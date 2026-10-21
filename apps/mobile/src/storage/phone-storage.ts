@@ -113,6 +113,12 @@ export type PhoneStorage = {
   /** Resolves once every write asked for so far is on the device, or has failed. */
   flush(): Promise<void>
   /**
+   * Write again what AsyncStorage last refused (the registry, device
+   * storage). Also done at every registry or device write; call it when the
+   * app leaves the foreground (`subscribePhonePageExit` does).
+   */
+  retryFailedWrites(): void
+  /**
    * Environments whose credential SecureStore refused to read during
    * `hydrate` (an iOS Keychain read before the first unlock, an Android
    * Keystore that lost its key). They read as needing to pair; their stored
@@ -272,14 +278,37 @@ export function createPhoneStorage(options: PhoneStorageOptions): PhoneStorage {
 
   // --- background writes ----------------------------------------------------
 
+  /** The newest write asked for, per AsyncStorage key, so only its outcome counts. */
+  const latestAsync = new Map<string, number>()
+  let asyncSeq = 0
+  /** AsyncStorage keys whose newest write failed, with the value it was to write. */
+  const unsavedAsync = new Map<string, string | null>()
+
   const asyncWrite = (key: string, value: string | null) => {
+    const seq = ++asyncSeq
+    latestAsync.set(key, seq)
+    unsavedAsync.delete(key)
     queue.enqueue({
       key: `async:${key}`,
       coalesce: true,
       run: () => (value === null ? asyncStore.removeItem(key) : asyncStore.setItem(key, value)),
-      onError: (cause) =>
-        report({ store: 'async', operation: value === null ? 'remove' : 'set', key, cause }),
+      onDone: () => {
+        if (latestAsync.get(key) === seq) latestAsync.delete(key)
+      },
+      onError: (cause) => {
+        // Kept for the next write, or the app leaving the foreground; never
+        // retried from here, so a disk that keeps refusing is not a loop.
+        if (latestAsync.get(key) === seq) {
+          latestAsync.delete(key)
+          unsavedAsync.set(key, value)
+        }
+        report({ store: 'async', operation: value === null ? 'remove' : 'set', key, cause })
+      },
     })
+  }
+
+  const retryFailedWrites = () => {
+    for (const [key, value] of [...unsavedAsync]) asyncWrite(key, value)
   }
 
   const desiredManifest = (): Manifest => {
@@ -400,6 +429,7 @@ export function createPhoneStorage(options: PhoneStorageOptions): PhoneStorage {
    * unchanged document is not rewritten.
    */
   const applyRegistry = (split: SplitDocument | null, stored: string | null) => {
+    retryFailedWrites()
     credentials = split ? new Map(split.credentials) : new Map()
     const listed = split ? split.environmentIds : new Set<string>()
     registryRaw = split ? split.stripped : null
@@ -502,12 +532,14 @@ export function createPhoneStorage(options: PhoneStorageOptions): PhoneStorage {
       requireReady()
       if (device.get(key) === value) return
       device.set(key, value)
+      retryFailedWrites()
       asyncWrite(DEVICE_KEY_PREFIX + key, value)
     },
     removeItem(key) {
       requireReady()
       if (!device.has(key)) return
       device.delete(key)
+      retryFailedWrites()
       asyncWrite(DEVICE_KEY_PREFIX + key, null)
     },
   }
@@ -651,6 +683,9 @@ export function createPhoneStorage(options: PhoneStorageOptions): PhoneStorage {
       return ready
     },
     flush: () => queue.drained(),
+    retryFailedWrites() {
+      if (ready) retryFailedWrites()
+    },
     get unreadableCredentials() {
       return [...unreadable.keys()]
     },

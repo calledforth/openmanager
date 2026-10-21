@@ -42,8 +42,17 @@ export const phoneStorage = createPhoneStorage({
   },
 })
 
-/** `SubscribePageExit` for `EnvironmentApplicationProviders`: leaving the foreground. */
-export const subscribePhonePageExit = createAppStatePageExit(AppState)
+const appStateExit = createAppStatePageExit(AppState)
+
+/**
+ * `SubscribePageExit` for `EnvironmentApplicationProviders`: leaving the
+ * foreground. Also the moment to write again what AsyncStorage refused.
+ */
+export const subscribePhonePageExit = (flush: () => void) =>
+  appStateExit(() => {
+    flush()
+    phoneStorage.retryFailedWrites()
+  })
 
 export {
   confirmCredentialRejected,

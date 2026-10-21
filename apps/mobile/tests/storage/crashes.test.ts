@@ -157,6 +157,45 @@ describe('a manifest write that fails', () => {
   })
 })
 
+describe('an AsyncStorage write that fails', () => {
+  it('is not retried on its own, and is written again with the next write or on leaving the foreground', async () => {
+    const stores = device()
+    const errors: StorageWriteError[] = []
+    const storage = await boot(stores, errors)
+    stores.asyncStore.failing.add(ENVIRONMENT_STORAGE_KEY)
+    await save(storage, withCredential(TOKEN_A))
+    expect(stores.asyncStore.data.has(ENVIRONMENT_STORAGE_KEY)).toBe(false)
+    // Nothing loops: draining again asks nothing more of the disk.
+    const failures = errors.length
+    await storage.flush()
+    expect(errors.length).toBe(failures)
+
+    // The disk recovers; a device-storage write carries the registry with it.
+    stores.asyncStore.failing.clear()
+    storage.device.setItem('theme', 'dark')
+    await storage.flush()
+    expect(stores.asyncStore.data.has(ENVIRONMENT_STORAGE_KEY)).toBe(true)
+    // So the next boot still has the environment, and its credential.
+    expect(credentialOf(await boot(stores))).toBe(TOKEN_A)
+  })
+
+  it('is written again when asked, as the app leaving the foreground does', async () => {
+    const stores = device()
+    const storage = await boot(stores)
+    stores.asyncStore.failing.add(ENVIRONMENT_STORAGE_KEY)
+    await save(storage, withCredential(TOKEN_A))
+    stores.asyncStore.failing.clear()
+    storage.retryFailedWrites()
+    await storage.flush()
+    expect(credentialOf(await boot(stores))).toBe(TOKEN_A)
+    // Nothing left to write: asking again is not a write.
+    stores.log.ops = []
+    storage.retryFailedWrites()
+    await storage.flush()
+    expect(stores.log.ops).toEqual([])
+  })
+})
+
 describe('a registry document that holds a credential at boot', () => {
   it('is removed rather than written back, when the credential is outside its field', async () => {
     const stores = device()
