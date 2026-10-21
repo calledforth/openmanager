@@ -19,7 +19,7 @@ export interface AsyncKeyValueStore {
  * Encrypted, async string storage: the iOS Keychain or the Android Keystore,
  * through `expo-secure-store`. Keys may only use `[A-Za-z0-9._-]`. On iOS an
  * entry outlives an uninstall, so this module only ever reads keys it wrote
- * during this install (see `credential-index` in `phone-storage.ts`).
+ * during this install (see the credential manifest in `phone-storage.ts`).
  */
 export interface SecureKeyValueStore {
   getItemAsync(key: string): Promise<string | null>

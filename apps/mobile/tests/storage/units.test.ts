@@ -7,11 +7,16 @@ import {
   writeEnvironmentRegistry,
 } from '@openmanager/environment-client/connection'
 import { createAppStatePageExit } from '../../src/storage/app-state'
-import { CREDENTIAL_KEY_PREFIX, credentialStoreKey } from '../../src/storage/credential-key'
+import {
+  CREDENTIAL_KEY_PREFIX,
+  credentialSlotKey,
+  credentialStoreKey,
+  isCredentialSlotKey,
+} from '../../src/storage/credential-key'
 import { createPhoneStorage } from '../../src/storage/phone-storage'
 import type { AsyncKeyValueStore } from '../../src/storage/ports'
 import { createWriteQueue } from '../../src/storage/write-queue'
-import { FakeSecureStore, TOKEN_A } from './fakes'
+import { FakeSecureStore, TOKEN_A, secretOf } from './fakes'
 
 describe('credentialStoreKey', () => {
   it('only uses characters SecureStore accepts', () => {
@@ -25,6 +30,18 @@ describe('credentialStoreKey', () => {
     const keys = ids.map(credentialStoreKey)
     expect(new Set(keys).size).toBe(ids.length)
     expect(credentialStoreKey('env-studio')).toBe(`${CREDENTIAL_KEY_PREFIX}env-studio`)
+  })
+
+  it("makes a fresh slot key per write that only its own environment's prefix matches", () => {
+    const slot = credentialSlotKey('a')
+    expect(slot).toMatch(/^[\w.-]+$/)
+    expect(isCredentialSlotKey(slot)).toBe(true)
+    expect(slot.startsWith(`${credentialStoreKey('a')}.`)).toBe(true)
+    // "a.b" encodes its dot, so its slots never look like slots of "a".
+    expect(credentialSlotKey('a.b').startsWith(`${credentialStoreKey('a')}.`)).toBe(false)
+    expect(credentialSlotKey('a')).not.toBe(slot)
+    expect(isCredentialSlotKey('openmanager.credential.a')).toBe(false)
+    expect(isCredentialSlotKey(42)).toBe(false)
   })
 })
 
@@ -133,7 +150,7 @@ describe('with the AsyncStorage package’s own mock', () => {
     writeEnvironmentRegistry(registry, storage.registry)
     await storage.flush()
     expect(JSON.stringify(mock.__INTERNAL_MOCK_STORAGE__)).not.toContain(TOKEN_A)
-    expect(secureStore.data.get(credentialStoreKey('env-studio'))).toBe(TOKEN_A)
+    expect(secretOf(secureStore, 'env-studio')).toBe(TOKEN_A)
 
     const relaunched = createPhoneStorage({ asyncStore: mock, secureStore })
     await relaunched.hydrate()

@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it } from 'vitest'
 import {
   EMPTY_REGISTRY,
   ENVIRONMENT_STORAGE_KEY,
@@ -16,7 +16,7 @@ import {
 } from '@openmanager/environment-client/connection'
 import { credentialStoreKey } from '../../src/storage/credential-key'
 import {
-  CREDENTIAL_INDEX_KEY,
+  CREDENTIAL_MANIFEST_KEY,
   DEVICE_KEY_PREFIX,
   PhoneStorageNotReadyError,
   createPhoneStorage,
@@ -27,10 +27,12 @@ import {
   TOKEN_A,
   TOKEN_B,
   TOKEN_C,
+  activeIds,
   device,
+  secretOf,
   storeContains,
+  takeLeaks,
   type FakeAsyncStorage,
-  type FakeSecureStore,
 } from './fakes'
 
 const STUDIO = 'env-studio'
@@ -70,9 +72,10 @@ function storedDocument(asyncStore: FakeAsyncStorage) {
   }
 }
 
-function secretOf(secureStore: FakeSecureStore, environmentId: string) {
-  return secureStore.data.get(credentialStoreKey(environmentId)) ?? null
-}
+// Checked on every write, not only at the end: no token may pass through AsyncStorage.
+afterEach(() => {
+  expect(takeLeaks()).toEqual([])
+})
 
 describe('the registry through the shared functions', () => {
   it('reads back exactly what was written, credentials included', async () => {
@@ -107,7 +110,7 @@ describe('the registry through the shared functions', () => {
     expect(document.environments[0]!.routes).toEqual(registry.environments[0]!.routes)
     expect(secretOf(secureStore, STUDIO)).toBe(TOKEN_A)
     expect(secretOf(secureStore, LAPTOP)).toBe(TOKEN_B)
-    expect(JSON.parse(asyncStore.data.get(CREDENTIAL_INDEX_KEY)!)).toEqual([LAPTOP, STUDIO])
+    expect(activeIds(asyncStore)).toEqual([LAPTOP, STUDIO])
   })
 
   it('keeps a pairing round trip out of AsyncStorage', async () => {
@@ -158,7 +161,7 @@ describe('the registry through the shared functions', () => {
     await save(storage, removeStoredEnvironment(both, STUDIO))
     expect(secretOf(secureStore, STUDIO)).toBeNull()
     expect(secretOf(secureStore, LAPTOP)).toBe(TOKEN_B)
-    expect(JSON.parse(asyncStore.data.get(CREDENTIAL_INDEX_KEY)!)).toEqual([LAPTOP])
+    expect(activeIds(asyncStore)).toEqual([LAPTOP])
   })
 
   it('forgets every credential when the registry is cleared', async () => {
@@ -168,7 +171,7 @@ describe('the registry through the shared functions', () => {
     await storage.flush()
     expect(secureStore.data.size).toBe(0)
     expect(asyncStore.data.has(ENVIRONMENT_STORAGE_KEY)).toBe(false)
-    expect(asyncStore.data.has(CREDENTIAL_INDEX_KEY)).toBe(false)
+    expect(asyncStore.data.has(CREDENTIAL_MANIFEST_KEY)).toBe(false)
     expect(readEnvironmentRegistry(storage.registry)).toEqual(EMPTY_REGISTRY)
   })
 
@@ -361,7 +364,7 @@ describe('hydration', () => {
     await storage.flush()
     expect(secretOf(stores.secureStore, STUDIO)).toBeNull()
     expect(secretOf(stores.secureStore, LAPTOP)).toBe(TOKEN_B)
-    expect(JSON.parse(stores.asyncStore.data.get(CREDENTIAL_INDEX_KEY)!)).toEqual([LAPTOP])
+    expect(activeIds(stores.asyncStore)).toEqual([LAPTOP])
   })
 
   it('forgets every indexed credential when there is no registry at all', async () => {
@@ -372,7 +375,7 @@ describe('hydration', () => {
     const { storage } = await booted(stores)
     await storage.flush()
     expect(stores.secureStore.data.size).toBe(0)
-    expect(stores.asyncStore.data.has(CREDENTIAL_INDEX_KEY)).toBe(false)
+    expect(stores.asyncStore.data.has(CREDENTIAL_MANIFEST_KEY)).toBe(false)
   })
 
   it('reads a credential SecureStore will not read as missing, and keeps it', async () => {
@@ -387,7 +390,7 @@ describe('hydration', () => {
       expect.objectContaining({
         store: 'secure',
         operation: 'read',
-        key: credentialStoreKey(STUDIO),
+        key: expect.stringContaining(`${credentialStoreKey(STUDIO)}.`),
       }),
     ])
     const registry = readEnvironmentRegistry(storage.registry)
@@ -434,25 +437,30 @@ describe('writes', () => {
     expect(registryWrites.length).toBeLessThanOrEqual(3)
   })
 
-  it('names an environment in the index, then saves its credential, then the registry', async () => {
-    const { storage, log } = await booted()
+  it('names a slot in the manifest, saves the credential, writes the registry, then marks it active', async () => {
+    const { storage, log, asyncStore } = await booted()
+    const slot = expect.stringContaining(`${credentialStoreKey(STUDIO)}.`)
     await save(storage, paired())
     expect(log.ops).toEqual([
-      { store: 'async', op: 'set', key: CREDENTIAL_INDEX_KEY },
-      { store: 'secure', op: 'set', key: credentialStoreKey(STUDIO) },
+      { store: 'async', op: 'set', key: CREDENTIAL_MANIFEST_KEY },
+      { store: 'secure', op: 'set', key: slot },
       { store: 'async', op: 'set', key: ENVIRONMENT_STORAGE_KEY },
+      { store: 'async', op: 'set', key: CREDENTIAL_MANIFEST_KEY },
     ])
+    expect(activeIds(asyncStore)).toEqual([STUDIO])
   })
 
-  it('forgets a removed credential before writing the registry, and the index after', async () => {
+  it('takes a removed credential out of the manifest first, then deletes it, then writes the registry', async () => {
     const { storage, log } = await booted()
+    const slot = expect.stringContaining(`${credentialStoreKey(STUDIO)}.`)
     await save(storage, paired())
     log.ops = []
     await save(storage, removeStoredEnvironment(paired(), STUDIO))
     expect(log.ops).toEqual([
-      { store: 'secure', op: 'remove', key: credentialStoreKey(STUDIO) },
+      { store: 'async', op: 'set', key: CREDENTIAL_MANIFEST_KEY },
+      { store: 'secure', op: 'remove', key: slot },
       { store: 'async', op: 'set', key: ENVIRONMENT_STORAGE_KEY },
-      { store: 'async', op: 'remove', key: CREDENTIAL_INDEX_KEY },
+      { store: 'async', op: 'remove', key: CREDENTIAL_MANIFEST_KEY },
     ])
   })
 
@@ -523,7 +531,7 @@ describe('writes', () => {
     log.release()
     await storage.flush()
     expect(secretOf(secureStore, STUDIO)).toBe(TOKEN_C)
-    expect(JSON.parse(asyncStore.data.get(CREDENTIAL_INDEX_KEY)!)).toEqual([STUDIO])
+    expect(activeIds(asyncStore)).toEqual([STUDIO])
     const relaunched = await booted({ log, asyncStore, secureStore })
     expect(readEnvironmentRegistry(relaunched.storage.registry).environments[0]!.credential).toBe(
       TOKEN_C,

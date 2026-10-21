@@ -69,18 +69,31 @@ holding a background task open.
   type-level check (`ReviewedRegistryFields`) stops compiling if the shared
   records gain a field, so a new secret cannot slip into AsyncStorage
   unnoticed.
-- **Credential index.** `openmanager-credential-index` (AsyncStorage, IDs
-  only) lists the environments that may have a SecureStore entry. It is
-  written before a credential and trimmed after one is deleted, so nothing in
-  SecureStore is ever unfindable, and only indexed IDs are read at boot. On
-  iOS a Keychain entry outlives an uninstall; the index does not, so a
-  reinstall starts clean.
-- **Order.** New credential: index, SecureStore, registry. Removed credential:
-  SecureStore, registry, index. Each step runs whatever the previous did. A
-  removal whose registry write fails still deletes the credential, leaving an
-  environment that needs pairing; a credential whose environment the registry
-  dropped is deleted at the next write or boot. A failed SecureStore write is
-  retried with the next registry write.
+- **Slots and the manifest.** Every credential write goes to a fresh
+  SecureStore slot, `openmanager.credential.<escaped id>.<slot>`. The manifest
+  (`openmanager-credential-manifest` in AsyncStorage, keys and IDs only) maps
+  each environment to its `active` slot and lists every other slot that may
+  exist as `retired`. Boot reads only active slots and deletes retired ones.
+  - A slot is written only once a saved manifest names it (checked when the
+    write runs), so nothing in SecureStore is ever unfindable. A failed
+    manifest write is tried again with the next registry write, and the slot
+    waits for it.
+  - A slot becomes active only after SecureStore confirms it. A credential
+    the registry drops (removed, revoked, rotated) leaves `active` at once, so
+    it is never read again even if deleting its slot fails; the delete is
+    tried again at the next write or boot.
+  - An earlier install's slots (on iOS the Keychain outlives an uninstall;
+    AsyncStorage does not) are named by no manifest and never read, even if
+    pairing again is cut short.
+- **Order.** New credential: manifest (slot named), SecureStore, registry,
+  manifest (slot active). Removed credential: manifest (slot retired),
+  SecureStore delete, registry, manifest. Each step runs whatever the
+  previous did. A store that keeps failing is retried once per registry write
+  or boot, never in a loop.
+- **Boot scrubbing.** A registry document that is not a registry, or that
+  holds a known credential outside its `credential` field, is removed rather
+  than rewritten around it (its credentials go too). So is a legacy record
+  holding one.
 - **Revocation only.** The credential is dropped only on the environment's
   revocation close (`4401`, marked `credentialRevoked` on the connection
   failure and `revoked` on the route-health report), and only if the stored

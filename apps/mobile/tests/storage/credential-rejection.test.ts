@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it } from 'vitest'
 import {
   createWebSocketEnvironmentClient,
   type WebSocketLike,
@@ -14,7 +14,6 @@ import {
   writeEnvironmentRegistry,
   type EnvironmentRegistry,
 } from '@openmanager/environment-client/connection'
-import { credentialStoreKey } from '../../src/storage/credential-key'
 import {
   environmentNeedsPairing,
   forgetRejectedCredential,
@@ -22,7 +21,7 @@ import {
   isRevokedCredentialReport,
 } from '../../src/storage/credential-rejection'
 import { createPhoneStorage } from '../../src/storage/phone-storage'
-import { TOKEN_A, TOKEN_B, device, storeContains } from './fakes'
+import { TOKEN_A, TOKEN_B, device, secretOf, storeContains, takeLeaks } from './fakes'
 
 const STUDIO = 'env-studio'
 const ENDPOINT = 'https://studio.example.com'
@@ -146,6 +145,10 @@ async function connect(registry: EnvironmentRegistry, expectEnvironmentId = STUD
   return { client, socket, timers, credential }
 }
 
+afterEach(() => {
+  expect(takeLeaks()).toEqual([])
+})
+
 describe('a credential the environment revoked', () => {
   it('is dropped from SecureStore, keeps the environment, offers pairing, and is never retried', async () => {
     const { storage, asyncStore, secureStore } = await pairedPhone()
@@ -168,7 +171,7 @@ describe('a credential the environment revoked', () => {
     writeEnvironmentRegistry(registry, storage.registry)
     await storage.flush()
 
-    expect(secureStore.data.has(credentialStoreKey(STUDIO))).toBe(false)
+    expect(secretOf(secureStore, STUDIO)).toBeNull()
     expect(storeContains(asyncStore, TOKEN_A)).toBe(false)
     const ui = deriveConnectionUi({
       environment: {
@@ -222,7 +225,7 @@ describe('a credential the environment revoked', () => {
     })!
     writeEnvironmentRegistry(repaired, relaunched.registry)
     await relaunched.flush()
-    expect(secureStore.data.get(credentialStoreKey(STUDIO))).toBe(TOKEN_B)
+    expect(secretOf(secureStore, STUDIO)).toBe(TOKEN_B)
     expect(storeContains(asyncStore, TOKEN_B)).toBe(false)
   })
 
@@ -245,7 +248,7 @@ describe('a credential that was not revoked', () => {
     expect(isRevokedCredentialFailure(connection.failure)).toBe(false)
     expect(isRevokedCredentialReport(routeHealthFromConnection(connection))).toBe(false)
     timers.advance(10 * 60_000)
-    expect(secureStore.data.get(credentialStoreKey(STUDIO))).toBe(TOKEN_A)
+    expect(secretOf(secureStore, STUDIO)).toBe(TOKEN_A)
   })
 
   it('is kept when a late refusal names a credential the phone has already replaced', async () => {

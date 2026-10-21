@@ -2,7 +2,7 @@
  * The phone's environment registry and device storage, kept where a phone
  * should keep them: the registry (environments, labels, routes, route health,
  * the selection) in AsyncStorage, and each environment's credential in
- * SecureStore under its environment ID. Never a credential in AsyncStorage.
+ * SecureStore. Never a credential in AsyncStorage.
  *
  * The seam. The shared registry functions (`readEnvironmentRegistry`,
  * `writeEnvironmentRegistry`, `clearEnvironmentRegistry`) take a synchronous
@@ -22,27 +22,29 @@
  * code sees exactly what it wrote. One implementation of the registry logic;
  * only the storage differs.
  *
- * Order and crashes. For a new or changed credential: the credential index
- * names the environment, then SecureStore takes the credential, then the
- * registry is written. For a removed environment or a dropped credential:
- * SecureStore forgets the credential first, then the registry is written, and
- * the index forgets the environment once SecureStore has. Each step is tried
- * whether or not the one before it worked. So:
+ * The manifest. Every credential write goes to a new SecureStore slot
+ * (`credential-key.ts`). The manifest in AsyncStorage (`CREDENTIAL_MANIFEST_KEY`,
+ * keys and environment IDs only) says which slot is each environment's
+ * credential (`active`) and which other slots may exist and are to be deleted
+ * (`retired`). It is the only thing boot reads SecureStore from:
  *
- * - A credential is never left where nothing will find it: whatever is in
- *   SecureStore is named in the index, and an indexed environment the registry
- *   no longer lists is forgotten at the next write or the next boot.
- * - If the registry write fails after its environment's credential was
- *   deleted, the registry still lists the environment, without a credential:
- *   it reads as needing to pair again. The reverse (a credential for an
- *   environment the registry dropped) is the first case.
- * - If a credential could not be saved, it works until the app restarts and
- *   is tried again with the next registry write.
+ * - A slot is written only after a saved manifest names it, so nothing in
+ *   SecureStore is ever unfindable. A manifest write that fails is tried again
+ *   with the next write, and the slot waits for it.
+ * - A slot becomes `active` only after its credential is saved. A credential
+ *   the registry drops (removed, or refused by the environment) leaves
+ *   `active` at once: it is never read again, whether or not deleting its
+ *   slot worked. A failed delete is tried again at the next write or boot.
+ * - A changed credential leaves the old slot `retired` straight away, so a
+ *   crash before the new one is saved reads as needing to pair, never as the
+ *   old credential.
+ * - Slots no manifest names (an earlier install's, since on iOS a Keychain
+ *   entry outlives an uninstall while AsyncStorage does not) are never read.
+ *   A reinstall starts clean.
  *
- * Reinstalls. AsyncStorage is wiped on uninstall; on iOS a Keychain entry is
- * not. Only environments named in the index (in AsyncStorage) are ever read
- * from SecureStore, so a reinstalled app starts with nothing, whatever an
- * earlier install left in the Keychain.
+ * If the registry write fails, the device keeps the previous registry; the
+ * credential state follows the manifest. An environment the registry lists
+ * whose credential the manifest does not reads as needing to pair again.
  */
 import {
   ENVIRONMENT_STORAGE_KEY,
@@ -53,7 +55,7 @@ import {
   type RegistryStorage,
   type StoredEnvironment,
 } from '@openmanager/environment-client/connection'
-import { credentialStoreKey } from './credential-key'
+import { credentialSlotKey, isCredentialSlotKey } from './credential-key'
 import type {
   AsyncKeyValueStore,
   SecureKeyValueStore,
@@ -62,8 +64,8 @@ import type {
 } from './ports'
 import { createWriteQueue } from './write-queue'
 
-/** The environments that may have a credential in SecureStore. IDs only. */
-export const CREDENTIAL_INDEX_KEY = 'openmanager-credential-index'
+/** Which SecureStore slot holds which environment's credential. Keys and IDs only. */
+export const CREDENTIAL_MANIFEST_KEY = 'openmanager-credential-manifest'
 /** AsyncStorage keys the device storage (`PhoneStorage.device`) owns. */
 export const DEVICE_KEY_PREFIX = 'openmanager.device:'
 
@@ -118,7 +120,7 @@ export type PhoneStorage = {
 export type PhoneStorageOptions = {
   asyncStore: AsyncKeyValueStore
   secureStore: SecureKeyValueStore
-  /** Told about every write that failed. Never given a value. */
+  /** Told about every write that failed, and about anything boot removed. Never given a value. */
   onError?: StorageErrorReporter
 }
 
@@ -127,6 +129,22 @@ type SplitDocument = {
   stripped: string
   credentials: Map<string, string>
   environmentIds: Set<string>
+}
+
+type Manifest = {
+  version: 1
+  /** Environment ID to the slot holding its credential. */
+  active: Record<string, string>
+  /** Slots that may exist and are not anyone's credential: to be deleted. */
+  retired: string[]
+}
+
+type Slot = {
+  environmentId: string
+  /** What the slot holds or is to hold; empty for one read back unreadable or retired. */
+  credential: string
+  /** SecureStore has confirmed the write (or boot read it back). */
+  written: boolean
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -157,16 +175,35 @@ export function splitRegistryDocument(raw: string): SplitDocument | null {
   return { stripped: JSON.stringify({ ...document, environments }), credentials, environmentIds }
 }
 
-function parseIndex(raw: string | null): string[] {
-  if (!raw) return []
+const EMPTY_MANIFEST: Manifest = { version: 1, active: {}, retired: [] }
+
+function parseManifest(raw: string | null): Manifest | null {
+  if (raw === null) return EMPTY_MANIFEST
+  let parsed: unknown
   try {
-    const parsed: unknown = JSON.parse(raw)
-    return Array.isArray(parsed)
-      ? parsed.filter((item): item is string => typeof item === 'string')
-      : []
+    parsed = JSON.parse(raw)
   } catch {
-    return []
+    return null
   }
+  if (!isRecord(parsed) || parsed.version !== 1 || !isRecord(parsed.active)) return null
+  if (!Array.isArray(parsed.retired)) return null
+  const active: Record<string, string> = {}
+  for (const [environmentId, key] of Object.entries(parsed.active)) {
+    if (isCredentialSlotKey(key)) active[environmentId] = key
+  }
+  return { version: 1, active, retired: parsed.retired.filter(isCredentialSlotKey) }
+}
+
+function namedIn(manifest: Manifest, key: string): boolean {
+  return manifest.retired.includes(key) || Object.values(manifest.active).includes(key)
+}
+
+/** Whether `text` holds any of `credentials`. */
+function holdsCredential(text: string, credentials: Iterable<string>): boolean {
+  for (const credential of credentials) {
+    if (credential.length >= LEAK_CHECK_MIN_LENGTH && text.includes(credential)) return true
+  }
+  return false
 }
 
 export function createPhoneStorage(options: PhoneStorageOptions): PhoneStorage {
@@ -184,17 +221,22 @@ export function createPhoneStorage(options: PhoneStorageOptions): PhoneStorage {
   let legacyRaw: string | null = null
   /** The credential each environment has, as the registry last said. */
   let credentials = new Map<string, string>()
-  /** Environments that may have a SecureStore entry, written or about to be. */
-  const secretIds = new Set<string>()
-  /** Credentials SecureStore would not read at boot; kept, never deleted implicitly. */
-  const unreadable = new Set<string>()
-  /** Credentials whose last save failed, to save again with the next write. */
-  const unsaved = new Set<string>()
-  /** The last SecureStore operation queued per environment, until it has run. */
-  const secureTail = new Map<string, { op: 'set' | 'delete'; seq: number }>()
-  let secureSeq = 0
-  /** The index value last queued, so an unchanged index is not written again. */
-  let indexValue: string | null = null
+  /** Every SecureStore slot that may exist, by key, until its delete is confirmed. */
+  const slots = new Map<string, Slot>()
+  /** The slot holding, or about to hold, each environment's credential. */
+  const current = new Map<string, string>()
+  /** Active slots SecureStore would not read at boot: kept while their environment is. */
+  const unreadable = new Map<string, string>()
+  /** Slots with a SecureStore write queued or running. */
+  const busy = new Set<string>()
+  /** Slots whose last SecureStore write failed: tried again at the next registry write or boot. */
+  const failed = new Set<string>()
+  /** The manifest AsyncStorage holds, as far as this run has seen confirmed. */
+  let persisted: Manifest = EMPTY_MANIFEST
+  /** The manifest last queued; `undefined` when the last attempt failed. */
+  let manifestQueued: string | null | undefined = null
+  /** The last manifest write failed: wait for the next registry write before trying again. */
+  let manifestFailed = false
   const device = new Map<string, string>()
 
   const requireReady = () => {
@@ -213,58 +255,97 @@ export function createPhoneStorage(options: PhoneStorageOptions): PhoneStorage {
     })
   }
 
-  const writeIndex = () => {
-    const ids = [...secretIds].sort()
-    const value = ids.length > 0 ? JSON.stringify(ids) : null
-    if (value === indexValue) return
-    indexValue = value
-    asyncWrite(CREDENTIAL_INDEX_KEY, value)
+  const desiredManifest = (): Manifest => {
+    const active: Record<string, string> = {}
+    for (const [environmentId, key] of current) {
+      if (slots.get(key)?.written) active[environmentId] = key
+    }
+    for (const [environmentId, key] of unreadable) active[environmentId] = key
+    const activeKeys = new Set(Object.values(active))
+    const retired = [...slots.keys()].filter((key) => !activeKeys.has(key)).sort()
+    const sorted = Object.fromEntries(
+      Object.entries(active).sort(([left], [right]) => (left < right ? -1 : 1)),
+    )
+    return { version: 1, active: sorted, retired }
   }
 
-  const secureJob = (environmentId: string, op: 'set' | 'delete', credential = '') => {
-    const seq = ++secureSeq
-    secureTail.set(environmentId, { op, seq })
-    const key = credentialStoreKey(environmentId)
-    const settle = () => {
-      if (secureTail.get(environmentId)?.seq === seq) secureTail.delete(environmentId)
-    }
+  const syncManifest = () => {
+    const manifest = desiredManifest()
+    const empty = Object.keys(manifest.active).length === 0 && manifest.retired.length === 0
+    const value = empty ? null : JSON.stringify(manifest)
+    if (value === manifestQueued || manifestFailed) return
+    manifestQueued = value
     queue.enqueue({
-      key: `secure:${key}`,
-      // Every SecureStore write runs, so each one's outcome is seen.
-      coalesce: false,
+      key: `async:${CREDENTIAL_MANIFEST_KEY}`,
+      coalesce: true,
       run: () =>
-        op === 'set' ? secureStore.setItemAsync(key, credential) : secureStore.deleteItemAsync(key),
+        value === null
+          ? asyncStore.removeItem(CREDENTIAL_MANIFEST_KEY)
+          : asyncStore.setItem(CREDENTIAL_MANIFEST_KEY, value),
       onDone: () => {
-        settle()
-        if (op === 'set') {
-          unsaved.delete(environmentId)
-          return
-        }
-        // Forgotten for good, unless the registry has given it a credential since.
-        if (!credentials.has(environmentId) && !unreadable.has(environmentId)) {
-          secretIds.delete(environmentId)
-          writeIndex()
-        }
+        persisted = manifest
       },
       onError: (cause) => {
-        settle()
-        if (op === 'set' && credentials.get(environmentId) === credential) {
-          unsaved.add(environmentId)
-        }
-        report({ store: 'secure', operation: op === 'set' ? 'set' : 'remove', key, cause })
+        // Not saved: the next write asks again, and slots wait for it.
+        if (manifestQueued === value) manifestQueued = undefined
+        manifestFailed = true
+        report({
+          store: 'async',
+          operation: value === null ? 'remove' : 'set',
+          key: CREDENTIAL_MANIFEST_KEY,
+          cause,
+        })
       },
     })
   }
 
-  /** Forget every credential the registry no longer gives an environment. */
-  const deleteUnwanted = (listed: ReadonlySet<string>) => {
-    for (const environmentId of secretIds) {
-      if (credentials.has(environmentId)) continue
-      // A credential that could not be read is kept while its environment is.
-      if (unreadable.has(environmentId) && listed.has(environmentId)) continue
-      unreadable.delete(environmentId)
-      if (secureTail.get(environmentId)?.op === 'delete') continue
-      secureJob(environmentId, 'delete')
+  const secureJob = (key: string, op: 'set' | 'delete') => {
+    const slot = slots.get(key)!
+    busy.add(key)
+    queue.enqueue({
+      key: `secure:${key}`,
+      // Every SecureStore write runs, so each one's outcome is seen.
+      coalesce: false,
+      run: async () => {
+        if (op === 'delete') return secureStore.deleteItemAsync(key)
+        // Superseded while it waited: the delete queued after it is all that is left to do.
+        if (current.get(slot.environmentId) !== key) return
+        // Nothing goes into SecureStore that a saved manifest does not name.
+        if (!namedIn(persisted, key)) {
+          throw new Error('The credential manifest was not saved, so the credential was not.')
+        }
+        return secureStore.setItemAsync(key, slot.credential)
+      },
+      onDone: () => {
+        busy.delete(key)
+        failed.delete(key)
+        if (op === 'delete') slots.delete(key)
+        else slot.written = true
+        reconcile()
+      },
+      onError: (cause) => {
+        busy.delete(key)
+        failed.add(key)
+        report({ store: 'secure', operation: op === 'set' ? 'set' : 'remove', key, cause })
+        reconcile()
+      },
+    })
+  }
+
+  /**
+   * Queue whatever brings the device to memory's state: the manifest first,
+   * then each slot's write or delete. Slots that just failed wait for the next
+   * registry write or boot, so a store that keeps refusing is not retried in
+   * a loop.
+   */
+  const reconcile = () => {
+    syncManifest()
+    for (const [key, slot] of slots) {
+      if (busy.has(key) || failed.has(key)) continue
+      const inUse =
+        current.get(slot.environmentId) === key || unreadable.get(slot.environmentId) === key
+      if (!inUse) secureJob(key, 'delete')
+      else if (!slot.written) secureJob(key, 'set')
     }
   }
 
@@ -272,37 +353,34 @@ export function createPhoneStorage(options: PhoneStorageOptions): PhoneStorage {
 
   /**
    * Make `split` the registry: memory first, then the writes that put the
-   * device in the same state, in the order the file comment gives. `stored`
-   * is what AsyncStorage holds now, so an unchanged document is not rewritten.
+   * device in the same state. `stored` is what AsyncStorage holds now, so an
+   * unchanged document is not rewritten.
    */
   const applyRegistry = (split: SplitDocument | null, stored: string | null) => {
-    const previous = credentials
     credentials = split ? new Map(split.credentials) : new Map()
+    const listed = split ? split.environmentIds : new Set<string>()
     registryRaw = split ? split.stripped : null
     joinedCache = undefined
 
-    const changed: Array<[string, string]> = []
+    for (const [environmentId] of unreadable) {
+      if (!listed.has(environmentId) || credentials.has(environmentId)) {
+        unreadable.delete(environmentId)
+      }
+    }
+    for (const [environmentId] of current) {
+      if (!credentials.has(environmentId)) current.delete(environmentId)
+    }
     for (const [environmentId, credential] of credentials) {
-      unreadable.delete(environmentId)
-      if (previous.get(environmentId) !== credential || unsaved.has(environmentId)) {
-        changed.push([environmentId, credential])
-      }
+      const key = current.get(environmentId)
+      if (key && slots.get(key)?.credential === credential) continue
+      const next = credentialSlotKey(environmentId)
+      slots.set(next, { environmentId, credential, written: false })
+      current.set(environmentId, next)
     }
-    for (const environmentId of unsaved) {
-      if (!credentials.has(environmentId)) unsaved.delete(environmentId)
-    }
-
-    // The index names an environment before SecureStore holds its credential.
-    let named = false
-    for (const [environmentId] of changed) {
-      if (!secretIds.has(environmentId)) {
-        secretIds.add(environmentId)
-        named = true
-      }
-    }
-    if (named) writeIndex()
-    deleteUnwanted(split ? split.environmentIds : new Set())
-    for (const [environmentId, credential] of changed) secureJob(environmentId, 'set', credential)
+    // A registry write is when anything that failed is tried again.
+    failed.clear()
+    manifestFailed = false
+    reconcile()
     if (registryRaw !== stored) asyncWrite(ENVIRONMENT_STORAGE_KEY, registryRaw)
   }
 
@@ -310,10 +388,8 @@ export function createPhoneStorage(options: PhoneStorageOptions): PhoneStorage {
     const split = splitRegistryDocument(raw)
     // Never store what cannot be split: it might carry a credential.
     if (!split) throw new Error('Not an environment registry document; not stored.')
-    for (const credential of [...split.credentials.values(), ...credentials.values()]) {
-      if (credential.length >= LEAK_CHECK_MIN_LENGTH && split.stripped.includes(credential)) {
-        throw new Error('A credential is still in the registry document; not stored.')
-      }
+    if (holdsCredential(split.stripped, [...split.credentials.values(), ...credentials.values()])) {
+      throw new Error('A credential is still in the registry document; not stored.')
     }
     applyRegistry(split, registryRaw)
   }
@@ -358,7 +434,6 @@ export function createPhoneStorage(options: PhoneStorageOptions): PhoneStorage {
       requireReady()
       if (key === ENVIRONMENT_STORAGE_KEY) {
         // Clearing the registry forgets every credential, unreadable ones too.
-        unreadable.clear()
         applyRegistry(null, registryRaw)
         return
       }
@@ -396,69 +471,106 @@ export function createPhoneStorage(options: PhoneStorageOptions): PhoneStorage {
 
   // --- boot -----------------------------------------------------------------
 
-  const readSecret = async (environmentId: string) => {
-    const key = credentialStoreKey(environmentId)
+  const readSlot = async (environmentId: string, key: string) => {
     try {
-      return { environmentId, credential: await secureStore.getItemAsync(key) }
+      return { environmentId, key, credential: await secureStore.getItemAsync(key) }
     } catch (cause) {
       report({ store: 'secure', operation: 'read', key, cause })
-      return { environmentId, credential: undefined }
+      return { environmentId, key, credential: undefined }
     }
   }
+
+  const removedAtBoot = (key: string, why: string) =>
+    report({ store: 'async', operation: 'read', key, cause: new Error(why) })
 
   const load = async () => {
     const [stored, allKeys] = await Promise.all([
       asyncStore.multiGet([
         ENVIRONMENT_STORAGE_KEY,
         LEGACY_ENVIRONMENT_STORAGE_KEY,
-        CREDENTIAL_INDEX_KEY,
+        CREDENTIAL_MANIFEST_KEY,
       ]),
       asyncStore.getAllKeys(),
     ])
     const value = (key: string) => stored.find(([name]) => name === key)?.[1] ?? null
     const deviceKeys = allKeys.filter((key) => key.startsWith(DEVICE_KEY_PREFIX))
     const deviceEntries = deviceKeys.length > 0 ? await asyncStore.multiGet(deviceKeys) : []
-    const indexRaw = value(CREDENTIAL_INDEX_KEY)
-    const reads = await Promise.all(parseIndex(indexRaw).map(readSecret))
+    const manifestRaw = value(CREDENTIAL_MANIFEST_KEY)
+    const manifest = parseManifest(manifestRaw)
+    const reads = await Promise.all(
+      Object.entries(manifest?.active ?? {}).map(([environmentId, key]) =>
+        readSlot(environmentId, key),
+      ),
+    )
 
     // Nothing above changed any state, so a load that threw can be retried.
-    indexValue = indexRaw
-    /** What SecureStore holds now. */
+    if (!manifest) {
+      // Its slots cannot be found again; their environments read as needing to pair.
+      removedAtBoot(CREDENTIAL_MANIFEST_KEY, 'The credential manifest could not be read.')
+    }
+    persisted = manifest ?? EMPTY_MANIFEST
+    manifestQueued = manifest ? manifestRaw : undefined
+    /** What SecureStore holds now, for the environments the manifest names. */
     const saved = new Map<string, string>()
-    for (const { environmentId, credential } of reads) {
-      secretIds.add(environmentId)
-      if (credential === undefined) unreadable.add(environmentId)
-      else if (credential !== null) {
-        const parsed = parseEnvironmentCredential(credential)
-        if (parsed) saved.set(environmentId, parsed)
+    for (const { environmentId, key, credential } of reads) {
+      if (credential === undefined) {
+        slots.set(key, { environmentId, credential: '', written: true })
+        unreadable.set(environmentId, key)
+        continue
       }
+      const parsed = credential === null ? '' : parseEnvironmentCredential(credential)
+      // A slot that is gone, or holds nothing usable, is retired.
+      slots.set(key, { environmentId, credential: parsed, written: true })
+      if (!parsed) continue
+      saved.set(environmentId, parsed)
+      current.set(environmentId, key)
+    }
+    for (const key of persisted.retired) {
+      if (!slots.has(key)) slots.set(key, { environmentId: '', credential: '', written: true })
     }
     for (const [key, item] of deviceEntries) {
       if (item !== null) device.set(key.slice(DEVICE_KEY_PREFIX.length), item)
     }
-    legacyRaw = value(LEGACY_ENVIRONMENT_STORAGE_KEY)
     credentials = saved
     ready = true
 
     const raw = value(ENVIRONMENT_STORAGE_KEY)
     registryRaw = raw
-    if (raw === null) {
-      // No registry: every indexed credential is left over from a clear or a
-      // removal cut short, so it goes.
+    const split = raw === null ? null : splitRegistryDocument(raw)
+    const known = [...saved.values(), ...(split?.credentials.values() ?? [])]
+
+    legacyRaw = value(LEGACY_ENVIRONMENT_STORAGE_KEY)
+    if (legacyRaw !== null && holdsCredential(legacyRaw, known)) {
+      removedAtBoot(LEGACY_ENVIRONMENT_STORAGE_KEY, 'It held a credential; removed.')
+      legacyRaw = null
+      asyncWrite(LEGACY_ENVIRONMENT_STORAGE_KEY, null)
+    }
+
+    if (raw !== null && !split) {
+      // The shared code reads it as empty anyway; it may hold anything, so it goes.
+      removedAtBoot(ENVIRONMENT_STORAGE_KEY, 'Not a registry document; removed.')
+      applyRegistry(null, raw)
+      return
+    }
+    if (split && holdsCredential(split.stripped, known)) {
+      // A credential outside its field (a label, a health message): the
+      // document is not rewritten around it but removed, credentials and all.
+      removedAtBoot(ENVIRONMENT_STORAGE_KEY, 'It held a credential outside its field; removed.')
+      applyRegistry(null, raw)
+      return
+    }
+    if (!split) {
+      // No registry: every slot the manifest names is left over, so it goes.
       applyRegistry(null, null)
       return
     }
-    const split = splitRegistryDocument(raw)
-    // A document that cannot be read is left as it is: the shared code reads
-    // it as empty, and its next write replaces it.
-    if (!split) return
     // Each listed environment gets what SecureStore holds. A credential found
     // in AsyncStorage (it should never be there) moves to SecureStore when
     // SecureStore has none, and is taken out of AsyncStorage either way.
     const listed = new Map<string, string>()
     for (const environmentId of split.environmentIds) {
       const credential = saved.get(environmentId) ?? split.credentials.get(environmentId)
-      if (credential) listed.set(environmentId, credential)
+      if (credential && !unreadable.has(environmentId)) listed.set(environmentId, credential)
     }
     applyRegistry({ ...split, credentials: listed }, raw)
   }
@@ -481,7 +593,7 @@ export function createPhoneStorage(options: PhoneStorageOptions): PhoneStorage {
     },
     flush: () => queue.drained(),
     get unreadableCredentials() {
-      return [...unreadable]
+      return [...unreadable.keys()]
     },
   }
 }
