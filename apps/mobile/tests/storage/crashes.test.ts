@@ -199,6 +199,44 @@ describe('an AsyncStorage write that fails', () => {
     expect(credentialOf(await boot(stores))).toBe(TOKEN_A)
   })
 
+  it('never lets a retried older value land after a newer one', async () => {
+    const stores = device()
+    const storage = await boot(stores)
+    stores.asyncStore.failing.add(ENVIRONMENT_STORAGE_KEY)
+    await save(storage, withCredential(TOKEN_A))
+    stores.asyncStore.failing.clear()
+    // The retry of the refused document and a newer document queue together.
+    stores.log.hold()
+    const renamed = upsertStoredEnvironment(withCredential(TOKEN_A), {
+      environmentId: STUDIO,
+      endpoint: ENDPOINT,
+      label: 'Renamed',
+    })!
+    writeEnvironmentRegistry(renamed, storage.registry)
+    storage.retryFailedWrites()
+    stores.log.release()
+    await storage.flush()
+    const relaunched = await boot(stores)
+    expect(readEnvironmentRegistry(relaunched.registry).environments[0]?.label).toBe('Renamed')
+  })
+
+  it('writes a refused device-storage removal again', async () => {
+    const stores = device()
+    const storage = await boot(stores)
+    storage.device.setItem('theme', 'dark')
+    await storage.flush()
+    const themeKey = `${DEVICE_KEY_PREFIX}theme`
+    stores.asyncStore.failing.add(themeKey)
+    storage.device.removeItem('theme')
+    await storage.flush()
+    expect(stores.asyncStore.data.has(themeKey)).toBe(true)
+    stores.asyncStore.failing.clear()
+    storage.retryFailedWrites()
+    await storage.flush()
+    expect(stores.asyncStore.data.has(themeKey)).toBe(false)
+    expect((await boot(stores)).device.getItem('theme')).toBeNull()
+  })
+
   it('is written again when asked, as the app leaving the foreground does', async () => {
     const stores = device()
     const storage = await boot(stores)
