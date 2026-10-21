@@ -12,13 +12,14 @@ import { useFonts } from 'expo-font'
 import { SafeAreaProvider } from 'react-native-safe-area-context'
 
 import '../../global.css'
-import { countNeedsYou } from '../home/rows'
-import { useHomeSource } from '../home/source'
 import { ThemeProvider, usePhoneTheme, useTheme } from '../theme/ThemeProvider'
 import { GlassBackdrop } from '../ui/Glass'
-import { PillNav } from '../ui/PillNav'
 
 const convexUrl = process.env.EXPO_PUBLIC_CONVEX_URL
+
+// A cold deep link (a session, search) still has the tabs under it, so its
+// back control returns to them.
+export const unstable_settings = { initialRouteName: '(tabs)' }
 
 SplashScreen.preventAutoHideAsync().catch(() => {
   // The splash screen can already be hidden during fast refresh.
@@ -27,8 +28,6 @@ SplashScreen.preventAutoHideAsync().catch(() => {
 function RootNavigator() {
   const { resolved } = useTheme()
   const theme = usePhoneTheme()
-  const { sessions } = useHomeSource()
-  const badge = countNeedsYou(sessions)
 
   return (
     <GlassBackdrop>
@@ -39,22 +38,21 @@ function RootNavigator() {
           // Each screen paints the canvas itself; the navigator's own
           // background (white, by default) must never show through.
           contentStyle: { backgroundColor: theme.bg },
-          // The top-level screens slide sideways; search and settings rise.
           animation: 'fade',
         }}
       >
-        <Stack.Screen name="index" />
-        <Stack.Screen name="inbox" />
-        <Stack.Screen name="settings" />
+        {/* Sessions, Inbox and Settings, with the pill nav as their tab bar. */}
+        <Stack.Screen name="(tabs)" />
+        {/* Pages slide in from the side; search and the theme preview rise. */}
         <Stack.Screen name="session/[externalId]" options={{ animation: 'slide_from_right' }} />
+        <Stack.Screen name="draft/new" options={{ animation: 'slide_from_right' }} />
+        <Stack.Screen name="draft/[draftId]" options={{ animation: 'slide_from_right' }} />
         <Stack.Screen
           name="search"
           options={{ presentation: 'modal', animation: 'slide_from_bottom' }}
         />
         <Stack.Screen name="theme-preview" options={{ presentation: 'modal' }} />
       </Stack>
-      {/* Drawn over every screen; it only shows itself on the three top-level routes. */}
-      <PillNav badge={badge} />
     </GlassBackdrop>
   )
 }

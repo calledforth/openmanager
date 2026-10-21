@@ -77,20 +77,35 @@ Look up the version Expo expects for the current SDK in
 
 ## Shell
 
-The app is three top-level screens and a layer: **Sessions** (`src/app/index.tsx`, tabs All ·
-Active · Drafts), **Inbox** (`src/app/inbox.tsx`, Needs you · Done · Failed) and **Settings**, reached
-through the floating glass pill (`src/ui/PillNav.tsx`) that the root layout draws over every
-top-level screen, with **Search** (`src/app/search.tsx`) detached beside it as a modal. The
-components under `src/ui/` are the phone's design system after `docs/ui-prototypes/mobile/`: `Glass`
-(blur + the scheme's translucent floating surface + float shadow), `StatusMark` (one glyph per
-session state), `SessionRow`, `DraftRow`, `SegmentedTabs`, `BigTitle`, `SectionLabel`, `FadeOut`,
-`IconButton`, `ProjectChip`.
+The app is three top-level screens and a layer above them. **Sessions** (`src/app/(tabs)/index.tsx`,
+tabs All · Active · Drafts), **Inbox** (`src/app/(tabs)/inbox.tsx`, Needs you · Done · Failed) and
+**Settings** (`src/app/(tabs)/settings.tsx`) are an expo-router `Tabs` group
+(`src/app/(tabs)/_layout.tsx`) whose tab bar is the floating glass pill (`src/ui/PillNav.tsx`). Each
+tab is one instance that keeps its own state and scroll; a pill tap goes through the navigator, so
+switching never stacks screens, re-tapping the current tab does nothing, and Android back goes to
+Sessions and then out. The pill's Inbox badge is how many sessions need you. **Search**
+(`src/app/search.tsx`, a modal pushed by the button detached beside the pill), a session
+(`src/app/session/[externalId].tsx`), a draft (`src/app/draft/new.tsx` from the compose button,
+`src/app/draft/[draftId].tsx` from a draft row; placeholders until the composer lands) and the theme
+preview sit in the root Stack above the tabs. A back or close control returns to the previous screen,
+or to the home when a cold deep link left nothing to go back to (`src/ui/goBack.ts`).
+
+The components under `src/ui/` are the phone's design system after `docs/ui-prototypes/mobile/`:
+`Glass` (blur + the scheme's translucent floating surface + float shadow), `StatusMark` (one glyph
+per session state), `ProviderMark` (a tool as its mark, never its name), `SessionRow`, `DraftRow`,
+`SegmentedTabs`, `BigTitle`, `SectionLabel`, `FadeOut`, `IconButton`, `ProjectChip`. The home and
+the inbox are `SectionList`s, one section per group.
 
 What the home shows comes through `src/home/source.ts`. Until the phone speaks the environment
-protocol it returns a fixture (`src/home/fixture.ts`, the owner's own session titles); the
-sessions-list issue swaps the hook for the shared sidebar providers without touching the screens.
-The pure logic in `src/home/rows.ts` (status marks, tab membership, day grouping, child nesting)
-and `src/home/search.ts` is unit-tested.
+protocol it returns a fixture (`src/home/fixture.ts`, the owner's own session titles) in the shared
+sidebar's own shapes (`SidebarSessionEntry`, `SidebarDraft`); the sessions-list issue swaps the hook
+for the shared sidebar providers without touching the screens. A session's status mark is the web
+sidebar's own mapping: `statusMarkOf` calls `sessionBusyTone` from app-core
+(`packages/app-core/src/components/sidebar/session-busy-tone.ts`, pure and import-free so Metro reads
+it), so `done`, `busy`, `ready` and the rest read the same on both, and a status with no glyph is the
+ring at rest. The pure logic in `src/home/rows.ts` (status marks, tab membership, Active groups and
+day groups, trees ranked by their most urgent member and dated by their newest, child nesting) and
+`src/home/search.ts` is unit-tested.
 
 ## Theme
 

@@ -1,5 +1,5 @@
 import { useRouter } from 'expo-router'
-import { ClockIcon, MagnifyingGlassIcon, XIcon } from 'phosphor-react-native'
+import { MagnifyingGlassIcon, XIcon } from 'phosphor-react-native'
 import { useMemo, useState } from 'react'
 import { Pressable, ScrollView, TextInput, View } from 'react-native'
 import { useSafeAreaInsets } from 'react-native-safe-area-context'
@@ -10,6 +10,7 @@ import { matchesTerms, searchTerms } from '../home/search'
 import { useHomeSource } from '../home/source'
 import { usePhoneTheme } from '../theme/ThemeProvider'
 import { SectionLabel } from '../ui/chrome'
+import { useGoBack } from '../ui/goBack'
 import { ProjectSquare } from '../ui/ProjectChip'
 import { SessionRow } from '../ui/SessionRow'
 
@@ -20,6 +21,7 @@ import { SessionRow } from '../ui/SessionRow'
  */
 export default function Search() {
   const router = useRouter()
+  const goBack = useGoBack()
   const insets = useSafeAreaInsets()
   const theme = usePhoneTheme()
   const { workspaces, sessions } = useHomeSource()
@@ -72,7 +74,7 @@ export default function Search() {
         <Pressable
           accessibilityRole="button"
           accessibilityLabel="Close search"
-          onPress={() => router.back()}
+          onPress={goBack}
           hitSlop={10}
           style={({ pressed }) => ({ opacity: pressed ? 0.6 : 1 })}
         >
@@ -136,27 +138,6 @@ export default function Search() {
           </>
         ) : (
           <>
-            <SectionLabel>Recent</SectionLabel>
-            {['tool payloads', 'pricing', 'soul id'].map((term) => (
-              <Pressable
-                key={term}
-                onPress={() => setQuery(term)}
-                style={({ pressed }) => ({
-                  flexDirection: 'row',
-                  alignItems: 'center',
-                  gap: 10,
-                  paddingHorizontal: 12,
-                  paddingVertical: 10,
-                  borderRadius: 12,
-                  backgroundColor: pressed ? theme.hover : 'transparent',
-                })}
-              >
-                <ClockIcon size={15} color={theme.faint} />
-                <AppText variant="text-14-regular" style={{ color: theme.muted }}>
-                  {term}
-                </AppText>
-              </Pressable>
-            ))}
             <SectionLabel>Projects</SectionLabel>
             {workspaces.map((w) => (
               <ProjectRow

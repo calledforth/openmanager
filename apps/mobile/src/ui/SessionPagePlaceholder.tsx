@@ -1,4 +1,4 @@
-import { useLocalSearchParams, useRouter } from 'expo-router'
+import { useLocalSearchParams } from 'expo-router'
 import { CaretLeftIcon } from 'phosphor-react-native'
 import { View } from 'react-native'
 import { useSafeAreaInsets } from 'react-native-safe-area-context'
@@ -6,12 +6,13 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context'
 import { AppText } from '../components/ui/AppText'
 import { useHomeSource } from '../home/source'
 import { usePhoneTheme } from '../theme/ThemeProvider'
+import { useGoBack } from './goBack'
 import { IconButton } from './IconButton'
 import { ProjectChip } from './ProjectChip'
 
 /** The session page's frame (back, title, project) until the transcript arrives. */
 export function SessionPagePlaceholder() {
-  const router = useRouter()
+  const goBack = useGoBack()
   const insets = useSafeAreaInsets()
   const theme = usePhoneTheme()
   const { externalId } = useLocalSearchParams<{ externalId: string }>()
@@ -21,7 +22,7 @@ export function SessionPagePlaceholder() {
   return (
     <View className="flex-1" style={{ paddingTop: insets.top + 6 }}>
       <View className="flex-row items-center justify-between px-5" style={{ height: 48 }}>
-        <IconButton label="Back" onPress={() => router.back()}>
+        <IconButton label="Back" onPress={goBack}>
           <CaretLeftIcon size={18} color={theme.fg} />
         </IconButton>
       </View>

@@ -1,4 +1,4 @@
-import { useLocalSearchParams, useRouter } from 'expo-router'
+import { useLocalSearchParams } from 'expo-router'
 import { CaretLeftIcon, DotsThreeVerticalIcon } from 'phosphor-react-native'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
@@ -25,6 +25,7 @@ import { useSession } from '../../data/useSession'
 import { useSessionMessages, type SessionMessage } from '../../data/useSessionMessages'
 import { useHomeSource } from '../../home/source'
 import { useTokens } from '../../theme/useTokens'
+import { useGoBack } from '../../ui/goBack'
 import { SessionPagePlaceholder } from '../../ui/SessionPagePlaceholder'
 
 // Phase 4 chat screen: header (back, 1-line title, status, overflow menu),
@@ -38,7 +39,7 @@ const ACTIVE_STATUSES = new Set(['running', 'busy', 'waiting'])
 const PERMISSION_RESOLVE_TIMEOUT_MS = 15_000
 
 function ConvexSessionScreen() {
-  const router = useRouter()
+  const goBack = useGoBack()
   const insets = useSafeAreaInsets()
   const tokens = useTokens()
   const { externalId, workspacePath } = useLocalSearchParams<{
@@ -185,13 +186,13 @@ function ConvexSessionScreen() {
       confirmLabel: 'Delete',
       onConfirm: () => {
         deleteSession({ workspacePath, sessionExternalId: externalId })
-          .then(() => router.back())
+          .then(goBack)
           .catch(() => {
             showAlert('Could not delete session', 'Please try again in a moment.')
           })
       },
     })
-  }, [externalId, workspacePath, deleteSession, router])
+  }, [externalId, workspacePath, deleteSession, goBack])
 
   const handleOverflowMenu = useCallback(() => {
     // Native: two-step action sheet (menu → confirm). Web: straight to the
@@ -217,7 +218,7 @@ function ConvexSessionScreen() {
         <TouchableOpacity
           activeOpacity={0.7}
           hitSlop={12}
-          onPress={() => router.back()}
+          onPress={goBack}
           accessibilityRole="button"
           accessibilityLabel="Back"
         >

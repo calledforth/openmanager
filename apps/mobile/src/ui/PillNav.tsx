@@ -1,40 +1,44 @@
-import { usePathname, useRouter } from 'expo-router'
+import { useRouter } from 'expo-router'
+import type { BottomTabBarProps } from 'expo-router/js-tabs'
 import { GearSixIcon, ListIcon, MagnifyingGlassIcon, TrayIcon } from 'phosphor-react-native'
+import type { ComponentType } from 'react'
 import { Pressable, View } from 'react-native'
-import { useSafeAreaInsets } from 'react-native-safe-area-context'
 
 import { AppText } from '../components/ui/AppText'
 import { usePhoneTheme } from '../theme/ThemeProvider'
 import { Glass } from './Glass'
 import { tap } from './haptics'
 
-type TabKey = 'sessions' | 'inbox' | 'settings'
+/** The tabs group's routes, by file name, in pill order. */
+const TABS: Record<
+  string,
+  { label: string; Icon: ComponentType<{ size: number; color: string }> }
+> = {
+  index: { label: 'Sessions', Icon: ListIcon },
+  inbox: { label: 'Inbox', Icon: TrayIcon },
+  settings: { label: 'Settings', Icon: GearSixIcon },
+}
 
-const TABS: { key: TabKey; path: '/' | '/inbox' | '/settings'; label: string }[] = [
-  { key: 'sessions', path: '/', label: 'Sessions' },
-  { key: 'inbox', path: '/inbox', label: 'Inbox' },
-  { key: 'settings', path: '/settings', label: 'Settings' },
-]
-
-export function activeTab(pathname: string): TabKey | null {
-  if (pathname === '/' || pathname === '') return 'sessions'
-  if (pathname.startsWith('/inbox')) return 'inbox'
-  if (pathname.startsWith('/settings')) return 'settings'
-  return null
+/** What a screen reader hears for a tab: the badge is part of the Inbox's name. */
+function tabLabel(label: string, badge: number) {
+  return badge > 0 ? `${label}, ${badge} ${badge === 1 ? 'needs' : 'need'} you` : label
 }
 
 /**
  * The floating pill: Sessions · Inbox · Settings, with search detached
- * beside it, after Linear iOS. Glass over the content, which keeps scrolling
- * under it. The badge is how many sessions wait on you.
+ * beside it, after Linear iOS. It is the tabs group's tab bar, so a tab
+ * press goes through the navigator (one instance per tab, nothing pushed).
+ * Glass over the content, which keeps scrolling under it. The badge is how
+ * many sessions wait on you.
  */
-export function PillNav({ badge = 0 }: { badge?: number }) {
+export function PillNav({
+  state,
+  navigation,
+  insets,
+  badge = 0,
+}: BottomTabBarProps & { badge?: number }) {
   const theme = usePhoneTheme()
   const router = useRouter()
-  const pathname = usePathname()
-  const insets = useSafeAreaInsets()
-  const current = activeTab(pathname)
-  if (!current) return null
   return (
     <View
       pointerEvents="box-none"
@@ -50,20 +54,29 @@ export function PillNav({ badge = 0 }: { badge?: number }) {
       }}
     >
       <Glass shadow="float" contentStyle={{ flexDirection: 'row', gap: 4, padding: 6 }}>
-        {TABS.map((tab) => {
-          const on = tab.key === current
+        {state.routes.map((route, index) => {
+          const tab = TABS[route.name]
+          if (!tab) return null
+          const on = state.index === index
           const color = on ? theme.fg : theme.muted
+          const count = route.name === 'inbox' ? badge : 0
           return (
             <Pressable
-              key={tab.key}
+              key={route.key}
               accessibilityRole="tab"
-              accessibilityLabel={tab.label}
+              accessibilityLabel={tabLabel(tab.label, count)}
               accessibilityState={{ selected: on }}
               onPress={() => {
-                if (on) return
+                const event = navigation.emit({
+                  type: 'tabPress',
+                  target: route.key,
+                  canPreventDefault: true,
+                })
+                if (on || event.defaultPrevented) return
                 tap()
-                router.navigate(tab.path)
+                navigation.navigate(route.name, route.params)
               }}
+              onLongPress={() => navigation.emit({ type: 'tabLongPress', target: route.key })}
               style={{
                 width: 48,
                 height: 44,
@@ -73,14 +86,8 @@ export function PillNav({ badge = 0 }: { badge?: number }) {
                 backgroundColor: on ? theme.active : 'transparent',
               }}
             >
-              {tab.key === 'sessions' ? (
-                <ListIcon size={21} color={color} />
-              ) : tab.key === 'inbox' ? (
-                <TrayIcon size={21} color={color} />
-              ) : (
-                <GearSixIcon size={21} color={color} />
-              )}
-              {tab.key === 'inbox' && badge > 0 ? (
+              <tab.Icon size={21} color={color} />
+              {count > 0 ? (
                 <View
                   style={{
                     position: 'absolute',
@@ -97,8 +104,11 @@ export function PillNav({ badge = 0 }: { badge?: number }) {
                     borderColor: theme.floatBg,
                   }}
                 >
-                  <AppText variant="text-10-medium" style={{ color: '#1a1a1a', lineHeight: 12 }}>
-                    {badge > 9 ? '9+' : badge}
+                  <AppText
+                    variant="text-10-medium"
+                    style={{ color: theme.statusInk.needs, lineHeight: 12 }}
+                  >
+                    {count > 9 ? '9+' : count}
                   </AppText>
                 </View>
               ) : null}

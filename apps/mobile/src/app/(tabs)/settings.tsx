@@ -1,13 +1,12 @@
 import Constants from 'expo-constants'
 import { useRouter } from 'expo-router'
-import { XIcon } from 'phosphor-react-native'
 import { ScrollView, TouchableOpacity, View } from 'react-native'
 import { useSafeAreaInsets } from 'react-native-safe-area-context'
 
 import { THEME_FAMILIES } from '@openmanager/app-core/lib/theme-families'
 
-import { AppText } from '../components/ui/AppText'
-import { type ThemeMode, usePhoneTheme, useTheme } from '../theme/ThemeProvider'
+import { AppText } from '../../components/ui/AppText'
+import { type ThemeMode, useTheme } from '../../theme/ThemeProvider'
 
 const THEME_OPTIONS: { mode: ThemeMode; label: string }[] = [
   { mode: 'system', label: 'System' },
@@ -19,26 +18,17 @@ export default function SettingsScreen() {
   const router = useRouter()
   const insets = useSafeAreaInsets()
   const { mode, setMode, family, setFamily, resolved } = useTheme()
-  const phone = usePhoneTheme()
 
   const deploymentUrl = process.env.EXPO_PUBLIC_CONVEX_URL ?? 'Not configured'
   const version = Constants.expoConfig?.version ?? '—'
 
   return (
     <View className="flex-1 bg-background" style={{ paddingTop: insets.top }}>
+      {/* A tab now, so nothing to close. The screen itself is redesigned later. */}
       <View className="flex-row items-center justify-between px-4 pb-3 pt-2">
         <AppText variant="text-16-medium" className="text-textStrong">
           Settings
         </AppText>
-        <TouchableOpacity
-          activeOpacity={0.7}
-          hitSlop={12}
-          onPress={() => router.back()}
-          accessibilityRole="button"
-          accessibilityLabel="Close settings"
-        >
-          <XIcon size={20} color={phone.muted} />
-        </TouchableOpacity>
       </View>
 
       <ScrollView
