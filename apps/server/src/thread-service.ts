@@ -53,6 +53,7 @@ import {
 } from './db/session-store.ts'
 import type { ArtifactStore } from './artifacts.ts'
 import { waitingKind } from './db/session-activity.ts'
+import type { WriteOptions } from './db/event-repository.ts'
 import { pageSessionSummaries } from './session-pagination.ts'
 import type { CommandContext } from './command-context.ts'
 import { formatTitleContext, type TitleContextMessage } from './session-titles/context.ts'
@@ -356,8 +357,12 @@ export function createThreadService(
     artifacts?: ArtifactStore
     database?: DatabaseSync
     flush?: () => void
-    /** Commit several host events together; falls back to one append per event. */
-    appendAtomic?: (events: readonly ProofEvent[]) => void
+    /**
+     * Commit several host events together; falls back to one append per
+     * event. `options` carries host-private facts that ride the write, such
+     * as a child session's provider identity.
+     */
+    appendAtomic?: (events: readonly ProofEvent[], options?: WriteOptions) => void
     /**
      * Write one turn's end now, throwing when it fails instead of keeping it
      * for a retry. Falls back to `appendEvent`.
@@ -458,13 +463,27 @@ export function createThreadService(
     cwd: record.cwd,
     ...(sessionId ? { sessionId } : {}),
   })
-  // Persist the opaque identity before allowing prompts to use the provider session.
+  /**
+   * Persist the opaque identity before allowing prompts to use the provider
+   * session. Host-private and not activity (docs/sync-foundations.md §4.4):
+   * it writes the identity alone, never `updated_at`, so no client-visible
+   * field changes and no event is owed. The row's provider was written by
+   * `session.created`; a row that is gone or names another provider is
+   * refused rather than silently left unstamped.
+   */
   const persistRuntimeSession = (record: ThreadRecord, providerSessionId: string): string => {
-    options.database
-      ?.prepare(
-        'UPDATE sessions SET provider_id = ?, provider_session_id = ?, updated_at = ? WHERE session_id = ?',
+    const database = options.database
+    if (!database) return providerSessionId
+    const stamped = database
+      .prepare(
+        'UPDATE sessions SET provider_session_id = ? WHERE session_id = ? AND provider_id = ?',
       )
-      .run(record.providerId, providerSessionId, Date.now(), record.session.sessionId)
+      .run(providerSessionId, record.session.sessionId, record.providerId)
+    if (stamped.changes !== 1) {
+      throw new Error(
+        `Session ${record.session.sessionId} has no row on provider ${record.providerId} to stamp`,
+      )
+    }
     return providerSessionId
   }
 
@@ -642,6 +661,8 @@ export function createThreadService(
     thread: Thread,
     providerId: ProviderId,
     alongside: readonly ProofEvent[] = [],
+    /** The provider's own id for the session, when it is known before the row exists (a child). */
+    identity?: string,
   ): string => {
     const timestamp = new Date().toISOString()
     const created = ProofEventSchemas['session.created'].parse({
@@ -663,9 +684,14 @@ export function createThreadService(
     announcedProviders.set(session.sessionId, providerId)
     try {
       if (options.appendAtomic) {
-        options.appendAtomic([created, threadCreated, ...alongside])
+        options.appendAtomic(
+          [created, threadCreated, ...alongside],
+          identity ? { identities: { [session.sessionId]: identity } } : undefined,
+        )
         return timestamp
       }
+      // Without an atomic writer there is no database (unit tests only), so
+      // there is no row for an identity to ride on.
       appendEvent(created)
       appendEvent(threadCreated)
       alongside.forEach(appendEvent)
@@ -1454,7 +1480,9 @@ export function createThreadService(
     }
     const thread: Thread = { threadId: randomUUID(), sessionId: session.sessionId }
     try {
-      persistCreatedThread(session, thread, parent.providerId)
+      // The identity is stored by the same write that creates the row, so a
+      // child is never durable without what it resumes and deduplicates by.
+      persistCreatedThread(session, thread, parent.providerId, [], providerSessionId)
     } catch (error) {
       // The parent turn carries on; the child is offered again on the next update.
       options.onPersistenceError?.(error, 'session.created')
@@ -1477,18 +1505,6 @@ export function createThreadService(
     sessions.set(session.sessionId, record)
     threads.set(thread.threadId, record)
     announcedProviders.delete(session.sessionId)
-    // The stamp is a direct row update that follows the committed insert in
-    // the same synchronous step. A child without its provider identity can
-    // neither resume nor deduplicate, so a failed stamp takes the announced
-    // session back rather than leaving that row behind.
-    try {
-      options.flush?.()
-      persistRuntimeSession(record, providerSessionId)
-    } catch (error) {
-      options.onPersistenceError?.(error, 'session.created')
-      rollbackSession(record)
-      return
-    }
     childSessionIds.set(key, session.sessionId)
   }
 

@@ -1413,7 +1413,11 @@ describe('durable server event boundary', () => {
       undefined,
       (workspaceId) =>
         workspaceId === 'workspace-1' ? { providerId: 'opencode', cwd: '/workspace' } : undefined,
-      { database, flush: events.flush, appendAtomic: (batch) => events.appendAtomic(batch) },
+      {
+        database,
+        flush: events.flush,
+        appendAtomic: (batch, options) => events.appendAtomic(batch, options),
+      },
     )
     service.setEnvironmentId('environment-1')
     const create = (requestId: string) =>

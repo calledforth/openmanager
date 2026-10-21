@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto'
 import type { DatabaseSync } from 'node:sqlite'
 import type { ProofEvent } from '@openmanager/protocol/node'
-import type { DurableProofEvent } from './event-repository.ts'
+import type { DurableProofEvent, WriteOptions } from './event-repository.ts'
 import { prepareDraftProjection } from './draft-projection.ts'
 import { OPEN_TURN_FOR_SESSION_SQL } from './queries.ts'
 import { createTurnClosure, reasoningIsOpen, toolIsOpen } from './turn-closure.ts'
@@ -31,15 +31,15 @@ export interface EventProjectionOptions {
 export function createEventProjector(
   database: DatabaseSync,
   options: EventProjectionOptions,
-): (event: DurableProofEvent) => void {
+): (event: DurableProofEvent, write?: WriteOptions) => void {
   const drafts = prepareDraftProjection(database)
   const closure = createTurnClosure(database)
   const s = {
     insertSession: database.prepare(
       `INSERT INTO sessions (
-         session_id, workspace_id, parent_session_id, provider_id, title, status,
-         created_at, updated_at
-       ) VALUES (?, ?, ?, ?, ?, 'idle', ?, ?)`,
+         session_id, workspace_id, parent_session_id, provider_id, provider_session_id, title,
+         status, created_at, updated_at
+       ) VALUES (?, ?, ?, ?, ?, ?, 'idle', ?, ?)`,
     ),
     updateWorkspaceName: database.prepare(
       'UPDATE workspaces SET name = ?, updated_at = ? WHERE workspace_id = ?',
@@ -402,7 +402,7 @@ export function createEventProjector(
     }))
   }
 
-  return function projectEvent(event: DurableProofEvent): void {
+  return function projectEvent(event: DurableProofEvent, write?: WriteOptions): void {
     const at = Date.parse(event.timestamp)
     switch (event.name) {
       case 'session.created': {
@@ -418,6 +418,8 @@ export function createEventProjector(
           session.workspaceId,
           session.parentSessionId ?? null,
           providerId,
+          // Host-private: the identity rides the write, never the event.
+          write?.identities?.[session.sessionId] ?? null,
           session.title,
           at,
           at,

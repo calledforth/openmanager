@@ -42,10 +42,24 @@ export interface EventGroup {
   events: readonly DurableProofEvent[]
 }
 
+/**
+ * Host-private facts that ride one write, never an event: they are no
+ * client's business (docs/sync-foundations.md I1).
+ */
+export interface WriteOptions {
+  /**
+   * The provider's own session id of a session this write creates, by host
+   * session id. The `session.created` projection stores it with the row, so
+   * a child session is never durable without the identity it resumes by
+   * (§4.7.4 (e)). Every key must name a session the same write creates.
+   */
+  identities?: Readonly<Record<string, string>>
+}
+
 export interface EventRepository {
   appendEvents(scope: SubscriptionScope, events: readonly DurableProofEvent[]): DurableEvent[]
   /** Commit several scopes' events together, in order: all or none become durable. */
-  appendGroups(groups: readonly EventGroup[]): DurableEvent[]
+  appendGroups(groups: readonly EventGroup[], options?: WriteOptions): DurableEvent[]
   finalizeTurn(scope: ThreadScope, events: readonly DurableProofEvent[]): DurableEvent[]
 }
 
@@ -149,6 +163,7 @@ export function createEventRepository(
     events: readonly DurableProofEvent[],
     writtenAt: number,
     transaction?: Transaction,
+    writeOptions?: WriteOptions,
   ): DurableEvent[] => {
     const key = scopeKey(scope)
     statements.ensureStream.run(
@@ -264,7 +279,7 @@ export function createEventRepository(
           transaction!.tracked.set(sessionId, entry)
         }
       }
-      project(event)
+      project(event, writeOptions)
       if (entry) {
         entry.lastEventId = event.eventId
         entry.lastTimestamp = event.timestamp
@@ -341,7 +356,7 @@ export function createEventRepository(
     )
   }
 
-  const write = (groups: readonly EventGroup[]): DurableEvent[] => {
+  const write = (groups: readonly EventGroup[], writeOptions?: WriteOptions): DurableEvent[] => {
     const pending = groups.filter((group) => group.events.length > 0)
     if (pending.length === 0) return []
     for (const { scope, events } of pending) {
@@ -351,12 +366,28 @@ export function createEventRepository(
         }
       }
     }
+    if (writeOptions?.identities) {
+      const created = new Set(
+        pending.flatMap(({ events }) =>
+          events.flatMap((event) =>
+            event.name === 'session.created' ? [event.payload.session.sessionId] : [],
+          ),
+        ),
+      )
+      for (const sessionId of Object.keys(writeOptions.identities)) {
+        if (!created.has(sessionId)) {
+          throw new Error(
+            `An identity was given for session ${sessionId}, which this write does not create`,
+          )
+        }
+      }
+    }
     database.exec('BEGIN IMMEDIATE')
     try {
       const writtenAt = now()
       const transaction: Transaction = { tracked: new Map(), retriedStatus: [] }
       const records = pending.flatMap(({ scope, events }) =>
-        writeScope(scope, events, writtenAt, transaction),
+        writeScope(scope, events, writtenAt, transaction, writeOptions),
       )
       records.push(...deriveStatus(transaction, writtenAt))
       options.beforeCommit?.(records)
@@ -375,7 +406,7 @@ export function createEventRepository(
 
   return {
     appendEvents: (scope, events) => write([{ scope, events }]),
-    appendGroups: write,
+    appendGroups: (groups, options) => write(groups, options),
     finalizeTurn(scope, events) {
       const terminal = events.at(-1)
       if (!terminal || !isTerminal(terminal)) {

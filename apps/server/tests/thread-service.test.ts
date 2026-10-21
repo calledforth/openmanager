@@ -1368,6 +1368,64 @@ describe('sends deduplicated by command id', () => {
     expect(started.commandId).toEqual(expect.any(String))
   })
 
+  it('stamps the provider identity alone: no time moves, and a row on another provider is refused', async () => {
+    const { database } = await createDatabase()
+    const events = createPersistentEventService(database, vi.fn(), {
+      sessionProviderId: () => 'opencode',
+    })
+    let resolveStart!: (value: { sessionId: string; state: 'created' }) => void
+    const runtime = {
+      ensureSession: vi
+        .fn()
+        .mockImplementation(() => new Promise((resolve) => (resolveStart = resolve))),
+      prompt: vi.fn().mockReturnValue(new Promise(() => undefined)),
+      cancel: vi.fn(),
+    }
+    const service = createThreadService(
+      runtime as unknown as Pick<AgentRuntime, 'ensureSession' | 'prompt' | 'cancel'>,
+      { rejection: () => undefined },
+      (event) => events.append(event),
+      undefined,
+      registered,
+      { database, flush: events.flush, appendAtomic: events.appendAtomic },
+    )
+    service.setEnvironmentId(input.environmentId)
+    const create = (requestId: string) =>
+      ProofResponseSchemas['session.create'].parse(
+        service.dispatch({ type: 'command', name: 'session.create', requestId, payload: input }),
+      ).payload
+    const row = (sessionId: string) =>
+      database
+        .prepare(
+          'SELECT provider_id, provider_session_id, updated_at FROM sessions WHERE session_id = ?',
+        )
+        .get(sessionId) as
+        | { provider_id: string; provider_session_id: string | null; updated_at: number }
+        | undefined
+
+    const created = create('create-1')
+    await vi.waitFor(() => expect(runtime.ensureSession).toHaveBeenCalledTimes(1))
+    const before = row(created.session.sessionId)!
+    expect(before).toMatchObject({ provider_session_id: null })
+    resolveStart({ sessionId: 'provider-1', state: 'created' })
+    await service.resolveRuntimeSession(created.session.sessionId)
+    // Host-private: the identity lands, and nothing a client sees moves.
+    expect(row(created.session.sessionId)).toEqual({ ...before, provider_session_id: 'provider-1' })
+    expect(before.updated_at).toBe(Date.parse(created.announcedAt!))
+
+    // The row names the provider `session.created` wrote; the stamp never rewrites it.
+    const other = create('create-2')
+    await vi.waitFor(() => expect(runtime.ensureSession).toHaveBeenCalledTimes(2))
+    database
+      .prepare("UPDATE sessions SET provider_id = 'cursor' WHERE session_id = ?")
+      .run(other.session.sessionId)
+    resolveStart({ sessionId: 'provider-2', state: 'created' })
+    await expect(service.resolveRuntimeSession(other.session.sessionId)).rejects.toThrow(
+      /no row on provider opencode/,
+    )
+    expect(row(other.session.sessionId)).toBeUndefined()
+  })
+
   it('persists one turn.started per command id', async () => {
     const { database } = await createDatabase()
     const publish = vi.fn()
@@ -1386,7 +1444,7 @@ describe('sends deduplicated by command id', () => {
         (event) => events.append(event),
         undefined,
         resolve,
-        { database, flush: events.flush, appendAtomic: (batch) => events.appendAtomic(batch) },
+        { database, flush: events.flush, appendAtomic: (batch, options) => events.appendAtomic(batch, options) },
       )
       service.setEnvironmentId(input.environmentId)
       return service
@@ -1899,7 +1957,7 @@ describe('durable session lifecycle', () => {
     }
   })
 
-  it('rolls the child back when stamping its provider identity fails', async () => {
+  it('files no child when its create fails, and registers it with its identity on the next report', async () => {
     const onPersistenceError = vi.fn()
     const h = setup(onPersistenceError)
     const service = h.service
@@ -1907,8 +1965,6 @@ describe('durable session lifecycle', () => {
     try {
       const { sessionId } = h.created.session
       await service.resolveRuntimeSession(sessionId)
-      // A subtask with no child session registers nothing, so the stamp below
-      // is the first one the patched statement can fail.
       await delegate(h, service, 'assistant-1', { title: 'Anonymous work' })
       expect(sessionCount(h)).toBe(1)
 
@@ -1928,36 +1984,28 @@ describe('durable session lifecycle', () => {
         })
 
       h.published.length = 0
-      const original = h.database.prepare.bind(h.database)
-      h.database.prepare = ((sql: string) => {
-        if (String(sql).includes('UPDATE sessions SET provider_id')) throw new Error('disk full')
-        return original(sql)
-      }) as typeof h.database.prepare
+      // The child's row, its thread and its identity are one write; refuse it.
+      h.database.exec(`CREATE TEMP TRIGGER refuse_child BEFORE INSERT ON sessions
+        WHEN NEW.parent_session_id IS NOT NULL BEGIN SELECT RAISE(ABORT, 'disk full'); END`)
       try {
         subtask('assistant-1-subtask-failing', 3)
       } finally {
-        h.database.prepare = original as typeof h.database.prepare
+        h.database.exec('DROP TRIGGER refuse_child')
       }
       h.events.flush()
 
       expect(onPersistenceError).toHaveBeenCalledWith(expect.any(Error), 'session.created')
-      const announced = h.published
-        .filter((item) => item.name === 'session.created' || item.name === 'session.deleted')
-        .map((item) => {
-          const payload = item.payload as {
-            session?: { sessionId: string }
-            sessionId?: string
-          }
-          return [item.name, payload.session?.sessionId ?? payload.sessionId]
-        })
-      expect(announced).toHaveLength(2)
-      expect(announced[0]?.[0]).toBe('session.created')
-      expect(announced[1]).toEqual(['session.deleted', announced[0]?.[1]])
+      // Nothing became durable, so nothing was announced and nothing is taken back.
+      expect(
+        h.published.filter(
+          (item) => item.name === 'session.created' || item.name === 'session.deleted',
+        ),
+      ).toEqual([])
       expect(listed(h, service).map((item) => item.sessionId)).toEqual([sessionId])
       expect(childRow(h)).toBeUndefined()
-      expect(sessionCount(h)).toBe(1)
 
-      // With the write working again the same child registers from scratch.
+      // With the write working again the same child registers from scratch,
+      // its identity stored by the write that created its row.
       subtask('assistant-1-subtask-retry', 4)
       h.events.flush()
       expect(sessionCount(h)).toBe(2)
@@ -1966,6 +2014,10 @@ describe('durable session lifecycle', () => {
         provider_session_id: 'provider-child',
         title: 'Explore the repo',
       })
+      expect(
+        h.published.filter((item) => item.name === 'session.created'),
+        'one create, and no later write of the identity',
+      ).toHaveLength(1)
     } finally {
       h.close()
     }

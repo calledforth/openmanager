@@ -16,10 +16,8 @@ import { describe, expect } from 'vitest'
 import {
   environmentSnapshotNeverRemoves,
   reasoningBudgetMarker,
-  runtimeStamp,
   sessionCreatedPartial,
   snapshotMergeDropsOlderActivity,
-  stampMovesRecency,
 } from './causes.ts'
 import {
   FlipError,
@@ -27,12 +25,11 @@ import {
   expectConverges,
   expectConvergesExcept,
   recordEvidence,
-  verdictOf,
 } from './evidence.ts'
 import { Driver, sleep, until, type Rig, type TestClient } from './harness.ts'
 import type { FrameFields, FrameRecord } from './link-proxy.ts'
 import { serverSessionsView, serverThreadView, type ThreadView } from './normalize.ts'
-import { recencyMirror, s8Causes, witnessOf, x2Causes } from './fixtures.ts'
+import { recencyMirror, witnessOf, x2Causes } from './fixtures.ts'
 import { createdAt, mirroredRecency } from './mirror.ts'
 import { afterPhase, futureTest, scenario } from './scenario.ts'
 import {
@@ -630,8 +627,16 @@ describe('§8.4 scenarios on main', () => {
     },
   )
 
+  /**
+   * Guard since F3 (§4.4): the runtime stamp writes the provider identity
+   * alone, a host-private column, so a session's time is the `session.created`
+   * time every client heard. On main the stamp moved `updated_at` with no
+   * event, and a watching client sorted the sidebar by a time the server no
+   * longer had (RUNTIME_STAMP). The rename of the older session lands inside
+   * the 500 ms before the new session's stamp, as on main.
+   */
   scenario(
-    'S8 a session created while another client watches (§4.4)',
+    'S8 a session created while another client watches (§4.4, guard)',
     { newSessionDelayMs: 500 },
     async (rig) => {
       // A direct, so the proxy carries only B: what B was sent is B's alone.
@@ -645,22 +650,11 @@ describe('§8.4 scenarios on main', () => {
         () => b.client.getState().sessions[older.sessionId],
         'B to list the older session',
       )
-      // A valid baseline before the new session's stamp is induced: B agrees
-      // with the server except for the older session's own X2 diff (its
-      // provider, its stamp), instantiated from what B was sent.
-      const baseline = async () =>
-        x2Causes({
-          sessionId: older.sessionId,
-          workspaceId: rig.workspaceId,
-          providerId: 'opencode',
-          createdAt: createdAt(rig.framesOf(b), older.sessionId),
-          heldRecency: mirroredRecency(rig.framesOf(b), rig.workspaceId),
-          witness: await witnessOf(rig, b),
-        })
-      await expectConvergesExcept('S8 baseline', rig, b, [
-        async () => (await baseline()).primary,
-        ...[0, 1].map((index) => async () => (await baseline()).residuals[index]!),
-      ])
+      // B heard of the sessions only through session.created, which carries
+      // no provider until X2 lands in this phase.
+      const partial = (ids: string[]) =>
+        sessionCreatedPartial({ sessionIds: ids, providerId: 'opencode' })
+      await expectConvergesExcept('S8 baseline', rig, b, [partial([older.sessionId])])
       const created = await createSession(rig, a, { title: 'New', open: false, quiet: false })
       // Inside the 500 ms before the new session's stamp: the older one moves above it.
       await a.client.commands.renameSession(older.sessionId, 'Older, renamed')
@@ -668,36 +662,32 @@ describe('§8.4 scenarios on main', () => {
         () => b.client.getState().sessions[created.sessionId],
         'B to list the new session',
       )
+      // The stamp has landed: the session has its provider identity.
+      await until(
+        async () => !(await rig.server.readUnidentified()).includes(created.sessionId),
+        'the new session to be stamped',
+      )
       await rig.waitQuiet()
-      const causes = async () =>
-        s8Causes({
-          olderId: older.sessionId,
-          newId: created.sessionId,
-          workspaceId: rig.workspaceId,
-          providerId: 'opencode',
-          createdAt: createdAt(rig.framesOf(b), created.sessionId),
-          heldRecency: mirroredRecency(rig.framesOf(b), rig.workspaceId),
-          witness: await witnessOf(rig, b),
-        })
-      await demonstrateDiff(
-        'S8',
-        rig,
-        b,
-        async () => (await causes()).primary,
-        [0, 1].map((index) => async () => (await causes()).residuals[index]!),
+      await expectConvergesExcept('S8', rig, b, [partial([older.sessionId, created.sessionId])])
+      // Equal is not enough: the server's time for the new session is still the one announced.
+      const server = serverSessionsView(await rig.server.readSessions()) as Array<{
+        sessionId: string
+        updatedAt: string
+      }>
+      expect(server.find((row) => row.sessionId === created.sessionId)?.updatedAt).toBe(
+        createdAt(rig.framesOf(b), created.sessionId),
       )
     },
   )
 
   /**
-   * Not deterministic on main, so neither a demonstration nor a guard: the
-   * stamp follows the child's insert in the same synchronous step
-   * (thread-service.ts:1338-1352), so whether its `updatedAt` moves depends on
-   * the clock crossing a millisecond in between. The run records which
-   * happened, and fails on anything the instantiated causes do not explain.
+   * Guard since F3 (§4.7.4 (e)): a child's provider identity is stored by the
+   * write that creates its row, so there is no second write for a time to
+   * move in. On main the stamp followed the insert as its own write and
+   * moved `updatedAt` whenever the clock crossed a millisecond in between.
    */
   scenario(
-    'S8 (child) a child session registered through subtask_update (observed)',
+    'S8 (child) a child session registered through subtask_update (guard)',
     {},
     async (rig) => {
       const a = await rig.connect('A', { link: 'direct' })
@@ -717,38 +707,27 @@ describe('§8.4 scenarios on main', () => {
           ),
         'B to list the child session',
       )
+      expect(
+        await rig.server.readUnidentified(),
+        'the child is durable with its identity',
+      ).not.toContain(child.sessionId)
       await finish(rig, a, parent, turnId)
-      const result = await rig.checkConvergence(b)
-      // The child's stamp: its provider identity written with no event, right
-      // after the insert; provenance names the write.
-      const witness = await witnessOf(rig, b)
-      const verdict = verdictOf(result, undefined, [
-        runtimeStamp({
-          sessionId: child.sessionId,
-          heldUpdatedAt: createdAt(rig.framesOf(b), child.sessionId),
-          witness,
-        }),
-        stampMovesRecency({
-          workspaceId: rig.workspaceId,
-          held: mirroredRecency(rig.framesOf(b), rig.workspaceId),
-          witness,
-        }),
+      await expectConvergesExcept('S8 (child)', rig, b, [
+        // B heard of both sessions only through session.created (X2, this phase).
         sessionCreatedPartial({
           sessionIds: [parent.sessionId, child.sessionId],
           providerId: 'opencode',
         }),
-        await recencyMirror(rig, b)(),
+        // The turn's status events move the workspace's recency with no
+        // workspace event (X1, this phase).
+        recencyMirror(rig, b),
       ])
-      expect(verdict.residual, 'only the instantiated causes may show').toEqual([])
-      recordEvidence({
-        scenario: 'S8 (child)',
-        bucket: 'regression-guard',
-        cause: 'observation: did the child stamp cross a millisecond?',
-        observed: {
-          childStampDiverged: verdict.residualCauses.includes('RUNTIME_STAMP'),
-          entries: result.entries,
-        },
-      })
+      // One write to the child's row: its insert, identity included.
+      const { provenance } = await witnessOf(rig, b)
+      const writes = provenance.audit.filter(
+        (row) => row.kind === 'session' && row.sessionId === child.sessionId,
+      )
+      expect(writes).toMatchObject([{ op: 'insert', newProvider: 'fake-child-1' }])
     },
   )
 

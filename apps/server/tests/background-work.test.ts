@@ -85,12 +85,12 @@ async function setup(durable = true, onPersistenceError?: (error: unknown) => vo
       ? {
           database,
           flush: events!.flush,
-          appendAtomic: (batch) => {
+          appendAtomic: (batch, options) => {
             if (failure.next) {
               failure.next = false
               throw new Error('disk busy')
             }
-            events!.appendAtomic(batch)
+            events!.appendAtomic(batch, options)
           },
           ...(onPersistenceError ? { onPersistenceError } : {}),
         }

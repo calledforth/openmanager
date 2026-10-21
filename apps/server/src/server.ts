@@ -373,7 +373,7 @@ export async function startServer(config: ServerConfig) {
       database: eventDatabase,
       artifacts,
       flush: eventService.flush,
-      appendAtomic: (events) => eventService.appendAtomic(events),
+      appendAtomic: (events, options) => eventService.appendAtomic(events, options),
       finalizeNow: (event) => eventService.finalizeNow(event),
       onPersistenceError: (error, eventName) =>
         log('error', 'event persistence failed', { eventName, reason: String(error) }),
