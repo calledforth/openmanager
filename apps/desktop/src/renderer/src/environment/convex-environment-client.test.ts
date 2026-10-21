@@ -376,6 +376,42 @@ describe('createConvexEnvironmentClient', () => {
     expect(state.sessions['session-1']?.status).toBe('waiting')
   })
 
+  it('shows a request from a turn the provider began by itself, and its answer', () => {
+    const { client, bridge } = setup()
+    client.connect()
+    // No prompt_started: this host records no such turn, but the provider
+    // waits for an answer (main/background-turns.ts).
+    bridge.emit(
+      agentEvent({
+        category: 'permission',
+        event: 'permission_request',
+        messageId: 'bg-1',
+        data: {
+          requestId: 'perm-bg',
+          sessionId: 'session-1',
+          toolCall: { toolCallId: 'tool-bg', title: 'Run tests' },
+          options: [{ optionId: 'allow', name: 'Allow', kind: 'allow_once' }],
+        },
+      }),
+    )
+    let thread = client.getState().threads['session-1']!
+    expect(thread.turns).toEqual([
+      expect.objectContaining({ turnId: 'bg-1', state: 'waiting', origin: 'background' }),
+    ])
+    expect(thread.interactions.map((item) => item.interaction.interactionId)).toEqual(['perm-bg'])
+    bridge.emit(
+      agentEvent({
+        category: 'permission',
+        event: 'permission_resolved',
+        messageId: 'bg-1',
+        data: { requestId: 'perm-bg', outcome: { outcome: 'selected', optionId: 'allow' } },
+      }),
+    )
+    thread = client.getState().threads['session-1']!
+    expect(thread.interactions).toEqual([])
+    expect(thread.turns[0]?.state).toBe('running')
+  })
+
   it('classifies persisted turns by their finish reason', async () => {
     const { client, convex } = setup()
     convex

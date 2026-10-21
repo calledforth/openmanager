@@ -40,6 +40,7 @@ import type {
   Workspace,
 } from '@openmanager/protocol'
 import { createAgentEventTranslator } from './agent-event-translator'
+import { namesUnknownTurn } from '@agentpack/view/protocol'
 
 /**
  * TEMPORARY — deleted with Convex retirement (see docs/compatibility-adapters.md).
@@ -254,6 +255,30 @@ export function createConvexEnvironmentClient(
     return true
   }
 
+  /** The `turn.started` a thread event's turn never had, if it had none. */
+  const backgroundTurnStart = (state: EnvironmentState, proof: ProofEvent): ProofEvent | null => {
+    if (proof.scope.type !== 'thread' || proof.name === 'turn.started') return null
+    if (proof.name === 'turn.notice' || !('turnId' in proof.payload)) return null
+    const thread = state.threads[proof.scope.threadId]
+    if (thread && !namesUnknownTurn(thread, proof)) return null
+    return {
+      type: 'event',
+      eventId: `${proof.eventId}:turn`,
+      timestamp: proof.timestamp,
+      name: 'turn.started',
+      scope: proof.scope,
+      payload: {
+        turn: {
+          turnId: proof.payload.turnId,
+          threadId: proof.scope.threadId,
+          state: 'running',
+          startedAt: proof.timestamp,
+          origin: 'background',
+        },
+      },
+    }
+  }
+
   const ingest = (event: AgentEvent) => {
     if (disposed || !remember(event.id)) return
     const events = translator.translate(event)
@@ -265,6 +290,14 @@ export function createConvexEnvironmentClient(
         if (proof.name === 'session.created' && next.sessions[proof.payload.session.sessionId]) {
           continue
         }
+        // This host never records a turn the provider began by itself (see
+        // main/background-turns.ts), yet such a turn can still ask the user
+        // something, and the provider waits for the answer. Since protocol
+        // v17 the shared reducers invent no turn they were not told about,
+        // so this adapter, which stands in for the environment, announces
+        // the turn first, the way the environment would.
+        const unannounced = backgroundTurnStart(next, proof)
+        if (unannounced) next = applyEvent(next, unannounced)
         next = applyEvent(next, proof)
         if (proof.scope.type === 'thread') {
           next = refreshLegacySessionStatus(next, proof.scope.sessionId)
