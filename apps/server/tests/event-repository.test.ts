@@ -20,6 +20,7 @@ import {
   createStreamingEventBatcher,
 } from '../src/db/event-batcher.js'
 import { createEventRepository, type EventRepository } from '../src/db/event-repository.js'
+import { reconcileAfterRestart } from '../src/db/boot-reconcile.js'
 import {
   REASONING_TEXT_BUDGET_BYTES,
   getSessionSummary,
@@ -1049,9 +1050,7 @@ describe('event repository transactions', () => {
 
     const recovered = openEnvironmentDatabase(directory)
     databases.push(recovered)
-    expect(recovered.prepare('SELECT head_sequence FROM event_streams').get()).toEqual({
-      head_sequence: 1,
-    })
+    // The uncommitted batch is gone; the turn it belonged to is still open.
     expect(
       recovered
         .prepare(
@@ -1059,6 +1058,19 @@ describe('event repository transactions', () => {
         )
         .all(),
     ).toEqual([{ sequence: 1 }])
+    // The boot reconcile ends it with an event on the same stream, next in line.
+    reconcileAfterRestart(recovered, createEventRepository(recovered), 'environment-1')
+    expect(
+      recovered
+        .prepare(
+          `SELECT sequence, event_name FROM event_log WHERE event_name != 'session.updated'
+           ORDER BY sequence`,
+        )
+        .all(),
+    ).toEqual([
+      { sequence: 1, event_name: 'turn.started' },
+      { sequence: 2, event_name: 'turn.interrupted' },
+    ])
     expect(recovered.prepare('SELECT state FROM turns WHERE turn_id = ?').get('turn-1')).toEqual({
       state: 'interrupted',
     })
@@ -1260,6 +1272,7 @@ describe('durable server event boundary', () => {
       database.close()
       const reopened = openEnvironmentDatabase(directory)
       databases.push(reopened)
+      reconcileAfterRestart(reopened, createEventRepository(reopened), 'environment-1')
       expect(reopened.prepare('SELECT state, finished_at FROM turns').get()).toEqual({
         state: 'interrupted',
         finished_at: expect.any(Number),

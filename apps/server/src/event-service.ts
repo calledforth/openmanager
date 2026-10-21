@@ -94,5 +94,11 @@ export function createPersistentEventService(
     },
     flush: batcher.flush,
     close: batcher.close,
+    /**
+     * The repository itself, for the boot reconcile, which writes before any
+     * client can be connected (db/boot-reconcile.ts). Its records are not
+     * published: nobody is subscribed yet, and every one of them replays.
+     */
+    repository,
   }
 }

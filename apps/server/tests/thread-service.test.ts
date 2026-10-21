@@ -16,6 +16,7 @@ import {
 import { createThreadService, type WorkspaceRuntimeResolver } from '../src/thread-service.js'
 import type { ArtifactStore } from '../src/artifacts.js'
 import { createPersistentEventService } from '../src/event-service.js'
+import { reconcileAfterRestart } from '../src/db/boot-reconcile.js'
 import { openEnvironmentDatabase } from '../src/db/database.js'
 
 /** The registry seam: every ID the tests use maps to one canonical root. */
@@ -1463,7 +1464,11 @@ describe('durable session lifecycle', () => {
       prompt: vi.fn().mockResolvedValue(undefined),
       cancel: vi.fn().mockResolvedValue(undefined),
     }
+    // A new service on the same rows is a new process: it boots as the host
+    // does, closing what the last one left open (db/boot-reconcile.ts).
     const fresh = (onPersistenceError?: (error: unknown, eventName: string) => void) => {
+      events.flush()
+      reconcileAfterRestart(database, events.repository, 'environment-1')
       const service = createThreadService(
         runtime as unknown as Pick<AgentRuntime, 'ensureSession' | 'prompt' | 'cancel'>,
         { rejection: () => undefined },
@@ -1511,6 +1516,40 @@ describe('durable session lifecycle', () => {
   }
 
   type Harness = ReturnType<typeof setup>
+
+  it('refuses a send beside a turn the rows hold open, and interrupts that turn by writing its end', async () => {
+    const h = setup()
+    try {
+      h.runtime.prompt.mockReturnValue(new Promise(() => undefined))
+      const target = h.created.thread
+      const sent = ProofResponseSchemas['turn.send'].parse(
+        h.dispatch(h.service, 'turn.send', { ...target, text: 'Long work' }),
+      ).payload
+      // The provider session is stamped, so a restart can open it again.
+      await h.service.resolveRuntimeSession(target.sessionId)
+      h.events.flush()
+      // The next boot cannot recover this turn (docs/sync-foundations.md §4.1 point 4).
+      h.database.exec(`CREATE TEMP TRIGGER refuse_recovery BEFORE UPDATE OF state ON turns
+        WHEN new.state = 'interrupted' BEGIN SELECT RAISE(ABORT, 'boom'); END`)
+      const restarted = h.fresh()
+      expect(h.database.prepare('SELECT state FROM turns').get()).toEqual({ state: 'running' })
+      h.dispatch(restarted, 'session.open', { sessionId: target.sessionId })
+      expect(h.dispatch(restarted, 'turn.send', { ...target, text: 'Another' })).toMatchObject({
+        type: 'error',
+        error: { code: 'conflict' },
+      })
+      h.database.exec('DROP TRIGGER refuse_recovery')
+      expect(
+        h.dispatch(restarted, 'turn.interrupt', { ...target, turnId: sent.turn.turnId }),
+      ).toMatchObject({ type: 'response', payload: { turnId: sent.turn.turnId } })
+      expect(h.database.prepare('SELECT state, interrupted_by FROM turns').get()).toEqual({
+        state: 'interrupted',
+        interrupted_by: 'user',
+      })
+    } finally {
+      h.close()
+    }
+  })
 
   it('persists an idle process crash once, ignores expected exits, and recovers on the next prompt', async () => {
     const h = setup()

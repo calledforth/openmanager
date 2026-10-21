@@ -8,6 +8,8 @@ import type { DatabaseSync } from 'node:sqlite'
 import { afterEach, describe, expect, it } from 'vitest'
 import { DATABASE_FILENAME, openEnvironmentDatabase } from '../src/db/database.js'
 import { readSchemaVersion } from '../src/db/migrate.js'
+import { reconcileAfterRestart } from '../src/db/boot-reconcile.js'
+import { createEventRepository } from '../src/db/event-repository.js'
 import {
   MESSAGE_HISTORY_PAGE_SQL,
   MESSAGE_PARTS_SQL,
@@ -168,6 +170,16 @@ describe('crash recovery', () => {
 
     const recovered = openEnvironmentDatabase(directory)
     databases.push(recovered)
+    // Opening only migrates; the boot reconcile ends the turn, with events.
+    expect(
+      recovered.prepare('SELECT state FROM turns WHERE turn_id = ?').get('turn-crashed'),
+    ).toEqual({ state: 'waiting' })
+    const report = reconcileAfterRestart(
+      recovered,
+      createEventRepository(recovered),
+      'environment-1',
+    )
+    expect(report).toMatchObject({ turnsRecovered: 1, questionsCancelled: 1, failures: [] })
 
     expect(readSchemaVersion(recovered)).toBe(21)
     expect(sessionList(recovered)).toMatchObject([

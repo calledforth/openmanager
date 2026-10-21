@@ -465,6 +465,25 @@ export function hasInteraction(
 }
 
 /**
+ * The turn a thread of this session still holds open in its rows, if any.
+ * After a boot whose recovery of that turn failed (db/boot-reconcile.ts),
+ * the rows hold an open turn no process is running.
+ */
+export function findOpenTurnId(
+  database: DatabaseSync,
+  query: { sessionId: string; threadId: string },
+): string | undefined {
+  const row = database
+    .prepare(
+      `SELECT turns.turn_id FROM turns JOIN threads ON threads.thread_id = turns.thread_id
+       WHERE turns.thread_id = ? AND threads.session_id = ? AND turns.state IN ('running', 'waiting')
+       LIMIT 1`,
+    )
+    .get(query.threadId, query.sessionId) as { turn_id: string } | undefined
+  return row?.turn_id
+}
+
+/**
  * The turn a command id already started in this thread, with the prompt it
  * recorded. A retry of that id answers with this turn rather than starting a
  * second one, including after a restart when nothing is left in memory.

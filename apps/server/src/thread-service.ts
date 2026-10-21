@@ -39,6 +39,7 @@ import {
   type RuntimeSessionArgs,
 } from '@agentpack/runtime/node'
 import {
+  findOpenTurnId,
   findSessionIdByProviderSession,
   findTurnByCommandId,
   getProviderSessionId,
@@ -1535,6 +1536,14 @@ export function createThreadService(
     if (record.activeTurn || record.cancellation || record.pendingBuild) {
       return errorResult(command.requestId, 'conflict', 'A turn is already in progress.')
     }
+    // The rows may hold a turn no process runs: one whose recovery failed at
+    // boot. A second turn beside it would leave the thread with two open.
+    if (options.database) {
+      options.flush?.()
+      if (findOpenTurnId(options.database, input)) {
+        return errorResult(command.requestId, 'conflict', 'A turn is already in progress.')
+      }
+    }
     let promptImages: { type: 'image'; mimeType: string; data: string }[] = []
     const artifactContent: Message['content'] = []
     try {
@@ -2483,6 +2492,31 @@ export function createThreadService(
           return errorResult(command.requestId, 'validation', 'Invalid interrupt request.')
         }
         const record = threads.get(parsed.data.payload.threadId)
+        // A turn the rows hold open with no process running it (its recovery
+        // failed at boot) has no provider work to stop: interrupting it is
+        // writing its end, through the same terminal path as any other.
+        const { sessionId, threadId, turnId } = parsed.data.payload
+        if (
+          options.database &&
+          (!record?.activeTurn || record.activeTurn.turn.turnId !== turnId) &&
+          (options.flush?.(), findOpenTurnId(options.database, { sessionId, threadId })) === turnId
+        ) {
+          appendRuntimeEvent(
+            ProofEventSchemas['turn.interrupted'].parse({
+              type: 'event',
+              name: 'turn.interrupted',
+              eventId: randomUUID(),
+              timestamp: new Date().toISOString(),
+              scope: { type: 'thread', environmentId, sessionId, threadId },
+              payload: { turnId, reason: 'user' },
+            }),
+          )
+          return ProofResponseSchemas['turn.interrupt'].parse({
+            type: 'response',
+            requestId: command.requestId,
+            payload: { turnId },
+          })
+        }
         if (!record || record.session.sessionId !== parsed.data.payload.sessionId) {
           return errorResult(command.requestId, 'not_found', 'Thread not found.')
         }

@@ -71,6 +71,7 @@ import {
 import { createPersistentEventService } from './event-service.ts'
 import { openEnvironmentDatabase } from './db/database.ts'
 import { raiseReplayFloors } from './db/replay-floor.ts'
+import { reconcileAfterRestart } from './db/boot-reconcile.ts'
 import { createEventRetention } from './db/event-retention.ts'
 import { createReplayReader } from './db/replay.ts'
 import { getSessionSummary } from './db/session-store.ts'
@@ -453,6 +454,32 @@ export async function startServer(config: ServerConfig) {
     onError: (error) => log('error', 'pairing exchange failed', { reason: String(error) }),
   })
   threadService.setEnvironmentId(identity.environmentId)
+  // Before anything listens: turns the last process left open, and children
+  // that turns which ended long ago left open, are closed with events
+  // (docs/sync-foundations.md §4.1, §4.2).
+  eventService.flush()
+  const reconciled = reconcileAfterRestart(
+    eventDatabase,
+    eventService.repository,
+    identity.environmentId,
+  )
+  for (const failure of reconciled.failures) {
+    log('error', `boot ${failure.kind} failed; left for the next start`, {
+      ...failure.ids,
+      reason: failure.reason,
+    })
+  }
+  if (reconciled.eventsWritten > 0) {
+    log('info', 'boot reconcile closed what the last process left open', {
+      turnsRecovered: reconciled.turnsRecovered,
+      toolsCancelled: reconciled.toolsCancelled,
+      thoughtsClosed: reconciled.thoughtsClosed,
+      questionsCancelled: reconciled.questionsCancelled,
+      repaired: reconciled.repaired,
+      eventsWritten: reconciled.eventsWritten,
+      durationMs: reconciled.durationMs,
+    })
+  }
   try {
     threadService.forgetStaleBackgroundWork()
   } catch (error) {
