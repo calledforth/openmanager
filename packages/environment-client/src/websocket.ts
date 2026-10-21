@@ -600,10 +600,23 @@ export function createWebSocketEnvironmentClient(
     foldEvent(record.event)
   }
 
+  /** Scopes already reported for a record naming a turn they do not hold. */
+  const reportedUnknownTurns = new Set<string>()
+
   /** Replace a scope that received a record it cannot place (see `needsSnapshot`). */
   const resnapshot = (subscription: Subscription) => {
     if (!subscription.needsSnapshot || subscription.recovery) return
     subscription.needsSnapshot = false
+    // A server bug, not a network one: said once per scope, so it is seen
+    // without flooding. Each such record costs one snapshot, no more.
+    const key = scopeKey(subscription.scope)
+    if (!reportedUnknownTurns.has(key)) {
+      reportedUnknownTurns.add(key)
+      console.warn(
+        'environment-client: a record named a turn this thread does not hold; replacing the thread from a snapshot',
+        { scope: subscription.scope },
+      )
+    }
     if (subscription.subscriptionId) sendUnsubscribe(subscription.subscriptionId)
     subscription.subscriptionId = null
     subscription.inflight = false

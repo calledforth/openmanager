@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import { PROTOCOL_VERSION, ProofCommandSchemas } from '@openmanager/protocol'
 import {
   DEFAULT_RECONNECT,
@@ -2290,6 +2290,7 @@ describe('cursor replay on reconnect', () => {
   }
 
   it('replaces a thread from a snapshot when a record names a turn it does not hold', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined)
     const { client, next } = await dropped()
     next.respond('subscription.replay', {
       mode: 'replay',
@@ -2320,6 +2321,9 @@ describe('cursor replay on reconnect', () => {
       scope: cursor(3).scope,
       cursor: null,
     })
+    // Said once for the scope, however often it happens.
+    expect(warn).toHaveBeenCalledTimes(1)
+    warn.mockRestore()
     client.dispose()
   })
 
