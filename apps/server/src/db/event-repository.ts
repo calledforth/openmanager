@@ -13,6 +13,7 @@ import {
 import { createEventProjector, type EventProjectionOptions } from './event-projection.ts'
 import { EVENT_TOMBSTONE_SQL } from './queries.ts'
 import { readSessionActivity, type SessionActivity } from './session-activity.ts'
+import { createTurnClosure } from './turn-closure.ts'
 
 type ThreadScope = Extract<SubscriptionScope, { type: 'thread' }>
 export type TerminalEvent = Extract<
@@ -81,6 +82,7 @@ export function createEventRepository(
   const newEpoch = options.epoch ?? randomUUID()
   const now = options.now ?? Date.now
   const project = createEventProjector(database, options)
+  const closure = createTurnClosure(database)
   const statements = {
     sessionStatus: database.prepare(
       'SELECT session_id, status, settled_at, done_at, background_tasks_json FROM sessions WHERE session_id = ?',
@@ -165,7 +167,32 @@ export function createEventRepository(
       }
     }
     let head = stream.head_sequence
-    for (const event of events) {
+    // A turn's end closes what the turn left open, before the terminal and in
+    // its transaction (turn-closure.ts). The closes are read from the rows
+    // when the terminal is reached, so a child the same batch already closed
+    // is not closed twice. A terminal already written brings back the closes
+    // it wrote, so a retried publish carries them again with their cursors.
+    const queue: DurableProofEvent[] = [...events]
+    const closed = new Set<string>()
+    for (let index = 0; index < queue.length; index++) {
+      const event = queue[index]!
+      if (scope.type === 'thread' && isTerminal(event) && !closed.has(event.eventId)) {
+        closed.add(event.eventId)
+        const written =
+          statements.selectByEventId.get(event.eventId) !== undefined ||
+          statements.selectTombstone.get(event.eventId) !== undefined
+        const closes = written
+          ? closure.closedBy(event.eventId).map((eventId) => {
+              const row = statements.selectByEventId.get(eventId) as unknown as ExistingEventRow
+              return JSON.parse(row.event_json) as DurableProofEvent
+            })
+          : closure.closesFor(event)
+        if (closes.length > 0) {
+          queue.splice(index, 0, ...closes)
+          index -= 1
+          continue
+        }
+      }
       const record = DurableEventSchema.parse({
         cursor: { scope, epoch: stream.epoch, sequence: head + 1 },
         event,

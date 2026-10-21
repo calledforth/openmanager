@@ -1473,11 +1473,12 @@ describe('durable turn activity', () => {
       'message:text-2',
     ])
     // Text within a run merges; the token estimate keeps its highest reading.
+    // The thought nothing closed is closed by the turn's end (turn-closure.ts).
     expect(page.reasoning).toEqual([
       {
         messageId: 'thought-1',
         turnId: 'turn-1',
-        phase: 'delta',
+        phase: 'stop',
         content: [{ type: 'text', text: 'Plan the change' }],
         tokens: 7,
       },
@@ -1716,11 +1717,12 @@ describe('durable turn activity', () => {
     expect(page.tools).toEqual([
       { toolCallId: 'tool-1', turnId: 'turn-1', title: 'Read file', status: 'completed' },
     ])
+    // The log holds the close the turn's end wrote, so the backfill has it too.
     expect(page.reasoning).toEqual([
       {
         messageId: 'thought-1',
         turnId: 'turn-1',
-        phase: 'delta',
+        phase: 'stop',
         content: [{ type: 'text', text: 'Check again' }],
       },
     ])

@@ -480,11 +480,13 @@ export function createThreadService(
   // Provider callbacks and turn settlement must not fail because a write did:
   // the in-memory turn still settles, and the host decides how to report it.
   const appendRuntimeEvent = (event: ProofEvent) => {
+    let committed = true
     try {
       appendEvent(event)
     } catch (error) {
       if (!options.onPersistenceError) throw error
       options.onPersistenceError(error, event.name)
+      committed = false
     }
     if (
       event.name === 'turn.completed' ||
@@ -503,7 +505,10 @@ export function createThreadService(
       // Deferred until the caller has marked the turn completed, which it
       // does right after announcing it.
       if (record && event.name === 'turn.completed') queueMicrotask(() => refineTitle(record))
-      for (const entry of record?.interactions.values() ?? []) {
+      // The requests the turn left open were closed by `interaction.cancelled`
+      // events committed with its end (db/turn-closure.ts). Memory follows
+      // that commit, never a write that failed (I11).
+      for (const entry of committed ? (record?.interactions.values() ?? []) : []) {
         if (entry.turnId !== event.payload.turnId || entry.settled) continue
         entry.settled = true
         if (entry.interaction.lifecycle) {

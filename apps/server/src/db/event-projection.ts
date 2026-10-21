@@ -4,6 +4,7 @@ import type { ProofEvent } from '@openmanager/protocol/node'
 import type { DurableProofEvent } from './event-repository.ts'
 import { prepareDraftProjection } from './draft-projection.ts'
 import { OPEN_TURN_FOR_SESSION_SQL } from './queries.ts'
+import { createTurnClosure } from './turn-closure.ts'
 
 type SessionSummary = Extract<ProofEvent, { name: 'session.created' }>['payload']['session']
 type TurnStarted = Extract<ProofEvent, { name: 'turn.started' }>
@@ -28,6 +29,7 @@ export function createEventProjector(
   options: EventProjectionOptions,
 ): (event: DurableProofEvent) => void {
   const drafts = prepareDraftProjection(database)
+  const closure = createTurnClosure(database)
   const s = {
     insertSession: database.prepare(
       `INSERT INTO sessions (
@@ -130,10 +132,7 @@ export function createEventProjector(
     pendingInteractions: database.prepare(
       "SELECT 1 FROM interactions WHERE turn_id = ? AND state = 'pending' LIMIT 1",
     ),
-    cancelPendingInteractions: database.prepare(
-      `UPDATE interactions SET state = 'cancelled', resolved_at = ?, updated_at = ?
-       WHERE turn_id = ? AND state = 'pending'`,
-    ),
+
     selectMessage: database.prepare(
       'SELECT turn_id, thread_id, role, is_final FROM messages WHERE message_id = ?',
     ),
@@ -565,6 +564,12 @@ export function createEventProjector(
       case 'turn.interrupted':
       case 'turn.failed': {
         const turnId = event.payload.turnId
+        // Each open child got its own close event before this one (I3,
+        // turn-closure.ts); a terminal that would leave one open rolls back.
+        const open = closure.openChildren(turnId, event.scope.threadId)
+        if (open.length > 0) {
+          throw new Error(`Turn ${turnId} cannot end with open children: ${open.join(', ')}`)
+        }
         const state =
           event.name === 'turn.completed'
             ? 'completed'
@@ -585,7 +590,6 @@ export function createEventProjector(
           throw new Error(`Cannot finalize missing or finished turn ${turnId}`)
         }
         s.finalizeTurnMessages.run(at, turnId)
-        s.cancelPendingInteractions.run(at, at, turnId)
         // The turn is over but the session is not resting while work it
         // started is still running in the background.
         const working = !!s.hasBackgroundTasks.get(event.scope.sessionId)
