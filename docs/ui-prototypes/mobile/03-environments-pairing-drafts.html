@@ -1,592 +1,2354 @@
 <!doctype html>
 <html lang="en">
-<head>
-<meta charset="utf-8" />
-<meta name="viewport" content="width=device-width, initial-scale=1" />
-<title>OpenManager mobile — 03 · Settings, environments, pairing, drafts, project picker</title>
-<link rel="preconnect" href="https://fonts.googleapis.com" />
-<link href="https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet" />
-<style>
-  :root {
-    --font: 'Geist', 'Geist Variable', 'Segoe UI', ui-sans-serif, system-ui, sans-serif;
-    --mono: 'JetBrains Mono', ui-monospace, Consolas, monospace;
-    --ease: cubic-bezier(0.2, 0.8, 0.2, 1);
-    --spring: cubic-bezier(0.34, 1.3, 0.64, 1);
-  }
-  .phone[data-theme='neutral'] {
-    color-scheme: dark;
-    --bg: #171717; --fg: #ededed; --muted: #8f8f8f; --faint: #5c5c5c;
-    --rule: rgb(255 255 255 / 0.075);
-    --hover: rgb(255 255 255 / 0.06); --active: rgb(255 255 255 / 0.1);
-    --surface-2: #1e1e1e; --bubble: #363636;
-    --float-bg: color-mix(in oklab, #171717, #ededed 5%);
-    --float-shadow: inset 0 1px 0 0 rgb(255 255 255 / 0.05), inset 0 0 0 1px rgb(255 255 255 / 0.035),
-      0 0 0 1px rgb(0 0 0 / 0.32), 0 2px 4px rgb(0 0 0 / 0.14), 0 8px 18px -4px rgb(0 0 0 / 0.22),
-      0 24px 56px -12px rgb(0 0 0 / 0.5);
-    --float-rest: inset 0 1px 0 0 rgb(255 255 255 / 0.05), inset 0 0 0 1px rgb(255 255 255 / 0.035),
-      0 0 0 1px rgb(0 0 0 / 0.32), 0 2px 4px rgb(0 0 0 / 0.12), 0 8px 16px -8px rgb(0 0 0 / 0.2);
-    --scrim: rgb(0 0 0 / 0.32);
-    --action-bg: #e5e5e5; --action-fg: #111111;
-    --glass: rgb(34 34 34 / 0.58); --glass-strong: rgb(34 34 34 / 0.72); --glass-sheet: rgb(28 28 28 / 0.82);
-    --status-working: #a193ff; --status-background: #6cbcf2; --status-needs: #f4b942;
-    --status-question: #f47fc4; --status-done: #5ed8a4; --status-error: #ff6f6f;
-    --cam: #0a0a0a;
-  }
-  .phone[data-theme='neutral-light'] {
-    color-scheme: light;
-    --bg: #fcfcfc; --fg: #1a1a1a; --muted: #737373; --faint: #a8a8a8;
-    --rule: #ececec;
-    --hover: rgb(0 0 0 / 0.04); --active: rgb(0 0 0 / 0.07);
-    --surface-2: #f5f5f5; --bubble: #ebebeb;
-    --float-bg: #ffffff;
-    --float-shadow: 0 0 0 1px rgb(0 0 0 / 0.06), 0 1px 1px -0.5px rgb(0 0 0 / 0.06), 0 3px 3px -1.5px rgb(0 0 0 / 0.06),
-      0 6px 6px -3px rgb(0 0 0 / 0.06), 0 12px 12px -6px rgb(0 0 0 / 0.06), 0 24px 24px -12px rgb(0 0 0 / 0.06);
-    --float-rest: 0 0 0 1px rgb(0 0 0 / 0.06), 0 1px 1px -0.5px rgb(0 0 0 / 0.06), 0 3px 3px -1.5px rgb(0 0 0 / 0.06),
-      0 6px 6px -3px rgb(0 0 0 / 0.06);
-    --scrim: rgb(0 0 0 / 0.18);
-    --action-bg: #2a2a2a; --action-fg: #f3f3f3;
-    --glass: rgb(255 255 255 / 0.6); --glass-strong: rgb(255 255 255 / 0.74); --glass-sheet: rgb(252 252 252 / 0.86);
-    --status-working: #6b56e0; --status-background: #1f74b0; --status-needs: #b7791f;
-    --status-question: #b8337f; --status-done: #12805a; --status-error: #c73b3b;
-    --cam: #0a0a0a;
-  }
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>OpenManager mobile — 03 · Settings, environments, pairing, drafts, project picker</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap"
+      rel="stylesheet"
+    />
+    <style>
+      :root {
+        --font: 'Geist', 'Geist Variable', 'Segoe UI', ui-sans-serif, system-ui, sans-serif;
+        --mono: 'JetBrains Mono', ui-monospace, Consolas, monospace;
+        --ease: cubic-bezier(0.2, 0.8, 0.2, 1);
+        --spring: cubic-bezier(0.34, 1.3, 0.64, 1);
+      }
+      .phone[data-theme='neutral'] {
+        color-scheme: dark;
+        --bg: #171717;
+        --fg: #ededed;
+        --muted: #8f8f8f;
+        --faint: #5c5c5c;
+        --rule: rgb(255 255 255 / 0.075);
+        --hover: rgb(255 255 255 / 0.06);
+        --active: rgb(255 255 255 / 0.1);
+        --surface-2: #1e1e1e;
+        --bubble: #363636;
+        --float-bg: color-mix(in oklab, #171717, #ededed 5%);
+        --float-shadow:
+          inset 0 1px 0 0 rgb(255 255 255 / 0.05), inset 0 0 0 1px rgb(255 255 255 / 0.035),
+          0 0 0 1px rgb(0 0 0 / 0.32), 0 2px 4px rgb(0 0 0 / 0.14),
+          0 8px 18px -4px rgb(0 0 0 / 0.22), 0 24px 56px -12px rgb(0 0 0 / 0.5);
+        --float-rest:
+          inset 0 1px 0 0 rgb(255 255 255 / 0.05), inset 0 0 0 1px rgb(255 255 255 / 0.035),
+          0 0 0 1px rgb(0 0 0 / 0.32), 0 2px 4px rgb(0 0 0 / 0.12), 0 8px 16px -8px rgb(0 0 0 / 0.2);
+        --scrim: rgb(0 0 0 / 0.32);
+        --action-bg: #e5e5e5;
+        --action-fg: #111111;
+        --glass: rgb(34 34 34 / 0.58);
+        --glass-strong: rgb(34 34 34 / 0.72);
+        --glass-sheet: rgb(28 28 28 / 0.82);
+        --status-working: #a193ff;
+        --status-background: #6cbcf2;
+        --status-needs: #f4b942;
+        --status-question: #f47fc4;
+        --status-done: #5ed8a4;
+        --status-error: #ff6f6f;
+        --cam: #0a0a0a;
+      }
+      .phone[data-theme='neutral-light'] {
+        color-scheme: light;
+        --bg: #fcfcfc;
+        --fg: #1a1a1a;
+        --muted: #737373;
+        --faint: #a8a8a8;
+        --rule: #ececec;
+        --hover: rgb(0 0 0 / 0.04);
+        --active: rgb(0 0 0 / 0.07);
+        --surface-2: #fcfcfc;
+        --bubble: #ebebeb;
+        --float-bg: #ffffff;
+        --float-shadow:
+          0 0 0 1px rgb(0 0 0 / 0.06), 0 1px 1px -0.5px rgb(0 0 0 / 0.06),
+          0 3px 3px -1.5px rgb(0 0 0 / 0.06), 0 6px 6px -3px rgb(0 0 0 / 0.06),
+          0 12px 12px -6px rgb(0 0 0 / 0.06), 0 24px 24px -12px rgb(0 0 0 / 0.06);
+        --float-rest:
+          0 0 0 1px rgb(0 0 0 / 0.06), 0 1px 1px -0.5px rgb(0 0 0 / 0.06),
+          0 3px 3px -1.5px rgb(0 0 0 / 0.06), 0 6px 6px -3px rgb(0 0 0 / 0.06);
+        --scrim: rgb(0 0 0 / 0.18);
+        --action-bg: #2a2a2a;
+        --action-fg: #f3f3f3;
+        --glass: rgb(255 255 255 / 0.6);
+        --glass-strong: rgb(255 255 255 / 0.74);
+        --glass-sheet: rgb(252 252 252 / 0.86);
+        --status-working: #6b56e0;
+        --status-background: #1f74b0;
+        --status-needs: #b7791f;
+        --status-question: #b8337f;
+        --status-done: #12805a;
+        --status-error: #c73b3b;
+        --cam: #0a0a0a;
+      }
 
-  body { margin: 0; background: #0b0b0b; font-family: var(--font); color: #bbb; }
-  .board { display: flex; flex-wrap: wrap; gap: 36px; padding: 36px; align-items: flex-start; }
-  .frame { display: flex; flex-direction: column; gap: 10px; }
-  .frame > .label { font-size: 12px; color: #777; letter-spacing: 0.02em; max-width: 390px; line-height: 1.5; }
-  .frame > .label b { color: #ccc; font-weight: 500; }
-  .frame > .label .tap { color: #8fd19e; }
+      body {
+        margin: 0;
+        background: #0b0b0b;
+        font-family: var(--font);
+        color: #bbb;
+      }
+      .board {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 36px;
+        padding: 36px;
+        align-items: flex-start;
+      }
+      .frame {
+        display: flex;
+        flex-direction: column;
+        gap: 10px;
+      }
+      .frame > .label {
+        font-size: 12px;
+        color: #777;
+        letter-spacing: 0.02em;
+        max-width: 390px;
+        line-height: 1.5;
+      }
+      .frame > .label b {
+        color: #ccc;
+        font-weight: 500;
+      }
+      .frame > .label .tap {
+        color: #8fd19e;
+      }
 
-  .phone { width: 390px; height: 844px; border-radius: 44px; overflow: hidden; position: relative;
-    background: var(--bg); color: var(--fg); font-family: var(--font); font-size: 15px;
-    box-shadow: 0 0 0 10px #1c1c1c, 0 0 0 11px #2a2a2a, 0 30px 80px -20px rgb(0 0 0 / 0.8);
-    display: flex; flex-direction: column; -webkit-font-smoothing: antialiased; user-select: none; }
-  .statusbar { height: 54px; display: flex; align-items: flex-end; justify-content: space-between; padding: 0 34px 8px; font-size: 15px; font-weight: 600; }
-  .statusbar .right { font-size: 12px; }
-  .homebar { position: absolute; bottom: 8px; left: 50%; transform: translateX(-50%); width: 134px; height: 5px; border-radius: 3px; background: var(--fg); opacity: 0.9; z-index: 50; }
-  .screen { flex: 1; display: flex; flex-direction: column; min-height: 0; }
+      .phone {
+        width: 390px;
+        height: 844px;
+        border-radius: 44px;
+        overflow: hidden;
+        position: relative;
+        background: var(--bg);
+        color: var(--fg);
+        font-family: var(--font);
+        font-size: 15px;
+        box-shadow:
+          0 0 0 10px #1c1c1c,
+          0 0 0 11px #2a2a2a,
+          0 30px 80px -20px rgb(0 0 0 / 0.8);
+        display: flex;
+        flex-direction: column;
+        -webkit-font-smoothing: antialiased;
+        user-select: none;
+      }
+      .statusbar {
+        height: 54px;
+        display: flex;
+        align-items: flex-end;
+        justify-content: space-between;
+        padding: 0 34px 8px;
+        font-size: 15px;
+        font-weight: 600;
+      }
+      .statusbar .right {
+        font-size: 12px;
+      }
+      .homebar {
+        position: absolute;
+        bottom: 8px;
+        left: 50%;
+        transform: translateX(-50%);
+        width: 134px;
+        height: 5px;
+        border-radius: 3px;
+        background: var(--fg);
+        opacity: 0.9;
+        z-index: 50;
+      }
+      .screen {
+        flex: 1;
+        display: flex;
+        flex-direction: column;
+        min-height: 0;
+      }
 
-  .glass { background: var(--glass); -webkit-backdrop-filter: blur(24px) saturate(1.6); backdrop-filter: blur(24px) saturate(1.6); }
-  .header { padding: 6px 20px 0; }
-  .header .top { display: flex; align-items: center; justify-content: space-between; height: 44px; }
-  .header h1 { font-size: 28px; font-weight: 600; letter-spacing: -0.02em; margin: 0; }
-  .header h1.sm { font-size: 22px; letter-spacing: -0.015em; }
-  .header .sub { font-size: 13px; color: var(--muted); margin-top: 4px; display: flex; align-items: center; gap: 6px; }
-  .iconbtn { width: 36px; height: 36px; border-radius: 50%; display: grid; place-items: center; color: var(--fg);
-    background: var(--glass); -webkit-backdrop-filter: blur(18px) saturate(1.5); backdrop-filter: blur(18px) saturate(1.5); box-shadow: var(--float-rest); }
-  .iconbtn svg { width: 18px; height: 18px; }
-  .btns { display: flex; gap: 10px; }
+      .glass {
+        background: var(--glass);
+        -webkit-backdrop-filter: blur(24px) saturate(1.6);
+        backdrop-filter: blur(24px) saturate(1.6);
+      }
+      .header {
+        padding: 6px 20px 0;
+      }
+      .header .top {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        height: 44px;
+      }
+      .header h1 {
+        font-size: 28px;
+        font-weight: 600;
+        letter-spacing: -0.02em;
+        margin: 0;
+      }
+      .header h1.sm {
+        font-size: 22px;
+        letter-spacing: -0.015em;
+      }
+      .header .sub {
+        font-size: 13px;
+        color: var(--muted);
+        margin-top: 4px;
+        display: flex;
+        align-items: center;
+        gap: 6px;
+      }
+      .iconbtn {
+        width: 36px;
+        height: 36px;
+        border-radius: 50%;
+        display: grid;
+        place-items: center;
+        color: var(--fg);
+        background: var(--glass);
+        -webkit-backdrop-filter: blur(18px) saturate(1.5);
+        backdrop-filter: blur(18px) saturate(1.5);
+        box-shadow: var(--float-rest);
+      }
+      .iconbtn svg {
+        width: 18px;
+        height: 18px;
+      }
+      .btns {
+        display: flex;
+        gap: 10px;
+      }
 
-  .tabs { display: flex; gap: 6px; padding: 14px 20px 8px; }
-  .tab { padding: 6px 12px; border-radius: 999px; font-size: 14px; color: var(--muted); font-weight: 500; }
-  .tab.on { background: var(--active); color: var(--fg); }
-  .tab .n { color: var(--faint); margin-left: 4px; font-weight: 400; }
+      .tabs {
+        display: flex;
+        gap: 6px;
+        padding: 14px 20px 8px;
+      }
+      .tab {
+        padding: 6px 12px;
+        border-radius: 999px;
+        font-size: 14px;
+        color: var(--muted);
+        font-weight: 500;
+      }
+      .tab.on {
+        background: var(--active);
+        color: var(--fg);
+      }
+      .tab .n {
+        color: var(--faint);
+        margin-left: 4px;
+        font-weight: 400;
+      }
 
-  /* ── Lists ── */
-  .list { flex: 1; overflow: hidden; padding: 0 8px 120px; }
-  .group { padding: 18px 12px 6px; font-size: 12px; color: var(--faint); font-weight: 500; letter-spacing: 0.02em; display: flex; align-items: center; }
-  .group .r { margin-left: auto; color: var(--muted); font-weight: 400; }
-  .row { display: flex; align-items: center; gap: 12px; padding: 11px 12px; border-radius: 12px; position: relative; }
-  .row.sel { background: var(--active); }
-  .row .mark { width: 22px; height: 22px; flex: none; display: grid; place-items: center; }
-  .row .ic { width: 32px; height: 32px; border-radius: 9px; flex: none; display: grid; place-items: center; background: var(--hover); color: var(--muted); }
-  .row .ic svg { width: 17px; height: 17px; }
-  .row .ic.on { color: var(--fg); }
-  .row .body { flex: 1; min-width: 0; }
-  .row .title { font-size: 15px; font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; letter-spacing: -0.005em; }
-  .row .sub { display: flex; align-items: center; gap: 6px; font-size: 12.5px; color: var(--muted); margin-top: 2px; white-space: nowrap; overflow: hidden; }
-  .row .sub .proj { display: inline-flex; align-items: center; gap: 5px; flex: none; }
-  .row .sub .proj i { width: 12px; height: 12px; border-radius: 3px; display: inline-block; }
-  .row .sub .sep { color: var(--faint); }
-  .row .sub code { font-family: var(--mono); font-size: 12px; }
-  .row .age { font-size: 12.5px; color: var(--faint); flex: none; }
-  .row .chev { width: 14px; height: 14px; color: var(--faint); flex: none; }
-  .row .val { font-size: 14px; color: var(--muted); flex: none; }
-  .row .pillv { font-size: 12px; padding: 3px 8px; border-radius: 999px; background: var(--hover); color: var(--muted); flex: none; }
-  .row .pillv.warn { color: var(--status-needs); }
-  .row.danger .title { color: var(--status-error); }
-  .dot { width: 8px; height: 8px; border-radius: 50%; display: inline-block; flex: none; }
-  .dot.ok { background: var(--status-done); } .dot.bad { background: var(--status-error); } .dot.off { background: var(--faint); }
-  .dot.ok.live { box-shadow: 0 0 0 0 color-mix(in oklab, var(--status-done) 50%, transparent); animation: pulse 2s ease-out infinite; }
-  @keyframes pulse { 70% { box-shadow: 0 0 0 6px transparent; } 100% { box-shadow: 0 0 0 0 transparent; } }
+      /* ── Lists ── */
+      .list {
+        flex: 1;
+        overflow: hidden;
+        padding: 0 8px 120px;
+      }
+      .group {
+        padding: 18px 12px 6px;
+        font-size: 12px;
+        color: var(--faint);
+        font-weight: 500;
+        letter-spacing: 0.02em;
+        display: flex;
+        align-items: center;
+      }
+      .group .r {
+        margin-left: auto;
+        color: var(--muted);
+        font-weight: 400;
+      }
+      .row {
+        display: flex;
+        align-items: center;
+        gap: 12px;
+        padding: 11px 12px;
+        border-radius: 12px;
+        position: relative;
+      }
+      .row.sel {
+        background: var(--active);
+      }
+      .row .mark {
+        width: 22px;
+        height: 22px;
+        flex: none;
+        display: grid;
+        place-items: center;
+      }
+      .row .ic {
+        width: 32px;
+        height: 32px;
+        border-radius: 9px;
+        flex: none;
+        display: grid;
+        place-items: center;
+        background: var(--hover);
+        color: var(--muted);
+      }
+      .row .ic svg {
+        width: 17px;
+        height: 17px;
+      }
+      .row .ic.on {
+        color: var(--fg);
+      }
+      .row .body {
+        flex: 1;
+        min-width: 0;
+      }
+      .row .title {
+        font-size: 15px;
+        font-weight: 500;
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        letter-spacing: -0.005em;
+      }
+      .row .sub {
+        display: flex;
+        align-items: center;
+        gap: 6px;
+        font-size: 12.5px;
+        color: var(--muted);
+        margin-top: 2px;
+        white-space: nowrap;
+        overflow: hidden;
+      }
+      .row .sub .proj {
+        display: inline-flex;
+        align-items: center;
+        gap: 5px;
+        flex: none;
+      }
+      .row .sub .proj i {
+        width: 12px;
+        height: 12px;
+        border-radius: 3px;
+        display: inline-block;
+      }
+      .row .sub .sep {
+        color: var(--faint);
+      }
+      .row .sub code {
+        font-family: var(--mono);
+        font-size: 12px;
+      }
+      .row .age {
+        font-size: 12.5px;
+        color: var(--faint);
+        flex: none;
+      }
+      .row .chev {
+        width: 14px;
+        height: 14px;
+        color: var(--faint);
+        flex: none;
+      }
+      .row .val {
+        font-size: 14px;
+        color: var(--muted);
+        flex: none;
+      }
+      .row .pillv {
+        font-size: 12px;
+        padding: 3px 8px;
+        border-radius: 999px;
+        background: var(--hover);
+        color: var(--muted);
+        flex: none;
+      }
+      .row .pillv.warn {
+        color: var(--status-needs);
+      }
+      .row.danger .title {
+        color: var(--status-error);
+      }
+      .dot {
+        width: 8px;
+        height: 8px;
+        border-radius: 50%;
+        display: inline-block;
+        flex: none;
+      }
+      .dot.ok {
+        background: var(--status-done);
+      }
+      .dot.bad {
+        background: var(--status-error);
+      }
+      .dot.off {
+        background: var(--faint);
+      }
+      .dot.ok.live {
+        box-shadow: 0 0 0 0 color-mix(in oklab, var(--status-done) 50%, transparent);
+        animation: pulse 2s ease-out infinite;
+      }
+      @keyframes pulse {
+        70% {
+          box-shadow: 0 0 0 6px transparent;
+        }
+        100% {
+          box-shadow: 0 0 0 0 transparent;
+        }
+      }
 
-  /* environment cards on settings home */
-  .card { margin: 4px 4px 0; border-radius: 18px; padding: 14px 14px 12px; background: var(--hover); display: flex; flex-direction: column; gap: 8px; }
-  .card.sel { background: var(--active); }
-  .card .head { display: flex; align-items: center; gap: 10px; }
-  .card .head .name { font-size: 16px; font-weight: 500; flex: 1; letter-spacing: -0.005em; }
-  .card .head .chev { width: 14px; height: 14px; color: var(--faint); }
-  .card .meta { display: flex; align-items: center; gap: 10px; font-size: 12.5px; color: var(--muted); }
-  .card .meta code { font-family: var(--mono); font-size: 12px; color: var(--muted); }
-  .card .meta .ms { color: var(--faint); margin-left: auto; font-variant-numeric: tabular-nums; }
-  .card .here { font-size: 11.5px; padding: 2px 7px; border-radius: 999px; background: var(--active); color: var(--fg); }
-  .add { margin: 10px 4px 0; display: flex; align-items: center; justify-content: center; gap: 8px; padding: 12px; border-radius: 16px; background: var(--hover); color: var(--muted); font-size: 14px; font-weight: 500; }
-  .add svg { width: 16px; height: 16px; }
+      /* environment cards on settings home */
+      .card {
+        margin: 4px 4px 0;
+        border-radius: 18px;
+        padding: 14px 14px 12px;
+        background: var(--hover);
+        display: flex;
+        flex-direction: column;
+        gap: 8px;
+      }
+      .card.sel {
+        background: var(--active);
+      }
+      .card .head {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+      }
+      .card .head .name {
+        font-size: 16px;
+        font-weight: 500;
+        flex: 1;
+        letter-spacing: -0.005em;
+      }
+      .card .head .chev {
+        width: 14px;
+        height: 14px;
+        color: var(--faint);
+      }
+      .card .meta {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        font-size: 12.5px;
+        color: var(--muted);
+      }
+      .card .meta code {
+        font-family: var(--mono);
+        font-size: 12px;
+        color: var(--muted);
+      }
+      .card .meta .ms {
+        color: var(--faint);
+        margin-left: auto;
+        font-variant-numeric: tabular-nums;
+      }
+      .card .here {
+        font-size: 11.5px;
+        padding: 2px 7px;
+        border-radius: 999px;
+        background: var(--active);
+        color: var(--fg);
+      }
+      .add {
+        margin: 10px 4px 0;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        gap: 8px;
+        padding: 12px;
+        border-radius: 16px;
+        background: var(--hover);
+        color: var(--muted);
+        font-size: 14px;
+        font-weight: 500;
+      }
+      .add svg {
+        width: 16px;
+        height: 16px;
+      }
 
-  /* segmented control (appearance) */
-  .segwrap { padding: 2px 12px 6px; }
-  .seg { display: flex; padding: 3px; border-radius: 12px; background: var(--hover); }
-  .seg .s { flex: 1; text-align: center; padding: 7px 0; border-radius: 9px; font-size: 13.5px; color: var(--muted); font-weight: 500; }
-  .seg .s.on { background: var(--glass-strong); color: var(--fg); box-shadow: var(--float-rest); }
-  .swatches { display: flex; gap: 10px; padding: 6px 12px 8px; }
-  .sw { width: 54px; height: 54px; border-radius: 14px; display: grid; place-items: center; position: relative; }
-  .sw.on::after { content: ''; position: absolute; inset: -4px; border-radius: 18px; box-shadow: 0 0 0 2px var(--fg); }
-  .sw .nm { position: absolute; bottom: -18px; left: 0; right: 0; text-align: center; font-size: 11px; color: var(--faint); }
+      /* segmented control (appearance) */
+      .segwrap {
+        padding: 2px 12px 6px;
+      }
+      .seg {
+        display: flex;
+        padding: 3px;
+        border-radius: 12px;
+        background: var(--hover);
+      }
+      .seg .s {
+        flex: 1;
+        text-align: center;
+        padding: 7px 0;
+        border-radius: 9px;
+        font-size: 13.5px;
+        color: var(--muted);
+        font-weight: 500;
+      }
+      .seg .s.on {
+        background: var(--glass-strong);
+        color: var(--fg);
+        box-shadow: var(--float-rest);
+      }
+      .swatches {
+        display: flex;
+        gap: 10px;
+        padding: 6px 12px 8px;
+      }
+      .sw {
+        width: 54px;
+        height: 54px;
+        border-radius: 14px;
+        display: grid;
+        place-items: center;
+        position: relative;
+      }
+      .sw.on::after {
+        content: '';
+        position: absolute;
+        inset: -4px;
+        border-radius: 18px;
+        box-shadow: 0 0 0 2px var(--fg);
+      }
+      .sw .nm {
+        position: absolute;
+        bottom: -18px;
+        left: 0;
+        right: 0;
+        text-align: center;
+        font-size: 11px;
+        color: var(--faint);
+      }
 
-  /* ── Bottom pill nav ── */
-  .nav { position: absolute; left: 0; right: 0; bottom: 28px; display: flex; justify-content: center; gap: 10px; padding: 0 20px; z-index: 5; }
-  .pill { display: flex; gap: 4px; padding: 6px; border-radius: 999px; background: var(--glass); -webkit-backdrop-filter: blur(24px) saturate(1.6); backdrop-filter: blur(24px) saturate(1.6); box-shadow: var(--float-shadow); }
-  .pill .it { width: 48px; height: 44px; border-radius: 999px; display: grid; place-items: center; color: var(--muted); position: relative; }
-  .pill .it.on { background: var(--active); color: var(--fg); }
-  .pill .it svg { width: 21px; height: 21px; }
-  .pill .it .badge { position: absolute; top: 9px; right: 11px; width: 7px; height: 7px; border-radius: 50%; background: var(--status-needs); box-shadow: 0 0 0 2px var(--float-bg); }
-  .fab { width: 56px; height: 56px; border-radius: 50%; display: grid; place-items: center; background: var(--glass); -webkit-backdrop-filter: blur(24px) saturate(1.6); backdrop-filter: blur(24px) saturate(1.6); box-shadow: var(--float-shadow); color: var(--fg); }
-  .fab svg { width: 22px; height: 22px; }
-  .fadeout { position: absolute; left: 0; right: 0; bottom: 0; height: 150px; pointer-events: none; background: linear-gradient(to bottom, transparent, color-mix(in oklab, var(--bg) 55%, transparent)); }
+      /* ── Bottom pill nav ── */
+      .nav {
+        position: absolute;
+        left: 0;
+        right: 0;
+        bottom: 28px;
+        display: flex;
+        justify-content: center;
+        gap: 10px;
+        padding: 0 20px;
+        z-index: 5;
+      }
+      .pill {
+        display: flex;
+        gap: 4px;
+        padding: 6px;
+        border-radius: 999px;
+        background: var(--glass);
+        -webkit-backdrop-filter: blur(24px) saturate(1.6);
+        backdrop-filter: blur(24px) saturate(1.6);
+        box-shadow: var(--float-shadow);
+      }
+      .pill .it {
+        width: 48px;
+        height: 44px;
+        border-radius: 999px;
+        display: grid;
+        place-items: center;
+        color: var(--muted);
+        position: relative;
+      }
+      .pill .it.on {
+        background: var(--active);
+        color: var(--fg);
+      }
+      .pill .it svg {
+        width: 21px;
+        height: 21px;
+      }
+      .pill .it .badge {
+        position: absolute;
+        top: 9px;
+        right: 11px;
+        width: 7px;
+        height: 7px;
+        border-radius: 50%;
+        background: var(--status-needs);
+        box-shadow: 0 0 0 2px var(--float-bg);
+      }
+      .fab {
+        width: 56px;
+        height: 56px;
+        border-radius: 50%;
+        display: grid;
+        place-items: center;
+        background: var(--glass);
+        -webkit-backdrop-filter: blur(24px) saturate(1.6);
+        backdrop-filter: blur(24px) saturate(1.6);
+        box-shadow: var(--float-shadow);
+        color: var(--fg);
+      }
+      .fab svg {
+        width: 22px;
+        height: 22px;
+      }
+      .fadeout {
+        position: absolute;
+        left: 0;
+        right: 0;
+        bottom: 0;
+        height: 150px;
+        pointer-events: none;
+        background: linear-gradient(
+          to bottom,
+          transparent,
+          color-mix(in oklab, var(--bg) 55%, transparent)
+        );
+      }
 
-  /* ── Big action buttons (pairing) ── */
-  .hero { flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 10px; padding: 0 36px 80px; text-align: center; }
-  .hero .mark-big { width: 72px; height: 72px; border-radius: 22px; background: var(--hover); display: grid; place-items: center; color: var(--muted); margin-bottom: 10px; }
-  .hero .mark-big svg { width: 34px; height: 34px; }
-  .hero h2 { font-size: 22px; font-weight: 600; letter-spacing: -0.015em; margin: 0; }
-  .hero p { margin: 0; color: var(--muted); font-size: 14.5px; line-height: 1.5; }
-  .actions { position: absolute; left: 20px; right: 20px; bottom: 44px; display: flex; flex-direction: column; gap: 10px; z-index: 5; }
-  .btn { display: flex; align-items: center; justify-content: center; gap: 8px; height: 52px; border-radius: 16px; font-size: 16px; font-weight: 500; cursor: pointer; }
-  .btn svg { width: 18px; height: 18px; }
-  .btn.primary { background: var(--action-bg); color: var(--action-fg); }
-  .btn.secondary { background: var(--glass-strong); -webkit-backdrop-filter: blur(24px) saturate(1.6); backdrop-filter: blur(24px) saturate(1.6); box-shadow: var(--float-rest); color: var(--fg); }
-  .btn.quiet { background: transparent; color: var(--muted); height: 40px; font-size: 14px; }
+      /* ── Big action buttons (pairing) ── */
+      .hero {
+        flex: 1;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        gap: 10px;
+        padding: 0 36px 80px;
+        text-align: center;
+      }
+      .hero .mark-big {
+        width: 72px;
+        height: 72px;
+        border-radius: 22px;
+        background: var(--hover);
+        display: grid;
+        place-items: center;
+        color: var(--muted);
+        margin-bottom: 10px;
+      }
+      .hero .mark-big svg {
+        width: 34px;
+        height: 34px;
+      }
+      .hero h2 {
+        font-size: 22px;
+        font-weight: 600;
+        letter-spacing: -0.015em;
+        margin: 0;
+      }
+      .hero p {
+        margin: 0;
+        color: var(--muted);
+        font-size: 14.5px;
+        line-height: 1.5;
+      }
+      .actions {
+        position: absolute;
+        left: 20px;
+        right: 20px;
+        bottom: 44px;
+        display: flex;
+        flex-direction: column;
+        gap: 10px;
+        z-index: 5;
+      }
+      .btn {
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        gap: 8px;
+        height: 52px;
+        border-radius: 16px;
+        font-size: 16px;
+        font-weight: 500;
+        cursor: pointer;
+      }
+      .btn svg {
+        width: 18px;
+        height: 18px;
+      }
+      .btn.primary {
+        background: var(--action-bg);
+        color: var(--action-fg);
+      }
+      .btn.secondary {
+        background: var(--glass-strong);
+        -webkit-backdrop-filter: blur(24px) saturate(1.6);
+        backdrop-filter: blur(24px) saturate(1.6);
+        box-shadow: var(--float-rest);
+        color: var(--fg);
+      }
+      .btn.quiet {
+        background: transparent;
+        color: var(--muted);
+        height: 40px;
+        font-size: 14px;
+      }
 
-  /* camera */
-  .camera { position: absolute; inset: 0; background: var(--cam); display: flex; flex-direction: column; opacity: 0; pointer-events: none; transition: opacity 260ms var(--ease); z-index: 20; }
-  .camera.open { opacity: 1; pointer-events: auto; }
-  .camera .feed { position: absolute; inset: 0; background:
-    radial-gradient(ellipse at 30% 20%, rgb(80 80 90 / 0.35), transparent 50%),
-    radial-gradient(ellipse at 70% 75%, rgb(60 70 90 / 0.3), transparent 50%),
-    linear-gradient(#161616, #0e0e0e); }
-  .camera .top { position: relative; display: flex; align-items: center; justify-content: space-between; padding: 60px 20px 0; color: #fff; }
-  .camera .top .iconbtn { background: rgb(255 255 255 / 0.12); color: #fff; box-shadow: none; }
-  .camera .viewport { position: relative; flex: 1; display: grid; place-items: center; }
-  .reticle { width: 240px; height: 240px; position: relative; }
-  .reticle i { position: absolute; width: 36px; height: 36px; border: 3px solid #fff; border-radius: 6px; }
-  .reticle i:nth-child(1) { top: 0; left: 0; border-right: 0; border-bottom: 0; }
-  .reticle i:nth-child(2) { top: 0; right: 0; border-left: 0; border-bottom: 0; }
-  .reticle i:nth-child(3) { bottom: 0; left: 0; border-right: 0; border-top: 0; }
-  .reticle i:nth-child(4) { bottom: 0; right: 0; border-left: 0; border-top: 0; }
-  .reticle .line { position: absolute; left: 12px; right: 12px; height: 2px; background: #5ed8a4; box-shadow: 0 0 12px #5ed8a4; top: 10%; animation: scan 2.2s ease-in-out infinite alternate; }
-  @keyframes scan { to { top: 90%; } }
-  .reticle .qr { position: absolute; inset: 40px; opacity: 0; transition: opacity 300ms; display: grid; grid-template-columns: repeat(9, 1fr); gap: 2px; }
-  .reticle .qr b { background: #fff; border-radius: 1px; }
-  .reticle .qr b.e { background: transparent; }
-  .camera.found .qr { opacity: 0.9; }
-  .camera.found .line { display: none; }
-  .camera .hint { position: relative; text-align: center; color: rgb(255 255 255 / 0.7); font-size: 14px; padding: 0 40px 24px; line-height: 1.5; }
-  .camera .hint b { color: #fff; font-weight: 500; }
-  .camera .simulate { position: relative; margin: 0 auto 60px; display: inline-flex; align-items: center; gap: 6px; padding: 8px 14px; border-radius: 999px; background: rgb(255 255 255 / 0.14); color: #fff; font-size: 13px; cursor: pointer; align-self: center; }
-  .camera .simulate.hide { display: none; }
+      /* camera */
+      .camera {
+        position: absolute;
+        inset: 0;
+        background: var(--cam);
+        display: flex;
+        flex-direction: column;
+        opacity: 0;
+        pointer-events: none;
+        transition: opacity 260ms var(--ease);
+        z-index: 20;
+      }
+      .camera.open {
+        opacity: 1;
+        pointer-events: auto;
+      }
+      .camera .feed {
+        position: absolute;
+        inset: 0;
+        background:
+          radial-gradient(ellipse at 30% 20%, rgb(80 80 90 / 0.35), transparent 50%),
+          radial-gradient(ellipse at 70% 75%, rgb(60 70 90 / 0.3), transparent 50%),
+          linear-gradient(#161616, #0e0e0e);
+      }
+      .camera .top {
+        position: relative;
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        padding: 60px 20px 0;
+        color: #fff;
+      }
+      .camera .top .iconbtn {
+        background: rgb(255 255 255 / 0.12);
+        color: #fff;
+        box-shadow: none;
+      }
+      .camera .viewport {
+        position: relative;
+        flex: 1;
+        display: grid;
+        place-items: center;
+      }
+      .reticle {
+        width: 240px;
+        height: 240px;
+        position: relative;
+      }
+      .reticle i {
+        position: absolute;
+        width: 36px;
+        height: 36px;
+        border: 3px solid #fff;
+        border-radius: 6px;
+      }
+      .reticle i:nth-child(1) {
+        top: 0;
+        left: 0;
+        border-right: 0;
+        border-bottom: 0;
+      }
+      .reticle i:nth-child(2) {
+        top: 0;
+        right: 0;
+        border-left: 0;
+        border-bottom: 0;
+      }
+      .reticle i:nth-child(3) {
+        bottom: 0;
+        left: 0;
+        border-right: 0;
+        border-top: 0;
+      }
+      .reticle i:nth-child(4) {
+        bottom: 0;
+        right: 0;
+        border-left: 0;
+        border-top: 0;
+      }
+      .reticle .line {
+        position: absolute;
+        left: 12px;
+        right: 12px;
+        height: 2px;
+        background: #5ed8a4;
+        box-shadow: 0 0 12px #5ed8a4;
+        top: 10%;
+        animation: scan 2.2s ease-in-out infinite alternate;
+      }
+      @keyframes scan {
+        to {
+          top: 90%;
+        }
+      }
+      .reticle .qr {
+        position: absolute;
+        inset: 40px;
+        opacity: 0;
+        transition: opacity 300ms;
+        display: grid;
+        grid-template-columns: repeat(9, 1fr);
+        gap: 2px;
+      }
+      .reticle .qr b {
+        background: #fff;
+        border-radius: 1px;
+      }
+      .reticle .qr b.e {
+        background: transparent;
+      }
+      .camera.found .qr {
+        opacity: 0.9;
+      }
+      .camera.found .line {
+        display: none;
+      }
+      .camera .hint {
+        position: relative;
+        text-align: center;
+        color: rgb(255 255 255 / 0.7);
+        font-size: 14px;
+        padding: 0 40px 24px;
+        line-height: 1.5;
+      }
+      .camera .hint b {
+        color: #fff;
+        font-weight: 500;
+      }
+      .camera .simulate {
+        position: relative;
+        margin: 0 auto 60px;
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
+        padding: 8px 14px;
+        border-radius: 999px;
+        background: rgb(255 255 255 / 0.14);
+        color: #fff;
+        font-size: 13px;
+        cursor: pointer;
+        align-self: center;
+      }
+      .camera .simulate.hide {
+        display: none;
+      }
 
-  /* connecting / result sheet */
-  .scrim { position: absolute; inset: 0; background: var(--scrim); opacity: 0; pointer-events: none; transition: opacity 220ms var(--ease); z-index: 25; }
-  .phone.has-overlay .scrim { opacity: 1; pointer-events: auto; }
-  .sheet { position: absolute; left: 8px; right: 8px; bottom: 8px; z-index: 30; border-radius: 28px; padding: 8px 8px 16px;
-    background: var(--glass-sheet); -webkit-backdrop-filter: blur(32px) saturate(1.7); backdrop-filter: blur(32px) saturate(1.7); box-shadow: var(--float-shadow);
-    transform: translateY(110%); transition: transform 360ms var(--spring); }
-  .sheet.open { transform: translateY(0); }
-  .sheet .grab { width: 36px; height: 4px; border-radius: 2px; background: var(--faint); opacity: 0.5; margin: 6px auto 10px; }
-  .sheet .sh { padding: 8px 12px 6px; font-size: 12px; color: var(--faint); font-weight: 500; letter-spacing: 0.02em; display: flex; align-items: center; gap: 6px; }
-  .sheet .ttl { padding: 4px 12px 2px; font-size: 18px; font-weight: 600; letter-spacing: -0.01em; }
-  .sheet .desc { padding: 0 12px 10px; font-size: 13.5px; color: var(--muted); line-height: 1.5; }
-  .sheet .desc code { font-family: var(--mono); font-size: 12.5px; }
-  .sheet .field { margin: 4px 4px 10px; display: flex; align-items: center; gap: 8px; padding: 12px 12px; border-radius: 14px; background: var(--hover); font-size: 14px; font-family: var(--mono); color: var(--fg); overflow: hidden; white-space: nowrap; }
-  .sheet .field .ph { color: var(--faint); font-family: var(--font); }
-  .sheet .field svg { width: 16px; height: 16px; color: var(--muted); flex: none; }
-  .sheet .field .cl { margin-left: auto; width: 18px; height: 18px; border-radius: 50%; background: var(--active); display: grid; place-items: center; }
-  .sheet .field .cl svg { width: 10px; height: 10px; }
-  .sheet .btn { margin: 0 4px; }
-  .sheet .result { display: flex; flex-direction: column; align-items: center; gap: 6px; padding: 14px 12px 12px; text-align: center; }
-  .sheet .result .big { width: 56px; height: 56px; border-radius: 50%; display: grid; place-items: center; margin-bottom: 6px; }
-  .sheet .result .big svg { width: 26px; height: 26px; }
-  .sheet .result .big.spin { border: 3px solid var(--status-working); border-right-color: transparent; animation: spin 1s linear infinite; }
-  .sheet .result .big.ok { background: color-mix(in oklab, var(--status-done) 22%, transparent); color: var(--status-done); }
-  .sheet .result .big.bad { background: color-mix(in oklab, var(--status-error) 22%, transparent); color: var(--status-error); }
-  @keyframes spin { to { transform: rotate(360deg); } }
-  .sheet .result h3 { margin: 0; font-size: 18px; font-weight: 600; letter-spacing: -0.01em; }
-  .sheet .result p { margin: 0; color: var(--muted); font-size: 13.5px; line-height: 1.5; }
-  .sheet .kv { margin: 8px 4px 12px; border-radius: 14px; background: var(--hover); padding: 4px 0; }
-  .sheet .kv .r { display: flex; align-items: center; gap: 10px; padding: 9px 12px; font-size: 13.5px; }
-  .sheet .kv .r .k { color: var(--muted); width: 72px; flex: none; }
-  .sheet .kv .r .v { flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-  .sheet .kv .r code { font-family: var(--mono); font-size: 12.5px; }
-  .opt { display: flex; align-items: center; gap: 10px; padding: 11px 12px; border-radius: 14px; font-size: 15px; cursor: pointer; }
-  .opt:active { background: var(--hover); }
-  .opt.on { background: var(--active); }
-  .opt .wsic { width: 26px; height: 26px; border-radius: 7px; display: grid; place-items: center; font-size: 12px; font-weight: 600; color: #fff; flex: none; }
-  .opt .name { flex: 1; min-width: 0; }
-  .opt .name .p { font-family: var(--mono); font-size: 11.5px; color: var(--faint); margin-top: 1px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-  .opt .hint { font-size: 12.5px; color: var(--faint); }
-  .opt .tick { width: 16px; height: 16px; color: var(--fg); visibility: hidden; }
-  .opt.on .tick { visibility: visible; }
-  .opt .pico { width: 16px; height: 16px; color: var(--muted); }
-  .sheet .search { margin: 0 4px 6px; display: flex; align-items: center; gap: 8px; padding: 10px 12px; border-radius: 14px; background: var(--hover); color: var(--faint); font-size: 14px; }
-  .sheet .search svg { width: 16px; height: 16px; }
+      /* connecting / result sheet */
+      .scrim {
+        position: absolute;
+        inset: 0;
+        background: var(--scrim);
+        opacity: 0;
+        pointer-events: none;
+        transition: opacity 220ms var(--ease);
+        z-index: 25;
+      }
+      .phone.has-overlay .scrim {
+        opacity: 1;
+        pointer-events: auto;
+      }
+      .sheet {
+        position: absolute;
+        left: 8px;
+        right: 8px;
+        bottom: 8px;
+        z-index: 30;
+        border-radius: 28px;
+        padding: 8px 8px 16px;
+        background: var(--glass-sheet);
+        -webkit-backdrop-filter: blur(32px) saturate(1.7);
+        backdrop-filter: blur(32px) saturate(1.7);
+        box-shadow: var(--float-shadow);
+        transform: translateY(110%);
+        transition: transform 360ms var(--spring);
+      }
+      .sheet.open {
+        transform: translateY(0);
+      }
+      .sheet .grab {
+        width: 36px;
+        height: 4px;
+        border-radius: 2px;
+        background: var(--faint);
+        opacity: 0.5;
+        margin: 6px auto 10px;
+      }
+      .sheet .sh {
+        padding: 8px 12px 6px;
+        font-size: 12px;
+        color: var(--faint);
+        font-weight: 500;
+        letter-spacing: 0.02em;
+        display: flex;
+        align-items: center;
+        gap: 6px;
+      }
+      .sheet .ttl {
+        padding: 4px 12px 2px;
+        font-size: 18px;
+        font-weight: 600;
+        letter-spacing: -0.01em;
+      }
+      .sheet .desc {
+        padding: 0 12px 10px;
+        font-size: 13.5px;
+        color: var(--muted);
+        line-height: 1.5;
+      }
+      .sheet .desc code {
+        font-family: var(--mono);
+        font-size: 12.5px;
+      }
+      .sheet .field {
+        margin: 4px 4px 10px;
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        padding: 12px 12px;
+        border-radius: 14px;
+        background: var(--hover);
+        font-size: 14px;
+        font-family: var(--mono);
+        color: var(--fg);
+        overflow: hidden;
+        white-space: nowrap;
+      }
+      .sheet .field .ph {
+        color: var(--faint);
+        font-family: var(--font);
+      }
+      .sheet .field svg {
+        width: 16px;
+        height: 16px;
+        color: var(--muted);
+        flex: none;
+      }
+      .sheet .field .cl {
+        margin-left: auto;
+        width: 18px;
+        height: 18px;
+        border-radius: 50%;
+        background: var(--active);
+        display: grid;
+        place-items: center;
+      }
+      .sheet .field .cl svg {
+        width: 10px;
+        height: 10px;
+      }
+      .sheet .btn {
+        margin: 0 4px;
+      }
+      .sheet .result {
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        gap: 6px;
+        padding: 14px 12px 12px;
+        text-align: center;
+      }
+      .sheet .result .big {
+        width: 56px;
+        height: 56px;
+        border-radius: 50%;
+        display: grid;
+        place-items: center;
+        margin-bottom: 6px;
+      }
+      .sheet .result .big svg {
+        width: 26px;
+        height: 26px;
+      }
+      .sheet .result .big.spin {
+        border: 3px solid var(--status-working);
+        border-right-color: transparent;
+        animation: spin 1s linear infinite;
+      }
+      .sheet .result .big.ok {
+        background: color-mix(in oklab, var(--status-done) 22%, transparent);
+        color: var(--status-done);
+      }
+      .sheet .result .big.bad {
+        background: color-mix(in oklab, var(--status-error) 22%, transparent);
+        color: var(--status-error);
+      }
+      @keyframes spin {
+        to {
+          transform: rotate(360deg);
+        }
+      }
+      .sheet .result h3 {
+        margin: 0;
+        font-size: 18px;
+        font-weight: 600;
+        letter-spacing: -0.01em;
+      }
+      .sheet .result p {
+        margin: 0;
+        color: var(--muted);
+        font-size: 13.5px;
+        line-height: 1.5;
+      }
+      .sheet .kv {
+        margin: 8px 4px 12px;
+        border-radius: 14px;
+        background: var(--hover);
+        padding: 4px 0;
+      }
+      .sheet .kv .r {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        padding: 9px 12px;
+        font-size: 13.5px;
+      }
+      .sheet .kv .r .k {
+        color: var(--muted);
+        width: 72px;
+        flex: none;
+      }
+      .sheet .kv .r .v {
+        flex: 1;
+        min-width: 0;
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+      }
+      .sheet .kv .r code {
+        font-family: var(--mono);
+        font-size: 12.5px;
+      }
+      .opt {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        padding: 11px 12px;
+        border-radius: 14px;
+        font-size: 15px;
+        cursor: pointer;
+      }
+      .opt:active {
+        background: var(--hover);
+      }
+      .opt.on {
+        background: var(--active);
+      }
+      .opt .wsic {
+        width: 26px;
+        height: 26px;
+        border-radius: 7px;
+        display: grid;
+        place-items: center;
+        font-size: 12px;
+        font-weight: 600;
+        color: #fff;
+        flex: none;
+      }
+      .opt .name {
+        flex: 1;
+        min-width: 0;
+      }
+      .opt .name .p {
+        font-family: var(--mono);
+        font-size: 11.5px;
+        color: var(--faint);
+        margin-top: 1px;
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+      }
+      .opt .hint {
+        font-size: 12.5px;
+        color: var(--faint);
+      }
+      .opt .tick {
+        width: 16px;
+        height: 16px;
+        color: var(--fg);
+        visibility: hidden;
+      }
+      .opt.on .tick {
+        visibility: visible;
+      }
+      .opt .pico {
+        width: 16px;
+        height: 16px;
+        color: var(--muted);
+      }
+      .sheet .search {
+        margin: 0 4px 6px;
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        padding: 10px 12px;
+        border-radius: 14px;
+        background: var(--hover);
+        color: var(--faint);
+        font-size: 14px;
+      }
+      .sheet .search svg {
+        width: 16px;
+        height: 16px;
+      }
 
-  /* drafts rows */
-  .row .draftic { width: 22px; height: 22px; flex: none; display: grid; place-items: center; color: var(--faint); }
-  .row .draftic svg { width: 16px; height: 16px; }
-  .row .title.q { font-weight: 400; color: var(--fg); }
-  .swipe { overflow: hidden; border-radius: 12px; position: relative; margin: 0; }
-  .swipe .row { transform: translateX(-88px); background: var(--bg); }
-  .swipe .del { position: absolute; top: 0; bottom: 0; right: 0; width: 88px; background: var(--status-error); color: #fff; display: grid; place-items: center; font-size: 13px; font-weight: 500; border-radius: 0 12px 12px 0; }
-  .swipe .del svg { width: 18px; height: 18px; }
+      /* drafts rows */
+      .row .draftic {
+        width: 22px;
+        height: 22px;
+        flex: none;
+        display: grid;
+        place-items: center;
+        color: var(--faint);
+      }
+      .row .draftic svg {
+        width: 16px;
+        height: 16px;
+      }
+      .row .title.q {
+        font-weight: 400;
+        color: var(--fg);
+      }
+      .swipe {
+        overflow: hidden;
+        border-radius: 12px;
+        position: relative;
+        margin: 0;
+      }
+      .swipe .row {
+        transform: translateX(-88px);
+        background: var(--bg);
+      }
+      .swipe .del {
+        position: absolute;
+        top: 0;
+        bottom: 0;
+        right: 0;
+        width: 88px;
+        background: var(--status-error);
+        color: #fff;
+        display: grid;
+        place-items: center;
+        font-size: 13px;
+        font-weight: 500;
+        border-radius: 0 12px 12px 0;
+      }
+      .swipe .del svg {
+        width: 18px;
+        height: 18px;
+      }
 
-  .note { max-width: 880px; color: #9a9a9a; font-size: 13.5px; line-height: 1.6; padding: 0 36px 40px; }
-  .note h2 { color: #ddd; font-size: 15px; font-weight: 600; margin: 24px 0 6px; }
-  .note b { color: #ccc; font-weight: 500; }
-  .note ul { padding-left: 18px; margin: 6px 0; }
-</style>
-</head>
-<body>
+      .note {
+        max-width: 880px;
+        color: #9a9a9a;
+        font-size: 13.5px;
+        line-height: 1.6;
+        padding: 0 36px 40px;
+      }
+      .note h2 {
+        color: #ddd;
+        font-size: 15px;
+        font-weight: 600;
+        margin: 24px 0 6px;
+      }
+      .note b {
+        color: #ccc;
+        font-weight: 500;
+      }
+      .note ul {
+        padding-left: 18px;
+        margin: 6px 0;
+      }
+    </style>
+  </head>
+  <body>
+    <svg width="0" height="0" style="position: absolute">
+      <defs>
+        <symbol id="i-chev" viewBox="0 0 24 24">
+          <path
+            d="M9 6l6 6-6 6"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="2.2"
+            stroke-linecap="round"
+            stroke-linejoin="round"
+          />
+        </symbol>
+        <symbol id="i-back" viewBox="0 0 24 24">
+          <path
+            d="M15 5l-7 7 7 7"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="2.2"
+            stroke-linecap="round"
+            stroke-linejoin="round"
+          />
+        </symbol>
+        <symbol id="i-more" viewBox="0 0 24 24">
+          <circle cx="6" cy="12" r="1.8" fill="currentColor" />
+          <circle cx="12" cy="12" r="1.8" fill="currentColor" />
+          <circle cx="18" cy="12" r="1.8" fill="currentColor" />
+        </symbol>
+        <symbol id="i-close" viewBox="0 0 24 24">
+          <path
+            d="M6 6l12 12M18 6L6 18"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="2.2"
+            stroke-linecap="round"
+          />
+        </symbol>
+        <symbol id="i-search" viewBox="0 0 24 24">
+          <circle cx="11" cy="11" r="6.5" fill="none" stroke="currentColor" stroke-width="2.2" />
+          <path
+            d="M16 16l4.5 4.5"
+            stroke="currentColor"
+            stroke-width="2.2"
+            stroke-linecap="round"
+          />
+        </symbol>
+        <symbol id="i-plus" viewBox="0 0 24 24">
+          <path
+            d="M12 5v14M5 12h14"
+            stroke="currentColor"
+            stroke-width="2.4"
+            stroke-linecap="round"
+          />
+        </symbol>
+        <symbol id="i-tick" viewBox="0 0 24 24">
+          <path
+            d="M5 12.5l4.5 4.5L19 7.5"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="2.6"
+            stroke-linecap="round"
+            stroke-linejoin="round"
+          />
+        </symbol>
+        <symbol id="i-sessions" viewBox="0 0 24 24">
+          <path
+            d="M5 6.5h14M5 12h14M5 17.5h9"
+            stroke="currentColor"
+            stroke-width="2.2"
+            stroke-linecap="round"
+          />
+        </symbol>
+        <symbol id="i-inbox" viewBox="0 0 24 24">
+          <path
+            d="M4 13l2.5-7h11L20 13v5a1.5 1.5 0 0 1-1.5 1.5h-13A1.5 1.5 0 0 1 4 18z"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="2"
+            stroke-linejoin="round"
+          />
+          <path
+            d="M4 13h5l1.5 2.5h3L15 13h5"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="2"
+            stroke-linejoin="round"
+          />
+        </symbol>
+        <symbol id="i-gear" viewBox="0 0 24 24">
+          <circle cx="12" cy="12" r="3" fill="none" stroke="currentColor" stroke-width="2" />
+          <path
+            d="M12 3v2.5M12 18.5V21M21 12h-2.5M5.5 12H3M18.4 5.6l-1.8 1.8M7.4 16.6l-1.8 1.8M18.4 18.4l-1.8-1.8M7.4 7.4L5.6 5.6"
+            stroke="currentColor"
+            stroke-width="2"
+            stroke-linecap="round"
+          />
+        </symbol>
+        <symbol id="i-qr" viewBox="0 0 24 24">
+          <rect
+            x="4"
+            y="4"
+            width="6"
+            height="6"
+            rx="1"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="2"
+          />
+          <rect
+            x="14"
+            y="4"
+            width="6"
+            height="6"
+            rx="1"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="2"
+          />
+          <rect
+            x="4"
+            y="14"
+            width="6"
+            height="6"
+            rx="1"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="2"
+          />
+          <path d="M14 14h2v2h-2zM18 14h2v2h-2zM14 18h2v2h-2zM18 18h2v2h-2z" fill="currentColor" />
+        </symbol>
+        <symbol id="i-link" viewBox="0 0 24 24">
+          <path
+            d="M10 14a4 4 0 0 0 5.7 0l3-3a4 4 0 0 0-5.7-5.7l-1.5 1.5"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="2"
+            stroke-linecap="round"
+          />
+          <path
+            d="M14 10a4 4 0 0 0-5.7 0l-3 3a4 4 0 0 0 5.7 5.7l1.5-1.5"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="2"
+            stroke-linecap="round"
+          />
+        </symbol>
+        <symbol id="i-laptop" viewBox="0 0 24 24">
+          <rect
+            x="4"
+            y="5"
+            width="16"
+            height="11"
+            rx="2"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="2"
+          />
+          <path d="M2 19h20" stroke="currentColor" stroke-width="2" stroke-linecap="round" />
+        </symbol>
+        <symbol id="i-phone" viewBox="0 0 24 24">
+          <rect
+            x="7"
+            y="3"
+            width="10"
+            height="18"
+            rx="2.5"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="2"
+          />
+          <circle cx="12" cy="17.5" r="1" fill="currentColor" />
+        </symbol>
+        <symbol id="i-server" viewBox="0 0 24 24">
+          <rect
+            x="4"
+            y="4"
+            width="16"
+            height="7"
+            rx="2"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="2"
+          />
+          <rect
+            x="4"
+            y="13"
+            width="16"
+            height="7"
+            rx="2"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="2"
+          />
+          <circle cx="8" cy="7.5" r="1" fill="currentColor" />
+          <circle cx="8" cy="16.5" r="1" fill="currentColor" />
+        </symbol>
+        <symbol id="i-globe" viewBox="0 0 24 24">
+          <circle cx="12" cy="12" r="8" fill="none" stroke="currentColor" stroke-width="2" />
+          <path
+            d="M4 12h16M12 4c3 3 3 13 0 16M12 4c-3 3-3 13 0 16"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="1.6"
+          />
+        </symbol>
+        <symbol id="i-wifi" viewBox="0 0 24 24">
+          <path
+            d="M3 9.5a14 14 0 0 1 18 0M6.5 13a9 9 0 0 1 11 0M10 16.5a4 4 0 0 1 4 0"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="2"
+            stroke-linecap="round"
+          />
+          <circle cx="12" cy="19.5" r="1.3" fill="currentColor" />
+        </symbol>
+        <symbol id="i-sun" viewBox="0 0 24 24">
+          <circle cx="12" cy="12" r="4" fill="none" stroke="currentColor" stroke-width="2" />
+          <path
+            d="M12 3v2M12 19v2M21 12h-2M5 12H3M18.4 5.6l-1.4 1.4M7 17l-1.4 1.4M18.4 18.4L17 17M7 7L5.6 5.6"
+            stroke="currentColor"
+            stroke-width="2"
+            stroke-linecap="round"
+          />
+        </symbol>
+        <symbol id="i-bell" viewBox="0 0 24 24">
+          <path
+            d="M6 17V11a6 6 0 0 1 12 0v6l1.5 2h-15z"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="2"
+            stroke-linejoin="round"
+          />
+          <path d="M10 21h4" stroke="currentColor" stroke-width="2" stroke-linecap="round" />
+        </symbol>
+        <symbol id="i-trash" viewBox="0 0 24 24">
+          <path
+            d="M5 7h14M10 11v6M14 11v6M7 7l1 13h8l1-13M9 7V4h6v3"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="2"
+            stroke-linecap="round"
+            stroke-linejoin="round"
+          />
+        </symbol>
+        <symbol id="i-folder" viewBox="0 0 24 24">
+          <path
+            d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="2"
+            stroke-linejoin="round"
+          />
+        </symbol>
+        <symbol id="i-draft" viewBox="0 0 24 24">
+          <path
+            d="M5 19l1-4L16.5 4.5a2.1 2.1 0 0 1 3 3L9 18z"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="2"
+            stroke-linejoin="round"
+          />
+        </symbol>
+        <symbol id="i-cloudoff" viewBox="0 0 24 24">
+          <path
+            d="M7 18h10a4 4 0 0 0 .5-8A6 6 0 0 0 6.2 11.5 3.5 3.5 0 0 0 7 18z"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="2"
+            stroke-linejoin="round"
+          />
+          <path d="M4 4l16 16" stroke="currentColor" stroke-width="2" stroke-linecap="round" />
+        </symbol>
+        <symbol id="i-image" viewBox="0 0 24 24">
+          <rect
+            x="4"
+            y="5"
+            width="16"
+            height="14"
+            rx="2.5"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="2"
+          />
+          <circle cx="9" cy="10" r="1.6" fill="currentColor" />
+          <path
+            d="M5 17l5-5 4 4 2-2 4 4"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="2"
+            stroke-linejoin="round"
+          />
+        </symbol>
+        <symbol id="i-clock" viewBox="0 0 24 24">
+          <circle cx="12" cy="12" r="8" fill="none" stroke="currentColor" stroke-width="2" />
+          <path
+            d="M12 8v4l3 2"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="2"
+            stroke-linecap="round"
+          />
+        </symbol>
+        <symbol id="i-paste" viewBox="0 0 24 24">
+          <rect
+            x="6"
+            y="5"
+            width="12"
+            height="16"
+            rx="2"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="2"
+          />
+          <rect x="9" y="3" width="6" height="4" rx="1" fill="currentColor" />
+        </symbol>
+      </defs>
+    </svg>
 
-<svg width="0" height="0" style="position:absolute">
-  <defs>
-    <symbol id="i-chev" viewBox="0 0 24 24"><path d="M9 6l6 6-6 6" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/></symbol>
-    <symbol id="i-back" viewBox="0 0 24 24"><path d="M15 5l-7 7 7 7" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/></symbol>
-    <symbol id="i-more" viewBox="0 0 24 24"><circle cx="6" cy="12" r="1.8" fill="currentColor"/><circle cx="12" cy="12" r="1.8" fill="currentColor"/><circle cx="18" cy="12" r="1.8" fill="currentColor"/></symbol>
-    <symbol id="i-close" viewBox="0 0 24 24"><path d="M6 6l12 12M18 6L6 18" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"/></symbol>
-    <symbol id="i-search" viewBox="0 0 24 24"><circle cx="11" cy="11" r="6.5" fill="none" stroke="currentColor" stroke-width="2.2"/><path d="M16 16l4.5 4.5" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"/></symbol>
-    <symbol id="i-plus" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"/></symbol>
-    <symbol id="i-tick" viewBox="0 0 24 24"><path d="M5 12.5l4.5 4.5L19 7.5" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"/></symbol>
-    <symbol id="i-sessions" viewBox="0 0 24 24"><path d="M5 6.5h14M5 12h14M5 17.5h9" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"/></symbol>
-    <symbol id="i-inbox" viewBox="0 0 24 24"><path d="M4 13l2.5-7h11L20 13v5a1.5 1.5 0 0 1-1.5 1.5h-13A1.5 1.5 0 0 1 4 18z" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/><path d="M4 13h5l1.5 2.5h3L15 13h5" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/></symbol>
-    <symbol id="i-gear" viewBox="0 0 24 24"><circle cx="12" cy="12" r="3" fill="none" stroke="currentColor" stroke-width="2"/><path d="M12 3v2.5M12 18.5V21M21 12h-2.5M5.5 12H3M18.4 5.6l-1.8 1.8M7.4 16.6l-1.8 1.8M18.4 18.4l-1.8-1.8M7.4 7.4L5.6 5.6" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></symbol>
-    <symbol id="i-qr" viewBox="0 0 24 24"><rect x="4" y="4" width="6" height="6" rx="1" fill="none" stroke="currentColor" stroke-width="2"/><rect x="14" y="4" width="6" height="6" rx="1" fill="none" stroke="currentColor" stroke-width="2"/><rect x="4" y="14" width="6" height="6" rx="1" fill="none" stroke="currentColor" stroke-width="2"/><path d="M14 14h2v2h-2zM18 14h2v2h-2zM14 18h2v2h-2zM18 18h2v2h-2z" fill="currentColor"/></symbol>
-    <symbol id="i-link" viewBox="0 0 24 24"><path d="M10 14a4 4 0 0 0 5.7 0l3-3a4 4 0 0 0-5.7-5.7l-1.5 1.5" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><path d="M14 10a4 4 0 0 0-5.7 0l-3 3a4 4 0 0 0 5.7 5.7l1.5-1.5" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></symbol>
-    <symbol id="i-laptop" viewBox="0 0 24 24"><rect x="4" y="5" width="16" height="11" rx="2" fill="none" stroke="currentColor" stroke-width="2"/><path d="M2 19h20" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></symbol>
-    <symbol id="i-phone" viewBox="0 0 24 24"><rect x="7" y="3" width="10" height="18" rx="2.5" fill="none" stroke="currentColor" stroke-width="2"/><circle cx="12" cy="17.5" r="1" fill="currentColor"/></symbol>
-    <symbol id="i-server" viewBox="0 0 24 24"><rect x="4" y="4" width="16" height="7" rx="2" fill="none" stroke="currentColor" stroke-width="2"/><rect x="4" y="13" width="16" height="7" rx="2" fill="none" stroke="currentColor" stroke-width="2"/><circle cx="8" cy="7.5" r="1" fill="currentColor"/><circle cx="8" cy="16.5" r="1" fill="currentColor"/></symbol>
-    <symbol id="i-globe" viewBox="0 0 24 24"><circle cx="12" cy="12" r="8" fill="none" stroke="currentColor" stroke-width="2"/><path d="M4 12h16M12 4c3 3 3 13 0 16M12 4c-3 3-3 13 0 16" fill="none" stroke="currentColor" stroke-width="1.6"/></symbol>
-    <symbol id="i-wifi" viewBox="0 0 24 24"><path d="M3 9.5a14 14 0 0 1 18 0M6.5 13a9 9 0 0 1 11 0M10 16.5a4 4 0 0 1 4 0" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><circle cx="12" cy="19.5" r="1.3" fill="currentColor"/></symbol>
-    <symbol id="i-sun" viewBox="0 0 24 24"><circle cx="12" cy="12" r="4" fill="none" stroke="currentColor" stroke-width="2"/><path d="M12 3v2M12 19v2M21 12h-2M5 12H3M18.4 5.6l-1.4 1.4M7 17l-1.4 1.4M18.4 18.4L17 17M7 7L5.6 5.6" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></symbol>
-    <symbol id="i-bell" viewBox="0 0 24 24"><path d="M6 17V11a6 6 0 0 1 12 0v6l1.5 2h-15z" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/><path d="M10 21h4" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></symbol>
-    <symbol id="i-trash" viewBox="0 0 24 24"><path d="M5 7h14M10 11v6M14 11v6M7 7l1 13h8l1-13M9 7V4h6v3" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></symbol>
-    <symbol id="i-folder" viewBox="0 0 24 24"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/></symbol>
-    <symbol id="i-draft" viewBox="0 0 24 24"><path d="M5 19l1-4L16.5 4.5a2.1 2.1 0 0 1 3 3L9 18z" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/></symbol>
-    <symbol id="i-cloudoff" viewBox="0 0 24 24"><path d="M7 18h10a4 4 0 0 0 .5-8A6 6 0 0 0 6.2 11.5 3.5 3.5 0 0 0 7 18z" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/><path d="M4 4l16 16" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></symbol>
-    <symbol id="i-image" viewBox="0 0 24 24"><rect x="4" y="5" width="16" height="14" rx="2.5" fill="none" stroke="currentColor" stroke-width="2"/><circle cx="9" cy="10" r="1.6" fill="currentColor"/><path d="M5 17l5-5 4 4 2-2 4 4" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/></symbol>
-    <symbol id="i-clock" viewBox="0 0 24 24"><circle cx="12" cy="12" r="8" fill="none" stroke="currentColor" stroke-width="2"/><path d="M12 8v4l3 2" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></symbol>
-    <symbol id="i-paste" viewBox="0 0 24 24"><rect x="6" y="5" width="12" height="16" rx="2" fill="none" stroke="currentColor" stroke-width="2"/><rect x="9" y="3" width="6" height="4" rx="1" fill="currentColor"/></symbol>
-  </defs>
-</svg>
-
-<div class="board">
-
-<!-- ═══════════ 1 · Settings home ═══════════ -->
-<div class="frame">
-  <div class="label"><b>1 · Settings</b> · third tab in the pill. Environments are cards (the one you're on is filled stronger and says <b>here</b>). Everything below is a grouped list; selection and grouping by fill, no borders.</div>
-  <div class="phone" data-theme="neutral">
-    <div class="statusbar"><span>9:41</span><span class="right">●●●● ◗ ▮</span></div>
-    <div class="screen">
-      <div class="header"><div class="top"><h1>Settings</h1></div></div>
-      <div class="list">
-        <div class="group">ENVIRONMENTS</div>
-        <div class="card sel">
-          <div class="head"><span class="dot ok live"></span><span class="name">Cletus's desktop</span><span class="here">here</span><svg class="chev"><use href="#i-chev"/></svg></div>
-          <div class="meta"><svg style="width:13px;height:13px" ><use href="#i-wifi"/></svg><code>192.168.1.4:43120</code><span class="ms">12 ms</span></div>
+    <div class="board">
+      <!-- ═══════════ 1 · Settings home ═══════════ -->
+      <div class="frame">
+        <div class="label">
+          <b>1 · Settings</b> · third tab in the pill. Environments are cards (the one you're on is
+          filled stronger and says <b>here</b>). Everything below is a grouped list; selection and
+          grouping by fill, no borders.
         </div>
-        <div class="card">
-          <div class="head"><span class="dot ok"></span><span class="name">WSL · ubuntu</span><svg class="chev"><use href="#i-chev"/></svg></div>
-          <div class="meta"><svg style="width:13px;height:13px"><use href="#i-globe"/></svg><code>wsl.cletus.xyz</code><span class="ms">84 ms</span></div>
+        <div class="phone" data-theme="neutral">
+          <div class="statusbar"><span>9:41</span><span class="right">●●●● ◗ ▮</span></div>
+          <div class="screen">
+            <div class="header">
+              <div class="top"><h1>Settings</h1></div>
+            </div>
+            <div class="list">
+              <div class="group">ENVIRONMENTS</div>
+              <div class="card sel">
+                <div class="head">
+                  <span class="dot ok live"></span><span class="name">Cletus's desktop</span
+                  ><span class="here">here</span><svg class="chev"><use href="#i-chev" /></svg>
+                </div>
+                <div class="meta">
+                  <svg style="width: 13px; height: 13px"><use href="#i-wifi" /></svg
+                  ><code>192.168.1.4:43120</code><span class="ms">12 ms</span>
+                </div>
+              </div>
+              <div class="card">
+                <div class="head">
+                  <span class="dot ok"></span><span class="name">WSL · ubuntu</span
+                  ><svg class="chev"><use href="#i-chev" /></svg>
+                </div>
+                <div class="meta">
+                  <svg style="width: 13px; height: 13px"><use href="#i-globe" /></svg
+                  ><code>wsl.cletus.xyz</code><span class="ms">84 ms</span>
+                </div>
+              </div>
+              <div class="card">
+                <div class="head">
+                  <span class="dot off"></span><span class="name">Office mini</span
+                  ><svg class="chev"><use href="#i-chev" /></svg>
+                </div>
+                <div class="meta"><span>Unreachable · last seen 3 d ago</span></div>
+              </div>
+              <div class="add">
+                <svg><use href="#i-plus" /></svg>Add environment
+              </div>
+
+              <div class="group">APPEARANCE</div>
+              <div class="swatches">
+                <div class="sw" style="background: #141414; box-shadow: inset 0 0 0 1px #2a2a2a">
+                  <span class="nm">Default</span>
+                </div>
+                <div class="sw on" style="background: #171717; box-shadow: inset 0 0 0 1px #333">
+                  <span class="nm">Neutral</span>
+                </div>
+                <div class="sw" style="background: #1a1917; box-shadow: inset 0 0 0 1px #2a2926">
+                  <span class="nm">Paper</span>
+                </div>
+                <div class="sw" style="background: #090909; box-shadow: inset 0 0 0 1px #262626">
+                  <span class="nm">Lovable</span>
+                </div>
+                <div class="sw" style="background: #1f1e1d; box-shadow: inset 0 0 0 1px #2d2c2a">
+                  <span class="nm">Claude</span>
+                </div>
+                <div class="sw" style="background: #141414; box-shadow: inset 0 0 0 1px #c5f23a55">
+                  <span class="nm">Carbon</span>
+                </div>
+              </div>
+              <div style="height: 16px"></div>
+              <div class="segwrap">
+                <div class="seg">
+                  <div class="s">Light</div>
+                  <div class="s on">Dark</div>
+                  <div class="s">System</div>
+                </div>
+              </div>
+
+              <div class="group">THIS PHONE</div>
+              <div class="row">
+                <div class="ic">
+                  <svg><use href="#i-bell" /></svg>
+                </div>
+                <div class="body">
+                  <div class="title">Notifications</div>
+                  <div class="sub">Needs you · Questions · Done</div>
+                </div>
+                <svg class="chev"><use href="#i-chev" /></svg>
+              </div>
+              <div class="row">
+                <div class="ic">
+                  <svg><use href="#i-phone" /></svg>
+                </div>
+                <div class="body">
+                  <div class="title">This device</div>
+                  <div class="sub">Pixel 9 · paired 2 environments</div>
+                </div>
+                <svg class="chev"><use href="#i-chev" /></svg>
+              </div>
+              <div class="row">
+                <div class="ic">
+                  <svg><use href="#i-gear" /></svg>
+                </div>
+                <div class="body">
+                  <div class="title">About</div>
+                  <div class="sub">OpenManager 0.3.0 · protocol 16</div>
+                </div>
+                <svg class="chev"><use href="#i-chev" /></svg>
+              </div>
+            </div>
+          </div>
+          <div class="fadeout"></div>
+          <div class="nav">
+            <div class="pill">
+              <div class="it">
+                <svg><use href="#i-sessions" /></svg>
+              </div>
+              <div class="it">
+                <svg><use href="#i-inbox" /></svg><span class="badge"></span>
+              </div>
+              <div class="it on">
+                <svg><use href="#i-gear" /></svg>
+              </div>
+            </div>
+            <div class="fab">
+              <svg><use href="#i-search" /></svg>
+            </div>
+          </div>
+          <div class="homebar"></div>
         </div>
-        <div class="card">
-          <div class="head"><span class="dot off"></span><span class="name">Office mini</span><svg class="chev"><use href="#i-chev"/></svg></div>
-          <div class="meta"><span>Unreachable · last seen 3 d ago</span></div>
+      </div>
+
+      <!-- ═══════════ 2 · Environment detail ═══════════ -->
+      <div class="frame">
+        <div class="label">
+          <b>2 · Environment</b> · routes the phone knows for this machine, which one is in use,
+          what else is paired, and the one destructive action at the very bottom. Routes are
+          server-owned facts; the phone just shows reachability.
         </div>
-        <div class="add"><svg><use href="#i-plus"/></svg>Add environment</div>
+        <div class="phone" data-theme="neutral-light">
+          <div class="statusbar"><span>9:41</span><span class="right">●●●● ◗ ▮</span></div>
+          <div class="screen">
+            <div class="header">
+              <div class="top">
+                <div class="iconbtn">
+                  <svg><use href="#i-back" /></svg>
+                </div>
+                <div class="iconbtn">
+                  <svg><use href="#i-more" /></svg>
+                </div>
+              </div>
+              <h1 class="sm" style="margin-top: 6px">Cletus's desktop</h1>
+              <div class="sub"><span class="dot ok live"></span>Connected over LAN · 12 ms</div>
+            </div>
+            <div class="list" style="padding-top: 6px">
+              <div class="group">ROUTES</div>
+              <div class="row sel">
+                <div class="ic on">
+                  <svg><use href="#i-wifi" /></svg>
+                </div>
+                <div class="body">
+                  <div class="title">Local network</div>
+                  <div class="sub"><code>192.168.1.4:43120</code></div>
+                </div>
+                <span class="pillv">in use</span>
+              </div>
+              <div class="row">
+                <div class="ic">
+                  <svg><use href="#i-globe" /></svg>
+                </div>
+                <div class="body">
+                  <div class="title">Tunnel</div>
+                  <div class="sub"><code>desk.cletus.xyz</code><span class="sep">·</span>84 ms</div>
+                </div>
+                <span class="dot ok"></span>
+              </div>
+              <div class="row">
+                <div class="ic">
+                  <svg><use href="#i-server" /></svg>
+                </div>
+                <div class="body">
+                  <div class="title">Tailscale</div>
+                  <div class="sub"><code>desktop.tail1a2b.ts.net</code></div>
+                </div>
+                <span class="dot bad"></span>
+              </div>
+              <div class="row" style="padding-top: 4px; padding-bottom: 4px">
+                <div class="ic" style="background: transparent"></div>
+                <div class="body">
+                  <div class="sub" style="margin: 0">
+                    Falls back in this order when one stops answering.
+                  </div>
+                </div>
+              </div>
 
-        <div class="group">APPEARANCE</div>
-        <div class="swatches">
-          <div class="sw on" style="background:#171717;box-shadow:inset 0 0 0 1px #333"><span class="nm">Neutral</span></div>
-          <div class="sw" style="background:#1b1f2a"><span class="nm">Slate</span></div>
-          <div class="sw" style="background:#1e1a17"><span class="nm">Warm</span></div>
-          <div class="sw" style="background:#141a16"><span class="nm">Moss</span></div>
+              <div class="group">PAIRED DEVICES <span class="r">3</span></div>
+              <div class="row">
+                <div class="ic">
+                  <svg><use href="#i-phone" /></svg>
+                </div>
+                <div class="body">
+                  <div class="title">This phone</div>
+                  <div class="sub">Pixel 9 · paired today</div>
+                </div>
+                <span class="pillv">you</span>
+              </div>
+              <div class="row">
+                <div class="ic">
+                  <svg><use href="#i-laptop" /></svg>
+                </div>
+                <div class="body">
+                  <div class="title">Laptop · Zen</div>
+                  <div class="sub">last seen 2 h ago</div>
+                </div>
+              </div>
+              <div class="row">
+                <div class="ic">
+                  <svg><use href="#i-laptop" /></svg>
+                </div>
+                <div class="body">
+                  <div class="title">Desktop app</div>
+                  <div class="sub">owner · always on</div>
+                </div>
+              </div>
+
+              <div class="group">PAIRING LINKS <span class="r">1 active</span></div>
+              <div class="row">
+                <div class="ic">
+                  <svg><use href="#i-link" /></svg>
+                </div>
+                <div class="body">
+                  <div class="title">Created from the desktop</div>
+                  <div class="sub">expires in 40 min · unused</div>
+                </div>
+                <span class="pillv warn">revoke</span>
+              </div>
+
+              <div class="group">WORKSPACES <span class="r">6</span></div>
+              <div class="row">
+                <div
+                  class="ic"
+                  style="background: #4f8ff7; color: #fff; font-weight: 600; font-size: 13px"
+                >
+                  O
+                </div>
+                <div class="body">
+                  <div class="title">openmanager</div>
+                  <div class="sub"><code>~/ClePro/openmanager</code></div>
+                </div>
+              </div>
+              <div class="row">
+                <div
+                  class="ic"
+                  style="background: #e0a04f; color: #fff; font-weight: 600; font-size: 13px"
+                >
+                  S
+                </div>
+                <div class="body">
+                  <div class="title">salesmaxai</div>
+                  <div class="sub"><code>~/ClePro/salesmaxai</code></div>
+                </div>
+              </div>
+              <div class="row">
+                <div class="ic" style="background: transparent"></div>
+                <div class="body"><div class="sub" style="margin: 0">4 more…</div></div>
+              </div>
+
+              <div style="height: 16px"></div>
+              <div class="row danger">
+                <div class="ic" style="color: var(--status-error)">
+                  <svg><use href="#i-trash" /></svg>
+                </div>
+                <div class="body">
+                  <div class="title">Forget this environment</div>
+                  <div class="sub">Removes it from this phone only</div>
+                </div>
+              </div>
+            </div>
+          </div>
+          <div class="fadeout"></div>
+          <div class="homebar"></div>
         </div>
-        <div style="height:16px"></div>
-        <div class="segwrap"><div class="seg"><div class="s">Light</div><div class="s on">Dark</div><div class="s">System</div></div></div>
-
-        <div class="group">THIS PHONE</div>
-        <div class="row"><div class="ic"><svg><use href="#i-bell"/></svg></div><div class="body"><div class="title">Notifications</div><div class="sub">Needs you · Questions · Done</div></div><svg class="chev"><use href="#i-chev"/></svg></div>
-        <div class="row"><div class="ic"><svg><use href="#i-phone"/></svg></div><div class="body"><div class="title">This device</div><div class="sub">Pixel 9 · paired 2 environments</div></div><svg class="chev"><use href="#i-chev"/></svg></div>
-        <div class="row"><div class="ic"><svg><use href="#i-gear"/></svg></div><div class="body"><div class="title">About</div><div class="sub">OpenManager 0.3.0 · protocol 16</div></div><svg class="chev"><use href="#i-chev"/></svg></div>
       </div>
-    </div>
-    <div class="fadeout"></div>
-    <div class="nav">
-      <div class="pill">
-        <div class="it"><svg><use href="#i-sessions"/></svg></div>
-        <div class="it"><svg><use href="#i-inbox"/></svg><span class="badge"></span></div>
-        <div class="it on"><svg><use href="#i-gear"/></svg></div>
-      </div>
-      <div class="fab"><svg><use href="#i-search"/></svg></div>
-    </div>
-    <div class="homebar"></div>
-  </div>
-</div>
 
-<!-- ═══════════ 2 · Environment detail ═══════════ -->
-<div class="frame">
-  <div class="label"><b>2 · Environment</b> · routes the phone knows for this machine, which one is in use, what else is paired, and the one destructive action at the very bottom. Routes are server-owned facts; the phone just shows reachability.</div>
-  <div class="phone" data-theme="neutral-light">
-    <div class="statusbar"><span>9:41</span><span class="right">●●●● ◗ ▮</span></div>
-    <div class="screen">
-      <div class="header"><div class="top"><div class="iconbtn"><svg><use href="#i-back"/></svg></div><div class="iconbtn"><svg><use href="#i-more"/></svg></div></div>
-        <h1 class="sm" style="margin-top:6px">Cletus's desktop</h1>
-        <div class="sub"><span class="dot ok live"></span>Connected over LAN · 12 ms</div>
-      </div>
-      <div class="list" style="padding-top:6px">
-        <div class="group">ROUTES</div>
-        <div class="row sel"><div class="ic on"><svg><use href="#i-wifi"/></svg></div><div class="body"><div class="title">Local network</div><div class="sub"><code>192.168.1.4:43120</code></div></div><span class="pillv">in use</span></div>
-        <div class="row"><div class="ic"><svg><use href="#i-globe"/></svg></div><div class="body"><div class="title">Tunnel</div><div class="sub"><code>desk.cletus.xyz</code><span class="sep">·</span>84 ms</div></div><span class="dot ok"></span></div>
-        <div class="row"><div class="ic"><svg><use href="#i-server"/></svg></div><div class="body"><div class="title">Tailscale</div><div class="sub"><code>desktop.tail1a2b.ts.net</code></div></div><span class="dot bad"></span></div>
-        <div class="row" style="padding-top:4px;padding-bottom:4px"><div class="ic" style="background:transparent"></div><div class="body"><div class="sub" style="margin:0">Falls back in this order when one stops answering.</div></div></div>
+      <!-- ═══════════ 3 · Pairing (INTERACTIVE) ═══════════ -->
+      <div class="frame">
+        <div class="label">
+          <b>3 · Pairing · interactive</b> · first launch, or "Add environment".
+          <span class="tap">Tap Scan a QR code</span> → camera with a reticle →
+          <span class="tap">tap "simulate scan"</span> → connecting → paired.
+          <span class="tap">Tap Paste a link</span> for the other path. Pairing = consent; no
+          account, no password.
+        </div>
+        <div class="phone" data-theme="neutral" id="pair">
+          <div class="statusbar"><span>9:41</span><span class="right">●●●● ◗ ▮</span></div>
+          <div class="screen">
+            <div class="header">
+              <div class="top">
+                <div></div>
+                <div class="iconbtn">
+                  <svg><use href="#i-more" /></svg>
+                </div>
+              </div>
+            </div>
+            <div class="hero">
+              <div class="mark-big">
+                <svg><use href="#i-server" /></svg>
+              </div>
+              <h2>Connect a machine</h2>
+              <p>
+                Open OpenManager on your computer, go to Settings → Devices, and show the pairing
+                code. Your sessions stay on that machine; the phone just talks to it.
+              </p>
+            </div>
+            <div class="actions">
+              <div class="btn primary" data-act="scan">
+                <svg><use href="#i-qr" /></svg>Scan a QR code
+              </div>
+              <div class="btn secondary" data-act="paste">
+                <svg><use href="#i-link" /></svg>Paste a link
+              </div>
+              <div class="btn quiet">What is an environment?</div>
+            </div>
+          </div>
 
-        <div class="group">PAIRED DEVICES <span class="r">3</span></div>
-        <div class="row"><div class="ic"><svg><use href="#i-phone"/></svg></div><div class="body"><div class="title">This phone</div><div class="sub">Pixel 9 · paired today</div></div><span class="pillv">you</span></div>
-        <div class="row"><div class="ic"><svg><use href="#i-laptop"/></svg></div><div class="body"><div class="title">Laptop · Zen</div><div class="sub">last seen 2 h ago</div></div></div>
-        <div class="row"><div class="ic"><svg><use href="#i-laptop"/></svg></div><div class="body"><div class="title">Desktop app</div><div class="sub">owner · always on</div></div></div>
+          <!-- camera -->
+          <div class="camera" id="camera">
+            <div class="feed"></div>
+            <div class="top">
+              <div class="iconbtn" data-act="camclose">
+                <svg><use href="#i-close" /></svg>
+              </div>
+              <div style="font-weight: 500">Scan</div>
+              <div style="width: 36px"></div>
+            </div>
+            <div class="viewport">
+              <div class="reticle">
+                <i></i><i></i><i></i><i></i>
+                <div class="line"></div>
+                <div class="qr" id="qr"></div>
+              </div>
+            </div>
+            <div class="hint">
+              Point at the code on your computer's screen.<br /><b
+                >Settings → Devices → Pair a phone</b
+              >
+            </div>
+            <div class="simulate" id="simulate" data-act="found">▶ simulate scan</div>
+          </div>
 
-        <div class="group">PAIRING LINKS <span class="r">1 active</span></div>
-        <div class="row"><div class="ic"><svg><use href="#i-link"/></svg></div><div class="body"><div class="title">Created from the desktop</div><div class="sub">expires in 40 min · unused</div></div><span class="pillv warn">revoke</span></div>
+          <!-- paste sheet -->
+          <div class="scrim" data-act="dismiss"></div>
+          <div class="sheet" id="sheetPaste">
+            <div class="grab"></div>
+            <div class="ttl">Paste a pairing link</div>
+            <div class="desc">
+              Copy it from <b>Settings → Devices</b> on your computer. It works once and expires in
+              an hour.
+            </div>
+            <div class="field">
+              <svg><use href="#i-link" /></svg
+              ><span id="pasteVal" class="ph">openmanager://pair/…</span
+              ><span class="cl" id="pasteClear" style="display: none"
+                ><svg><use href="#i-close" /></svg
+              ></span>
+            </div>
+            <div class="btn secondary" data-act="dopaste" id="pasteBtn" style="margin-bottom: 8px">
+              <svg><use href="#i-paste" /></svg>Paste from clipboard
+            </div>
+            <div
+              class="btn primary"
+              data-act="connect"
+              id="connectBtn"
+              style="opacity: 0.4; pointer-events: none"
+            >
+              Connect
+            </div>
+          </div>
 
-        <div class="group">WORKSPACES <span class="r">6</span></div>
-        <div class="row"><div class="ic" style="background:#4f8ff7;color:#fff;font-weight:600;font-size:13px">O</div><div class="body"><div class="title">openmanager</div><div class="sub"><code>~/ClePro/openmanager</code></div></div></div>
-        <div class="row"><div class="ic" style="background:#e0a04f;color:#fff;font-weight:600;font-size:13px">S</div><div class="body"><div class="title">salesmaxai</div><div class="sub"><code>~/ClePro/salesmaxai</code></div></div></div>
-        <div class="row"><div class="ic" style="background:transparent"></div><div class="body"><div class="sub" style="margin:0">4 more…</div></div></div>
-
-        <div style="height:16px"></div>
-        <div class="row danger"><div class="ic" style="color:var(--status-error)"><svg><use href="#i-trash"/></svg></div><div class="body"><div class="title">Forget this environment</div><div class="sub">Removes it from this phone only</div></div></div>
-      </div>
-    </div>
-    <div class="fadeout"></div>
-    <div class="homebar"></div>
-  </div>
-</div>
-
-<!-- ═══════════ 3 · Pairing (INTERACTIVE) ═══════════ -->
-<div class="frame">
-  <div class="label"><b>3 · Pairing · interactive</b> · first launch, or "Add environment". <span class="tap">Tap Scan a QR code</span> → camera with a reticle → <span class="tap">tap "simulate scan"</span> → connecting → paired. <span class="tap">Tap Paste a link</span> for the other path. Pairing = consent; no account, no password.</div>
-  <div class="phone" data-theme="neutral" id="pair">
-    <div class="statusbar"><span>9:41</span><span class="right">●●●● ◗ ▮</span></div>
-    <div class="screen">
-      <div class="header"><div class="top"><div></div><div class="iconbtn"><svg><use href="#i-more"/></svg></div></div></div>
-      <div class="hero">
-        <div class="mark-big"><svg><use href="#i-server"/></svg></div>
-        <h2>Connect a machine</h2>
-        <p>Open OpenManager on your computer, go to Settings → Devices, and show the pairing code. Your sessions stay on that machine; the phone just talks to it.</p>
-      </div>
-      <div class="actions">
-        <div class="btn primary" data-act="scan"><svg><use href="#i-qr"/></svg>Scan a QR code</div>
-        <div class="btn secondary" data-act="paste"><svg><use href="#i-link"/></svg>Paste a link</div>
-        <div class="btn quiet">What is an environment?</div>
-      </div>
-    </div>
-
-    <!-- camera -->
-    <div class="camera" id="camera">
-      <div class="feed"></div>
-      <div class="top"><div class="iconbtn" data-act="camclose"><svg><use href="#i-close"/></svg></div><div style="font-weight:500">Scan</div><div style="width:36px"></div></div>
-      <div class="viewport">
-        <div class="reticle"><i></i><i></i><i></i><i></i><div class="line"></div>
-          <div class="qr" id="qr"></div>
+          <!-- connecting / result -->
+          <div class="sheet" id="sheetResult">
+            <div class="grab"></div>
+            <div class="result" id="resConnecting">
+              <div class="big spin"></div>
+              <h3>Connecting…</h3>
+              <p>
+                Trying the addresses the code gave us.<br />Local network first, then the tunnel.
+              </p>
+            </div>
+            <div class="result" id="resOk" style="display: none">
+              <div class="big ok">
+                <svg><use href="#i-tick" /></svg>
+              </div>
+              <h3>Paired with Cletus's desktop</h3>
+              <p>
+                This phone can now see its sessions and send prompts. You can forget it any time
+                from Settings.
+              </p>
+            </div>
+            <div class="kv" id="resKv" style="display: none">
+              <div class="r">
+                <span class="k">Route</span
+                ><span class="v"><code>192.168.1.4:43120</code> · 12 ms</span
+                ><span class="dot ok"></span>
+              </div>
+              <div class="r">
+                <span class="k">Fallback</span><span class="v"><code>desk.cletus.xyz</code></span
+                ><span class="dot ok"></span>
+              </div>
+              <div class="r">
+                <span class="k">Workspaces</span
+                ><span class="v">6 · openmanager, salesmaxai, ClePro…</span>
+              </div>
+            </div>
+            <div class="btn primary" id="resDone" data-act="reset" style="display: none">
+              Open sessions
+            </div>
+          </div>
+          <div class="homebar"></div>
         </div>
       </div>
-      <div class="hint">Point at the code on your computer's screen.<br/><b>Settings → Devices → Pair a phone</b></div>
-      <div class="simulate" id="simulate" data-act="found">▶ simulate scan</div>
-    </div>
 
-    <!-- paste sheet -->
-    <div class="scrim" data-act="dismiss"></div>
-    <div class="sheet" id="sheetPaste">
-      <div class="grab"></div>
-      <div class="ttl">Paste a pairing link</div>
-      <div class="desc">Copy it from <b>Settings → Devices</b> on your computer. It works once and expires in an hour.</div>
-      <div class="field"><svg><use href="#i-link"/></svg><span id="pasteVal" class="ph">openmanager://pair/…</span><span class="cl" id="pasteClear" style="display:none"><svg><use href="#i-close"/></svg></span></div>
-      <div class="btn secondary" data-act="dopaste" id="pasteBtn" style="margin-bottom:8px"><svg><use href="#i-paste"/></svg>Paste from clipboard</div>
-      <div class="btn primary" data-act="connect" id="connectBtn" style="opacity:.4;pointer-events:none">Connect</div>
-    </div>
-
-    <!-- connecting / result -->
-    <div class="sheet" id="sheetResult">
-      <div class="grab"></div>
-      <div class="result" id="resConnecting">
-        <div class="big spin"></div>
-        <h3>Connecting…</h3>
-        <p>Trying the addresses the code gave us.<br/>Local network first, then the tunnel.</p>
-      </div>
-      <div class="result" id="resOk" style="display:none">
-        <div class="big ok"><svg><use href="#i-tick"/></svg></div>
-        <h3>Paired with Cletus's desktop</h3>
-        <p>This phone can now see its sessions and send prompts. You can forget it any time from Settings.</p>
-      </div>
-      <div class="kv" id="resKv" style="display:none">
-        <div class="r"><span class="k">Route</span><span class="v"><code>192.168.1.4:43120</code> · 12 ms</span><span class="dot ok"></span></div>
-        <div class="r"><span class="k">Fallback</span><span class="v"><code>desk.cletus.xyz</code></span><span class="dot ok"></span></div>
-        <div class="r"><span class="k">Workspaces</span><span class="v">6 · openmanager, salesmaxai, ClePro…</span></div>
-      </div>
-      <div class="btn primary" id="resDone" data-act="reset" style="display:none">Open sessions</div>
-    </div>
-    <div class="homebar"></div>
-  </div>
-</div>
-
-<!-- ═══════════ 4 · Drafts ═══════════ -->
-<div class="frame">
-  <div class="label"><b>4 · Drafts</b> · a tab on the Sessions home, not a separate place. A draft row is the first line you typed, where it will run, and whether the server has it yet (<b>Not synced</b> when the phone couldn't save it). Swipe left to delete; tap to pull the composer up with it loaded.</div>
-  <div class="phone" data-theme="neutral-light">
-    <div class="statusbar"><span>9:41</span><span class="right">●●●● ◗ ▮</span></div>
-    <div class="screen">
-      <div class="header"><div class="top"><h1>Sessions</h1><div class="btns"><div class="iconbtn"><svg><use href="#i-draft"/></svg></div></div></div>
-        <div class="sub"><span class="dot ok live"></span>Cletus's desktop <span style="color:var(--faint)">· LAN</span></div>
-      </div>
-      <div class="tabs"><div class="tab">All</div><div class="tab">Active<span class="n">4</span></div><div class="tab on">Drafts<span class="n">5</span></div></div>
-      <div class="list">
-        <div class="group">TODAY</div>
-        <div class="row"><div class="draftic"><svg><use href="#i-draft"/></svg></div><div class="body"><div class="title q">Add a retry to the upload ticket when the socket drops mid-PUT</div><div class="sub"><span class="proj"><i style="background:#4f8ff7"></i>openmanager</span><span class="sep">·</span>Opus 5.5 · Agent</div></div><div class="age">2m</div></div>
-        <div class="swipe">
-          <div class="row"><div class="draftic"><svg><use href="#i-draft"/></svg></div><div class="body"><div class="title q">Write the landing copy for the pricing page, three tiers</div><div class="sub"><span class="proj"><i style="background:#e0a04f"></i>salesmaxai</span><span class="sep">·</span>GPT-6.1 · Plan</div></div><div class="age">1h</div></div>
-          <div class="del"><svg><use href="#i-trash"/></svg></div>
+      <!-- ═══════════ 4 · Drafts ═══════════ -->
+      <div class="frame">
+        <div class="label">
+          <b>4 · Drafts</b> · a tab on the Sessions home, not a separate place. A draft row is the
+          first line you typed, where it will run, and whether the server has it yet (<b
+            >Not synced</b
+          >
+          when the phone couldn't save it). Swipe left to delete; tap to pull the composer up with
+          it loaded.
         </div>
-        <div class="row"><div class="draftic"><svg><use href="#i-cloudoff"/></svg></div><div class="body"><div class="title q">Why does the sidebar remount when the theme flips?</div><div class="sub"><span class="proj"><i style="background:#4f8ff7"></i>openmanager</span><span class="sep">·</span><span class="pillv warn" style="padding:1px 7px">Not synced</span></div></div><div class="age">3h</div></div>
+        <div class="phone" data-theme="neutral-light">
+          <div class="statusbar"><span>9:41</span><span class="right">●●●● ◗ ▮</span></div>
+          <div class="screen">
+            <div class="header">
+              <div class="top">
+                <h1>Sessions</h1>
+                <div class="btns">
+                  <div class="iconbtn">
+                    <svg><use href="#i-draft" /></svg>
+                  </div>
+                </div>
+              </div>
+              <div class="sub">
+                <span class="dot ok live"></span>Cletus's desktop
+                <span style="color: var(--faint)">· LAN</span>
+              </div>
+            </div>
+            <div class="tabs">
+              <div class="tab">All</div>
+              <div class="tab">Active<span class="n">4</span></div>
+              <div class="tab on">Drafts<span class="n">5</span></div>
+            </div>
+            <div class="list">
+              <div class="group">TODAY</div>
+              <div class="row">
+                <div class="draftic">
+                  <svg><use href="#i-draft" /></svg>
+                </div>
+                <div class="body">
+                  <div class="title q">
+                    Add a retry to the upload ticket when the socket drops mid-PUT
+                  </div>
+                  <div class="sub">
+                    <span class="proj"><i style="background: #4f8ff7"></i>openmanager</span
+                    ><span class="sep">·</span>Opus 5.5 · Agent
+                  </div>
+                </div>
+                <div class="age">2m</div>
+              </div>
+              <div class="swipe">
+                <div class="row">
+                  <div class="draftic">
+                    <svg><use href="#i-draft" /></svg>
+                  </div>
+                  <div class="body">
+                    <div class="title q">
+                      Write the landing copy for the pricing page, three tiers
+                    </div>
+                    <div class="sub">
+                      <span class="proj"><i style="background: #e0a04f"></i>salesmaxai</span
+                      ><span class="sep">·</span>GPT-6.1 · Plan
+                    </div>
+                  </div>
+                  <div class="age">1h</div>
+                </div>
+                <div class="del">
+                  <svg><use href="#i-trash" /></svg>
+                </div>
+              </div>
+              <div class="row">
+                <div class="draftic">
+                  <svg><use href="#i-cloudoff" /></svg>
+                </div>
+                <div class="body">
+                  <div class="title q">Why does the sidebar remount when the theme flips?</div>
+                  <div class="sub">
+                    <span class="proj"><i style="background: #4f8ff7"></i>openmanager</span
+                    ><span class="sep">·</span
+                    ><span class="pillv warn" style="padding: 1px 7px">Not synced</span>
+                  </div>
+                </div>
+                <div class="age">3h</div>
+              </div>
 
-        <div class="group">YESTERDAY</div>
-        <div class="row"><div class="draftic"><svg><use href="#i-image"/></svg></div><div class="body"><div class="title q">Match this reference — the soul ID avatar grid</div><div class="sub"><span class="proj"><i style="background:#9b6bd6"></i>ClePro</span><span class="sep">·</span>2 images · Cursor</div></div><div class="age">1d</div></div>
-        <div class="row"><div class="draftic"><svg><use href="#i-clock"/></svg></div><div class="body"><div class="title q">Nightly: run the convergence harness and summarise drift</div><div class="sub"><span class="proj"><i style="background:#4f8ff7"></i>openmanager</span><span class="sep">·</span>Scheduled · 02:00 daily</div></div><div class="age">1d</div></div>
+              <div class="group">YESTERDAY</div>
+              <div class="row">
+                <div class="draftic">
+                  <svg><use href="#i-image" /></svg>
+                </div>
+                <div class="body">
+                  <div class="title q">Match this reference — the soul ID avatar grid</div>
+                  <div class="sub">
+                    <span class="proj"><i style="background: #9b6bd6"></i>ClePro</span
+                    ><span class="sep">·</span>2 images · Cursor
+                  </div>
+                </div>
+                <div class="age">1d</div>
+              </div>
+              <div class="row">
+                <div class="draftic">
+                  <svg><use href="#i-clock" /></svg>
+                </div>
+                <div class="body">
+                  <div class="title q">
+                    Nightly: run the convergence harness and summarise drift
+                  </div>
+                  <div class="sub">
+                    <span class="proj"><i style="background: #4f8ff7"></i>openmanager</span
+                    ><span class="sep">·</span>Scheduled · 02:00 daily
+                  </div>
+                </div>
+                <div class="age">1d</div>
+              </div>
 
-        <div class="group" style="padding-top:28px">OTHER ENVIRONMENTS</div>
-        <div class="row" style="opacity:.75"><div class="draftic"><svg><use href="#i-server"/></svg></div><div class="body"><div class="title">WSL · ubuntu</div><div class="sub">2 drafts</div></div><svg class="chev"><use href="#i-chev"/></svg></div>
+              <div class="group" style="padding-top: 28px">OTHER ENVIRONMENTS</div>
+              <div class="row" style="opacity: 0.75">
+                <div class="draftic">
+                  <svg><use href="#i-server" /></svg>
+                </div>
+                <div class="body">
+                  <div class="title">WSL · ubuntu</div>
+                  <div class="sub">2 drafts</div>
+                </div>
+                <svg class="chev"><use href="#i-chev" /></svg>
+              </div>
+            </div>
+          </div>
+          <div class="fadeout"></div>
+          <div class="nav">
+            <div class="pill">
+              <div class="it on">
+                <svg><use href="#i-sessions" /></svg>
+              </div>
+              <div class="it">
+                <svg><use href="#i-inbox" /></svg><span class="badge"></span>
+              </div>
+              <div class="it">
+                <svg><use href="#i-gear" /></svg>
+              </div>
+            </div>
+            <div class="fab">
+              <svg><use href="#i-search" /></svg>
+            </div>
+          </div>
+          <div class="homebar"></div>
+        </div>
+      </div>
+
+      <!-- ═══════════ 5 · Project picker sheet ═══════════ -->
+      <div class="frame">
+        <div class="label">
+          <b>5 · Project picker</b> · the sheet you get from the project chip in the composer tray
+          (file 02, expanded state). Grouped by environment; recents first; the workspace icon is
+          the one the server declares. Browse opens the folder browser as a second page in the same
+          sheet.
+        </div>
+        <div class="phone has-overlay" data-theme="neutral">
+          <div class="statusbar"><span>9:41</span><span class="right">●●●● ◗ ▮</span></div>
+          <div class="screen">
+            <div class="header">
+              <div class="top">
+                <h1>Sessions</h1>
+                <div class="btns">
+                  <div class="iconbtn">
+                    <svg><use href="#i-draft" /></svg>
+                  </div>
+                </div>
+              </div>
+              <div class="sub">
+                <span class="dot ok live"></span>Cletus's desktop
+                <span style="color: var(--faint)">· LAN</span>
+              </div>
+            </div>
+            <div class="tabs">
+              <div class="tab on">All</div>
+              <div class="tab">Active<span class="n">4</span></div>
+              <div class="tab">Drafts<span class="n">5</span></div>
+            </div>
+            <div class="list">
+              <div class="group">WORKING</div>
+              <div class="row">
+                <div class="mark">
+                  <span
+                    style="
+                      width: 12px;
+                      height: 12px;
+                      border-radius: 50%;
+                      border: 2.5px solid var(--status-working);
+                      border-right-color: transparent;
+                      display: block;
+                    "
+                  ></span>
+                </div>
+                <div class="body">
+                  <div class="title">Codex Integration: Tool Call Payloads</div>
+                  <div class="sub">
+                    <span class="proj"><i style="background: #4f8ff7"></i>openmanager</span
+                    ><span class="sep">·</span>Editing environment-thread.ts
+                  </div>
+                </div>
+                <div class="age">now</div>
+              </div>
+              <div class="row">
+                <div class="mark">
+                  <span
+                    style="
+                      width: 14px;
+                      height: 14px;
+                      border-radius: 50%;
+                      background: var(--status-needs);
+                      display: grid;
+                      place-items: center;
+                      font-size: 10px;
+                      font-weight: 700;
+                      color: #1a1a1a;
+                    "
+                    >!</span
+                  >
+                </div>
+                <div class="body">
+                  <div class="title">Settings Environment Page Redesign</div>
+                  <div class="sub">
+                    <span class="proj"><i style="background: #4f8ff7"></i>openmanager</span
+                    ><span class="sep">·</span>Allow <code>rm -rf .tmp</code>?
+                  </div>
+                </div>
+                <div class="age">4m</div>
+              </div>
+              <div class="group">EARLIER</div>
+              <div class="row">
+                <div class="mark">
+                  <span
+                    style="
+                      width: 12px;
+                      height: 12px;
+                      border-radius: 50%;
+                      border: 1.5px solid var(--faint);
+                      display: block;
+                    "
+                  ></span>
+                </div>
+                <div class="body">
+                  <div class="title">Higgsfield Soul ID API Automation</div>
+                  <div class="sub">
+                    <span class="proj"><i style="background: #9b6bd6"></i>ClePro</span>
+                  </div>
+                </div>
+                <div class="age">2d</div>
+              </div>
+            </div>
+          </div>
+          <div class="scrim"></div>
+          <div class="sheet open">
+            <div class="grab"></div>
+            <div class="search">
+              <svg><use href="#i-search" /></svg>Search projects
+            </div>
+            <div class="sh">RECENT</div>
+            <div class="opt on">
+              <span class="wsic" style="background: #4f8ff7">O</span>
+              <div class="name">
+                openmanager
+                <div class="p">~/ClePro/openmanager</div>
+              </div>
+              <svg class="tick"><use href="#i-tick" /></svg>
+            </div>
+            <div class="opt">
+              <span class="wsic" style="background: #e0a04f">S</span>
+              <div class="name">
+                salesmaxai
+                <div class="p">~/ClePro/salesmaxai</div>
+              </div>
+              <svg class="tick"><use href="#i-tick" /></svg>
+            </div>
+            <div class="sh">
+              <svg><use href="#i-server" /></svg>CLETUS'S DESKTOP
+            </div>
+            <div class="opt">
+              <span class="wsic" style="background: #9b6bd6">C</span>
+              <div class="name">
+                ClePro
+                <div class="p">~/ClePro</div>
+              </div>
+              <svg class="tick"><use href="#i-tick" /></svg>
+            </div>
+            <div class="opt">
+              <span class="wsic" style="background: #4a9d7a">T</span>
+              <div class="name">
+                t3code
+                <div class="p">~/.tmp/t3code</div>
+              </div>
+              <svg class="tick"><use href="#i-tick" /></svg>
+            </div>
+            <div class="sh">
+              <svg><use href="#i-server" /></svg>WSL · UBUNTU
+            </div>
+            <div class="opt">
+              <span class="wsic" style="background: #c0565a">I</span>
+              <div class="name">
+                infra
+                <div class="p">/home/cletus/infra</div>
+              </div>
+              <svg class="tick"><use href="#i-tick" /></svg>
+            </div>
+            <div class="opt" style="margin-top: 4px">
+              <svg class="pico"><use href="#i-folder" /></svg>
+              <div class="name" style="color: var(--muted)">Browse a folder…</div>
+              <svg class="pico" style="width: 14px; height: 14px"><use href="#i-chev" /></svg>
+            </div>
+          </div>
+          <div class="homebar"></div>
+        </div>
       </div>
     </div>
-    <div class="fadeout"></div>
-    <div class="nav">
-      <div class="pill">
-        <div class="it on"><svg><use href="#i-sessions"/></svg></div>
-        <div class="it"><svg><use href="#i-inbox"/></svg><span class="badge"></span></div>
-        <div class="it"><svg><use href="#i-gear"/></svg></div>
-      </div>
-      <div class="fab"><svg><use href="#i-search"/></svg></div>
+
+    <div class="note">
+      <h2>Decisions these screens make</h2>
+      <ul>
+        <li>
+          <b>Settings is the third tab</b>, and environments are the first thing in it. Cards, not
+          rows, because each one carries a live status, the route it's on and a latency, and because
+          switching environment is the main thing you do here.
+        </li>
+        <li>
+          <b>Environment detail shows routes as facts</b>: which one is in use, which answer, which
+          don't. The phone never picks a route the server hasn't offered; fallback order is the
+          server's list. The only client-side action is <b>Forget</b>, which touches phone storage
+          only.
+        </li>
+        <li>
+          <b>Pairing has two doors and nothing else</b>: scan a QR, or paste a link. Both land in
+          the same connecting → paired sheet, which names the machine, the route it landed on and
+          what it found. No account screen, no password, no "advanced".
+        </li>
+        <li>
+          <b>Drafts are a tab on Sessions</b>, scoped to the current environment, with other
+          environments' drafts one tap away. Rows show the first line, project, picks, and the
+          <b>Not synced</b> state from the web draft work (CAL-85). Swipe to delete; tap to load
+          into the expanded composer.
+        </li>
+        <li>
+          <b>Project picker is the same bottom sheet as the model picker</b> (file 02): search on
+          top, recents first, then one group per environment. The folder browser (CAL-200 on web) is
+          a second page inside the same sheet, not a new screen.
+        </li>
+      </ul>
+      <h2>Theme sharing, concretely</h2>
+      <p>
+        Every colour on these frames comes from the same token names web uses (<code>--bg</code>,
+        <code>--fg</code>, <code>--muted</code>, <code>--faint</code>, <code>--hover</code>,
+        <code>--active</code>, status colours, the float shadow recipe). The RN build reads a
+        generated token map per theme family × mode; the swatches on the Settings screen are the
+        families from <code>theme-families.ts</code>. Glass is the one thing that isn't a token:
+        it's a per-platform recipe (BlurView on iOS/Android) fed by the same
+        <code>--glass</code> colours.
+      </p>
     </div>
-    <div class="homebar"></div>
-  </div>
-</div>
 
-<!-- ═══════════ 5 · Project picker sheet ═══════════ -->
-<div class="frame">
-  <div class="label"><b>5 · Project picker</b> · the sheet you get from the project chip in the composer tray (file 02, expanded state). Grouped by environment; recents first; the workspace icon is the one the server declares. Browse opens the folder browser as a second page in the same sheet.</div>
-  <div class="phone has-overlay" data-theme="neutral">
-    <div class="statusbar"><span>9:41</span><span class="right">●●●● ◗ ▮</span></div>
-    <div class="screen">
-      <div class="header"><div class="top"><h1>Sessions</h1><div class="btns"><div class="iconbtn"><svg><use href="#i-draft"/></svg></div></div></div>
-        <div class="sub"><span class="dot ok live"></span>Cletus's desktop <span style="color:var(--faint)">· LAN</span></div>
-      </div>
-      <div class="tabs"><div class="tab on">All</div><div class="tab">Active<span class="n">4</span></div><div class="tab">Drafts<span class="n">5</span></div></div>
-      <div class="list">
-        <div class="group">WORKING</div>
-        <div class="row"><div class="mark"><span style="width:12px;height:12px;border-radius:50%;border:2.5px solid var(--status-working);border-right-color:transparent;display:block"></span></div><div class="body"><div class="title">Codex Integration: Tool Call Payloads</div><div class="sub"><span class="proj"><i style="background:#4f8ff7"></i>openmanager</span><span class="sep">·</span>Editing environment-thread.ts</div></div><div class="age">now</div></div>
-        <div class="row"><div class="mark"><span style="width:14px;height:14px;border-radius:50%;background:var(--status-needs);display:grid;place-items:center;font-size:10px;font-weight:700;color:#1a1a1a">!</span></div><div class="body"><div class="title">Settings Environment Page Redesign</div><div class="sub"><span class="proj"><i style="background:#4f8ff7"></i>openmanager</span><span class="sep">·</span>Allow <code>rm -rf .tmp</code>?</div></div><div class="age">4m</div></div>
-        <div class="group">EARLIER</div>
-        <div class="row"><div class="mark"><span style="width:12px;height:12px;border-radius:50%;border:1.5px solid var(--faint);display:block"></span></div><div class="body"><div class="title">Higgsfield Soul ID API Automation</div><div class="sub"><span class="proj"><i style="background:#9b6bd6"></i>ClePro</span></div></div><div class="age">2d</div></div>
-      </div>
-    </div>
-    <div class="scrim"></div>
-    <div class="sheet open">
-      <div class="grab"></div>
-      <div class="search"><svg><use href="#i-search"/></svg>Search projects</div>
-      <div class="sh">RECENT</div>
-      <div class="opt on"><span class="wsic" style="background:#4f8ff7">O</span><div class="name">openmanager<div class="p">~/ClePro/openmanager</div></div><svg class="tick"><use href="#i-tick"/></svg></div>
-      <div class="opt"><span class="wsic" style="background:#e0a04f">S</span><div class="name">salesmaxai<div class="p">~/ClePro/salesmaxai</div></div><svg class="tick"><use href="#i-tick"/></svg></div>
-      <div class="sh"><svg><use href="#i-server"/></svg>CLETUS'S DESKTOP</div>
-      <div class="opt"><span class="wsic" style="background:#9b6bd6">C</span><div class="name">ClePro<div class="p">~/ClePro</div></div><svg class="tick"><use href="#i-tick"/></svg></div>
-      <div class="opt"><span class="wsic" style="background:#4a9d7a">T</span><div class="name">t3code<div class="p">~/.tmp/t3code</div></div><svg class="tick"><use href="#i-tick"/></svg></div>
-      <div class="sh"><svg><use href="#i-server"/></svg>WSL · UBUNTU</div>
-      <div class="opt"><span class="wsic" style="background:#c0565a">I</span><div class="name">infra<div class="p">/home/cletus/infra</div></div><svg class="tick"><use href="#i-tick"/></svg></div>
-      <div class="opt" style="margin-top:4px"><svg class="pico"><use href="#i-folder"/></svg><div class="name" style="color:var(--muted)">Browse a folder…</div><svg class="pico" style="width:14px;height:14px"><use href="#i-chev"/></svg></div>
-    </div>
-    <div class="homebar"></div>
-  </div>
-</div>
+    <script>
+      ;(function () {
+        const phone = document.getElementById('pair')
+        const camera = document.getElementById('camera')
+        const sheetPaste = document.getElementById('sheetPaste')
+        const sheetResult = document.getElementById('sheetResult')
+        const qr = document.getElementById('qr')
+        const simulate = document.getElementById('simulate')
+        const pasteVal = document.getElementById('pasteVal')
+        const pasteClear = document.getElementById('pasteClear')
+        const connectBtn = document.getElementById('connectBtn')
+        const pasteBtn = document.getElementById('pasteBtn')
 
-</div>
+        // fake QR
+        const pat =
+          '110111011010000010101110110000101011111010001000101011101010101010100010101011101011'
+        for (let i = 0; i < 81; i++) {
+          const b = document.createElement('b')
+          if (pat[i % pat.length] === '0') b.className = 'e'
+          qr.appendChild(b)
+        }
 
-<div class="note">
-  <h2>Decisions these screens make</h2>
-  <ul>
-    <li><b>Settings is the third tab</b>, and environments are the first thing in it. Cards, not rows, because each one carries a live status, the route it's on and a latency, and because switching environment is the main thing you do here.</li>
-    <li><b>Environment detail shows routes as facts</b>: which one is in use, which answer, which don't. The phone never picks a route the server hasn't offered; fallback order is the server's list. The only client-side action is <b>Forget</b>, which touches phone storage only.</li>
-    <li><b>Pairing has two doors and nothing else</b>: scan a QR, or paste a link. Both land in the same connecting → paired sheet, which names the machine, the route it landed on and what it found. No account screen, no password, no "advanced".</li>
-    <li><b>Drafts are a tab on Sessions</b>, scoped to the current environment, with other environments' drafts one tap away. Rows show the first line, project, picks, and the <b>Not synced</b> state from the web draft work (CAL-85). Swipe to delete; tap to load into the expanded composer.</li>
-    <li><b>Project picker is the same bottom sheet as the model picker</b> (file 02): search on top, recents first, then one group per environment. The folder browser (CAL-200 on web) is a second page inside the same sheet, not a new screen.</li>
-  </ul>
-  <h2>Theme sharing, concretely</h2>
-  <p>Every colour on these frames comes from the same token names web uses (<code>--bg</code>, <code>--fg</code>, <code>--muted</code>, <code>--faint</code>, <code>--hover</code>, <code>--active</code>, status colours, the float shadow recipe). The RN build reads a generated token map per theme family × mode; the swatches on the Settings screen are the families from <code>theme-families.ts</code>. Glass is the one thing that isn't a token: it's a per-platform recipe (BlurView on iOS/Android) fed by the same <code>--glass</code> colours.</p>
-</div>
+        const pending = []
+        const later = (fn, ms) => pending.push(setTimeout(fn, ms))
+        const cancelPending = () => {
+          while (pending.length) clearTimeout(pending.pop())
+        }
 
-<script>
-(function () {
-  const phone = document.getElementById('pair');
-  const camera = document.getElementById('camera');
-  const sheetPaste = document.getElementById('sheetPaste');
-  const sheetResult = document.getElementById('sheetResult');
-  const qr = document.getElementById('qr');
-  const simulate = document.getElementById('simulate');
-  const pasteVal = document.getElementById('pasteVal');
-  const pasteClear = document.getElementById('pasteClear');
-  const connectBtn = document.getElementById('connectBtn');
-  const pasteBtn = document.getElementById('pasteBtn');
+        function closeAll() {
+          cancelPending()
+          camera.classList.remove('open', 'found')
+          simulate.classList.remove('hide')
+          sheetPaste.classList.remove('open')
+          sheetResult.classList.remove('open')
+          phone.classList.remove('has-overlay')
+        }
+        function showResult(ok) {
+          document.getElementById('resConnecting').style.display = ok ? 'none' : ''
+          document.getElementById('resOk').style.display = ok ? '' : 'none'
+          document.getElementById('resKv').style.display = ok ? '' : 'none'
+          document.getElementById('resDone').style.display = ok ? '' : 'none'
+        }
+        function connectFlow() {
+          sheetPaste.classList.remove('open')
+          showResult(false)
+          phone.classList.add('has-overlay')
+          sheetResult.classList.add('open')
+          later(() => {
+            camera.classList.remove('open')
+          }, 300)
+          later(() => showResult(true), 1700)
+        }
 
-  // fake QR
-  const pat = '110111011010000010101110110000101011111010001000101011101010101010100010101011101011';
-  for (let i = 0; i < 81; i++) { const b = document.createElement('b'); if (pat[i % pat.length] === '0') b.className = 'e'; qr.appendChild(b); }
-
-  function closeAll() {
-    camera.classList.remove('open', 'found'); simulate.classList.remove('hide');
-    sheetPaste.classList.remove('open'); sheetResult.classList.remove('open');
-    phone.classList.remove('has-overlay');
-  }
-  function showResult(ok) {
-    document.getElementById('resConnecting').style.display = ok ? 'none' : '';
-    document.getElementById('resOk').style.display = ok ? '' : 'none';
-    document.getElementById('resKv').style.display = ok ? '' : 'none';
-    document.getElementById('resDone').style.display = ok ? '' : 'none';
-  }
-  function connectFlow() {
-    sheetPaste.classList.remove('open');
-    showResult(false);
-    phone.classList.add('has-overlay'); sheetResult.classList.add('open');
-    setTimeout(() => { camera.classList.remove('open'); }, 300);
-    setTimeout(() => showResult(true), 1700);
-  }
-
-  phone.addEventListener('click', (e) => {
-    const t = e.target.closest('[data-act]'); if (!t) return;
-    const act = t.dataset.act;
-    if (act === 'scan') { camera.classList.add('open'); }
-    if (act === 'camclose') { camera.classList.remove('open', 'found'); simulate.classList.remove('hide'); }
-    if (act === 'found') { camera.classList.add('found'); simulate.classList.add('hide'); setTimeout(connectFlow, 650); }
-    if (act === 'paste') { phone.classList.add('has-overlay'); sheetPaste.classList.add('open'); }
-    if (act === 'dopaste') {
-      pasteVal.textContent = 'openmanager://pair/8f3k2…c91?env=desktop';
-      pasteVal.classList.remove('ph'); pasteClear.style.display = '';
-      connectBtn.style.opacity = '1'; connectBtn.style.pointerEvents = 'auto'; pasteBtn.style.display = 'none';
-    }
-    if (act === 'connect') { connectFlow(); }
-    if (act === 'dismiss') { closeAll(); }
-    if (act === 'reset') {
-      closeAll();
-      pasteVal.textContent = 'openmanager://pair/…'; pasteVal.classList.add('ph'); pasteClear.style.display = 'none';
-      connectBtn.style.opacity = '.4'; connectBtn.style.pointerEvents = 'none'; pasteBtn.style.display = '';
-    }
-  });
-})();
-</script>
-</body>
+        phone.addEventListener('click', (e) => {
+          const t = e.target.closest('[data-act]')
+          if (!t) return
+          const act = t.dataset.act
+          if (act === 'scan') {
+            camera.classList.add('open')
+          }
+          if (act === 'camclose') {
+            cancelPending()
+            camera.classList.remove('open', 'found')
+            simulate.classList.remove('hide')
+          }
+          if (act === 'found') {
+            camera.classList.add('found')
+            simulate.classList.add('hide')
+            later(connectFlow, 650)
+          }
+          if (act === 'paste') {
+            phone.classList.add('has-overlay')
+            sheetPaste.classList.add('open')
+          }
+          if (act === 'dopaste') {
+            pasteVal.textContent = 'openmanager://pair/8f3k2…c91?env=desktop'
+            pasteVal.classList.remove('ph')
+            pasteClear.style.display = ''
+            connectBtn.style.opacity = '1'
+            connectBtn.style.pointerEvents = 'auto'
+            pasteBtn.style.display = 'none'
+          }
+          if (act === 'connect') {
+            connectFlow()
+          }
+          if (act === 'dismiss') {
+            closeAll()
+          }
+          if (act === 'reset') {
+            closeAll()
+            pasteVal.textContent = 'openmanager://pair/…'
+            pasteVal.classList.add('ph')
+            pasteClear.style.display = 'none'
+            connectBtn.style.opacity = '.4'
+            connectBtn.style.pointerEvents = 'none'
+            pasteBtn.style.display = ''
+          }
+        })
+      })()
+    </script>
+  </body>
 </html>

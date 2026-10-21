@@ -1,18 +1,20 @@
 # Phone mockups
 
 Phone-frame HTML mockups (390×844, dark and light) for the native OpenManager
-client. Open any file in a browser; the frames marked *interactive* respond to
-taps. Every colour comes from the same token names web uses (`--bg`, `--fg`,
-`--muted`, `--faint`, `--hover`, `--active`, the `--status-*` set and the
-float-shadow recipe), lifted from `packages/app-core/src/styles/globals.css`
-and `fluid.css`, so what you see here is what the token pipeline (CAL-306)
-produces on the phone.
+client. Open any file in a browser; the frames marked _interactive_ respond to
+taps. The frames use web's token names (`--bg`, `--fg`, `--muted`, `--faint`,
+`--hover`, `--active`, the `--status-*` set and the float-shadow recipe) with
+values copied by hand from `packages/app-core/src/styles/globals.css` and
+`fluid.css` for the Neutral family. They are a design reference, not the
+pipeline's output: the generated token map (CAL-306) is the source of truth on
+the phone, and the six families on the Settings frame are the ones
+`theme-families.ts` declares.
 
-| File | Frames | Screen issues |
-| --- | --- | --- |
-| `01-home-and-session.html` | Sessions home (dark, light); session page working (dark) and needing you (light) | CAL-307, CAL-308 |
-| `02-composer-and-pickers.html` | Four placements for the model/mode/effort picks (A header chips, **B composer picks row — interactive**, C one summary chip, D pulled-up composer); model sheet; effort and mode popovers; full-screen composer with tray and keyboard | CAL-309 |
-| `03-environments-pairing-drafts.html` | Settings home; environment detail; pairing (**interactive**: scan QR or paste a link → connecting → paired); drafts tab; project picker sheet | CAL-310, CAL-311, CAL-313 |
+| File                                  | Frames                                                                                                                                                                                                                                 | Screen issues             |
+| ------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------- |
+| `01-home-and-session.html`            | Sessions home (dark, light); session page working (dark) and needing you (light)                                                                                                                                                       | CAL-307, CAL-308          |
+| `02-composer-and-pickers.html`        | Four placements for the model/mode/effort picks (A header chips, **B composer picks row — interactive**, C one summary chip, D pulled-up composer); model sheet; effort and mode popovers; full-screen composer with tray and keyboard | CAL-309                   |
+| `03-environments-pairing-drafts.html` | Settings home; environment detail; pairing (**interactive**: scan QR or paste a link → connecting → paired); drafts tab; project picker sheet                                                                                          | CAL-310, CAL-311, CAL-313 |
 
 ## Decisions
 
@@ -23,8 +25,8 @@ Reactions recorded from the owner's review, 2026-10-20/21.
 - The whole of file 01 ("I love everything"): the floating pill nav, big title
   with segmented tabs, inbox-style session rows with a status mark on the left
   and age on the right, the session page with a docked composer, user bubbles
-  as fills, work groups that fold tool calls, and the composer that *becomes
-  the prompt* when a permission or question is pending (Allow / Always / Deny
+  as fills, work groups that fold tool calls, and the composer that _becomes
+  the prompt_ when a permission or question is pending (Allow / Always / Deny
   inside the composer, nothing modal).
 - Glass. Every floating surface (pill nav, search button, icon buttons, the
   docked composer, sheets, popovers, the jump-to-latest button) is translucent
@@ -47,7 +49,7 @@ Reactions recorded from the owner's review, 2026-10-20/21.
   is docked or expanded. Rarer settings (config options, titles) go under the
   session's ⋯ menu.
 - **Pill nav is Sessions · Inbox · Settings**, with search as a detached
-  button beside it and *compose* top-right in the header, after Linear iOS.
+  button beside it and _compose_ top-right in the header, after Linear iOS.
   The project issue said "sessions, new, settings"; Inbox (everything waiting
   on you, with a badge) earned the slot instead because that is what you open
   the phone for.
