@@ -75,6 +75,32 @@ pnpm --filter @openmanager/mobile add <pkg>@<sdk-compatible-version>
 Look up the version Expo expects for the current SDK in
 `apps/mobile/node_modules/expo/bundledNativeModules.json` before installing.
 
+## Theme
+
+The phone paints with web's tokens, not its own palette. `packages/app-core/scripts/theme-tokens.mjs`
+reads `globals.css` and `fluid.css`, resolves the cascade for each `data-theme` scheme (twelve: six
+families × light and dark), evaluates the colour maths, and writes
+`packages/app-core/src/lib/theme-tokens.generated.ts`. That file is checked in; app-core's
+`tests/theme-tokens.test.ts` fails when it is stale, so a token change on web cannot drift from
+the phone. Regenerate with:
+
+```bash
+pnpm --filter @openmanager/app-core theme-tokens
+```
+
+On the phone, `src/theme/tokens.ts` derives a `PhoneTheme` (the roles the screens use: canvas,
+ink, muted, faint, hover, active, bubble, float, glass, status colours, shadows) from the generated
+map for one scheme, and `themeVars` turns it into NativeWind variables; the colour names in
+`tailwind.config.js` all point at those variables. `src/theme/ThemeProvider.tsx` keeps the
+appearance (family + light / dark / system) in AsyncStorage under the same key and shape web uses,
+resolves the scheme from the OS appearance when the mode is system, and applies the variables on
+the root view. `useTheme()` exposes the appearance, the resolved scheme and the `PhoneTheme`;
+`usePhoneTheme()` is the shortcut for imperative styles. Settings → Theme → "Preview every scheme"
+opens `src/app/theme-preview.tsx`, which paints all twelve.
+
+Pure theme logic is unit-tested with vitest (`pnpm --filter @openmanager/mobile test`); screens
+are checked by `tsc` and by bundling (`npx expo export --platform android`).
+
 ## Architecture
 
 ```

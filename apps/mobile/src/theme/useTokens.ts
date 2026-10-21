@@ -1,11 +1,12 @@
-import { basisDark, basisLight, type BasisTokens } from './tokens'
+import { useMemo } from 'react'
+
+import { legacyBasis, type BasisTokens } from './tokens'
 import { useTheme } from './ThemeProvider'
 
-// Resolved raw token values for imperative style objects (SVG icon color,
-// markdown-display style maps, reanimated colors) where a Tailwind class won't
-// reach. Component chrome should still prefer NativeWind classes.
-
+// The first build's resolved token values, for the screens that still read
+// them imperatively (SVG icon colour, markdown style maps). New screens use
+// `usePhoneTheme()` from ./ThemeProvider and the NativeWind classes.
 export function useTokens(): BasisTokens {
-  const { resolved } = useTheme()
-  return resolved === 'dark' ? basisDark : basisLight
+  const { theme } = useTheme()
+  return useMemo(() => legacyBasis(theme), [theme])
 }
