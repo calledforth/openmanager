@@ -2,7 +2,7 @@ import { createContext, useContext } from 'react'
 import type { ProviderId } from '@agentpack/contract'
 import type { DraftDiscardOptions, SidebarDraft } from '../components/sidebar/sidebar-sessions'
 
-export type { DraftDiscardOptions }
+export type { DraftDiscardOptions, SidebarDraft }
 
 /** Cheap facts about a workspace the host already knows; nothing is probed here. */
 export interface WorkspaceCapabilitySummary {

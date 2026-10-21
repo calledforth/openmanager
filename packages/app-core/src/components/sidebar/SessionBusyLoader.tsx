@@ -1,5 +1,20 @@
 import type { CSSProperties } from 'react'
 import { cn } from '../../lib/utils'
+import type { SessionBusyTone } from './session-busy-tone'
+
+export { sessionBusyTone, type SessionBusyDetail, type SessionBusyTone } from './session-busy-tone'
+
+const DOTS = [0, 1, 2, 3] as const
+const SPARKS = [0, 1, 2, 3, 4, 5, 6, 7] as const
+
+const LABEL: Record<SessionBusyTone, string> = {
+  working: 'Session in progress',
+  background: 'Session running background work',
+  question: 'Session has a question for you',
+  needs: 'Session needs your attention',
+  done: 'Session finished',
+  error: 'Session failed',
+}
 
 /** The 2×2 dot glyph that shows a session's state in the sidebar. Each state
  * moves in its own way, and the motion matches how urgent it is:
@@ -18,20 +33,6 @@ import { cn } from '../../lib/utils'
  * The motion is pure CSS (globals.css, `.session-busy-*`) and stops under
  * `prefers-reduced-motion`. Colour and shape still carry the state.
  */
-export type SessionBusyTone = 'working' | 'background' | 'question' | 'needs' | 'done' | 'error'
-
-const DOTS = [0, 1, 2, 3] as const
-const SPARKS = [0, 1, 2, 3, 4, 5, 6, 7] as const
-
-const LABEL: Record<SessionBusyTone, string> = {
-  working: 'Session in progress',
-  background: 'Session running background work',
-  question: 'Session has a question for you',
-  needs: 'Session needs your attention',
-  done: 'Session finished',
-  error: 'Session failed',
-}
-
 export function SessionBusyLoader({
   className,
   style,
@@ -67,26 +68,4 @@ export function SessionBusyLoader({
       ) : null}
     </div>
   )
-}
-
-/** What the status alone does not say, when the host knows it. */
-export type SessionBusyDetail = {
-  /** The kind of request a waiting session is waiting on. */
-  waitingOn?: string
-  /** A running session kept going only by its background work. */
-  inBackground?: boolean
-}
-
-/** The glyph a session status earns, or null when it is at rest and shows its age. */
-export function sessionBusyTone(
-  status: string,
-  detail: SessionBusyDetail = {},
-): SessionBusyTone | null {
-  if (status === 'waiting') return detail.waitingOn === 'question' ? 'question' : 'needs'
-  if (status === 'done') return 'done'
-  if (status === 'error') return 'error'
-  if (status === 'running') return detail.inBackground ? 'background' : 'working'
-  if (status === 'busy') return 'working'
-  // `ready` / `idle`: nothing is happening and nothing is unseen.
-  return null
 }

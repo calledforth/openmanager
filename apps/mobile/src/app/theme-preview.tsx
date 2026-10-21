@@ -1,16 +1,12 @@
-import { useRouter } from 'expo-router'
 import { useState } from 'react'
 import { Pressable, ScrollView, View } from 'react-native'
 import { useSafeAreaInsets } from 'react-native-safe-area-context'
-import {
-  THEME_FAMILIES,
-  THEME_MODES,
-  type ThemeMode as SchemeId,
-} from '@openmanager/app-core/lib/theme-families'
+import { THEME_FAMILIES, THEME_MODES } from '@openmanager/app-core/lib/theme-families'
 
 import { AppText } from '../components/ui/AppText'
 import { useTheme } from '../theme/ThemeProvider'
 import { phoneTheme, type PhoneTheme } from '../theme/tokens'
+import { useGoBack } from '../ui/goBack'
 
 /**
  * Every scheme, painted from the generated tokens, on one screen: the roles
@@ -19,7 +15,7 @@ import { phoneTheme, type PhoneTheme } from '../theme/tokens'
  * switcher, which is what Settings → Appearance will become.
  */
 export default function ThemePreview() {
-  const router = useRouter()
+  const goBack = useGoBack()
   const insets = useSafeAreaInsets()
   const { appearance, setAppearance, theme, scheme } = useTheme()
   const [showAll, setShowAll] = useState(false)
@@ -30,7 +26,7 @@ export default function ThemePreview() {
       contentContainerStyle={{ paddingTop: insets.top + 12, paddingBottom: insets.bottom + 40 }}
     >
       <View className="flex-row items-center justify-between px-5 pb-3">
-        <Pressable onPress={() => router.back()} className="rounded-full bg-hover px-3 py-2">
+        <Pressable onPress={goBack} className="rounded-full bg-hover px-3 py-2">
           <AppText variant="text-13-medium" className="text-ink">
             Back
           </AppText>

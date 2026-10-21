@@ -12,7 +12,12 @@ import { SafeAreaProvider } from 'react-native-safe-area-context'
 
 import '../../global.css'
 import { PhoneEnvironmentProvider } from '../environment/PhoneEnvironmentProvider'
-import { ThemeProvider, useTheme } from '../theme/ThemeProvider'
+import { ThemeProvider, usePhoneTheme, useTheme } from '../theme/ThemeProvider'
+import { GlassBackdrop } from '../ui/Glass'
+
+// A cold deep link (a session, search) still has the tabs under it, so its
+// back control returns to them.
+export const unstable_settings = { anchor: '(tabs)' }
 
 SplashScreen.preventAutoHideAsync().catch(() => {
   // The splash screen can already be hidden during fast refresh.
@@ -20,22 +25,33 @@ SplashScreen.preventAutoHideAsync().catch(() => {
 
 function RootNavigator() {
   const { resolved } = useTheme()
+  const theme = usePhoneTheme()
 
   return (
-    <>
+    <GlassBackdrop>
       <StatusBar style={resolved === 'dark' ? 'light' : 'dark'} />
       <Stack
         screenOptions={{
           headerShown: false,
-          contentStyle: { backgroundColor: 'transparent' },
+          // Each screen paints the canvas itself; the navigator's own
+          // background (white, by default) must never show through.
+          contentStyle: { backgroundColor: theme.bg },
+          animation: 'fade',
         }}
       >
-        <Stack.Screen name="index" />
-        <Stack.Screen name="session/[externalId]" />
-        <Stack.Screen name="settings" options={{ presentation: 'modal' }} />
+        {/* Sessions, Inbox and Settings, with the pill nav as their tab bar. */}
+        <Stack.Screen name="(tabs)" />
+        {/* Pages slide in from the side; search and the theme preview rise. */}
+        <Stack.Screen name="session/[externalId]" options={{ animation: 'slide_from_right' }} />
+        <Stack.Screen name="draft/new" options={{ animation: 'slide_from_right' }} />
+        <Stack.Screen name="draft/[draftId]" options={{ animation: 'slide_from_right' }} />
+        <Stack.Screen
+          name="search"
+          options={{ presentation: 'modal', animation: 'slide_from_bottom' }}
+        />
         <Stack.Screen name="theme-preview" options={{ presentation: 'modal' }} />
       </Stack>
-    </>
+    </GlassBackdrop>
   )
 }
 
