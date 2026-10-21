@@ -178,6 +178,48 @@ describe('phone connection controller', () => {
       expect(h.sockets()).toHaveLength(1)
     })
 
+    it('keeps the newer refusal version when an older read answers late', async () => {
+      const h = harness()
+      await h.controller.start()
+      await flush()
+      const refuse = () => {
+        const socket = h.socket()
+        socket.open()
+        socket.receive({
+          type: 'error',
+          requestId: socket.last('protocol.handshake').requestId,
+          error: {
+            code: 'protocol_incompatible',
+            message: 'Upgrade required.',
+            details: { clientProtocolVersion: PROTOCOL_VERSION, serverProtocolVersion: 99 },
+          },
+        })
+      }
+      const mismatch = (serverProtocolVersion: number): BootstrapOutcome => ({
+        status: 'incompatible_protocol',
+        clientProtocolVersion: PROTOCOL_VERSION,
+        serverProtocolVersion,
+        environmentId: ENV,
+      })
+      const older = deferred<BootstrapOutcome>()
+      h.answers.set(LAN, older.promise)
+      refuse()
+      await flush()
+      // A person retries; the environment still answers ready, then refuses again.
+      h.answers.set(LAN, ready())
+      h.controller.retry()
+      await flush()
+      const newer = deferred<BootstrapOutcome>()
+      h.answers.set(LAN, newer.promise)
+      refuse()
+      await flush()
+      newer.resolve(mismatch(99))
+      await flush()
+      older.resolve(mismatch(98))
+      await flush()
+      expect(h.state().protocol).toEqual({ client: PROTOCOL_VERSION, environment: 99 })
+    })
+
     it('shows the version the environment speaks after a handshake refusal', async () => {
       const h = harness()
       await h.controller.start()
@@ -206,6 +248,47 @@ describe('phone connection controller', () => {
         protocol: { client: PROTOCOL_VERSION, environment: 99 },
         bootstrap: { status: 'incompatible_protocol', serverProtocolVersion: 99 },
       })
+    })
+  })
+
+  describe('the default probe', () => {
+    it('gives a silent route one request within its deadline, then takes the tunnel', async () => {
+      const calls: Array<{ url: string; mode?: string }> = []
+      const realFetch = globalThis.fetch
+      globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+        const url = String(input)
+        calls.push({ url, mode: init?.mode })
+        if (url.startsWith(TUNNEL)) {
+          return new Response(
+            JSON.stringify({
+              protocolVersion: PROTOCOL_VERSION,
+              environmentId: ENV,
+              capabilities: [],
+            }),
+            { status: 200, headers: { 'content-type': 'application/json' } },
+          )
+        }
+        // The LAN address is silent: nothing answers until the probe gives up.
+        return new Promise<Response>((_resolve, reject) => {
+          init?.signal?.addEventListener('abort', () => reject(new Error('aborted')))
+        })
+      }) as typeof fetch
+      try {
+        const h = harness({
+          routes: [LAN, TUNNEL],
+          options: { probe: undefined, probeTimeoutMs: 50 },
+        })
+        await h.controller.start()
+        await new Promise((resolve) => setTimeout(resolve, 200))
+        await flush()
+        expect(h.state()).toMatchObject({ status: 'connecting', endpoint: TUNNEL })
+        // One bootstrap request each; no no-cors follow-up after the timeout.
+        expect(calls.filter((call) => call.url.startsWith(LAN))).toEqual([
+          { url: `${LAN}/bootstrap`, mode: undefined },
+        ])
+      } finally {
+        globalThis.fetch = realFetch
+      }
     })
   })
 

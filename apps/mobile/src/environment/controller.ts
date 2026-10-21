@@ -182,12 +182,26 @@ export type PhoneConnectionOptions = {
   retryDelaysMs?: readonly number[]
   /** A socket that stayed up this long resets the retry delays when it drops. */
   stableAfterMs?: number
+  /** How long one route may take to answer `GET /bootstrap`. */
+  probeTimeoutMs?: number
 }
 
 export const PHONE_RETRY_DELAYS_MS: readonly number[] = [1000, 2000, 4000, 8000, 15000, 30000]
 export const PHONE_STABLE_AFTER_MS = 10_000
 /** How long one route may take to answer `GET /bootstrap`, as in the shared search. */
 const PROBE_TIMEOUT_MS = 6000
+
+/** `signal`, also aborted after `ms`. React Native has no `AbortSignal.any`. */
+function withDeadline(signal: AbortSignal, ms: number): AbortSignal {
+  const deadline = AbortSignal.timeout(ms)
+  if (typeof AbortSignal.any === 'function') return AbortSignal.any([signal, deadline])
+  const joined = new AbortController()
+  const abort = () => joined.abort()
+  if (signal.aborted || deadline.aborted) abort()
+  signal.addEventListener('abort', abort, { once: true })
+  deadline.addEventListener('abort', abort, { once: true })
+  return joined.signal
+}
 
 /** What a probe of a cancelled search answers; never read, as the search is stale. */
 const CANCELLED: BootstrapOutcome = {
@@ -262,13 +276,16 @@ export function createPhoneConnectionController(
   const now = options.now ?? (() => Date.now())
   const retryDelays = options.retryDelaysMs ?? PHONE_RETRY_DELAYS_MS
   const stableAfterMs = options.stableAfterMs ?? PHONE_STABLE_AFTER_MS
+  const probeTimeoutMs = options.probeTimeoutMs ?? PROBE_TIMEOUT_MS
   const persistence: RegistryPersistence = createRegistryPersistence(options.storage)
   const probeRoute =
     options.probe ??
     ((endpoint: string, signal: AbortSignal) =>
+      // The deadline lives in the signal itself, not in `timeoutMs`: a probe
+      // that timed out then reads as aborted, so `fetchBootstrap` does not
+      // follow it with its own five-second check of what answered.
       fetchBootstrap(endpoint, {
-        signal,
-        timeoutMs: PROBE_TIMEOUT_MS,
+        signal: withDeadline(signal, probeTimeoutMs),
         loopbackAccessDenied: noLoopbackGate,
       }))
   /**
@@ -500,14 +517,19 @@ export function createPhoneConnectionController(
    * its own answer is shown, and only while the latch it explains still holds.
    */
   const readRefusedVersion = (environmentId: string, endpoint: string) => {
+    // This refusal's own latch: a retry that is refused again makes a new
+    // one, and this answer must not overwrite that one's.
+    const refusal = latch
     const abort = new AbortController()
     const release = () => abort.abort()
     releases.push(release)
     void probeRoute(endpoint, abort.signal).then((outcome) => {
       const index = releases.indexOf(release)
       if (index !== -1) releases.splice(index, 1)
-      if (disposed || latch?.environmentId !== environmentId) return
-      if (latch.status !== 'incompatible_protocol') return
+      if (disposed || !refusal || latch !== refusal) return
+      if (refusal.environmentId !== environmentId || refusal.status !== 'incompatible_protocol') {
+        return
+      }
       if (outcome.status !== 'incompatible_protocol') return
       if (outcome.environmentId && outcome.environmentId !== environmentId) return
       set({
