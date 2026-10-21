@@ -1058,6 +1058,22 @@ describe('§8.4 scenarios on main', () => {
       await streaming
       const closes = proxiedCloses(rig, 'slow_consumer')
       if (closes.length === 0) {
+        // What the server and the link held meanwhile, so a flip can be judged.
+        recordEvidence({
+          scenario: 'S15',
+          bucket: 'flip-diagnostics',
+          cause: 'no slow_consumer close',
+          observed: {
+            samples,
+            serverCloses: rig.server.closes.map(({ code, reason, at }) => ({
+              code,
+              reason,
+              atMs: rig.since(at) - started,
+            })),
+            clientCloses: a.closes,
+            fatals: rig.server.fatals,
+          },
+        })
         throw new FlipError('S15', 'No slow_consumer close in 70 s; enable its after-F5a half.')
       }
       recordEvidence({
