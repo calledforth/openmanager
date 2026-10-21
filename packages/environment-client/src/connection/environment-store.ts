@@ -38,6 +38,11 @@ export type RouteHealthReport = {
    * connection, which keeps it until a route answers; never saved.
    */
   stopped?: true
+  /**
+   * The environment refused the credential itself (the socket's revocation
+   * close), not merely this route. Read by the connection; never saved.
+   */
+  revoked?: true
 }
 
 /**

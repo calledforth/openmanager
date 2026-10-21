@@ -94,6 +94,20 @@ describe('routeHealthFromConnection', () => {
     ).toEqual({ status: 'unauthorized', message: 'Token revoked.' })
     expect(
       routeHealthFromConnection({
+        phase: 'closed',
+        failure: {
+          code: 'auth',
+          message: "This device's access was revoked.",
+          credentialRevoked: true,
+        },
+      }),
+    ).toEqual({
+      status: 'unauthorized',
+      message: "This device's access was revoked.",
+      revoked: true,
+    })
+    expect(
+      routeHealthFromConnection({
         phase: 'reconnecting',
         failure: { code: 'unavailable', message: 'Connection closed.' },
       }),

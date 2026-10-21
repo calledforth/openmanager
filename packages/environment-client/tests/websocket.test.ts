@@ -1106,7 +1106,7 @@ describe('websocket environment client', () => {
     socket.drop(4401, 'revoked')
     expect(client.getState().connection).toMatchObject({
       phase: 'closed',
-      failure: { code: 'auth' },
+      failure: { code: 'auth', credentialRevoked: true },
       retriesExhausted: true,
     })
     timers.advance(60_000)
@@ -1120,11 +1120,21 @@ describe('websocket environment client', () => {
     socket.drop(4401, 'unauthorized')
     expect(client.getState().connection).toMatchObject({
       phase: 'closed',
-      failure: { code: 'auth', message: 'Token not recognized.' },
+      failure: { code: 'auth', message: 'Token not recognized.', credentialRevoked: true },
       retriesExhausted: true,
     })
     timers.advance(60_000)
     expect(FakeSocket.instances).toHaveLength(1)
+  })
+
+  it('does not call reaching a different environment a revoked credential', async () => {
+    // Also an `auth` failure, but the environment refused nothing: the
+    // address now leads elsewhere. A host that forgets a revoked credential
+    // must keep this one.
+    const { client } = await connected(FULL_CAPABILITIES, {}, { environmentId: 'other-env' })
+    const failure = client.getState().connection.failure
+    expect(failure).toMatchObject({ code: 'auth' })
+    expect(failure).not.toHaveProperty('credentialRevoked')
   })
 
   it('says the environment shut down, then redials as for any drop', async () => {

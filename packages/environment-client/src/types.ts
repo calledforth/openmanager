@@ -186,6 +186,14 @@ export interface ConnectionFailure {
    * on the failure that close caused; the redials after it say nothing new.
    */
   serverStopped?: true
+  /**
+   * The environment closed the socket with the revocation code
+   * (`CLIENT_REVOKED_CLOSE_CODE`): it refused this client's credential, which
+   * will never work again. Only on that close, so a host that forgets a
+   * refused credential does not forget one over any other `auth` failure
+   * (this client finding a different environment at the address is one).
+   */
+  credentialRevoked?: true
 }
 
 export interface ConnectionState {
