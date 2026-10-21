@@ -47,13 +47,15 @@ export interface PhoneTheme {
   hover: string
   active: string
   selected: string
-  /** One step above the canvas. */
+  /** One step above the canvas (fluid's `--surface-2`). */
   surface2: string
   /** A sent message. */
   bubble: string
   actionBg: string
   actionFg: string
   actionHover: string
+  destructive: string
+  destructiveFg: string
   /** Floating surfaces: opaque, and the three glass strengths over content. */
   floatBg: string
   scrim: string
@@ -100,11 +102,13 @@ export function phoneTheme(scheme: SchemeId): PhoneTheme {
     hover: t.hover,
     active: t.active,
     selected: t.selected,
-    surface2: t['basis-surface'],
+    surface2: t['surface-2'],
     bubble: t['basis-chat-user-bg'],
     actionBg: t['basis-action-bg'],
     actionFg: t['basis-action-fg'],
     actionHover: t['basis-action-hover'],
+    destructive: t['color-destructive'],
+    destructiveFg: t['color-destructive-foreground'],
     floatBg,
     scrim: t['float-scrim'],
     glass: withAlpha(floatBg, alpha.glass),
@@ -176,8 +180,8 @@ export function themeVars(theme: PhoneTheme) {
     '--text-strong': theme.fg,
     '--text-muted': theme.muted,
     '--text-faint': theme.faint,
-    '--destructive': DESTRUCTIVE,
-    '--destructive-fg': DESTRUCTIVE_FG,
+    '--destructive': theme.destructive,
+    '--destructive-fg': theme.destructiveFg,
     '--background': theme.bg,
     '--foreground': theme.tokens['basis-text'],
     '--card': theme.tokens['basis-surface'],
@@ -188,10 +192,6 @@ export function themeVars(theme: PhoneTheme) {
     '--input': theme.tokens['basis-surface'],
   })
 }
-
-/** Web's `--color-destructive: hsl(0 62% 50%)` and its foreground, as hex. */
-const DESTRUCTIVE = '#cf3030'
-const DESTRUCTIVE_FG = '#f2f2f2'
 
 /** The first build's token shape, for screens not yet rebuilt on PhoneTheme. */
 export interface BasisTokens {
@@ -232,8 +232,8 @@ export function legacyBasis(theme: PhoneTheme): BasisTokens {
     actionBg: theme.actionBg,
     actionFg: theme.actionFg,
     actionHover: theme.actionHover,
-    destructive: DESTRUCTIVE,
-    destructiveFg: DESTRUCTIVE_FG,
+    destructive: theme.destructive,
+    destructiveFg: theme.destructiveFg,
   }
 }
 

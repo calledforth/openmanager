@@ -367,8 +367,12 @@ function render(perScheme) {
   const partial = [...names].filter(([, n]) => n !== perScheme.size).map(([name]) => name)
   everywhere.sort()
   partial.sort()
-  const shadowNames = everywhere.filter((name) =>
-    SHADOW_PREFIXES.some((prefix) => `--${name}`.startsWith(prefix)),
+  // A shadow token carries lengths; `--shadow-color` is a colour the recipes
+  // share, not a shadow.
+  const shadowNames = everywhere.filter(
+    (name) =>
+      SHADOW_PREFIXES.some((prefix) => `--${name}`.startsWith(prefix)) &&
+      [...perScheme.values()].every((tokens) => /\d+px/.test(tokens.get(name))),
   )
 
   const q = (s) => JSON.stringify(s)

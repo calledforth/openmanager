@@ -68,8 +68,12 @@ export function ThemeProvider({ children }: PropsWithChildren) {
         // The first build saved only a mode; carry it over once.
         const legacy = appearanceFromLegacyMode(await AsyncStorage.getItem(LEGACY_MODE_STORAGE_KEY))
         if (legacy) {
-          await AsyncStorage.setItem(APPEARANCE_STORAGE_KEY, serializeAppearance(legacy))
-          await AsyncStorage.removeItem(LEGACY_MODE_STORAGE_KEY)
+          try {
+            await AsyncStorage.setItem(APPEARANCE_STORAGE_KEY, serializeAppearance(legacy))
+            await AsyncStorage.removeItem(LEGACY_MODE_STORAGE_KEY)
+          } catch {
+            // The saved mode still applies this session when it cannot be moved.
+          }
         }
         return legacy ?? DEFAULT_APPEARANCE
       } catch {

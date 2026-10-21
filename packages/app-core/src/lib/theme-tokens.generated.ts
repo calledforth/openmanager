@@ -287,7 +287,6 @@ export type ShadowTokenName =
   | "shadow-6"
   | "shadow-7"
   | "shadow-8"
-  | "shadow-color"
   | "shadow-dark-1"
   | "shadow-dark-2"
   | "shadow-dark-3"
@@ -3414,9 +3413,6 @@ export const THEME_SHADOWS: Record<ThemeMode, Record<ShadowTokenName, ShadowLaye
       { inset: false, x: 0, y: 48, blur: 48, spread: -24, color: "rgba(0, 0, 0, 0.06)" },
       { inset: false, x: 0, y: 96, blur: 96, spread: -48, color: "rgba(0, 0, 0, 0.06)" },
     ],
-    "shadow-color": [
-      { inset: false, x: 0, y: 0, blur: 0, spread: 0, color: "rgba(0, 0, 0, 0.06)" },
-    ],
     "shadow-dark-1": [
       { inset: true, x: 0, y: 0, blur: 0, spread: 1, color: "rgba(255, 255, 255, 0.02)" },
     ],
@@ -3701,9 +3697,6 @@ export const THEME_SHADOWS: Record<ThemeMode, Record<ShadowTokenName, ShadowLaye
       { inset: false, x: 0, y: 48, blur: 48, spread: -24, color: "rgba(0, 0, 0, 0.18)" },
       { inset: false, x: 0, y: 96, blur: 96, spread: -48, color: "rgba(0, 0, 0, 0.18)" },
     ],
-    "shadow-color": [
-      { inset: false, x: 0, y: 0, blur: 0, spread: 0, color: "rgba(0, 0, 0, 0.06)" },
-    ],
     "shadow-dark-1": [
       { inset: true, x: 0, y: 0, blur: 0, spread: 1, color: "rgba(255, 255, 255, 0.02)" },
     ],
@@ -3984,9 +3977,6 @@ export const THEME_SHADOWS: Record<ThemeMode, Record<ShadowTokenName, ShadowLaye
       { inset: false, x: 0, y: 24, blur: 24, spread: -12, color: "rgba(0, 0, 0, 0.06)" },
       { inset: false, x: 0, y: 48, blur: 48, spread: -24, color: "rgba(0, 0, 0, 0.06)" },
       { inset: false, x: 0, y: 96, blur: 96, spread: -48, color: "rgba(0, 0, 0, 0.06)" },
-    ],
-    "shadow-color": [
-      { inset: false, x: 0, y: 0, blur: 0, spread: 0, color: "rgba(0, 0, 0, 0.06)" },
     ],
     "shadow-dark-1": [
       { inset: true, x: 0, y: 0, blur: 0, spread: 1, color: "rgba(255, 255, 255, 0.02)" },
@@ -4272,9 +4262,6 @@ export const THEME_SHADOWS: Record<ThemeMode, Record<ShadowTokenName, ShadowLaye
       { inset: false, x: 0, y: 48, blur: 48, spread: -24, color: "rgba(0, 0, 0, 0.18)" },
       { inset: false, x: 0, y: 96, blur: 96, spread: -48, color: "rgba(0, 0, 0, 0.18)" },
     ],
-    "shadow-color": [
-      { inset: false, x: 0, y: 0, blur: 0, spread: 0, color: "rgba(0, 0, 0, 0.06)" },
-    ],
     "shadow-dark-1": [
       { inset: true, x: 0, y: 0, blur: 0, spread: 1, color: "rgba(255, 255, 255, 0.02)" },
     ],
@@ -4555,9 +4542,6 @@ export const THEME_SHADOWS: Record<ThemeMode, Record<ShadowTokenName, ShadowLaye
       { inset: false, x: 0, y: 24, blur: 24, spread: -12, color: "rgba(0, 0, 0, 0.06)" },
       { inset: false, x: 0, y: 48, blur: 48, spread: -24, color: "rgba(0, 0, 0, 0.06)" },
       { inset: false, x: 0, y: 96, blur: 96, spread: -48, color: "rgba(0, 0, 0, 0.06)" },
-    ],
-    "shadow-color": [
-      { inset: false, x: 0, y: 0, blur: 0, spread: 0, color: "rgba(0, 0, 0, 0.06)" },
     ],
     "shadow-dark-1": [
       { inset: true, x: 0, y: 0, blur: 0, spread: 1, color: "rgba(255, 255, 255, 0.02)" },
@@ -4843,9 +4827,6 @@ export const THEME_SHADOWS: Record<ThemeMode, Record<ShadowTokenName, ShadowLaye
       { inset: false, x: 0, y: 48, blur: 48, spread: -24, color: "rgba(0, 0, 0, 0.18)" },
       { inset: false, x: 0, y: 96, blur: 96, spread: -48, color: "rgba(0, 0, 0, 0.18)" },
     ],
-    "shadow-color": [
-      { inset: false, x: 0, y: 0, blur: 0, spread: 0, color: "rgba(0, 0, 0, 0.06)" },
-    ],
     "shadow-dark-1": [
       { inset: true, x: 0, y: 0, blur: 0, spread: 1, color: "rgba(255, 255, 255, 0.02)" },
     ],
@@ -5126,9 +5107,6 @@ export const THEME_SHADOWS: Record<ThemeMode, Record<ShadowTokenName, ShadowLaye
       { inset: false, x: 0, y: 24, blur: 24, spread: -12, color: "rgba(0, 0, 0, 0.06)" },
       { inset: false, x: 0, y: 48, blur: 48, spread: -24, color: "rgba(0, 0, 0, 0.06)" },
       { inset: false, x: 0, y: 96, blur: 96, spread: -48, color: "rgba(0, 0, 0, 0.06)" },
-    ],
-    "shadow-color": [
-      { inset: false, x: 0, y: 0, blur: 0, spread: 0, color: "rgba(0, 0, 0, 0.06)" },
     ],
     "shadow-dark-1": [
       { inset: true, x: 0, y: 0, blur: 0, spread: 1, color: "rgba(255, 255, 255, 0.02)" },
@@ -5414,9 +5392,6 @@ export const THEME_SHADOWS: Record<ThemeMode, Record<ShadowTokenName, ShadowLaye
       { inset: false, x: 0, y: 48, blur: 48, spread: -24, color: "rgba(0, 0, 0, 0.18)" },
       { inset: false, x: 0, y: 96, blur: 96, spread: -48, color: "rgba(0, 0, 0, 0.18)" },
     ],
-    "shadow-color": [
-      { inset: false, x: 0, y: 0, blur: 0, spread: 0, color: "rgba(0, 0, 0, 0.06)" },
-    ],
     "shadow-dark-1": [
       { inset: true, x: 0, y: 0, blur: 0, spread: 1, color: "rgba(255, 255, 255, 0.02)" },
     ],
@@ -5697,9 +5672,6 @@ export const THEME_SHADOWS: Record<ThemeMode, Record<ShadowTokenName, ShadowLaye
       { inset: false, x: 0, y: 24, blur: 24, spread: -12, color: "rgba(0, 0, 0, 0.06)" },
       { inset: false, x: 0, y: 48, blur: 48, spread: -24, color: "rgba(0, 0, 0, 0.06)" },
       { inset: false, x: 0, y: 96, blur: 96, spread: -48, color: "rgba(0, 0, 0, 0.06)" },
-    ],
-    "shadow-color": [
-      { inset: false, x: 0, y: 0, blur: 0, spread: 0, color: "rgba(0, 0, 0, 0.06)" },
     ],
     "shadow-dark-1": [
       { inset: true, x: 0, y: 0, blur: 0, spread: 1, color: "rgba(255, 255, 255, 0.02)" },
@@ -5985,9 +5957,6 @@ export const THEME_SHADOWS: Record<ThemeMode, Record<ShadowTokenName, ShadowLaye
       { inset: false, x: 0, y: 48, blur: 48, spread: -24, color: "rgba(0, 0, 0, 0.18)" },
       { inset: false, x: 0, y: 96, blur: 96, spread: -48, color: "rgba(0, 0, 0, 0.18)" },
     ],
-    "shadow-color": [
-      { inset: false, x: 0, y: 0, blur: 0, spread: 0, color: "rgba(0, 0, 0, 0.06)" },
-    ],
     "shadow-dark-1": [
       { inset: true, x: 0, y: 0, blur: 0, spread: 1, color: "rgba(255, 255, 255, 0.02)" },
     ],
@@ -6268,9 +6237,6 @@ export const THEME_SHADOWS: Record<ThemeMode, Record<ShadowTokenName, ShadowLaye
       { inset: false, x: 0, y: 24, blur: 24, spread: -12, color: "rgba(0, 0, 0, 0.06)" },
       { inset: false, x: 0, y: 48, blur: 48, spread: -24, color: "rgba(0, 0, 0, 0.06)" },
       { inset: false, x: 0, y: 96, blur: 96, spread: -48, color: "rgba(0, 0, 0, 0.06)" },
-    ],
-    "shadow-color": [
-      { inset: false, x: 0, y: 0, blur: 0, spread: 0, color: "rgba(0, 0, 0, 0.06)" },
     ],
     "shadow-dark-1": [
       { inset: true, x: 0, y: 0, blur: 0, spread: 1, color: "rgba(255, 255, 255, 0.02)" },
@@ -6555,9 +6521,6 @@ export const THEME_SHADOWS: Record<ThemeMode, Record<ShadowTokenName, ShadowLaye
       { inset: false, x: 0, y: 24, blur: 24, spread: -12, color: "rgba(0, 0, 0, 0.18)" },
       { inset: false, x: 0, y: 48, blur: 48, spread: -24, color: "rgba(0, 0, 0, 0.18)" },
       { inset: false, x: 0, y: 96, blur: 96, spread: -48, color: "rgba(0, 0, 0, 0.18)" },
-    ],
-    "shadow-color": [
-      { inset: false, x: 0, y: 0, blur: 0, spread: 0, color: "rgba(0, 0, 0, 0.06)" },
     ],
     "shadow-dark-1": [
       { inset: true, x: 0, y: 0, blur: 0, spread: 1, color: "rgba(255, 255, 255, 0.02)" },

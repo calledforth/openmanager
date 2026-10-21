@@ -61,6 +61,8 @@ describe('theme tokens', () => {
     expect(rest.every((layer) => /^(#[0-9a-f]{6}|rgba\()/.test(layer.color))).toBe(true)
     const light = THEME_SHADOWS['neutral-light']['float-shadow-rest']
     expect(light.every((layer) => !layer.inset)).toBe(true)
+    // `--shadow-color` is a colour the recipes share, not a shadow.
+    expect(Object.keys(THEME_SHADOWS.neutral)).not.toContain('shadow-color')
   })
 
   it('exposes the same token set on every scheme', () => {

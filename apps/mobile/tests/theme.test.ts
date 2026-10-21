@@ -76,6 +76,9 @@ describe('phone theme', () => {
       expect(theme.hover).toBe(tokens.hover)
       expect(theme.active).toBe(tokens.active)
       expect(theme.bubble).toBe(tokens['basis-chat-user-bg'])
+      expect(theme.surface2).toBe(tokens['surface-2'])
+      expect(theme.destructive).toBe(tokens['color-destructive'])
+      expect(theme.destructiveFg).toBe(tokens['color-destructive-foreground'])
       expect(theme.status.working).toBe(tokens['basis-status-working'])
       expect(theme.shadow.rest).toBe(tokens['float-shadow-rest'])
     }
