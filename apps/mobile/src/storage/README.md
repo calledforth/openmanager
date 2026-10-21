@@ -126,6 +126,41 @@ holding a background task open.
   device. The `expo-secure-store` config plugin keeps it out of Android Auto
   Backup.
 
+## Replacing the in-memory seam
+
+The connection work (`src/environment/` on its own branch) runs on an
+in-memory `PhoneStorage` with `ready()`, `registry`, `device` and a separate
+`credentials` store, and its `persistence.ts` writes the registry with every
+credential blanked and the tokens to `credentials`. This module is not a
+drop-in for that one line, and must not be wired in behind that persistence:
+
+- **Never hand this adapter a blanked registry.** Here a registry write _is_
+  the credential write. A document with every `credential` empty retires every
+  slot and deletes every token, as a removal would.
+- Load with `await phoneStorage.hydrate()` and then
+  `readEnvironmentRegistry(phoneStorage.registry)`: credentials come back
+  joined, nothing to fetch per environment.
+- Save the whole registry, credentials included, with
+  `writeEnvironmentRegistry(next, phoneStorage.registry)`; `flush` is
+  `phoneStorage.flush()`. The split, the order and the retries happen here.
+- `persistence.ts`'s token split and the `CredentialStore` port go away;
+  `ready` maps to `hydrate`.
+- Keep passing the one `phoneStorage.device` and `subscribePhonePageExit`
+  (fixed identities), and call the credential-rejection helpers after the
+  `credential_rejected` latch (step 4 above).
+
+The in-memory store kept nothing across launches, so there is no data to
+migrate.
+
+## A new field on a shared record
+
+The adapter strips only `credential`; every other field of an environment or
+route is carried through AsyncStorage as the shared code wrote it, so a new
+plain field (for example the pairing link's app origin) needs no storage
+migration. `ReviewedRegistryFields` will stop compiling when it is added to
+the shared type: add its name to the reviewed list there once it is known not
+to be a secret.
+
 ## Known limit
 
 Dropping a credential takes two writes: the manifest retires its slot, and

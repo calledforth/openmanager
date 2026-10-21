@@ -398,3 +398,57 @@ describe('rapid changes with a store refusing part of them', () => {
     expect(secretOf(stores.secureStore, STUDIO)).toBe(TOKEN_B)
   })
 })
+
+describe('a phone with no working keystore', () => {
+  it('still boots and saves the registry, uses the credential for this run, and asks to pair after a restart', async () => {
+    const stores = device()
+    // An emulator without a keystore: every SecureStore call throws.
+    stores.secureStore.failing.add('')
+    stores.secureStore.unreadable.add('')
+    const errors: StorageWriteError[] = []
+    const storage = await boot(stores, errors)
+    await save(storage, withCredential(TOKEN_A))
+    expect(credentialOf(storage)).toBe(TOKEN_A)
+    expect(stores.secureStore.data.size).toBe(0)
+    expect(stores.asyncStore.data.has(ENVIRONMENT_STORAGE_KEY)).toBe(true)
+    expect(storeContains(stores.asyncStore, TOKEN_A)).toBe(false)
+
+    // Refused once per write, never retried on its own.
+    const refused = errors.length
+    expect(refused).toBeGreaterThan(0)
+    await storage.flush()
+    storage.retryFailedWrites()
+    await storage.flush()
+    expect(errors.length).toBe(refused)
+
+    const relaunched = await boot(stores)
+    expect(readEnvironmentRegistry(relaunched.registry).environments).toHaveLength(1)
+    expect(credentialOf(relaunched)).toBe('')
+    expect(relaunched.unreadableCredentials).toEqual([STUDIO])
+  })
+})
+
+describe('a field the shared records gain', () => {
+  it('is carried through AsyncStorage as written, with no migration', async () => {
+    const stores = device()
+    const storage = await boot(stores)
+    await save(storage, withCredential(TOKEN_A))
+    // A new string field on an environment record, as the shared code would write it.
+    const raw = JSON.parse(storage.registry.getItem(ENVIRONMENT_STORAGE_KEY)!) as {
+      environments: Record<string, unknown>[]
+    }
+    raw.environments[0]!.appOrigin = 'https://app.example.com'
+    storage.registry.setItem(ENVIRONMENT_STORAGE_KEY, JSON.stringify(raw))
+    await storage.flush()
+
+    const relaunched = await boot(stores)
+    const read = JSON.parse(relaunched.registry.getItem(ENVIRONMENT_STORAGE_KEY)!) as {
+      environments: Record<string, unknown>[]
+    }
+    expect(read.environments[0]).toMatchObject({
+      appOrigin: 'https://app.example.com',
+      credential: TOKEN_A,
+    })
+    expect(storeContains(stores.asyncStore, 'https://app.example.com')).toBe(true)
+  })
+})
