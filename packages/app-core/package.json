@@ -6,6 +6,7 @@
   "description": "Shared browser-safe React application for OpenManager web and desktop",
   "exports": {
     ".": "./src/index.ts",
+    "./logic": "./src/logic.ts",
     "./styles/globals.css": "./src/styles/globals.css",
     "./lib/attachments": "./src/lib/attachments.ts",
     "./lib/environment-thread": "./src/lib/environment-thread.ts",
