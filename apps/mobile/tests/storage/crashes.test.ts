@@ -110,6 +110,24 @@ describe('a manifest write that fails', () => {
     await save(relaunched, removeStoredEnvironment(withCredential(TOKEN_A), STUDIO))
     expect(stores.secureStore.data.size).toBe(0)
   })
+  it('still activates a later credential when only an earlier manifest write failed', async () => {
+    // Pair, then rotate before the first manifest write settles; only that
+    // first write fails. The newer manifest gets through, and the rotated
+    // credential must end up active, not retired and deleted at the next boot.
+    const stores = device()
+    const storage = await boot(stores)
+    stores.log.hold()
+    writeEnvironmentRegistry(withCredential(TOKEN_A), storage.registry)
+    writeEnvironmentRegistry(withCredential(TOKEN_B), storage.registry)
+    stores.asyncStore.failNext.set(CREDENTIAL_MANIFEST_KEY, 1)
+    stores.log.release()
+    await storage.flush()
+    expect(activeIds(stores.asyncStore)).toEqual([STUDIO])
+    expect(secretOf(stores.secureStore, STUDIO)).toBe(TOKEN_B)
+    const relaunched = await boot(stores)
+    expect(credentialOf(relaunched)).toBe(TOKEN_B)
+    expect(secretOf(stores.secureStore, STUDIO)).toBe(TOKEN_B)
+  })
 })
 
 describe('a registry document that holds a credential at boot', () => {

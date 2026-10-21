@@ -284,11 +284,20 @@ export function createPhoneStorage(options: PhoneStorageOptions): PhoneStorage {
           : asyncStore.setItem(CREDENTIAL_MANIFEST_KEY, value),
       onDone: () => {
         persisted = manifest
+        // A newer manifest got through: an older failure no longer holds
+        // anything back, and whatever it held back (a slot becoming active)
+        // is written now.
+        manifestFailed = false
+        reconcile()
       },
       onError: (cause) => {
-        // Not saved: the next write asks again, and slots wait for it.
-        if (manifestQueued === value) manifestQueued = undefined
-        manifestFailed = true
+        // Not saved. Only the newest manifest's failure counts: a newer one
+        // already queued is tried anyway. Otherwise the next registry write
+        // asks again, and slots wait for it.
+        if (manifestQueued === value) {
+          manifestQueued = undefined
+          manifestFailed = true
+        }
         report({
           store: 'async',
           operation: value === null ? 'remove' : 'set',

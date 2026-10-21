@@ -51,6 +51,8 @@ export class FakeAsyncStorage implements AsyncKeyValueStore {
   readonly data = new Map<string, string>()
   /** Keys whose writes throw, as a full disk would. */
   readonly failing = new Set<string>()
+  /** Keys whose next N writes throw. */
+  readonly failNext = new Map<string, number>()
   failReads = false
   /** Writes that carried a token, as they happened, not just what is left at the end. */
   readonly leaks: string[] = []
@@ -66,6 +68,11 @@ export class FakeAsyncStorage implements AsyncKeyValueStore {
   async setItem(key: string, value: string) {
     await this.log.gate()
     if (this.failing.has(key)) throw new Error(`disk full writing ${key}`)
+    const left = this.failNext.get(key) ?? 0
+    if (left > 0) {
+      this.failNext.set(key, left - 1)
+      throw new Error(`disk full writing ${key}`)
+    }
     for (const token of TOKENS) {
       if (key.includes(token) || value.includes(token)) this.leaks.push(`${key} = ${value}`)
     }
