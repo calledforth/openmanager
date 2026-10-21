@@ -5,7 +5,41 @@ module.exports = {
   presets: [require('nativewind/preset')],
   theme: {
     extend: {
+      // Every colour is a variable ThemeProvider sets from web's generated
+      // token map (see src/theme/tokens.ts); nothing here is a literal.
       colors: {
+        // Roles the screens use, named as the mockups name them.
+        canvas: 'var(--canvas)',
+        ink: 'var(--ink)',
+        muted: 'var(--muted)',
+        faint: 'var(--faint)',
+        rule: 'var(--rule)',
+        hover: 'var(--hover)',
+        active: 'var(--active)',
+        selected: 'var(--selected)',
+        'surface-2': 'var(--surface-2)',
+        bubble: 'var(--bubble)',
+        action: 'var(--action-bg)',
+        'action-fg': 'var(--action-fg)',
+        'action-hover': 'var(--action-hover)',
+        float: 'var(--float)',
+        scrim: 'var(--scrim)',
+        glass: 'var(--glass)',
+        'glass-strong': 'var(--glass-strong)',
+        'glass-sheet': 'var(--glass-sheet)',
+        tint: 'var(--tint)',
+        'tint-soft': 'var(--tint-soft)',
+        status: {
+          working: 'var(--status-working)',
+          background: 'var(--status-background)',
+          needs: 'var(--status-needs)',
+          question: 'var(--status-question)',
+          done: 'var(--status-done)',
+          error: 'var(--status-error)',
+          'done-wash': 'var(--status-done-wash)',
+          'error-wash': 'var(--status-error-wash)',
+        },
+        // The first build's names, kept until its screens are rebuilt.
         canvasBg: 'var(--canvas-bg)',
         surface: 'var(--surface)',
         surfaceElevated: 'var(--surface-elevated)',

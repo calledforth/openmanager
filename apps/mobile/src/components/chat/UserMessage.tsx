@@ -4,7 +4,8 @@ import { View } from 'react-native'
 import { useTokens } from '../../theme/useTokens'
 import { AppText } from '../ui/AppText'
 
-// Right-aligned user bubble: surfaceElevated bg, radius 6, chat-user type.
+// Right-aligned user bubble on web's chat-user fill (a sent message reads by
+// colour, no outline), chat-user type.
 // Optimistic (not yet acked by the backend) messages render dimmed with a
 // clock glyph — the plan's "queued" state, which also covers jobs parked as
 // `pending` while the desktop worker is offline.
@@ -15,7 +16,7 @@ export function UserMessage({ content, isQueued }: { content: string; isQueued?:
   return (
     <View className="w-full flex-row justify-end py-1">
       <View
-        className="max-w-[85%] rounded border border-borderMuted bg-surfaceElevated px-3 py-2"
+        className="max-w-[85%] rounded-2xl rounded-br bg-bubble px-3 py-2"
         style={isQueued ? { opacity: 0.6 } : undefined}
       >
         <AppText variant="chat-user" selectable>

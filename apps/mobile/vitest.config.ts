@@ -1,8 +1,9 @@
 import { defineConfig } from 'vitest/config'
 
-// The controller, storage seam, route order, runtime fills and Metro resolver
-// are plain TypeScript (or CommonJS) with no React Native import, so they run
-// under Node. Anything that needs React Native stays out of `tests/`.
+// Pure logic only, no React Native runtime: appearance resolution and token
+// derivation, and the connection controller, storage seam, route order,
+// runtime fills and Metro resolver. Screens are checked by typecheck and by
+// the Expo bundle; see README.
 export default defineConfig({
   test: {
     environment: 'node',

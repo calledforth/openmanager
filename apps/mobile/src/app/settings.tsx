@@ -3,6 +3,8 @@ import { useRouter } from 'expo-router'
 import { ScrollView, TouchableOpacity, View } from 'react-native'
 import { useSafeAreaInsets } from 'react-native-safe-area-context'
 
+import { THEME_FAMILIES } from '@openmanager/app-core/lib/theme-families'
+
 import { AppText } from '../components/ui/AppText'
 import { usePhoneConnection } from '../environment/PhoneEnvironmentProvider'
 import { type ThemeMode, useTheme } from '../theme/ThemeProvider'
@@ -16,7 +18,7 @@ const THEME_OPTIONS: { mode: ThemeMode; label: string }[] = [
 export default function SettingsScreen() {
   const router = useRouter()
   const insets = useSafeAreaInsets()
-  const { mode, setMode } = useTheme()
+  const { mode, setMode, family, setFamily, resolved } = useTheme()
 
   const connection = usePhoneConnection()
   const environment = connection.environments.find(
@@ -56,6 +58,46 @@ export default function SettingsScreen() {
         }}
       >
         <Section title="Appearance">
+          <View className="flex-row flex-wrap gap-3">
+            {THEME_FAMILIES.map((option) => {
+              const active = family === option.id
+              const side = option[resolved]
+              return (
+                <TouchableOpacity
+                  key={option.id}
+                  activeOpacity={0.8}
+                  onPress={() => setFamily(option.id)}
+                  className="items-center gap-1.5"
+                  accessibilityRole="button"
+                  accessibilityLabel={`${option.label} theme`}
+                >
+                  <View
+                    className={
+                      active
+                        ? 'h-12 w-12 rounded-xl border-2 border-textStrong'
+                        : 'h-12 w-12 rounded-xl border border-borderMuted'
+                    }
+                    style={{ backgroundColor: side.swatch.canvas }}
+                  >
+                    <View
+                      className="absolute bottom-1.5 left-1.5 h-2 w-5 rounded-full"
+                      style={{ backgroundColor: side.swatch.ink }}
+                    />
+                    <View
+                      className="absolute right-1.5 top-1.5 h-2 w-2 rounded-full"
+                      style={{ backgroundColor: side.swatch.accent }}
+                    />
+                  </View>
+                  <AppText
+                    variant="text-11-regular"
+                    className={active ? 'text-textStrong' : 'text-textMuted'}
+                  >
+                    {option.label}
+                  </AppText>
+                </TouchableOpacity>
+              )
+            })}
+          </View>
           <View className="flex-row gap-2">
             {THEME_OPTIONS.map((option) => {
               const active = mode === option.mode
@@ -80,6 +122,22 @@ export default function SettingsScreen() {
               )
             })}
           </View>
+        </Section>
+
+        <Section title="Theme">
+          <TouchableOpacity
+            activeOpacity={0.8}
+            onPress={() => router.push('/theme-preview')}
+            className="rounded border border-borderMuted bg-surface px-3.5 py-3"
+            accessibilityRole="button"
+          >
+            <AppText variant="text-13-medium" className="text-textStrong">
+              Preview every scheme
+            </AppText>
+            <AppText variant="text-11-regular" className="text-textMuted">
+              Web's tokens, painted on the phone
+            </AppText>
+          </TouchableOpacity>
         </Section>
 
         <Section title="Environment">
