@@ -10,6 +10,7 @@ import {
   LEGACY_ENVIRONMENT_STORAGE_KEY,
   environmentBootstrapUrl,
   environmentLocalOwnerUrl,
+  environmentSocketUrl,
   isLoopbackEnvironmentEndpoint,
   parseEnvironmentCredential,
   parseEnvironmentEndpoint,
@@ -105,6 +106,13 @@ describe('parseEnvironmentEndpoint', () => {
     expect(endpoint).toBe('https://host.example/openmanager')
     expect(environmentBootstrapUrl(endpoint!)).toBe('https://host.example/openmanager/bootstrap')
     expect(environmentLocalOwnerUrl(endpoint!)).toBe('https://host.example/openmanager/local-owner')
+  })
+
+  it('derives the socket URL from the endpoint, keeping its prefix and its security', () => {
+    expect(environmentSocketUrl('http://192.168.1.5:43120')).toBe('ws://192.168.1.5:43120/ws')
+    expect(environmentSocketUrl('https://host.example/openmanager')).toBe(
+      'wss://host.example/openmanager/ws',
+    )
   })
 })
 

@@ -118,6 +118,18 @@ export function environmentLocalOwnerUrl(endpoint: string): string {
   return new URL('local-owner', endpointBase(endpoint)).href
 }
 
+/**
+ * The environment's WebSocket URL for a stored HTTP endpoint: `/ws` under it,
+ * keeping any path prefix, `wss:` for `https:`. The bootstrap payload also
+ * advertises one, but it reports the loopback address the server bound to,
+ * which is wrong the moment a client reaches it through a tunnel or the LAN.
+ */
+export function environmentSocketUrl(endpoint: string): string {
+  const url = new URL('ws', endpointBase(endpoint))
+  url.protocol = url.protocol === 'https:' ? 'wss:' : 'ws:'
+  return url.href
+}
+
 const LOOPBACK_HOSTS = new Set(['127.0.0.1', 'localhost', '[::1]'])
 
 /** True when the stored HTTP endpoint names a loopback host. */
