@@ -4,6 +4,7 @@ import { ScrollView, TouchableOpacity, View } from 'react-native'
 import { useSafeAreaInsets } from 'react-native-safe-area-context'
 
 import { AppText } from '../components/ui/AppText'
+import { usePhoneConnection } from '../environment/PhoneEnvironmentProvider'
 import { type ThemeMode, useTheme } from '../theme/ThemeProvider'
 
 const THEME_OPTIONS: { mode: ThemeMode; label: string }[] = [
@@ -17,7 +18,14 @@ export default function SettingsScreen() {
   const insets = useSafeAreaInsets()
   const { mode, setMode } = useTheme()
 
-  const deploymentUrl = process.env.EXPO_PUBLIC_CONVEX_URL ?? 'Not configured'
+  const connection = usePhoneConnection()
+  const environment = connection.environments.find(
+    (item) => item.environmentId === connection.selectedId,
+  )
+  const protocol =
+    connection.protocol.environment === null
+      ? `v${connection.protocol.client}`
+      : `v${connection.protocol.client} · environment v${connection.protocol.environment}`
   const version = Constants.expoConfig?.version ?? '—'
 
   return (
@@ -74,8 +82,11 @@ export default function SettingsScreen() {
           </View>
         </Section>
 
-        <Section title="Deployment">
-          <ReadOnlyRow label="Convex URL" value={deploymentUrl} mono />
+        <Section title="Environment">
+          <ReadOnlyRow label="Environment" value={environment?.label ?? 'None'} />
+          <ReadOnlyRow label="Connection" value={connection.status} mono />
+          <ReadOnlyRow label="Route" value={connection.endpoint ?? '—'} mono />
+          <ReadOnlyRow label="Protocol" value={protocol} mono />
           <ReadOnlyRow label="App version" value={version} />
         </Section>
       </ScrollView>

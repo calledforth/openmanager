@@ -1,17 +1,20 @@
 {
   "name": "@openmanager/mobile",
-  "main": "expo-router/entry",
+  "main": "index.ts",
   "version": "1.0.0",
   "private": true,
   "dependencies": {
     "@expo-google-fonts/geist": "^0.4.2",
     "@expo-google-fonts/jetbrains-mono": "^0.4.1",
-    "@openmanager/convex": "workspace:*",
+    "@openmanager/app-core": "workspace:*",
+    "@openmanager/environment-client": "workspace:*",
+    "@openmanager/protocol": "workspace:*",
     "@openmanager/shared": "workspace:*",
     "@react-native-async-storage/async-storage": "2.2.0",
-    "convex": "catalog:",
+    "@react-native-community/netinfo": "12.0.1",
     "expo": "~57.0.2",
     "expo-constants": "~57.0.3",
+    "expo-crypto": "~57.0.0",
     "expo-font": "~57.0.0",
     "expo-linking": "~57.0.1",
     "expo-router": "~57.0.3",
@@ -30,19 +33,27 @@
     "react-native-safe-area-context": "~5.7.0",
     "react-native-screens": "4.25.2",
     "react-native-svg": "15.15.4",
+    "react-native-url-polyfill": "^4.0.0",
     "react-native-web": "~0.21.0",
     "react-native-worklets": "0.10.0",
-    "tailwindcss": "^3.4.17"
+    "tailwindcss": "^3.4.17",
+    "zod": "4.4.3"
   },
   "devDependencies": {
+    "@types/node": "^26.1.0",
     "@types/react": "~19.2.2",
-    "typescript": "~6.0.3"
+    "eslint": "^9.39.4",
+    "typescript": "~6.0.3",
+    "vitest": "^4.0.18"
   },
   "scripts": {
     "start": "expo start",
     "android": "expo run:android",
     "ios": "expo run:ios",
     "web": "expo start --web",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "lint": "eslint src tests live index.ts vitest.config.ts metro.config.js metro",
+    "test": "vitest run",
+    "test:live": "vitest run --config live/vitest.live.config.ts"
   }
 }
