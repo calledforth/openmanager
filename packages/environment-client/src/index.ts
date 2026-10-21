@@ -6,6 +6,7 @@ export type {
   BackgroundTask,
   ComposerPreferenceTarget,
   ConnectionFailure,
+  CredentialRefusal,
   ConnectionPhase,
   ConnectionState,
   CreatePairingLinkInput,
