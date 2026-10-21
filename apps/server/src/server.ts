@@ -374,6 +374,7 @@ export async function startServer(config: ServerConfig) {
       artifacts,
       flush: eventService.flush,
       appendAtomic: (events) => eventService.appendAtomic(events),
+      finalizeNow: (event) => eventService.finalizeNow(event),
       onPersistenceError: (error, eventName) =>
         log('error', 'event persistence failed', { eventName, reason: String(error) }),
       workspaceAvailability: (workspaceId) => workspaces.availability(workspaceId),

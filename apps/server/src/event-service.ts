@@ -92,6 +92,19 @@ export function createPersistentEventService(
       batcher.flush()
       repository.appendGroups(groups satisfies readonly EventGroup[]).forEach(publish)
     },
+    /**
+     * Write one turn's end now, through the terminal path (its closes first),
+     * after anything already buffered. Unlike `append`, a failed write is
+     * not kept for a retry: it throws, and the caller answers the failure.
+     */
+    finalizeNow(event: ProofEvent) {
+      const terminal = durable(event)
+      if (!isTerminal(terminal) || terminal.scope.type !== 'thread') {
+        throw new Error('finalizeNow writes one terminal turn event')
+      }
+      batcher.flush()
+      repository.finalizeTurn(terminal.scope, [terminal]).forEach(publish)
+    },
     flush: batcher.flush,
     close: batcher.close,
     /**

@@ -350,6 +350,11 @@ export function createThreadService(
     /** Commit several host events together; falls back to one append per event. */
     appendAtomic?: (events: readonly ProofEvent[]) => void
     /**
+     * Write one turn's end now, throwing when it fails instead of keeping it
+     * for a retry. Falls back to `appendEvent`.
+     */
+    finalizeNow?: (event: ProofEvent) => void
+    /**
      * A failed write on the provider-driven path is reported here and the
      * batch stays queued for the next append. Without a handler it throws.
      */
@@ -2496,21 +2501,36 @@ export function createThreadService(
         // failed at boot) has no provider work to stop: interrupting it is
         // writing its end, through the same terminal path as any other.
         const { sessionId, threadId, turnId } = parsed.data.payload
-        if (
-          options.database &&
-          (!record?.activeTurn || record.activeTurn.turn.turnId !== turnId) &&
-          (options.flush?.(), findOpenTurnId(options.database, { sessionId, threadId })) === turnId
-        ) {
-          appendRuntimeEvent(
-            ProofEventSchemas['turn.interrupted'].parse({
-              type: 'event',
-              name: 'turn.interrupted',
-              eventId: randomUUID(),
-              timestamp: new Date().toISOString(),
-              scope: { type: 'thread', environmentId, sessionId, threadId },
-              payload: { turnId, reason: 'user' },
-            }),
-          )
+        const running = record?.activeTurn?.turn.turnId === turnId
+        let heldOpen = false
+        if (options.database && !running) {
+          options.flush?.()
+          heldOpen = findOpenTurnId(options.database, { sessionId, threadId }) === turnId
+        }
+        if (heldOpen) {
+          // The answer says what the rows say: a write that rolled back is
+          // an error, not a success (I10). A turn whose end cannot be
+          // written at all stays open until its rows are fixed or its
+          // session is deleted.
+          try {
+            ;(options.finalizeNow ?? appendEvent)(
+              ProofEventSchemas['turn.interrupted'].parse({
+                type: 'event',
+                name: 'turn.interrupted',
+                eventId: randomUUID(),
+                timestamp: new Date().toISOString(),
+                scope: { type: 'thread', environmentId, sessionId, threadId },
+                payload: { turnId, reason: 'user' },
+              }),
+            )
+          } catch (error) {
+            options.onPersistenceError?.(error, 'turn.interrupted')
+            return errorResult(
+              command.requestId,
+              'unavailable',
+              'The turn could not be ended. Try again, or delete the session.',
+            )
+          }
           return ProofResponseSchemas['turn.interrupt'].parse({
             type: 'response',
             requestId: command.requestId,

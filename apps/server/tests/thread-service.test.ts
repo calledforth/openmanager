@@ -1479,6 +1479,7 @@ describe('durable session lifecycle', () => {
           database,
           flush: events.flush,
           appendAtomic: events.appendAtomic,
+          finalizeNow: events.finalizeNow,
           ...(onPersistenceError ? { onPersistenceError } : {}),
         },
       )
@@ -1538,6 +1539,14 @@ describe('durable session lifecycle', () => {
         type: 'error',
         error: { code: 'conflict' },
       })
+      // While the turn's end still cannot be written, the interrupt says so.
+      expect(
+        h.dispatch(restarted, 'turn.interrupt', { ...target, turnId: sent.turn.turnId }),
+      ).toMatchObject({ type: 'error', error: { code: 'unavailable' } })
+      expect(h.database.prepare('SELECT state FROM turns').get()).toEqual({ state: 'running' })
+      // Nothing of the failed write is kept to retry later.
+      h.events.flush()
+      expect(h.database.prepare('SELECT state FROM turns').get()).toEqual({ state: 'running' })
       h.database.exec('DROP TRIGGER refuse_recovery')
       expect(
         h.dispatch(restarted, 'turn.interrupt', { ...target, turnId: sent.turn.turnId }),
