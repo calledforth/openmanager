@@ -969,7 +969,16 @@ export function createConvexEnvironmentClient(
         .threads[sessionId]?.turns.find(
           (turn) => turn.state === 'running' || turn.state === 'waiting',
         )
-      if (open) translator.adoptTurn(sessionId, open.turnId)
+      if (open) {
+        const pending = store
+          .getState()
+          .threads[sessionId]!.interactions.filter((item) => item.turnId === open.turnId)
+          .map((item) => ({
+            interactionId: item.interaction.interactionId,
+            kind: item.interaction.kind,
+          }))
+        translator.adoptTurn(sessionId, open.turnId, pending)
+      }
     },
     async loadSessionHistory(input) {
       gate()

@@ -33,9 +33,15 @@ export interface AgentEventTranslator {
   activeTurnId(sessionId: string): string | null
   /**
    * Record a turn learned from hydration rather than from `prompt_started`,
-   * so later events that carry no message ID still land on the right turn.
+   * so later events that carry no message ID still land on the right turn,
+   * with the requests it is still waiting on: a resolution then says whether
+   * the turn still waits on another.
    */
-  adoptTurn(sessionId: string, turnId: string): void
+  adoptTurn(
+    sessionId: string,
+    turnId: string,
+    requests?: readonly { interactionId: string; kind: Interaction['kind'] }[],
+  ): void
 }
 
 const INTERRUPTED_STOP = /cancel|abort|interrupt/i
@@ -452,8 +458,10 @@ export function createAgentEventTranslator(options: {
   return {
     translate,
     activeTurnId: (sessionId) => turns.get(sessionId) ?? null,
-    adoptTurn: (sessionId, turnId) => {
+    adoptTurn: (sessionId, turnId, requests = []) => {
       turns.set(sessionId, turnId)
+      const tracked = openOf(sessionId).requests
+      for (const { interactionId, kind } of requests) tracked.set(interactionId, kind)
     },
   }
 }

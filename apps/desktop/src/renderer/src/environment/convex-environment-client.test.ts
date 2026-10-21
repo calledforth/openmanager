@@ -376,6 +376,49 @@ describe('createConvexEnvironmentClient', () => {
     expect(state.sessions['session-1']?.status).toBe('waiting')
   })
 
+  it('keeps a hydrated turn waiting while another hydrated request is still open', async () => {
+    const { client, convex, bridge } = setup()
+    convex
+      .on('sessions:getByExternalId', () => ({
+        ...SESSION_ROW,
+        workspaceId: 'ws1',
+        status: 'running',
+      }))
+      .on('messages:listMetadata', () => [
+        { externalId: 'usr-2', role: 'user', sequenceNum: 0, isFinal: true },
+      ])
+      .on('messages:getContent', ({ externalId }) => ({ externalId, role: 'user', content: 'go' }))
+      .on('permissions:getPendingForSession', () => ({
+        requestId: 'perm-1',
+        toolName: 'bash',
+        description: 'run',
+        options: [{ optionId: 'allow', name: 'Allow', kind: 'allow_once' }],
+      }))
+      .on('questions:getPendingForSession', () => null)
+      .on('plans:getPendingForSession', () => ({
+        requestId: 'plan-1',
+        markdown: '# Plan',
+        todos: [{ id: 't', content: 'x', status: 'pending' }],
+      }))
+    client.connect()
+    await client.commands.openSession('session-1')
+    expect(selectActiveThread(client.getState())!.turns.at(-1)?.state).toBe('waiting')
+
+    // The permission is answered; the plan hydrated beside it is still open.
+    bridge.emit(
+      agentEvent({
+        category: 'permission',
+        event: 'permission_resolved',
+        messageId: 'usr-2',
+        data: { requestId: 'perm-1', outcome: { outcome: 'selected', optionId: 'allow' } },
+      }),
+    )
+    const thread = selectActiveThread(client.getState())!
+    expect(thread.interactions.map((item) => item.interaction.interactionId)).toEqual(['plan-1'])
+    expect(thread.turns.at(-1)).toMatchObject({ turnId: 'usr-2', state: 'waiting' })
+    expect(client.getState().sessions['session-1']?.status).toBe('waiting')
+  })
+
   it('shows a request from a turn the provider began by itself, and its answer', () => {
     const { client, bridge } = setup()
     client.connect()
