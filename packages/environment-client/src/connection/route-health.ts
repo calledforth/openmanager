@@ -40,7 +40,13 @@ export function routeHealthFromConnection(
 ): RouteHealthReport | null {
   if (connection.phase === 'connected') return { status: 'available' }
   if (connection.failure?.code === 'auth') {
-    return { status: 'unauthorized', message: connection.failure.message }
+    return {
+      status: 'unauthorized',
+      message: connection.failure.message,
+      ...(connection.failure.credentialRefusal
+        ? { credentialRefusal: connection.failure.credentialRefusal }
+        : {}),
+    }
   }
   if (connection.failure?.code === 'unavailable') {
     return {
