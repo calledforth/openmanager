@@ -630,6 +630,22 @@ describe('phone connection controller', () => {
       expect(h.state().status).toBe('held')
     })
 
+    it('stops the probes still in flight once a search has its answer', async () => {
+      const tunnel = deferred<BootstrapOutcome>()
+      const h = harness({
+        routes: [LAN, TUNNEL],
+        answers: { [LAN]: ready(), [TUNNEL]: tunnel.promise },
+      })
+      await h.controller.start()
+      await flush()
+      expect(h.state()).toMatchObject({ status: 'connecting', endpoint: LAN })
+      const tunnelProbe = h.signals[h.probes.indexOf(TUNNEL)]!
+      expect(tunnelProbe.aborted).toBe(true)
+      tunnel.resolve(ready())
+      await flush()
+      expect(h.sockets()).toHaveLength(1)
+    })
+
     it('aborts the probes of a search that another search replaced', async () => {
       const lan = deferred<BootstrapOutcome>()
       const h = harness({ answers: { [LAN]: lan.promise } })
@@ -640,7 +656,8 @@ describe('phone connection controller', () => {
       h.controller.retry()
       await flush()
       expect(first.aborted).toBe(true)
-      expect(h.signals.at(-1)!.aborted).toBe(false)
+      // The newer search ran to its answer and dialled.
+      expect(h.state()).toMatchObject({ status: 'connecting', endpoint: LAN })
       lan.resolve(ready())
       await flush()
       expect(h.sockets()).toHaveLength(1)

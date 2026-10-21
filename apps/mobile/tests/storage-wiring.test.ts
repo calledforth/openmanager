@@ -166,6 +166,42 @@ describe('a refused token', () => {
     expect(h.storage.secret(ENV)).toBe(fresh)
   })
 
+  it('stops the confirmation for a hold, and asks again on return', async () => {
+    const h = harness()
+    await h.controller.start()
+    await flush()
+    let answer!: (outcome: ReturnType<typeof ready>) => void
+    h.answers.set(LAN, new Promise((resolve) => (answer = resolve)))
+    h.socket().open()
+    h.socket().drop(4401, 'unknown_client')
+    await flush()
+    const inFlight = h.signals.at(-1)!
+    expect(h.probes).toEqual([LAN, LAN])
+
+    h.activity.set('background')
+    await flush()
+    expect(inFlight.aborted).toBe(true)
+    // Its late answer decides nothing.
+    answer(ready())
+    await flush()
+    await h.controller.flush()
+    expect(h.storage.secret(ENV)).toBe(TOKEN)
+
+    h.answers.set(LAN, ready())
+    h.activity.set('active')
+    await flush()
+    await h.controller.flush()
+    expect(h.probes).toEqual([LAN, LAN, LAN])
+    expect(h.storage.secret(ENV)).toBeNull()
+    expect(h.state().status).toBe('unauthorized')
+
+    // Decided: a later return asks nothing.
+    h.activity.set('background')
+    h.activity.set('active')
+    await flush()
+    expect(h.probes).toHaveLength(3)
+  })
+
   it('is kept on a handshake auth refusal that is not the revocation close', async () => {
     const h = harness()
     await h.controller.start()

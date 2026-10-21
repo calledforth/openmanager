@@ -34,6 +34,7 @@ import {
   type RouteSearchResult,
   type StoredEnvironment,
 } from '@openmanager/environment-client/connection'
+import type { CredentialRefusal } from '@openmanager/environment-client'
 import {
   confirmCredentialRejected,
   credentialRefusalOf,
@@ -302,6 +303,11 @@ type Latch = {
    * the version the environment speaks, until it has answered.
    */
   readVersionFrom?: string
+  /**
+   * For a refused token: what is needed to decide whether to forget it,
+   * until that has been decided (`credential-rejection.ts`).
+   */
+  confirmRejection?: { endpoint: string; rejected: string; refusal: CredentialRefusal }
 }
 
 type Wake = 'start' | 'select' | 'retry' | 'foreground' | 'online' | 'activity' | 'timer' | 'socket'
@@ -413,6 +419,8 @@ export function createPhoneConnectionController(
   let hydrateWait: { resolve: () => void; timer: unknown } | null = null
   /** The bootstrap read explaining a socket's protocol refusal, while in flight. */
   let refusalRead: AbortController | null = null
+  /** The bootstrap read deciding whether to forget a refused token, while in flight. */
+  let rejectionCheck: AbortController | null = null
   let searchGeneration = 0
   let searchAbort: AbortController | null = null
   let retryTimer: unknown = null
@@ -472,28 +480,36 @@ export function createPhoneConnectionController(
    * certain that its own environment refused it (`revoked`, or `unknown` and
    * the same address still answers as this environment). Compare-and-clear:
    * a token saved since then is left alone. The latch holds either way.
+   *
+   * The `unknown` case asks the route's bootstrap. Like every other request
+   * it stops for a hold or a network gap and is asked again on return, while
+   * the latch it belongs to holds and nothing has been decided.
    */
-  const forgetIfRejected = (
-    environmentId: string,
-    endpoint: string,
-    rejected: string,
-    refusal: ReturnType<typeof credentialRefusalOf>,
-  ) => {
-    if (!refusal || !rejected) return
+  const checkRejection = () => {
+    const refusal = latch
+    const pending = refusal?.confirmRejection
+    if (!refusal || !pending || rejectionCheck) return
     const abort = new AbortController()
-    const release = () => abort.abort()
-    releases.push(release)
+    rejectionCheck = abort
     void confirmCredentialRejected({
-      refusal,
-      environmentId,
-      endpoint,
+      refusal: pending.refusal,
+      environmentId: refusal.environmentId,
+      endpoint: pending.endpoint,
       probe: (route) => probeRoute(route, abort.signal),
     }).then((confirmed) => {
-      const index = releases.indexOf(release)
-      if (index !== -1) releases.splice(index, 1)
-      if (!confirmed || disposed || abort.signal.aborted) return
-      commit(forgetRejectedCredential(registry, environmentId, rejected))
+      if (rejectionCheck === abort) rejectionCheck = null
+      if (abort.signal.aborted || disposed || latch !== refusal) return
+      // Decided: kept (no answer, another environment) or forgotten.
+      delete refusal.confirmRejection
+      if (confirmed) {
+        commit(forgetRejectedCredential(registry, refusal.environmentId, pending.rejected))
+      }
     })
+  }
+
+  const cancelRejectionCheck = () => {
+    rejectionCheck?.abort()
+    rejectionCheck = null
   }
 
   /** What reaching a route showed. Repeating the same report writes nothing. */
@@ -569,6 +585,7 @@ export function createPhoneConnectionController(
     readVersionFrom?: string,
   ) => {
     cancelRefusalRead()
+    cancelRejectionCheck()
     latch = { environmentId, status, ...(readVersionFrom ? { readVersionFrom } : {}) }
     cancelSearch()
     clearRetry()
@@ -626,7 +643,11 @@ export function createPhoneConnectionController(
           ...(failure.message ? { message: failure.message } : {}),
         },
       })
-      forgetIfRejected(environmentId, endpoint, current.credential, credentialRefusalOf(failure))
+      const refusal = credentialRefusalOf(failure)
+      if (refusal && current.credential && latch) {
+        latch.confirmRejection = { endpoint, rejected: current.credential, refusal }
+        checkRejection()
+      }
       return
     }
     if (failure?.code === 'protocol_incompatible' || failure?.code === 'capability_missing') {
@@ -817,6 +838,9 @@ export function createPhoneConnectionController(
         },
       }
     }
+    // The search may answer while routes behind the one it took are still
+    // being asked; those answers are not needed, so their requests stop.
+    abort.abort()
     if (searchAbort === abort) searchAbort = null
     if (generation !== searchGeneration || disposed) return
     const environmentId = environment.environmentId
@@ -891,12 +915,18 @@ export function createPhoneConnectionController(
     }
     if (latch && latch.environmentId === environment.environmentId) {
       cancelSearch()
-      if (activity === 'background' || !network.online) cancelRefusalRead()
-      else readRefusedVersion()
+      if (activity === 'background' || !network.online) {
+        cancelRefusalRead()
+        cancelRejectionCheck()
+      } else {
+        readRefusedVersion()
+        checkRejection()
+      }
       set({ status: latch.status, retryAt: null })
       return
     }
     cancelRefusalRead()
+    cancelRejectionCheck()
     latch = null
     if (activity === 'background') {
       quiet()
@@ -1077,6 +1107,7 @@ export function createPhoneConnectionController(
       }
       cancelSearch()
       cancelRefusalRead()
+      cancelRejectionCheck()
       clearRetry()
       for (const release of releases.splice(0)) release()
       dropTransport()
