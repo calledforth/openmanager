@@ -470,6 +470,7 @@ export function createPhoneConnectionController(
       latchOn(environmentId, 'incompatible_protocol', {
         protocol: { client: PROTOCOL_VERSION, environment: null },
       })
+      readRefusedVersion(environmentId, endpoint)
       return
     }
 
@@ -491,6 +492,32 @@ export function createPhoneConnectionController(
     // It failed while opening, or soon after: back off before asking again,
     // so a route that answers bootstrap but refuses the socket cannot spin.
     scheduleRetry()
+  }
+
+  /**
+   * The socket's refusal carries no version the client keeps, so the route's
+   * bootstrap is asked once for the version the environment speaks now. Only
+   * its own answer is shown, and only while the latch it explains still holds.
+   */
+  const readRefusedVersion = (environmentId: string, endpoint: string) => {
+    const abort = new AbortController()
+    const release = () => abort.abort()
+    releases.push(release)
+    void probeRoute(endpoint, abort.signal).then((outcome) => {
+      const index = releases.indexOf(release)
+      if (index !== -1) releases.splice(index, 1)
+      if (disposed || latch?.environmentId !== environmentId) return
+      if (latch.status !== 'incompatible_protocol') return
+      if (outcome.status !== 'incompatible_protocol') return
+      if (outcome.environmentId && outcome.environmentId !== environmentId) return
+      set({
+        bootstrap: outcome,
+        protocol: {
+          client: outcome.clientProtocolVersion,
+          environment: outcome.serverProtocolVersion,
+        },
+      })
+    })
   }
 
   const dial = (environment: StoredEnvironment, endpoint: string) => {

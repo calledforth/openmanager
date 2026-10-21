@@ -173,8 +173,39 @@ describe('phone connection controller', () => {
       expect(h.state()).toMatchObject({ status: 'incompatible_protocol', client: null })
       h.timers.advance(10 * 60_000)
       await flush()
-      expect(h.probes).toEqual([LAN])
+      // One bootstrap read for the version that refused, then nothing.
+      expect(h.probes).toEqual([LAN, LAN])
       expect(h.sockets()).toHaveLength(1)
+    })
+
+    it('shows the version the environment speaks after a handshake refusal', async () => {
+      const h = harness()
+      await h.controller.start()
+      await flush()
+      // The environment was upgraded between bootstrap and handshake.
+      h.answers.set(LAN, {
+        status: 'incompatible_protocol',
+        clientProtocolVersion: PROTOCOL_VERSION,
+        serverProtocolVersion: 99,
+        environmentId: ENV,
+      })
+      const socket = h.socket()
+      socket.open()
+      socket.receive({
+        type: 'error',
+        requestId: socket.last('protocol.handshake').requestId,
+        error: {
+          code: 'protocol_incompatible',
+          message: 'Upgrade required.',
+          details: { clientProtocolVersion: PROTOCOL_VERSION, serverProtocolVersion: 99 },
+        },
+      })
+      await flush()
+      expect(h.state()).toMatchObject({
+        status: 'incompatible_protocol',
+        protocol: { client: PROTOCOL_VERSION, environment: 99 },
+        bootstrap: { status: 'incompatible_protocol', serverProtocolVersion: 99 },
+      })
     })
   })
 
