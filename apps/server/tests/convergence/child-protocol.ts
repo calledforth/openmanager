@@ -92,6 +92,8 @@ export type ServerOp =
   | { op: 'readUnidentified' }
   /** Graceful stop through `server.close()`, then exit. */
   | { op: 'shutdown' }
+  /** How many bytes the running `streamText` has handed the server, and since when. */
+  | { op: 'readStreamed' }
   /** Arm a kill at a commit (see `KillAt`); `null` disarms. */
   | { op: 'armKill'; at: KillAt | null }
 

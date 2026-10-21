@@ -774,6 +774,9 @@ function readThread(sessionId: string, threadId: string): ServerThreadRead {
   }
 }
 
+/** What the current `streamText` has handed the server so far (S15's achieved rate). */
+let streamed = { bytes: 0, startedAt: 0 }
+
 async function handle(request: ChildRequest): Promise<unknown> {
   switch (request.op) {
     case 'emitText':
@@ -884,9 +887,11 @@ async function handle(request: ChildRequest): Promise<unknown> {
       const end = performance.now() + request.durationMs
       let next = performance.now()
       let bytes = 0
+      streamed = { bytes: 0, startedAt: performance.now() }
       while (performance.now() < end && activePrompts.get(active.providerSessionId) === active) {
         await update(active, { sessionUpdate: 'agent_message_chunk', content: text(chunk) })
         bytes += chunk.length
+        streamed.bytes = bytes
         next += tickMs
         await sleep(Math.max(0, next - performance.now()))
       }
@@ -979,6 +984,11 @@ async function handle(request: ChildRequest): Promise<unknown> {
           readyState: ws.readyState,
           bufferedAmount: ws.bufferedAmount,
         }))
+    case 'readStreamed':
+      return {
+        bytes: streamed.bytes,
+        elapsedMs: streamed.startedAt ? Math.round(performance.now() - streamed.startedAt) : 0,
+      }
     case 'armKill':
       armedKill = request.at ? { ...request.at } : undefined
       return null

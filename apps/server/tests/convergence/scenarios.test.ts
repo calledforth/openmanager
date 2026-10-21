@@ -381,6 +381,25 @@ describe('§8.4 scenarios on main', () => {
     const turnId = await startTurn(a, target)
     await rig.provider({ op: 'emitThought', sessionId: target.sessionId, text: 'Thinking' })
     await rig.provider({ op: 'emitText', sessionId: target.sessionId, text: 'The answer.' })
+    // Closed by the text, while the turn is still running: the turn's end
+    // would close it too, so checking only after it would prove nothing.
+    await untilThread(
+      a,
+      target,
+      (state) => state.reasoning[0]?.phase === 'stop',
+      'A to hold the thought closed while the turn runs',
+    )
+    expect(turnState(a, target, turnId)).toBe('running')
+    await rig.waitQuiet()
+    const running = await serverThread(rig, target)
+    expect(
+      (running.turns as Array<{ turnId: string; state: string }>).find(
+        (turn) => turn.turnId === turnId,
+      )?.state,
+    ).toBe('running')
+    expect(
+      Object.values(running.reasoning).map((thought) => (thought as { phase?: string }).phase),
+    ).toEqual(['stop'])
     await finish(rig, a, target, turnId)
     const thoughts = Object.keys((await serverThread(rig, target)).reasoning)
     expect(thoughts).toHaveLength(1)
@@ -1037,7 +1056,15 @@ describe('§8.4 scenarios on main', () => {
           durationMs: 60_000,
         })
         .catch(() => undefined)
-      const samples: Array<{ atMs: number; bufferedAmount: number; proxyQueued: number }> = []
+      // `producedBytes` is what the provider had handed the server: the
+      // construction needs it near 100 KiB/s, so a run that cannot push that
+      // through the batcher and SQLite shows why it missed the threshold.
+      const samples: Array<{
+        atMs: number
+        bufferedAmount: number
+        proxyQueued: number
+        producedBytes: number
+      }> = []
       const started = rig.now()
       while (proxiedCloses(rig, 'slow_consumer').length === 0 && rig.now() - started < 70_000) {
         const sockets = await rig.server.sampleSockets()
@@ -1045,12 +1072,14 @@ describe('§8.4 scenarios on main', () => {
           (socket) =>
             socket.remotePort !== undefined && rig.proxy.serverSidePorts.has(socket.remotePort),
         )
+        const produced = await rig.server.call<{ bytes: number }>({ op: 'readStreamed' })
         samples.push({
           atMs: rig.now() - started,
           bufferedAmount: proxied.reduce((total, socket) => total + socket.bufferedAmount, 0),
           proxyQueued: rig.proxy
             .backlog()
             .reduce((total, entry) => total + entry.down + entry.inspecting, 0),
+          producedBytes: produced.bytes,
         })
         await sleep(1_000)
       }
