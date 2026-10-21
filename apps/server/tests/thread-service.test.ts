@@ -2945,6 +2945,15 @@ describe('transcript runs', () => {
     thought('Check again')
     thought('', 'stop')
     thought('One more')
+    // A tool closes the open thought too, and the close comes first.
+    service.onRuntimeEvent({
+      ...base(),
+      category: 'tool',
+      event: 'tool_call',
+      data: { toolCallId: 'call-2', title: 'Edit file', kind: 'edit', status: 'in_progress' },
+    })
+    const names = events.map((event) => event.name)
+    expect(names.lastIndexOf('message.reasoning')).toBeLessThan(names.lastIndexOf('tool.updated'))
 
     const reasoningIds = events
       .filter((event) => event.name === 'message.reasoning')
@@ -2954,10 +2963,19 @@ describe('transcript runs', () => {
       .filter((event) => (event.payload as { role: string }).role === 'assistant')
       .map((event) => (event.payload as { messageId: string }).messageId)
 
-    // Same run, same id; each boundary starts a new one.
-    expect(reasoningIds).toHaveLength(5)
+    const reasoningPhases = events
+      .filter((event) => event.name === 'message.reasoning')
+      .map((event) => (event.payload as { phase: string }).phase)
+
+    // Same run, same id; each boundary starts a new one. The first thought is
+    // closed by the server where the text begins (docs/sync-foundations.md
+    // §4.3.3); the framed one closed itself; the last is closed by the tool.
+    expect(reasoningIds).toHaveLength(7)
+    expect(reasoningPhases).toEqual(['delta', 'delta', 'stop', 'delta', 'stop', 'delta', 'stop'])
+    expect(reasoningIds[6]).toBe(reasoningIds[5])
     expect(reasoningIds[0]).toBe(reasoningIds[1])
-    expect(reasoningIds[2]).toBe(reasoningIds[3])
+    expect(reasoningIds[2]).toBe(reasoningIds[0])
+    expect(reasoningIds[3]).toBe(reasoningIds[4])
     expect(new Set(reasoningIds).size).toBe(3)
     expect(textIds).toHaveLength(3)
     expect(textIds[0]).toBe(textIds[1])

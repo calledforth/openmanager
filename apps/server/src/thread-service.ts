@@ -117,6 +117,12 @@ type ActiveTurn = {
    */
   textRunId?: string
   reasoningRunId?: string
+  /**
+   * Thoughts of this turn that no `stop` has closed yet, by host message id.
+   * ACP providers never frame their thoughts, so the server closes them when
+   * the provider moves on to text or a tool (docs/sync-foundations.md §4.3.3).
+   */
+  openReasoning?: Set<string>
   /** The mode the host is starting this turn in (a plan build), if it chose one. */
   modeId?: string
   generatedImages?: Set<string>
@@ -840,6 +846,24 @@ export function createThreadService(
     }
   }
 
+  /** Close every thought of the turn still open (see `ActiveTurn.openReasoning`). */
+  const closeOpenReasoning = (record: ThreadRecord, active: ActiveTurn, timestamp: string) => {
+    if (!active.openReasoning?.size) return
+    for (const messageId of active.openReasoning) {
+      appendRuntimeEvent(
+        ProofEventSchemas['message.reasoning'].parse({
+          type: 'event',
+          name: 'message.reasoning',
+          eventId: randomUUID(),
+          timestamp,
+          scope: threadScope(record),
+          payload: { messageId, turnId: active.turn.turnId, phase: 'stop' },
+        }),
+      )
+    }
+    active.openReasoning.clear()
+  }
+
   const projectOwnEvent = (
     record: ThreadRecord,
     event: RuntimeEvent,
@@ -921,8 +945,22 @@ export function createThreadService(
     // own signals would only repeat them.
     if (projected.name === 'session.created') return
     if (options.database && projected.name === 'turn.started') return
+    // A thought ends where the provider moves on to its answer or a tool: the
+    // server says so, with an event, instead of every client guessing it.
+    if (
+      active &&
+      ((projected.name === 'message.delta' && projected.payload.role === 'assistant') ||
+        projected.name === 'tool.updated')
+    ) {
+      closeOpenReasoning(record, active, projected.timestamp)
+    }
     if (projected.name === 'turn.notice') publishTransient(projected)
     else appendRuntimeEvent(projected)
+    if (active && projected.name === 'message.reasoning') {
+      active.openReasoning ??= new Set()
+      if (projected.payload.phase === 'stop') active.openReasoning.delete(projected.payload.messageId)
+      else active.openReasoning.add(projected.payload.messageId)
+    }
     if (active && projected.name === 'interaction.requested') {
       const { interaction } = projected.payload
       active.pendingInteractions.set(interaction.interactionId, {

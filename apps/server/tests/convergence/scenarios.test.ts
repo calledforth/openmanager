@@ -21,7 +21,6 @@ import {
   silentRecovery,
   snapshotMergeDropsOlderActivity,
   stampMovesRecency,
-  thoughtClosedByFold,
 } from './causes.ts'
 import {
   FlipError,
@@ -297,11 +296,10 @@ async function demonstrateHeartbeatLoop(
 const QUIET = { quiet: true } as const
 
 /**
- * Tool status at turn end on this build. Main never settles a tool, on either
- * side (event-projection.ts:528-570). F3 writes `tool.updated {cancelled}`
- * before the terminal (§4.3); that phase changes this to 'cancelled'.
+ * Tool status at turn end. Main never settled a tool, on either side; F3
+ * writes `tool.updated {cancelled}` before the terminal (§4.3, turn-closure.ts).
  */
-const TOOL_STATUS_AFTER_TURN_END = 'in_progress'
+const TOOL_STATUS_AFTER_TURN_END = 'cancelled'
 
 // ---------------------------------------------------------------------------
 // Scenarios
@@ -352,7 +350,13 @@ describe('§8.4 scenarios on main', () => {
     )
   })
 
-  scenario('S2 a thought followed by text, connected throughout', {}, async (rig) => {
+  /**
+   * Guard since F3 (§4.3.3): the server closes the thought with its own
+   * `message.reasoning {phase: 'stop'}` where the text begins, so the client,
+   * a fresh load and the rows all hold it closed. On main the fold closed it
+   * and the row kept `delta` (THOUGHT_CLOSED_BY_FOLD).
+   */
+  scenario('S2 a thought followed by text, connected throughout (guard)', {}, async (rig) => {
     const a = await rig.connect('A')
     const target = await createSession(rig, a, QUIET)
     const turnId = await startTurn(a, target)
@@ -361,12 +365,19 @@ describe('§8.4 scenarios on main', () => {
     await finish(rig, a, target, turnId)
     const thoughts = Object.keys((await serverThread(rig, target)).reasoning)
     expect(thoughts).toHaveLength(1)
-    await demonstrateDiff(
-      'S2',
-      rig,
-      a,
-      thoughtClosedByFold({ threadId: target.threadId, messageIds: thoughts }),
+    const result = await expectConverges('S2', rig, a)
+    const phases = [result.view, result.fresh].map((view) =>
+      Object.values(view.active!.threads[target.threadId]!.reasoning).map(
+        (thought) => (thought as { phase?: string }).phase,
+      ),
     )
+    phases.push(
+      Object.values(result.server.threads[target.threadId]!.reasoning).map(
+        (thought) => (thought as { phase?: string }).phase,
+      ),
+    )
+    for (const seen of phases) expect(seen, 'the thought is closed everywhere').toEqual(['stop'])
+    recordEvidence({ scenario: 'S2', bucket: 'regression-guard', cause: 'phase', observed: phases })
   })
 
   scenario('S3 a tool left open when the turn completes (guard)', {}, async (rig) => {
