@@ -385,6 +385,28 @@ describe('phone connection controller', () => {
       expect(h.sockets()).toHaveLength(2)
     })
 
+    it('retires the socket on the old token when a new one is saved, so its refusal cannot latch the new one', async () => {
+      const h = harness()
+      await connect(h)
+      const old = h.socket()
+      const lan = deferred<BootstrapOutcome>()
+      h.answers.set(LAN, lan.promise)
+      const fresh = 'n'.repeat(43)
+      h.controller.saveEnvironment({ environmentId: ENV, endpoint: LAN, credential: fresh })
+      await flush()
+      expect(old.closedWith?.reason).toBe('client_disposed')
+      // The old token is refused while the new token's search is still out.
+      old.drop(4401, 'revoked')
+      await flush()
+      expect(h.state().status).toBe('searching')
+      lan.resolve(ready())
+      await flush()
+      expect(h.socket().protocols).toEqual(['openmanager.v1', `openmanager.auth.${fresh}`])
+      h.socket().accept()
+      await flush()
+      expect(h.state().status).toBe('connected')
+    })
+
     it('connects with a new token once one is saved for the environment', async () => {
       const h = harness()
       await h.controller.start()
@@ -402,6 +424,47 @@ describe('phone connection controller', () => {
       expect(h.state().status).toBe('connected')
       await h.controller.flush()
       expect(h.storage.credentials.snapshot()).toEqual({ [ENV]: fresh })
+    })
+  })
+
+  describe('cancelled searches', () => {
+    it('aborts a probe in flight and asks no further route when the app goes to the background', async () => {
+      const lan = deferred<BootstrapOutcome>()
+      const h = harness({ routes: [LAN, TUNNEL], answers: { [LAN]: ready(), [TUNNEL]: ready() } })
+      await connect(h)
+      h.timers.advance(11_000)
+      h.answers.set(LAN, lan.promise)
+      // A stable connection drops: the route in use is asked on its own first.
+      h.socket().drop(1006)
+      await flush()
+      expect(h.probes).toEqual([LAN, TUNNEL, LAN])
+      const inFlight = h.signals.at(-1)!
+      expect(inFlight.aborted).toBe(false)
+
+      h.activity.set('background')
+      await flush()
+      expect(inFlight.aborted).toBe(true)
+      // The aborted probe fails; the search must not go on to the tunnel.
+      lan.resolve(silent)
+      await flush()
+      expect(h.probes).toEqual([LAN, TUNNEL, LAN])
+      expect(h.state().status).toBe('held')
+    })
+
+    it('aborts the probes of a search that another search replaced', async () => {
+      const lan = deferred<BootstrapOutcome>()
+      const h = harness({ answers: { [LAN]: lan.promise } })
+      await h.controller.start()
+      await flush()
+      const first = h.signals.at(-1)!
+      h.answers.set(LAN, ready())
+      h.controller.retry()
+      await flush()
+      expect(first.aborted).toBe(true)
+      expect(h.signals.at(-1)!.aborted).toBe(false)
+      lan.resolve(ready())
+      await flush()
+      expect(h.sockets()).toHaveLength(1)
     })
   })
 

@@ -11,6 +11,8 @@ import {
   EMPTY_REGISTRY,
   environmentSocketUrl,
   isLoopbackEnvironmentEndpoint,
+  fetchBootstrap,
+  findStoredEnvironment,
   noLoopbackGate,
   removeStoredEnvironment,
   routeHealthFromBootstrap,
@@ -166,8 +168,11 @@ export type PhoneConnectionOptions = {
   transport?: Pick<WebSocketEnvironmentClientOptions, 'WebSocket' | 'fetch' | 'requestId'>
   /** Replaced in tests. */
   createClient?: (options: WebSocketEnvironmentClientOptions) => EnvironmentClient
-  /** How one route is asked; `fetchBootstrap` with no loopback gate by default. */
-  probe?: (endpoint: string) => Promise<BootstrapOutcome>
+  /**
+   * How one route is asked; `fetchBootstrap` with no loopback gate by
+   * default. `signal` aborts when the search is cancelled.
+   */
+  probe?: (endpoint: string, signal: AbortSignal) => Promise<BootstrapOutcome>
   timers?: {
     setTimeout: (fn: () => void, delayMs: number) => unknown
     clearTimeout: (handle: unknown) => void
@@ -181,6 +186,15 @@ export type PhoneConnectionOptions = {
 
 export const PHONE_RETRY_DELAYS_MS: readonly number[] = [1000, 2000, 4000, 8000, 15000, 30000]
 export const PHONE_STABLE_AFTER_MS = 10_000
+/** How long one route may take to answer `GET /bootstrap`, as in the shared search. */
+const PROBE_TIMEOUT_MS = 6000
+
+/** What a probe of a cancelled search answers; never read, as the search is stale. */
+const CANCELLED: BootstrapOutcome = {
+  status: 'unreachable',
+  message: 'The search was cancelled.',
+  cause: 'network',
+}
 
 const IDLE: BootstrapOutcome = { status: 'idle' }
 
@@ -249,10 +263,30 @@ export function createPhoneConnectionController(
   const retryDelays = options.retryDelaysMs ?? PHONE_RETRY_DELAYS_MS
   const stableAfterMs = options.stableAfterMs ?? PHONE_STABLE_AFTER_MS
   const persistence: RegistryPersistence = createRegistryPersistence(options.storage)
-  const search = (environment: StoredEnvironment, first?: string): Promise<RouteSearchResult> =>
-    options.probe
-      ? searchRoutes(phoneSearchOrder(environment), { probe: options.probe, first })
-      : searchRoutes(phoneSearchOrder(environment), { loopbackAccessDenied: noLoopbackGate, first })
+  const probeRoute =
+    options.probe ??
+    ((endpoint: string, signal: AbortSignal) =>
+      fetchBootstrap(endpoint, {
+        signal,
+        timeoutMs: PROBE_TIMEOUT_MS,
+        loopbackAccessDenied: noLoopbackGate,
+      }))
+  /**
+   * The shared search, every probe tied to `signal`. Once the search is
+   * cancelled (hold, offline, another search, dispose) a probe in flight is
+   * aborted, and the routes `searchRoutes` would ask after it are answered
+   * at once without a request.
+   */
+  const search = (
+    environment: StoredEnvironment,
+    signal: AbortSignal,
+    first?: string,
+  ): Promise<RouteSearchResult> =>
+    searchRoutes(phoneSearchOrder(environment), {
+      first,
+      probe: (endpoint) =>
+        signal.aborted ? Promise.resolve(CANCELLED) : probeRoute(endpoint, signal),
+    })
 
   let registry: EnvironmentRegistry = EMPTY_REGISTRY
   let loaded = false
@@ -262,6 +296,7 @@ export function createPhoneConnectionController(
   let network = options.network.current()
   let latch: Latch | null = null
   let searchGeneration = 0
+  let searchAbort: AbortController | null = null
   let retryTimer: unknown = null
   let attempt = 0
   let transport: Transport | null = null
@@ -328,6 +363,8 @@ export function createPhoneConnectionController(
 
   const cancelSearch = () => {
     searchGeneration += 1
+    searchAbort?.abort()
+    searchAbort = null
   }
 
   /** Close and forget the socket's client. Views keep it only with `keepClient`. */
@@ -519,11 +556,14 @@ export function createPhoneConnectionController(
   }
 
   const runSearch = async (environment: StoredEnvironment, first?: string) => {
-    const generation = ++searchGeneration
+    cancelSearch()
+    const generation = searchGeneration
+    const abort = new AbortController()
+    searchAbort = abort
     set({ status: 'searching', retryAt: null })
     let result: RouteSearchResult
     try {
-      result = await search(environment, first)
+      result = await search(environment, abort.signal, first)
     } catch {
       // A probe never throws by contract; one that does is no answer.
       result = {
@@ -537,6 +577,7 @@ export function createPhoneConnectionController(
         },
       }
     }
+    if (searchAbort === abort) searchAbort = null
     if (generation !== searchGeneration || disposed) return
     const environmentId = environment.environmentId
     for (const probe of result.probes) {
@@ -722,7 +763,17 @@ export function createPhoneConnectionController(
         new Date(now()),
       )
       if (!next) throw new Error('That environment address or ID is not valid.')
-      if (transport && transport.environmentId !== input.environmentId) dropTransport()
+      // A socket on another environment, or on this one with the token being
+      // replaced, is retired now: left open while the new token's search runs,
+      // a late refusal of the old token would latch the new one as refused.
+      const saved = findStoredEnvironment(next.environments, input.environmentId)
+      if (
+        transport &&
+        (transport.environmentId !== input.environmentId ||
+          transport.credential !== saved?.credential)
+      ) {
+        dropTransport()
+      }
       if (registry.selectedId !== input.environmentId) {
         set({ endpoint: null, bootstrap: IDLE, routeFailure: null })
       }

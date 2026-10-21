@@ -217,6 +217,7 @@ export function harness(
   const network = createSource<PhoneNetwork>({ online: true })
   const answers = new Map(Object.entries(input.answers ?? { [LAN]: ready() }))
   const probes: string[] = []
+  const signals: AbortSignal[] = []
   let requests = 0
   const controller = createPhoneConnectionController({
     storage,
@@ -224,8 +225,9 @@ export function harness(
     network,
     timers,
     now: timers.now,
-    probe: async (endpoint) => {
+    probe: async (endpoint, signal) => {
       probes.push(endpoint)
+      signals.push(signal)
       return (await answers.get(endpoint)) ?? silent
     },
     createClient: (options: WebSocketEnvironmentClientOptions) =>
@@ -244,6 +246,7 @@ export function harness(
     network,
     answers,
     probes,
+    signals,
     sockets: () => FakeSocket.instances,
     socket: () => FakeSocket.instances.at(-1)!,
     state: () => controller.getState(),
