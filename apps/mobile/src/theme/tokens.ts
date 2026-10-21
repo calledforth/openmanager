@@ -15,6 +15,7 @@ import {
   type ThemeMode as SchemeId,
 } from '@openmanager/app-core/lib/theme-families'
 import {
+  colorChannels,
   themeShadows,
   themeTokens,
   withAlpha,
@@ -66,12 +67,44 @@ export interface PhoneTheme {
   tint: string
   tintSoft: string
   status: StatusColors
+  /** The ink a glyph on each status fill takes: `bg` or `fg`, by contrast. */
+  statusInk: StatusColors
   statusWash: { done: string; error: string }
   /** CSS box-shadow text React Native's `boxShadow` style takes as-is. */
   shadow: { float: string; rest: string }
   shadowLayers: { float: ShadowLayer[]; rest: ShadowLayer[] }
   /** Every token of the scheme, for anything the roles above do not name. */
   tokens: ThemeTokens
+  /**
+   * The ink for something drawn on `fill` (a badge count, a status glyph):
+   * the scheme's canvas or its ink, whichever contrasts more with the fill.
+   */
+  inkOn: (fill: string) => string
+}
+
+/** WCAG relative luminance of a generated colour; its alpha is ignored. */
+export function relativeLuminance(color: string): number {
+  const channels = colorChannels(color)
+  if (!channels) return 0
+  const linear = (value: number) => {
+    const c = value / 255
+    return c <= 0.03928 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4
+  }
+  return 0.2126 * linear(channels.r) + 0.7152 * linear(channels.g) + 0.0722 * linear(channels.b)
+}
+
+/** WCAG contrast ratio between two generated colours, from 1 to 21. */
+export function contrastRatio(a: string, b: string): number {
+  const [hi, lo] = [relativeLuminance(a), relativeLuminance(b)].sort((x, y) => y - x) as [
+    number,
+    number,
+  ]
+  return (hi + 0.05) / (lo + 0.05)
+}
+
+/** Of the two inks, the one that reads better on `fill`. */
+function pickInk(fill: string, bg: string, fg: string): string {
+  return contrastRatio(fill, bg) >= contrastRatio(fill, fg) ? bg : fg
 }
 
 const GLASS_ALPHA: Record<ColorScheme, { glass: number; strong: number; sheet: number }> = {
@@ -90,11 +123,22 @@ export function phoneTheme(scheme: SchemeId): PhoneTheme {
   const colorScheme = schemeOfTheme(scheme)
   const alpha = GLASS_ALPHA[colorScheme]
   const floatBg = t['float-bg']
+  const bg = t['basis-canvas-bg']
+  const fg = t['basis-text-strong']
+  const inkOn = (fill: string) => pickInk(fill, bg, fg)
+  const status: StatusColors = {
+    working: t['basis-status-working'],
+    background: t['basis-status-background'],
+    needs: t['basis-status-needs'],
+    question: t['basis-status-question'],
+    done: t['basis-status-done'],
+    error: t['basis-status-error'],
+  }
   const theme: PhoneTheme = {
     scheme,
     colorScheme,
-    bg: t['basis-canvas-bg'],
-    fg: t['basis-text-strong'],
+    bg,
+    fg,
     muted: t['basis-text-muted'],
     faint: t['basis-text-faint'],
     rule: t['basis-border-muted'],
@@ -116,18 +160,20 @@ export function phoneTheme(scheme: SchemeId): PhoneTheme {
     glassSheet: withAlpha(floatBg, alpha.sheet),
     tint: t.tint,
     tintSoft: t['tint-soft'],
-    status: {
-      working: t['basis-status-working'],
-      background: t['basis-status-background'],
-      needs: t['basis-status-needs'],
-      question: t['basis-status-question'],
-      done: t['basis-status-done'],
-      error: t['basis-status-error'],
+    status,
+    statusInk: {
+      working: inkOn(status.working),
+      background: inkOn(status.background),
+      needs: inkOn(status.needs),
+      question: inkOn(status.question),
+      done: inkOn(status.done),
+      error: inkOn(status.error),
     },
     statusWash: { done: t['basis-status-done-wash'], error: t['basis-status-error-wash'] },
     shadow: { float: t['float-shadow'], rest: t['float-shadow-rest'] },
     shadowLayers: { float: shadows['float-shadow'], rest: shadows['float-shadow-rest'] },
     tokens: t,
+    inkOn,
   }
   cache.set(scheme, theme)
   return theme

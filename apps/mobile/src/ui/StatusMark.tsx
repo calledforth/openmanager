@@ -19,6 +19,8 @@ import { AppText } from '../components/ui/AppText'
  * turning while it works, a slower blue one for background work, an amber
  * "!" when it needs you, a pink "?" for a question, a green tick when it
  * finished since you looked, a red "×" when it failed, a hollow ring at rest.
+ * A glyph on a fill takes the scheme's canvas or ink, whichever reads better
+ * on that fill (`theme.statusInk`).
  */
 export function StatusMark({ mark, size = 14 }: { mark: Mark; size?: number }) {
   const theme = usePhoneTheme()
@@ -30,11 +32,13 @@ export function StatusMark({ mark, size = 14 }: { mark: Mark; size?: number }) {
         <Spinner color={theme.status.background} size={size - 2} periodMs={2200} opacity={0.8} />
       )
     case 'needs':
-      return <Disc color={theme.status.needs} size={size} glyph="!" />
+      return <Disc color={theme.status.needs} ink={theme.statusInk.needs} size={size} glyph="!" />
     case 'question':
-      return <Disc color={theme.status.question} size={size} glyph="?" />
+      return (
+        <Disc color={theme.status.question} ink={theme.statusInk.question} size={size} glyph="?" />
+      )
     case 'error':
-      return <Disc color={theme.status.error} size={size} glyph="×" />
+      return <Disc color={theme.status.error} ink={theme.statusInk.error} size={size} glyph="×" />
     case 'done':
       return (
         <View
@@ -47,7 +51,7 @@ export function StatusMark({ mark, size = 14 }: { mark: Mark; size?: number }) {
             justifyContent: 'center',
           }}
         >
-          <CheckIcon size={size - 5} color="#1a1a1a" weight="bold" />
+          <CheckIcon size={size - 5} color={theme.statusInk.done} weight="bold" />
         </View>
       )
     default:
@@ -65,7 +69,17 @@ export function StatusMark({ mark, size = 14 }: { mark: Mark; size?: number }) {
   }
 }
 
-function Disc({ color, size, glyph }: { color: string; size: number; glyph: string }) {
+function Disc({
+  color,
+  ink,
+  size,
+  glyph,
+}: {
+  color: string
+  ink: string
+  size: number
+  glyph: string
+}) {
   return (
     <View
       style={{
@@ -79,7 +93,7 @@ function Disc({ color, size, glyph }: { color: string; size: number; glyph: stri
     >
       <AppText
         variant="text-10-medium"
-        style={{ color: '#1a1a1a', fontWeight: '700', lineHeight: size, fontSize: size * 0.72 }}
+        style={{ color: ink, fontWeight: '700', lineHeight: size, fontSize: size * 0.72 }}
       >
         {glyph}
       </AppText>

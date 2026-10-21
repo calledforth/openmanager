@@ -14,7 +14,7 @@ const {
   resolveScheme,
   serializeAppearance,
 } = await import('../src/theme/appearance')
-const { basisDark, basisLight, legacyBasis, phoneTheme, themeVars } =
+const { basisDark, basisLight, contrastRatio, legacyBasis, phoneTheme, themeVars } =
   await import('../src/theme/tokens')
 
 describe('appearance', () => {
@@ -147,5 +147,26 @@ describe('phone theme', () => {
     expect(legacy.textStrong).toBe('#e0e0e0')
     expect(basisLight.canvasBg).toBe('#f8f8f8')
     expect(legacy.destructive).toBe('#cf3030')
+  })
+
+  it('inks every status fill with the canvas or the ink, whichever reads at 3:1 or better', () => {
+    for (const scheme of THEME_MODES) {
+      const theme = phoneTheme(scheme)
+      for (const [state, fill] of Object.entries(theme.status)) {
+        const ink = theme.statusInk[state as keyof typeof theme.status]
+        expect([theme.bg, theme.fg], `${scheme} ${state}`).toContain(ink)
+        expect(theme.inkOn(fill)).toBe(ink)
+        expect(contrastRatio(fill, ink), `${scheme} ${state}`).toBeGreaterThanOrEqual(3)
+        // The pick is the better of the two, never the worse.
+        const other = ink === theme.bg ? theme.fg : theme.bg
+        expect(contrastRatio(fill, ink)).toBeGreaterThanOrEqual(contrastRatio(fill, other))
+      }
+    }
+  })
+
+  it('measures contrast the WCAG way', () => {
+    expect(contrastRatio('#000000', '#ffffff')).toBeCloseTo(21, 5)
+    expect(contrastRatio('#ffffff', '#000000')).toBeCloseTo(21, 5)
+    expect(contrastRatio('#777777', '#777777')).toBe(1)
   })
 })
