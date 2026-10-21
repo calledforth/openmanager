@@ -2,9 +2,9 @@ name: CI
 
 on:
   pull_request:
-    branches: [main]
+    branches: [main, dev]
   push:
-    branches: [main]
+    branches: [main, dev]
   workflow_dispatch:
 
 permissions:
@@ -47,6 +47,9 @@ jobs:
 
       - name: Typecheck, lint, and test desktop
         run: pnpm run ci:desktop
+
+      - name: Typecheck and test mobile
+        run: pnpm run ci:mobile
 
       - name: Build production bundles
         run: pnpm run build

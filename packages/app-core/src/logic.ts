@@ -38,6 +38,7 @@ export * from './lib/relative-time'
 export * from './lib/stream-continuity'
 export * from './lib/streaming-messages-store'
 export * from './lib/theme-families'
+export * from './lib/theme-tokens'
 export * from './lib/workspace-availability'
 
 // Pure logic that lives beside the components it serves.

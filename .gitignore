@@ -25,5 +25,6 @@ opencode.ref/
 # T3 Code research deep-dives (local reference only)
 docs/t3code-*.html
 
-# Local UI indicator prototypes (experiment only)
-docs/ui-prototypes/
+# Local UI indicator prototypes (experiment only); the phone mockups are checked in
+docs/ui-prototypes/*
+!docs/ui-prototypes/mobile/

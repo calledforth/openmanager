@@ -7,8 +7,7 @@ import Animated, {
   withTiming,
 } from 'react-native-reanimated'
 
-import { basisDark, basisLight } from '../theme/tokens'
-import { useTheme } from '../theme/ThemeProvider'
+import { useTokens } from '../theme/useTokens'
 
 // Session status indicator (mirrors WorkspaceSidebarView mapping):
 // active (running | busy | waiting) => pulsing `textStrong` dot;
@@ -18,8 +17,7 @@ import { useTheme } from '../theme/ThemeProvider'
 const SIZE = 7
 
 export function StatusDot({ active }: { active: boolean }) {
-  const { resolved } = useTheme()
-  const tokens = resolved === 'dark' ? basisDark : basisLight
+  const tokens = useTokens()
   const opacity = useSharedValue(1)
 
   useEffect(() => {

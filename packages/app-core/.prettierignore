@@ -1,2 +1,3 @@
 # Vendored Fluid Functionalism components: re-pull, do not hand-format.
 src/components/fluid/
+src/lib/theme-tokens.generated.ts
