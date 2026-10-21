@@ -24,6 +24,7 @@ import { usePendingPermission } from '../../data/usePendingPermission'
 import { useSession } from '../../data/useSession'
 import { useSessionMessages, type SessionMessage } from '../../data/useSessionMessages'
 import { useTokens } from '../../theme/useTokens'
+import { SessionPagePlaceholder } from '../../ui/SessionPagePlaceholder'
 
 // Phase 4 chat screen: header (back, 1-line title, status, overflow menu),
 // message timeline with desktop-parity auto-stick scrolling, streaming via
@@ -35,7 +36,7 @@ const ACTIVE_STATUSES = new Set(['running', 'busy', 'waiting'])
 // assuming the desktop worker never cleared `pending_permissions`.
 const PERMISSION_RESOLVE_TIMEOUT_MS = 15_000
 
-export default function SessionScreen() {
+function ConvexSessionScreen() {
   const router = useRouter()
   const insets = useSafeAreaInsets()
   const tokens = useTokens()
@@ -279,4 +280,14 @@ export default function SessionScreen() {
       </KeyboardAvoidingView>
     </View>
   )
+}
+
+/**
+ * The Convex-era page needs its provider; without a Convex URL the phone
+ * shows where the session page is headed instead of crashing. The page
+ * itself is rebuilt on the environment protocol in CAL-308.
+ */
+export default function SessionScreen() {
+  if (!process.env.EXPO_PUBLIC_CONVEX_URL) return <SessionPagePlaceholder />
+  return <ConvexSessionScreen />
 }

@@ -9,12 +9,13 @@ import * as SplashScreen from 'expo-splash-screen'
 import { StatusBar } from 'expo-status-bar'
 import { useEffect, useMemo } from 'react'
 import { useFonts } from 'expo-font'
-import { View } from 'react-native'
 import { SafeAreaProvider } from 'react-native-safe-area-context'
 
 import '../../global.css'
-import { AppText } from '../components/ui/AppText'
-import { ThemeProvider, useTheme } from '../theme/ThemeProvider'
+import { countNeedsYou } from '../home/rows'
+import { useHomeSource } from '../home/source'
+import { ThemeProvider, usePhoneTheme, useTheme } from '../theme/ThemeProvider'
+import { PillNav } from '../ui/PillNav'
 
 const convexUrl = process.env.EXPO_PUBLIC_CONVEX_URL
 
@@ -24,6 +25,9 @@ SplashScreen.preventAutoHideAsync().catch(() => {
 
 function RootNavigator() {
   const { resolved } = useTheme()
+  const theme = usePhoneTheme()
+  const { sessions } = useHomeSource()
+  const badge = countNeedsYou(sessions)
 
   return (
     <>
@@ -31,29 +35,26 @@ function RootNavigator() {
       <Stack
         screenOptions={{
           headerShown: false,
-          contentStyle: { backgroundColor: 'transparent' },
+          // Each screen paints the canvas itself; the navigator's own
+          // background (white, by default) must never show through.
+          contentStyle: { backgroundColor: theme.bg },
+          // The top-level screens slide sideways; search and settings rise.
+          animation: 'fade',
         }}
       >
         <Stack.Screen name="index" />
-        <Stack.Screen name="session/[externalId]" />
-        <Stack.Screen name="settings" options={{ presentation: 'modal' }} />
+        <Stack.Screen name="inbox" />
+        <Stack.Screen name="settings" />
+        <Stack.Screen name="session/[externalId]" options={{ animation: 'slide_from_right' }} />
+        <Stack.Screen
+          name="search"
+          options={{ presentation: 'modal', animation: 'slide_from_bottom' }}
+        />
         <Stack.Screen name="theme-preview" options={{ presentation: 'modal' }} />
       </Stack>
+      {/* Drawn over every screen; it only shows itself on the three top-level routes. */}
+      <PillNav badge={badge} />
     </>
-  )
-}
-
-function ConvexNotConfigured() {
-  return (
-    <View className="flex-1 items-center justify-center bg-background px-8">
-      <AppText variant="text-16-medium" className="mb-2 text-center text-textStrong">
-        Convex is not configured
-      </AppText>
-      <AppText variant="text-13-regular" className="text-center text-textMuted">
-        Create apps/mobile/.env from .env.example and set EXPO_PUBLIC_CONVEX_URL to your Convex
-        deployment URL, then restart the dev server.
-      </AppText>
-    </View>
   )
 }
 
@@ -82,26 +83,17 @@ export default function RootLayout() {
     return null
   }
 
-  // Missing EXPO_PUBLIC_CONVEX_URL would otherwise throw while constructing the
-  // Convex client, leaving the splash stuck with no error. Render a readable
-  // configuration screen instead of the ConvexProvider tree.
-  if (!convex) {
-    return (
-      <SafeAreaProvider>
-        <ThemeProvider>
-          <ConvexNotConfigured />
-        </ThemeProvider>
-      </SafeAreaProvider>
-    )
-  }
-
+  // The shell and the sessions home no longer need Convex. The Convex-era
+  // session page still does, so its provider stays while a URL is set; the
+  // environment protocol replaces all of it (CAL-148, CAL-304).
+  const tree = (
+    <ThemeProvider>
+      <RootNavigator />
+    </ThemeProvider>
+  )
   return (
     <SafeAreaProvider>
-      <ConvexProvider client={convex}>
-        <ThemeProvider>
-          <RootNavigator />
-        </ThemeProvider>
-      </ConvexProvider>
+      {convex ? <ConvexProvider client={convex}>{tree}</ConvexProvider> : tree}
     </SafeAreaProvider>
   )
 }

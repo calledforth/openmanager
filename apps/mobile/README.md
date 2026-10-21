@@ -75,6 +75,23 @@ pnpm --filter @openmanager/mobile add <pkg>@<sdk-compatible-version>
 Look up the version Expo expects for the current SDK in
 `apps/mobile/node_modules/expo/bundledNativeModules.json` before installing.
 
+## Shell
+
+The app is three top-level screens and a layer: **Sessions** (`src/app/index.tsx`, tabs All ·
+Active · Drafts), **Inbox** (`src/app/inbox.tsx`, Needs you · Done · Failed) and **Settings**, reached
+through the floating glass pill (`src/ui/PillNav.tsx`) that the root layout draws over every
+top-level screen, with **Search** (`src/app/search.tsx`) detached beside it as a modal. The
+components under `src/ui/` are the phone's design system after `docs/ui-prototypes/mobile/`: `Glass`
+(blur + the scheme's translucent floating surface + float shadow), `StatusMark` (one glyph per
+session state), `SessionRow`, `DraftRow`, `SegmentedTabs`, `BigTitle`, `SectionLabel`, `FadeOut`,
+`IconButton`, `ProjectChip`.
+
+What the home shows comes through `src/home/source.ts`. Until the phone speaks the environment
+protocol it returns a fixture (`src/home/fixture.ts`, the owner's own session titles); the
+sessions-list issue swaps the hook for the shared sidebar providers without touching the screens.
+The pure logic in `src/home/rows.ts` (status marks, tab membership, day grouping, child nesting)
+and `src/home/search.ts` is unit-tested.
+
 ## Theme
 
 The phone paints with web's tokens, not its own palette. `packages/app-core/scripts/theme-tokens.mjs`
