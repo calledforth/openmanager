@@ -22,7 +22,7 @@ import {
   appOriginFromPairingLink,
   type NativeWebSocketConstructor,
 } from '../src/environment/app-origin'
-import { createMemoryPhoneStorage } from '../src/environment/phone-storage'
+import { relaunchedStorage } from '../tests/support'
 import {
   installAbortSignalTimeout,
   installRandomUUID,
@@ -294,7 +294,9 @@ describe('phone connection, live', () => {
     expect(withRoute).toBe(403)
 
     // ---- the phone's controller ------------------------------------------
-    const storage = createMemoryPhoneStorage()
+    // The phone's real storage adapter, over in-memory AsyncStorage and
+    // SecureStore: nothing saved yet, as on a first launch.
+    const storage = relaunchedStorage({ selectedId: null, environments: [] })
     const warnings: string[] = []
     const activity = createSource<AppActivity>('active')
     const network = createSource<PhoneNetwork>({ online: true })
@@ -374,12 +376,17 @@ describe('phone connection, live', () => {
       capabilities: state.connection?.capabilities.length,
     })
     const client = state.client as EnvironmentClient
-    const storedDocument = storage.registry.getItem('openmanager-environments') ?? ''
+    await controller.flush()
+    const asyncDump = JSON.stringify(storage.asyncStore.dump())
     note('storage', {
-      registryHasToken: storedDocument.includes(paired.credential),
-      credentialStore: Object.keys(storage.credentials.snapshot()),
+      asyncStorageHasToken: asyncDump.includes(paired.credential),
+      secureStoreHasToken: storage.secret(paired.environmentId) === paired.credential,
+      asyncStorageKeys: Object.keys(storage.asyncStore.dump()),
+      savedAppOrigin: storage.document()?.environments[0]?.appOrigin ?? null,
     })
-    expect(storedDocument.includes(paired.credential)).toBe(false)
+    expect(asyncDump.includes(paired.credential)).toBe(false)
+    expect(storage.secret(paired.environmentId)).toBe(paired.credential)
+    if (APP_ORIGIN) expect(storage.document()?.environments[0]?.appOrigin).toBe(APP_ORIGIN)
 
     // ---- a session, opened with session.open and its snapshot -------------
     const workspaceId = owner.getState().workspaceOrder[0]
@@ -449,11 +456,17 @@ describe('phone connection, live', () => {
     network.set({ online: false })
     network.set({ online: true })
     await new Promise((resolve) => setTimeout(resolve, 5000))
+    await controller.flush()
     note('revoked.latched', {
       status: controller.getState().status,
       routeFailure: controller.getState().routeFailure,
       newSockets: socketCount - socketsAtRevoke,
+      paired: controller.getState().environments[0]?.paired,
+      secureStoreHasToken: storage.secret(paired.environmentId) !== null,
+      environmentKept: storage.document()?.environments.length === 1,
     })
+    expect(storage.secret(paired.environmentId)).toBeNull()
+    expect(controller.getState().environments[0]?.paired).toBe(false)
     expect(controller.getState().status).toBe('unauthorized')
     expect(socketCount).toBe(socketsAtRevoke)
   })

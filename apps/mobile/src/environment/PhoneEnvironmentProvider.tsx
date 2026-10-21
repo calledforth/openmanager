@@ -9,8 +9,8 @@ import {
   type PhoneConnectionController,
   type PhoneConnectionState,
 } from './controller'
-import { appActivity, deviceNetwork, subscribeAppExit } from './lifecycle'
-import { phoneStorage } from './phone-storage-instance'
+import { phoneStorage, subscribePhonePageExit } from '../storage'
+import { appActivity, deviceNetwork } from './lifecycle'
 import { missingRuntimeFills, type RuntimeScope } from './runtime-fills'
 
 /**
@@ -107,7 +107,7 @@ export function PhoneEnvironmentProvider({ children }: { children: ReactNode }) 
           <EnvironmentApplicationProviders
             key={state.selectedId ?? undefined}
             storage={phoneStorage.device}
-            subscribePageExit={subscribeAppExit}
+            subscribePageExit={subscribePhonePageExit}
           >
             {children}
           </EnvironmentApplicationProviders>

@@ -5,6 +5,7 @@ import {
   type WebSocketLike,
 } from '@openmanager/environment-client'
 import {
+  ENVIRONMENT_STORAGE_KEY,
   writeEnvironmentRegistry,
   type BootstrapOutcome,
   type EnvironmentRegistry,
@@ -15,8 +16,8 @@ import {
   type PhoneConnectionOptions,
   type PhoneNetwork,
 } from '../src/environment/controller'
-import { PHONE_APP_ORIGINS_STORAGE_KEY, serializeAppOrigins } from '../src/environment/app-origin'
-import { createMemoryPhoneStorage } from '../src/environment/phone-storage'
+import { createPhoneStorage } from '../src/storage/phone-storage'
+import { device, secretOf } from './storage/fakes'
 
 type Listener = (event: never) => void
 
@@ -206,16 +207,59 @@ export function registryWith(endpoints: string[], environmentId = ENV): Environm
 }
 
 /**
- * A controller over memory storage with one saved environment, fake timers,
- * scripted route answers and the real WebSocket client on fake sockets.
+ * The phone's real storage adapter over in-memory AsyncStorage and
+ * SecureStore, holding `registry` as an earlier launch saved it (credentials
+ * in SecureStore, the rest in AsyncStorage). `hydrate()` waits for that
+ * earlier launch's writes, then loads as a fresh launch does.
+ */
+export function relaunchedStorage(registry: EnvironmentRegistry) {
+  const stores = device()
+  const seeded = (async () => {
+    const earlier = createPhoneStorage(stores)
+    await earlier.hydrate()
+    writeEnvironmentRegistry(registry, earlier.registry)
+    await earlier.flush()
+  })()
+  const storage = createPhoneStorage(stores)
+  return {
+    registry: storage.registry,
+    flush: () => storage.flush(),
+    hydrate: async () => {
+      await seeded
+      await storage.hydrate()
+    },
+    adapter: storage,
+    ...stores,
+    /** The registry document as AsyncStorage holds it: no credentials. */
+    document: () =>
+      JSON.parse(stores.asyncStore.data.get(ENVIRONMENT_STORAGE_KEY) ?? 'null') as {
+        selectedId: string | null
+        environments: Array<{
+          environmentId: string
+          label: string
+          credential?: string
+          appOrigin?: string
+          routes: Array<{ endpoint: string; health: { status: string } }>
+        }>
+      } | null,
+    /** The credential SecureStore holds for an environment. */
+    secret: (environmentId: string) => secretOf(stores.secureStore, environmentId),
+  }
+}
+
+/**
+ * A controller over the phone's storage with one saved environment, fake
+ * timers, scripted route answers and the real WebSocket client on fake
+ * sockets.
  */
 export function harness(
   input: {
     routes?: string[]
     answers?: Record<string, BootstrapOutcome | Promise<BootstrapOutcome>>
     registry?: EnvironmentRegistry
+    /** Each saved environment's token; `{ [ENV]: TOKEN }` unless given. */
     credentials?: Record<string, string>
-    /** The saved app origins document, as `serializeAppOrigins` writes it. */
+    /** Each saved environment's app origin. */
     appOrigins?: Record<string, string>
     options?: Partial<PhoneConnectionOptions>
   } = {},
@@ -223,14 +267,18 @@ export function harness(
   FakeSocket.instances = []
   FakeSocket.deferClose = false
   const timers = createTimers()
-  const storage = createMemoryPhoneStorage({ credentials: input.credentials ?? { [ENV]: TOKEN } })
-  writeEnvironmentRegistry(input.registry ?? registryWith(input.routes ?? [LAN]), storage.registry)
-  if (input.appOrigins) {
-    storage.registry.setItem(
-      PHONE_APP_ORIGINS_STORAGE_KEY,
-      serializeAppOrigins(new Map(Object.entries(input.appOrigins))),
-    )
-  }
+  const credentials = input.credentials ?? { [ENV]: TOKEN }
+  const seed = input.registry ?? registryWith(input.routes ?? [LAN])
+  const storage = relaunchedStorage({
+    ...seed,
+    environments: seed.environments.map((environment) => ({
+      ...environment,
+      credential: credentials[environment.environmentId] ?? environment.credential,
+      ...(input.appOrigins?.[environment.environmentId]
+        ? { appOrigin: input.appOrigins[environment.environmentId] }
+        : {}),
+    })),
+  })
   const warnings: string[] = []
   const activity = createSource<AppActivity>('active')
   const network = createSource<PhoneNetwork>({ online: true })

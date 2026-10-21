@@ -1,9 +1,6 @@
 import { PROTOCOL_VERSION } from '@openmanager/protocol'
 import { describe, expect, it } from 'vitest'
-import {
-  ENVIRONMENT_STORAGE_KEY,
-  type BootstrapOutcome,
-} from '@openmanager/environment-client/connection'
+import type { BootstrapOutcome } from '@openmanager/environment-client/connection'
 import {
   ENV,
   LAN,
@@ -19,16 +16,7 @@ import {
   silent,
 } from './support'
 
-const savedDocument = (h: ReturnType<typeof harness>) =>
-  JSON.parse(h.storage.registry.getItem(ENVIRONMENT_STORAGE_KEY)!) as {
-    selectedId: string | null
-    environments: Array<{
-      environmentId: string
-      label: string
-      credential: string
-      routes: Array<{ endpoint: string; health: { status: string } }>
-    }>
-  }
+const savedDocument = (h: ReturnType<typeof harness>) => h.storage.document()!
 
 /** Start, let the search answer, and accept the socket it opened. */
 async function connect(h: ReturnType<typeof harness>) {
@@ -614,7 +602,7 @@ describe('phone connection controller', () => {
       await flush()
       expect(h.state().status).toBe('connected')
       await h.controller.flush()
-      expect(h.storage.credentials.snapshot()).toEqual({ [ENV]: fresh })
+      expect(h.storage.secret(ENV)).toBe(fresh)
     })
   })
 
@@ -773,14 +761,14 @@ describe('phone connection controller', () => {
   })
 
   describe('storage', () => {
-    it('keeps the token out of the registry document', async () => {
+    it('keeps the token in SecureStore and out of AsyncStorage', async () => {
       const h = harness()
       await connect(h)
       await h.controller.flush()
       const document = savedDocument(h)
-      expect(document.environments[0]).toMatchObject({ environmentId: ENV, credential: '' })
-      expect(JSON.stringify(document)).not.toContain(TOKEN)
-      expect(h.storage.credentials.snapshot()).toEqual({ [ENV]: TOKEN })
+      expect(document.environments[0]).toMatchObject({ environmentId: ENV })
+      expect(JSON.stringify(h.storage.asyncStore.dump())).not.toContain(TOKEN)
+      expect(h.storage.secret(ENV)).toBe(TOKEN)
       expect(h.state().environments).toEqual([
         expect.objectContaining({ environmentId: ENV, label: 'Studio', paired: true }),
       ])
@@ -804,7 +792,8 @@ describe('phone connection controller', () => {
         client: null,
         environments: [],
       })
-      expect(h.storage.credentials.snapshot()).toEqual({})
+      expect(h.storage.secret(ENV)).toBeNull()
+      expect(savedDocument(h).environments).toEqual([])
       expect(h.socket().closedWith?.reason).toBe('client_disposed')
     })
   })

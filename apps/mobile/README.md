@@ -56,8 +56,8 @@ pnpm --filter @openmanager/mobile add <pkg>@<sdk-compatible-version>
 - **Entry.** `index.ts` imports `src/environment/polyfills.ts` before
   expo-router: `react-native-url-polyfill` (React Native's `URL` lacks the
   accessors the endpoint helpers read), `AbortSignal.timeout` (the route
-  probes give up through it) and `crypto.randomUUID` from expo-crypto
-  (app-core mints draft and session ids with it).
+  probes give up through it) and `crypto.randomUUID`, a version 4 UUID from
+  expo-crypto's random bytes (app-core mints draft and session ids with it).
 - **Root provider.** `src/environment/PhoneEnvironmentProvider.tsx` owns the
   connection controller, hands its client to app-core's
   `EnvironmentClientProvider`, and mounts `EnvironmentApplicationProviders`
@@ -68,12 +68,15 @@ pnpm --filter @openmanager/mobile add <pkg>@<sdk-compatible-version>
   one environment client on the route that answered. It holds (no socket, no
   timers) while the app is in the background or the device is offline, and
   searches again when the app is back or the network returns. A refused token
-  or a protocol mismatch waits for a person; nothing retries it.
-- **Storage.** `src/environment/phone-storage.ts` is the seam: a synchronous
-  registry store for the shared registry functions, a credential store for
-  tokens (kept out of the registry document), and app-core's device storage.
-  `phone-storage-instance.ts` picks the implementation; it is in memory until
-  the AsyncStorage and SecureStore stores replace it.
+  or a protocol mismatch waits for a person; nothing retries it. Each socket
+  sends the environment's app origin (the pairing link's origin) as `Origin`,
+  the value the environment's `--allowed-origin` lists
+  (`src/environment/app-origin.ts`).
+- **Storage.** `src/storage` (see its README): the registry in AsyncStorage,
+  each credential in SecureStore. The controller waits for `hydrate()`, reads
+  and writes the whole registry through the shared registry functions, and
+  after a refused token's latch forgets the token once its own environment is
+  known to have refused it.
 - **Metro.** `metro/resolve-request.js` lets Metro load the workspace
   packages' TypeScript source (NodeNext `./x.js` imports of `x.ts` files) and
   keeps one React in the bundle under pnpm's isolated linker.

@@ -1,6 +1,5 @@
 import NetInfo, { type NetInfoState } from '@react-native-community/netinfo'
 import { AppState, type AppStateStatus } from 'react-native'
-import type { SubscribePageExit } from '@openmanager/app-core/logic'
 import type { AppActivity, AppActivitySource, NetworkSource, PhoneNetwork } from './controller'
 
 /** `inactive` is a passing state (app switcher, a call banner), not a hold. */
@@ -41,17 +40,4 @@ export const deviceNetwork: NetworkSource = {
       listener(next)
     })
   },
-}
-
-/**
- * app-core's page-exit hook on a phone: the app going to the background is
- * the last moment it is sure to run, so a pending draft discard is carried
- * out then. One function for the app's lifetime; app-core keeps its device
- * host memoised on this identity.
- */
-export const subscribeAppExit: SubscribePageExit = (flush) => {
-  const subscription = AppState.addEventListener('change', (status) => {
-    if (status === 'background') flush()
-  })
-  return () => subscription.remove()
 }

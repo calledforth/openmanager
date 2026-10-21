@@ -1,23 +1,13 @@
 import { describe, expect, it } from 'vitest'
 import { encodePairingLink } from '@openmanager/environment-client'
 import {
-  ENVIRONMENT_STORAGE_KEY,
-  writeEnvironmentRegistry,
-} from '@openmanager/environment-client/connection'
-import {
-  PHONE_APP_ORIGINS_STORAGE_KEY,
   appOriginFromPairingLink,
   parseAppOrigin,
-  readAppOrigins,
-  serializeAppOrigins,
   withSocketOrigin,
 } from '../src/environment/app-origin'
-import { createRegistryPersistence } from '../src/environment/persistence'
-import { createMemoryPhoneStorage } from '../src/environment/phone-storage'
 import {
   ENV,
   LAN,
-  OTHER_ENV,
   PAIRING_TOKEN,
   TOKEN,
   TUNNEL,
@@ -25,7 +15,6 @@ import {
   flush,
   harness,
   ready,
-  registryWith,
 } from './support'
 
 const APP = 'https://app.example.test'
@@ -51,20 +40,6 @@ describe('app origin', () => {
     expect(parseAppOrigin('https://user:pw@app.example.test')).toBeNull()
     expect(parseAppOrigin(42)).toBeNull()
   })
-
-  it('reads back only well-formed entries', () => {
-    const storage = createMemoryPhoneStorage({
-      registry: {
-        [PHONE_APP_ORIGINS_STORAGE_KEY]: JSON.stringify({
-          version: 1,
-          origins: { [ENV]: `${APP}/ignored-path`, [OTHER_ENV]: 'not a url', '': APP },
-        }),
-      },
-    })
-    expect([...readAppOrigins(storage.registry)]).toEqual([[ENV, APP]])
-    const junk = createMemoryPhoneStorage({ registry: { [PHONE_APP_ORIGINS_STORAGE_KEY]: '{' } })
-    expect(readAppOrigins(junk.registry).size).toBe(0)
-  })
 })
 
 describe('the socket wrapper', () => {
@@ -83,54 +58,6 @@ describe('the socket wrapper', () => {
   it("leaves React Native's own default, the route's origin, when unwrapped", () => {
     const socket = new FakeSocket('wss://studio.example.com/ws')
     expect(socket.origin).toBe('https://studio.example.com')
-  })
-})
-
-describe('app origin in the registry seam', () => {
-  it('is saved beside the registry, never in it, and pruned with its environment', async () => {
-    const storage = createMemoryPhoneStorage()
-    const persistence = createRegistryPersistence(storage)
-    await persistence.load()
-    const both = registryWith([LAN])
-    both.environments.push(registryWith([TUNNEL], OTHER_ENV).environments[0]!)
-    persistence.save(
-      both,
-      new Map([
-        [ENV, APP],
-        [OTHER_ENV, 'https://other.example.test'],
-      ]),
-    )
-    await persistence.flush()
-    expect(storage.registry.getItem(ENVIRONMENT_STORAGE_KEY)).not.toContain(APP)
-    expect(readAppOrigins(storage.registry).get(ENV)).toBe(APP)
-
-    persistence.save(
-      { ...both, environments: [both.environments[0]!] },
-      new Map([
-        [ENV, APP],
-        [OTHER_ENV, 'https://other.example.test'],
-      ]),
-    )
-    await persistence.flush()
-    expect([...readAppOrigins(storage.registry)]).toEqual([[ENV, APP]])
-
-    persistence.save({ selectedId: null, environments: [] }, new Map())
-    await persistence.flush()
-    expect(storage.registry.getItem(PHONE_APP_ORIGINS_STORAGE_KEY)).toBeNull()
-  })
-
-  it('loads an environment saved before the field existed with no app origin', async () => {
-    const storage = createMemoryPhoneStorage({ credentials: { [ENV]: TOKEN } })
-    writeEnvironmentRegistry(registryWith([LAN]), storage.registry)
-    const { registry, appOrigins } = await createRegistryPersistence(storage).load()
-    expect(registry.environments).toHaveLength(1)
-    expect(appOrigins.size).toBe(0)
-  })
-
-  it('writes the same document for the same origins', () => {
-    expect(serializeAppOrigins(new Map([[ENV, APP]]))).toBe(
-      serializeAppOrigins(new Map([[ENV, APP]])),
-    )
   })
 })
 
@@ -184,7 +111,7 @@ describe('the controller and the app origin', () => {
     expect(h.socket().origin).toBe(APP)
     expect(h.state().socketOrigin).toEqual({ origin: APP, from: 'app' })
     await h.controller.flush()
-    expect(readAppOrigins(h.storage.registry).get(ENV)).toBe(APP)
+    expect(h.storage.document()!.environments[0]!.appOrigin).toBe(APP)
   })
 
   it('keeps the saved app origin when a later save brings none, and forgets it with the environment', async () => {
@@ -197,7 +124,7 @@ describe('the controller and the app origin', () => {
 
     h.controller.removeEnvironment(ENV)
     await h.controller.flush()
-    expect(h.storage.registry.getItem(PHONE_APP_ORIGINS_STORAGE_KEY)).toBeNull()
+    expect(h.storage.document()!.environments).toEqual([])
   })
 
   it('retires a connected socket when only the app origin changes', async () => {

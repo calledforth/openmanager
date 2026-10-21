@@ -15,6 +15,8 @@ import {
   fetchBootstrap,
   findStoredEnvironment,
   noLoopbackGate,
+  parseAppOrigin,
+  readEnvironmentRegistry,
   removeStoredEnvironment,
   routeHealthFromBootstrap,
   routeHealthFromConnection,
@@ -23,6 +25,7 @@ import {
   selectedStoredEnvironment,
   setStoredRouteHealth,
   upsertStoredEnvironment,
+  writeEnvironmentRegistry,
   type BootstrapOutcome,
   type EnvironmentRegistry,
   type EnvironmentRoute,
@@ -32,13 +35,12 @@ import {
   type StoredEnvironment,
 } from '@openmanager/environment-client/connection'
 import {
-  parseAppOrigin,
-  routeOrigin,
-  withSocketOrigin,
-  type NativeWebSocketConstructor,
-} from './app-origin'
-import { createRegistryPersistence, type RegistryPersistence } from './persistence'
-import type { PhoneStorage } from './phone-storage'
+  confirmCredentialRejected,
+  credentialRefusalOf,
+  forgetRejectedCredential,
+} from '../storage/credential-rejection'
+import type { PhoneStorage } from '../storage/phone-storage'
+import { routeOrigin, withSocketOrigin, type NativeWebSocketConstructor } from './app-origin'
 import { phoneSearchOrder } from './route-order'
 
 /**
@@ -103,14 +105,21 @@ export type PhoneEnvironment = {
   environmentId: string
   label: string
   routes: readonly EnvironmentRoute[]
-  /** The phone holds a token for it. */
+  /**
+   * The phone holds a token for it. `false` once the environment refused it
+   * for certain (`credential-rejection.ts`), or when SecureStore could not
+   * read it: the environment needs pairing again.
+   */
   paired: boolean
   /**
    * The origin of the web app it was paired from: what its socket sends as
-   * `Origin`. `null` for an environment saved before the phone kept one.
+   * `Origin`. `null` for an environment saved without one.
    */
   appOrigin: string | null
 }
+
+/** What the controller needs of the phone's storage (`src/storage`). */
+export type ConnectionStorage = Pick<PhoneStorage, 'registry' | 'hydrate' | 'flush'>
 
 /**
  * The `Origin` the socket sends, and where it came from.
@@ -191,7 +200,12 @@ export interface PhoneConnectionController {
 }
 
 export type PhoneConnectionOptions = {
-  storage: PhoneStorage
+  /**
+   * The phone's storage: `hydrate()` before the first read, then the shared
+   * registry functions over `registry`, whole registry in, credentials
+   * included (the adapter moves them to SecureStore itself).
+   */
+  storage: ConnectionStorage
   activity: AppActivitySource
   network: NetworkSource
   /**
@@ -292,16 +306,13 @@ type Latch = {
 
 type Wake = 'start' | 'select' | 'retry' | 'foreground' | 'online' | 'activity' | 'timer' | 'socket'
 
-function view(
-  registry: EnvironmentRegistry,
-  appOrigins: ReadonlyMap<string, string>,
-): PhoneEnvironment[] {
+function view(registry: EnvironmentRegistry): PhoneEnvironment[] {
   return registry.environments.map((environment) => ({
     environmentId: environment.environmentId,
     label: environment.label,
     routes: environment.routes,
     paired: environment.credential !== '',
-    appOrigin: appOrigins.get(environment.environmentId) ?? null,
+    appOrigin: environment.appOrigin ?? null,
   }))
 }
 
@@ -362,7 +373,6 @@ export function createPhoneConnectionController(
     }
   }
   const warn = options.warn ?? ((message: string) => console.warn(message))
-  const persistence: RegistryPersistence = createRegistryPersistence(options.storage)
   const probeRoute =
     options.probe ??
     ((endpoint: string, signal: AbortSignal) =>
@@ -391,8 +401,6 @@ export function createPhoneConnectionController(
     })
 
   let registry: EnvironmentRegistry = EMPTY_REGISTRY
-  /** Each environment's app origin by ID; kept beside the registry. */
-  let appOrigins: ReadonlyMap<string, string> = new Map()
   /** Environments already reported as dialling without an app origin. */
   const warnedOrigin = new Set<string>()
   let loaded = false
@@ -401,6 +409,8 @@ export function createPhoneConnectionController(
   let activity = options.activity.current()
   let network = options.network.current()
   let latch: Latch | null = null
+  /** The wait before asking the storage to load again, while there is one. */
+  let hydrateWait: { resolve: () => void; timer: unknown } | null = null
   /** The bootstrap read explaining a socket's protocol refusal, while in flight. */
   let refusalRead: AbortController | null = null
   let searchGeneration = 0
@@ -444,12 +454,46 @@ export function createPhoneConnectionController(
 
   const selected = () => selectedStoredEnvironment(registry)
 
-  const commit = (next: EnvironmentRegistry, nextOrigins = appOrigins) => {
-    if (next === registry && nextOrigins === appOrigins) return
+  /**
+   * The whole registry, credentials included, to the phone's storage, which
+   * writes it in the background, in order, and keeps each credential in
+   * SecureStore. Never a registry with the credentials blanked: to that
+   * adapter that would be every token removed.
+   */
+  const commit = (next: EnvironmentRegistry) => {
+    if (next === registry) return
     registry = next
-    appOrigins = nextOrigins
-    set({ environments: view(next, nextOrigins), selectedId: next.selectedId })
-    persistence.save(next, nextOrigins)
+    set({ environments: view(next), selectedId: next.selectedId })
+    writeEnvironmentRegistry(next, options.storage.registry)
+  }
+
+  /**
+   * After a refused token has latched: forget the token, but only once it is
+   * certain that its own environment refused it (`revoked`, or `unknown` and
+   * the same address still answers as this environment). Compare-and-clear:
+   * a token saved since then is left alone. The latch holds either way.
+   */
+  const forgetIfRejected = (
+    environmentId: string,
+    endpoint: string,
+    rejected: string,
+    refusal: ReturnType<typeof credentialRefusalOf>,
+  ) => {
+    if (!refusal || !rejected) return
+    const abort = new AbortController()
+    const release = () => abort.abort()
+    releases.push(release)
+    void confirmCredentialRejected({
+      refusal,
+      environmentId,
+      endpoint,
+      probe: (route) => probeRoute(route, abort.signal),
+    }).then((confirmed) => {
+      const index = releases.indexOf(release)
+      if (index !== -1) releases.splice(index, 1)
+      if (!confirmed || disposed || abort.signal.aborted) return
+      commit(forgetRejectedCredential(registry, environmentId, rejected))
+    })
   }
 
   /** What reaching a route showed. Repeating the same report writes nothing. */
@@ -582,6 +626,7 @@ export function createPhoneConnectionController(
           ...(failure.message ? { message: failure.message } : {}),
         },
       })
+      forgetIfRejected(environmentId, endpoint, current.credential, credentialRefusalOf(failure))
       return
     }
     if (failure?.code === 'protocol_incompatible' || failure?.code === 'capability_missing') {
@@ -655,8 +700,9 @@ export function createPhoneConnectionController(
    * The `Origin` a socket to `endpoint` sends. With no app origin saved it is
    * React Native's own default, the route's origin, reported once.
    */
-  const socketOriginFor = (environmentId: string, endpoint: string) => {
-    const appOrigin = appOrigins.get(environmentId) ?? null
+  const socketOriginFor = (environment: StoredEnvironment, endpoint: string) => {
+    const { environmentId } = environment
+    const appOrigin = environment.appOrigin ?? null
     if (appOrigin) {
       return { appOrigin, socketOrigin: { origin: appOrigin, from: 'app' } as SocketOrigin }
     }
@@ -675,7 +721,7 @@ export function createPhoneConnectionController(
   const dial = (environment: StoredEnvironment, endpoint: string) => {
     const credential = environment.credential
     const current = transport
-    const { appOrigin, socketOrigin } = socketOriginFor(environment.environmentId, endpoint)
+    const { appOrigin, socketOrigin } = socketOriginFor(environment, endpoint)
     if (
       current &&
       current.environmentId === environment.environmentId &&
@@ -923,21 +969,30 @@ export function createPhoneConnectionController(
       // Read whatever changed while subscribing.
       activity = options.activity.current()
       network = options.network.current()
-      let saved = EMPTY_REGISTRY
-      let savedOrigins: ReadonlyMap<string, string> = new Map()
-      try {
-        const loadedState = await persistence.load()
-        saved = loadedState.registry
-        savedOrigins = loadedState.appOrigins
-      } catch {
-        // Unreadable storage starts empty; the next save writes it whole.
+      // Nothing reads or writes the registry before the storage has loaded:
+      // until then its writes are dropped, so the controller waits, and asks
+      // again (an unreadable AsyncStorage) on the retry delays.
+      for (let tries = 0; ; tries += 1) {
+        try {
+          await options.storage.hydrate()
+          break
+        } catch (error) {
+          if (disposed) return
+          const delay = retryDelays[Math.min(tries, retryDelays.length - 1)]!
+          warn(`The phone's storage did not load (${String(error)}); trying again in ${delay} ms.`)
+          await new Promise<void>((resolve) => {
+            hydrateWait = { resolve, timer: timers.setTimeout(resolve, delay) }
+          })
+          hydrateWait = null
+          if (disposed) return
+        }
       }
       if (disposed) return
+      const saved = readEnvironmentRegistry(options.storage.registry)
       registry = saved
-      appOrigins = savedOrigins
       loaded = true
       set({
-        environments: view(saved, savedOrigins),
+        environments: view(saved),
         selectedId: saved.selectedId,
         activity,
         network,
@@ -958,6 +1013,11 @@ export function createPhoneConnectionController(
     },
     saveEnvironment(input) {
       if (!loaded || disposed) return
+      let appOrigin: string | undefined
+      if (input.appOrigin !== undefined && input.appOrigin !== null) {
+        appOrigin = parseAppOrigin(input.appOrigin) ?? undefined
+        if (!appOrigin) throw new Error('That app address is not valid.')
+      }
       const next = upsertStoredEnvironment(
         registry,
         {
@@ -965,29 +1025,22 @@ export function createPhoneConnectionController(
           endpoint: input.endpoint,
           label: input.label,
           credential: input.credential,
+          ...(appOrigin ? { appOrigin } : {}),
         },
         new Date(now()),
       )
       if (!next) throw new Error('That environment address or ID is not valid.')
-      let nextOrigins = appOrigins
-      if (input.appOrigin !== undefined && input.appOrigin !== null) {
-        const appOrigin = parseAppOrigin(input.appOrigin)
-        if (!appOrigin) throw new Error('That app address is not valid.')
-        if (appOrigins.get(input.environmentId) !== appOrigin) {
-          nextOrigins = new Map(appOrigins).set(input.environmentId, appOrigin)
-          warnedOrigin.delete(input.environmentId)
-        }
-      }
       // A socket on another environment, or on this one with the token or the
       // app origin being replaced, is retired now: left open while the new
       // search runs, a late refusal of the old token would latch the new one
       // as refused, and a socket that stays up would keep the old origin.
       const saved = findStoredEnvironment(next.environments, input.environmentId)
+      if (saved?.appOrigin) warnedOrigin.delete(input.environmentId)
       if (
         transport &&
         (transport.environmentId !== input.environmentId ||
           transport.credential !== saved?.credential ||
-          transport.appOrigin !== (nextOrigins.get(input.environmentId) ?? null))
+          transport.appOrigin !== (saved?.appOrigin ?? null))
       ) {
         dropTransport()
       }
@@ -995,7 +1048,7 @@ export function createPhoneConnectionController(
         set({ endpoint: null, bootstrap: IDLE, routeFailure: null })
       }
       latch = null
-      commit(next, nextOrigins)
+      commit(next)
       restart('select')
     },
     removeEnvironment(environmentId) {
@@ -1004,14 +1057,8 @@ export function createPhoneConnectionController(
       stores.delete(environmentId)
       if (latch?.environmentId === environmentId) latch = null
       const wasSelected = registry.selectedId === environmentId
-      let nextOrigins = appOrigins
-      if (appOrigins.has(environmentId)) {
-        const without = new Map(appOrigins)
-        without.delete(environmentId)
-        nextOrigins = without
-      }
       warnedOrigin.delete(environmentId)
-      commit(removeStoredEnvironment(registry, environmentId), nextOrigins)
+      commit(removeStoredEnvironment(registry, environmentId))
       if (wasSelected) set({ endpoint: null, bootstrap: IDLE, routeFailure: null })
       restart('select')
     },
@@ -1020,10 +1067,14 @@ export function createPhoneConnectionController(
       latch = null
       restart('retry')
     },
-    flush: () => persistence.flush(),
+    flush: () => options.storage.flush(),
     dispose() {
       if (disposed) return
       disposed = true
+      if (hydrateWait) {
+        timers.clearTimeout(hydrateWait.timer)
+        hydrateWait.resolve()
+      }
       cancelSearch()
       cancelRefusalRead()
       clearRetry()
