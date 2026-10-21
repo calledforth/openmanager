@@ -92,8 +92,8 @@ async function rejection(url: string, options: ClientOptions = {}) {
   )
 }
 
-async function connect(url: string, credential: string, options: ClientOptions = {}) {
-  const ws = new WebSocket(url, { ...options, headers: { authorization: `Bearer ${credential}` } })
+async function connect(url: string, credential: string) {
+  const ws = new WebSocket(url, { headers: { authorization: `Bearer ${credential}` } })
   clients.push(ws)
   const queue: ServerMessage[] = []
   let waiter: ((message: ServerMessage) => void) | undefined
@@ -223,37 +223,6 @@ describe('negative security tests', () => {
         details: { origin: 'https://attacker.example' },
       },
     ])
-  })
-
-  it('accepts an Origin that names the host the socket was sent to, as native clients send', async () => {
-    const host = await setup()
-    // React Native's WebSocket fills Origin in from the URL it dials.
-    const own = new URL(host.url.replace('ws:', 'http:')).origin
-    const client = await connect(host.url, host.token, { origin: own })
-    expect(client.ws.readyState).toBe(WebSocket.OPEN)
-    expect(host.server.audit.query({ type: 'origin.rejected' })).toEqual([])
-  })
-
-  it('still rejects an Origin on the same host name with another port or scheme', async () => {
-    const host = await setup()
-    const { hostname, port } = new URL(host.url)
-    for (const origin of [
-      `http://${hostname}:${Number(port) + 1}`,
-      `ws://${hostname}:${port}`,
-      `http://${hostname}:${port}/path`,
-      'null',
-    ]) {
-      const denied = await rejection(host.url, {
-        origin,
-        headers: { authorization: `Bearer ${host.token}` },
-      })
-      expectClosedFor(
-        `origin ${origin}`,
-        { status: denied.status, code: denied.body.error?.code },
-        { status: 403, code: 'auth' },
-      )
-    }
-    expect(host.server.audit.query({ type: 'origin.rejected' })).toHaveLength(4)
   })
 
   it('rejects path traversal because it escaped the workspace, not because the file is missing', async () => {

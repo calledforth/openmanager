@@ -9,32 +9,13 @@ export interface RequestRejection {
 }
 
 /**
- * True when `origin` names exactly the host the request was sent to. A web
- * page only ever sends its own origin, so no page on another site can produce
- * this one; it comes from a page this host served itself, or from a native
- * WebSocket client that fills `Origin` in from the URL it dials (React
- * Native does, on Android and iOS). `host` has already passed the `Host`
- * check, so this admits nothing the host list does not.
- */
-function isSameOrigin(origin: string, host: string): boolean {
-  let url: URL
-  try {
-    url = new URL(origin)
-  } catch {
-    return false
-  }
-  if (url.protocol !== 'http:' && url.protocol !== 'https:') return false
-  return url.origin === origin.toLowerCase() && url.host === host
-}
-
-/**
  * Host and Origin policy shared by HTTP requests and WebSocket upgrades
  * (threat model T8, T9). Both checks fail closed: a request whose `Host` is
  * not the bound loopback address or a configured host is refused, which is
- * what defeats DNS rebinding, and a request carrying an `Origin` that is
- * neither allowlisted nor the request's own host is refused even with a valid
- * credential. Forwarded headers are never consulted, so a proxy cannot vouch
- * for a hostname it was not configured for.
+ * what defeats DNS rebinding, and a request carrying an `Origin` that is not
+ * allowlisted is refused even with a valid credential. Forwarded headers are
+ * never consulted, so a proxy cannot vouch for a hostname it was not
+ * configured for.
  */
 export function createRequestGuard(options: {
   allowedOrigins: readonly string[]
@@ -67,11 +48,7 @@ export function createRequestGuard(options: {
         return { status: 403, code: 'auth', message: 'Host is not allowed.' }
       }
       const origin = request.headers.origin
-      if (
-        origin !== undefined &&
-        !options.allowedOrigins.includes(origin) &&
-        !isSameOrigin(origin, host)
-      ) {
+      if (origin !== undefined && !options.allowedOrigins.includes(origin)) {
         options.audit.record({
           type: 'origin.rejected',
           remoteAddress,
