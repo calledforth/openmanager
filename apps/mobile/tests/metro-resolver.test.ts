@@ -193,6 +193,27 @@ describe('metro resolver', () => {
     )
   })
 
+  it('is the resolver metro.config.js hands Metro, through the NativeWind wrapper', () => {
+    const config = requireFromApp('./metro.config.js') as {
+      resolver: {
+        resolveRequest: (
+          context: unknown,
+          moduleName: string,
+          platform: string | null,
+        ) => Resolution
+      }
+    }
+    const configured = config.resolver.resolveRequest
+    const source = readFileSync(agentView, 'utf8')
+    const specifier = /from '(\.\/[^']+\.js)'/.exec(source)![1]!
+    expect(
+      pathOf(metroResolver.resolve(contextFor(agentView, configured), specifier, 'android')),
+    ).toBe(realpathSync(path.join(path.dirname(agentView), specifier.replace(/\.js$/, '.ts'))))
+    expect(
+      pathOf(metroResolver.resolve(contextFor(appCoreLogic, configured), 'react', 'android')),
+    ).toBe(pathOf(defaultResolve(path.join(appRoot, 'index.ts'), 'react')))
+  }, 60_000)
+
   it('resolves every import on the shared path the phone loads', () => {
     const resolver = createResolveRequest({ projectRoot: appRoot })
     const entries = [

@@ -251,6 +251,83 @@ describe('phone connection controller', () => {
     })
   })
 
+  describe('the refused version read', () => {
+    const refuse = (socket: FakeSocket) => {
+      socket.open()
+      socket.receive({
+        type: 'error',
+        requestId: socket.last('protocol.handshake').requestId,
+        error: {
+          code: 'protocol_incompatible',
+          message: 'Upgrade required.',
+          details: { clientProtocolVersion: PROTOCOL_VERSION, serverProtocolVersion: 99 },
+        },
+      })
+    }
+
+    it('stops for a hold and is asked again on return, while the version is unknown', async () => {
+      const h = harness()
+      await h.controller.start()
+      await flush()
+      const read = deferred<BootstrapOutcome>()
+      h.answers.set(LAN, read.promise)
+      refuse(h.socket())
+      await flush()
+      expect(h.probes).toEqual([LAN, LAN])
+      const inFlight = h.signals.at(-1)!
+      expect(inFlight.aborted).toBe(false)
+
+      h.activity.set('background')
+      await flush()
+      expect(inFlight.aborted).toBe(true)
+      expect(h.state().status).toBe('incompatible_protocol')
+      // Its late answer is not shown.
+      read.resolve({
+        status: 'incompatible_protocol',
+        clientProtocolVersion: PROTOCOL_VERSION,
+        serverProtocolVersion: 98,
+        environmentId: ENV,
+      })
+      await flush()
+      expect(h.state().protocol.environment).toBeNull()
+
+      h.answers.set(LAN, {
+        status: 'incompatible_protocol',
+        clientProtocolVersion: PROTOCOL_VERSION,
+        serverProtocolVersion: 99,
+        environmentId: ENV,
+      })
+      h.activity.set('active')
+      await flush()
+      expect(h.probes).toEqual([LAN, LAN, LAN])
+      expect(h.state()).toMatchObject({
+        status: 'incompatible_protocol',
+        protocol: { client: PROTOCOL_VERSION, environment: 99 },
+      })
+
+      // Answered: a later return asks nothing.
+      h.activity.set('background')
+      h.activity.set('active')
+      await flush()
+      expect(h.probes).toHaveLength(3)
+      expect(h.sockets()).toHaveLength(1)
+    })
+
+    it('stops when the device goes offline', async () => {
+      const h = harness()
+      await h.controller.start()
+      await flush()
+      h.answers.set(LAN, deferred<BootstrapOutcome>().promise)
+      refuse(h.socket())
+      await flush()
+      const inFlight = h.signals.at(-1)!
+      h.network.set({ online: false })
+      await flush()
+      expect(inFlight.aborted).toBe(true)
+      expect(h.state().status).toBe('incompatible_protocol')
+    })
+  })
+
   describe('the default probe', () => {
     it('gives a silent route one request within its deadline, then takes the tunnel', async () => {
       const calls: Array<{ url: string; mode?: string }> = []
@@ -627,6 +704,54 @@ describe('phone connection controller', () => {
       h.socket().drop(1006)
       await flush()
       expect(h.state().retryAt).toBe(h.timers.now() + 2000)
+    })
+
+    it('takes the tunnel when a stale LAN route answers bootstrap but its socket fails', async () => {
+      const h = harness({
+        routes: [LAN, TUNNEL],
+        answers: { [LAN]: ready(), [TUNNEL]: ready() },
+        options: { retryDelaysMs: [1000], socketFailureCooldownMs: 60_000 },
+      })
+      await h.controller.start()
+      await flush()
+      expect(h.socket().url).toBe('ws://192.168.1.20:43120/ws')
+      h.socket().drop(1006)
+      await flush()
+      expect(h.state().status).toBe('waiting')
+
+      h.timers.advance(1000)
+      await flush()
+      // The LAN route still answers, but is asked after the tunnel now.
+      expect(h.sockets()).toHaveLength(2)
+      expect(h.socket().url).toBe('wss://studio.example.com/ws')
+      h.socket().accept()
+      await flush()
+      expect(h.state()).toMatchObject({ status: 'connected', endpoint: TUNNEL })
+    })
+
+    it('still asks a route whose socket failed when nothing else answers, and forgets it on return', async () => {
+      const h = harness({
+        routes: [LAN, TUNNEL],
+        answers: { [LAN]: ready(), [TUNNEL]: silent },
+        options: { retryDelaysMs: [1000] },
+      })
+      await h.controller.start()
+      await flush()
+      h.socket().drop(1006)
+      await flush()
+      h.timers.advance(1000)
+      await flush()
+      expect(h.sockets()).toHaveLength(2)
+      expect(h.socket().url).toBe('ws://192.168.1.20:43120/ws')
+      h.socket().drop(1006)
+      await flush()
+
+      // Back from the background: every route takes its place again.
+      h.answers.set(TUNNEL, ready())
+      h.activity.set('background')
+      h.activity.set('active')
+      await flush()
+      expect(h.socket().url).toBe('ws://192.168.1.20:43120/ws')
     })
 
     it('searches at once when a connection that had been up drops, asking its route first', async () => {

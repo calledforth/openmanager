@@ -222,10 +222,18 @@ export type PhoneConnectionOptions = {
   stableAfterMs?: number
   /** How long one route may take to answer `GET /bootstrap`. */
   probeTimeoutMs?: number
+  /** How long a route whose socket just failed is asked last. */
+  socketFailureCooldownMs?: number
 }
 
 export const PHONE_RETRY_DELAYS_MS: readonly number[] = [1000, 2000, 4000, 8000, 15000, 30000]
 export const PHONE_STABLE_AFTER_MS = 10_000
+/**
+ * How long a route whose socket failed right after its bootstrap answered is
+ * asked after every other route, so a stale LAN address that still answers
+ * `GET /bootstrap` cannot keep the phone off a tunnel that works.
+ */
+export const PHONE_SOCKET_FAILURE_COOLDOWN_MS = 60_000
 /** How long one route may take to answer `GET /bootstrap`, as in the shared search. */
 const PROBE_TIMEOUT_MS = 6000
 
@@ -272,7 +280,15 @@ type Transport = {
   unsubscribe: () => void
 }
 
-type Latch = { environmentId: string; status: 'unauthorized' | 'incompatible_protocol' }
+type Latch = {
+  environmentId: string
+  status: 'unauthorized' | 'incompatible_protocol'
+  /**
+   * For a socket's protocol refusal: the route whose bootstrap is asked for
+   * the version the environment speaks, until it has answered.
+   */
+  readVersionFrom?: string
+}
 
 type Wake = 'start' | 'select' | 'retry' | 'foreground' | 'online' | 'activity' | 'timer' | 'socket'
 
@@ -321,6 +337,30 @@ export function createPhoneConnectionController(
   const retryDelays = options.retryDelaysMs ?? PHONE_RETRY_DELAYS_MS
   const stableAfterMs = options.stableAfterMs ?? PHONE_STABLE_AFTER_MS
   const probeTimeoutMs = options.probeTimeoutMs ?? PROBE_TIMEOUT_MS
+  const socketFailureCooldownMs =
+    options.socketFailureCooldownMs ?? PHONE_SOCKET_FAILURE_COOLDOWN_MS
+  /** Routes whose socket failed soon after their bootstrap answered, and when. */
+  const socketFailures = new Map<string, number>()
+  /**
+   * The phone's search order with each route whose socket failed within the
+   * cooldown moved behind the others. Moved, not dropped: when nothing else
+   * answers it is still asked.
+   */
+  const demoteFailedSockets = (environment: StoredEnvironment): StoredEnvironment => {
+    const ordered = phoneSearchOrder(environment)
+    const failed = (endpoint: string) => {
+      const at = socketFailures.get(endpoint)
+      return at !== undefined && now() - at < socketFailureCooldownMs
+    }
+    if (!ordered.routes.some((route) => failed(route.endpoint))) return ordered
+    return {
+      ...ordered,
+      routes: [
+        ...ordered.routes.filter((route) => !failed(route.endpoint)),
+        ...ordered.routes.filter((route) => failed(route.endpoint)),
+      ],
+    }
+  }
   const warn = options.warn ?? ((message: string) => console.warn(message))
   const persistence: RegistryPersistence = createRegistryPersistence(options.storage)
   const probeRoute =
@@ -344,7 +384,7 @@ export function createPhoneConnectionController(
     signal: AbortSignal,
     first?: string,
   ): Promise<RouteSearchResult> =>
-    searchRoutes(phoneSearchOrder(environment), {
+    searchRoutes(demoteFailedSockets(environment), {
       first,
       probe: (endpoint) =>
         signal.aborted ? Promise.resolve(CANCELLED) : probeRoute(endpoint, signal),
@@ -361,6 +401,8 @@ export function createPhoneConnectionController(
   let activity = options.activity.current()
   let network = options.network.current()
   let latch: Latch | null = null
+  /** The bootstrap read explaining a socket's protocol refusal, while in flight. */
+  let refusalRead: AbortController | null = null
   let searchGeneration = 0
   let searchAbort: AbortController | null = null
   let retryTimer: unknown = null
@@ -471,12 +513,19 @@ export function createPhoneConnectionController(
     set({ status: 'waiting', attempt, retryAt: now() + delay })
   }
 
+  const cancelRefusalRead = () => {
+    refusalRead?.abort()
+    refusalRead = null
+  }
+
   const latchOn = (
     environmentId: string,
     status: Latch['status'],
     patch: Partial<PhoneConnectionState> = {},
+    readVersionFrom?: string,
   ) => {
-    latch = { environmentId, status }
+    cancelRefusalRead()
+    latch = { environmentId, status, ...(readVersionFrom ? { readVersionFrom } : {}) }
     cancelSearch()
     clearRetry()
     dropTransport()
@@ -506,6 +555,7 @@ export function createPhoneConnectionController(
 
     if (connection.phase === 'connected') {
       current.connectedAt = now()
+      socketFailures.delete(endpoint)
       recordHealth(environmentId, endpoint, { status: 'available' })
       set({
         status: 'connected',
@@ -535,10 +585,13 @@ export function createPhoneConnectionController(
       return
     }
     if (failure?.code === 'protocol_incompatible' || failure?.code === 'capability_missing') {
-      latchOn(environmentId, 'incompatible_protocol', {
-        protocol: { client: PROTOCOL_VERSION, environment: null },
-      })
-      readRefusedVersion(environmentId, endpoint)
+      latchOn(
+        environmentId,
+        'incompatible_protocol',
+        { protocol: { client: PROTOCOL_VERSION, environment: null } },
+        endpoint,
+      )
+      readRefusedVersion()
       return
     }
 
@@ -558,29 +611,34 @@ export function createPhoneConnectionController(
       return
     }
     // It failed while opening, or soon after: back off before asking again,
-    // so a route that answers bootstrap but refuses the socket cannot spin.
+    // so a route that answers bootstrap but refuses the socket cannot spin,
+    // and ask the other routes before this one next time.
+    socketFailures.set(endpoint, now())
     scheduleRetry()
   }
 
   /**
    * The socket's refusal carries no version the client keeps, so the route's
-   * bootstrap is asked once for the version the environment speaks now. Only
-   * its own answer is shown, and only while the latch it explains still holds.
+   * bootstrap is asked for the version the environment speaks now. Only its
+   * own answer is shown, and only while the latch it explains still holds.
+   * Like every other request it stops for a hold or a network gap; it is
+   * asked again when the app is back, while the version is still unknown.
    */
-  const readRefusedVersion = (environmentId: string, endpoint: string) => {
+  const readRefusedVersion = () => {
     // This refusal's own latch: a retry that is refused again makes a new
     // one, and this answer must not overwrite that one's.
     const refusal = latch
+    const endpoint = refusal?.readVersionFrom
+    if (!refusal || !endpoint || refusalRead) return
+    const { environmentId } = refusal
     const abort = new AbortController()
-    const release = () => abort.abort()
-    releases.push(release)
+    refusalRead = abort
     void probeRoute(endpoint, abort.signal).then((outcome) => {
-      const index = releases.indexOf(release)
-      if (index !== -1) releases.splice(index, 1)
-      if (disposed || !refusal || latch !== refusal) return
-      if (refusal.environmentId !== environmentId || refusal.status !== 'incompatible_protocol') {
-        return
-      }
+      if (refusalRead === abort) refusalRead = null
+      if (abort.signal.aborted || disposed || latch !== refusal) return
+      if (outcome.status === 'unreachable') return
+      // Answered: asked no more for this refusal, whatever the answer was.
+      delete refusal.readVersionFrom
       if (outcome.status !== 'incompatible_protocol') return
       if (outcome.environmentId && outcome.environmentId !== environmentId) return
       set({
@@ -787,9 +845,12 @@ export function createPhoneConnectionController(
     }
     if (latch && latch.environmentId === environment.environmentId) {
       cancelSearch()
+      if (activity === 'background' || !network.online) cancelRefusalRead()
+      else readRefusedVersion()
       set({ status: latch.status, retryAt: null })
       return
     }
+    cancelRefusalRead()
     latch = null
     if (activity === 'background') {
       quiet()
@@ -818,9 +879,14 @@ export function createPhoneConnectionController(
     void runSearch(environment, reason === 'socket' ? current?.endpoint : undefined)
   }
 
-  /** Lifecycle and network changes that start over count from zero. */
+  /**
+   * Lifecycle and network changes that start over count from zero, and forget
+   * which sockets failed: on another network, or at a person's request, every
+   * route deserves its place again.
+   */
   const restart = (reason: Wake) => {
     attempt = 0
+    socketFailures.clear()
     set({ attempt: 0 })
     wake(reason)
   }
@@ -957,6 +1023,7 @@ export function createPhoneConnectionController(
       if (disposed) return
       disposed = true
       cancelSearch()
+      cancelRefusalRead()
       clearRetry()
       for (const release of releases.splice(0)) release()
       dropTransport()
