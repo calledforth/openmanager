@@ -221,8 +221,11 @@ export class ServerProcess {
    * Restart with a kill armed from the first instruction, so it can land
    * inside boot; the process that dies there is replaced by a normal one.
    */
-  async restartKilledAtBoot(at: KillAt): Promise<void> {
-    await this.stop()
+  async restartKilledAtBoot(at: KillAt, options: { crash?: boolean } = {}): Promise<void> {
+    // A crash leaves open turns for the next boot to recover; a graceful stop
+    // ends them on its way out.
+    if (options.crash) await this.kill()
+    else await this.stop()
     await this.spawn({ killAt: at }).then(
       () => {
         throw new Error('The server child booted although a kill was armed inside boot.')

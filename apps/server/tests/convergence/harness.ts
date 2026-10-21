@@ -464,9 +464,9 @@ export class Rig {
     this.proxy.setTarget(this.server.port)
   }
 
-  /** A graceful stop, then a boot that dies at a chosen commit, then a normal boot. */
-  async restartKilledAtBoot(at: KillAt): Promise<void> {
-    await this.server.restartKilledAtBoot(at)
+  /** A stop (graceful, or a crash), then a boot that dies at a chosen commit, then a normal boot. */
+  async restartKilledAtBoot(at: KillAt, options: { crash?: boolean } = {}): Promise<void> {
+    await this.server.restartKilledAtBoot(at, options)
     this.proxy.setTarget(this.server.port)
   }
 
