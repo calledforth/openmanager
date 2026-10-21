@@ -126,6 +126,24 @@ describe('a manifest write that fails', () => {
     expect(secretOf(stores.secureStore, STUDIO)).toBe(TOKEN_A)
   })
 
+  it('keeps a pending credential SecureStore will not read at boot, for a later boot to read', async () => {
+    const stores = device()
+    const storage = await boot(stores)
+    stores.asyncStore.failAt.set(CREDENTIAL_MANIFEST_KEY, 2)
+    await save(storage, withCredential(TOKEN_A))
+    expect(activeIds(stores.asyncStore)).toEqual([])
+    // The Keychain refuses the read this boot (before first unlock, say).
+    stores.secureStore.unreadable.add(credentialStoreKey(STUDIO))
+    const locked = await boot(stores)
+    expect(credentialOf(locked)).toBe('')
+    expect(locked.unreadableCredentials).toEqual([STUDIO])
+    // An ordinary write in the meantime does not delete it.
+    await save(locked, selectStoredEnvironment(withCredential(''), STUDIO))
+    expect(secretOf(stores.secureStore, STUDIO)).toBe(TOKEN_A)
+    stores.secureStore.unreadable.clear()
+    expect(credentialOf(await boot(stores))).toBe(TOKEN_A)
+  })
+
   it('retires a revoked credential rather than leaving it pending', async () => {
     // Only the current credential is ever pending. (If the retirement write
     // and the delete both fail, a pending or active slot can still come back

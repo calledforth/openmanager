@@ -606,10 +606,19 @@ export function createPhoneStorage(options: PhoneStorageOptions): PhoneStorage {
       current.set(environmentId, key)
     }
     // A pending slot SecureStore has is the newer credential: its write
-    // landed and only the confirmation did not. One it does not have (or will
-    // not read) is retired, and the active one, if any, stays.
+    // landed and only the confirmation did not. One it does not have is
+    // retired, and the active one, if any, stays. One it will not read is kept.
     for (const { environmentId, key, credential } of pendingReads) {
-      const parsed = typeof credential === 'string' ? parseEnvironmentCredential(credential) : ''
+      if (credential === undefined) {
+        // SecureStore would not say: kept, as an unreadable active slot is.
+        // It is newer than any active slot the environment has.
+        slots.set(key, { environmentId, credential: '', written: true })
+        current.delete(environmentId)
+        saved.delete(environmentId)
+        unreadable.set(environmentId, key)
+        continue
+      }
+      const parsed = credential === null ? '' : parseEnvironmentCredential(credential)
       slots.set(key, { environmentId, credential: parsed, written: true })
       if (!parsed) continue
       unreadable.delete(environmentId)
