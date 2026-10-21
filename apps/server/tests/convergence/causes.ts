@@ -1,4 +1,4 @@
-import { ABSENT, type DiffEntry, type NormalizedView, type ThreadView } from './normalize.ts'
+import { ABSENT, type DiffEntry } from './normalize.ts'
 import {
   equals,
   isTimestamp,
@@ -29,7 +29,6 @@ const BOTH: readonly Comparison[] = ['fresh', 'server']
 const FRESH: readonly Comparison[] = ['fresh']
 const thread = (threadId: string) => `active.threads.${threadId}`
 const absent = equals(ABSENT)
-const ms = (value: unknown) => (typeof value === 'string' ? Date.parse(value) : Number.NaN)
 
 const entry = (
   comparisons: readonly Comparison[],
@@ -42,60 +41,6 @@ const entry = (
 // ---------------------------------------------------------------------------
 // Builders
 // ---------------------------------------------------------------------------
-
-/** W1, S1: restart recovery rewrites rows in SQL and writes no events. */
-export function silentRecovery(fixture: {
-  threadId: string
-  turnId: string
-  /** The turn's state on the client when the server went down. */
-  openState: 'running' | 'waiting'
-  /** The pending interactions the client held, by id, as normalize shows them. */
-  interactions: Record<string, unknown>
-}): CauseInstance {
-  const at = thread(fixture.threadId)
-  return {
-    name: 'SILENT_RECOVERY',
-    cause:
-      'recoverInterruptedTurns rewrites turns, interactions and sessions in SQL on boot ' +
-      '(database.ts:42-105) and writes no event, so the replay from the pre-crash cursor is ' +
-      'empty and the client keeps the turn open with its question pending. W1, S1. (The session ' +
-      'status the doc also names is put right on main by the catalog read every reconnect makes.)',
-    entries: [
-      entry(
-        BOTH,
-        `${at}.turns[${fixture.turnId}].state`,
-        equals(fixture.openState),
-        equals('interrupted'),
-      ),
-      entry(BOTH, `${at}.turns[${fixture.turnId}].finishedAt`, absent, isTimestamp),
-      ...Object.entries(fixture.interactions).map(([id, value]) =>
-        entry(BOTH, `${at}.interactions.${id}`, equals(value), absent),
-      ),
-    ],
-  }
-}
-
-/** §3.6 row 1, S2: the fold closes thoughts the server rows keep open. */
-export function thoughtClosedByFold(fixture: {
-  threadId: string
-  messageIds: string[]
-}): CauseInstance {
-  return {
-    name: 'THOUGHT_CLOSED_BY_FOLD',
-    cause:
-      'The client fold closes a thought when text, a tool update or the turn end follows it ' +
-      '(foldProtocolEvent.ts:80-86, :137, :169-172, :211); the server row keeps phase "delta" ' +
-      '(event-projection.ts:326-351). §3.6 row 1, S2.',
-    entries: fixture.messageIds.map((id) =>
-      entry(
-        BOTH,
-        `${thread(fixture.threadId)}.reasoning.${id}.phase`,
-        equals('stop'),
-        equals('delta'),
-      ),
-    ),
-  }
-}
 
 /**
  * W2, S4, S10: a snapshot over held history keeps older messages but
@@ -347,40 +292,13 @@ export interface RunContext {
 
 const ID = '[^.\\[\\]]+'
 const pattern = (source: string) => new RegExp(`^${source}$`)
-const TURN_STATE = pattern(`active\\.threads\\.(${ID})\\.turns\\[(${ID})\\]\\.state`)
-const TURN_FINISHED = pattern(`active\\.threads\\.(${ID})\\.turns\\[(${ID})\\]\\.finishedAt`)
-const INTERACTION = pattern(`active\\.threads\\.(${ID})\\.interactions\\.(${ID})`)
-const PHASE = pattern(`active\\.threads\\.(${ID})\\.reasoning\\.(${ID})\\.phase`)
-const FAILURE = pattern(`active\\.threads\\.(${ID})\\.failures\\.(${ID})`)
 const UPDATED = pattern(`sessions\\[(${ID})\\]\\.updatedAt`)
 const PROVIDER = pattern(`sessions\\[(${ID})\\]\\.providerId`)
 const RECENCY = pattern(`workspaces\\.(${ID})\\.lastActivityAt`)
 
 type Fingerprint = (entry: DiffEntry, result: ConvergenceResult, context: RunContext) => boolean
 
-const threadOf = (view: NormalizedView, threadId: string): ThreadView | undefined =>
-  view.active?.threads[threadId]
-const turnOf = (view: ThreadView | undefined, turnId: string) =>
-  (view?.turns as Array<{ turnId: string; state: string; finishedAt?: string }> | undefined)?.find(
-    (turn) => turn.turnId === turnId,
-  )
 const sessionsOnly = (comparison: string) => comparison === 'fresh' || comparison === 'server'
-const settled = (state: string | undefined) =>
-  state === 'completed' || state === 'interrupted' || state === 'failed'
-
-/** The turn was cut off by a restart: the rows say interrupted, finished at a boot. */
-function interruptedByRestart(
-  result: ConvergenceResult,
-  context: RunContext,
-  threadId: string,
-  turnId: string,
-) {
-  const fresh = turnOf(threadOf(result.fresh, threadId), turnId)
-  if (fresh?.state !== 'interrupted' || !fresh.finishedAt) return false
-  const finished = ms(fresh.finishedAt)
-  return context.restarts.some((boot) => Math.abs(finished - boot) <= 5_000)
-}
-
 /** A recency entry whose provenance names `cause` (provenance.ts, `explainRecency`). */
 function recency(entry: DiffEntry, context: RunContext, cause: string): boolean {
   const match = RECENCY.exec(entry.path)
@@ -390,65 +308,6 @@ function recency(entry: DiffEntry, context: RunContext, cause: string): boolean 
 }
 
 export const FINGERPRINTS: Record<string, Fingerprint> = {
-  SILENT_RECOVERY: (entry, result, context) => {
-    // Recovery's own writes to session times and recency, named by provenance.
-    if (recency(entry, context, 'SILENT_RECOVERY')) return true
-    const updated = UPDATED.exec(entry.path)
-    if (updated && sessionsOnly(entry.comparison)) {
-      const { provenance, wire } = context.witness
-      return (
-        explainSessionTime(provenance, updated[1]!, entry.left, entry.right, wire).cause ===
-        'SILENT_RECOVERY'
-      )
-    }
-    if (!sessionsOnly(entry.comparison)) return false
-    const state = TURN_STATE.exec(entry.path)
-    if (state) {
-      return (
-        (entry.left === 'running' || entry.left === 'waiting') &&
-        entry.right === 'interrupted' &&
-        interruptedByRestart(result, context, state[1]!, state[2]!)
-      )
-    }
-    const finished = TURN_FINISHED.exec(entry.path)
-    if (finished) {
-      return (
-        entry.left === ABSENT && interruptedByRestart(result, context, finished[1]!, finished[2]!)
-      )
-    }
-    const interaction = INTERACTION.exec(entry.path)
-    if (interaction && entry.right === ABSENT) {
-      const turnId = (entry.left as { turnId?: string } | undefined)?.turnId
-      return !!turnId && interruptedByRestart(result, context, interaction[1]!, turnId)
-    }
-    return false
-  },
-  THOUGHT_CLOSED_BY_FOLD: (entry, result) => {
-    const match = PHASE.exec(entry.path)
-    if (
-      !match ||
-      !sessionsOnly(entry.comparison) ||
-      entry.left !== 'stop' ||
-      entry.right !== 'delta'
-    ) {
-      return false
-    }
-    // Closed by what followed it in its turn, or by the turn's end.
-    const view = threadOf(result.view, match[1]!)
-    const order = (view?.order ?? []) as Array<{ kind: string; id: string; turnId: string }>
-    const index = order.findIndex((ref) => ref.kind === 'reasoning' && ref.id === match[2])
-    const turnId = order[index]?.turnId
-    if (index === -1 || !turnId) return false
-    const followed = order
-      .slice(index + 1)
-      .some((ref) => ref.turnId === turnId && ref.kind !== 'reasoning')
-    return followed || settled(turnOf(view, turnId)?.state)
-  },
-  FAILURE_ONLY_LIVE: (entry, result) => {
-    const match = FAILURE.exec(entry.path)
-    if (!match || !sessionsOnly(entry.comparison) || entry.right !== ABSENT) return false
-    return turnOf(threadOf(result.fresh, match[1]!), match[2]!)?.state === 'failed'
-  },
   RUNTIME_STAMP: (entry, _result, context) => {
     const match = UPDATED.exec(entry.path)
     if (!match || !sessionsOnly(entry.comparison)) return false
