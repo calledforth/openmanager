@@ -51,7 +51,12 @@ export const event = <E extends ProofEvent>(
 /** A turn the user sent, so its payload also stands in for a `turn.send` response. */
 export const turnStarted = (turnId = 'turn-1', text = 'hello', commandId?: string) => {
   const payload: TurnStart = {
-    turn: { turnId, threadId: THREAD.threadId, state: 'running' },
+    turn: {
+      turnId,
+      threadId: THREAD.threadId,
+      state: 'running',
+      startedAt: '2026-09-10T00:00:00.000Z',
+    },
     userMessage: {
       messageId: `${turnId}-user`,
       threadId: THREAD.threadId,

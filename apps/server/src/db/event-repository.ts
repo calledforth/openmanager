@@ -347,7 +347,8 @@ function changesSessionStatus(event: ProofEvent): boolean {
     isTerminal(event) ||
     event.name === 'interaction.requested' ||
     event.name === 'interaction.resolved' ||
-    event.name === 'interaction.expired'
+    event.name === 'interaction.expired' ||
+    event.name === 'interaction.cancelled'
   )
 }
 
@@ -364,6 +365,7 @@ function eventTurnId(event: DurableProofEvent): string | undefined {
     case 'interaction.requested':
     case 'interaction.resolved':
     case 'interaction.expired':
+    case 'interaction.cancelled':
       return event.payload.turnId
     default:
       return undefined

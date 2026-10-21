@@ -676,7 +676,13 @@ export function createMockEnvironmentClient(
     if (thread.turns.some((turn) => turn.state === 'running' || turn.state === 'waiting')) {
       throw new EnvironmentClientError('conflict', 'A turn is already in progress.')
     }
-    const turn: Turn = { turnId: nextId(), threadId: input.threadId, state: 'running' }
+    const turn: Turn = {
+      turnId: nextId(),
+      threadId: input.threadId,
+      state: 'running',
+      startedAt: now(),
+      ...(input.commandId ? { commandId: input.commandId } : {}),
+    }
     const userMessage: Message = {
       messageId: nextId(),
       threadId: input.threadId,
@@ -1119,7 +1125,7 @@ export function createMockEnvironmentClient(
           ...base(),
           name: 'turn.interrupted',
           scope: threadScope(input),
-          payload: { turnId: input.turnId },
+          payload: { turnId: input.turnId, reason: 'user' },
         })
       }),
     respondToInteraction: (input) =>
@@ -1136,7 +1142,18 @@ export function createMockEnvironmentClient(
           ...base(),
           name: 'interaction.resolved',
           scope: threadScope(input),
-          payload: { turnId: pending.turnId, response: input.response as InteractionResponse },
+          payload: {
+            turnId: pending.turnId,
+            response: input.response as InteractionResponse,
+            // Waiting while another request of the turn is still open.
+            turnState: thread.interactions.some(
+              (item) =>
+                item.turnId === pending.turnId &&
+                item.interaction.interactionId !== input.response.interactionId,
+            )
+              ? 'waiting'
+              : 'running',
+          },
         })
       }),
     getProviderCatalog: () =>
@@ -1522,7 +1539,7 @@ export function createMockEnvironmentClient(
         ...base(),
         name: 'turn.interrupted',
         scope: threadScope(target),
-        payload: { turnId: target.turnId },
+        payload: { turnId: target.turnId, reason: 'user' },
       })
     },
     failTurn: (target, reason, message) => {
@@ -1541,7 +1558,7 @@ export function createMockEnvironmentClient(
         ...base(),
         name: 'interaction.requested',
         scope: threadScope(target),
-        payload: { turnId: target.turnId, interaction },
+        payload: { turnId: target.turnId, interaction, turnState: 'waiting' },
       })
     },
     notice: (target, message) => {

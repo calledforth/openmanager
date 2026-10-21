@@ -513,8 +513,15 @@ describe('applyEvent', () => {
   })
 
   it('stamps a turn with when it started and finished', () => {
-    const start = turnStarted()
-    let state = applyEvent(seeded(), { ...start, timestamp: '2026-09-24T10:00:00.000Z' })
+    const at = '2026-09-24T10:00:00.000Z'
+    const sent = turnStarted()
+    // The server always says when a turn started (protocol v17).
+    const start = {
+      ...sent,
+      timestamp: at,
+      payload: { ...sent.payload, turn: { ...sent.payload.turn, startedAt: at } },
+    }
+    let state = applyEvent(seeded(), start)
     expect(selectActiveTurn(state)?.startedAt).toBe('2026-09-24T10:00:00.000Z')
     // The send response arriving second may not rewind the start.
     state = applyTurnStarted(state, THREAD, start.payload)

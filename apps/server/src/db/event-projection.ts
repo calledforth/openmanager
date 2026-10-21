@@ -109,7 +109,8 @@ export function createEventProjector(
     ),
     finishOpenTurn: database.prepare(
       `UPDATE turns
-       SET state = ?, failure_reason = ?, finished_at = ?, updated_at = ?
+       SET state = ?, failure_reason = ?, failure_message = ?, interrupted_by = ?,
+           finished_at = ?, updated_at = ?
        WHERE turn_id = ? AND thread_id = ? AND state IN ('running', 'waiting')`,
     ),
     insertInteraction: database.prepare(
@@ -493,6 +494,9 @@ export function createEventProjector(
           at,
           at,
         )
+        if (event.payload.turnState !== 'waiting') {
+          throw new Error(`A request leaves turn ${turnId} waiting, not ${event.payload.turnState}`)
+        }
         if (s.updateOpenTurnState.run('waiting', at, turnId, event.scope.threadId).changes !== 1) {
           throw new Error(`Cannot mark missing or finished turn ${turnId} as waiting`)
         }
@@ -501,10 +505,15 @@ export function createEventProjector(
         return
       }
       case 'interaction.resolved':
-      case 'interaction.expired': {
+      case 'interaction.expired':
+      case 'interaction.cancelled': {
         const { response, turnId } = event.payload
         const resolved = s.resolvePendingInteraction.run(
-          event.name === 'interaction.expired' ? 'expired' : 'resolved',
+          event.name === 'interaction.expired'
+            ? 'expired'
+            : event.name === 'interaction.cancelled'
+              ? 'cancelled'
+              : 'resolved',
           JSON.stringify(response),
           at,
           at,
@@ -519,6 +528,12 @@ export function createEventProjector(
           )
         }
         const status = s.pendingInteractions.get(turnId) ? 'waiting' : 'running'
+        // The producer states the turn's state; the rows must agree (I2).
+        if (event.payload.turnState !== status) {
+          throw new Error(
+            `${event.name} says turn ${turnId} is ${event.payload.turnState}; its requests say ${status}`,
+          )
+        }
         if (s.updateOpenTurnState.run(status, at, turnId, event.scope.threadId).changes !== 1) {
           throw new Error(`Cannot resume missing or finished turn ${turnId}`)
         }
@@ -538,6 +553,8 @@ export function createEventProjector(
         const finished = s.finishOpenTurn.run(
           state,
           event.name === 'turn.failed' ? event.payload.reason : null,
+          event.name === 'turn.failed' ? event.payload.message : null,
+          event.name === 'turn.interrupted' ? event.payload.reason : null,
           at,
           at,
           turnId,
@@ -551,8 +568,13 @@ export function createEventProjector(
         // The turn is over but the session is not resting while work it
         // started is still running in the background.
         const working = !!s.hasBackgroundTasks.get(event.scope.sessionId)
+        // A restart cut the turn off: nobody asked it to stop, so the session
+        // shows the failure, as a failed turn does.
+        const failedHere =
+          event.name === 'turn.failed' ||
+          (event.name === 'turn.interrupted' && event.payload.reason === 'server_restarted')
         const session = s.updateSessionStatus.run(
-          event.name === 'turn.failed' ? 'error' : working ? 'running' : 'idle',
+          failedHere ? 'error' : working ? 'running' : 'idle',
           at,
           event.scope.sessionId,
         )

@@ -73,10 +73,14 @@ export function createAgentEventTranslator(options: {
     return inferred
   }
 
+  // Open requests per session, so a resolution says whether its turn still waits.
+  const pending = new Map<string, Set<string>>()
+
   const failure = (event: Located, reason: TurnFailureReason, message: string): ProofEvent[] => {
     const turnId = turns.get(event.sessionId) ?? event.messageId
     if (!turnId) return []
     turns.delete(event.sessionId)
+    pending.delete(event.sessionId)
     return [
       {
         ...envelope(event),
@@ -87,23 +91,36 @@ export function createAgentEventTranslator(options: {
     ]
   }
 
-  const requested = (event: Located, interaction: Interaction): ProofEvent[] => [
-    {
-      ...envelope(event),
-      name: 'interaction.requested',
-      scope: threadScope(event.sessionId),
-      payload: { turnId: turnIdFor(event), interaction },
-    },
-  ]
+  const requested = (event: Located, interaction: Interaction): ProofEvent[] => {
+    const open = pending.get(event.sessionId) ?? new Set<string>()
+    open.add(interaction.interactionId)
+    pending.set(event.sessionId, open)
+    return [
+      {
+        ...envelope(event),
+        name: 'interaction.requested',
+        scope: threadScope(event.sessionId),
+        payload: { turnId: turnIdFor(event), interaction, turnState: 'waiting' },
+      },
+    ]
+  }
 
-  const resolved = (event: Located, response: InteractionResponse): ProofEvent[] => [
-    {
-      ...envelope(event),
-      name: 'interaction.resolved',
-      scope: threadScope(event.sessionId),
-      payload: { turnId: turnIdFor(event), response },
-    },
-  ]
+  const resolved = (event: Located, response: InteractionResponse): ProofEvent[] => {
+    const open = pending.get(event.sessionId)
+    open?.delete(response.interactionId)
+    return [
+      {
+        ...envelope(event),
+        name: 'interaction.resolved',
+        scope: threadScope(event.sessionId),
+        payload: {
+          turnId: turnIdFor(event),
+          response,
+          turnState: open && open.size > 0 ? 'waiting' : 'running',
+        },
+      },
+    ]
+  }
 
   const translate = (event: AgentEvent): ProofEvent[] => {
     switch (event.event) {
@@ -170,7 +187,12 @@ export function createAgentEventTranslator(options: {
             name: 'turn.started',
             scope: threadScope(event.sessionId),
             payload: {
-              turn: { turnId, threadId: event.sessionId, state: 'running' },
+              turn: {
+                turnId,
+                threadId: event.sessionId,
+                state: 'running',
+                startedAt: event.timestamp,
+              },
               userMessage: {
                 messageId: event.data.userMessageId,
                 threadId: event.sessionId,
@@ -185,14 +207,22 @@ export function createAgentEventTranslator(options: {
       case 'prompt_completed': {
         const turnId = turnIdFor(event)
         turns.delete(event.sessionId)
+        pending.delete(event.sessionId)
         const interrupted = !!event.data.stopReason && INTERRUPTED_STOP.test(event.data.stopReason)
         return [
-          {
-            ...envelope(event),
-            name: interrupted ? 'turn.interrupted' : 'turn.completed',
-            scope: threadScope(event.sessionId),
-            payload: { turnId },
-          },
+          interrupted
+            ? {
+                ...envelope(event),
+                name: 'turn.interrupted',
+                scope: threadScope(event.sessionId),
+                payload: { turnId, reason: 'user' },
+              }
+            : {
+                ...envelope(event),
+                name: 'turn.completed',
+                scope: threadScope(event.sessionId),
+                payload: { turnId },
+              },
         ]
       }
       case 'agent_message_chunk': {

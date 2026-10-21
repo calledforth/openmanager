@@ -58,6 +58,21 @@ interface StreamBoundsRow {
   epoch: string
   head_sequence: number
   oldest_sequence: number | null
+  replay_floor: number
+}
+
+/**
+ * The oldest sequence a replay may carry. Retention prunes from the front;
+ * the replay floor (db/replay-floor.ts) hides everything written in an older
+ * event format. A floor at or above the head leaves nothing replayable,
+ * which `decideReplay` reads as `null`: a cursor at the head replays empty,
+ * any lower one gets a snapshot.
+ */
+export function oldestReplayable(bounds: StreamBoundsRow): number | null {
+  const retained = bounds.oldest_sequence
+  if (retained === null || bounds.replay_floor <= 0) return retained
+  if (bounds.replay_floor >= bounds.head_sequence) return null
+  return Math.max(retained, bounds.replay_floor + 1)
 }
 
 interface EventRow {
@@ -147,7 +162,7 @@ export function createReplayReader(database: DatabaseSync, options: ReplayReader
       const head: Cursor = bounds
         ? { scope, epoch: bounds.epoch, sequence: bounds.head_sequence }
         : { scope, epoch: options.epoch, sequence: 0 }
-      const decision = decideReplay(scope, cursor, head, bounds?.oldest_sequence ?? null)
+      const decision = decideReplay(scope, cursor, head, bounds ? oldestReplayable(bounds) : null)
       if (decision.mode === 'snapshot' || !cursor) {
         return snapshot(scope, head, decision.mode === 'snapshot' ? decision.reason : 'initial')
       }

@@ -70,6 +70,7 @@ import {
 } from './local-owner.ts'
 import { createPersistentEventService } from './event-service.ts'
 import { openEnvironmentDatabase } from './db/database.ts'
+import { raiseReplayFloors } from './db/replay-floor.ts'
 import { createEventRetention } from './db/event-retention.ts'
 import { createReplayReader } from './db/replay.ts'
 import { getSessionSummary } from './db/session-store.ts'
@@ -261,6 +262,11 @@ export async function startServer(config: ServerConfig) {
   // Bound once the thread service exists, which the event service predates.
   let sessionProvider: (sessionId: string) => string | undefined = () => undefined
   const eventDatabase = openEnvironmentDatabase(config.dataDir)
+  // Before anything is appended: events stored in an older format are no
+  // longer replayed (docs/sync-foundations.md §4.7.7).
+  const floorsRaised = raiseReplayFloors(eventDatabase)
+  if (floorsRaised > 0)
+    log('info', 'replay floors raised for a new event format', { streams: floorsRaised })
   // One epoch per process for streams that start here; replay reads it for
   // scopes that have no stream row yet.
   const eventEpoch = randomUUID()

@@ -509,7 +509,7 @@ describe('thread command provider routing', () => {
       expect(events).toContainEqual(
         expect.objectContaining({
           name: 'turn.interrupted',
-          payload: { turnId: sent.payload.turn.turnId },
+          payload: { turnId: sent.payload.turn.turnId, reason: 'user' },
         }),
       ),
     )

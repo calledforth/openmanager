@@ -62,7 +62,12 @@ const started = (eventId = 'event-started') => {
     timestamp: '2026-09-10T10:00:00.000Z',
     scope,
     payload: {
-      turn: { turnId: 'turn-1', threadId: 'thread-1', state: 'running' },
+      turn: {
+        turnId: 'turn-1',
+        threadId: 'thread-1',
+        state: 'running',
+        startedAt: '2026-09-10T10:00:00.000Z',
+      },
       userMessage: {
         messageId: 'message-user',
         threadId: 'thread-1',
@@ -110,6 +115,7 @@ const interactionRequested = () =>
     scope,
     payload: {
       turnId: 'turn-1',
+      turnState: 'waiting',
       interaction: {
         kind: 'plan',
         interactionId: 'interaction-1',
@@ -120,7 +126,10 @@ const interactionRequested = () =>
     },
   })
 
-const interactionResolved = (eventId = 'interaction-resolved') =>
+const interactionResolved = (
+  eventId = 'interaction-resolved',
+  turnState: 'running' | 'waiting' = 'running',
+) =>
   ProofEventSchemas['interaction.resolved'].parse({
     type: 'event',
     name: 'interaction.resolved',
@@ -129,6 +138,7 @@ const interactionResolved = (eventId = 'interaction-resolved') =>
     scope,
     payload: {
       turnId: 'turn-1',
+      turnState,
       response: {
         kind: 'plan',
         interactionId: 'interaction-1',
@@ -198,6 +208,7 @@ describe('event repository transactions', () => {
         eventId: 'question-requested',
         payload: {
           turnId: 'turn-1',
+          turnState: 'waiting',
           interaction: {
             kind: 'question',
             interactionId: 'question-1',
@@ -212,6 +223,7 @@ describe('event repository transactions', () => {
         eventId: 'permission-requested',
         payload: {
           turnId: 'turn-1',
+          turnState: 'waiting',
           interaction: {
             kind: 'permission',
             interactionId: 'permission-1',
@@ -221,7 +233,7 @@ describe('event repository transactions', () => {
         },
       }),
     )
-    append(interactionResolved())
+    append(interactionResolved('interaction-resolved', 'waiting'))
     expect(
       database.prepare('SELECT status FROM sessions WHERE session_id = ?').get('session-1'),
     ).toEqual({ status: 'waiting' })
@@ -237,6 +249,8 @@ describe('event repository transactions', () => {
           eventId: `${kind}-resolved`,
           payload: {
             turnId: 'turn-1',
+            // The permission is still open once the question is answered.
+            turnState: kind === 'question' ? 'waiting' : 'running',
             response: {
               kind,
               interactionId: `${kind}-1`,
@@ -506,6 +520,7 @@ describe('event repository transactions', () => {
       eventId: 'expired',
       payload: {
         turnId: 'turn-1',
+        turnState: 'waiting',
         response: {
           kind: 'plan',
           interactionId: 'interaction-1',
@@ -532,6 +547,7 @@ describe('event repository transactions', () => {
         eventId: 'second-expired',
         payload: {
           ...expiry.payload,
+          turnState: 'running',
           response: { ...expiry.payload.response, interactionId: 'second' },
         },
       },
@@ -570,7 +586,7 @@ describe('event repository transactions', () => {
         name,
         payload: {
           turnId: 'turn-1',
-          reason: 'provider_process_crashed',
+          reason: name === 'turn.interrupted' ? 'user' : 'provider_process_crashed',
           message: 'Provider crashed',
         },
       })
@@ -1584,7 +1600,12 @@ describe('durable turn activity', () => {
         ...otherStart,
         scope: other,
         payload: {
-          turn: { turnId: 'turn-2', threadId: 'thread-2', state: 'running' },
+          turn: {
+            turnId: 'turn-2',
+            threadId: 'thread-2',
+            state: 'running',
+            startedAt: '2026-09-10T10:00:00.000Z',
+          },
           userMessage: {
             ...otherStart.payload.userMessage,
             messageId: 'other-user',

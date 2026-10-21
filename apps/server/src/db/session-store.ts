@@ -103,8 +103,50 @@ type TurnRow = {
   thread_id: string
   state: string
   origin?: string | null
+  command_id: string | null
+  failure_reason: string | null
+  failure_message: string | null
+  interrupted_by: string | null
   started_at: number
   finished_at: number | null
+}
+
+/** A turn as every read states it: history pages, snapshots and a retried send's answer. */
+function turnFromRow(row: TurnRow): Turn {
+  return TurnSchema.parse({
+    turnId: row.turn_id,
+    threadId: row.thread_id,
+    state: row.state,
+    startedAt: new Date(row.started_at).toISOString(),
+    ...(row.finished_at === null ? {} : { finishedAt: new Date(row.finished_at).toISOString() }),
+    ...(row.origin ? { origin: row.origin } : {}),
+    ...(row.command_id ? { commandId: row.command_id } : {}),
+    // A failure recorded before its message was kept says only its reason.
+    ...(row.state === 'failed' && row.failure_reason
+      ? {
+          failure: {
+            reason: row.failure_reason,
+            message: row.failure_message ?? FAILURE_MESSAGES[row.failure_reason] ?? '',
+          },
+        }
+      : {}),
+    ...(row.state === 'interrupted' && row.interrupted_by
+      ? { interruptedBy: row.interrupted_by }
+      : {}),
+  })
+}
+
+/**
+ * What the server said for each failure reason before `turns.failure_message`
+ * existed (thread-service.ts `emitFailed`, agent-runtime `failureMessage`):
+ * a turn failed before migration 21 reads back the text its event carried.
+ */
+const FAILURE_MESSAGES: Record<string, string> = {
+  provider_process_crashed: 'The provider process crashed before the turn completed.',
+  provider_process_exited: 'The provider process exited before the turn completed.',
+  provider_error: 'The provider failed to complete the turn.',
+  authentication_required: 'The provider requires authentication.',
+  capability_missing: 'The provider does not support this operation.',
 }
 type TurnActivityRow = {
   activity_id: string
@@ -274,17 +316,7 @@ export function listSessionHistory(
   const pageRows = rows.slice(0, limit)
   const messages = pageRows.map((row) => messageFromRow(database, row)).reverse()
   const turns = (database.prepare(TURNS_FOR_THREAD_SQL).all(query.threadId) as TurnRow[]).map(
-    (row) =>
-      TurnSchema.parse({
-        turnId: row.turn_id,
-        threadId: row.thread_id,
-        state: row.state,
-        startedAt: new Date(row.started_at).toISOString(),
-        ...(row.finished_at === null
-          ? {}
-          : { finishedAt: new Date(row.finished_at).toISOString() }),
-        ...(row.origin ? { origin: row.origin } : {}),
-      }),
+    turnFromRow,
   )
   // The reasoning and tool calls that belong to this page: everything after
   // the newest message the next older page will carry, up to this page's own
@@ -451,7 +483,7 @@ export function findTurnByCommandId(
     MessageRow | undefined
   if (!message) return undefined
   return {
-    turn: TurnSchema.parse({ turnId: turn.turn_id, threadId: turn.thread_id, state: turn.state }),
+    turn: turnFromRow(turn),
     userMessage: messageFromRow(database, message),
     commandId: query.commandId,
   }

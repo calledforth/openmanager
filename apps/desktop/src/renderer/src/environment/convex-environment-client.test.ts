@@ -464,7 +464,12 @@ describe('createConvexEnvironmentClient', () => {
       }),
     )
     const result = await sending
-    expect(result.turn).toEqual({ turnId: 'asst-1', threadId: 'session-1', state: 'running' })
+    expect(result.turn).toEqual({
+      turnId: 'asst-1',
+      threadId: 'session-1',
+      state: 'running',
+      startedAt: '2026-09-11T00:00:00.000Z',
+    })
     expect(result.userMessage.messageId).toBe('agent_usr_uuid-1')
     expect(convex.watcherCount('jobs:getStatus')).toBe(0)
 

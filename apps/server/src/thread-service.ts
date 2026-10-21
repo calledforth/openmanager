@@ -290,6 +290,11 @@ function sameAnswer(first: InteractionAnswer, second: InteractionAnswer): boolea
 /** Why a response does not fit the request it answers, if it does not. */
 function invalidResponse(interaction: Interaction, response: InteractionResponse): string | null {
   if (interaction.kind !== response.kind) return 'Response does not match the interaction kind.'
+  if (
+    response.outcome.outcome === 'cancelled' &&
+    (response.outcome.reason === 'turn_ended' || response.outcome.reason === 'server_restarted')
+  )
+    return 'Only the environment cancels a request for that reason.'
   if (interaction.kind === 'permission' && response.kind === 'permission') {
     const { outcome } = response
     if (
@@ -515,7 +520,11 @@ export function createThreadService(
     }
   }
 
-  const emitInterrupted = (record: ThreadRecord, turnId: string) => {
+  const emitInterrupted = (
+    record: ThreadRecord,
+    turnId: string,
+    reason: 'user' | 'server_restarted' = 'user',
+  ) => {
     appendRuntimeEvent(
       ProofEventSchemas['turn.interrupted'].parse({
         type: 'event',
@@ -528,7 +537,7 @@ export function createThreadService(
           sessionId: record.session.sessionId,
           threadId: record.thread.threadId,
         },
-        payload: { turnId },
+        payload: { turnId, reason },
       }),
     )
   }
@@ -877,6 +886,14 @@ export function createThreadService(
           : undefined,
       completionState,
       failureReason,
+      // A request settled here leaves its turn waiting only on the others.
+      turnState:
+        active &&
+        [...active.pendingInteractions.keys()].some(
+          (id) => id !== stableId(active.interactionIds, providerInteractionId),
+        )
+          ? 'waiting'
+          : 'running',
     })
     if (!projected) return
     if (projected.name === 'message.delta' && projected.payload.content.type === 'image' && options.artifacts) {
@@ -1022,6 +1039,7 @@ export function createThreadService(
       turnId: randomUUID(),
       threadId: record.thread.threadId,
       state: 'running',
+      startedAt: event.timestamp,
       origin: 'background',
     }
     const started = ProofEventSchemas['turn.started'].parse({
@@ -1486,10 +1504,13 @@ export function createThreadService(
     } catch {
       return errorResult(command.requestId, 'unavailable', 'An attachment could not be read.')
     }
+    const startedAt = new Date().toISOString()
     const turn: Turn = {
       turnId: randomUUID(),
       threadId: record.thread.threadId,
       state: 'running',
+      startedAt,
+      commandId,
     }
     const userMessage: Message = {
       messageId: randomUUID(),
@@ -1509,7 +1530,7 @@ export function createThreadService(
           type: 'event',
           name: 'turn.started',
           eventId: randomUUID(),
-          timestamp: new Date().toISOString(),
+          timestamp: startedAt,
           scope: threadScope(record),
           payload: started,
         })
@@ -2533,15 +2554,35 @@ export function createThreadService(
         const providerRejection = rejectProvider(command.requestId, record.providerId)
         if (providerRejection) return providerRejection
         const target = { providerId: record.providerId, requestId: entry.providerRequestId }
+        // `invalidResponse` refused the reasons only the environment gives
+        // (`turn_ended`, `server_restarted`); what is left is the provider's.
+        type Forwarded<T> = T extends { outcome: 'cancelled' }
+          ? {
+              outcome: 'cancelled'
+              reason?: Exclude<T['reason' & keyof T], 'turn_ended' | 'server_restarted'>
+            }
+          : T
         const forward =
           response.kind === 'permission'
             ? runtime.respondPermission &&
-              (() => runtime.respondPermission!({ ...target, outcome: response.outcome }))
+              (() =>
+                runtime.respondPermission!({
+                  ...target,
+                  outcome: response.outcome as Forwarded<typeof response.outcome>,
+                }))
             : response.kind === 'question'
               ? runtime.respondQuestion &&
-                (() => runtime.respondQuestion!({ ...target, outcome: response.outcome }))
+                (() =>
+                  runtime.respondQuestion!({
+                    ...target,
+                    outcome: response.outcome as Forwarded<typeof response.outcome>,
+                  }))
               : runtime.respondPlan &&
-                (() => runtime.respondPlan!({ ...target, outcome: response.outcome }))
+                (() =>
+                  runtime.respondPlan!({
+                    ...target,
+                    outcome: response.outcome as Forwarded<typeof response.outcome>,
+                  }))
         if (!forward) {
           return errorResult(
             command.requestId,
