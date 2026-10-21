@@ -8,11 +8,11 @@ import { ProjectChip } from './ProjectChip'
 import { StatusMark } from './StatusMark'
 import { tap } from './haptics'
 
-/** Short ages for a list: "now", "4m", "2h", "3d". */
-export function shortAge(iso: string | undefined, now = Date.now()): string {
-  if (!iso) return ''
-  const at = Date.parse(iso)
-  if (Number.isNaN(at)) return ''
+/** Short ages for a list: "now", "4m", "2h", "3d", from an ISO time or epoch ms. */
+export function shortAge(when: string | number | undefined, now = Date.now()): string {
+  if (when === undefined || when === '') return ''
+  const at = typeof when === 'number' ? when : Date.parse(when)
+  if (!Number.isFinite(at) || at <= 0) return ''
   const diff = now - at
   if (diff < 45_000) return 'now'
   const text = formatRelativeTime(at, now)

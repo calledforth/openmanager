@@ -114,12 +114,12 @@ export const FIXTURE_SESSIONS: HomeSession[] = [
   {
     externalId: 's-pricing',
     title: 'Pricing page copy, three tiers',
-    status: 'idle',
+    // Finished since anyone looked: the environment says `done` until it is opened.
+    status: 'done',
     providerId: 'opencode',
     isDriven: false,
     workspacePath: SALESMAXAI.path,
     updatedAt: minutesAgo(70),
-    doneUnseen: true,
   },
   {
     externalId: 's-sync-f2',
@@ -133,7 +133,7 @@ export const FIXTURE_SESSIONS: HomeSession[] = [
   {
     externalId: 's-portfolio',
     title: 'Freelancer Portfolio Site',
-    status: 'idle',
+    status: 'ready',
     providerId: 'cursor',
     isDriven: false,
     workspacePath: CLEPRO.path,
@@ -142,7 +142,7 @@ export const FIXTURE_SESSIONS: HomeSession[] = [
   {
     externalId: 's-grouped-themes',
     title: 'Group themes into families',
-    status: 'idle',
+    status: 'ready',
     providerId: 'claude',
     isDriven: false,
     workspacePath: OPENMANAGER.path,
@@ -152,7 +152,7 @@ export const FIXTURE_SESSIONS: HomeSession[] = [
   {
     externalId: 's-send-flicker',
     title: 'Stop a sent message from flickering',
-    status: 'idle',
+    status: 'ready',
     providerId: 'claude',
     isDriven: false,
     workspacePath: OPENMANAGER.path,
@@ -162,7 +162,7 @@ export const FIXTURE_SESSIONS: HomeSession[] = [
   {
     externalId: 's-t3code',
     title: 'Read t3code as a security reference',
-    status: 'idle',
+    status: 'ready',
     providerId: 'claude',
     isDriven: false,
     workspacePath: T3CODE.path,
@@ -172,37 +172,45 @@ export const FIXTURE_SESSIONS: HomeSession[] = [
   },
 ]
 
+const msAgo = (minutes: number, now = Date.now()) => now - minutes * 60_000
+
+/** Draft cards in the shared sidebar's shape: the project by id (its path), edits in ms. */
 export const FIXTURE_DRAFTS: HomeDraft[] = [
   {
     draftId: 'd-upload-retry',
-    workspacePath: OPENMANAGER.path,
+    sessionId: 's-draft-upload-retry',
+    workspaceId: OPENMANAGER.path,
+    providerId: 'claude',
     preview: 'Add a retry to the upload ticket when the socket drops mid-PUT',
-    updatedAt: minutesAgo(2),
-    providerLabel: 'Opus 5.5 · Agent',
-    synced: true,
+    imageCount: 0,
+    editedAt: msAgo(2),
   },
   {
     draftId: 'd-pricing',
-    workspacePath: SALESMAXAI.path,
+    sessionId: 's-draft-pricing',
+    workspaceId: SALESMAXAI.path,
+    providerId: 'opencode',
     preview: 'Write the landing copy for the pricing page, three tiers',
-    updatedAt: minutesAgo(60),
-    providerLabel: 'GPT-6.1 · Plan',
-    synced: true,
+    imageCount: 0,
+    editedAt: msAgo(60),
   },
   {
     draftId: 'd-sidebar-remount',
-    workspacePath: OPENMANAGER.path,
+    sessionId: 's-draft-sidebar-remount',
+    workspaceId: OPENMANAGER.path,
+    providerId: 'claude',
     preview: 'Why does the sidebar remount when the theme flips?',
-    updatedAt: minutesAgo(60 * 3),
-    synced: false,
+    imageCount: 0,
+    editedAt: msAgo(60 * 3),
+    unsynced: 'offline',
   },
   {
     draftId: 'd-soul-avatar',
-    workspacePath: CLEPRO.path,
+    sessionId: 's-draft-soul-avatar',
+    workspaceId: CLEPRO.path,
+    providerId: 'cursor',
     preview: 'Match this reference — the soul ID avatar grid',
-    updatedAt: minutesAgo(60 * 25),
-    providerLabel: 'Cursor',
-    synced: true,
     imageCount: 2,
+    editedAt: msAgo(60 * 25),
   },
 ]

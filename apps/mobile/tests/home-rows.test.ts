@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest'
+import { sessionBusyTone } from '@openmanager/app-core/components/sidebar/session-busy-tone'
 
 import { FIXTURE_DRAFTS, FIXTURE_SESSIONS, FIXTURE_WORKSPACES } from '../src/home/fixture'
 import {
@@ -18,7 +19,7 @@ const local = (y: number, m: number, d: number, h = 10) => new Date(y, m - 1, d,
 
 const session = (overrides: Partial<HomeSession>): HomeSession => ({
   externalId: overrides.externalId ?? 'x',
-  status: 'idle',
+  status: 'ready',
   providerId: 'claude',
   isDriven: false,
   workspacePath: FIXTURE_WORKSPACES[0]!.path,
@@ -33,8 +34,26 @@ describe('status marks', () => {
     expect(statusMarkOf(session({ status: 'waiting', waitingOn: 'plan' }))).toBe('needs')
     expect(statusMarkOf(session({ status: 'waiting', waitingOn: 'question' }))).toBe('question')
     expect(statusMarkOf(session({ status: 'error' }))).toBe('error')
-    expect(statusMarkOf(session({ status: 'idle', doneUnseen: true }))).toBe('done')
+  })
+
+  it('reads the statuses the shared provider emits for idle, as the web sidebar does', () => {
+    // Protocol idle with an unseen completion arrives as `done`; plain idle as `ready`.
+    expect(statusMarkOf(session({ status: 'done' }))).toBe('done')
+    expect(statusMarkOf(session({ status: 'ready' }))).toBe('idle')
     expect(statusMarkOf(session({ status: 'idle' }))).toBe('idle')
+    expect(statusMarkOf(session({ status: 'busy' }))).toBe('working')
+    expect(statusLineOf(session({ status: 'done' }))).toBe('Done')
+    expect(statusLineOf(session({ status: 'busy' }))).toBe('Working')
+  })
+
+  it('agrees with the web sidebar on every status', () => {
+    for (const status of ['running', 'waiting', 'busy', 'done', 'ready', 'idle', 'error']) {
+      for (const detail of [{}, { waitingOn: 'question' }, { inBackground: true }]) {
+        expect(statusMarkOf(session({ status, ...detail }))).toBe(
+          sessionBusyTone(status, detail) ?? 'idle',
+        )
+      }
+    }
   })
 
   it('never invents a state: an unknown status reads idle', () => {
@@ -46,7 +65,7 @@ describe('status marks', () => {
     expect(
       statusLineOf(session({ status: 'running', inBackground: true, backgroundTaskCount: 2 })),
     ).toBe('2 in the background')
-    expect(statusLineOf(session({ status: 'idle' }))).toBeNull()
+    expect(statusLineOf(session({ status: 'ready' }))).toBeNull()
   })
 })
 
@@ -57,6 +76,7 @@ describe('day labels', () => {
     expect(dayLabel(local(2026, 10, 17), NOW)).toBe(
       new Intl.DateTimeFormat(undefined, { weekday: 'long' }).format(new Date(2026, 9, 17, 10)),
     )
+    expect(dayLabel(local(2026, 10, 3), NOW)).toBe('Earlier this month')
     expect(dayLabel(local(2026, 9, 2), NOW)).toBe(
       new Intl.DateTimeFormat(undefined, { month: 'long' }).format(new Date(2026, 8, 2, 10)),
     )
@@ -67,6 +87,9 @@ describe('day labels', () => {
     )
     expect(dayLabel(undefined, NOW)).toBe('Earlier')
     expect(dayLabel('not a date', NOW)).toBe('Earlier')
+    // Epoch ms, as draft cards carry their edits.
+    expect(dayLabel(new Date(2026, 9, 21, 9).getTime(), NOW)).toBe('Today')
+    expect(dayLabel(0, NOW)).toBe('Earlier')
   })
 
   it('turns over at local midnight, not at a fixed number of hours', () => {
@@ -75,12 +98,15 @@ describe('day labels', () => {
     expect(dayLabel(new Date(2026, 9, 20, 23, 59, 59).toISOString(), justAfterMidnight)).toBe(
       'Yesterday',
     )
-    // Six days back is still a weekday name; seven is the month.
+    // Six days back is still a weekday name; seven is earlier this month.
     expect(dayLabel(local(2026, 10, 15), NOW)).toBe(
       new Intl.DateTimeFormat(undefined, { weekday: 'long' }).format(new Date(2026, 9, 15, 10)),
     )
-    expect(dayLabel(local(2026, 10, 14), NOW)).toBe(
-      new Intl.DateTimeFormat(undefined, { month: 'long' }).format(new Date(2026, 9, 14, 10)),
+    expect(dayLabel(local(2026, 10, 14), NOW)).toBe('Earlier this month')
+    // A week back across a month boundary is that month.
+    const earlyNovember = new Date(2026, 10, 4, 12)
+    expect(dayLabel(local(2026, 10, 27), earlyNovember)).toBe(
+      new Intl.DateTimeFormat(undefined, { month: 'long' }).format(new Date(2026, 9, 27, 10)),
     )
   })
 })
@@ -106,18 +132,94 @@ describe('home rows', () => {
     expect(ids(all)).toHaveLength(FIXTURE_SESSIONS.length)
   })
 
-  it('leads Active with what needs you, then working, then background, then failed', () => {
+  it('groups Active as needs you, working, failed, recent', () => {
     const active = selectHomeRows({
       sessions: FIXTURE_SESSIONS,
       workspaces: FIXTURE_WORKSPACES,
       tab: 'active',
       now: NOW,
     })
-    expect(active[0]!.label).toBe('Working')
-    const marks = active[0]!.rows.filter((r) => r.depth === 0).map((r) => r.mark)
-    expect(marks).toEqual(['needs', 'question', 'working', 'background', 'error'])
-    expect(active[1]!.label).toBe('Recent')
-    expect(active[1]!.rows.map((r) => r.mark)).toEqual(['done', 'idle'])
+    expect(
+      active.map((g) => [g.label, g.rows.filter((r) => r.depth === 0).map((r) => r.mark)]),
+    ).toEqual([
+      ['Needs you', ['needs', 'question']],
+      ['Working', ['working', 'background']],
+      ['Failed', ['error']],
+      ['Recent', ['done', 'idle']],
+    ])
+  })
+
+  it('leaves an empty Active group out', () => {
+    const at = NOW.toISOString()
+    const active = selectHomeRows({
+      sessions: [
+        session({ externalId: 'w', status: 'running', updatedAt: at }),
+        session({ externalId: 'r', status: 'ready', updatedAt: at }),
+      ],
+      workspaces: FIXTURE_WORKSPACES,
+      tab: 'active',
+      now: NOW,
+    })
+    expect(active.map((g) => g.label)).toEqual(['Working', 'Recent'])
+  })
+
+  it('ranks an Active tree by its most urgent member, at any depth', () => {
+    const active = selectHomeRows({
+      sessions: [
+        session({ externalId: 'busy', status: 'running', updatedAt: local(2026, 10, 21, 11) }),
+        session({ externalId: 'quiet-parent', status: 'ready', updatedAt: local(2026, 10, 19) }),
+        session({
+          externalId: 'child',
+          parentExternalId: 'quiet-parent',
+          status: 'ready',
+          updatedAt: local(2026, 10, 19),
+        }),
+        session({
+          externalId: 'asking-grandchild',
+          parentExternalId: 'child',
+          status: 'waiting',
+          waitingOn: 'permission',
+          updatedAt: local(2026, 10, 20),
+        }),
+      ],
+      workspaces: FIXTURE_WORKSPACES,
+      tab: 'active',
+      now: NOW,
+    })
+    expect(active[0]!.label).toBe('Needs you')
+    expect(active[0]!.rows.map((r) => [r.session.externalId, r.depth, r.mark])).toEqual([
+      ['quiet-parent', 0, 'idle'],
+      ['child', 1, 'idle'],
+      ['asking-grandchild', 2, 'needs'],
+    ])
+    expect(active[1]!.label).toBe('Working')
+  })
+
+  it('dates an All tree by its newest member', () => {
+    const all = selectHomeRows({
+      sessions: [
+        session({ externalId: 'yesterday', status: 'ready', updatedAt: local(2026, 10, 20) }),
+        session({
+          externalId: 'settled-parent',
+          status: 'ready',
+          updatedAt: local(2026, 10, 12),
+          settledAt: local(2026, 10, 13),
+        }),
+        session({
+          externalId: 'running-child',
+          parentExternalId: 'settled-parent',
+          status: 'running',
+          updatedAt: local(2026, 10, 21, 11),
+        }),
+      ],
+      workspaces: FIXTURE_WORKSPACES,
+      tab: 'all',
+      now: NOW,
+    })
+    expect(all.map((g) => [g.label, g.rows.map((r) => r.session.externalId)])).toEqual([
+      ['Today', ['settled-parent', 'running-child']],
+      ['Yesterday', ['yesterday']],
+    ])
   })
 
   it('nests a child under its parent and never starts a group with one', () => {
@@ -127,7 +229,7 @@ describe('home rows', () => {
       tab: 'active',
       now: NOW,
     })
-    const rows = active[0]!.rows
+    const rows = active.find((g) => g.key === 'working')!.rows
     const parent = rows.findIndex((r) => r.session.externalId === 's-tool-payloads')
     expect(rows[parent + 1]!.session.externalId).toBe('s-tool-payloads-tests')
     expect(rows[parent + 1]!.depth).toBe(1)
@@ -203,8 +305,14 @@ describe('home rows', () => {
       now: new Date(),
     })
     expect(all[0]!.label).toBe('Today')
+    // Each tree by its newest member.
     const times = all.flatMap((g) =>
-      g.rows.filter((r) => r.depth === 0).map((r) => Date.parse(r.session.updatedAt!)),
+      g.rows.flatMap((r, i) => {
+        if (r.depth > 0) return []
+        const tree = [r]
+        for (let j = i + 1; j < g.rows.length && g.rows[j]!.depth > 0; j++) tree.push(g.rows[j]!)
+        return [Math.max(...tree.map((member) => Date.parse(member.session.updatedAt!)))]
+      }),
     )
     expect([...times].sort((a, b) => b - a)).toEqual(times)
   })
@@ -239,5 +347,17 @@ describe('home rows', () => {
     expect(groups[0]!.label).toBe('Today')
     expect(groups[0]!.rows[0]!.draft.draftId).toBe('d-upload-retry')
     expect(groups.flatMap((g) => g.rows)).toHaveLength(FIXTURE_DRAFTS.length)
+  })
+
+  it('places a draft in its project by id, and in none once that project is gone', () => {
+    const first = FIXTURE_DRAFTS[0]!
+    const groups = selectDraftRows({
+      drafts: [first, { ...first, draftId: 'orphan', workspaceId: null }],
+      workspaces: FIXTURE_WORKSPACES,
+      now: NOW,
+    })
+    const rows = groups.flatMap((g) => g.rows)
+    expect(rows.find((r) => r.draft.draftId === first.draftId)!.workspace?.name).toBe('openmanager')
+    expect(rows.find((r) => r.draft.draftId === 'orphan')!.workspace).toBeUndefined()
   })
 })
