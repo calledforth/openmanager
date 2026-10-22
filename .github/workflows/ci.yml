@@ -48,7 +48,7 @@ jobs:
       - name: Typecheck, lint, and test desktop
         run: pnpm run ci:desktop
 
-      - name: Typecheck and test mobile
+      - name: Typecheck, lint, and test mobile
         run: pnpm run ci:mobile
 
       - name: Build production bundles

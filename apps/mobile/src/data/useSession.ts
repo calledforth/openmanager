@@ -1,16 +1,17 @@
-import { api } from '@openmanager/convex/_generated/api'
-import { useQuery } from 'convex/react'
+// Inert until the chat screen reads sessions from the environment client.
 
-// Session detail + reachability. A session whose `clientId` is unset can never
-// be reached from mobile (a submitted job would target the mobile client
-// itself), so the UI must disable the composer/abort for it — see plan §3.
+export interface SessionDetail {
+  externalId: string
+  workspacePath: string
+  title?: string
+  status: string
+  clientId?: string
+}
 
-export function useSession(externalId: string | null | undefined) {
-  const session = useQuery(api.sessions.getByExternalId, externalId ? { externalId } : 'skip')
-
-  return {
-    session: session ?? null,
-    isReachable: !!session?.clientId,
-    isLoading: externalId ? session === undefined : false,
-  }
+export function useSession(_externalId: string | null | undefined): {
+  session: SessionDetail | null
+  isReachable: boolean
+  isLoading: boolean
+} {
+  return { session: null, isReachable: false, isLoading: false }
 }

@@ -228,6 +228,20 @@ export default [
     },
   },
   {
+    // Metro loads the phone's bundler config as CommonJS under Node.
+    files: ['apps/mobile/metro.config.js', 'apps/mobile/metro/**/*.js'],
+    languageOptions: {
+      sourceType: 'commonjs',
+      globals: {
+        require: 'readonly',
+        module: 'writable',
+        __dirname: 'readonly',
+        process: 'readonly',
+        console: 'readonly',
+      },
+    },
+  },
+  {
     files: ['apps/desktop/postcss.config.js'],
     languageOptions: {
       globals: {

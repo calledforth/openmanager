@@ -69,6 +69,14 @@ export type StoredEnvironment = {
   /** Never empty, sorted by priority. */
   routes: EnvironmentRoute[]
   credential: string
+  /**
+   * The origin of the web app whose pairing link paired this client
+   * (`https://app.example.com` for `https://app.example.com/pair#…`). A
+   * native client sends it as its socket's `Origin`, the value the
+   * environment's `--allowed-origin` lists; a browser sends its own page's
+   * origin and never sets it. Absent for a record saved without one.
+   */
+  appOrigin?: string
 }
 
 export type EnvironmentRegistry = {
@@ -88,6 +96,21 @@ export type RegistryStorage = {
   getItem(key: string): string | null
   setItem(key: string, value: string): void
   removeItem(key: string): void
+}
+
+/** An http(s) origin as `URL.origin` writes it, or `null` for anything else. */
+export function parseAppOrigin(raw: unknown): string | null {
+  if (typeof raw !== 'string') return null
+  let url: URL
+  try {
+    url = new URL(raw.trim())
+  } catch {
+    return null
+  }
+  if (url.protocol !== 'http:' && url.protocol !== 'https:') return null
+  if (url.username || url.password) return null
+  const origin = url.origin
+  return origin && origin !== 'null' ? origin : null
 }
 
 export function parseEnvironmentEndpoint(raw: string): string | null {
@@ -123,6 +146,18 @@ export function environmentBootstrapUrl(endpoint: string): string {
 /** Join `/local-owner` onto the stored endpoint, keeping any path prefix. */
 export function environmentLocalOwnerUrl(endpoint: string): string {
   return new URL('local-owner', endpointBase(endpoint)).href
+}
+
+/**
+ * The environment's WebSocket URL for a stored HTTP endpoint: `/ws` under it,
+ * keeping any path prefix, `wss:` for `https:`. The bootstrap payload also
+ * advertises one, but it reports the loopback address the server bound to,
+ * which is wrong the moment a client reaches it through a tunnel or the LAN.
+ */
+export function environmentSocketUrl(endpoint: string): string {
+  const url = new URL('ws', endpointBase(endpoint))
+  url.protocol = url.protocol === 'https:' ? 'wss:' : 'ws:'
+  return url.href
 }
 
 const LOOPBACK_HOSTS = new Set(['127.0.0.1', 'localhost', '[::1]'])
@@ -266,11 +301,13 @@ export function parseStoredEnvironment(input: unknown): StoredEnvironment | null
   if (!environmentId || routes.length === 0) return null
   const credential =
     typeof record.credential === 'string' ? parseEnvironmentCredential(record.credential) : ''
+  const appOrigin = parseAppOrigin(record.appOrigin)
   return {
     environmentId,
     label: parseLabel(record.label),
     routes,
     credential,
+    ...(appOrigin ? { appOrigin } : {}),
   }
 }
 
@@ -363,6 +400,8 @@ export function upsertStoredEnvironment(
      * on a route the client picked by itself, which is not a choice.
      */
     keepOrder?: boolean
+    /** The pairing link's app origin. Omitted, or not an origin, keeps the saved one. */
+    appOrigin?: string
   },
   now: Date = new Date(),
 ): EnvironmentRegistry | null {
@@ -373,7 +412,8 @@ export function upsertStoredEnvironment(
   const credential = parseEnvironmentCredential(input.credential ?? '')
   const existing = registry.environments.find((item) => item.environmentId === environmentId)
   const known = existing?.routes.find((item) => item.endpoint === endpoint)
-  const record: StoredEnvironment = existing
+  const appOrigin = parseAppOrigin(input.appOrigin) ?? existing?.appOrigin
+  const fields: StoredEnvironment = existing
     ? {
         environmentId,
         label: input.label !== undefined ? parseLabel(input.label) : existing.label,
@@ -393,6 +433,7 @@ export function upsertStoredEnvironment(
         routes: preferRoute([], endpoint, input.health, now),
         credential,
       }
+  const record: StoredEnvironment = appOrigin ? { ...fields, appOrigin } : fields
 
   const environments = existing
     ? replaceEnvironment(registry, record)

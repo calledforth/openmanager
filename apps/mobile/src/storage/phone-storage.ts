@@ -81,7 +81,12 @@ export const DEVICE_KEY_PREFIX = 'openmanager.device:'
 type AssertNone<T extends never> = T
 export type ReviewedRegistryFields = AssertNone<
   | Exclude<keyof EnvironmentRegistry, 'selectedId' | 'environments'>
-  | Exclude<keyof StoredEnvironment, 'environmentId' | 'label' | 'routes' | 'credential'>
+  // `appOrigin`: the pairing link's web app origin, sent as the socket's
+  // Origin. Public (any page on that origin names it); kept in AsyncStorage.
+  | Exclude<
+      keyof StoredEnvironment,
+      'environmentId' | 'label' | 'routes' | 'credential' | 'appOrigin'
+    >
   | Exclude<keyof EnvironmentRoute, 'type' | 'endpoint' | 'priority' | 'health'>
 >
 

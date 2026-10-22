@@ -1,8 +1,4 @@
-import { api } from '@openmanager/convex/_generated/api'
-import { useQuery } from 'convex/react'
-
-// Latest pending permission for a session, or null. Shape mirrors
-// `permissions.getPendingForSession` (plan §3).
+// Inert until permissions come from the environment client's interactions.
 
 export interface PendingPermission {
   requestId: string
@@ -16,11 +12,8 @@ export interface PendingPermission {
   updatedAt: number
 }
 
-export function usePendingPermission(sessionExternalId: string | null | undefined) {
-  const pending = useQuery(
-    api.permissions.getPendingForSession,
-    sessionExternalId ? { sessionExternalId } : 'skip',
-  )
-
-  return (pending ?? null) as PendingPermission | null
+export function usePendingPermission(
+  _sessionExternalId: string | null | undefined,
+): PendingPermission | null {
+  return null
 }

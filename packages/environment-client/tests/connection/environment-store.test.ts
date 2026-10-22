@@ -10,7 +10,9 @@ import {
   LEGACY_ENVIRONMENT_STORAGE_KEY,
   environmentBootstrapUrl,
   environmentLocalOwnerUrl,
+  environmentSocketUrl,
   isLoopbackEnvironmentEndpoint,
+  parseAppOrigin,
   parseEnvironmentCredential,
   parseEnvironmentEndpoint,
   parseStoredEnvironment,
@@ -105,6 +107,13 @@ describe('parseEnvironmentEndpoint', () => {
     expect(endpoint).toBe('https://host.example/openmanager')
     expect(environmentBootstrapUrl(endpoint!)).toBe('https://host.example/openmanager/bootstrap')
     expect(environmentLocalOwnerUrl(endpoint!)).toBe('https://host.example/openmanager/local-owner')
+  })
+
+  it('derives the socket URL from the endpoint, keeping its prefix and its security', () => {
+    expect(environmentSocketUrl('http://192.168.1.5:43120')).toBe('ws://192.168.1.5:43120/ws')
+    expect(environmentSocketUrl('https://host.example/openmanager')).toBe(
+      'wss://host.example/openmanager/ws',
+    )
   })
 })
 
@@ -647,5 +656,57 @@ describe('findStoredEnvironment', () => {
     expect(findStoredEnvironment([a, b], null)).toBeUndefined()
     expect(findStoredEnvironment([a, b], 'env-unknown')).toBeUndefined()
     expect(shared).toBe(preferredRoute(a).endpoint)
+  })
+})
+
+describe('app origin on a stored environment', () => {
+  const memory = () => {
+    const items = new Map<string, string>()
+    return {
+      getItem: (key: string) => items.get(key) ?? null,
+      setItem: (key: string, value: string) => void items.set(key, value),
+      removeItem: (key: string) => void items.delete(key),
+    }
+  }
+
+  it('reads only an http(s) origin', () => {
+    expect(parseAppOrigin('https://app.example.test/console/')).toBe('https://app.example.test')
+    expect(parseAppOrigin('javascript:alert(1)')).toBeNull()
+    expect(parseAppOrigin('https://user:pw@app.example.test')).toBeNull()
+    expect(parseAppOrigin(undefined)).toBeNull()
+  })
+
+  it('is kept through the registry, and a record without one reads as before', () => {
+    const base = upsertStoredEnvironment(EMPTY_REGISTRY, {
+      environmentId: 'env-a',
+      endpoint: 'https://studio.example.com',
+      credential: 'tok',
+    })!
+    expect(base.environments[0]).not.toHaveProperty('appOrigin')
+    const withOrigin = upsertStoredEnvironment(base, {
+      environmentId: 'env-a',
+      endpoint: 'https://studio.example.com',
+      appOrigin: 'https://app.example.test/pair',
+    })!
+    expect(withOrigin.environments[0]!.appOrigin).toBe('https://app.example.test')
+    // A later save without one, or with junk, keeps it.
+    const kept = upsertStoredEnvironment(withOrigin, {
+      environmentId: 'env-a',
+      endpoint: 'http://192.168.1.20:43120',
+      appOrigin: 'not a url',
+    })!
+    expect(kept.environments[0]!.appOrigin).toBe('https://app.example.test')
+    const storage = memory()
+    writeEnvironmentRegistry(kept, storage)
+    expect(readEnvironmentRegistry(storage).environments[0]!.appOrigin).toBe(
+      'https://app.example.test',
+    )
+    expect(
+      parseStoredEnvironment({
+        environmentId: 'env-a',
+        routes: [{ endpoint: 'https://studio.example.com' }],
+        appOrigin: 'ftp://nope',
+      }),
+    ).not.toHaveProperty('appOrigin')
   })
 })

@@ -1,4 +1,3 @@
-import { api } from '@openmanager/convex/_generated/api'
 import {
   countUserMessages,
   createOptimisticUserMessage,
@@ -9,25 +8,23 @@ import {
   type OptimisticUserMessage,
   type PersistedMessageMeta,
 } from '@openmanager/shared/lib/optimistic-messages'
-import { useQuery } from 'convex/react'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 
-// Port of the desktop `active-session-provider` message merge: subscribe to
-// `listMetadata` and overlay optimistic user messages that clear as the
+// Port of the desktop `active-session-provider` message merge: overlay
+// optimistic user messages on the persisted list, clearing them as the
 // persisted user-message count grows. All the ordering/reconciliation logic is
 // the pure reducer in `@openmanager/shared/lib/optimistic-messages`.
+//
+// The persisted list is empty until the chat screen reads its thread from the
+// environment client; the optimistic overlay is kept so the screen behaves as
+// before.
 
 const EMPTY: PersistedMessageMeta[] = []
 
 export type SessionMessage = MergedMessage
 
 export function useSessionMessages(sessionExternalId: string | null | undefined) {
-  const raw = useQuery(
-    api.messages.listMetadata,
-    sessionExternalId ? { sessionExternalId } : 'skip',
-  ) as PersistedMessageMeta[] | undefined
-
-  const messageList = raw ?? EMPTY
+  const messageList = EMPTY
   const [optimistic, setOptimistic] = useState<OptimisticUserMessage[]>([])
   const userCountRef = useRef<number | null>(null)
   const counterRef = useRef(0)
@@ -72,7 +69,7 @@ export function useSessionMessages(sessionExternalId: string | null | undefined)
 
   return {
     messages,
-    isLoading: sessionExternalId ? raw === undefined : false,
+    isLoading: false,
     addOptimisticMessage,
     removeOptimisticMessage,
   }

@@ -3,19 +3,17 @@ import {
   JetBrainsMono_400Regular,
   JetBrainsMono_500Medium,
 } from '@expo-google-fonts/jetbrains-mono'
-import { ConvexProvider, ConvexReactClient } from 'convex/react'
 import { Stack } from 'expo-router'
 import * as SplashScreen from 'expo-splash-screen'
 import { StatusBar } from 'expo-status-bar'
-import { useEffect, useMemo } from 'react'
+import { useEffect } from 'react'
 import { useFonts } from 'expo-font'
 import { SafeAreaProvider } from 'react-native-safe-area-context'
 
 import '../../global.css'
+import { PhoneEnvironmentProvider } from '../environment/PhoneEnvironmentProvider'
 import { ThemeProvider, usePhoneTheme, useTheme } from '../theme/ThemeProvider'
 import { GlassBackdrop } from '../ui/Glass'
-
-const convexUrl = process.env.EXPO_PUBLIC_CONVEX_URL
 
 // A cold deep link (a session, search) still has the tabs under it, so its
 // back control returns to them.
@@ -58,10 +56,6 @@ function RootNavigator() {
 }
 
 export default function RootLayout() {
-  const convex = useMemo(
-    () => (convexUrl ? new ConvexReactClient(convexUrl, { unsavedChangesWarning: false }) : null),
-    [],
-  )
   const [fontsLoaded, fontError] = useFonts({
     'Geist-Regular': Geist_400Regular,
     'Geist-Medium': Geist_500Medium,
@@ -82,17 +76,15 @@ export default function RootLayout() {
     return null
   }
 
-  // The shell and the sessions home no longer need Convex. The Convex-era
-  // session page still does, so its provider stays while a URL is set; the
-  // environment protocol replaces all of it (CAL-148, CAL-304).
-  const tree = (
-    <ThemeProvider>
-      <RootNavigator />
-    </ThemeProvider>
-  )
+  // The phone reaches its environment through the shared environment client;
+  // the provider owns the connection and hands the client to app-core.
   return (
     <SafeAreaProvider>
-      {convex ? <ConvexProvider client={convex}>{tree}</ConvexProvider> : tree}
+      <PhoneEnvironmentProvider>
+        <ThemeProvider>
+          <RootNavigator />
+        </ThemeProvider>
+      </PhoneEnvironmentProvider>
     </SafeAreaProvider>
   )
 }
