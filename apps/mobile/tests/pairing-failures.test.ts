@@ -38,6 +38,7 @@ describe('what a pairing failure says, and what it offers next', () => {
     const cases: PairingFailure[] = [
       { kind: 'unreachable', route: 'http://192.168.1.4:43120' },
       { kind: 'rate_limited' },
+      { kind: 'timed_out', route: 'http://192.168.1.4:43120' },
       { kind: 'not_connected', label: 'Studio' },
       { kind: 'unexpected', detail: 'The environment answered with HTTP 500.' },
       { kind: 'rejected', reason: 'malformed' },

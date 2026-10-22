@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { encodePairingLink } from '@openmanager/environment-client'
-import type { PairingRejectionReason } from '@openmanager/protocol'
+import { PROTOCOL_VERSION, type PairingRejectionReason } from '@openmanager/protocol'
 import { connectedRoute } from '../src/environment/connected-route'
 import { readPhoneLabel, suggestPhoneLabel } from '../src/pairing/device-label'
 import {
@@ -11,6 +11,7 @@ import {
   planPairing,
   redeemLink,
 } from '../src/pairing/flow'
+import { describePairingFailure, type PairingFailure } from '../src/pairing/failures'
 import { readPairingLink, type PairingLinkRead } from '../src/pairing/link'
 import {
   ENV,
@@ -292,6 +293,39 @@ describe('what keeps a link from being used up for nothing', () => {
     expect(result).toEqual({ ok: false, failure: { kind: 'unreachable', route: LAN } })
   })
 
+  it('ends an exchange whose body never finishes, and saves nothing when it lands late', async () => {
+    const h = freshInstall()
+    await h.controller.start()
+    let finish!: (body: unknown) => void
+    // Headers arrive, the body never settles, and the network abort is ignored.
+    const stuck = (async () =>
+      ({
+        ok: true,
+        status: 200,
+        json: () =>
+          new Promise((resolve) => {
+            finish = resolve
+          }),
+      }) as unknown as Response) as typeof fetch
+    const pending = exchangeLink(read(linkTo(LAN)), {}, h.controller, stuck, {
+      timers: h.timers,
+      timeoutMs: 20_000,
+    })
+    await flush()
+    h.timers.advance(20_000)
+    const result = await pending
+    expect(result).toEqual({ ok: false, failure: { kind: 'timed_out', route: LAN } })
+    expect(describePairingFailure((result as { failure: PairingFailure }).failure)).toMatchObject({
+      next: 'retry',
+    })
+    finish(answer())
+    await flush()
+    await h.controller.flush()
+    expect(h.state().environments).toEqual([])
+    expect(h.storage.secret(ENV)).toBeNull()
+    expect(h.timers.pending()).toBe(0)
+  })
+
   it('reports a save the controller did not take instead of a pairing', async () => {
     const h = freshInstall()
     await h.controller.start()
@@ -418,6 +452,38 @@ describe('a link for an environment the phone already knows', () => {
     ).toBe(false)
     await h.controller.flush()
     expect(h.storage.document()!.environments[0]!.appOrigin).toBe(APP)
+  })
+
+  it('clears a protocol refusal when it fills a missing app origin, and redeems at once', async () => {
+    const h = harness({
+      routes: [LAN],
+      answers: {
+        [LAN]: {
+          status: 'incompatible_protocol',
+          clientProtocolVersion: PROTOCOL_VERSION,
+          serverProtocolVersion: PROTOCOL_VERSION + 1,
+          environmentId: ENV,
+        },
+      },
+    })
+    await h.controller.start()
+    await flush()
+    expect(h.state().status).toBe('incompatible_protocol')
+    // The environment was updated since; the link is scanned once.
+    h.answers.set(LAN, ready())
+    const redeemed = redeemLink(read(linkTo(LAN)), h.controller, { timers: h.timers })
+    await flush()
+    expect(h.storage.document()!.environments[0]!.appOrigin).toBe(APP)
+    expect(h.socket().origin).toBe(APP)
+    h.socket().accept(ENV, ['connection.heartbeat', 'pairing.redeem'])
+    await flush()
+    h.socket().respond('pairing.redeem', {
+      clientId: 'client-phone',
+      clientLabel: 'Pixel 9',
+      grant: ['read'],
+      grantChanged: false,
+    })
+    expect((await redeemed).ok).toBe(true)
   })
 
   it('reports a redeem refusal by its reason', async () => {

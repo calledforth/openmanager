@@ -12,6 +12,8 @@ import { endpointHost } from '../environment/connected-route'
  *   (`PAIRING_REJECTION_REASONS`): expired, used, withdrawn (`invalid`), a
  *   creator that lost access (`creator_revoked`), and the rest.
  * - `unreachable`: nothing answered at the link's address.
+ * - `timed_out`: the address took the request but did not finish answering
+ *   in time. The link may or may not have been used by then.
  * - `environment_mismatch`: the address answered as a different environment
  *   than the link names, so nothing was saved or sent there.
  * - `rate_limited`, `not_pairing`: the address answered, but with HTTP 429, or
@@ -25,6 +27,7 @@ export type PairingFailure =
   | { kind: 'link'; problem: 'not_a_link' | 'unsupported_version' | 'malformed' }
   | { kind: 'rejected'; reason: PairingRejectionReason }
   | { kind: 'unreachable'; route: string }
+  | { kind: 'timed_out'; route: string }
   | { kind: 'environment_mismatch'; route: string }
   | { kind: 'rate_limited' }
   | { kind: 'not_pairing'; route: string }
@@ -126,6 +129,12 @@ export function describePairingFailure(failure: PairingFailure): PairingFailureC
       return copy(
         'Could not reach your computer',
         `Nothing answered at ${endpointHost(failure.route)}. Check that this phone is on the same network as the computer, or that its tunnel is running. The link has not been used.`,
+        'retry',
+      )
+    case 'timed_out':
+      return copy(
+        'Your computer did not finish answering',
+        `${endpointHost(failure.route)} took the request but did not answer in time. Check the connection and try again; if it then says the link was already used, make a new one.`,
         'retry',
       )
     case 'environment_mismatch':

@@ -106,9 +106,11 @@ export async function exchangeLink(
   input: { label?: string },
   controller: PairingController,
   fetchImpl: typeof fetch,
-  options: { timeoutMs?: number } = {},
+  options: { timeoutMs?: number; timers?: PairingTimers } = {},
 ): Promise<PairingResult> {
   const { route, environmentId, token } = link.payload
+  const timers = options.timers ?? realTimers
+  const timeoutMs = options.timeoutMs ?? EXCHANGE_TIMEOUT_MS
   // The token is used up by the exchange; with the registry not loaded yet
   // its answer could not be saved, so nothing is sent.
   if (controller.getState().status === 'starting') {
@@ -117,7 +119,7 @@ export async function exchangeLink(
       detail: 'The phone is still loading. Try again in a moment.',
     })
   }
-  const deadline = AbortSignal.timeout(options.timeoutMs ?? EXCHANGE_TIMEOUT_MS)
+  const deadline = AbortSignal.timeout(timeoutMs)
   const seen: { network: boolean; status: number | null } = { network: false, status: null }
   const watched: typeof fetch = async (request, init) => {
     try {
@@ -130,13 +132,28 @@ export async function exchangeLink(
       throw error
     }
   }
-  let answer: Awaited<ReturnType<typeof exchangePairingToken>>
+  type Answer = Awaited<ReturnType<typeof exchangePairingToken>>
+  // The abort above stops the request, but a body that started arriving may
+  // never settle on a native fetch. The whole exchange races a deadline of its
+  // own, so the pairing always ends; an answer that lands after it is dropped
+  // and nothing is saved from it.
+  const exchange = exchangePairingToken(
+    route,
+    input.label ? { token, label: input.label } : { token },
+    watched,
+  )
+  let timer: unknown = null
+  const timedOut = new Promise<'timed_out'>((resolve) => {
+    timer = timers.setTimeout(() => resolve('timed_out'), timeoutMs)
+  })
+  let answer: Answer
   try {
-    answer = await exchangePairingToken(
-      route,
-      input.label ? { token, label: input.label } : { token },
-      watched,
-    )
+    const first = await Promise.race([exchange, timedOut])
+    if (first === 'timed_out') {
+      exchange.catch(() => undefined)
+      return fail({ kind: 'timed_out', route })
+    }
+    answer = first
   } catch (error) {
     const reason = pairingRejectionReason(error)
     if (reason) return fail({ kind: 'rejected', reason })
@@ -144,6 +161,8 @@ export async function exchangeLink(
     if (seen.status === 429) return fail({ kind: 'rate_limited' })
     if (seen.status === 404 || seen.status === 405) return fail({ kind: 'not_pairing', route })
     return fail({ kind: 'unexpected', detail: describeError(error) })
+  } finally {
+    if (timer !== null) timers.clearTimeout(timer)
   }
   // The link's route answered for another environment than the link names.
   // Its token stays unsaved: nothing says what it opens.
@@ -284,25 +303,29 @@ export async function redeemLink(
     'this environment'
   // A pairing saved before the phone kept app origins dials with the route's
   // own, which the environment refuses; the link says which app it came from.
-  const filled =
+  if (
     link.appOrigin !== null &&
-    state.environments.some((item) => item.environmentId === environmentId && !item.appOrigin) &&
+    state.environments.some((item) => item.environmentId === environmentId && !item.appOrigin)
+  ) {
     controller.fillAppOrigin({ environmentId, appOrigin: link.appOrigin })
-  if (state.selectedId !== environmentId) controller.selectEnvironment(environmentId)
-  else if (filled) {
-    // Filling it already started a new search with the new origin.
-  } else if (
+  }
+  const stopped =
     state.status === 'unauthorized' ||
     state.status === 'incompatible_protocol' ||
     state.status === 'waiting'
-  ) {
+  if (state.selectedId !== environmentId) controller.selectEnvironment(environmentId)
+  else if (stopped) {
     // A person asked to use the link: stopped or backing off, the connection
-    // is asked again now rather than read as refused from before.
+    // is asked again now rather than read as refused from before. Filling an
+    // origin searches again but keeps a latch; this clears it.
     controller.retry()
   }
+  // Otherwise filling the origin (if it was missing) already searched again.
   const client = await connectedClient(controller, environmentId, options)
   if (!client) return fail({ kind: 'not_connected', label })
   try {
+    // The token goes over the phone's own authenticated socket to this same
+    // environment (its handshake named it), as web redeems; never to the link's address.
     const answer = await client.commands.redeemPairingLink({ token })
     return {
       ok: true,
