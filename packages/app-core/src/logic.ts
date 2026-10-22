@@ -42,6 +42,7 @@ export * from './lib/theme-tokens'
 export * from './lib/workspace-availability'
 
 // Pure logic that lives beside the components it serves.
+export * from './components/chat/composerControls'
 export * from './components/chat/composerDrafts'
 export * from './components/chat/composerDraftStore'
 export * from './components/chat/favoriteModels'
