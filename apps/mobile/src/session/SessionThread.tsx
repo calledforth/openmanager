@@ -287,7 +287,7 @@ export const SessionThread = memo(function SessionThread({
         <LinearGradient
           pointerEvents="none"
           colors={[theme.bg, withAlpha(theme.bg, 0)]}
-          style={{ position: 'absolute', left: 0, right: 0, top: 0, height: 14 }}
+          style={{ position: 'absolute', left: 0, right: 0, top: 0, height: 22 }}
         />
         <BottomFade height={dockHeight + 48} />
 

@@ -1,12 +1,13 @@
 import { useRouter } from 'expo-router'
 import { CaretRightIcon } from 'phosphor-react-native'
 import { memo } from 'react'
-import { Pressable, View } from 'react-native'
+import { View } from 'react-native'
 
 import { AppText } from '../components/ui/AppText'
 import { statusLineOf, statusMarkOf, type HomeSession } from '../home/rows'
 import { usePhoneTheme } from '../theme/ThemeProvider'
 import { tap } from '../ui/haptics'
+import { Press } from '../ui/Press'
 import { StatusMark } from '../ui/StatusMark'
 
 /**
@@ -20,7 +21,7 @@ const ChildSessionCard = memo(function ChildSessionCard({ session }: { session: 
   const title = session.title?.trim() || 'Untitled subagent'
   const line = statusLineOf(session)
   return (
-    <Pressable
+    <Press
       accessibilityRole="button"
       accessibilityLabel={`Open subagent ${title}`}
       onPress={() => {
@@ -47,7 +48,7 @@ const ChildSessionCard = memo(function ChildSessionCard({ session }: { session: 
         </AppText>
       </View>
       <CaretRightIcon size={14} color={theme.faint} weight="bold" />
-    </Pressable>
+    </Press>
   )
 })
 

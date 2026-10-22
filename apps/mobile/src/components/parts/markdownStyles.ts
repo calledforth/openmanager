@@ -38,6 +38,8 @@ export function buildMarkdownStyles(theme: PhoneTheme): Record<string, TextStyle
       borderWidth: 0,
       borderRadius: 4,
       paddingHorizontal: 4,
+      // The fill hugs the glyphs rather than the prose's taller line.
+      lineHeight: 18,
     },
 
     // Quotes lean on a bar of the faint ink, the one rule prose keeps.
@@ -92,7 +94,13 @@ export function buildMarkdownStyles(theme: PhoneTheme): Record<string, TextStyle
     hr: { backgroundColor: theme.rule, height: 1, marginVertical: 12 },
 
     // A table is a list that needs its rules.
-    table: { borderWidth: 0, borderRadius: 8, marginVertical: 6, backgroundColor: theme.hover },
+    table: {
+      borderWidth: 0,
+      borderRadius: 8,
+      overflow: 'hidden',
+      marginVertical: 6,
+      backgroundColor: theme.hover,
+    },
     th: { flex: 1, padding: 8 },
     tr: { borderBottomWidth: 1, borderColor: theme.rule, flexDirection: 'row' },
     td: { flex: 1, padding: 8, fontSize: 13 },

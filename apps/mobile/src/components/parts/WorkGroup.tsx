@@ -51,7 +51,9 @@ export function WorkGroup({
         <DisclosureChevron open={open} color={theme.faint} />
         <View style={{ flex: 1, minWidth: 0 }}>
           {running ? (
-            <ShimmerText variant="text-13-regular">{label}</ShimmerText>
+            <ShimmerText variant="text-13-regular" numberOfLines={1}>
+              {label}
+            </ShimmerText>
           ) : (
             <AppText variant="text-13-regular" numberOfLines={1} style={{ color: theme.muted }}>
               {label}

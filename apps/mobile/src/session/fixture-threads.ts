@@ -203,7 +203,7 @@ export const TIERS = [
 export function doneThread(now: number): ThreadState {
   const b = new ThreadBuilder('s-pricing')
   const turn = 'turn-d1'
-  b.turn(turn, 'completed', now - 4_300_000, now - 4_200_000 + 14_000)
+  b.turn(turn, 'completed', now - 4_214_000, now - 4_200_000)
     .message(turn, 'd-user', 'user', 'Write the pricing page copy, three tiers.')
     .thought(
       turn,
@@ -221,7 +221,7 @@ export function doneThread(now: number): ThreadState {
 export function failedThread(now: number): ThreadState {
   const b = new ThreadBuilder('s-sync-f2')
   const turn = 'turn-f1'
-  b.turn(turn, 'failed', now - 10_900_000, now - 10_800_000)
+  b.turn(turn, 'failed', now - 10_838_000, now - 10_800_000)
     .message(turn, 'f-user', 'user', 'Run the convergence harness against the fixture replay.')
     .tool(turn, 'f-t1', 'Bash', 'execute', 'completed')
     .tool(turn, 'f-t2', 'Bash', 'execute', 'failed')

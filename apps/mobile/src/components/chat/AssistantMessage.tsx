@@ -103,7 +103,7 @@ export const AssistantMessage = memo(function AssistantMessage({
       ) : hasParts ? (
         <MessageParts parts={parts} isStreaming={isStreaming} />
       ) : (
-        <TextPart text={content} />
+        <TextPart text={content} live={isStreaming} />
       )}
       {noted}
     </View>

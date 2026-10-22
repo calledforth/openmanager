@@ -42,7 +42,7 @@ function renderPart(part: Part, isStreaming: boolean | undefined): ReactNode {
   switch (part.type) {
     case 'text': {
       if (part.synthetic || part.ignored) return null
-      return <TextPart text={(part.text as string) ?? ''} />
+      return <TextPart text={(part.text as string) ?? ''} live={!!isStreaming} />
     }
     case 'tool':
       return <ToolRow part={part as unknown as ToolPartData} />
