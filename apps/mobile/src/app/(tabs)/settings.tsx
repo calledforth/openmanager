@@ -1,13 +1,14 @@
 import Constants from 'expo-constants'
 import { useRouter } from 'expo-router'
-import { ScrollView, TouchableOpacity, View } from 'react-native'
+import { CaretRightIcon, QrCodeIcon } from 'phosphor-react-native'
+import { Pressable, ScrollView, TouchableOpacity, View } from 'react-native'
 import { useSafeAreaInsets } from 'react-native-safe-area-context'
 
 import { THEME_FAMILIES } from '@openmanager/app-core/lib/theme-families'
 
 import { AppText } from '../../components/ui/AppText'
 import { usePhoneConnection } from '../../environment/PhoneEnvironmentProvider'
-import { type ThemeMode, useTheme } from '../../theme/ThemeProvider'
+import { type ThemeMode, usePhoneTheme, useTheme } from '../../theme/ThemeProvider'
 
 const THEME_OPTIONS: { mode: ThemeMode; label: string }[] = [
   { mode: 'system', label: 'System' },
@@ -48,6 +49,8 @@ export default function SettingsScreen() {
           gap: 24,
         }}
       >
+        <PairRow onPress={() => router.push('/pair')} />
+
         <Section title="Appearance">
           <View className="flex-row flex-wrap gap-3">
             {THEME_FAMILIES.map((option) => {
@@ -140,6 +143,53 @@ export default function SettingsScreen() {
         </Section>
       </ScrollView>
     </View>
+  )
+}
+
+/**
+ * The way in to pairing, at the top of Settings. The rest of this screen is
+ * the earlier build's and is redesigned later; this row already follows the
+ * new look (a fill, not a border).
+ */
+function PairRow({ onPress }: { onPress: () => void }) {
+  const theme = usePhoneTheme()
+  return (
+    <Pressable
+      accessibilityRole="button"
+      accessibilityLabel="Pair with a computer"
+      onPress={onPress}
+      style={({ pressed }) => ({
+        flexDirection: 'row',
+        alignItems: 'center',
+        gap: 12,
+        paddingHorizontal: 14,
+        paddingVertical: 12,
+        borderRadius: 16,
+        backgroundColor: pressed ? theme.active : theme.hover,
+      })}
+    >
+      <View
+        style={{
+          width: 36,
+          height: 36,
+          borderRadius: 18,
+          alignItems: 'center',
+          justifyContent: 'center',
+          backgroundColor: theme.actionBg,
+        }}
+      >
+        <QrCodeIcon size={18} color={theme.actionFg} />
+      </View>
+      <View style={{ flex: 1 }}>
+        <AppText variant="text-14-medium" style={{ color: theme.fg }}>
+          Pair with a computer
+        </AppText>
+        <AppText variant="text-12-regular" style={{ color: theme.muted }}>
+          Scan its QR code or paste its link
+        </AppText>
+      </View>
+      <CaretRightIcon size={16} color={theme.faint} />
+    </Pressable>
   )
 }
 

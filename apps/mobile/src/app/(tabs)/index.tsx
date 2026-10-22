@@ -1,5 +1,5 @@
 import { useRouter } from 'expo-router'
-import { NotePencilIcon, PlusIcon } from 'phosphor-react-native'
+import { DesktopIcon, NotePencilIcon, PlusIcon, QrCodeIcon } from 'phosphor-react-native'
 import { useCallback, useMemo, useState } from 'react'
 import { SectionList, View, type SectionListRenderItem } from 'react-native'
 import { useSafeAreaInsets } from 'react-native-safe-area-context'
@@ -14,6 +14,7 @@ import {
   type HomeTab,
 } from '../../home/rows'
 import { useHomeSource } from '../../home/source'
+import { ActionButton } from '../../pairing/ActionButton'
 import { usePhoneTheme } from '../../theme/ThemeProvider'
 import { BigTitle, FadeOut, SectionLabel } from '../../ui/chrome'
 import { DraftRow } from '../../ui/DraftRow'
@@ -39,6 +40,48 @@ const EMPTY: Record<HomeTab, { title: string; body: string }> = {
   },
 }
 
+/**
+ * The home with nothing paired: the one thing to do is pair with the
+ * computer the sessions live on.
+ */
+function PairFirst({ onPair }: { onPair: () => void }) {
+  const theme = usePhoneTheme()
+  return (
+    <View className="items-center px-10 pt-20">
+      <View
+        style={{
+          width: 72,
+          height: 72,
+          borderRadius: 22,
+          backgroundColor: theme.hover,
+          alignItems: 'center',
+          justifyContent: 'center',
+          marginBottom: 14,
+        }}
+      >
+        <DesktopIcon size={32} color={theme.muted} />
+      </View>
+      <AppText variant="text-16-medium" style={{ color: theme.fg }}>
+        No computer paired yet
+      </AppText>
+      <AppText
+        variant="text-13-regular"
+        style={{ color: theme.muted, textAlign: 'center', marginTop: 4, marginBottom: 20 }}
+      >
+        Open OpenManager on your computer, go to Settings, then Devices, and pair this phone. Your
+        sessions stay on that computer; the phone talks to it.
+      </AppText>
+      <View style={{ alignSelf: 'stretch' }}>
+        <ActionButton
+          label="Pair with your computer"
+          icon={<QrCodeIcon size={18} color={theme.actionFg} />}
+          onPress={onPair}
+        />
+      </View>
+    </View>
+  )
+}
+
 const keyOf = (row: ListRow) =>
   row.kind === 'draft' ? `draft:${row.draft.draftId}` : `session:${row.session.externalId}`
 
@@ -51,7 +94,7 @@ export default function SessionsHome() {
   const router = useRouter()
   const insets = useSafeAreaInsets()
   const theme = usePhoneTheme()
-  const { environment, connected, workspaces, sessions, drafts } = useHomeSource()
+  const { environment, needsPairing, workspaces, sessions, drafts } = useHomeSource()
   const [tab, setTab] = useState<HomeTab>('all')
 
   const counts = useMemo(() => tabCounts(sessions, drafts), [sessions, drafts])
@@ -85,15 +128,7 @@ export default function SessionsHome() {
     <View className="flex-1" style={{ paddingTop: insets.top + 6 }}>
       <BigTitle
         title="Sessions"
-        environment={
-          environment
-            ? {
-                label: environment.label,
-                detail: environment.route.kind === 'local' ? 'LAN' : 'Tunnel',
-                connected,
-              }
-            : null
-        }
+        environment={environment}
         trailing={
           <IconButton label="New session" onPress={() => router.push('/draft/new')}>
             <NotePencilIcon size={18} color={theme.fg} />
@@ -120,30 +155,34 @@ export default function SessionsHome() {
           contentContainerStyle={{ paddingHorizontal: 8, paddingBottom: insets.bottom + 140 }}
           showsVerticalScrollIndicator={false}
           ListEmptyComponent={
-            <View className="items-center px-10 pt-24">
-              <View
-                style={{
-                  width: 56,
-                  height: 56,
-                  borderRadius: 18,
-                  backgroundColor: theme.hover,
-                  alignItems: 'center',
-                  justifyContent: 'center',
-                  marginBottom: 12,
-                }}
-              >
-                <PlusIcon size={26} color={theme.muted} />
+            needsPairing ? (
+              <PairFirst onPair={() => router.push('/pair')} />
+            ) : (
+              <View className="items-center px-10 pt-24">
+                <View
+                  style={{
+                    width: 56,
+                    height: 56,
+                    borderRadius: 18,
+                    backgroundColor: theme.hover,
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    marginBottom: 12,
+                  }}
+                >
+                  <PlusIcon size={26} color={theme.muted} />
+                </View>
+                <AppText variant="text-16-medium" style={{ color: theme.fg }}>
+                  {empty.title}
+                </AppText>
+                <AppText
+                  variant="text-13-regular"
+                  style={{ color: theme.muted, textAlign: 'center', marginTop: 4 }}
+                >
+                  {empty.body}
+                </AppText>
               </View>
-              <AppText variant="text-16-medium" style={{ color: theme.fg }}>
-                {empty.title}
-              </AppText>
-              <AppText
-                variant="text-13-regular"
-                style={{ color: theme.muted, textAlign: 'center', marginTop: 4 }}
-              >
-                {empty.body}
-              </AppText>
-            </View>
+            )
           }
         />
         <FadeOut />

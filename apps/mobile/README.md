@@ -82,6 +82,35 @@ pnpm --filter @openmanager/mobile add <pkg>@<sdk-compatible-version>
   keeps one React in the bundle under pnpm's isolated linker.
   `OPENMANAGER_METRO_RESOLVER_LOG=1` prints every rewrite.
 
+## Pairing
+
+`src/app/pair.tsx` is a modal in the root Stack, opened from the top row of Settings and from the
+sessions home while nothing is paired. Two doors: scan the QR code web's Pair-device dialog shows
+(`expo-camera`, QR only, `src/pairing/ScanPanel.tsx`), or paste its link (a field with a paste from
+clipboard button). Both go through the same core in `src/pairing/`, which never keeps the link or
+the token anywhere but memory:
+
+- **Read** (`link.ts`): the shared `parsePairingLink`, plus the app origin, the origin of the
+  link's own URL, which the controller sends as the socket's `Origin`.
+- **Plan** (`flow.ts`, `planPairing`): with no token for the link's environment, **exchange** the
+  link's token at `POST {route}/pair` (shared `exchangePairingToken`) and save through
+  `controller.saveEnvironment` (token to SecureStore, route, label and `appOrigin` to the
+  registry). With a token, **redeem** the link over the phone's own socket (`pairing.redeem`),
+  never at the link's route; if the link's address is new to the environment, the shared rule
+  (`classifyDiscoveredRoute`, exposed as `controller.classifyRoute`) says the saved token would go
+  there, so the address is first checked to answer as that environment, then the person is asked,
+  and only an agreed address joins (`controller.addRoute`, as the last route).
+- **Refusals** (`failures.ts`): every reason the environment reports reads as web's shared
+  message, with a title and a next step (a new link, try again, or close); unreachable, another
+  environment answering, rate limits and links this app cannot read are told apart too.
+- **Label** (`device-label.ts`): the phone's model name from `expo-device`, editable; a link made
+  with a name keeps that name.
+
+After pairing, the sheet names the route the controller connected through, and the home's
+environment line reads the controller's label and route kind (LAN or Tunnel,
+`src/environment/connected-route.ts`). `live/pairing.live.ts` drives the core against a real
+server.
+
 ## Shell
 
 The app is three top-level screens and a layer above them. **Sessions** (`src/app/(tabs)/index.tsx`,
@@ -103,8 +132,9 @@ per session state), `ProviderMark` (a tool as its mark, never its name), `Sessio
 `SegmentedTabs`, `BigTitle`, `SectionLabel`, `FadeOut`, `IconButton`, `ProjectChip`. The home and
 the inbox are `SectionList`s, one section per group.
 
-What the home shows comes through `src/home/source.ts`. Until the phone speaks the environment
-protocol it returns a fixture (`src/home/fixture.ts`, the owner's own session titles) in the shared
+What the home shows comes through `src/home/source.ts`. Its environment line is the connection
+controller's; until the phone speaks the session protocol the rows are a fixture, shown once an
+environment is paired (`src/home/fixture.ts`, the owner's own session titles) in the shared
 sidebar's own shapes (`SidebarSessionEntry`, `SidebarDraft`); the sessions-list issue swaps the hook
 for the shared sidebar providers without touching the screens. A session's status mark is the web
 sidebar's own mapping: `statusMarkOf` calls `sessionBusyTone` from app-core
