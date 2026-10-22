@@ -40,3 +40,15 @@ export function foldSettledTurn(parts: readonly MessagePart[]): SettledTurnFold 
     toolCount: workParts.filter((part) => part.type === 'tool').length,
   }
 }
+
+/**
+ * How a turn's parts are laid out. A turn is drawn as it streams (each run of
+ * tools its own group) while it is live, and also once it settles if the
+ * reader watched it stream: re-folding a reply in front of them would make
+ * it jump, so it settles in place (labels and marks change, nothing changes
+ * height). A turn that mounts already settled (opened later, or scrolled
+ * back into view) is folded under its timing.
+ */
+export function turnLayout(turn: { streaming: boolean; watchedLive: boolean }): 'live' | 'folded' {
+  return turn.streaming || turn.watchedLive ? 'live' : 'folded'
+}

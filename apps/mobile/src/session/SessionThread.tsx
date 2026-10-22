@@ -22,18 +22,32 @@ import { FadeOut as BottomFade } from '../ui/chrome'
 import { IconButton } from '../ui/IconButton'
 import { ChildSessionCards } from './ChildSessionCards'
 import { countRender } from './render-probe'
-import { awayFromLatest, MAINTAIN_POSITION } from './scroll-anchor'
+import { createScrollFollower, MAINTAIN_POSITION } from './scroll-anchor'
 import { ReadOnlyBar, SessionDock } from './SessionDock'
-import { SessionHeader, useSessionChrome } from './SessionHeader'
+import { SessionHeader } from './SessionHeader'
 import { SessionMenu } from './SessionMenu'
-import type { SessionMenuItem } from './session-menu'
 import type { StatusLineView } from './status-line'
 import type { ReadOnlySessionPhase } from './useReadOnlySession'
 import type { SessionActions } from './useSessionActions'
+import { useSessionChrome } from './useSessionChrome'
 
 /** The dock's height before it has measured itself: the status line and a one-line slot. */
 const DOCK_ESTIMATE = 96
 const ROW_GAP_BOTTOM = 18
+/** Rows drawn before the first layout; a longer thread starts drawing at its end. */
+const INITIAL_ROWS = 10
+
+/**
+ * The scroll view's own scroll to the end, which lands on the content's true
+ * end (the room left for the dock included). The list's `scrollToEnd` adds
+ * up its cells' estimated sizes and leaves the bottom padding out.
+ */
+function nativeScrollToEnd(list: FlatList<UIMessage> | null, animated: boolean) {
+  const scroller = list?.getScrollResponder() as unknown as {
+    scrollToEnd?: (options: { animated: boolean }) => void
+  } | null
+  scroller?.scrollToEnd?.({ animated })
+}
 
 const keyOf = (message: UIMessage) => message.rowKey ?? message.externalId
 const renderRow: ListRenderItem<UIMessage> = ({ item }) => <ResolvedMessage message={item} />
@@ -119,7 +133,6 @@ export interface SessionThreadProps {
 }
 
 const NO_CHILDREN: readonly HomeSession[] = []
-const NO_ITEMS: readonly SessionMenuItem[] = []
 
 /**
  * A session's page: back, project and title; the transcript, newest at the
@@ -147,25 +160,45 @@ export const SessionThread = memo(function SessionThread({
   const [dockHeight, setDockHeight] = useState(DOCK_ESTIMATE)
   const chrome = useSessionChrome(actions, title)
 
-  // Newest first: the inverted list's offset 0 is the end of the transcript.
-  const rows = useMemo(() => [...messages].reverse(), [messages])
+  // Follows the end while the reader is at it; see scroll-anchor.ts.
+  const [follower] = useState(() =>
+    createScrollFollower({
+      scrollToEnd: (animated) => nativeScrollToEnd(listRef.current, animated),
+      schedule: (run) => requestAnimationFrame(run),
+      onAway: (next) => away.set(next),
+    }),
+  )
+  // The page opens at its newest row: a long thread starts rendering there.
+  const [initialIndex] = useState(() =>
+    messages.length > INITIAL_ROWS ? messages.length - 1 : undefined,
+  )
 
   const onScroll = useCallback(
     (event: NativeSyntheticEvent<NativeScrollEvent>) => {
-      away.set(awayFromLatest(event.nativeEvent.contentOffset.y, away.get()))
+      const { contentOffset, contentSize, layoutMeasurement } = event.nativeEvent
+      follower.onScroll({
+        offset: contentOffset.y,
+        contentHeight: contentSize.height,
+        viewportHeight: layoutMeasurement.height,
+      })
     },
-    [away],
+    [follower],
   )
-  const toLatest = useCallback(() => {
-    listRef.current?.scrollToOffset({ offset: 0, animated: true })
-  }, [])
+  const onDragStart = useCallback(() => follower.onDrag(true), [follower])
+  const onDragEnd = useCallback(() => follower.onDrag(false), [follower])
+  const onContentSize = useCallback(
+    (_width: number, height: number) => follower.onContentHeight(height),
+    [follower],
+  )
+  const onIndexFailed = useCallback(() => nativeScrollToEnd(listRef.current, false), [])
+  const toLatest = useCallback(() => follower.toLatest(), [follower])
   const onDockHeight = useCallback((height: number) => {
     setDockHeight((previous) => (Math.abs(previous - height) < 1 ? previous : Math.round(height)))
   }, [])
 
-  // Inverted, the content's top padding is the room under the newest row.
+  // Top-aligned, as the mockup's transcript is; the end clears the dock.
   const contentStyle = useMemo(
-    () => ({ paddingHorizontal: 20, paddingTop: dockHeight + ROW_GAP_BOTTOM, paddingBottom: 8 }),
+    () => ({ paddingHorizontal: 20, paddingTop: 8, paddingBottom: dockHeight + ROW_GAP_BOTTOM }),
     [dockHeight],
   )
   const footer = useMemo(
@@ -205,16 +238,20 @@ export const SessionThread = memo(function SessionThread({
         ) : (
           <FlatList
             ref={listRef}
-            inverted
-            data={rows}
+            data={messages}
             keyExtractor={keyOf}
             renderItem={renderRow}
-            ListHeaderComponent={footer}
+            ListFooterComponent={footer}
             maintainVisibleContentPosition={MAINTAIN_POSITION}
+            initialScrollIndex={initialIndex}
+            onScrollToIndexFailed={onIndexFailed}
             onScroll={onScroll}
+            onScrollBeginDrag={onDragStart}
+            onScrollEndDrag={onDragEnd}
+            onContentSizeChange={onContentSize}
             scrollEventThrottle={32}
             contentContainerStyle={contentStyle}
-            initialNumToRender={8}
+            initialNumToRender={INITIAL_ROWS}
             maxToRenderPerBatch={6}
             updateCellsBatchingPeriod={40}
             windowSize={9}
@@ -265,7 +302,7 @@ export const SessionThread = memo(function SessionThread({
 
       {chrome.menuOpen ? (
         <SessionMenu
-          items={actions?.menu ?? NO_ITEMS}
+          items={chrome.menu}
           note={actions?.unavailable ?? null}
           top={insets.top + 6 + 48}
           onChoose={chrome.choose}

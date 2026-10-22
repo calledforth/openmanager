@@ -3,7 +3,12 @@ import { projectThread } from '@openmanager/app-core/logic'
 import type { ThreadState } from '@openmanager/environment-client'
 
 import { highlightCode, languageLabel } from '../src/components/parts/highlight'
-import { foldSettledTurn, toolCallCount, workGroupLabel } from '../src/components/parts/work-groups'
+import {
+  foldSettledTurn,
+  toolCallCount,
+  turnLayout,
+  workGroupLabel,
+} from '../src/components/parts/work-groups'
 import type { HomeSession } from '../src/home/rows'
 import { childSessionsOf } from '../src/session/child-sessions'
 import { createFixtureThread } from '../src/session/fixture-thread'
@@ -19,8 +24,8 @@ import {
   AWAY_HIDE_PX,
   AWAY_SHOW_PX,
   awayFromLatest,
-  FOLLOW_THRESHOLD_PX,
-  MAINTAIN_POSITION,
+  createScrollFollower,
+  FOLLOW_SLOP_PX,
 } from '../src/session/scroll-anchor'
 import { sessionMenuItems, type SessionMenuInput } from '../src/session/session-menu'
 import {
@@ -120,6 +125,19 @@ describe('status line', () => {
 })
 
 describe('code highlighting', () => {
+  it('reads a fence named after an inherited object property as plain text', () => {
+    for (const name of ['constructor', '__proto__', 'toString', 'hasOwnProperty']) {
+      const lines = highlightCode('x = 1 // not a comment here', name)
+      expect(
+        lines
+          .flat()
+          .map((token) => token.text)
+          .join(''),
+      ).toBe('x = 1 // not a comment here')
+      expect(lines.flat().every((token) => token.kind === 'plain')).toBe(true)
+    }
+  })
+
   it('reads comments, strings, numbers and keywords', () => {
     const [line] = highlightCode("const tier = 'team' // the default\n", 'ts')
     expect(line).toEqual([
@@ -185,14 +203,15 @@ describe('transcript rows', () => {
     expect(noticesOfTurn(thread.notices, 'other')).toBe(noticesOfTurn([], 'x'))
   })
 
-  it('lists a session children, newest first', () => {
+  it('lists a session children in the order the shared listing gives them', () => {
     const rows = [
       session({ externalId: 'p' }),
       session({ externalId: 'c1', parentExternalId: 'p', updatedAt: '2026-10-22T09:00:00Z' }),
       session({ externalId: 'c2', parentExternalId: 'p', updatedAt: '2026-10-22T09:30:00Z' }),
       session({ externalId: 'other', parentExternalId: 'q' }),
     ]
-    expect(childSessionsOf(rows, 'p').map((row) => row.externalId)).toEqual(['c2', 'c1'])
+    // c1 is older but listed first: the phone keeps the listing's order.
+    expect(childSessionsOf(rows, 'p').map((row) => row.externalId)).toEqual(['c1', 'c2'])
   })
 
   it('builds the long fixture as 200 messages', () => {
@@ -259,23 +278,200 @@ describe('work groups', () => {
   })
 })
 
+/**
+ * The transcript as the phone lays it out: cells top to bottom in reading
+ * order, a viewport over them, and the real follower wired to it the way the
+ * page wires it (a native scroll to the end, one frame later).
+ */
+function transcript(heights: number[], viewport = 600) {
+  const cells = [...heights]
+  let offset = 0
+  const scheduled: Array<() => void> = []
+  const scrolls: boolean[] = []
+  const away: boolean[] = []
+  const content = () => cells.reduce((sum, height) => sum + height, 0)
+  const maxOffset = () => Math.max(0, content() - viewport)
+  const metrics = () => ({ offset, contentHeight: content(), viewportHeight: viewport })
+  const follower = createScrollFollower({
+    scrollToEnd: (animated) => {
+      scrolls.push(animated)
+      offset = maxOffset()
+      follower.onScroll(metrics())
+    },
+    schedule: (run) => scheduled.push(run),
+    onAway: (next) => away.push(next),
+  })
+  const frame = () => {
+    while (scheduled.length > 0) scheduled.shift()!()
+  }
+  /** A layout pass: the scroll view clamps its offset, then the content says its new size. */
+  const layout = () => {
+    if (offset > maxOffset()) {
+      offset = maxOffset()
+      follower.onScroll(metrics())
+    }
+    follower.onContentHeight(content())
+  }
+  const moveTo = (next: number) => {
+    offset = Math.min(maxOffset(), Math.max(0, next))
+    follower.onScroll(metrics())
+  }
+  layout()
+  frame()
+  return {
+    scrolls,
+    away,
+    following: () => follower.following(),
+    offset: () => offset,
+    fromEnd: () => maxOffset() - offset,
+    /** Which cell the screen's top edge is in and how far into it: what the reader is reading. */
+    topLine() {
+      let y = offset
+      for (let index = 0; index < cells.length; index += 1) {
+        if (y < cells[index]!) return { cell: index, into: y }
+        y -= cells[index]!
+      }
+      return { cell: cells.length, into: y }
+    },
+    /** The live reply (the last cell) grows (or shrinks) by `by` without a frame passing. */
+    growNoFrame(by: number) {
+      cells[cells.length - 1]! += by
+      layout()
+    },
+    frame,
+    /** The live reply grows (or shrinks) by `by`, then a frame passes. */
+    grow(by: number) {
+      cells[cells.length - 1]! += by
+      layout()
+      frame()
+    },
+    /** A new row lands at the end. */
+    append(height: number) {
+      cells.push(height)
+      layout()
+      frame()
+    },
+    /** The reader drags by `dy` (negative is up) and lets go; a `fling` then carries on alone. */
+    drag(dy: number, fling = 0) {
+      follower.onDrag(true)
+      moveTo(offset + dy)
+      follower.onDrag(false)
+      if (fling) moveTo(offset + fling)
+    },
+    hold: () => follower.onDrag(true),
+    release: () => follower.onDrag(false),
+    toLatest() {
+      follower.toLatest()
+      frame()
+    },
+  }
+}
+
 describe('scroll anchoring', () => {
-  it('follows the end only within the threshold, anchoring past the reader otherwise', () => {
-    expect(MAINTAIN_POSITION).toEqual({
-      minIndexForVisible: 0,
-      autoscrollToTopThreshold: FOLLOW_THRESHOLD_PX,
-    })
+  it('opens at the end and follows it, one native scroll per content-size change', () => {
+    const list = transcript([400, 300, 500])
+    expect(list.fromEnd()).toBe(0)
+    const before = list.scrolls.length
+    list.grow(24)
+    expect(list.scrolls).toHaveLength(before + 1)
+    expect(list.scrolls.at(-1)).toBe(false)
+    expect(list.fromEnd()).toBe(0)
+    list.append(80)
+    expect(list.fromEnd()).toBe(0)
   })
 
-  it('shows the scroll-to-latest button past one offset and hides it within a lower one', () => {
+  it('coalesces size changes within a frame, and asks nothing when a token changes no height', () => {
+    const list = transcript([400, 300, 500])
+    const before = list.scrolls.length
+    list.growNoFrame(20)
+    list.growNoFrame(20)
+    list.growNoFrame(20)
+    list.frame()
+    expect(list.scrolls).toHaveLength(before + 1)
+    list.grow(0)
+    expect(list.scrolls).toHaveLength(before + 1)
+  })
+
+  it('never moves a reader who scrolled up inside the growing live reply', () => {
+    // Two settled rows, then a live reply taller than the screen.
+    const list = transcript([400, 300, 1500])
+    list.drag(-400)
+    const reading = list.topLine()
+    // The reader is inside the live reply, well past the slop.
+    expect(reading.cell).toBe(2)
+    expect(list.fromEnd()).toBeGreaterThan(FOLLOW_SLOP_PX)
+    const scrolls = list.scrolls.length
+    const offset = list.offset()
+    for (let token = 0; token < 40; token += 1) list.grow(22)
+    expect(list.scrolls).toHaveLength(scrolls)
+    expect(list.offset()).toBe(offset)
+    expect(list.topLine()).toEqual(reading)
+  })
+
+  it('never moves a reader above the live reply, even when it settles shorter', () => {
+    const list = transcript([400, 300, 900])
+    list.drag(-700)
+    const reading = list.topLine()
+    expect(reading.cell).toBeLessThan(2)
+    list.grow(300)
+    list.grow(-500)
+    expect(list.topLine()).toEqual(reading)
+  })
+
+  it('keeps a reader at the end there when the reply settles shorter', () => {
+    const list = transcript([400, 300, 900])
+    list.grow(-300)
+    expect(list.fromEnd()).toBe(0)
+    expect(list.following()).toBe(true)
+  })
+
+  it('follows nothing while a finger is on the list, and again once it lets go at the end', () => {
+    const list = transcript([400, 300, 500])
+    list.hold()
+    const scrolls = list.scrolls.length
+    list.grow(40)
+    expect(list.scrolls).toHaveLength(scrolls)
+    list.release()
+    list.grow(40)
+    expect(list.fromEnd()).toBe(0)
+  })
+
+  it('leaves the end on a fling up that began within the slop', () => {
+    const list = transcript([400, 300, 1500])
+    list.drag(-20, -500)
+    expect(list.following()).toBe(false)
+    const offset = list.offset()
+    list.grow(60)
+    expect(list.offset()).toBe(offset)
+  })
+
+  it('takes the reader back with the button, animated, and follows again', () => {
+    const list = transcript([400, 300, 1500])
+    list.drag(-900)
+    expect(list.away.at(-1)).toBe(true)
+    list.toLatest()
+    expect(list.scrolls.at(-1)).toBe(true)
+    expect(list.away.at(-1)).toBe(false)
+    list.grow(30)
+    expect(list.fromEnd()).toBe(0)
+  })
+
+  it('shows the scroll-to-latest button past one distance and hides it within a lower one', () => {
     expect(awayFromLatest(0, false)).toBe(false)
     expect(awayFromLatest(AWAY_SHOW_PX, false)).toBe(false)
     expect(awayFromLatest(AWAY_SHOW_PX + 1, false)).toBe(true)
-    // Between the two, it keeps what it was: no flicker at the edge.
     const between = (AWAY_SHOW_PX + AWAY_HIDE_PX) / 2
     expect(awayFromLatest(between, true)).toBe(true)
     expect(awayFromLatest(between, false)).toBe(false)
     expect(awayFromLatest(AWAY_HIDE_PX, true)).toBe(false)
+  })
+})
+
+describe('settling in place', () => {
+  it('keeps the layout a reader watched stream, and folds a turn that mounts settled', () => {
+    expect(turnLayout({ streaming: true, watchedLive: true })).toBe('live')
+    expect(turnLayout({ streaming: false, watchedLive: true })).toBe('live')
+    expect(turnLayout({ streaming: false, watchedLive: false })).toBe('folded')
   })
 })
 

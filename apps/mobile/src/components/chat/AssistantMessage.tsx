@@ -1,5 +1,5 @@
 import { InfoIcon } from 'phosphor-react-native'
-import { memo, useMemo } from 'react'
+import { memo, useMemo, useState } from 'react'
 import { View } from 'react-native'
 import {
   settledTurnLabel,
@@ -11,7 +11,7 @@ import {
 import { usePhoneTheme } from '../../theme/ThemeProvider'
 import { MessageParts } from '../parts/MessageParts'
 import { TextPart } from '../parts/TextPart'
-import { foldSettledTurn, toolCallCount } from '../parts/work-groups'
+import { foldSettledTurn, toolCallCount, turnLayout } from '../parts/work-groups'
 import { WorkGroup } from '../parts/WorkGroup'
 import { AppText } from '../ui/AppText'
 import { ShimmerText } from './ShimmerText'
@@ -63,9 +63,13 @@ export const AssistantMessage = memo(function AssistantMessage({
   const theme = usePhoneTheme()
   const hasParts = !!parts && parts.length > 0
   const isStreaming = isFinal !== true
+  // Whether this row was live when it mounted: a reply watched as it
+  // streamed settles in place rather than re-folding under the reader.
+  const [watchedLive] = useState(isStreaming)
+  const folded = turnLayout({ streaming: isStreaming, watchedLive }) === 'folded'
   const fold = useMemo(
-    () => (hasParts && !isStreaming ? foldSettledTurn(parts) : undefined),
-    [hasParts, isStreaming, parts],
+    () => (hasParts && folded ? foldSettledTurn(parts) : undefined),
+    [folded, hasParts, parts],
   )
   const workParts = fold?.work ?? NO_PARTS
   const finalParts = fold?.answer ?? NO_PARTS
