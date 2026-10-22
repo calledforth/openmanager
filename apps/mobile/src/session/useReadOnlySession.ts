@@ -10,9 +10,10 @@
  * there instead.
  *
  * The page owns the client's one active session while it is the page in
- * front: it opens it on focus when another page took it, and releases it
+ * front: it opens it on focus, and releases it on blur and on leaving, but
  * only if it is still its own, so a page left under another (a search, a
- * second session) neither leaks it nor takes it from the one in front.
+ * second session) neither keeps it subscribed nor takes it from the one in
+ * front.
  *
  * Nothing is decided on the phone: the status is the listed session's, and
  * "done" is cleared by asking the environment (`acknowledgeSessionDone`)
@@ -113,23 +114,35 @@ export function useReadOnlySession(
     )
   }, [client, sessionId])
 
-  // Leaving the page, or this page showing another session, releases it,
-  // if it is still this page's: another page may have taken it since.
+  // Lets the session go, if it is still this page's: another page may have
+  // taken it since. An open still on its way lands nowhere once the
+  // selection moves.
+  const release = useCallback(() => {
+    const active = client.getState().activeSessionId
+    const pending = openingRef.current === sessionId
+    openingRef.current = null
+    if (active === sessionId || (pending && active === null)) client.setActiveSession(null)
+  }, [client, sessionId])
+
+  // Leaving the page, or this page showing another session, releases it.
   useEffect(() => {
     setMissing(false)
     knownRef.current = false
-    return () => {
-      const active = client.getState().activeSessionId
-      const pending = openingRef.current === sessionId
-      openingRef.current = null
-      // An open still on its way lands nowhere once the selection moves.
-      if (active === sessionId || (pending && active === null)) client.setActiveSession(null)
-    }
-  }, [client, sessionId])
+    return release
+  }, [release])
+
+  // So does another page coming in front of it, and an environment that
+  // stops replaying events: the client opens its active session again
+  // after a reconnect, through session.history where there is no replay,
+  // so none is left selected there.
+  useEffect(() => {
+    if (!focused || (connected && !replays)) release()
+  }, [connected, focused, release, replays])
 
   // Opened while this page is in front and the socket is up, unless it is
   // already the client's (the client opens its active session again itself
-  // after a reconnect) or an open is on its way.
+  // after a reconnect) or an open is on its way. Back in front, it opens
+  // again.
   useEffect(() => {
     if (!focused || !connected || !replays || onScreen || openingRef.current === sessionId) return
     open()

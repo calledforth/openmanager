@@ -472,6 +472,41 @@ describe('a session opened read-only on the phone', () => {
     ])
   })
 
+  it('lets the session go while another page is in front of it', async () => {
+    const client = replayingClient({ seed: SEED, respond: () => null })
+    await mount(client, SESSION.sessionId)
+    await flush()
+    expect(client.getState().activeSessionId).toBe(SESSION.sessionId)
+    // Covered (a search, say): nothing stays selected or subscribed for it.
+    await mount(client, [{ id: SESSION.sessionId, focused: false }])
+    await flush()
+    expect(client.getState().activeSessionId).toBeNull()
+    await mount(client, [{ id: SESSION.sessionId, focused: true }])
+    await flush()
+    expect(client.getState().activeSessionId).toBe(SESSION.sessionId)
+    expect(seen!.phase).toBe('ready')
+  })
+
+  it('lets the session go when the environment stops replaying events', async () => {
+    const client = replayingClient({ seed: SEED, respond: () => null })
+    await mount(client, SESSION.sessionId)
+    await flush()
+    expect(client.getState().activeSessionId).toBe(SESSION.sessionId)
+    // A reconnect to an environment without replay: the client's own
+    // recovery would reopen its active session through session.history.
+    await act(() =>
+      client.setConnection({
+        capabilities: client
+          .getState()
+          .connection.capabilities.filter((name) => name !== 'subscription.replay'),
+      }),
+    )
+    await flush()
+    expect(client.getState().activeSessionId).toBeNull()
+    expect(seen!.phase).toBe('unsupported')
+    expect(commandsOf(client)).not.toContain('loadSessionHistory')
+  })
+
   it('opens again after the connection drops under the first open', async () => {
     const client = replayingClient({ seed: SEED, respond: () => null })
     const open = client.commands.openSession
