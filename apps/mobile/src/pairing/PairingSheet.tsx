@@ -1,14 +1,13 @@
 import { CheckIcon, LinkIcon, ProhibitIcon, WarningIcon } from 'phosphor-react-native'
 import type { ReactNode } from 'react'
-import { ActivityIndicator, Pressable, StyleSheet, View } from 'react-native'
-import { useSafeAreaInsets } from 'react-native-safe-area-context'
+import { ActivityIndicator, View } from 'react-native'
 
 import { AppText } from '../components/ui/AppText'
 import { connectedRoute, endpointHost, selectedEnvironment } from '../environment/connected-route'
 import type { PhoneConnectionState, PhoneConnectionStatus } from '../environment/controller'
 import { ROUTE_KIND_LABELS } from '../environment/route-order'
 import { usePhoneTheme } from '../theme/ThemeProvider'
-import { Glass } from '../ui/Glass'
+import { Sheet } from '../ui/Sheet'
 import { ActionButton } from './ActionButton'
 import { describePairingFailure } from './failures'
 import type { Pairing, PairingPhase } from './usePairing'
@@ -46,49 +45,20 @@ export function PairingSheet({
   onOpenSessions: () => void
   onClose: () => void
 }) {
-  const theme = usePhoneTheme()
-  const insets = useSafeAreaInsets()
   const { phase } = pairing
   if (phase.kind === 'idle') return null
   const dismissible = phase.kind === 'failed' || phase.kind === 'declined'
   return (
-    <View style={StyleSheet.absoluteFill} pointerEvents="box-none">
-      <Pressable
-        accessibilityElementsHidden
-        importantForAccessibility="no-hide-descendants"
-        disabled={!dismissible}
-        onPress={pairing.reset}
-        style={[StyleSheet.absoluteFill, { backgroundColor: theme.scrim }]}
+    <Sheet onDismiss={dismissible ? pairing.reset : undefined}>
+      <SheetBody
+        phase={phase}
+        pairing={pairing}
+        state={state}
+        linkRoute={linkRoute}
+        onOpenSessions={onOpenSessions}
+        onClose={onClose}
       />
-      <View style={{ position: 'absolute', left: 8, right: 8, bottom: Math.max(insets.bottom, 8) }}>
-        <Glass
-          strength="sheet"
-          shadow="float"
-          radius={28}
-          contentStyle={{ paddingHorizontal: 16, paddingTop: 10, paddingBottom: 14 }}
-        >
-          <View
-            style={{
-              alignSelf: 'center',
-              width: 36,
-              height: 4,
-              borderRadius: 2,
-              backgroundColor: theme.faint,
-              opacity: 0.5,
-              marginBottom: 14,
-            }}
-          />
-          <SheetBody
-            phase={phase}
-            pairing={pairing}
-            state={state}
-            linkRoute={linkRoute}
-            onOpenSessions={onOpenSessions}
-            onClose={onClose}
-          />
-        </Glass>
-      </View>
-    </View>
+    </Sheet>
   )
 }
 
