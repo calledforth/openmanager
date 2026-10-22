@@ -48,6 +48,7 @@ vi.mock('../src/environment/PhoneEnvironmentProvider', () => ({
 const { useReadOnlySession } = await import('../src/session/useReadOnlySession')
 const { useHomeSource } = await import('../src/home/source')
 const { threadRowsOf } = await import('../src/session/thread-rows')
+const { useSessionActions } = await import('../src/session/useSessionActions')
 
 const WORKSPACE = {
   workspaceId: 'C:/repo',
@@ -600,5 +601,68 @@ describe('a session opened read-only on the phone', () => {
     )
     await flush()
     expect(seen!.phase).toBe('gone')
+  })
+})
+
+describe('the session page header on a live session', () => {
+  let actions: ReturnType<typeof useSessionActions> | null = null
+  let title: string | undefined
+  function ActionsProbe({ sessionId }: { sessionId: string }) {
+    const view = useReadOnlySession(sessionId, { focused: true })
+    actions = useSessionActions(sessionId, view.session)
+    title = view.session?.title
+    return null
+  }
+  function mountActions(client: MockEnvironmentClient) {
+    return act(() =>
+      root.render(
+        <EnvironmentClientProvider client={client}>
+          <EnvironmentApplicationProviders storage={null} navigateDraft={navigateDraft}>
+            <ActionsProbe sessionId={SESSION.sessionId} />
+          </EnvironmentApplicationProviders>
+        </EnvironmentClientProvider>,
+      ),
+    )
+  }
+
+  it('renames through the shared client and shows the title the environment kept', async () => {
+    const client = replayingClient({ seed: SEED, respond: () => null })
+    await mountActions(client)
+    await flush()
+    const ids = actions!.menu.filter((item) => !item.disabledReason).map((item) => item.id)
+    expect(ids).toEqual(['rename', 'regenerate-title', 'settle'])
+    expect(actions!.unavailable).toBeNull()
+
+    await act(() => actions!.rename('Renamed'))
+    await flush()
+    expect(client.calls.filter((call) => call.command === 'renameSession')).toEqual([
+      { command: 'renameSession', input: { sessionId: SESSION.sessionId, title: 'Renamed' } },
+    ])
+    expect(title).toBe('Renamed')
+  })
+
+  it('settles through the shared client and then offers to move it back', async () => {
+    const client = replayingClient({ seed: SEED, respond: () => null })
+    await mountActions(client)
+    await flush()
+    await act(() => actions!.run('settle'))
+    await flush()
+    expect(commandsOf(client)).toContain('settleSession')
+    expect(actions!.menu.map((item) => item.id)).toContain('unsettle')
+  })
+
+  it('lists what the environment does not advertise as disabled, with why', async () => {
+    const client = createMockEnvironmentClient({
+      seed: SEED,
+      respond: () => null,
+      capabilities: ['openSession', 'listSessions', 'listWorkspaces', 'getEnvironment'],
+    })
+    client.setConnection({
+      capabilities: [...client.getState().connection.capabilities, 'subscription.replay'],
+    })
+    await mountActions(client)
+    await flush()
+    const rename = actions!.menu.find((item) => item.id === 'rename')
+    expect(rename?.disabledReason).toBe('This environment cannot rename sessions')
   })
 })

@@ -1,0 +1,123 @@
+import { CaretLeftIcon, DotsThreeIcon } from 'phosphor-react-native'
+import { memo, useRef, useState } from 'react'
+import { Text, TextInput, View, type TextStyle } from 'react-native'
+
+import { ShimmerText } from '../components/chat/ShimmerText'
+import { AppText } from '../components/ui/AppText'
+import { usePhoneTheme } from '../theme/ThemeProvider'
+import { useGoBack } from '../ui/goBack'
+import { IconButton } from '../ui/IconButton'
+import { Press } from '../ui/Press'
+import { ProjectChip } from '../ui/ProjectChip'
+import { TITLE_MAX, type SessionChrome } from './useSessionChrome'
+
+/** The title's own type: the mockup's 22 px semibold. */
+const TITLE_STYLE: TextStyle = {
+  fontFamily: 'Geist-SemiBold',
+  fontSize: 22,
+  lineHeight: 26.5,
+  letterSpacing: -0.33,
+  marginTop: 4,
+}
+
+/** The title, editable in place: the field is the title, in the title's type. */
+function TitleField({ title, onCommit }: { title: string; onCommit: (title: string) => void }) {
+  const theme = usePhoneTheme()
+  const [value, setValue] = useState(title)
+  const done = useRef(false)
+  const commit = () => {
+    if (done.current) return
+    done.current = true
+    onCommit(value)
+  }
+  return (
+    <TextInput
+      accessibilityLabel="Session title"
+      autoFocus
+      selectTextOnFocus
+      value={value}
+      onChangeText={setValue}
+      maxLength={TITLE_MAX}
+      returnKeyType="done"
+      submitBehavior="blurAndSubmit"
+      onSubmitEditing={commit}
+      onBlur={commit}
+      underlineColorAndroid="transparent"
+      cursorColor={theme.fg}
+      selectionColor={theme.active}
+      style={[TITLE_STYLE, { color: theme.fg, padding: 0, margin: 0 }]}
+    />
+  )
+}
+
+/**
+ * Back and ⋯ in glass, then the project and the title: the top kept as clear
+ * as it can be. A tap on the title renames the session when the environment
+ * can; the line under it says what a command is doing, or why it failed.
+ */
+export const SessionHeader = memo(function SessionHeader({
+  title,
+  project,
+  topInset,
+  chrome,
+}: {
+  title: string
+  project?: string
+  topInset: number
+  chrome: SessionChrome
+}) {
+  const goBack = useGoBack()
+  const theme = usePhoneTheme()
+  const { editing, canRename, note } = chrome
+  const heading = (
+    <Text accessibilityRole="header" numberOfLines={2} style={[TITLE_STYLE, { color: theme.fg }]}>
+      {title}
+    </Text>
+  )
+  return (
+    <View style={{ paddingTop: topInset + 6 }}>
+      <View className="flex-row items-center justify-between px-5" style={{ height: 48 }}>
+        <IconButton label="Back" onPress={goBack}>
+          <CaretLeftIcon size={18} color={theme.fg} weight="bold" />
+        </IconButton>
+        <IconButton label="Session actions" onPress={chrome.openMenu}>
+          <DotsThreeIcon size={20} color={theme.fg} weight="bold" />
+        </IconButton>
+      </View>
+      <View className="px-5" style={{ paddingTop: 2, paddingBottom: 10 }}>
+        {project ? <ProjectChip name={project} /> : null}
+        {editing ? (
+          <TitleField title={title} onCommit={chrome.commitTitle} />
+        ) : canRename ? (
+          <Press
+            accessibilityRole="button"
+            accessibilityLabel={`${title}. Rename`}
+            onPress={chrome.startEditing}
+            style={({ pressed }) => ({ opacity: pressed ? 0.6 : 1 })}
+          >
+            {heading}
+          </Press>
+        ) : (
+          heading
+        )}
+        {note ? (
+          <View style={{ marginTop: 4 }}>
+            {note.kind === 'busy' ? (
+              <ShimmerText variant="text-12-regular" numberOfLines={1}>
+                {note.text}
+              </ShimmerText>
+            ) : (
+              <AppText
+                variant="text-12-regular"
+                numberOfLines={2}
+                style={{ color: theme.status.error }}
+              >
+                {note.text}
+              </AppText>
+            )}
+          </View>
+        ) : null}
+      </View>
+    </View>
+  )
+})

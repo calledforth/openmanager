@@ -1,18 +1,23 @@
-import { Fragment, useMemo, type ReactNode } from 'react'
+import { memo, useMemo, type ReactNode } from 'react'
 import { View } from 'react-native'
+import { groupActivityParts, type ActivitySummary } from '@openmanager/shared/lib/activity-groups'
 import type { ArtifactSource, MessagePart } from '@openmanager/app-core/logic'
 
+import { countRender } from '../../session/render-probe'
+import { usePhoneTheme } from '../../theme/ThemeProvider'
 import { AppText } from '../ui/AppText'
-import { CollapsibleSteps } from './CollapsibleSteps'
 import { ImagePart } from './ImagePart'
 import { TextPart } from './TextPart'
 import { ThinkingPart } from './ThinkingPart'
-import { ToolRow } from './ToolRow'
+import { ToolRow, type ToolPartData } from './ToolRow'
+import { toolCallCount, workGroupLabel } from './work-groups'
+import { WorkGroup } from './WorkGroup'
 
-// Port of the desktop `MessageParts`: dedupe by id, and once a final text
-// answer follows a run of tool/reasoning steps (and streaming has settled),
-// collapse those steps behind a "Worked N steps" summary. Streaming keeps
-// everything expanded so the live trail stays visible.
+// After web's `MessageParts`: parts deduplicated by id, runs of consecutive
+// tool calls folded into one work group with web's own summary wording
+// (`groupActivityParts`), and every part memoised by identity. The shared
+// projection hands an unchanged part back as the same object on every event,
+// so a streamed token re-renders the one part it changed.
 
 type Part = MessagePart
 
@@ -24,41 +29,27 @@ function getPartKey(part: Part, index: number): string {
   return `${part.type}:${index}`
 }
 
-function FallbackPart({ part }: { part: Part }) {
-  if (
-    part.type === 'step-start' ||
-    part.type === 'step-finish' ||
-    part.type === 'snapshot' ||
-    part.type === 'agent'
-  ) {
-    return null
-  }
+/** A note the transcript keeps without a row of its own, in the environment's words. */
+function NoteRow({ children }: { children: string }) {
+  const theme = usePhoneTheme()
   return (
-    <AppText
-      variant="text-12-regular"
-      className="py-0.5 text-textMuted"
-      style={{ fontStyle: 'italic' }}
-    >
-      {part.type}
-      {(part as Record<string, unknown>).tool ? `: ${(part as Record<string, unknown>).tool}` : ''}
+    <AppText variant="text-13-regular" style={{ color: theme.muted, paddingVertical: 2 }}>
+      {children}
     </AppText>
   )
 }
 
-function renderPart(part: Part, index: number, isStreaming?: boolean): ReactNode {
-  const key = getPartKey(part, index)
-
+function renderPart(part: Part, isStreaming: boolean | undefined): ReactNode {
   switch (part.type) {
     case 'text': {
-      const text = (part.text as string) ?? ''
       if (part.synthetic || part.ignored) return null
-      return <TextPart key={key} text={text} />
+      return <TextPart text={(part.text as string) ?? ''} live={!!isStreaming} />
     }
     case 'tool':
-      return <ToolRow key={key} part={part as Parameters<typeof ToolRow>[0]['part']} />
+      return <ToolRow part={part as unknown as ToolPartData} />
     case 'image':
       return (
-        <View key={key} className="py-1">
+        <View style={{ paddingVertical: 4 }}>
           <ImagePart
             url={typeof part.url === 'string' ? part.url : undefined}
             artifact={part.artifact as ArtifactSource | undefined}
@@ -76,139 +67,147 @@ function renderPart(part: Part, index: number, isStreaming?: boolean): ReactNode
       // shape of the part decides what is passed down — never the provider id.
       return (
         <ThinkingPart
-          key={key}
           text={typeof part.text === 'string' ? part.text : ''}
           tokens={typeof part.tokens === 'number' ? part.tokens : undefined}
           isStreaming={reasoningStreaming}
           duration={
-            partTime ? (partTime.end ?? Date.now()) - (partTime.start ?? Date.now()) : undefined
+            partTime && typeof partTime.end === 'number' && typeof partTime.start === 'number'
+              ? partTime.end - partTime.start
+              : undefined
           }
         />
       )
     }
     case 'retry':
       return (
-        <AppText key={key} variant="text-12-regular" className="py-0.5 text-textMuted">
-          Retrying (attempt {(part.attempt as number) ?? '?'})
-          {part.error ? `: ${String(part.error)}` : ''}
-        </AppText>
+        <NoteRow>
+          {`Retrying (attempt ${(part.attempt as number) ?? '?'})${part.error ? `: ${String(part.error)}` : ''}`}
+        </NoteRow>
       )
     case 'subtask':
       return (
-        <AppText key={key} variant="text-12-regular" className="py-0.5 text-textMuted">
-          Subtask: {(part.description as string) ?? (part.prompt as string) ?? 'running'}
-        </AppText>
+        <NoteRow>{`Subtask: ${(part.description as string) ?? (part.prompt as string) ?? 'running'}`}</NoteRow>
       )
     case 'compaction':
-      return (
-        <AppText
-          key={key}
-          variant="text-12-regular"
-          className="py-0.5 text-textMuted"
-          style={{ fontStyle: 'italic' }}
-        >
-          Session compacted
-        </AppText>
-      )
+      return <NoteRow>Session compacted</NoteRow>
     default:
-      return <FallbackPart key={key} part={part} />
+      // Step markers, snapshots and parts the phone does not draw yet.
+      return null
   }
 }
 
-function isToolOrExploringStep(part: Part): boolean {
-  return (
-    part.type === 'tool' ||
-    part.type === 'reasoning' ||
-    part.type === 'retry' ||
-    part.type === 'subtask'
-  )
+/** One part, skipped while it is the object it was. */
+const PartNode = memo(function PartNode({
+  part,
+  isStreaming,
+}: {
+  part: Part
+  isStreaming?: boolean
+}) {
+  countRender('PartNode')
+  return renderPart(part, isStreaming)
+})
+
+const SUMMARY_FIELDS = [
+  'text',
+  'runningText',
+  'isRunning',
+  'toolCount',
+] as const satisfies readonly (keyof ActivitySummary)[]
+
+/**
+ * A run of tool calls as one work group. Grouping builds the run anew on
+ * every render, so it is compared by what it holds: a run whose calls and
+ * counts are unchanged is left alone, with its rows.
+ */
+const ActivityGroupNode = memo(
+  function ActivityGroupNode({
+    items,
+    summary,
+    isStreaming,
+  }: {
+    items: Part[]
+    summary: ActivitySummary
+    isStreaming?: boolean
+  }) {
+    return (
+      <WorkGroup
+        label={workGroupLabel(summary)}
+        meta={toolCallCount(summary.toolCount)}
+        running={summary.isRunning}
+        // A live run shows its calls as they land; a settled one stays folded.
+        defaultOpen={!!isStreaming}
+      >
+        {items.map((item, index) => (
+          <PartNode key={getPartKey(item, index)} part={item} isStreaming={isStreaming} />
+        ))}
+      </WorkGroup>
+    )
+  },
+  (previous, next) =>
+    previous.isStreaming === next.isStreaming &&
+    previous.items.length === next.items.length &&
+    previous.items.every((item, index) => item === next.items[index]) &&
+    SUMMARY_FIELDS.every((field) => previous.summary[field] === next.summary[field]),
+)
+
+function dedupe(parts: readonly Part[]): Part[] {
+  const seen = new Set<string>()
+  return parts.filter((part, index) => {
+    const id = part.id ?? (part as { callID?: string }).callID ?? getPartKey(part, index)
+    if (seen.has(id)) return false
+    seen.add(id)
+    return true
+  })
 }
 
-export function MessageParts({
+/**
+ * A turn's parts in the order they happened. `flat` lays tool calls out as
+ * bare rows (inside a settled turn's own work group, so no fold sits in a
+ * fold); otherwise each run of calls is its own work group.
+ */
+export const MessageParts = memo(function MessageParts({
   parts,
   isStreaming,
+  flat = false,
 }: {
   parts: readonly Part[]
   isStreaming?: boolean
+  flat?: boolean
 }) {
-  const deduped = useMemo(() => {
-    const seen = new Set<string>()
-    return parts.filter((part, index) => {
-      const id = part.id ?? (part as { callID?: string }).callID ?? getPartKey(part, index)
-      if (seen.has(id)) return false
-      seen.add(id)
-      return true
-    })
-  }, [parts])
+  countRender('MessageParts')
+  const deduped = useMemo(() => dedupe(parts), [parts])
+  const nodes = useMemo(
+    () => (flat ? null : groupActivityParts(deduped as Part[])),
+    [deduped, flat],
+  )
 
-  const { stepParts, hasFinalText, stepsCount, finalParts } = useMemo(() => {
-    let lastTextIdx = -1
-    for (let i = deduped.length - 1; i >= 0; i -= 1) {
-      if (deduped[i].type === 'text' && !deduped[i].synthetic && !deduped[i].ignored) {
-        const text = (deduped[i].text as string) ?? ''
-        if (text.trim()) {
-          lastTextIdx = i
-          break
-        }
-      }
-    }
+  if (deduped.length === 0) return null
 
-    const hasToolsBefore =
-      lastTextIdx > 0 && deduped.slice(0, lastTextIdx).some(isToolOrExploringStep)
-    const nextHasFinalText = lastTextIdx > 0 && hasToolsBefore
-    const nextStepParts = nextHasFinalText ? deduped.slice(0, lastTextIdx) : deduped
-    const nextFinalParts = nextHasFinalText ? deduped.slice(lastTextIdx) : []
-
-    let nextStepsCount = 0
-    if (nextHasFinalText) {
-      for (const part of nextStepParts) {
-        if (
-          part.type === 'tool' ||
-          part.type === 'reasoning' ||
-          part.type === 'retry' ||
-          part.type === 'subtask' ||
-          (part.type === 'text' && (part.text as string)?.trim())
-        ) {
-          nextStepsCount += 1
-        }
-      }
-    }
-
-    return {
-      stepParts: nextStepParts,
-      hasFinalText: nextHasFinalText,
-      stepsCount: nextStepsCount,
-      finalParts: nextFinalParts,
-    }
-  }, [deduped])
-
-  if (parts.length === 0) return null
-
-  const renderedSteps = <>{stepParts.map((part, idx) => renderPart(part, idx, isStreaming))}</>
-
-  if (hasFinalText && !isStreaming) {
+  if (!nodes) {
     return (
-      <View>
-        <CollapsibleSteps stepsCount={stepsCount}>{renderedSteps}</CollapsibleSteps>
-        {finalParts.map((part, idx) => (
-          <Fragment key={`final:${idx}`}>
-            {renderPart(part, stepParts.length + idx, isStreaming)}
-          </Fragment>
+      <View style={{ gap: 6 }}>
+        {deduped.map((part, index) => (
+          <PartNode key={getPartKey(part, index)} part={part} isStreaming={isStreaming} />
         ))}
       </View>
     )
   }
 
   return (
-    <View>
-      {renderedSteps}
-      {hasFinalText
-        ? finalParts.map((part, idx) => (
-            <Fragment key={`final:${idx}`}>
-              {renderPart(part, stepParts.length + idx, isStreaming)}
-            </Fragment>
-          ))
-        : null}
+    <View style={{ gap: 10 }}>
+      {nodes.map((node, index) =>
+        node.kind === 'part' ? (
+          <PartNode key={getPartKey(node.part, index)} part={node.part} isStreaming={isStreaming} />
+        ) : (
+          <ActivityGroupNode
+            key={node.id}
+            items={node.items}
+            summary={node.summary}
+            isStreaming={isStreaming}
+          />
+        ),
+      )}
     </View>
   )
-}
+})

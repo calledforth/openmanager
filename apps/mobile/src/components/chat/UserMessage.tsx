@@ -1,8 +1,9 @@
 import { ClockIcon, WarningCircleIcon } from 'phosphor-react-native'
+import { memo } from 'react'
 import { View } from 'react-native'
 import type { ArtifactSource, MessagePart, OptimisticImage } from '@openmanager/app-core/logic'
 
-import { useTokens } from '../../theme/useTokens'
+import { usePhoneTheme } from '../../theme/ThemeProvider'
 import { ImagePart } from '../parts/ImagePart'
 import { AppText } from '../ui/AppText'
 
@@ -28,7 +29,7 @@ function imagesOf(parts: readonly MessagePart[], attachments: readonly Optimisti
  * colour, no outline), with its images above it. An echo the environment has
  * not confirmed is dimmed with a clock; one it refused says why.
  */
-export function UserMessage({
+export const UserMessage = memo(function UserMessage({
   content,
   parts = [],
   attachments = [],
@@ -41,13 +42,13 @@ export function UserMessage({
   isQueued?: boolean
   sendError?: string
 }) {
-  const tokens = useTokens()
+  const theme = usePhoneTheme()
   const images = imagesOf(parts, attachments)
 
   return (
-    <View className="w-full items-end gap-1.5 py-1">
+    <View className="w-full items-end gap-1.5">
       {images.length > 0 ? (
-        <View className="max-w-[85%] flex-row flex-wrap justify-end gap-1.5">
+        <View className="max-w-[86%] flex-row flex-wrap justify-end gap-1.5">
           {images.map((image) => (
             <ImagePart key={image.id} url={image.url} artifact={image.artifact} size={120} />
           ))}
@@ -55,16 +56,29 @@ export function UserMessage({
       ) : null}
       {content ? (
         <View
-          className="max-w-[85%] rounded-2xl rounded-br bg-bubble px-3 py-2"
-          style={isQueued && !sendError ? { opacity: 0.6 } : undefined}
+          style={{
+            maxWidth: '86%',
+            backgroundColor: theme.bubble,
+            borderTopLeftRadius: 18,
+            borderTopRightRadius: 18,
+            borderBottomLeftRadius: 18,
+            borderBottomRightRadius: 4,
+            paddingHorizontal: 14,
+            paddingVertical: 10,
+            ...(isQueued && !sendError ? { opacity: 0.6 } : null),
+          }}
         >
-          <AppText variant="chat-user" selectable>
+          <AppText
+            variant="chat-user"
+            selectable
+            style={{ color: theme.fg, fontSize: 15, lineHeight: 22 }}
+          >
             {content}
           </AppText>
           {isQueued && !sendError ? (
             <View className="mt-1 flex-row items-center justify-end gap-1">
-              <ClockIcon size={11} color={tokens.textFaint} />
-              <AppText variant="text-11-regular" className="text-textFaint">
+              <ClockIcon size={11} color={theme.faint} />
+              <AppText variant="text-11-regular" style={{ color: theme.faint }}>
                 queued
               </AppText>
             </View>
@@ -72,13 +86,13 @@ export function UserMessage({
         </View>
       ) : null}
       {sendError ? (
-        <View className="max-w-[85%] flex-row items-center gap-1">
-          <WarningCircleIcon size={12} color={tokens.destructive} />
-          <AppText variant="text-11-regular" className="text-destructive">
+        <View className="max-w-[86%] flex-row items-center gap-1">
+          <WarningCircleIcon size={12} color={theme.status.error} />
+          <AppText variant="text-11-regular" style={{ color: theme.status.error }}>
             {sendError}
           </AppText>
         </View>
       ) : null}
     </View>
   )
-}
+})
