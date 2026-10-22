@@ -31,7 +31,7 @@ const WORKSPACE = {
   path: 'C:/repo',
   lastUsedAt: null,
   lastActivityAt: null,
-  capabilities: { git: false, providers: ['opencode'] },
+  capabilities: { git: false },
   exists: true,
 }
 const SESSION = { sessionId: 'session-1', workspaceId: WORKSPACE.workspaceId, title: 'First' }
@@ -1298,6 +1298,7 @@ describe('the shared application over the environment client', () => {
       },
       health: {
         summary: 'ready' as const,
+        available: true,
         refreshing: false,
         install: 'installed' as const,
         auth: 'authenticated' as const,

@@ -12,7 +12,7 @@ export const WORKSPACE = {
   path: 'C:/repo',
   lastUsedAt: null,
   lastActivityAt: null,
-  capabilities: { git: false, providers: ['opencode'] },
+  capabilities: { git: false },
   exists: true,
 }
 export const SESSION = { sessionId: 'session-1', workspaceId: WORKSPACE.workspaceId, title: null }
@@ -122,6 +122,7 @@ export const BARE_PROVIDER: ProviderCatalogEntry = {
   },
   health: {
     summary: 'ready',
+    available: true,
     refreshing: false,
     install: 'installed',
     auth: 'authenticated',

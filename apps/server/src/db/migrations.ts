@@ -814,6 +814,31 @@ export const MIGRATIONS: readonly Migration[] = [
       `)
     },
   },
+  {
+    version: 22,
+    name: 'workspace_git_and_preference_revision',
+    up(database) {
+      // Additive only (docs/sync-foundations.md §4.4, §3.2). A workspace keeps
+      // the git reading its last observation made, so its row describes it
+      // without touching the filesystem and a listing or snapshot only reads.
+      // A composer preference counts its own changes, so an answer and an
+      // event about it can be ordered by the server's number, not the client's.
+      const columns = (table: string) =>
+        new Set(
+          (database.prepare(`PRAGMA table_info(${table})`).all() as { name: string }[]).map(
+            (column) => column.name,
+          ),
+        )
+      if (!columns('workspaces').has('git_json')) {
+        database.exec(`ALTER TABLE workspaces ADD COLUMN git_json TEXT
+          CHECK (git_json IS NULL OR json_valid(git_json))`)
+      }
+      if (!columns('workspace_composer_preferences').has('revision')) {
+        database.exec(`ALTER TABLE workspace_composer_preferences
+          ADD COLUMN revision INTEGER NOT NULL DEFAULT 0 CHECK (revision >= 0)`)
+      }
+    },
+  },
 ]
 
 type RetainedActivityRow = {

@@ -1,11 +1,16 @@
 import { randomUUID } from 'node:crypto'
 import type { DatabaseSync } from 'node:sqlite'
 import { isDeepStrictEqual } from 'node:util'
-import { SessionSummarySchema, type ProofEvent } from '@openmanager/protocol/node'
+import {
+  SessionSummarySchema,
+  WorkspaceSchema,
+  type ProofEvent,
+} from '@openmanager/protocol/node'
 import type { DurableProofEvent, WriteOptions } from './event-repository.ts'
 import { prepareDraftProjection } from './draft-projection.ts'
 import { OPEN_TURN_FOR_SESSION_SQL } from './queries.ts'
 import { getSessionSummary } from './session-store.ts'
+import { gitJsonOf, readWorkspace } from './workspace-rows.ts'
 import { createTurnClosure, reasoningIsOpen, toolIsOpen } from './turn-closure.ts'
 
 type TurnStarted = Extract<ProofEvent, { name: 'turn.started' }>
@@ -36,9 +41,21 @@ export function createEventProjector(
          title_source, title_generated, status, created_at, updated_at
        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'idle', ?, ?)`,
     ),
-    updateWorkspaceName: database.prepare(
-      'UPDATE workspaces SET name = ?, updated_at = ? WHERE workspace_id = ?',
+    // The registry's one writer (docs/sync-foundations.md §4.7.11): a
+    // registration inserts, every later change rewrites what the event states.
+    upsertWorkspace: database.prepare(
+      `INSERT INTO workspaces (
+         workspace_id, name, path, availability, git_json, last_used_at, created_at, updated_at
+       ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?7)
+       ON CONFLICT(workspace_id) DO UPDATE SET
+         name = excluded.name,
+         path = excluded.path,
+         availability = excluded.availability,
+         git_json = excluded.git_json,
+         last_used_at = excluded.last_used_at,
+         updated_at = excluded.updated_at`,
     ),
+    deleteWorkspace: database.prepare('DELETE FROM workspaces WHERE workspace_id = ?'),
     // Automatic titles never replace one the user set; a rename, or a title
     // the user asked to have generated, may. A title the title model wrote is
     // kept as 'provider' plus `title_generated` (see migration 15), and
@@ -431,15 +448,38 @@ export function createEventProjector(
         }
         return
       }
-      case 'workspace.updated':
-        s.updateWorkspaceName.run(
-          event.payload.workspace.name,
+      case 'workspace.updated': {
+        // The whole workspace, as its producer read it from the rows and the
+        // folder; the row takes every field it stores.
+        const workspace = event.payload.workspace
+        const availability = workspace.availability ?? (workspace.exists ? 'available' : 'missing')
+        s.upsertWorkspace.run(
+          workspace.workspaceId,
+          workspace.name,
+          workspace.path,
+          availability,
+          gitJsonOf(availability, {
+            checkout: workspace.capabilities.git,
+            ...(workspace.git ? { git: workspace.git } : {}),
+          }),
+          workspace.lastUsedAt === null ? null : Date.parse(workspace.lastUsedAt),
           at,
-          event.payload.workspace.workspaceId,
         )
+        // Checked, not assumed: what a listing reads back, recency included,
+        // is what the event said (I2).
+        const written = readWorkspace(database, workspace.workspaceId)
+        if (!isDeepStrictEqual(written, WorkspaceSchema.parse(workspace))) {
+          throw new Error(
+            `workspace.updated for ${workspace.workspaceId} says ${JSON.stringify(workspace)}; its row reads ${JSON.stringify(written)}`,
+          )
+        }
         return
+      }
       case 'workspace.removed':
-        // The registry deletes the row itself; sessions cascade with it.
+        // Sessions still cascade with the row until removal announces them.
+        if (s.deleteWorkspace.run(event.payload.workspaceId).changes !== 1) {
+          throw new Error(`Cannot remove missing workspace ${event.payload.workspaceId}`)
+        }
         return
       case 'session.updated':
         if (event.payload.status !== undefined) {

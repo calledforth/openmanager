@@ -48,7 +48,7 @@ export const scopeSnapshots: ScopeSnapshot[] = [
           path: 'workspace-1',
           lastUsedAt: null,
           lastActivityAt: null,
-          capabilities: { git: false, providers: [] },
+          capabilities: { git: false },
           exists: true,
         },
       ],

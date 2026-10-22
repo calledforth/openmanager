@@ -381,7 +381,7 @@ describe('draft cards', () => {
           target: newDraft('alpha', 's1'),
           content: { text: 'go', providerId: 'opencode' },
         },
-        // No pick: the project's last-run provider, which it no longer offers.
+        // No pick: the project's last-run provider, which is no longer available.
         { draftId: 'unpicked', target: newDraft('alpha', 's2'), content: { text: 'go' } },
       ],
       sessions: [{ sessionId: 'old', workspaceId: 'alpha', providerId: 'opencode' }],
@@ -389,15 +389,15 @@ describe('draft cards', () => {
     const state = {
       ...base,
       providerOrder: ['opencode', 'cursor', 'claude'],
+      // Which providers could start a session is provider health, as the
+      // environment states it: OpenCode is not available now.
       providers: Object.fromEntries(
-        ['opencode', 'cursor', 'claude'].map((id) => [id, { id, label: id }]),
+        ['opencode', 'cursor', 'claude'].map((id) => [
+          id,
+          { id, label: id, health: { available: id !== 'opencode' } },
+        ]),
       ),
-      workspaces: {
-        alpha: {
-          workspaceId: 'alpha',
-          capabilities: { git: false, providers: ['cursor', 'claude'] },
-        },
-      },
+      workspaces: { alpha: { workspaceId: 'alpha', capabilities: { git: false } } },
     } as unknown as EnvironmentState
     // Cursor is known to be broken: the composer skips it, so the card does.
     const statuses = { cursor: 'failed' } as const

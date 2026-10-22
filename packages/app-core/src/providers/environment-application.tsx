@@ -115,6 +115,7 @@ import { PlanStateProvider, type PlanRow } from './plan-provider'
 import { ViewActionsContext, WorkspaceIconContext, type ViewActions } from './view-actions'
 import { createEnvironmentThreadStores } from '../lib/environment-thread'
 import { providerHealthReportFromWire } from '../lib/provider-health-view'
+import { availableProviderIds } from './draft-provider'
 
 const DEFAULT_PROVIDER_ID: ProviderId = 'opencode'
 const COLLAPSED_WORKSPACES_KEY = 'openmanager.sidebar.collapsed-workspaces'
@@ -1199,14 +1200,15 @@ function defaultStorage(): Pick<Storage, 'getItem' | 'setItem'> | null {
   }
 }
 
-function toWorkspaceEntry(workspace: Workspace): WorkspaceEntry {
+function toWorkspaceEntry(workspace: Workspace, available: string[]): WorkspaceEntry {
   return {
     path: workspace.workspaceId,
     name: workspace.name,
     missing: !workspace.exists,
     availability: workspace.availability,
     lastActivityAt: workspace.lastActivityAt,
-    capabilities: workspace.capabilities,
+    // Which providers could start here is provider health, the same for every project.
+    capabilities: { git: workspace.capabilities.git, providers: available },
     ...(workspace.git ? { git: workspace.git } : {}),
   }
 }
@@ -1249,8 +1251,18 @@ function EnvironmentSidebarDataProvider({
       ? { environmentId: environmentState.environmentId, label }
       : undefined
   }, [environmentState])
-  const workspaceEntries = useMemo(() => workspaces.map(toWorkspaceEntry), [workspaces])
-  const recentEntries = useMemo(() => recentWorkspaces.map(toWorkspaceEntry), [recentWorkspaces])
+  const available = useEnvironmentState(
+    (state) => availableProviderIds(selectProviderCatalog(state)),
+    shallowEqualArray,
+  )
+  const workspaceEntries = useMemo(
+    () => workspaces.map((workspace) => toWorkspaceEntry(workspace, available)),
+    [workspaces, available],
+  )
+  const recentEntries = useMemo(
+    () => recentWorkspaces.map((workspace) => toWorkspaceEntry(workspace, available)),
+    [recentWorkspaces, available],
+  )
   // Which sessions hold an unsent draft: a coarse fact, so typing in a
   // composer changes it only when the text empties or starts.
   const syncsDrafts = client.drafts !== undefined

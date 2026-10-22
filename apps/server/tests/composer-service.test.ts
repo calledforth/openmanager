@@ -45,6 +45,7 @@ const provider: ProviderBootstrap = {
   },
   health: {
     summary: 'ready',
+    available: true,
     refreshing: false,
     install: 'installed',
     auth: 'authenticated',

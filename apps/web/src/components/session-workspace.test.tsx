@@ -13,7 +13,7 @@ const WORKSPACE = {
   lastUsedAt: null,
   lastActivityAt: null,
   exists: true,
-  capabilities: { git: false, providers: [] },
+  capabilities: { git: false },
 }
 const SESSION = {
   sessionId: 'session-1',
@@ -328,7 +328,7 @@ describe('session workspace', () => {
     localStorage.setItem('openmanager.sent-drafts', JSON.stringify({ 'sent-draft': 'deleted' }))
     const { router } = renderConnected('/drafts/sent-draft', {
       ...SEED,
-      workspaces: [{ ...WORKSPACE, capabilities: { git: false, providers: ['opencode'] } }],
+      workspaces: [{ ...WORKSPACE, capabilities: { git: false } }],
     })
     const visited: string[] = []
     const stop = router.history.subscribe(() => visited.push(router.history.location.pathname))
@@ -499,7 +499,7 @@ describe('session workspace', () => {
     const user = userEvent.setup()
     const { client, router } = renderConnected('/', {
       environment: SEED.environment,
-      workspaces: [{ ...WORKSPACE, capabilities: { git: false, providers: ['opencode'] } }],
+      workspaces: [{ ...WORKSPACE, capabilities: { git: false } }],
     })
     await waitFor(() => expect(screen.getByText('Start with a message below')).toBeInTheDocument())
     const textbox = await screen.findByRole('textbox')
@@ -551,7 +551,7 @@ describe('session workspace', () => {
     const user = userEvent.setup()
     const { router } = renderConnected('/', {
       environment: SEED.environment,
-      workspaces: [{ ...WORKSPACE, capabilities: { git: false, providers: ['opencode'] } }],
+      workspaces: [{ ...WORKSPACE, capabilities: { git: false } }],
     })
     const textbox = await screen.findByRole('textbox')
     await waitFor(() => expect(textbox).toBeEnabled())
@@ -579,7 +579,7 @@ describe('session workspace', () => {
   it('opens a blank page in place of a draft address nobody knows', async () => {
     const { router } = renderConnected('/drafts/nobody-knows', {
       environment: SEED.environment,
-      workspaces: [{ ...WORKSPACE, capabilities: { git: false, providers: ['opencode'] } }],
+      workspaces: [{ ...WORKSPACE, capabilities: { git: false } }],
     })
     await waitFor(() => expect(router.state.location.pathname).toBe('/'))
     const textbox = await screen.findByRole('textbox')

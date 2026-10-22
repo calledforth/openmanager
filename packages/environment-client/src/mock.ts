@@ -856,7 +856,7 @@ export function createMockEnvironmentClient(
           path: input.path,
           lastUsedAt: null,
           lastActivityAt: null,
-          capabilities: { git: false, providers: [] },
+          capabilities: { git: false },
           exists: true,
         }
         emit({
@@ -906,7 +906,11 @@ export function createMockEnvironmentClient(
         if (!workspace || !workspace.exists) {
           throw new EnvironmentClientError('not_found', 'Workspace not found.')
         }
-        if (!workspace.capabilities.providers.includes(input.providerId)) {
+        // Like the environment: a provider it does not run is refused. A mock
+        // seeded with no catalog runs the providers this product ships.
+        const runnable =
+          catalog.length > 0 ? catalog.map((entry) => entry.id) : MOCK_RUNNABLE_PROVIDERS
+        if (!runnable.includes(input.providerId)) {
           throw new EnvironmentClientError(
             'validation',
             'The workspace does not offer the requested provider.',
@@ -1756,6 +1760,9 @@ function seedState(
   if (seed?.activeSessionId) state = applyActiveSession(state, seed.activeSessionId)
   return state
 }
+
+/** The providers an environment of this product can run, for a mock seeded with no catalog. */
+const MOCK_RUNNABLE_PROVIDERS: readonly string[] = ['opencode', 'cursor', 'claude']
 
 function splitChunks(text: string, size = 12): string[] {
   const chunks: string[] = []

@@ -197,7 +197,7 @@ describe('createConvexEnvironmentClient', () => {
       path: 'C:/repo',
       lastUsedAt: null,
       lastActivityAt: null,
-      capabilities: { git: false, providers: [] },
+      capabilities: { git: false },
       exists: true,
     })
     expect(selectSessionList(state, 'C:/repo')).toMatchObject([
@@ -952,7 +952,7 @@ describe('createConvexEnvironmentClient', () => {
       path: 'C:/other',
       lastUsedAt: null,
       lastActivityAt: null,
-      capabilities: { git: false, providers: [] },
+      capabilities: { git: false },
       exists: true,
     })
     expect(client.getState().workspaceOrder).toEqual(['C:/repo', 'C:/other'])

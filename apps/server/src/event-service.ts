@@ -82,7 +82,7 @@ export function createPersistentEventService(
      * a session never becomes durable without its thread. Terminal turn events
      * keep going through `append`, which routes them to turn finalization.
      */
-    appendAtomic(events: readonly ProofEvent[], options?: WriteOptions) {
+    appendAtomic(events: readonly ProofEvent[], options?: WriteOptions): DurableEvent[] {
       const groups: { scope: SubscriptionScope; events: DurableProofEvent[] }[] = []
       for (const event of events.map(durable)) {
         if (isTerminal(event)) throw new Error('Terminal turn events are appended one at a time')
@@ -91,7 +91,9 @@ export function createPersistentEventService(
         else groups.push({ scope: event.scope, events: [event] })
       }
       batcher.flush()
-      repository.appendGroups(groups satisfies readonly EventGroup[], options).forEach(publish)
+      const records = repository.appendGroups(groups satisfies readonly EventGroup[], options)
+      records.forEach(publish)
+      return records
     },
     /**
      * Write one turn's end now, through the terminal path (its closes first),

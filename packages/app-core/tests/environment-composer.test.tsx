@@ -29,7 +29,7 @@ const WORKSPACE = {
   path: 'C:/repo',
   lastUsedAt: null,
   lastActivityAt: null,
-  capabilities: { git: false, providers: ['opencode', 'cursor', 'claude'] },
+  capabilities: { git: false },
   exists: true,
 }
 const SESSION = { sessionId: 'session-1', workspaceId: WORKSPACE.workspaceId, title: 'First' }
@@ -37,6 +37,7 @@ const SIBLING = { sessionId: 'session-2', workspaceId: WORKSPACE.workspaceId, ti
 
 const READY = {
   summary: 'ready',
+  available: true,
   refreshing: false,
   install: 'installed',
   auth: 'authenticated',
@@ -100,6 +101,7 @@ const BROKEN_CLAUDE: ProviderCatalogEntry = {
   health: {
     ...READY,
     summary: 'error',
+    available: false,
     install: 'missing',
     runtime: { state: 'stopped', liveProcesses: 0, activeTurns: 0 },
     // A reading with nothing running only counts while its probe is fresh.

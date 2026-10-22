@@ -468,7 +468,7 @@ describe('createEnvironmentThreadStores', () => {
               lastUsedAt: null,
               lastActivityAt: null,
               exists: true,
-              capabilities: { git: false, providers: [] },
+              capabilities: { git: false },
             },
           ],
           sessions: [

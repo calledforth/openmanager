@@ -672,7 +672,7 @@ describe('mock environment drafts', () => {
     const created = await client.commands.createSession({
       environmentId: client.getState().environment!.environmentId,
       workspaceId: WORKSPACE.workspaceId,
-      providerId: WORKSPACE.capabilities.providers[0]!,
+      providerId: 'opencode',
       sessionId: 'session-launch',
       draftId: 'd',
     })
