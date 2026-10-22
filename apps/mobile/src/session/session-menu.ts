@@ -95,3 +95,20 @@ export function sessionMenuItems(input: SessionMenuInput): SessionMenuItem[] {
   })
   return items
 }
+
+/** What a held item says while another command is out. */
+export const PENDING_REASON = 'Waiting for the last change to land'
+
+/**
+ * The items while a command is out: every one that could be used waits for
+ * it, so two answers never race for the line under the title.
+ */
+export function holdWhilePending(
+  items: readonly SessionMenuItem[],
+  pending: boolean,
+): readonly SessionMenuItem[] {
+  if (!pending) return items
+  return items.map((item) =>
+    item.disabledReason ? item : { ...item, disabledReason: PENDING_REASON },
+  )
+}
