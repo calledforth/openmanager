@@ -40,7 +40,10 @@ Package-local scripts (via `pnpm --filter @openmanager/mobile <script>`):
 `test:live` drives the phone's connection controller against a running
 environment server; see `live/handshake.live.ts` (pairing, origin, lifecycle) and
 `live/sessions.live.ts` (the home and a read-only thread through a live provider turn) for the
-variables they read.
+variables they read. `live/recovery.live.ts` starts its own server on a side port (43420 by
+default) behind switchable LAN and tunnel forwarders and records the recovery matrix: airplane
+mode, LAN to tunnel, the tunnel down (HTTP 530) and back, a server restart, and a revocation
+followed by pairing again.
 
 `EXPO_PUBLIC_FIXTURE=1` shows the dev fixture on a phone with nothing paired (the home's
 sessions and drafts from `src/home/fixture.ts`, a session page from a recorded thread); without
