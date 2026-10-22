@@ -91,6 +91,11 @@ export function useSessionChrome(actions: SessionActions | null, title: string) 
         setEditing(true)
         return
       }
+      if (id === 'session-settings') {
+        // Not a command: the sheet opens, and each change in it is one.
+        actions.openSettings?.()
+        return
+      }
       send(id, () => actions.run(id))
     },
     [actions, send],

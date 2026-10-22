@@ -1,5 +1,5 @@
 import { EyeIcon } from 'phosphor-react-native'
-import { memo, type ReactNode } from 'react'
+import { createContext, memo, useContext, useMemo, useRef, type ReactNode } from 'react'
 import { View, type LayoutChangeEvent } from 'react-native'
 
 import { AppText } from '../components/ui/AppText'
@@ -33,25 +33,88 @@ export const SessionDock = memo(function SessionDock({
   /** The slot: the composer once it lands. */
   children: ReactNode
 }) {
-  const onLayout = (event: LayoutChangeEvent) => onHeight(event.nativeEvent.layout.height)
+  // While the composer eases a fold, the dock's height changes every frame:
+  // it says its new height once, at the start (`hold`), and nothing per frame.
+  const measured = useRef(0)
+  const reported = useRef(0)
+  const held = useRef(false)
+  const control = useMemo<DockHold>(() => {
+    const report = (height: number) => {
+      reported.current = height
+      onHeight(height)
+    }
+    return {
+      report,
+      hold(delta) {
+        held.current = true
+        report(reported.current + delta)
+      },
+      release() {
+        held.current = false
+        report(measured.current)
+      },
+    }
+  }, [onHeight])
+  const onLayout = (event: LayoutChangeEvent) => {
+    measured.current = event.nativeEvent.layout.height
+    if (!held.current) control.report(measured.current)
+  }
   return (
-    <View
-      pointerEvents="box-none"
-      onLayout={onLayout}
-      style={{
-        position: 'absolute',
-        left: DOCK_SIDE,
-        right: DOCK_SIDE,
-        bottom: 0,
-        paddingBottom: bottomInset,
-        gap: DOCK_GAP,
-      }}
-    >
-      <StatusLine view={status} />
-      {children}
-    </View>
+    <DockHoldContext.Provider value={control}>
+      <View
+        pointerEvents="box-none"
+        onLayout={onLayout}
+        style={{
+          position: 'absolute',
+          left: DOCK_SIDE,
+          right: DOCK_SIDE,
+          bottom: 0,
+          paddingBottom: bottomInset,
+          gap: DOCK_GAP,
+        }}
+      >
+        <StatusLine view={status} />
+        {children}
+      </View>
+    </DockHoldContext.Provider>
   )
 })
+
+/** How the slot's content keeps an easing height from being reported per frame. */
+export interface DockHold {
+  report(height: number): void
+  /** Report the dock `delta` taller now, and hold back the heights measured until `release`. */
+  hold(delta: number): void
+  /** Report the dock's measured height again. */
+  release(): void
+}
+
+export const DockHoldContext = createContext<DockHold | null>(null)
+
+/** The dock's hold, for what eases its height; null outside a dock. */
+export const useDockHold = () => useContext(DockHoldContext)
+
+/**
+ * Where the page's dock goes, for a composer drawn over the whole page (its
+ * sheets and its pulled-up state cover the header too): the status line, the
+ * room under the dock, and where to say how tall it is. The composer renders
+ * the `SessionDock` itself with these.
+ */
+export interface DockSlot {
+  status: StatusLineView | null
+  bottomInset: number
+  onHeight: (height: number) => void
+  /** A layer of the composer covers the page: the page hides itself from a screen reader. */
+  onCovered: (covered: boolean) => void
+}
+
+export const DockSlotContext = createContext<DockSlot | null>(null)
+
+export function useDockSlot(): DockSlot {
+  const slot = useContext(DockSlotContext)
+  if (!slot) throw new Error('useDockSlot must be used inside a session page')
+  return slot
+}
 
 /** The slot's content until the composer lands: replies happen elsewhere for now. */
 export function ReadOnlyBar() {

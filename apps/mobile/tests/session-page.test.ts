@@ -281,6 +281,27 @@ describe('work groups', () => {
   })
 })
 
+describe('the keyboard under the transcript', () => {
+  it('keeps a reader at the end there when the list gets shorter', () => {
+    const list = transcript([400, 400, 400])
+    expect(list.fromEnd()).toBe(0)
+    list.resize(350)
+    expect(list.fromEnd()).toBe(0)
+    expect(list.following()).toBe(true)
+    list.resize(600)
+    expect(list.fromEnd()).toBe(0)
+  })
+
+  it('leaves a reader who scrolled up where they are', () => {
+    const list = transcript([400, 400, 400])
+    list.drag(-400)
+    const before = list.offset()
+    list.resize(350)
+    expect(list.offset()).toBe(before)
+    expect(list.following()).toBe(false)
+  })
+})
+
 /**
  * The transcript as the phone lays it out: cells top to bottom in reading
  * order, a viewport over them, and the real follower wired to it the way the
@@ -320,8 +341,19 @@ function transcript(heights: number[], viewport = 600) {
     follower.onScroll(metrics())
   }
   layout()
+  follower.onViewportHeight(viewport)
   frame()
   return {
+    /** The list's own height changes (the keyboard rises or falls), then a frame passes. */
+    resize(next: number) {
+      viewport = next
+      if (offset > maxOffset()) {
+        offset = maxOffset()
+        follower.onScroll(metrics())
+      }
+      follower.onViewportHeight(next)
+      frame()
+    },
     scrolls,
     away,
     following: () => follower.following(),

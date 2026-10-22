@@ -502,7 +502,7 @@ describe('the composer over the environment client', () => {
       return create(input)
     })
 
-    let sending!: Promise<void>
+    let sending!: Promise<unknown>
     await act(() => {
       sending = probe.thread.sendMessage('hello')
     })

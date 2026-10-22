@@ -1,10 +1,20 @@
 import { LinearGradient } from 'expo-linear-gradient'
 import { ArrowClockwiseIcon, ArrowDownIcon, WarningCircleIcon } from 'phosphor-react-native'
-import { memo, useCallback, useMemo, useRef, useState, useSyncExternalStore } from 'react'
+import {
+  memo,
+  useCallback,
+  useMemo,
+  useRef,
+  useState,
+  useSyncExternalStore,
+  type ReactNode,
+} from 'react'
 import {
   FlatList,
+  KeyboardAvoidingView,
   Platform,
   View,
+  type LayoutChangeEvent,
   type ListRenderItem,
   type NativeScrollEvent,
   type NativeSyntheticEvent,
@@ -20,11 +30,12 @@ import { AppText } from '../components/ui/AppText'
 import type { HomeSession } from '../home/rows'
 import { usePhoneTheme } from '../theme/ThemeProvider'
 import { FadeOut as BottomFade } from '../ui/chrome'
+import { coveredBySheet } from '../ui/a11y-focus'
 import { IconButton } from '../ui/IconButton'
 import { ChildSessionCards } from './ChildSessionCards'
 import { countRender } from './render-probe'
 import { createScrollFollower, flingsUp, INITIAL_ROWS, MAINTAIN_POSITION } from './scroll-anchor'
-import { ReadOnlyBar, SessionDock } from './SessionDock'
+import { DockSlotContext, ReadOnlyBar, SessionDock, type DockSlot } from './SessionDock'
 import { SessionHeader } from './SessionHeader'
 import { SessionMenu } from './SessionMenu'
 import type { StatusLineView } from './status-line'
@@ -138,6 +149,12 @@ export interface SessionThreadProps {
   childSessions?: readonly HomeSession[]
   /** What the ⋯ menu and the title can ask the environment; none before a client exists. */
   actions?: SessionActions | null
+  /**
+   * The composer: a layer over the whole page that draws the dock (through
+   * `DockSlotContext`) and whatever it opens. Without one the dock holds the
+   * read-only bar.
+   */
+  composer?: ReactNode
 }
 
 const NO_CHILDREN: readonly HomeSession[] = []
@@ -159,6 +176,7 @@ export const SessionThread = memo(function SessionThread({
   onRetry,
   childSessions = NO_CHILDREN,
   actions = null,
+  composer,
 }: SessionThreadProps) {
   countRender('SessionThread')
   const insets = useSafeAreaInsets()
@@ -200,6 +218,10 @@ export const SessionThread = memo(function SessionThread({
     (_width: number, height: number) => follower.onContentHeight(height),
     [follower],
   )
+  const onListLayout = useCallback(
+    (event: LayoutChangeEvent) => follower.onViewportHeight(event.nativeEvent.layout.height),
+    [follower],
+  )
   const onIndexFailed = useCallback(() => nativeScrollToEnd(listRef.current, false), [])
   const toLatest = useCallback(() => follower.toLatest(), [follower])
   const onDockHeight = useCallback((height: number) => {
@@ -218,98 +240,120 @@ export const SessionThread = memo(function SessionThread({
 
   const problem = problemOf(phase, failure)
   const bottomInset = Math.max(insets.bottom, 12) + 8
+  // A composer sheet, popover, camera or the pulled-up editor over the page.
+  const [covered, setCovered] = useState(false)
+  const dockSlot = useMemo<DockSlot>(
+    () => ({ status, bottomInset, onHeight: onDockHeight, onCovered: setCovered }),
+    [bottomInset, onDockHeight, status],
+  )
 
   return (
-    <View className="flex-1">
-      <SessionHeader title={title} project={project} topInset={insets.top} chrome={chrome} />
+    // Android resizes the window for the keyboard (the dock rises with it);
+    // iOS does not, so the page makes the room itself.
+    <KeyboardAvoidingView
+      style={{ flex: 1 }}
+      behavior={Platform.OS === 'ios' ? 'padding' : undefined}
+    >
+      {/* Hidden from a screen reader while a composer layer covers it, as under a sheet. */}
+      <View style={{ flex: 1 }} {...coveredBySheet(covered)}>
+        <SessionHeader title={title} project={project} topInset={insets.top} chrome={chrome} />
 
-      <View className="flex-1">
-        {messages.length === 0 ? (
-          <View
-            className="flex-1 items-center justify-center gap-3 px-10"
-            style={{ paddingBottom: dockHeight }}
-          >
-            {phase === 'opening' ? (
-              <ShimmerText variant="text-14-regular">Opening…</ShimmerText>
-            ) : (
-              <AppText
-                variant="text-14-regular"
-                style={{ color: theme.muted, textAlign: 'center' }}
-              >
-                {problem ?? 'No messages yet.'}
-              </AppText>
-            )}
-            {phase === 'failed' && onRetry ? (
-              <IconButton label="Try again" onPress={onRetry}>
-                <ArrowClockwiseIcon size={18} color={theme.fg} />
-              </IconButton>
-            ) : null}
-          </View>
-        ) : (
-          <FlatList
-            ref={listRef}
-            data={messages}
-            keyExtractor={keyOf}
-            renderItem={renderRow}
-            ListFooterComponent={footer}
-            maintainVisibleContentPosition={MAINTAIN_POSITION}
-            initialScrollIndex={initialIndex}
-            onScrollToIndexFailed={onIndexFailed}
-            onScroll={onScroll}
-            onScrollBeginDrag={onDragStart}
-            onScrollEndDrag={onDragEnd}
-            onMomentumScrollEnd={onMomentumEnd}
-            onContentSizeChange={onContentSize}
-            scrollEventThrottle={32}
-            contentContainerStyle={contentStyle}
-            initialNumToRender={INITIAL_ROWS}
-            maxToRenderPerBatch={6}
-            updateCellsBatchingPeriod={40}
-            windowSize={9}
-            keyboardShouldPersistTaps="handled"
-            showsVerticalScrollIndicator={false}
-          />
-        )}
-
-        {/* The transcript's top edge eases under the header rather than cutting off. */}
-        <LinearGradient
-          pointerEvents="none"
-          colors={[theme.bg, withAlpha(theme.bg, 0)]}
-          style={{ position: 'absolute', left: 0, right: 0, top: 0, height: 22 }}
-        />
-        <BottomFade height={dockHeight + 48} />
-
-        {messages.length > 0 && problem ? (
-          <View
-            pointerEvents="box-none"
-            style={{ position: 'absolute', left: 16, right: 16, bottom: dockHeight + 10 }}
-          >
-            {/* What is on screen may be stale: said over the transcript, not hidden behind it. */}
+        <View className="flex-1">
+          {messages.length === 0 ? (
             <View
-              className="flex-row items-center gap-2.5 rounded-2xl px-4 py-2.5"
-              style={{ backgroundColor: theme.statusWash.error }}
+              className="flex-1 items-center justify-center gap-3 px-10"
+              style={{ paddingBottom: dockHeight }}
             >
-              <WarningCircleIcon size={16} color={theme.status.error} />
-              <AppText variant="text-13-regular" style={{ color: theme.fg, flex: 1 }}>
-                {problem}
-              </AppText>
+              {phase === 'opening' ? (
+                <ShimmerText variant="text-14-regular">Opening…</ShimmerText>
+              ) : (
+                <AppText
+                  variant="text-14-regular"
+                  style={{ color: theme.muted, textAlign: 'center' }}
+                >
+                  {problem ?? 'No messages yet.'}
+                </AppText>
+              )}
               {phase === 'failed' && onRetry ? (
-                <IconButton label="Try again" size={32} onPress={onRetry}>
-                  <ArrowClockwiseIcon size={16} color={theme.fg} />
+                <IconButton label="Try again" onPress={onRetry}>
+                  <ArrowClockwiseIcon size={18} color={theme.fg} />
                 </IconButton>
               ) : null}
             </View>
-          </View>
-        ) : null}
+          ) : (
+            <FlatList
+              ref={listRef}
+              data={messages}
+              keyExtractor={keyOf}
+              renderItem={renderRow}
+              ListFooterComponent={footer}
+              maintainVisibleContentPosition={MAINTAIN_POSITION}
+              initialScrollIndex={initialIndex}
+              onScrollToIndexFailed={onIndexFailed}
+              onScroll={onScroll}
+              onScrollBeginDrag={onDragStart}
+              onScrollEndDrag={onDragEnd}
+              onMomentumScrollEnd={onMomentumEnd}
+              onContentSizeChange={onContentSize}
+              onLayout={onListLayout}
+              scrollEventThrottle={32}
+              contentContainerStyle={contentStyle}
+              initialNumToRender={INITIAL_ROWS}
+              maxToRenderPerBatch={6}
+              updateCellsBatchingPeriod={40}
+              windowSize={9}
+              keyboardShouldPersistTaps="handled"
+              showsVerticalScrollIndicator={false}
+            />
+          )}
 
-        {messages.length > 0 && !problem ? (
-          <ScrollToLatest away={away} bottom={dockHeight + 12} onPress={toLatest} />
-        ) : null}
+          {/* The transcript's top edge eases under the header rather than cutting off. */}
+          <LinearGradient
+            pointerEvents="none"
+            colors={[theme.bg, withAlpha(theme.bg, 0)]}
+            style={{ position: 'absolute', left: 0, right: 0, top: 0, height: 22 }}
+          />
+          <BottomFade height={dockHeight + 48} />
 
-        <SessionDock status={status} bottomInset={bottomInset} onHeight={onDockHeight}>
-          <ReadOnlyBar />
-        </SessionDock>
+          {messages.length > 0 && problem ? (
+            <View
+              pointerEvents="box-none"
+              style={{ position: 'absolute', left: 16, right: 16, bottom: dockHeight + 10 }}
+            >
+              {/* What is on screen may be stale: said over the transcript, not hidden behind it. */}
+              <View
+                className="flex-row items-center gap-2.5 rounded-2xl px-4 py-2.5"
+                style={{ backgroundColor: theme.statusWash.error }}
+              >
+                <WarningCircleIcon size={16} color={theme.status.error} />
+                <AppText variant="text-13-regular" style={{ color: theme.fg, flex: 1 }}>
+                  {problem}
+                </AppText>
+                {phase === 'failed' && onRetry ? (
+                  <IconButton label="Try again" size={32} onPress={onRetry}>
+                    <ArrowClockwiseIcon size={16} color={theme.fg} />
+                  </IconButton>
+                ) : null}
+              </View>
+            </View>
+          ) : null}
+
+          {messages.length > 0 && !problem ? (
+            <ScrollToLatest away={away} bottom={dockHeight + 12} onPress={toLatest} />
+          ) : null}
+
+          {composer ? null : (
+            <SessionDock status={status} bottomInset={bottomInset} onHeight={onDockHeight}>
+              <ReadOnlyBar />
+            </SessionDock>
+          )}
+        </View>
       </View>
+
+      {/* Over the whole page, header included: its sheets and pulled-up state cover it all. */}
+      {composer ? (
+        <DockSlotContext.Provider value={dockSlot}>{composer}</DockSlotContext.Provider>
+      ) : null}
 
       {chrome.menuOpen ? (
         <SessionMenu
@@ -320,6 +364,6 @@ export const SessionThread = memo(function SessionThread({
           onClose={chrome.closeMenu}
         />
       ) : null}
-    </View>
+    </KeyboardAvoidingView>
   )
 })

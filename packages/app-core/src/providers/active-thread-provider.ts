@@ -28,6 +28,11 @@ export interface UIMessage {
   commandId?: string
 }
 
+/** A send the environment refused: the reason it gave. */
+export interface SendRefused {
+  refused: string
+}
+
 /** The persisted record of the thread on screen, plus whether this client drives it. */
 export interface ActiveThreadDetails {
   externalId: string
@@ -134,8 +139,16 @@ export interface ActiveThreadStateValue {
   error: string | null
   /** Drop an optimistic user message once its persisted body is on screen. */
   acknowledgeOptimisticMessage: (externalId: string) => void
-  /** Send a prompt to the active session, or start a session from the open draft. */
-  sendMessage: (content: string, attachments?: UploadedImageAttachment[]) => Promise<void>
+  /**
+   * Send a prompt to the active session, or start a session from the open
+   * draft. A send the environment refused resolves with why (`SendRefused`)
+   * where the host keeps the refused message on screen as a row of its own;
+   * a host without such a row (the phone) restores its draft from it.
+   */
+  sendMessage: (
+    content: string,
+    attachments?: UploadedImageAttachment[],
+  ) => Promise<void | SendRefused>
   /** Send a failed message again under its own id. Hosts without a retryable
    * send leave this out and the failed row shows the reason only. */
   retrySend?: (commandId: string) => Promise<void>

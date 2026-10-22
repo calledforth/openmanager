@@ -33,6 +33,11 @@ export interface SessionMenuInput {
    */
   unavailable: string | null
   supports: (command: EnvironmentCommandName) => boolean
+  /**
+   * Session settings: null when the composer can open them, else why not.
+   * Left out where there is no composer (a sample session, nothing paired).
+   */
+  settings?: string | null
 }
 
 /** Live work cannot be settled: the environment refuses it, as web's sidebar says. */
@@ -87,11 +92,12 @@ export function sessionMenuItems(input: SessionMenuInput): SessionMenuItem[] {
       ),
     })
   }
-  // Config options and the like land with the composer's pickers.
+  // The provider's other settings, in the composer's sheet.
   items.push({
     id: 'session-settings',
     label: 'Session settings',
-    disabledReason: 'Not on the phone yet',
+    disabledReason:
+      input.unavailable ?? (input.settings === undefined ? 'Not on the phone yet' : input.settings),
   })
   return items
 }

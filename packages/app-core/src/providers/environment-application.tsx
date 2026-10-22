@@ -110,6 +110,7 @@ import {
   type ActiveThreadDetails,
   type ActiveThreadStateValue,
   type ActiveThreadStores,
+  type SendRefused,
   type UIMessage,
 } from './active-thread-provider'
 import {
@@ -1617,9 +1618,21 @@ function EnvironmentActiveThreadProvider({ children }: { children: ReactNode }) 
         beginSessionTurn()
         // A rejected send keeps its own row on screen with the reason and a
         // retry, so it is neither an error banner nor a composer rollback.
-        await commands
+        // The refusal is still answered, for a host that has no such row.
+        return await commands
           .sendTurn({ ...current, text, ...(artifactIds?.length ? { artifactIds } : {}) })
-          .catch(() => failTurn())
+          .then(
+            () => undefined,
+            (refusal: unknown): SendRefused => {
+              failTurn()
+              return {
+                refused:
+                  refusal instanceof Error && refusal.message
+                    ? refusal.message
+                    : 'The environment refused the message.',
+              }
+            },
+          )
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err)
         failTurn(message)
