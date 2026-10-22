@@ -1,11 +1,11 @@
-import { useRef } from 'react'
+import { useRef, useState } from 'react'
 import { View } from 'react-native'
 
 import { usePhoneTheme } from '../theme/ThemeProvider'
 import { ProviderMark } from '../ui/ProviderMark'
 import { ProjectSquare } from '../ui/ProjectChip'
 import { CaretGlyph, EffortGlyph, effortLevelOf, ModeIcon } from './icons'
-import type { ComposerModel } from './model'
+import { PICK_GAP, roomFor, TRAY_MODEL_MAX, type ComposerModel } from './model'
 import { ContextMeter, Pick } from './Pick'
 import type { ComposerUi, PickAnchor } from './ui-state'
 
@@ -35,10 +35,19 @@ export function Picks({
   const effortRef = useRef<View>(null)
   const { picks } = model
   const tray = variant === 'tray'
+  // The row's room, and what mode and effort take of it (they never shrink).
+  const [rowWidth, setRowWidth] = useState(0)
+  const [modeWidth, setModeWidth] = useState(0)
+  const [effortWidth, setEffortWidth] = useState(0)
+  const room = roomFor({
+    row: rowWidth,
+    fixed: (picks.mode ? modeWidth + PICK_GAP : 0) + (picks.effort ? effortWidth + PICK_GAP : 0),
+    meter: picks.usagePercent !== null,
+  })
   const effortIndex = picks.effort
     ? model.effortChoices.findIndex((choice) => choice.id === picks.effort!.id)
     : -1
-  return (
+  const content = (
     <>
       {tray && model.project ? (
         <Pick
@@ -55,6 +64,7 @@ export function Picks({
         filled={tray}
         label={picks.modelLabel}
         accessibilityLabel={`Model: ${picks.modelLabel}`}
+        maxWidth={tray ? TRAY_MODEL_MAX : room.model}
         icon={<ProviderMark providerId={picks.providerId} size={13} />}
         trailing={<CaretGlyph size={9} color={theme.faint} />}
         disabledReason={picks.lockedReason}
@@ -64,6 +74,7 @@ export function Picks({
         <Pick
           ref={modeRef}
           filled={tray}
+          onLayout={(event) => setModeWidth(event.nativeEvent.layout.width)}
           label={picks.mode.label}
           accessibilityLabel={`Mode: ${picks.mode.label}`}
           icon={<ModeIcon modeId={picks.mode.id} size={13} color={tray ? theme.fg : theme.muted} />}
@@ -75,6 +86,7 @@ export function Picks({
         <Pick
           ref={effortRef}
           filled={tray}
+          onLayout={(event) => setEffortWidth(event.nativeEvent.layout.width)}
           label={picks.effort.label}
           accessibilityLabel={`Effort: ${picks.effort.label}`}
           icon={
@@ -91,7 +103,18 @@ export function Picks({
         />
       ) : null}
       {!tray ? <View style={{ flex: 1 }} /> : null}
-      {!tray && picks.usagePercent !== null ? <ContextMeter percent={picks.usagePercent} /> : null}
+      {!tray && picks.usagePercent !== null && room.meter ? (
+        <ContextMeter percent={picks.usagePercent} />
+      ) : null}
     </>
+  )
+  if (tray) return content
+  return (
+    <View
+      onLayout={(event) => setRowWidth(event.nativeEvent.layout.width)}
+      style={{ flex: 1, minWidth: 0, flexDirection: 'row', alignItems: 'center', gap: PICK_GAP }}
+    >
+      {content}
+    </View>
   )
 }

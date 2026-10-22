@@ -7,6 +7,7 @@ import { Glass } from '../ui/Glass'
 import { tap } from '../ui/haptics'
 import { Press } from '../ui/Press'
 import { ProviderMark } from '../ui/ProviderMark'
+import { useFoldTransition } from './fold-transition'
 import { AttachGlyph } from './icons'
 import { ImageStrip } from './ImageStrip'
 import { composerFold, type ComposerModel } from './model'
@@ -18,8 +19,9 @@ import type { ComposerUi } from './ui-state'
 /**
  * The fold, B ⇄ C: the composer's box eases to its new height and the picks
  * row and summary chip cross-fade. Reanimated layout animations, so they run
- * on the UI thread, once per change of the session's state (a turn starting
- * or ending, a request arriving), never per token.
+ * on the UI thread, and only through a change of the session's state (a turn
+ * starting or ending, a request arriving; `useFoldTransition`), never per
+ * token and never for text wrapping, an image or a notice.
  */
 export const FOLD = LinearTransition.duration(200).easing(Easing.out(Easing.cubic))
 export const FOLD_IN = FadeIn.duration(200).easing(Easing.out(Easing.quad))
@@ -87,9 +89,10 @@ export function ComposerDock({ model, ui }: { model: ComposerModel; ui: Composer
   const theme = usePhoneTheme()
   const fold = composerFold(model)
   const prompt = model.prompt
+  const folding = useFoldTransition(fold, prompt?.requestId ?? null)
   const replaced = prompt && prompt.kind !== 'plan'
   return (
-    <Animated.View layout={FOLD}>
+    <Animated.View layout={folding ? FOLD : undefined}>
       <Glass
         strength="strong"
         shadow="rest"
@@ -185,7 +188,6 @@ export function ComposerDock({ model, ui }: { model: ComposerModel; ui: Composer
                 style={{
                   flexDirection: 'row',
                   alignItems: 'center',
-                  gap: 4,
                   paddingLeft: 4,
                   paddingRight: 2,
                 }}

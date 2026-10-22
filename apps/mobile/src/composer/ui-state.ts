@@ -33,6 +33,7 @@ const INITIAL: ComposerUiState = { expanded: false, overlay: null }
  */
 export function createComposerUi(initial: Partial<ComposerUiState> = {}) {
   let state: ComposerUiState = { ...INITIAL, ...initial }
+  let promptId: string | null = null
   const listeners = new Set<() => void>()
   const set = (next: ComposerUiState) => {
     if (next.expanded === state.expanded && next.overlay === state.overlay) return
@@ -52,6 +53,17 @@ export function createComposerUi(initial: Partial<ComposerUiState> = {}) {
     collapse: () => set({ expanded: false, overlay: null }),
     open: (overlay: ComposerOverlay) => set({ ...state, overlay }),
     close: () => set({ ...state, overlay: null }),
+    /**
+     * The request the session waits on (null when none). A new one arriving
+     * while the composer is pulled up drops it back to the dock, which is
+     * that request now, so nothing waits unseen under the editor. What was
+     * typed stays in the draft.
+     */
+    followPrompt(requestId: string | null) {
+      const fresh = requestId !== null && requestId !== promptId
+      promptId = requestId
+      if (fresh && state.expanded) set({ expanded: false, overlay: null })
+    },
     /**
      * Android's Back: the open sheet or popover first, then the pulled-up
      * composer. False when there was nothing to close.

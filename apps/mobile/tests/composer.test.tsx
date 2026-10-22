@@ -26,8 +26,17 @@ vi.mock('../src/environment/PhoneEnvironmentProvider', () => ({
 
 const { useLiveComposerModel } = await import('../src/composer/useLiveComposerModel')
 const { ThreadBridge } = await import('../src/composer/thread-port')
-const { composerFold, modelSheetSections, permissionChoices, primaryAction, slashPopupOf } =
-  await import('../src/composer/model')
+const {
+  composerFold,
+  modelSheetSections,
+  permissionChoices,
+  pressPrimary,
+  primaryAction,
+  roomFor,
+  slashPopupOf,
+  METER_WIDTH,
+  MODEL_MIN_WIDTH,
+} = await import('../src/composer/model')
 const { createComposerUi } = await import('../src/composer/ui-state')
 
 const WORKSPACE = {
@@ -115,12 +124,17 @@ function seed(turnState: 'completed' | 'running'): MockSeed {
 }
 
 let model: ComposerModel | null = null
-function Probe() {
-  const live = useLiveComposerModel(SESSION.sessionId)
+function Probe({ sessionId = SESSION.sessionId }: { sessionId?: string }) {
+  const live = useLiveComposerModel(sessionId)
   model = live.model
   return <ThreadBridge port={live.port} />
 }
 const current = () => model!
+/** The one button, pressed as it is drawn: send or stop, whichever it shows. */
+const press = () =>
+  act(async () =>
+    pressPrimary(current().primary, { send: current().send, interrupt: current().interrupt }),
+  )
 
 let container: HTMLDivElement
 let root: Root
@@ -308,7 +322,7 @@ describe('the dock folds with the turn', () => {
 
     await act(async () => current().setText('Run the tests'))
     expect(current().primary).toMatchObject({ kind: 'send', enabled: true })
-    await act(async () => current().send())
+    await press()
     await flush()
     expect(callsOf(client, 'sendTurn')).toEqual([
       expect.objectContaining({ ...THREAD, text: 'Run the tests' }),
@@ -405,7 +419,7 @@ describe('images', () => {
     await flush()
     const second = current().images[0]!
     await act(async () => current().setText('What is this?'))
-    await act(async () => current().send())
+    await press()
     await flush()
     expect(callsOf(client, 'sendTurn')).toEqual([
       expect.objectContaining({ text: 'What is this?', artifactIds: [second.id] }),
@@ -612,7 +626,11 @@ describe('the composer as the prompt', () => {
     expect(current().attach.enabled).toBe(false)
 
     await act(async () => current().setText('Use a masonry grid'))
-    await act(async () => current().send())
+    // The turn waits on the review, so it still counts as running: the button
+    // must ask for the change, not stop the turn.
+    expect(current().isStreaming).toBe(true)
+    expect(current().primary).toMatchObject({ kind: 'send', enabled: true })
+    await press()
     await flush()
     expect(callsOf(client, 'respondToInteraction').at(-1)).toMatchObject({
       response: {
@@ -705,5 +723,250 @@ describe('before the session is open', () => {
     await flush()
     expect(current().text).toBe('typed while it opens')
     expect(current().primary.enabled).toBe(true)
+  })
+})
+
+describe('a refused send', () => {
+  it('puts the text back, keeps what was typed since, and stays with its session', async () => {
+    const client = createMockEnvironmentClient({
+      seed: {
+        ...seed('completed'),
+        sessions: [
+          ...seed('completed').sessions!,
+          {
+            session: {
+              sessionId: 'session-2',
+              workspaceId: WORKSPACE.workspaceId,
+              title: 'Second',
+            },
+            providerId: 'claude',
+            threads: [{ threadId: 'thread-2', sessionId: 'session-2' }],
+            turns: [],
+            messages: [],
+          },
+        ],
+      },
+      respond: () => null,
+    })
+    let refuse!: (error: Error) => void
+    vi.spyOn(client.commands, 'sendTurn').mockImplementation(
+      () => new Promise((_resolve, reject) => (refuse = reject)),
+    )
+    const page = (sessionId: string) =>
+      act(() =>
+        root.render(
+          <EnvironmentClientProvider client={client}>
+            <EnvironmentApplicationProviders storage={null} navigateDraft={async () => undefined}>
+              <Probe key={sessionId} sessionId={sessionId} />
+            </EnvironmentApplicationProviders>
+          </EnvironmentClientProvider>,
+        ),
+      )
+    await page(SESSION.sessionId)
+    await act(() => client.commands.openSession(SESSION.sessionId))
+    await flush()
+    await act(async () => current().setText('Deploy it'))
+    await press()
+    await flush()
+    // Emptied for the send, which is still out.
+    expect(current().text).toBe('')
+    await act(async () => current().setText('and tag it'))
+    await act(async () => refuse(new Error('The environment is busy.')))
+    await flush()
+    expect(current().text).toBe('Deploy it\nand tag it')
+    expect(current().notice).toBe('The environment is busy.')
+
+    // Another send refused after the reader has moved on: it goes back to its own session.
+    await act(async () => current().setText('Second try'))
+    await press()
+    await flush()
+    await page('session-2')
+    await act(() => client.commands.openSession('session-2'))
+    await flush()
+    expect(current().text).toBe('')
+    await act(async () => refuse(new Error('Still busy.')))
+    await flush()
+    await page(SESSION.sessionId)
+    await act(() => client.commands.openSession(SESSION.sessionId))
+    await flush()
+    expect(current().text).toBe('Second try')
+  })
+})
+
+describe('a photo on its way', () => {
+  it('holds the send while it is read, and is dropped if the session changes first', async () => {
+    let finish!: () => void
+    const bytes = new Blob([new Uint8Array([1, 2, 3])], { type: 'image/jpeg' })
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(
+        () =>
+          new Promise<Response>((resolve) => {
+            finish = () => resolve({ blob: async () => bytes } as unknown as Response)
+          }),
+      ),
+    )
+    const client = await open({ seed: seed('completed'), respond: () => null })
+    await act(async () => current().setText('Look at this'))
+    const upload = vi.spyOn(client, 'uploadArtifact')
+    await act(async () => {
+      current().attachPhoto({ uri: 'file:///a.jpg', name: 'a.jpg', mimeType: 'image/jpeg' })
+    })
+    // Being read: the send waits for it.
+    expect(current().primary).toMatchObject({ kind: 'send', enabled: false })
+    expect(current().primary.reason).toMatch(/upload/)
+
+    // The reader leaves the session before the bytes are read.
+    await act(async () => client.setActiveSession(null))
+    await act(async () => finish())
+    await flush()
+    expect(upload).not.toHaveBeenCalled()
+    expect(current().images).toEqual([])
+    expect(current().notice).toMatch(/session changed/)
+    expect(client.getState().drafts?.[SESSION.sessionId]?.content.artifactIds).toBeUndefined()
+  })
+})
+
+describe('question answers that do not land', () => {
+  it('says so on the question, and Submit or Skip tries again', async () => {
+    const client = await open({ seed: seed('running'), respond: () => null })
+    await act(() =>
+      client.requestInteraction(TARGET, {
+        kind: 'question',
+        interactionId: 'q-fail',
+        questions: [
+          {
+            questionId: 'one',
+            prompt: 'Which?',
+            options: [{ optionId: 'a', label: 'A' }],
+          },
+        ],
+      }),
+    )
+    await flush()
+    const flow = () => {
+      const prompt = current().prompt
+      if (prompt?.kind !== 'question') throw new Error('no question')
+      return prompt
+    }
+    const respond = client.commands.respondToInteraction.bind(client.commands)
+    const spy = vi
+      .spyOn(client.commands, 'respondToInteraction')
+      .mockRejectedValueOnce(new Error('Skip refused'))
+      .mockRejectedValueOnce(new Error('Submit refused'))
+      .mockImplementation(respond)
+
+    await act(async () => flow().flow.skip())
+    await flush()
+    expect(flow().error).toBe('Skip refused')
+    await act(async () => flow().flow.pick(flow().flow.question!, 'a'))
+    await act(async () => flow().flow.advance())
+    await flush()
+    expect(flow().error).toBe('Submit refused')
+    expect(flow().flow.submitting).toBe(false)
+    expect(flow().flow.canAdvance).toBe(true)
+    await act(async () => flow().flow.advance())
+    await flush()
+    expect(spy).toHaveBeenCalledTimes(3)
+    expect(current().prompt).toBeNull()
+  })
+})
+
+describe('a request arriving while the composer is pulled up', () => {
+  it('drops the editor back to the dock, which is the request, and keeps the draft', () => {
+    const ui = createComposerUi()
+    ui.followPrompt(null)
+    ui.expand()
+    ui.open({ kind: 'model' })
+    ui.followPrompt('perm-1')
+    expect(ui.get()).toEqual({ expanded: false, overlay: null })
+    // The same request again (a re-render) leaves a reopened editor alone.
+    ui.expand()
+    ui.followPrompt('perm-1')
+    expect(ui.get().expanded).toBe(true)
+    ui.followPrompt(null)
+    expect(ui.get().expanded).toBe(true)
+  })
+})
+
+describe('the picks row', () => {
+  it('cuts only the model name, and drops the meter before any label', () => {
+    expect(roomFor({ row: 0, fixed: 0, meter: true })).toEqual({ model: undefined, meter: true })
+    expect(roomFor({ row: 340, fixed: 160, meter: true })).toEqual({
+      model: 340 - 160 - METER_WIDTH,
+      meter: true,
+    })
+    // Too narrow for the name with the meter: the meter goes.
+    expect(roomFor({ row: 300, fixed: 160, meter: true })).toEqual({ model: 140, meter: false })
+    expect(roomFor({ row: 200, fixed: 180, meter: false }).model).toBe(MODEL_MIN_WIDTH)
+  })
+
+  it('names each provider group for a screen reader', () => {
+    const sections = modelSheetSections({
+      groups: [{ providerId: 'cursor', providerName: 'Cursor', models: [{ id: 'c', name: 'C' }] }],
+      currentProviderId: 'cursor',
+      canChangeProvider: false,
+      favorites: ['cursor:c'],
+      query: '',
+    })
+    expect(sections.map((section) => section.label)).toEqual(['Favourites', 'Cursor'])
+  })
+})
+
+describe('the camera shutter', () => {
+  it('lands nowhere once the camera has closed, and closes nothing opened since', async () => {
+    const { useCapture } = await import('../src/composer/capture')
+    let resolveShot!: (photo: { uri: string; name: string; mimeType: string }) => void
+    const onPhoto = vi.fn()
+    const onClose = vi.fn()
+    let capture: ReturnType<typeof useCapture> | null = null
+    function Camera() {
+      capture = useCapture({
+        take: () => new Promise((resolve) => (resolveShot = resolve)),
+        onPhoto,
+        onClose,
+      })
+      return null
+    }
+    await act(() => root.render(<Camera />))
+    await act(async () => {
+      void capture!.shoot()
+    })
+    // Back before the shot comes in.
+    await act(async () => capture!.close())
+    expect(onClose).toHaveBeenCalledTimes(1)
+    await act(async () =>
+      resolveShot({ uri: 'file:///late.jpg', name: 'late', mimeType: 'image/jpeg' }),
+    )
+    expect(onPhoto).not.toHaveBeenCalled()
+    expect(onClose).toHaveBeenCalledTimes(1)
+  })
+})
+
+describe('the fold animation window', () => {
+  it('opens only when the dock folds or a request arrives', async () => {
+    const { useFoldTransition } = await import('../src/composer/fold-transition')
+    const seen: boolean[] = []
+    function Dock({
+      fold,
+      request,
+    }: {
+      fold: 'rest' | 'running' | 'prompt'
+      request: string | null
+    }) {
+      seen.push(useFoldTransition(fold, request))
+      return null
+    }
+    await act(() => root.render(<Dock fold="rest" request={null} />))
+    expect(seen.at(-1)).toBe(false)
+    // Content changing without a fold (a re-render with the same state) does not animate.
+    await act(() => root.render(<Dock fold="rest" request={null} />))
+    expect(seen.at(-1)).toBe(false)
+    await act(() => root.render(<Dock fold="running" request={null} />))
+    expect(seen.at(-1)).toBe(true)
+    await act(() => new Promise((resolve) => setTimeout(resolve, 300)))
+    expect(seen.at(-1)).toBe(false)
+    await act(() => root.render(<Dock fold="prompt" request="q-1" />))
+    expect(seen.at(-1)).toBe(true)
   })
 })

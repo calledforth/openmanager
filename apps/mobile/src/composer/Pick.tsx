@@ -1,12 +1,12 @@
 import { forwardRef, type ReactNode } from 'react'
-import { View } from 'react-native'
+import { View, type LayoutChangeEvent } from 'react-native'
 
 import { AppText } from '../components/ui/AppText'
 import { usePhoneTheme } from '../theme/ThemeProvider'
 import { tap } from '../ui/haptics'
 import { Press } from '../ui/Press'
 import { SendGlyph, StopGlyph } from './icons'
-import { meterPercent, type PrimaryAction } from './model'
+import { meterPercent, pressPrimary, type PrimaryAction } from './model'
 
 /**
  * One pick in the composer's row or tray: an icon, a short label, a fill
@@ -25,10 +25,25 @@ export const Pick = forwardRef<
     strong?: boolean
     filled?: boolean
     disabledReason?: string | null
+    /** The model pick's room in the row: it alone gives way to a long name. */
+    maxWidth?: number
+    onLayout?: (event: LayoutChangeEvent) => void
     onPress: () => void
   }
 >(function Pick(
-  { label, accessibilityLabel, icon, trailing, on, strong, filled, disabledReason, onPress },
+  {
+    label,
+    accessibilityLabel,
+    icon,
+    trailing,
+    on,
+    strong,
+    filled,
+    disabledReason,
+    maxWidth,
+    onLayout,
+    onPress,
+  },
   ref,
 ) {
   const theme = usePhoneTheme()
@@ -43,6 +58,7 @@ export const Pick = forwardRef<
       accessibilityState={{ disabled, expanded: on }}
       disabled={disabled}
       hitSlop={4}
+      onLayout={onLayout}
       onPress={() => {
         tap()
         onPress()
@@ -54,9 +70,10 @@ export const Pick = forwardRef<
         paddingVertical: 5,
         paddingHorizontal: label ? 9 : 7,
         borderRadius: 999,
-        // The model's name gives way first, so the row never runs past the composer.
+        // Only the model's name gives way; mode and effort keep their whole labels.
         flexShrink: strong ? 1 : 0,
         minWidth: 0,
+        ...(maxWidth !== undefined ? { maxWidth } : null),
         opacity: disabled ? 0.45 : 1,
         backgroundColor:
           on || (pressed && !disabled) ? theme.active : filled ? theme.hover : 'transparent',
@@ -67,7 +84,7 @@ export const Pick = forwardRef<
         <AppText
           variant="text-12-regular"
           numberOfLines={1}
-          style={{ color: ink, fontSize: 12.5, maxWidth: 132, flexShrink: 1 }}
+          style={{ color: ink, fontSize: 12.5, ...(strong ? { flexShrink: 1 } : null) }}
         >
           {label}
         </AppText>
@@ -141,8 +158,7 @@ export function PrimaryButton({
       hitSlop={6}
       onPress={() => {
         tap()
-        if (stop) onStop()
-        else onSend()
+        pressPrimary(action, { send: onSend, interrupt: onStop })
       }}
       style={({ pressed }) => ({
         width: size,

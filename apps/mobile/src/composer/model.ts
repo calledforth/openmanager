@@ -64,7 +64,9 @@ export interface PrimaryAction {
 /**
  * Send and stop share one button, as on web. Steering a running turn has
  * not landed on the server, so while a turn runs the button stops it and
- * nothing is sent.
+ * nothing is sent; except while a plan waits for review, when the turn is
+ * held for the answer and the button sends the change request, as web's
+ * plan review does.
  */
 export function primaryAction(input: {
   isStreaming: boolean
@@ -83,7 +85,7 @@ export function primaryAction(input: {
   planReview: boolean
   hasImages: boolean
 }): PrimaryAction {
-  if (input.isStreaming) {
+  if (input.isStreaming && !input.planReview) {
     return {
       kind: 'stop',
       enabled: input.canInterrupt && !input.unavailable,
@@ -107,6 +109,16 @@ export function primaryAction(input: {
     reason,
     busy: input.sending,
   }
+}
+
+/** What the one button does when pressed, as it is drawn. */
+export function pressPrimary(
+  action: PrimaryAction,
+  handlers: { send: () => void; interrupt: () => void },
+): void {
+  if (!action.enabled) return
+  if (action.kind === 'stop') handlers.interrupt()
+  else handlers.send()
 }
 
 /** The picks as the dock's row and the tray show them. */
@@ -162,6 +174,8 @@ export interface ModelRow {
 export interface ModelSection {
   /** `favorites`, or the provider the rows belong to (shown by its mark only). */
   id: 'favorites' | ProviderId
+  /** What a screen reader says for the header (the screen shows a provider's mark only). */
+  label: string
   rows: ModelRow[]
 }
 
@@ -196,6 +210,7 @@ export function modelSheetSections({
   const byKey = new Map<FavoriteModelKey, ModelRow>()
   const sections: ModelSection[] = visible.map((group) => ({
     id: group.providerId,
+    label: group.providerName,
     rows: group.models.flatMap((model) => {
       const label = modelLabel(model.name, model.description)
       const hint = modelHint(model.name, model.description)
@@ -228,7 +243,9 @@ export function modelSheetSections({
     return matches ? [row] : []
   })
   return [
-    ...(favoriteRows.length > 0 ? [{ id: 'favorites' as const, rows: favoriteRows }] : []),
+    ...(favoriteRows.length > 0
+      ? [{ id: 'favorites' as const, label: 'Favourites', rows: favoriteRows }]
+      : []),
     ...sections.filter((section) => section.rows.length > 0),
   ]
 }
@@ -375,4 +392,32 @@ export function slashPopupOf(
   const query = slashQueryFromText(text)
   if (query === null || dismissed) return { query, matches: [] }
   return { query, matches: matchSlashCommands(commands, query) }
+}
+
+/** The row's gap between picks. */
+export const PICK_GAP = 4
+/** What the context meter takes: its number, its bar and its padding. */
+export const METER_WIDTH = 80
+/** Narrower than this, the model's name says too little: the meter goes first. */
+export const MODEL_MIN_WIDTH = 84
+/** The tray scrolls; a long name still stops somewhere. */
+export const TRAY_MODEL_MAX = 200
+
+/**
+ * How the dock's picks row shares its width: mode and effort keep their
+ * whole labels; the model's name takes what is left; when that would be too
+ * little for it, the context meter steps aside before any label is cut.
+ * Before the row has measured itself, everything shows and nothing is capped.
+ */
+export function roomFor({ row, fixed, meter }: { row: number; fixed: number; meter: boolean }): {
+  model: number | undefined
+  meter: boolean
+} {
+  if (row <= 0) return { model: undefined, meter }
+  const free = row - fixed
+  const showMeter = meter && free - METER_WIDTH >= MODEL_MIN_WIDTH
+  return {
+    model: Math.max(MODEL_MIN_WIDTH, free - (showMeter ? METER_WIDTH : 0)),
+    meter: showMeter,
+  }
 }

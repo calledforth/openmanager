@@ -1,4 +1,4 @@
-import { useCallback, useMemo, useState } from 'react'
+import { useCallback, useMemo, useRef, useState } from 'react'
 import {
   composerImageSupportMessage,
   configurableSessionOptions,
@@ -40,6 +40,9 @@ export function useLiveComposerModel(sessionId: string): {
   const client = useEnvironmentClient()
   const { status: connection } = usePhoneConnection()
   const { activeSessionId } = useSessionState()
+  // The session the shared uploader stores under, as of this render (it reads its own the same way).
+  const ownerRef = useRef(activeSessionId)
+  ownerRef.current = activeSessionId
   const { port, status: threadStatus } = useThreadPort()
   const binding = useComposerControls(threadStatus)
   const { controls } = binding
@@ -105,7 +108,10 @@ export function useLiveComposerModel(sessionId: string): {
     draftKey: `session:${sessionId}`,
     imageUploadEnabled,
     imageSupportMessage,
-    ports: useMemo(() => ({ uploadAttachments, send }), [send, uploadAttachments]),
+    ports: useMemo(
+      () => ({ uploadAttachments, send, uploadOwner: () => ownerRef.current }),
+      [send, uploadAttachments],
+    ),
   })
 
   const [stopError, setStopError] = useState<string | null>(null)

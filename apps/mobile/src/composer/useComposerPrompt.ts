@@ -36,11 +36,34 @@ export function useComposerPrompt({
   const permission = permissionState?.pendingPermission ?? null
   const question = questionState?.pendingQuestion ?? null
   const plan = planState?.pendingPlan ?? null
-  const flow = useQuestionFlow(question, questionState?.resolveQuestion)
-
   // The answer this phone sent and is waiting on, by request; and what went wrong.
   const [answering, setAnswering] = useState<string | null>(null)
   const [failure, setFailure] = useState<{ requestId: string; text: string } | null>(null)
+
+  // A question's answer (or its skip) that did not land is said on the
+  // question, and the same Submit or Skip tries again: the flow keeps the
+  // answers, and nothing is thrown past it.
+  const resolveQuestion = questionState?.resolveQuestion
+  const questionId = question?.requestId ?? null
+  const answerQuestion = useCallback(
+    async (outcome: Parameters<NonNullable<typeof resolveQuestion>>[0]) => {
+      if (!resolveQuestion || !questionId) return
+      setFailure(null)
+      try {
+        await resolveQuestion(outcome)
+      } catch (error) {
+        setFailure({
+          requestId: questionId,
+          text: reasonOf(
+            error,
+            outcome.outcome === 'cancelled' ? 'The skip did not land' : 'The answers did not land',
+          ),
+        })
+      }
+    },
+    [questionId, resolveQuestion],
+  )
+  const flow = useQuestionFlow(question, resolveQuestion ? answerQuestion : undefined)
   const permissionId = permission?.requestId ?? null
   useEffect(() => {
     // A new request (or none): the last one's answer and failure are done with.

@@ -1,6 +1,6 @@
 import { CameraView, useCameraPermissions } from 'expo-camera'
 import { ArrowsClockwiseIcon, CameraIcon, XIcon } from 'phosphor-react-native'
-import { useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { BackHandler, Linking, Platform, View } from 'react-native'
 import Animated from 'react-native-reanimated'
 import { useSafeAreaInsets } from 'react-native-safe-area-context'
@@ -10,6 +10,7 @@ import { usePhoneTheme } from '../theme/ThemeProvider'
 import { tap } from '../ui/haptics'
 import { IconButton } from '../ui/IconButton'
 import { Press } from '../ui/Press'
+import { useCapture } from './capture'
 import { EXPAND_IN, EXPAND_OUT } from './ExpandedComposer'
 import type { CapturedPhoto } from './model'
 
@@ -32,34 +33,24 @@ export function CameraCapture({
   const [permission, requestPermission] = useCameraPermissions()
   const [facing, setFacing] = useState<'back' | 'front'>('back')
   const [ready, setReady] = useState(false)
-  const [busy, setBusy] = useState(false)
-  const [failure, setFailure] = useState<string | null>(null)
+  const take = useCallback(async (): Promise<CapturedPhoto> => {
+    if (!camera.current) throw new Error('The camera is not ready.')
+    const picture = await camera.current.takePictureAsync({ quality: 0.8, exif: false })
+    return {
+      uri: picture.uri,
+      name: `Photo ${new Date().toISOString()}.jpg`,
+      mimeType: 'image/jpeg',
+    }
+  }, [])
+  // Close and Back end the camera: a shot still on its way lands nowhere.
+  const { shoot, close, busy, failure } = useCapture({ take, onPhoto, onClose })
   useEffect(() => {
     const subscription = BackHandler.addEventListener('hardwareBackPress', () => {
-      onClose()
+      close()
       return true
     })
     return () => subscription.remove()
-  }, [onClose])
-
-  const shoot = async () => {
-    if (!camera.current || busy) return
-    setBusy(true)
-    setFailure(null)
-    try {
-      const picture = await camera.current.takePictureAsync({ quality: 0.8, exif: false })
-      onPhoto({
-        uri: picture.uri,
-        name: `Photo ${new Date().toISOString()}.jpg`,
-        mimeType: 'image/jpeg',
-      })
-      onClose()
-    } catch (error) {
-      setFailure(error instanceof Error ? error.message : 'The photo was not taken.')
-    } finally {
-      setBusy(false)
-    }
-  }
+  }, [close])
 
   const granted = permission?.granted ?? false
   const blocked = permission ? !permission.granted && !permission.canAskAgain : false
@@ -131,7 +122,7 @@ export function CameraCapture({
           justifyContent: 'space-between',
         }}
       >
-        <IconButton label="Close the camera" onPress={onClose}>
+        <IconButton label="Close the camera" onPress={close}>
           <XIcon size={18} color={theme.fg} />
         </IconButton>
         {granted && !web ? (

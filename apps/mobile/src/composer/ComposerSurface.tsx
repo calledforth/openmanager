@@ -45,6 +45,12 @@ export function ComposerSurface({
     return () => subscription.remove()
   }, [expanded, ui])
 
+  // A request arriving brings the composer down to it (see `followPrompt`).
+  const requestId = model.prompt?.requestId ?? null
+  useEffect(() => {
+    ui.followPrompt(requestId)
+  }, [requestId, ui])
+
   // A plan answered elsewhere takes its sheet with it.
   const plan = model.prompt?.kind === 'plan' ? model.prompt.plan : null
   useEffect(() => {

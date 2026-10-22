@@ -1,11 +1,12 @@
 import { randomUUID } from 'node:crypto'
-import { existsSync, readFileSync, writeFileSync } from 'node:fs'
+import { existsSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { createRequire } from 'node:module'
 import { join } from 'node:path'
 import { crc32, deflateSync } from 'node:zlib'
 import { createElement, useSyncExternalStore } from 'react'
 import { afterAll, describe, expect, it, vi } from 'vitest'
 import {
+  selectActiveTurn,
   createWebSocketEnvironmentClient,
   type EnvironmentClient,
   type WebSocketConstructor,
@@ -287,16 +288,21 @@ describe('the phone composer, live', () => {
       .flatMap((thread) => thread.messages)
       .filter((message) => message.role === 'assistant')
       .at(-1)
-    note('photo.sent', {
-      sent: sentSince(since),
-      images: now()!.images.length,
-      reply: lastReply?.content,
-    })
+    const replyText = (lastReply?.content ?? [])
+      .map((part) => ('text' in part && typeof part.text === 'string' ? part.text : ''))
+      .join(' ')
+    note('photo.sent', { sent: sentSince(since), images: now()!.images.length, reply: replyText })
+    // Claude saw the photo: it names its colour.
+    expect(replyText).toMatch(/red/i)
+    expect(now()!.images).toEqual([])
 
     // ---- 3. a permission, answered from the composer --------------------
     since = Date.now() - started
     before = replies()
     const target = join(WORKSPACE_PATH, 'phone-permission.txt')
+    // A fresh file, so only this turn's write can satisfy the check.
+    rmSync(target, { force: true })
+    const askedAt = Date.now()
     await act(async () =>
       now()!.setText(
         'Use the Write tool to create a file named phone-permission.txt in the current folder containing the single word hello. Do nothing else.',
@@ -326,6 +332,10 @@ describe('the phone composer, live', () => {
       content: existsSync(target) ? readFileSync(target, 'utf8') : null,
     })
     expect(sentSince(since)).toContain('interaction.respond')
+    expect(allow.label).toMatch(/allow/i)
+    expect(existsSync(target)).toBe(true)
+    expect(readFileSync(target, 'utf8').trim()).toBe('hello')
+    expect(statSync(target).mtimeMs).toBeGreaterThanOrEqual(askedAt - 1_000)
 
     // ---- 4. interrupt a running turn ------------------------------------
     since = Date.now() - started
@@ -339,13 +349,22 @@ describe('the phone composer, live', () => {
       120_000,
     )
     await new Promise((resolve) => setTimeout(resolve, 2_000))
+    // The turn the button will stop: the one running now.
+    const targeted = selectActiveTurn(client.getState())?.turnId
+    expect(targeted).toBeTruthy()
     await act(async () => now()!.interrupt())
     await wait('stopped', (m) => !m.isStreaming, 60_000)
     const interrupted = Object.values(client.getState().threads)
       .flatMap((thread) => thread.turns)
-      .at(-1)
-    note('interrupt', { sent: sentSince(since), turn: interrupted?.state, primary: now()!.primary })
+      .find((turn) => turn.turnId === targeted)
+    note('interrupt', {
+      sent: sentSince(since),
+      turnId: targeted,
+      turn: interrupted?.state,
+      primary: now()!.primary,
+    })
     expect(sentSince(since)).toContain('turn.interrupt')
+    expect(interrupted?.state).toBe('interrupted')
     expect(sentSince(0)).not.toContain('session.history')
   })
 })

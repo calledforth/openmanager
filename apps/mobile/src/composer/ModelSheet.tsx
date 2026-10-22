@@ -10,6 +10,9 @@ import { ProviderMark } from '../ui/ProviderMark'
 import { Sheet } from '../ui/Sheet'
 import { modelSheetSections, type ComposerModel, type ModelRow } from './model'
 
+/** The height of a heading's line (the 12 px label's), which a provider's mark fills. */
+const HEADER_LINE = 15
+
 function Row({
   row,
   current,
@@ -157,12 +160,15 @@ export function ModelSheet({ model, onClose }: { model: ComposerModel; onClose: 
         {sections.map((section) => (
           <View key={section.id} accessibilityRole="menu">
             <View
+              accessible
               accessibilityRole="header"
-              accessibilityLabel={section.id === 'favorites' ? 'Favourites' : undefined}
+              accessibilityLabel={section.label}
               style={{
                 flexDirection: 'row',
                 alignItems: 'center',
                 gap: 6,
+                // The same line as the Favourites heading, whether it holds words or a mark.
+                minHeight: HEADER_LINE + 14,
                 paddingTop: 8,
                 paddingBottom: 6,
                 paddingHorizontal: 12,
@@ -179,7 +185,8 @@ export function ModelSheet({ model, onClose }: { model: ComposerModel; onClose: 
                   </AppText>
                 </>
               ) : (
-                <ProviderMark providerId={section.id} size={13} />
+                // The heading is the provider's mark, at the label's weight: never its name.
+                <ProviderMark providerId={section.id} size={HEADER_LINE} />
               )}
             </View>
             {section.rows.map((row) => (

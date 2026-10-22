@@ -55,6 +55,12 @@ export interface DraftPorts {
   send: (text: string, attachments: UploadedImageAttachment[]) => Promise<void>
   /** Reads a photo's bytes; `photoFile` over `fetch` unless a test says otherwise. */
   readPhoto?: (photo: CapturedPhoto) => Promise<File>
+  /**
+   * The session the uploader stores under right now. A photo belongs to the
+   * session it was attached in: one that finishes after the reader moved to
+   * another is dropped, never stored under the new one.
+   */
+  uploadOwner?: () => string | null
 }
 
 /** Bytes of images another device (or an earlier visit) kept with the draft. */
@@ -129,6 +135,17 @@ export function useComposerDraft({
     setPendingByKey(pendingRef.current)
   }
   const pending = pendingByKey[draftKey] ?? NO_UPLOADS
+  // Photos still being read off the phone, by draft key: they hold the send too.
+  const [preparingByKey, setPreparingByKey] = useState<Record<string, number>>({})
+  const preparingRef = useRef(preparingByKey)
+  const prepare = (key: string, delta: number) => {
+    preparingRef.current = {
+      ...preparingRef.current,
+      [key]: Math.max(0, (preparingRef.current[key] ?? 0) + delta),
+    }
+    setPreparingByKey(preparingRef.current)
+  }
+  const preparing = preparingByKey[draftKey] ?? 0
   // This composer's own previews of images it uploaded, so they need not be read back.
   const keptPreviews = useRef(new Map<string, { uri: string; name: string }>())
   const [sending, setSending] = useState(false)
@@ -182,7 +199,7 @@ export function useComposerDraft({
     }))
     return [...kept, ...waiting]
   }, [keepsImages, pending, remoteUris, storedImages])
-  const uploading = keepsImages && pending.length > 0
+  const uploading = preparing > 0 || (keepsImages && pending.length > 0)
 
   const setText = useCallback(
     (next: string) => {
@@ -192,7 +209,7 @@ export function useComposerDraft({
   )
 
   /** Store a photo now and name it in the draft it was attached to, wherever the reader is by then. */
-  const keep = async (key: string, attachment: DraftImageAttachment) => {
+  const keep = async (key: string, attachment: DraftImageAttachment, owner: string | null) => {
     const release = store.holdImage?.(key)
     const target = store.imageTarget?.(key)
     const stillWanted = () =>
@@ -210,6 +227,11 @@ export function useComposerDraft({
     try {
       let stored: UploadedImageAttachment | undefined
       try {
+        // Checked as the upload starts: the uploader stores under the session
+        // open at that moment, which must be the one the photo was attached in.
+        if (ports.uploadOwner && ports.uploadOwner() !== owner) {
+          throw new Error('The session changed before it was stored.')
+        }
         ;[stored] = await uploadAttachments!([attachment])
         if (!stored) throw new Error('The image was not stored.')
       } catch (uploadError) {
@@ -249,7 +271,11 @@ export function useComposerDraft({
         return
       }
       const key = draftKey
-      const count = storedImages.length + (pendingRef.current[key]?.length ?? 0)
+      const owner = ports.uploadOwner?.() ?? null
+      const count =
+        storedImages.length +
+        (pendingRef.current[key]?.length ?? 0) +
+        (preparingRef.current[key] ?? 0)
       if (count >= MAX_IMAGE_ATTACHMENTS) {
         setError(`You can attach up to ${MAX_IMAGE_ATTACHMENTS} images.`)
         return
@@ -259,11 +285,15 @@ export function useComposerDraft({
         return
       }
       let file: File
+      // Counted from here, so a send cannot go ahead of the photo being read.
+      prepare(key, 1)
       try {
         file = await readPhoto(photo)
       } catch (readError) {
         setError(`${photo.name} could not be read. ${reasonOf(readError, '')}`.trim())
         return
+      } finally {
+        prepare(key, -1)
       }
       if (file.size <= 0 || file.size > MAX_IMAGE_BYTES) {
         setError(`${photo.name} must be smaller than 10 MB.`)
@@ -278,7 +308,7 @@ export function useComposerDraft({
       setPending(key, [...(pendingRef.current[key] ?? NO_UPLOADS), attachment])
       // An image is the draft's first content as much as text is.
       store.claim?.(key)
-      if (keepsImages) await keep(key, attachment)
+      if (keepsImages) await keep(key, attachment, owner)
     },
     // `keep` reads refs and the store only.
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -287,6 +317,7 @@ export function useComposerDraft({
       imageSupportMessage,
       imageUploadEnabled,
       keepsImages,
+      ports,
       readPhoto,
       store,
       storedImages,
