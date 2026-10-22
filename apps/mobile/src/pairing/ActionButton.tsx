@@ -1,9 +1,9 @@
 import type { ReactNode } from 'react'
-import { Pressable } from 'react-native'
 
 import { AppText } from '../components/ui/AppText'
 import { usePhoneTheme } from '../theme/ThemeProvider'
 import { tap } from '../ui/haptics'
+import { Press } from '../ui/Press'
 
 /**
  * A full-width action with words, for the few places a button must say what
@@ -26,7 +26,7 @@ export function ActionButton({
   const theme = usePhoneTheme()
   const primary = tone === 'primary'
   return (
-    <Pressable
+    <Press
       accessibilityRole="button"
       accessibilityLabel={label}
       accessibilityState={{ disabled: Boolean(disabled) }}
@@ -53,6 +53,6 @@ export function ActionButton({
       >
         {label}
       </AppText>
-    </Pressable>
+    </Press>
   )
 }

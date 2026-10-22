@@ -1,4 +1,4 @@
-import { Pressable, View } from 'react-native'
+import { View } from 'react-native'
 
 import { AppText } from '../components/ui/AppText'
 import { formatRelativeTime } from '../lib/relativeTime'
@@ -7,6 +7,7 @@ import { usePhoneTheme } from '../theme/ThemeProvider'
 import { ProjectChip } from './ProjectChip'
 import { StatusMark } from './StatusMark'
 import { tap } from './haptics'
+import { Press } from './Press'
 
 /** Short ages for a list: "now", "4m", "2h", "3d", from an ISO time or epoch ms. */
 export function shortAge(when: string | number | undefined, now = Date.now()): string {
@@ -47,7 +48,7 @@ export function SessionRow({
   // One step per generation, capped so a deep tree still leaves the title room.
   const indent = INDENT * Math.min(depth, 2)
   return (
-    <Pressable
+    <Press
       accessibilityRole="button"
       onPress={() => {
         tap()
@@ -114,6 +115,6 @@ export function SessionRow({
       <AppText variant="text-12-regular" style={{ color: theme.faint }}>
         {shortAge(session.updatedAt)}
       </AppText>
-    </Pressable>
+    </Press>
   )
 }

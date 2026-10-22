@@ -4,15 +4,7 @@ import * as Device from 'expo-device'
 import { useRouter } from 'expo-router'
 import { ArrowRightIcon, ClipboardTextIcon, LinkIcon, XIcon } from 'phosphor-react-native'
 import { useEffect, useRef, useState } from 'react'
-import {
-  KeyboardAvoidingView,
-  Platform,
-  Pressable,
-  ScrollView,
-  Text,
-  TextInput,
-  View,
-} from 'react-native'
+import { KeyboardAvoidingView, Platform, ScrollView, Text, TextInput, View } from 'react-native'
 import { useSafeAreaInsets } from 'react-native-safe-area-context'
 import { CLIENT_LABEL_MAX_LENGTH } from '@openmanager/protocol'
 
@@ -32,6 +24,7 @@ import { usePhoneTheme } from '../theme/ThemeProvider'
 import { useGoBack } from '../ui/goBack'
 import { success, tap, warning } from '../ui/haptics'
 import { IconButton } from '../ui/IconButton'
+import { Press } from '../ui/Press'
 
 /**
  * Pairing: two doors and nothing else. Scan the QR code web's Pair-device
@@ -217,7 +210,7 @@ export default function PairScreen() {
                   </FieldIcon>
                 )}
               </View>
-              <Pressable
+              <Press
                 accessibilityRole="button"
                 accessibilityLabel="Pair with this link"
                 accessibilityState={{ disabled: !typed || !ready }}
@@ -237,7 +230,7 @@ export default function PairScreen() {
                 })}
               >
                 <ArrowRightIcon size={20} color={theme.actionFg} weight="bold" />
-              </Pressable>
+              </Press>
             </View>
             {heldHost ? (
               <Hint>Ready to pair. Nothing is sent until you go.</Hint>
@@ -335,7 +328,7 @@ function FieldIcon({
 }) {
   const theme = usePhoneTheme()
   return (
-    <Pressable
+    <Press
       accessibilityRole="button"
       accessibilityLabel={label}
       hitSlop={6}
@@ -350,6 +343,6 @@ function FieldIcon({
       })}
     >
       {children}
-    </Pressable>
+    </Press>
   )
 }

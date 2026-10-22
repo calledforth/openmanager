@@ -1,7 +1,7 @@
 import Constants from 'expo-constants'
 import { useRouter } from 'expo-router'
 import { CaretRightIcon, QrCodeIcon } from 'phosphor-react-native'
-import { Pressable, ScrollView, TouchableOpacity, View } from 'react-native'
+import { ScrollView, TouchableOpacity, View } from 'react-native'
 import { useSafeAreaInsets } from 'react-native-safe-area-context'
 
 import { THEME_FAMILIES } from '@openmanager/app-core/lib/theme-families'
@@ -9,6 +9,7 @@ import { THEME_FAMILIES } from '@openmanager/app-core/lib/theme-families'
 import { AppText } from '../../components/ui/AppText'
 import { usePhoneConnection } from '../../environment/PhoneEnvironmentProvider'
 import { type ThemeMode, usePhoneTheme, useTheme } from '../../theme/ThemeProvider'
+import { Press } from '../../ui/Press'
 
 const THEME_OPTIONS: { mode: ThemeMode; label: string }[] = [
   { mode: 'system', label: 'System' },
@@ -154,7 +155,7 @@ export default function SettingsScreen() {
 function PairRow({ onPress }: { onPress: () => void }) {
   const theme = usePhoneTheme()
   return (
-    <Pressable
+    <Press
       accessibilityRole="button"
       accessibilityLabel="Pair with a computer"
       onPress={onPress}
@@ -189,7 +190,7 @@ function PairRow({ onPress }: { onPress: () => void }) {
         </AppText>
       </View>
       <CaretRightIcon size={16} color={theme.faint} />
-    </Pressable>
+    </Press>
   )
 }
 
