@@ -10,6 +10,8 @@ import {
 } from '@openmanager/environment-client'
 import {
   EMPTY_REGISTRY,
+  addStoredRoute,
+  classifyDiscoveredRoute,
   environmentSocketUrl,
   isLoopbackEnvironmentEndpoint,
   fetchBootstrap,
@@ -179,6 +181,28 @@ export type SaveEnvironmentInput = {
   appOrigin?: string | null
 }
 
+/**
+ * What an address is to the phone's saved environments, by the shared rule
+ * (`classifyDiscoveredRoute`), without the record or its token.
+ *
+ * - `new_environment`: nothing saved has that ID.
+ * - `known_route`: the saved environment already has the address.
+ * - `new_route`: the address is new to a saved environment. When
+ *   `sendsSavedCredential`, reaching it would send the token the phone holds
+ *   to an address that has never had it: that needs a person's consent.
+ */
+export type RouteStanding =
+  | { kind: 'new_environment' }
+  | { kind: 'known_route' }
+  | { kind: 'new_route'; sendsSavedCredential: boolean }
+
+export type AddRouteInput = {
+  environmentId: string
+  endpoint: string
+  /** The pairing link's app origin. Saved only when the environment has none yet. */
+  appOrigin?: string | null
+}
+
 export interface PhoneConnectionController {
   getState(): PhoneConnectionState
   subscribe(listener: () => void): () => void
@@ -193,6 +217,24 @@ export interface PhoneConnectionController {
   saveEnvironment(input: SaveEnvironmentInput): void
   /** Forget an environment, its routes and its token. */
   removeEnvironment(environmentId: string): void
+  /** Where an address stands against the saved registry; never carries a token. */
+  classifyRoute(input: {
+    environmentId: string
+    endpoint: string
+    credential?: string
+  }): RouteStanding
+  /**
+   * Ask one address's `GET /bootstrap` the way the route search does: no
+   * token is sent, and it gives up after the probe deadline.
+   */
+  checkRoute(endpoint: string): Promise<BootstrapOutcome>
+  /**
+   * Add an address a person agreed to (`RouteStanding.sendsSavedCredential`)
+   * to a saved environment as its last choice of route, select that
+   * environment and search again. `false` when the environment is not saved
+   * or already has the address.
+   */
+  addRoute(input: AddRouteInput): boolean
   /** A person asked to try again: clears a refusal and searches at once. */
   retry(): void
   /** Resolves once every registry write handed in so far has finished. */
@@ -1099,6 +1141,48 @@ export function createPhoneConnectionController(
       if (!loaded || disposed) return
       latch = null
       restart('retry')
+    },
+    classifyRoute(input) {
+      const found = classifyDiscoveredRoute(registry, input)
+      return found.kind === 'new_route'
+        ? { kind: 'new_route', sendsSavedCredential: found.sendsSavedCredential }
+        : { kind: found.kind }
+    },
+    checkRoute(endpoint) {
+      if (disposed) return Promise.resolve(CANCELLED)
+      // A probe never throws by contract; one that does is no answer.
+      return probeRoute(endpoint, new AbortController().signal).catch(() => ({
+        status: 'unreachable' as const,
+        message: `Could not reach ${endpoint}.`,
+        cause: 'network' as const,
+      }))
+    },
+    addRoute(input) {
+      if (!loaded || disposed) return false
+      const { environmentId } = input
+      let next = addStoredRoute(registry, environmentId, input.endpoint, undefined, new Date(now()))
+      if (next === registry) return false
+      const appOrigin = input.appOrigin ? parseAppOrigin(input.appOrigin) : null
+      const saved = findStoredEnvironment(next.environments, environmentId)
+      if (appOrigin && saved && !saved.appOrigin) {
+        next = {
+          ...next,
+          environments: next.environments.map((item) =>
+            item === saved ? { ...saved, appOrigin } : item,
+          ),
+        }
+        warnedOrigin.delete(environmentId)
+        // A socket dialled with the route's own origin is retired for the app's.
+        if (transport?.environmentId === environmentId) dropTransport()
+      }
+      if (registry.selectedId !== environmentId) {
+        if (transport && transport.environmentId !== environmentId) dropTransport()
+        set({ endpoint: null, bootstrap: IDLE, routeFailure: null })
+        latch = null
+      }
+      commit(selectStoredEnvironment(next, environmentId))
+      restart('select')
+      return true
     },
     flush: () => options.storage.flush(),
     dispose() {
