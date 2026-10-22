@@ -487,6 +487,61 @@ describe('a session opened read-only on the phone', () => {
     expect(seen!.phase).toBe('ready')
   })
 
+  it('cancels a second open whose first, cancelled attempt answers late', async () => {
+    const client = replayingClient({ seed: SEED, respond: () => null })
+    // The wire client, for a session the list has not reached: the reply
+    // alone selects it, and a selection made after the request (a release,
+    // a later open) lets the reply land nowhere. Each reply is held here
+    // until the test lets it through.
+    const open = client.commands.openSession
+    const select = client.setActiveSession
+    let generation = 0
+    const held: Array<() => Promise<void>> = []
+    client.setActiveSession = (sessionId) => {
+      generation += 1
+      select(sessionId)
+    }
+    client.commands.openSession = (sessionId) => {
+      const mine = ++generation
+      return new Promise<void>((resolve, reject) => {
+        held.push(() => (mine === generation ? open(sessionId) : Promise.resolve()).then(resolve, reject))
+      })
+    }
+    const answer = async () => {
+      await act(() => held.shift()!())
+      await flush()
+    }
+
+    // The first open is on its way when a search covers the page; back in
+    // front, the page asks again.
+    await mount(client, SESSION.sessionId)
+    await flush()
+    await mount(client, [{ id: SESSION.sessionId, focused: false }])
+    await flush()
+    await mount(client, [{ id: SESSION.sessionId, focused: true }])
+    await flush()
+    expect(held).toHaveLength(2)
+
+    // The cancelled first attempt answers now, landing nowhere.
+    await answer()
+    expect(client.getState().activeSessionId).toBeNull()
+
+    // Covered again before the second attempt answers: that answer must land
+    // nowhere too, not select and subscribe a session no page is showing.
+    await mount(client, [{ id: SESSION.sessionId, focused: false }])
+    await flush()
+    await answer()
+    expect(client.getState().activeSessionId).toBeNull()
+    expect(held).toHaveLength(0)
+
+    // In front once more, it opens, and the answer lands.
+    await mount(client, [{ id: SESSION.sessionId, focused: true }])
+    await flush()
+    await answer()
+    expect(client.getState().activeSessionId).toBe(SESSION.sessionId)
+    expect(seen!.phase).toBe('ready')
+  })
+
   it('lets the session go when the environment stops replaying events', async () => {
     const client = replayingClient({ seed: SEED, respond: () => null })
     await mount(client, SESSION.sessionId)

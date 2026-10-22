@@ -94,20 +94,24 @@ export function useReadOnlySession(
     ),
   )
   const [missing, setMissing] = useState(false)
-  // An open this page has on its way. Until its answer, a session the list
-  // has not reached yet is not the active one, and a reconnect would not
-  // open it again; a failed attempt clears this, so the next connect does.
-  const openingRef = useRef<string | null>(null)
+  // The open this page has on its way, one token per attempt. Until its
+  // answer, a session the list has not reached yet is not the active one, and
+  // a reconnect would not open it again; a failed attempt clears this, so the
+  // next connect does. Only the attempt's own answer clears it: a release
+  // under one attempt and a newer attempt after it leave an older answer,
+  // landing late, nothing to clear (the client already lets it land nowhere).
+  const openingRef = useRef<symbol | null>(null)
   const knownRef = useRef(false)
 
   const open = useCallback(() => {
-    openingRef.current = sessionId
+    const attempt = Symbol(sessionId)
+    openingRef.current = attempt
     client.commands.openSession(sessionId).then(
       () => {
-        if (openingRef.current === sessionId) openingRef.current = null
+        if (openingRef.current === attempt) openingRef.current = null
       },
       (error: unknown) => {
-        if (openingRef.current !== sessionId) return
+        if (openingRef.current !== attempt) return
         openingRef.current = null
         if (isEnvironmentClientError(error) && error.code === 'not_found') setMissing(true)
       },
@@ -119,7 +123,7 @@ export function useReadOnlySession(
   // selection moves.
   const release = useCallback(() => {
     const active = client.getState().activeSessionId
-    const pending = openingRef.current === sessionId
+    const pending = openingRef.current !== null
     openingRef.current = null
     if (active === sessionId || (pending && active === null)) client.setActiveSession(null)
   }, [client, sessionId])
@@ -144,7 +148,7 @@ export function useReadOnlySession(
   // after a reconnect) or an open is on its way. Back in front, it opens
   // again.
   useEffect(() => {
-    if (!focused || !connected || !replays || onScreen || openingRef.current === sessionId) return
+    if (!focused || !connected || !replays || onScreen || openingRef.current !== null) return
     open()
   }, [connected, focused, onScreen, open, replays, sessionId])
 
