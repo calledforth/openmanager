@@ -149,7 +149,7 @@ export function useReadOnlySession(
 
   // Done means "finished and not looked at yet": having it on screen while the
   // app is in front clears it, on the environment. A failed clear leaves the
-  // mark, and the next open tries again.
+  // mark until it is asked again.
   const acknowledge = sidebar?.acknowledgeSessionDone
   const doneOnScreen = focused && onScreen && activity === 'active' && session?.status === 'done'
   // Once per listing of it as done: a new provider value while the answer is
@@ -158,9 +158,11 @@ export function useReadOnlySession(
   useEffect(() => {
     if (!doneOnScreen || !acknowledge || !session || acknowledgedRef.current === session) return
     acknowledgedRef.current = session
-    acknowledge(session.workspacePath, session.externalId, session.providerId).catch(
-      () => undefined,
-    )
+    // A clear that did not land is asked again the next time the
+    // environment offers it (a reconnect hands out a new callback).
+    acknowledge(session.workspacePath, session.externalId, session.providerId).catch(() => {
+      if (acknowledgedRef.current === session) acknowledgedRef.current = null
+    })
   }, [acknowledge, doneOnScreen, session])
 
   const mine = onScreen && thread.activeSessionId === sessionId

@@ -305,6 +305,39 @@ describe('a session opened read-only on the phone', () => {
     expect(seen!.status).toBe('ready')
   })
 
+  it('asks again to clear "done" when the first ask did not land', async () => {
+    const client = replayingClient({
+      seed: {
+        ...SEED,
+        sessions: SEED.sessions!.map((entry) =>
+          entry.session.sessionId === SESSION.sessionId
+            ? { ...entry, session: { ...entry.session, doneAt: new Date().toISOString() } }
+            : entry,
+        ),
+      },
+      respond: () => null,
+    })
+    const acknowledgeSession = client.commands.acknowledgeSession
+    let attempts = 0
+    client.commands.acknowledgeSession = (sessionId) => {
+      attempts += 1
+      if (attempts === 1) {
+        client.setConnection({ phase: 'reconnecting' })
+        return Promise.reject(new EnvironmentClientError('unavailable', 'The socket closed.'))
+      }
+      return acknowledgeSession(sessionId)
+    }
+    await mount(client, SESSION.sessionId)
+    await flush()
+    expect(attempts).toBe(1)
+    expect(seen!.status).toBe('done')
+
+    await act(() => client.setConnection({ phase: 'connected' }))
+    await flush()
+    expect(attempts).toBe(2)
+    expect(seen!.status).toBe('ready')
+  })
+
   it('opens a child session read-only on its own', async () => {
     const client = replayingClient({ seed: SEED, respond: () => null })
     await mount(client, CHILD.sessionId)
