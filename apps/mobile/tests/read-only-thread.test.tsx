@@ -504,7 +504,9 @@ describe('a session opened read-only on the phone', () => {
     client.commands.openSession = (sessionId) => {
       const mine = ++generation
       return new Promise<void>((resolve, reject) => {
-        held.push(() => (mine === generation ? open(sessionId) : Promise.resolve()).then(resolve, reject))
+        held.push(() =>
+          (mine === generation ? open(sessionId) : Promise.resolve()).then(resolve, reject),
+        )
       })
     }
     const answer = async () => {
