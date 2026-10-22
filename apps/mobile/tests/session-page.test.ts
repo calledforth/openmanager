@@ -25,7 +25,10 @@ import {
   AWAY_SHOW_PX,
   awayFromLatest,
   createScrollFollower,
+  flingsUp,
   FOLLOW_SLOP_PX,
+  INITIAL_ROWS,
+  openingIndex,
 } from '../src/session/scroll-anchor'
 import { sessionMenuItems, type SessionMenuInput } from '../src/session/session-menu'
 import {
@@ -351,15 +354,33 @@ function transcript(heights: number[], viewport = 600) {
       layout()
       frame()
     },
-    /** The reader drags by `dy` (negative is up) and lets go; a `fling` then carries on alone. */
+    /**
+     * The reader drags by `dy` (negative is up), every step reported, and lets
+     * go; a `fling` then carries on alone until it rests.
+     */
     drag(dy: number, fling = 0) {
-      follower.onDrag(true)
+      follower.onDragStart()
       moveTo(offset + dy)
-      follower.onDrag(false)
-      if (fling) moveTo(offset + fling)
+      follower.onDragEnd(metrics(), fling < 0)
+      if (fling) {
+        moveTo(offset + fling)
+        follower.onMomentumEnd(metrics())
+      }
     },
-    hold: () => follower.onDrag(true),
-    release: () => follower.onDrag(false),
+    hold: () => follower.onDragStart(),
+    /** The finger comes off where the list is, thrown upward or not. */
+    release: (flungUp = false) => follower.onDragEnd(metrics(), flungUp),
+    /** The list moves by `dy` with no scroll event yet: the platform throttles them. */
+    moveUnreported(dy: number) {
+      offset = Math.min(maxOffset(), Math.max(0, offset + dy))
+    },
+    /** A (late) scroll event reports where the list is. */
+    report: () => follower.onScroll(metrics()),
+    /** The fling moves the list by `dy`, reported, and then comes to rest. */
+    flingTo(dy: number) {
+      moveTo(offset + dy)
+      follower.onMomentumEnd(metrics())
+    },
     toLatest() {
       follower.toLatest()
       frame()
@@ -443,6 +464,74 @@ describe('scroll anchoring', () => {
     const offset = list.offset()
     list.grow(60)
     expect(list.offset()).toBe(offset)
+  })
+
+  it('reads the drag-end event: a drag past the slop that no scroll event reported yet has left the end', () => {
+    const list = transcript([400, 300, 1500])
+    list.hold()
+    // The last throttled scroll event saw the list at the end; the finger took it 150 px up.
+    list.moveUnreported(-150)
+    list.release()
+    const scrolls = list.scrolls.length
+    const offset = list.offset()
+    // Growth and its frame land before the next scroll event.
+    list.growNoFrame(40)
+    list.frame()
+    expect(list.scrolls).toHaveLength(scrolls)
+    expect(list.offset()).toBe(offset)
+    list.report()
+    expect(list.following()).toBe(false)
+  })
+
+  it('lets an upward throw run: growth before its first scroll event neither snaps back nor stops it', () => {
+    const list = transcript([400, 300, 1500])
+    list.hold()
+    // Thrown upward from within the slop: no event has said the reader left.
+    list.moveUnreported(-20)
+    list.release(true)
+    const scrolls = list.scrolls.length
+    list.growNoFrame(30)
+    list.frame()
+    expect(list.scrolls).toHaveLength(scrolls)
+    // A late event still inside the slop does not hand the end back mid-fling.
+    list.report()
+    list.grow(0)
+    list.grow(10)
+    expect(list.scrolls).toHaveLength(scrolls)
+    // The fling comes to rest far up: the reader stays where it left them.
+    list.flingTo(-600)
+    const offset = list.offset()
+    list.grow(50)
+    expect(list.scrolls).toHaveLength(scrolls)
+    expect(list.offset()).toBe(offset)
+    expect(list.following()).toBe(false)
+  })
+
+  it('follows again after a release at the end with no throw', () => {
+    const list = transcript([400, 300, 1500])
+    list.hold()
+    list.moveUnreported(-10)
+    list.release(false)
+    list.grow(40)
+    expect(list.fromEnd()).toBe(0)
+  })
+
+  it('reads an upward throw in each platform sign', () => {
+    // Android reports the finger's velocity: moving down scrolls toward the top.
+    expect(flingsUp(1.2, 'android')).toBe(true)
+    expect(flingsUp(-1.2, 'android')).toBe(false)
+    // iOS reports the offset's velocity: negative is toward the top.
+    expect(flingsUp(-1.2, 'ios')).toBe(true)
+    expect(flingsUp(1.2, 'ios')).toBe(false)
+    expect(flingsUp(0.01, 'android')).toBe(false)
+    expect(flingsUp(undefined, 'android')).toBe(false)
+    expect(flingsUp(-3, 'web')).toBe(false)
+  })
+
+  it('opens a long thread at its newest row and a short one from the top', () => {
+    expect(openingIndex(0)).toBeUndefined()
+    expect(openingIndex(INITIAL_ROWS)).toBeUndefined()
+    expect(openingIndex(200)).toBe(199)
   })
 
   it('takes the reader back with the button, animated, and follows again', () => {

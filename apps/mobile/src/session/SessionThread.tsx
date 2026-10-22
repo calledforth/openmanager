@@ -3,6 +3,7 @@ import { ArrowClockwiseIcon, ArrowDownIcon, WarningCircleIcon } from 'phosphor-r
 import { memo, useCallback, useMemo, useRef, useState, useSyncExternalStore } from 'react'
 import {
   FlatList,
+  Platform,
   View,
   type ListRenderItem,
   type NativeScrollEvent,
@@ -22,20 +23,19 @@ import { FadeOut as BottomFade } from '../ui/chrome'
 import { IconButton } from '../ui/IconButton'
 import { ChildSessionCards } from './ChildSessionCards'
 import { countRender } from './render-probe'
-import { createScrollFollower, MAINTAIN_POSITION } from './scroll-anchor'
+import { createScrollFollower, flingsUp, INITIAL_ROWS, MAINTAIN_POSITION } from './scroll-anchor'
 import { ReadOnlyBar, SessionDock } from './SessionDock'
 import { SessionHeader } from './SessionHeader'
 import { SessionMenu } from './SessionMenu'
 import type { StatusLineView } from './status-line'
 import type { ReadOnlySessionPhase } from './useReadOnlySession'
 import type { SessionActions } from './useSessionActions'
+import { useOpeningIndex } from './useOpeningIndex'
 import { useSessionChrome } from './useSessionChrome'
 
 /** The dock's height before it has measured itself: the status line and a one-line slot. */
 const DOCK_ESTIMATE = 96
 const ROW_GAP_BOTTOM = 18
-/** Rows drawn before the first layout; a longer thread starts drawing at its end. */
-const INITIAL_ROWS = 10
 
 /**
  * The scroll view's own scroll to the end, which lands on the content's true
@@ -48,6 +48,14 @@ function nativeScrollToEnd(list: FlatList<UIMessage> | null, animated: boolean) 
   } | null
   scroller?.scrollToEnd?.({ animated })
 }
+
+type ScrollEvent = NativeSyntheticEvent<NativeScrollEvent>
+
+const metricsOf = ({ nativeEvent }: ScrollEvent) => ({
+  offset: nativeEvent.contentOffset.y,
+  contentHeight: nativeEvent.contentSize.height,
+  viewportHeight: nativeEvent.layoutMeasurement.height,
+})
 
 const keyOf = (message: UIMessage) => message.rowKey ?? message.externalId
 const renderRow: ListRenderItem<UIMessage> = ({ item }) => <ResolvedMessage message={item} />
@@ -168,24 +176,26 @@ export const SessionThread = memo(function SessionThread({
       onAway: (next) => away.set(next),
     }),
   )
-  // The page opens at its newest row: a long thread starts rendering there.
-  const [initialIndex] = useState(() =>
-    messages.length > INITIAL_ROWS ? messages.length - 1 : undefined,
-  )
+  // The page opens at its newest row: a long thread starts drawing there,
+  // read when the transcript first has rows (the snapshot), not at mount.
+  const initialIndex = useOpeningIndex(messages.length)
 
   const onScroll = useCallback(
-    (event: NativeSyntheticEvent<NativeScrollEvent>) => {
-      const { contentOffset, contentSize, layoutMeasurement } = event.nativeEvent
-      follower.onScroll({
-        offset: contentOffset.y,
-        contentHeight: contentSize.height,
-        viewportHeight: layoutMeasurement.height,
-      })
-    },
+    (event: ScrollEvent) => follower.onScroll(metricsOf(event)),
     [follower],
   )
-  const onDragStart = useCallback(() => follower.onDrag(true), [follower])
-  const onDragEnd = useCallback(() => follower.onDrag(false), [follower])
+  const onDragStart = useCallback(() => follower.onDragStart(), [follower])
+  // The drag-end event's own place and speed: scroll events are throttled,
+  // so the last one may not have seen how far the finger took the list.
+  const onDragEnd = useCallback(
+    (event: ScrollEvent) =>
+      follower.onDragEnd(metricsOf(event), flingsUp(event.nativeEvent.velocity?.y, Platform.OS)),
+    [follower],
+  )
+  const onMomentumEnd = useCallback(
+    (event: ScrollEvent) => follower.onMomentumEnd(metricsOf(event)),
+    [follower],
+  )
   const onContentSize = useCallback(
     (_width: number, height: number) => follower.onContentHeight(height),
     [follower],
@@ -248,6 +258,7 @@ export const SessionThread = memo(function SessionThread({
             onScroll={onScroll}
             onScrollBeginDrag={onDragStart}
             onScrollEndDrag={onDragEnd}
+            onMomentumScrollEnd={onMomentumEnd}
             onContentSizeChange={onContentSize}
             scrollEventThrottle={32}
             contentContainerStyle={contentStyle}

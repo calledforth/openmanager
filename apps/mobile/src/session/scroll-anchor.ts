@@ -51,10 +51,18 @@ export function distanceFromEnd({ offset, contentHeight, viewportHeight }: Scrol
 }
 
 export interface ScrollFollower {
-  /** A scroll event: the reader's place, theirs or the list's own. */
+  /** A scroll event: the reader's place, theirs or the list's own. Throttled by the platform. */
   onScroll(metrics: ScrollMetrics): void
-  /** A finger went down on the list, or came off it. */
-  onDrag(dragging: boolean): void
+  /** A finger went down on the list. */
+  onDragStart(): void
+  /**
+   * The finger came off: where the list was at that moment (the drag-end
+   * event's own metrics, which no throttled scroll event may have reported
+   * yet), and whether it was thrown upward (see `flingsUp`).
+   */
+  onDragEnd(metrics: ScrollMetrics, flungUp: boolean): void
+  /** The fling after a drag came to rest. */
+  onMomentumEnd(metrics: ScrollMetrics): void
   /** The content's height changed. */
   onContentHeight(height: number): void
   /** The reader asked for the newest row (the scroll-to-latest button). */
@@ -72,16 +80,41 @@ export interface ScrollFollowerPorts {
   onAway?(away: boolean): void
 }
 
+/** Below this speed (px/ms) a release is a release, not a throw. */
+export const FLING_MIN_VELOCITY = 0.05
+
+/**
+ * Whether a drag-end's vertical velocity throws the list upward (toward
+ * older rows). Android reports the finger's own velocity (positive while it
+ * moves down, which scrolls toward the top); iOS reports the content
+ * offset's (negative toward the top). Web reports none.
+ */
+export function flingsUp(velocityY: number | undefined, platform: string): boolean {
+  if (!velocityY) return false
+  return platform === 'android'
+    ? velocityY > FLING_MIN_VELOCITY
+    : platform === 'ios'
+      ? velocityY < -FLING_MIN_VELOCITY
+      : false
+}
+
 /**
  * The follow-the-end state machine. It starts following (a page opens at its
- * newest row) and only the reader's own scrolling takes it off the end.
+ * newest row) and only the reader's own scrolling takes it off the end. A
+ * gesture is the reader's from the finger going down until its fling comes
+ * to rest: thrown upward, it has left the end for all of that time, whatever
+ * a late scroll event says, so growth can neither snap the reader back nor
+ * cut the fling short (a native scroll to the end would stop it).
  */
 export function createScrollFollower(ports: ScrollFollowerPorts): ScrollFollower {
   let atEnd = true
   let dragging = false
+  /** Thrown upward and still moving: the reader's, until the fling rests. */
+  let flingingUp = false
   let away = false
   let lastHeight = -1
   let lastOffset = 0
+  let dragStartOffset = 0
   let scheduled = false
 
   const setAway = (next: boolean) => {
@@ -89,6 +122,7 @@ export function createScrollFollower(ports: ScrollFollowerPorts): ScrollFollower
     away = next
     ports.onAway?.(next)
   }
+  const held = () => dragging || flingingUp
 
   const follow = () => {
     if (scheduled) return
@@ -96,36 +130,75 @@ export function createScrollFollower(ports: ScrollFollowerPorts): ScrollFollower
     ports.schedule(() => {
       scheduled = false
       // The reader may have taken hold, or left, in the meantime.
-      if (atEnd && !dragging) ports.scrollToEnd(false)
+      if (atEnd && !held()) ports.scrollToEnd(false)
     })
+  }
+
+  /** Where the list is now, from any event that says so. */
+  const read = (metrics: ScrollMetrics) => {
+    const fromEnd = distanceFromEnd(metrics)
+    const movedUp = metrics.offset < lastOffset - 1
+    lastOffset = metrics.offset
+    // Growth below the reader makes the end farther without moving them,
+    // and the list's own scroll to the end only moves down: the reader
+    // leaves the end only by moving up (a drag or its fling). Coming back
+    // within the slop is being at the end again, unless an upward fling is
+    // still carrying them away.
+    if (fromEnd <= FOLLOW_SLOP_PX && !flingingUp) atEnd = true
+    else if (movedUp) atEnd = false
+    setAway(awayFromLatest(fromEnd, away))
+    return fromEnd
   }
 
   return {
     onScroll(metrics) {
-      const fromEnd = distanceFromEnd(metrics)
-      const movedUp = metrics.offset < lastOffset - 1
-      lastOffset = metrics.offset
-      // Growth below the reader makes the end farther without moving them,
-      // and the list's own scroll to the end only moves down: the reader
-      // leaves the end only by moving up (a drag or its fling). Coming back
-      // within the slop, by any means, is being at the end again.
-      if (fromEnd <= FOLLOW_SLOP_PX) atEnd = true
-      else if (movedUp) atEnd = false
-      setAway(awayFromLatest(fromEnd, away))
+      read(metrics)
     },
-    onDrag(next) {
-      dragging = next
+    onDragStart() {
+      dragging = true
+      flingingUp = false
+      dragStartOffset = lastOffset
+    },
+    onDragEnd(metrics, flungUp) {
+      const fromEnd = read(metrics)
+      dragging = false
+      if (flungUp) {
+        // Thrown toward older rows: away from the end until the fling rests.
+        flingingUp = true
+        atEnd = false
+      } else if (metrics.offset < dragStartOffset - 1 && fromEnd > FOLLOW_SLOP_PX) {
+        // Dragged up past the slop and let go: whatever the last throttled
+        // scroll event said, the reader is no longer at the end.
+        atEnd = false
+      }
+    },
+    onMomentumEnd(metrics) {
+      flingingUp = false
+      read(metrics)
     },
     onContentHeight(height) {
       if (height === lastHeight) return
       lastHeight = height
-      if (atEnd && !dragging) follow()
+      if (atEnd && !held()) follow()
     },
     toLatest() {
+      flingingUp = false
       atEnd = true
       setAway(false)
       ports.scrollToEnd(true)
     },
-    following: () => atEnd && !dragging,
+    following: () => atEnd && !held(),
   }
+}
+
+/** Rows drawn before the first layout; a longer thread starts drawing at its end. */
+export const INITIAL_ROWS = 10
+
+/**
+ * Where a transcript of `count` rows starts drawing: at its newest row when
+ * it is longer than the first batch, so a long thread opens at its end
+ * without walking up through its history; from the top otherwise.
+ */
+export function openingIndex(count: number): number | undefined {
+  return count > INITIAL_ROWS ? count - 1 : undefined
 }
