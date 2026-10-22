@@ -13,8 +13,12 @@ import {
   type HomeRow,
   type HomeTab,
 } from '../../home/rows'
+import { phoneConnectionView } from '../../environment/connection-ui'
+import { usePhoneConnection } from '../../environment/PhoneEnvironmentProvider'
 import { useHomeSource } from '../../home/source'
 import { ActionButton } from '../../pairing/ActionButton'
+import { ConnectionPanel } from '../../settings/ConnectionPanel'
+import { useTitleEnvironment } from '../../settings/title-environment'
 import { usePhoneTheme } from '../../theme/ThemeProvider'
 import { BigTitle, FadeOut, SectionLabel } from '../../ui/chrome'
 import { DraftRow } from '../../ui/DraftRow'
@@ -95,7 +99,14 @@ export default function SessionsHome() {
   const router = useRouter()
   const insets = useSafeAreaInsets()
   const theme = usePhoneTheme()
-  const { environment, connected, needsPairing, workspaces, sessions, drafts } = useHomeSource()
+  const source = useHomeSource()
+  const { environment, needsPairing, workspaces, sessions, drafts } = source
+  const titleEnvironment = useTitleEnvironment(source)
+  const connection = usePhoneConnection()
+  const view = phoneConnectionView(connection)
+  // Not connected and nothing to show yet: the connection's own state, with
+  // its next step, says why the list is empty.
+  const showConnection = source.kind === 'environment' && view.ui.kind !== 'ready'
   const [tab, setTab] = useState<HomeTab>('all')
 
   const counts = useMemo(() => tabCounts(sessions, drafts), [sessions, drafts])
@@ -129,15 +140,7 @@ export default function SessionsHome() {
     <View className="flex-1" style={{ paddingTop: insets.top + 6 }}>
       <BigTitle
         title="Sessions"
-        environment={
-          environment
-            ? {
-                label: environment.label,
-                detail: environment.route.kind === 'local' ? 'LAN' : 'Tunnel',
-                connected,
-              }
-            : null
-        }
+        environment={titleEnvironment}
         trailing={
           <IconButton label="New session" onPress={() => router.push('/draft/new')}>
             <NotePencilIcon size={18} color={theme.fg} />
@@ -166,6 +169,10 @@ export default function SessionsHome() {
           ListEmptyComponent={
             needsPairing ? (
               <PairFirst again={environment?.label ?? null} onPair={() => router.push('/pair')} />
+            ) : showConnection ? (
+              <View className="px-2 pt-6">
+                <ConnectionPanel view={view} />
+              </View>
             ) : (
               <View className="items-center px-10 pt-24">
                 <View
