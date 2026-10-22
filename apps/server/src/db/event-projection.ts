@@ -2,10 +2,19 @@ import { randomUUID } from 'node:crypto'
 import type { DatabaseSync } from 'node:sqlite'
 import { isDeepStrictEqual } from 'node:util'
 import {
+  ProviderComposerProfileSchema,
   SessionSummarySchema,
+  WorkspaceComposerPreferenceSchema,
   WorkspaceSchema,
   type ProofEvent,
 } from '@openmanager/protocol/node'
+import {
+  preferenceFromRow,
+  prepareComposerProjection,
+  profileFromRow,
+  readPreferenceRow,
+  readProfileRow,
+} from './composer-rows.ts'
 import type { DurableProofEvent, WriteOptions } from './event-repository.ts'
 import { prepareDraftProjection } from './draft-projection.ts'
 import { OPEN_TURN_FOR_SESSION_SQL } from './queries.ts'
@@ -33,6 +42,7 @@ export function createEventProjector(
   database: DatabaseSync,
 ): (event: DurableProofEvent, write?: WriteOptions) => void {
   const drafts = prepareDraftProjection(database)
+  const composer = prepareComposerProjection(database)
   const closure = createTurnClosure(database)
   const s = {
     insertSession: database.prepare(
@@ -556,10 +566,31 @@ export function createEventProjector(
       case 'draft.deleted':
         drafts.deleted(event.payload, at)
         return
-      case 'composer.preferences.updated':
-      case 'provider.catalog.updated':
-        // The composer store already holds both; the log only carries them to clients.
+      case 'composer.preferences.updated': {
+        // The composer store's one writer (docs/sync-foundations.md §4.7.11).
+        const { workspaceId, providerId, preference, revision } = event.payload
+        composer.preference({ workspaceId, providerId }, preference, revision, at)
+        const row = readPreferenceRow(database, workspaceId, providerId)
+        if (
+          !row ||
+          !isDeepStrictEqual(preferenceFromRow(row), WorkspaceComposerPreferenceSchema.parse(preference))
+        ) {
+          throw new Error(`Preference ${workspaceId}/${providerId} does not read back as announced`)
+        }
         return
+      }
+      case 'provider.catalog.updated': {
+        const profile = event.payload.profile
+        composer.profile(profile)
+        const row = readProfileRow(database, profile.providerId)
+        if (
+          !row ||
+          !isDeepStrictEqual(profileFromRow(row), ProviderComposerProfileSchema.parse(profile))
+        ) {
+          throw new Error(`Profile ${profile.providerId} does not read back as announced`)
+        }
+        return
+      }
       case 'session.deleted':
         s.deleteSession.run(event.payload.sessionId)
         return

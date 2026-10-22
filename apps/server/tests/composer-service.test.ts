@@ -12,7 +12,8 @@ import {
 } from '@openmanager/protocol/node'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { createComposerService, desiredSessionConfig } from '../src/composer-service.js'
-import { openComposerStore, type ComposerStore } from '../src/composer-store.js'
+import type { ComposerStore } from '../src/composer-store.js'
+import { openTestComposerStore } from './helpers/composer-store.js'
 
 const directories: string[] = []
 const stores: ComposerStore[] = []
@@ -58,7 +59,11 @@ const provider: ProviderBootstrap = {
 async function harness() {
   const directory = await mkdtemp(join(tmpdir(), 'openmanager-composer-service-test-'))
   directories.push(directory)
-  const store = openComposerStore(directory)
+  // Profile and preference events, as the store commits them.
+  const committed: Array<{ name: string; payload: unknown }> = []
+  const store = openTestComposerStore(directory, (event) =>
+    committed.push({ name: event.name, payload: event.payload }),
+  )
   stores.push(store)
   const runtime = {
     setModel: vi.fn().mockResolvedValue(undefined),
@@ -85,7 +90,7 @@ async function harness() {
   const service = createComposerService(runtime, providers, store, (sessionId) =>
     sessionId === 'session-1' ? Promise.resolve(target) : undefined,
   )
-  return { runtime, service, store, target }
+  return { runtime, service, store, target, committed }
 }
 
 describe('composer service commands', () => {
@@ -389,15 +394,15 @@ describe('composer service commands', () => {
     it('announces nothing when it says what is already known', async () => {
       const directory = await mkdtemp(join(tmpdir(), 'openmanager-composer-service-test-'))
       directories.push(directory)
-      const store = openComposerStore(directory)
-      stores.push(store)
       const publish = vi.fn()
+      // A catalog change is the store's own event.
+      const store = openTestComposerStore(directory, (event) => publish(event.name, event.payload))
+      stores.push(store)
       const service = createComposerService(
         { modelImageInputSupport: vi.fn(async () => new Map()) } as never,
         { snapshot: () => [provider], rejection: () => undefined },
         store,
         () => undefined,
-        { publish },
       )
       const catalog = {
         models: {
@@ -535,8 +540,7 @@ describe('what a provider and its models accept in a prompt', () => {
   })
 
   it('records the handshake answer on the profile and publishes it', async () => {
-    const { service, store } = await harness()
-    const published: unknown[] = []
+    const { service, store, committed: published } = await harness()
     const publishing = createComposerService(
       { modelImageInputSupport: async () => new Map() } as unknown as Parameters<
         typeof createComposerService
@@ -544,7 +548,6 @@ describe('what a provider and its models accept in a prompt', () => {
       { snapshot: () => [provider], rejection: () => undefined },
       store,
       () => undefined,
-      { publish: (name, payload) => published.push({ name, payload }) },
     )
     publishing.onRuntimeEvent(initialized({ image: true }))
     expect(store.getProfile('cursor')).toMatchObject({

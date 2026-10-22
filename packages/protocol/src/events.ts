@@ -23,6 +23,7 @@ import {
 } from './domains.js'
 import {
   ComposerPreferenceTargetSchema,
+  PreferenceRevisionSchema,
   ProviderComposerProfileSchema,
   SessionComposerStateSchema,
   WorkspaceComposerPreferenceSchema,
@@ -113,11 +114,17 @@ export const ProofEventSchemas = {
     EnvironmentScopeSchema,
     z.object({ sessionId: EntityIdSchema, composer: SessionComposerStateSchema }),
   ),
-  /** The remembered selection a new draft in this workspace opens with. */
+  /**
+   * The remembered selection a new draft in this workspace opens with, and
+   * the revision this change gave it.
+   */
   'composer.preferences.updated': event(
     'composer.preferences.updated',
     EnvironmentScopeSchema,
-    ComposerPreferenceTargetSchema.extend({ preference: WorkspaceComposerPreferenceSchema }),
+    ComposerPreferenceTargetSchema.extend({
+      preference: WorkspaceComposerPreferenceSchema,
+      revision: PreferenceRevisionSchema,
+    }),
   ),
   /**
    * A composer draft as last saved, by any paired client. The whole draft, so

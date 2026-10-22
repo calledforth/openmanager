@@ -161,7 +161,6 @@ export async function startServer(config: ServerConfig) {
   const budgetKey = createBudgetKey(config.tunnel?.hostname)
   const identity = await loadEnvironmentIdentity(config.dataDir)
   const audit = createAuditLog(log, { dataDir: config.dataDir })
-  const composerStore = openComposerStore(config.dataDir)
   const environmentSettings = openEnvironmentSettings(config.dataDir)
   const filesystem = createFilesystemService({ settings: environmentSettings })
   let announceClients: () => void = () => undefined
@@ -234,6 +233,13 @@ export async function startServer(config: ServerConfig) {
       ...config.commitHooks,
     },
   )
+  // Profiles and workspace preferences: rows the projection writes, read
+  // through the event connection (docs/sync-foundations.md §4.7.11).
+  const composerStore = openComposerStore({
+    database: eventDatabase,
+    environmentId: identity.environmentId,
+    appendAtomic: (events) => eventService.appendAtomic(events),
+  })
   let workspaces
   try {
     workspaces = openWorkspaceRegistry(
@@ -257,7 +263,6 @@ export async function startServer(config: ServerConfig) {
   } catch (error) {
     eventService.close()
     eventDatabase.close()
-    composerStore.close()
     environmentSettings.close()
     clients.close()
     audit.close()

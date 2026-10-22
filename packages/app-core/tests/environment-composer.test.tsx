@@ -336,6 +336,7 @@ describe('the composer over the environment client', () => {
         workspaceId: WORKSPACE.workspaceId,
         providerId: 'opencode',
         preference: { modelId: 'opus' },
+        revision: 10,
       },
     })
     await settle(client)
@@ -483,6 +484,7 @@ describe('the composer over the environment client', () => {
         workspaceId: WORKSPACE.workspaceId,
         providerId: 'opencode',
         preference: { modelId: 'sonnet' },
+        revision: 10,
       },
     })
     await openDraft(client)

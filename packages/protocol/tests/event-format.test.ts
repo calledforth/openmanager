@@ -13,7 +13,7 @@ import { EVENT_FORMAT_VERSION, ProofEventSchema } from '../src/index.js'
  * alone needs the bump by hand.
  */
 const DIGESTS: Record<number, string> = {
-  2: 'c80ffd4054fe003911de122a3437f0a898adc2e755daf7124b1cf6cd746d54d3',
+  2: '1f7e711c498899932df978d6d0f805fe9ee77b1a314137268ede4c655497bd72',
 }
 
 function digest(): string {

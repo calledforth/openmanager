@@ -330,6 +330,7 @@ export const proofEvents = [
       workspaceId: 'workspace-1',
       providerId: 'claude-code',
       preference: { modelId: 'claude-opus', configValues: { effort: 'high' } },
+      revision: 3,
     },
   },
   {
