@@ -4,7 +4,7 @@ import {
   PaperPlaneTiltIcon,
   PencilSimpleLineIcon,
 } from 'phosphor-react-native'
-import { Pressable, View } from 'react-native'
+import { View } from 'react-native'
 
 import { AppText } from '../components/ui/AppText'
 import type { HomeDraftRow } from '../home/rows'
@@ -13,6 +13,7 @@ import { ProjectChip } from './ProjectChip'
 import { ProviderMark } from './ProviderMark'
 import { shortAge } from './SessionRow'
 import { tap } from './haptics'
+import { Press } from './Press'
 
 const images = (count: number) => `${count} ${count === 1 ? 'image' : 'images'}`
 
@@ -32,7 +33,7 @@ export function DraftRow({ row, onPress }: { row: HomeDraftRow; onPress?: () => 
         ? 'images'
         : null
   return (
-    <Pressable
+    <Press
       accessibilityRole="button"
       onPress={() => {
         tap()
@@ -103,6 +104,6 @@ export function DraftRow({ row, onPress }: { row: HomeDraftRow; onPress?: () => 
       <AppText variant="text-12-regular" style={{ color: theme.faint }}>
         {shortAge(draft.editedAt)}
       </AppText>
-    </Pressable>
+    </Press>
   )
 }

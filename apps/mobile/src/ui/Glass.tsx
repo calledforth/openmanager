@@ -1,5 +1,5 @@
 import { BlurTargetView, BlurView } from 'expo-blur'
-import { createContext, useContext, useRef, type ReactNode, type RefObject } from 'react'
+import { createContext, useRef, type ReactNode, type RefObject } from 'react'
 import { Platform, StyleSheet, View, type StyleProp, type ViewStyle } from 'react-native'
 
 import { usePhoneTheme } from '../theme/ThemeProvider'
@@ -50,7 +50,6 @@ export function Glass({
   children?: ReactNode
 }) {
   const theme = usePhoneTheme()
-  const blurTarget = useContext(BlurTargetContext)
   const tint =
     strength === 'glass'
       ? theme.glass
@@ -72,9 +71,11 @@ export function Glass({
         <BlurView
           intensity={intensity}
           tint={theme.colorScheme === 'dark' ? 'dark' : 'light'}
-          {...(Platform.OS === 'android' && blurTarget
-            ? { blurMethod: 'dimezisBlurView' as const, blurTarget }
-            : null)}
+          // Android: the tint alone for now. The native blur draws its target,
+          // and every Glass sits inside the one target the root provides, so
+          // the render tree loops and the app dies on the first pushed
+          // screen (CAL-320 restructures the targets per screen).
+          {...(Platform.OS === 'android' ? { blurMethod: 'none' as const } : null)}
           style={StyleSheet.absoluteFill}
         />
         <View style={[StyleSheet.absoluteFill, { backgroundColor: tint }]} />

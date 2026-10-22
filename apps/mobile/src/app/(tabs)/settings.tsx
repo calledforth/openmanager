@@ -1,7 +1,7 @@
 import Constants from 'expo-constants'
 import { useRouter } from 'expo-router'
 import { CaretRightIcon, InfoIcon, PlusIcon, QrCodeIcon } from 'phosphor-react-native'
-import { Pressable, ScrollView, TouchableOpacity, View } from 'react-native'
+import { ScrollView, TouchableOpacity, View } from 'react-native'
 import { useSafeAreaInsets } from 'react-native-safe-area-context'
 
 import { THEME_FAMILIES } from '@openmanager/app-core/lib/theme-families'
@@ -14,6 +14,7 @@ import { environmentCards } from '../../settings/environments'
 import { SettingsRow } from '../../settings/SettingsRow'
 import { type ThemeMode, usePhoneTheme, useTheme } from '../../theme/ThemeProvider'
 import { BigTitle, FadeOut, SectionLabel } from '../../ui/chrome'
+import { Press } from '../../ui/Press'
 
 const THEME_OPTIONS: { mode: ThemeMode; label: string }[] = [
   { mode: 'system', label: 'System' },
@@ -89,7 +90,7 @@ export default function SettingsScreen() {
 function AddEnvironment({ onPress }: { onPress: () => void }) {
   const theme = usePhoneTheme()
   return (
-    <Pressable
+    <Press
       accessibilityRole="button"
       accessibilityLabel="Add environment"
       onPress={onPress}
@@ -109,7 +110,7 @@ function AddEnvironment({ onPress }: { onPress: () => void }) {
       <AppText variant="text-14-medium" style={{ color: theme.muted }}>
         Add environment
       </AppText>
-    </Pressable>
+    </Press>
   )
 }
 
@@ -117,7 +118,7 @@ function AddEnvironment({ onPress }: { onPress: () => void }) {
 function PairRow({ onPress }: { onPress: () => void }) {
   const theme = usePhoneTheme()
   return (
-    <Pressable
+    <Press
       accessibilityRole="button"
       accessibilityLabel="Pair with a computer"
       onPress={onPress}
@@ -154,7 +155,7 @@ function PairRow({ onPress }: { onPress: () => void }) {
         </AppText>
       </View>
       <CaretRightIcon size={16} color={theme.faint} />
-    </Pressable>
+    </Press>
   )
 }
 

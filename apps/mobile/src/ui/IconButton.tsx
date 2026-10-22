@@ -1,8 +1,9 @@
 import type { ReactNode } from 'react'
-import { Pressable, type StyleProp, type ViewStyle } from 'react-native'
+import { type StyleProp, type ViewStyle } from 'react-native'
 
 import { Glass } from './Glass'
 import { tap } from './haptics'
+import { Press } from './Press'
 
 /** A round glass button for the header: back, more, compose, mark all seen. */
 export function IconButton({
@@ -19,7 +20,7 @@ export function IconButton({
   children: ReactNode
 }) {
   return (
-    <Pressable
+    <Press
       accessibilityRole="button"
       accessibilityLabel={label}
       hitSlop={6}
@@ -35,6 +36,6 @@ export function IconButton({
       >
         {children}
       </Glass>
-    </Pressable>
+    </Press>
   )
 }

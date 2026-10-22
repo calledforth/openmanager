@@ -1,12 +1,13 @@
 import { CaretRightIcon } from 'phosphor-react-native'
 import type { ReactNode } from 'react'
-import { Pressable, View } from 'react-native'
+import { View } from 'react-native'
 
 import { AppText } from '../components/ui/AppText'
 import type { PhoneConnectionTone } from '../environment/connection-ui'
 import type { PhoneTheme } from '../theme/tokens'
 import { usePhoneTheme } from '../theme/ThemeProvider'
 import { tap } from '../ui/haptics'
+import { Press } from '../ui/Press'
 
 /** The colour of a state's dot. Theme status colours only. */
 export function toneColor(theme: PhoneTheme, tone: PhoneConnectionTone): string {
@@ -136,7 +137,7 @@ export function SettingsRow({
   )
   if (!onPress) return body(false)
   return (
-    <Pressable
+    <Press
       accessibilityRole="button"
       accessibilityLabel={accessibilityLabel ?? title}
       onPress={() => {
@@ -145,6 +146,6 @@ export function SettingsRow({
       }}
     >
       {({ pressed }) => body(pressed)}
-    </Pressable>
+    </Press>
   )
 }

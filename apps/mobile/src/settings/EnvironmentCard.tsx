@@ -1,11 +1,12 @@
 import { CaretRightIcon, GlobeIcon, WifiHighIcon } from 'phosphor-react-native'
-import { Pressable, View } from 'react-native'
+import { View } from 'react-native'
 import Animated, { FadeIn } from 'react-native-reanimated'
 
 import { AppText } from '../components/ui/AppText'
 import { usePhoneTheme } from '../theme/ThemeProvider'
 import { shortAge } from '../ui/SessionRow'
 import { tap } from '../ui/haptics'
+import { Press } from '../ui/Press'
 import type { EnvironmentCardView } from './environments'
 import { Dot, Pill, toneColor } from './SettingsRow'
 
@@ -28,7 +29,7 @@ export function EnvironmentCard({
   const RouteIcon = card.route?.kind === 'lan' ? WifiHighIcon : GlobeIcon
   const meta = card.route ? `${card.route.host}` : card.words
   return (
-    <Pressable
+    <Press
       accessibilityRole="button"
       accessibilityLabel={`${card.label}${card.selected ? ', in use' : ''}${meta ? `, ${meta}` : ''}`}
       onPress={() => {
@@ -81,7 +82,7 @@ export function EnvironmentCard({
           </AppText>
         )}
       </Animated.View>
-    </Pressable>
+    </Press>
   )
 }
 

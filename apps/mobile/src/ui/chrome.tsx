@@ -1,11 +1,12 @@
 import { LinearGradient } from 'expo-linear-gradient'
 import type { ReactNode } from 'react'
-import { Pressable, Text, View, type StyleProp, type ViewStyle } from 'react-native'
+import { Text, View, type StyleProp, type ViewStyle } from 'react-native'
 import { withAlpha } from '@openmanager/app-core/lib/theme-tokens'
 
 import { AppText } from '../components/ui/AppText'
 import { usePhoneTheme } from '../theme/ThemeProvider'
 import { tap } from './haptics'
+import { Press } from './Press'
 
 /**
  * The environment line under a top-level title: its name, a dot and a few
@@ -90,7 +91,7 @@ function EnvironmentLine({ environment }: { environment: TitleEnvironment }) {
   if (!environment.onPress) return line
   const { onPress } = environment
   return (
-    <Pressable
+    <Press
       accessibilityRole="button"
       accessibilityLabel={`${environment.label}${environment.detail ? `, ${environment.detail}` : ''}`}
       hitSlop={8}
@@ -101,7 +102,7 @@ function EnvironmentLine({ environment }: { environment: TitleEnvironment }) {
       style={({ pressed }) => ({ alignSelf: 'flex-start', opacity: pressed ? 0.6 : 1 })}
     >
       {line}
-    </Pressable>
+    </Press>
   )
 }
 
