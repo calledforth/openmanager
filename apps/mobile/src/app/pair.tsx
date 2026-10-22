@@ -2,7 +2,7 @@ import * as Clipboard from 'expo-clipboard'
 import * as Device from 'expo-device'
 import { useRouter } from 'expo-router'
 import { ArrowRightIcon, ClipboardTextIcon, LinkIcon, XIcon } from 'phosphor-react-native'
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import {
   KeyboardAvoidingView,
   Platform,
@@ -47,14 +47,35 @@ export default function PairScreen() {
   const theme = usePhoneTheme()
   const controller = usePhoneConnectionController()
   const state = usePhoneConnection()
-  const [pasted, setPasted] = useState('')
+  // What is being typed, until it reads as a whole link. A link that reads is
+  // moved out of the field into a ref at once, so its token is never shown
+  // and is not kept in React state; the field then names only its address.
+  const [draft, setDraft] = useState('')
+  const held = useRef<string | null>(null)
+  const [heldHost, setHeldHost] = useState<string | null>(null)
+  const clearLink = () => {
+    held.current = null
+    setHeldHost(null)
+    setDraft('')
+  }
+  const takeText = (text: string) => {
+    const read = readPairingLink(text)
+    if (read.ok) {
+      held.current = text.trim()
+      setHeldHost(endpointHost(read.link.payload.route))
+      setDraft('')
+    } else {
+      setDraft(text)
+    }
+  }
+  const pasted = held.current ?? draft
   const pairing = usePairing({
     controller,
     fetch: globalThis.fetch,
     onPaired: () => {
       success()
-      // The link is used up; its token leaves the field too.
-      setPasted('')
+      // The link is used up; the phone lets go of it too.
+      clearLink()
     },
     onFailed: warning,
   })
@@ -64,9 +85,10 @@ export default function PairScreen() {
   )
 
   const labelRead = readPhoneLabel(label)
-  const pastedRead = useMemo(() => (pasted.trim() ? readPairingLink(pasted) : null), [pasted])
   const idle = pairing.phase.kind === 'idle'
-  const ready = idle && labelRead.ok
+  // Nothing is used before the phone has read what it saved: an exchange
+  // uses the link up, and its answer must have somewhere to go.
+  const ready = idle && labelRead.ok && state.status !== 'starting'
   // The camera reports a code on every frame it sees it: one read per pairing.
   const scanned = useRef(false)
   useEffect(() => {
@@ -88,11 +110,11 @@ export default function PairScreen() {
   const pasteFromClipboard = async () => {
     tap()
     const text = await Clipboard.getStringAsync().catch(() => '')
-    if (text) setPasted(text.trim())
+    if (text) takeText(text.trim())
   }
 
   const reset = () => {
-    setPasted('')
+    clearLink()
     pairing.reset()
   }
 
@@ -146,29 +168,40 @@ export default function PairScreen() {
                 }}
               >
                 <LinkIcon size={18} color={theme.muted} />
-                <TextInput
-                  accessibilityLabel="Pairing link"
-                  value={pasted}
-                  onChangeText={setPasted}
-                  editable={idle}
-                  placeholder="Paste a pairing link"
-                  placeholderTextColor={theme.faint}
-                  autoCapitalize="none"
-                  autoCorrect={false}
-                  spellCheck={false}
-                  keyboardType={Platform.OS === 'ios' ? 'url' : 'default'}
-                  returnKeyType="go"
-                  onSubmitEditing={() => pasted.trim() && submitLink(pasted, 'paste')}
-                  style={{
-                    flex: 1,
-                    fontFamily: 'Geist-Regular',
-                    fontSize: 15,
-                    color: theme.fg,
-                    paddingVertical: 0,
-                  }}
-                />
+                {heldHost ? (
+                  <AppText
+                    accessibilityLabel={`Pairing link for ${heldHost}`}
+                    variant="text-14-regular"
+                    numberOfLines={1}
+                    style={{ flex: 1, color: theme.fg }}
+                  >
+                    Pairing link for {heldHost}
+                  </AppText>
+                ) : (
+                  <TextInput
+                    accessibilityLabel="Pairing link"
+                    value={draft}
+                    onChangeText={takeText}
+                    editable={idle}
+                    placeholder="Paste a pairing link"
+                    placeholderTextColor={theme.faint}
+                    autoCapitalize="none"
+                    autoCorrect={false}
+                    spellCheck={false}
+                    keyboardType={Platform.OS === 'ios' ? 'url' : 'default'}
+                    returnKeyType="go"
+                    onSubmitEditing={() => pasted.trim() && submitLink(pasted, 'paste')}
+                    style={{
+                      flex: 1,
+                      fontFamily: 'Geist-Regular',
+                      fontSize: 15,
+                      color: theme.fg,
+                      paddingVertical: 0,
+                    }}
+                  />
+                )}
                 {pasted ? (
-                  <FieldIcon label="Clear the link" onPress={() => setPasted('')}>
+                  <FieldIcon label="Clear the link" onPress={clearLink}>
                     <XIcon size={16} color={theme.muted} />
                   </FieldIcon>
                 ) : (
@@ -199,8 +232,8 @@ export default function PairScreen() {
                 <ArrowRightIcon size={20} color={theme.actionFg} weight="bold" />
               </Pressable>
             </View>
-            {pastedRead?.ok ? (
-              <Hint>Reaches {endpointHost(pastedRead.link.payload.route)}</Hint>
+            {heldHost ? (
+              <Hint>Ready to pair. Nothing is sent until you go.</Hint>
             ) : (
               <Hint>
                 On your computer: Settings, then Devices, then Pair a device. It shows the QR code

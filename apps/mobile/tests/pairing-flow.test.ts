@@ -260,6 +260,44 @@ describe('pairing a fresh install: link, exchange, store', () => {
   })
 })
 
+describe('what keeps a link from being used up for nothing', () => {
+  it('sends nothing while the phone has not read what it saved', async () => {
+    const h = freshInstall()
+    const { fetchImpl, calls } = pairFetch(() => json(200, answer()))
+    const result = await exchangeLink(read(linkTo(LAN)), {}, h.controller, fetchImpl)
+    expect(result).toMatchObject({ ok: false, failure: { kind: 'unexpected' } })
+    expect(calls).toHaveLength(0)
+  })
+
+  it('gives up on an exchange that never finishes answering, as unreachable', async () => {
+    const h = freshInstall()
+    await h.controller.start()
+    const hanging = (async (_input: RequestInfo | URL, init?: RequestInit) =>
+      new Promise<Response>((_resolve, reject) => {
+        init?.signal?.addEventListener('abort', () =>
+          reject(new DOMException('aborted', 'AbortError')),
+        )
+      })) as typeof fetch
+    const result = await exchangeLink(read(linkTo(LAN)), {}, h.controller, hanging, {
+      timeoutMs: 50,
+    })
+    expect(result).toEqual({ ok: false, failure: { kind: 'unreachable', route: LAN } })
+  })
+
+  it('reports a save the controller did not take instead of a pairing', async () => {
+    const h = freshInstall()
+    await h.controller.start()
+    const { fetchImpl } = pairFetch(() => json(200, answer()))
+    const result = await exchangeLink(
+      read(linkTo(LAN)),
+      {},
+      { ...h.controller, saveEnvironment: () => undefined },
+      fetchImpl,
+    )
+    expect(result).toMatchObject({ ok: false, failure: { kind: 'unexpected' } })
+  })
+})
+
 describe('a link for an environment the phone already knows', () => {
   it('needs consent before a new address joins one it holds a token for', async () => {
     const h = harness({ routes: [LAN] })
@@ -364,6 +402,22 @@ describe('a link for an environment the phone already knows', () => {
       },
     })
     expect(await redeemed).toEqual({ ok: false, failure: { kind: 'rejected', reason: 'used' } })
+  })
+
+  it('asks a latched connection again before redeeming, rather than reading the old refusal', async () => {
+    const h = harness({ routes: [LAN] })
+    await h.controller.start()
+    await flush()
+    h.socket().drop(4401, 'revoked')
+    await flush()
+    expect(h.state().status).toBe('unauthorized')
+    const sockets = h.sockets().length
+    const redeemed = redeemLink(read(linkTo(LAN)), h.controller, { timers: h.timers })
+    await flush()
+    expect(h.sockets().length).toBeGreaterThanOrEqual(sockets)
+    expect(h.probes.length).toBeGreaterThan(1)
+    h.timers.advance(20_000)
+    expect((await redeemed).ok).toBe(false)
   })
 
   it('gives up on redeeming when the connection does not come up', async () => {

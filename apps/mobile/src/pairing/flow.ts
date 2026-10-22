@@ -18,6 +18,7 @@ export type PairingController = Pick<
   | 'classifyRoute'
   | 'checkRoute'
   | 'addRoute'
+  | 'retry'
 >
 
 /**
@@ -68,6 +69,13 @@ const fail = (failure: PairingFailure): PairingResult => ({ ok: false, failure }
 const describeError = (error: unknown) => (error instanceof Error ? error.message : String(error))
 
 /**
+ * How long the exchange may take, answer body included. A route that takes
+ * the request and never finishes answering reads as one that is unreachable,
+ * so the pairing ends and can be tried again.
+ */
+export const EXCHANGE_TIMEOUT_MS = 20_000
+
+/**
  * Trade the link's token for this phone's own token at the link's route,
  * then save the environment through the controller: the token to
  * SecureStore, the route, label and app origin to the registry. The token
@@ -81,12 +89,22 @@ export async function exchangeLink(
   input: { label?: string },
   controller: PairingController,
   fetchImpl: typeof fetch,
+  options: { timeoutMs?: number } = {},
 ): Promise<PairingResult> {
   const { route, environmentId, token } = link.payload
+  // The token is used up by the exchange; with the registry not loaded yet
+  // its answer could not be saved, so nothing is sent.
+  if (controller.getState().status === 'starting') {
+    return fail({
+      kind: 'unexpected',
+      detail: 'The phone is still loading. Try again in a moment.',
+    })
+  }
+  const deadline = AbortSignal.timeout(options.timeoutMs ?? EXCHANGE_TIMEOUT_MS)
   const seen: { network: boolean; status: number | null } = { network: false, status: null }
-  const watched: typeof fetch = async (...args) => {
+  const watched: typeof fetch = async (request, init) => {
     try {
-      const response = await fetchImpl(...args)
+      const response = await fetchImpl(request, { ...init, signal: deadline })
       seen.status = response.status
       return response
     } catch (error) {
@@ -124,6 +142,17 @@ export async function exchangeLink(
     })
   } catch (error) {
     return fail({ kind: 'unexpected', detail: describeError(error) })
+  }
+  // Read back what the controller holds: a save it did not take is not a pairing.
+  const saved = controller
+    .getState()
+    .environments.find((environment) => environment.environmentId === environmentId)
+  if (!saved?.paired) {
+    return fail({
+      kind: 'unexpected',
+      detail:
+        'The environment answered, but this phone could not save it. Pair again with a new link.',
+    })
   }
   return {
     ok: true,
@@ -236,6 +265,15 @@ export async function redeemLink(
     state.environments.find((environment) => environment.environmentId === environmentId)?.label ??
     'this environment'
   if (state.selectedId !== environmentId) controller.selectEnvironment(environmentId)
+  else if (
+    state.status === 'unauthorized' ||
+    state.status === 'incompatible_protocol' ||
+    state.status === 'waiting'
+  ) {
+    // A person asked to use the link: stopped or backing off, the connection
+    // is asked again now rather than read as refused from before.
+    controller.retry()
+  }
   const client = await connectedClient(controller, environmentId, options)
   if (!client) return fail({ kind: 'not_connected', label })
   try {
