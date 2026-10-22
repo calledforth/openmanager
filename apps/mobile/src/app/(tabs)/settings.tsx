@@ -1,31 +1,38 @@
 import Constants from 'expo-constants'
+import * as Device from 'expo-device'
 import { useRouter } from 'expo-router'
-import { CaretRightIcon, InfoIcon, PlusIcon, QrCodeIcon } from 'phosphor-react-native'
-import { ScrollView, TouchableOpacity, View } from 'react-native'
+import {
+  CaretRightIcon,
+  DeviceMobileIcon,
+  InfoIcon,
+  PlusIcon,
+  QrCodeIcon,
+} from 'phosphor-react-native'
+import { ScrollView, View } from 'react-native'
 import { useSafeAreaInsets } from 'react-native-safe-area-context'
-
-import { THEME_FAMILIES } from '@openmanager/app-core/lib/theme-families'
 
 import { AppText } from '../../components/ui/AppText'
 import { phoneConnectionView } from '../../environment/connection-ui'
 import { usePhoneConnection } from '../../environment/PhoneEnvironmentProvider'
+import { suggestPhoneLabel } from '../../pairing/device-label'
+import { AppearanceSection } from '../../settings/AppearanceSection'
 import { EnvironmentCard } from '../../settings/EnvironmentCard'
 import { environmentCards } from '../../settings/environments'
 import { SettingsRow } from '../../settings/SettingsRow'
-import { type ThemeMode, usePhoneTheme, useTheme } from '../../theme/ThemeProvider'
+import { usePhoneTheme } from '../../theme/ThemeProvider'
 import { BigTitle, FadeOut, SectionLabel } from '../../ui/chrome'
 import { Press } from '../../ui/Press'
 
-const THEME_OPTIONS: { mode: ThemeMode; label: string }[] = [
-  { mode: 'system', label: 'System' },
-  { mode: 'dark', label: 'Dark' },
-  { mode: 'light', label: 'Light' },
-]
+/** What this phone calls itself, the way it names itself when it pairs. */
+const PHONE_NAME = suggestPhoneLabel({ modelName: Device.modelName, osName: Device.osName })
 
 /**
- * Settings, the third tab. Environments first, as cards: the one the phone
- * connects to says "here" and carries the live state in the shared words;
- * each opens its page. Then appearance and this phone.
+ * Settings, the third tab, as the mockup's Settings frame: environments
+ * first, as cards (the one the phone connects to says "here" and carries the
+ * live state in the shared words; each opens its page, where its devices,
+ * pairing links, providers and session titles live). Then appearance, and
+ * this phone. Notifications are left out: the phone has no notification
+ * setting yet, and a row that does nothing is not shown.
  */
 export default function SettingsScreen() {
   const router = useRouter()
@@ -39,6 +46,7 @@ export default function SettingsScreen() {
       ? `${client}`
       : `${client} (environment ${environment})`
   const version = Constants.expoConfig?.version ?? '—'
+  const paired = connection.environments.filter((item) => item.paired).length
 
   return (
     <View className="flex-1" style={{ paddingTop: insets.top + 6 }}>
@@ -71,9 +79,14 @@ export default function SettingsScreen() {
           )}
 
           <SectionLabel>Appearance</SectionLabel>
-          <AppearanceSection onPreview={() => router.push('/theme-preview')} />
+          <AppearanceSection />
 
           <SectionLabel>This phone</SectionLabel>
+          <SettingsRow
+            icon={<DeviceMobileIcon size={17} color={theme.muted} />}
+            title="This device"
+            sub={`${PHONE_NAME} · paired with ${paired === 1 ? '1 environment' : `${paired} environments`}`}
+          />
           <SettingsRow
             icon={<InfoIcon size={17} color={theme.muted} />}
             title="About"
@@ -156,91 +169,5 @@ function PairRow({ onPress }: { onPress: () => void }) {
       </View>
       <CaretRightIcon size={16} color={theme.faint} />
     </Press>
-  )
-}
-
-/** Theme family and mode, from the shared families. Redesigned to the mockup separately. */
-function AppearanceSection({ onPreview }: { onPreview: () => void }) {
-  const { mode, setMode, family, setFamily, resolved } = useTheme()
-  return (
-    <View className="gap-3 px-3">
-      <View className="flex-row flex-wrap gap-3">
-        {THEME_FAMILIES.map((option) => {
-          const active = family === option.id
-          const side = option[resolved]
-          return (
-            <TouchableOpacity
-              key={option.id}
-              activeOpacity={0.8}
-              onPress={() => setFamily(option.id)}
-              className="items-center gap-1.5"
-              accessibilityRole="button"
-              accessibilityLabel={`${option.label} theme`}
-            >
-              <View
-                className={
-                  active
-                    ? 'h-12 w-12 rounded-xl border-2 border-textStrong'
-                    : 'h-12 w-12 rounded-xl border border-borderMuted'
-                }
-                style={{ backgroundColor: side.swatch.canvas }}
-              >
-                <View
-                  className="absolute bottom-1.5 left-1.5 h-2 w-5 rounded-full"
-                  style={{ backgroundColor: side.swatch.ink }}
-                />
-                <View
-                  className="absolute right-1.5 top-1.5 h-2 w-2 rounded-full"
-                  style={{ backgroundColor: side.swatch.accent }}
-                />
-              </View>
-              <AppText
-                variant="text-11-regular"
-                className={active ? 'text-textStrong' : 'text-textMuted'}
-              >
-                {option.label}
-              </AppText>
-            </TouchableOpacity>
-          )
-        })}
-      </View>
-      <View className="flex-row gap-2">
-        {THEME_OPTIONS.map((option) => {
-          const active = mode === option.mode
-          return (
-            <TouchableOpacity
-              key={option.mode}
-              activeOpacity={0.8}
-              onPress={() => setMode(option.mode)}
-              className={
-                active
-                  ? 'flex-1 items-center rounded border border-border bg-tabActiveBg px-3 py-2.5'
-                  : 'flex-1 items-center rounded border border-borderMuted bg-surfaceElevated px-3 py-2.5'
-              }
-            >
-              <AppText
-                variant="text-13-medium"
-                className={active ? 'text-textStrong' : 'text-textMuted'}
-              >
-                {option.label}
-              </AppText>
-            </TouchableOpacity>
-          )
-        })}
-      </View>
-      <TouchableOpacity
-        activeOpacity={0.8}
-        onPress={onPreview}
-        className="rounded border border-borderMuted bg-surface px-3.5 py-3"
-        accessibilityRole="button"
-      >
-        <AppText variant="text-13-medium" className="text-textStrong">
-          Preview every scheme
-        </AppText>
-        <AppText variant="text-11-regular" className="text-textMuted">
-          Web's tokens, painted on the phone
-        </AppText>
-      </TouchableOpacity>
-    </View>
   )
 }
