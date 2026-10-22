@@ -17,7 +17,7 @@ const REJECTION_MESSAGES: Record<PairingRejectionReason, string> = {
   used: 'This pairing link was already used. Ask for a new one.',
   creator_revoked: 'The device that made this link no longer has access, so the link is void.',
   grant_exceeds_link: 'This asked for more access than the link offers.',
-  already_authorized: 'This browser already has full access to the environment.',
+  already_authorized: 'This device already has full access to the environment.',
 }
 
 export function pairingRejectionMessage(reason: PairingRejectionReason): string {
