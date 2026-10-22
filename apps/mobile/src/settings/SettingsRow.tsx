@@ -116,7 +116,14 @@ export function SettingsRow({
           {icon}
         </View>
       ) : null}
-      <View style={{ flex: 1, minWidth: 0 }}>
+      <View
+        style={{ flex: 1, minWidth: 0 }}
+        // A row that is not a button keeps its own words for the screen
+        // reader on the text column, so anything at its end (a retry button)
+        // stays reachable on its own.
+        accessible={!onPress && accessibilityLabel !== undefined}
+        accessibilityLabel={!onPress ? accessibilityLabel : undefined}
+      >
         <AppText
           variant="text-14-medium"
           numberOfLines={1}
