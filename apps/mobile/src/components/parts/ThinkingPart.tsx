@@ -30,8 +30,9 @@ function tokenLabel(tokens?: number): string {
  * Reasoning as one collapsed row: "Thinking" shimmering while it streams,
  * "Thought" (with how long, when the environment says) once it is done. It
  * stays folded whether live or not; a tap on a thought with text opens it,
- * and the text fades in. A thought with no text (a provider that reports
- * only a token count) is a plain row with nothing to open.
+ * and the text fades in. A thought with no text yet (or a provider that
+ * reports only a token count) keeps the same row, its chevron dimmed, with
+ * nothing to open.
  */
 export const ThinkingPart = memo(function ThinkingPart({
   text,
@@ -63,7 +64,25 @@ export const ThinkingPart = memo(function ThinkingPart({
   )
 
   if (!body) {
-    return <View style={{ paddingVertical: 2 }}>{labelView}</View>
+    // The same collapsed row as a thought with text, chevron and all, so a
+    // live "Thinking" and a settled "Thought for 12s" read alike. With nothing
+    // to open it is not a button, and its chevron is dimmed to say so.
+    return (
+      <View
+        style={{
+          paddingVertical: 2,
+          flexDirection: 'row',
+          alignItems: 'center',
+          gap: 8,
+          alignSelf: 'flex-start',
+        }}
+      >
+        <View style={{ opacity: 0.4 }}>
+          <DisclosureChevron open={false} color={theme.faint} />
+        </View>
+        {labelView}
+      </View>
+    )
   }
 
   return (
