@@ -206,6 +206,47 @@ describe('the session titles setting', () => {
     expect(setting.getState().saved).toEqual({ provider: FIRST_TOOL, model: '' })
   })
 
+  it('recovers from a read the connection dropped: the reconnect reads again', async () => {
+    const client = createMockEnvironmentClient({ seed: SEED })
+    clients.push(client)
+    let first = true
+    const read = client.commands.getEnvironmentSettings
+    client.commands.getEnvironmentSettings = () => {
+      if (!first) return read()
+      first = false
+      // The socket drops while the read is out.
+      client.setConnection({ phase: 'reconnecting' })
+      return Promise.reject(new Error('The connection closed.'))
+    }
+    const setting = createTitleSetting(client)
+    setting.start()
+    await settle()
+    expect(setting.getState()).toMatchObject({ saved: null, error: 'The connection closed.' })
+    client.setConnection({ phase: 'connected' })
+    await settle()
+    expect(setting.getState()).toMatchObject({
+      saved: { provider: 'claude', model: '' },
+      error: null,
+    })
+  })
+
+  it('reads again on retry after a refusal', async () => {
+    const client = createMockEnvironmentClient({ seed: SEED })
+    clients.push(client)
+    let refuse = true
+    const read = client.commands.getEnvironmentSettings
+    client.commands.getEnvironmentSettings = () =>
+      refuse ? Promise.reject(new Error('Busy.')) : read()
+    const setting = createTitleSetting(client)
+    setting.start()
+    await settle()
+    expect(setting.getState().error).toBe('Busy.')
+    refuse = false
+    setting.retry()
+    await settle()
+    expect(setting.getState().saved).toEqual({ provider: 'claude', model: '' })
+  })
+
   it('picks nothing before the environment’s value is known', async () => {
     const client = createMockEnvironmentClient({ seed: SEED })
     clients.push(client)

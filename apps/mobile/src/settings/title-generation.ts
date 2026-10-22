@@ -107,7 +107,13 @@ export interface TitleSetting {
   save(next: TitleGenerationSetting): Promise<boolean>
   /** Off, or back on with the tool and model in use before (else the first default). */
   toggle(): Promise<boolean>
-  /** Read the environment's value; returns the stop. */
+  /** Read the environment's value again (after a failed read). */
+  retry(): void
+  /**
+   * Read the environment's value now (when connected) and again on every
+   * reconnect, so a read the connection dropped is not the last word.
+   * Returns the stop.
+   */
   start(): () => void
   dispose(): void
 }
@@ -132,6 +138,27 @@ export function createTitleSetting(client: EnvironmentClient): TitleSetting {
   const message = (error: unknown) => (error instanceof Error ? error.message : String(error))
 
   let generation = 0
+  let stopState: (() => void) | null = null
+
+  const read = () => {
+    if (disposed) return
+    const current = ++generation
+    set({ error: null })
+    client.commands.getEnvironmentSettings().then(
+      (settings) => {
+        if (current === generation) set({ saved: settings.titleGeneration, error: null })
+      },
+      (error: unknown) => {
+        if (current === generation) set({ error: message(error) })
+      },
+    )
+  }
+  const stop = () => {
+    stopState?.()
+    stopState = null
+    // An answer to a read asked before the stop is not for the next start.
+    generation += 1
+  }
 
   const save = async (next: TitleGenerationSetting) => {
     if (state.busy || !state.saved) return false
@@ -162,24 +189,22 @@ export function createTitleSetting(client: EnvironmentClient): TitleSetting {
       }
       return save(lastOn ?? { provider: FIRST_TOOL, model: '' })
     },
+    retry: read,
     start() {
       if (disposed) return () => undefined
-      const current = ++generation
-      client.commands.getEnvironmentSettings().then(
-        (settings) => {
-          if (current === generation) set({ saved: settings.titleGeneration, error: null })
-        },
-        (error: unknown) => {
-          if (current === generation) set({ error: message(error) })
-        },
-      )
-      return () => {
-        if (current === generation) generation += 1
-      }
+      stop()
+      let connected = client.getState().connection.phase === 'connected'
+      stopState = client.subscribe(() => {
+        const now = client.getState().connection.phase === 'connected'
+        if (now && !connected) read()
+        connected = now
+      })
+      if (connected) read()
+      return stop
     },
     dispose() {
+      stop()
       disposed = true
-      generation += 1
       listeners.clear()
     },
   }
