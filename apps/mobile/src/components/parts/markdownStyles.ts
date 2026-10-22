@@ -38,8 +38,8 @@ export function buildMarkdownStyles(theme: PhoneTheme): Record<string, TextStyle
       borderWidth: 0,
       borderRadius: 4,
       paddingHorizontal: 4,
-      // The fill hugs the glyphs rather than the prose's taller line.
-      lineHeight: 18,
+      // No lineHeight of its own: on Android a span's line height resizes
+      // the whole line it sits on, and prose lines must keep one rhythm.
     },
 
     // Quotes lean on a bar of the faint ink, the one rule prose keeps.

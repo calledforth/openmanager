@@ -8,6 +8,8 @@ import { sessionMenuItems, type SessionMenuItem, type SessionMenuItemId } from '
 /** What the page's header can do with the session it shows. */
 export interface SessionActions {
   menu: readonly SessionMenuItem[]
+  /** Why nothing can be sent from here, said once at the top of the menu; null when it can. */
+  unavailable: string | null
   /** Sends a menu item's command; settles once the environment answered. */
   run: (id: SessionMenuItemId) => Promise<void>
   /** Asks the environment to rename it; the title on screen is the one it keeps. */
@@ -27,6 +29,7 @@ export function unavailableSessionActions(
       unavailable: reason,
       supports: () => false,
     }),
+    unavailable: reason,
     run: () => Promise.resolve(),
     rename: () => Promise.resolve(),
   }
@@ -46,22 +49,24 @@ export function useSessionActions(
   const mark = session ? statusMarkOf(session) : 'idle'
   const settled = !!session?.settledAt
   const backgroundTaskCount = session?.backgroundTaskCount ?? 0
+  const listed = !!session
+  const unavailable =
+    status !== 'connected'
+      ? 'Not connected to its environment'
+      : !listed
+        ? 'Not listed by its environment yet'
+        : null
   const menu = useMemo(
     () =>
       sessionMenuItems({
         mark,
         settled,
         backgroundTaskCount,
-        unavailable:
-          status !== 'connected'
-            ? 'Not connected to its environment'
-            : !session
-              ? 'Not listed by its environment yet'
-              : null,
+        unavailable,
         supports: (command) => client.supports(command),
       }),
-    // `status` is in the list: what the client supports is known once it connects.
-    [backgroundTaskCount, client, mark, session, settled, status],
+    // `unavailable` follows the connection: what the client supports is known once it connects.
+    [backgroundTaskCount, client, mark, settled, unavailable],
   )
   const run = useCallback(
     async (id: SessionMenuItemId) => {
@@ -85,5 +90,5 @@ export function useSessionActions(
     (title: string) => client.commands.renameSession(sessionId, title),
     [client, sessionId],
   )
-  return useMemo(() => ({ menu, run, rename }), [menu, rename, run])
+  return useMemo(() => ({ menu, unavailable, run, rename }), [menu, rename, run, unavailable])
 }

@@ -266,6 +266,7 @@ export const SessionThread = memo(function SessionThread({
       {chrome.menuOpen ? (
         <SessionMenu
           items={actions?.menu ?? NO_ITEMS}
+          note={actions?.unavailable ?? null}
           top={insets.top + 6 + 48}
           onChoose={chrome.choose}
           onClose={chrome.closeMenu}

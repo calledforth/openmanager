@@ -31,7 +31,16 @@ const ICONS: Record<SessionMenuItemId, ComponentType<IconProps>> = {
 const MENU_IN = FadeIn.duration(160).easing(Easing.out(Easing.quad))
 const MENU_OUT = FadeOut.duration(120).easing(Easing.in(Easing.quad))
 
-function MenuRow({ item, onChoose }: { item: SessionMenuItem; onChoose: () => void }) {
+function MenuRow({
+  item,
+  said,
+  onChoose,
+}: {
+  item: SessionMenuItem
+  /** The reason the menu already says at its top: not repeated on the row. */
+  said: string | null
+  onChoose: () => void
+}) {
   const theme = usePhoneTheme()
   const Icon = ICONS[item.id]
   const disabled = item.disabledReason !== null
@@ -65,13 +74,25 @@ function MenuRow({ item, onChoose }: { item: SessionMenuItem; onChoose: () => vo
         <AppText variant="text-14-regular" numberOfLines={1} style={{ color: tone }}>
           {item.label}
         </AppText>
-        {item.disabledReason ? (
+        {item.disabledReason && item.disabledReason !== said ? (
           <AppText variant="text-12-regular" numberOfLines={2} style={{ color: theme.muted }}>
             {item.disabledReason}
           </AppText>
         ) : null}
       </View>
     </Press>
+  )
+}
+
+function MenuNote({ text }: { text: string }) {
+  const theme = usePhoneTheme()
+  return (
+    <AppText
+      variant="text-12-regular"
+      style={{ color: theme.muted, paddingHorizontal: 12, paddingTop: 8, paddingBottom: 4 }}
+    >
+      {text}
+    </AppText>
   )
 }
 
@@ -82,11 +103,14 @@ function MenuRow({ item, onChoose }: { item: SessionMenuItem; onChoose: () => vo
  */
 export function SessionMenu({
   items,
+  note,
   top,
   onChoose,
   onClose,
 }: {
   items: readonly SessionMenuItem[]
+  /** Why nothing can be sent from here, said once above the items. */
+  note: string | null
   /** Where the popover's top sits: just under the header's buttons. */
   top: number
   onChoose: (id: SessionMenuItemId) => void
@@ -107,9 +131,10 @@ export function SessionMenu({
       />
       <View style={{ position: 'absolute', top, right: 16, width: 256 }}>
         <Glass strength="sheet" shadow="float" radius={16} contentStyle={{ padding: 6 }}>
+          {note ? <MenuNote text={note} /> : null}
           <View accessibilityRole="menu">
             {items.map((item) => (
-              <MenuRow key={item.id} item={item} onChoose={() => onChoose(item.id)} />
+              <MenuRow key={item.id} item={item} said={note} onChoose={() => onChoose(item.id)} />
             ))}
           </View>
         </Glass>
