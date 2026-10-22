@@ -69,7 +69,7 @@ export function DeviceSheet({
         initialFocus={heading}
         returnFocus={returnFocus}
       >
-        <View style={{ paddingHorizontal: 8, paddingBottom: 10, gap: 4 }}>
+        <View style={{ paddingHorizontal: 44, paddingBottom: 10, gap: 4 }}>
           <AppText
             ref={heading}
             accessibilityRole="header"
@@ -86,8 +86,14 @@ export function DeviceSheet({
             {row.isCurrent ? `This phone · ${row.sub}` : row.sub}
           </AppText>
         </View>
+        {/* Closing the sheet, reachable by every screen reader (the scrim is not). */}
+        <View style={{ position: 'absolute', top: 20, right: 12 }}>
+          <FieldAction label="Close" disabled={busy} onPress={onClose}>
+            <XIcon size={17} color={theme.muted} />
+          </FieldAction>
+        </View>
         {renaming ? (
-          <Animated.View entering={STEP_IN} style={{ gap: 8 }}>
+          <Animated.View key="rename" entering={STEP_IN} style={{ gap: 8 }}>
             <View
               style={{
                 flexDirection: 'row',
@@ -139,7 +145,7 @@ export function DeviceSheet({
             </View>
           </Animated.View>
         ) : (
-          <Animated.View entering={STEP_IN}>
+          <Animated.View key="actions" entering={STEP_IN}>
             {row.canRename ? (
               <SettingsRow
                 raised

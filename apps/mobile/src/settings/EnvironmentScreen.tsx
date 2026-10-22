@@ -8,7 +8,7 @@ import {
   TrashIcon,
   WifiHighIcon,
 } from 'phosphor-react-native'
-import { useCallback, useRef, useState, type ReactNode, type RefObject } from 'react'
+import { useCallback, useRef, type ReactNode, type RefObject } from 'react'
 import { ScrollView, Text, View } from 'react-native'
 import { useEnvironmentClientOptional } from '@openmanager/app-core/logic'
 import Animated, { FadeIn } from 'react-native-reanimated'
@@ -28,33 +28,25 @@ import { ConfirmSheet } from '../ui/ConfirmSheet'
 import { useGoBack } from '../ui/goBack'
 import { IconButton } from '../ui/IconButton'
 import { ConnectionPanel } from './ConnectionPanel'
-import type { DeviceAdmin, DeviceAdminState, ShownPairingLink } from './device-admin'
+import type { DeviceAdmin, DeviceAdminState } from './device-admin'
 import { DeviceSheet } from './DeviceSheet'
 import {
   confirmCopy,
   currentDevice,
   defaultPairingRoute,
   deviceRows as deviceRowViews,
-  type DeviceConfirm,
 } from './devices'
 import { DevicesSection } from './DevicesSection'
 import { sinceWords } from './EnvironmentCard'
 import { PairSheet } from './PairSheet'
 import { ProvidersSection } from './ProvidersSection'
 import { TitlesSection, TitlesSheet } from './TitlesSheet'
+import { usePageSheet, type PageSheet } from './page-sheet'
 import { useDeviceAdmin, useTitleSetting } from './useSettingsStores'
 import { ROUTE_ORDER_NOTE, pageStatusWords, routeRows, type RouteRowView } from './environments'
 import { Dot, Pill, SettingsRow, toneColor } from './SettingsRow'
 
 const WORDS_IN = FadeIn.duration(180)
-
-/** The one sheet the page shows at a time. */
-type PageSheet =
-  | { kind: 'forget' }
-  | { kind: 'device'; clientId: string }
-  | { kind: 'confirm'; confirm: DeviceConfirm }
-  | { kind: 'pair'; reopen: ShownPairingLink | null }
-  | { kind: 'titles' }
 
 /**
  * One saved environment: where the phone stands with it, its routes in the
@@ -69,7 +61,6 @@ export function EnvironmentScreen({ environmentId }: { environmentId: string }) 
   const goBack = useGoBack()
   const state = usePhoneConnection()
   const controller = usePhoneConnectionController()
-  const [sheet, setSheet] = useState<PageSheet | null>(null)
   const forgetRow = useRef<View>(null)
   const pairRow = useRef<View>(null)
   const revokeOthersRow = useRef<View>(null)
@@ -92,6 +83,10 @@ export function EnvironmentScreen({ environmentId }: { environmentId: string }) 
   const [titles, titlesState] = useTitleSetting(
     client?.supports('getEnvironmentSettings') ? client : null,
   )
+  const [sheet, setSheet] = usePageSheet(adminState, {
+    appUrl: environment?.appOrigin ?? null,
+    titlesRead: Boolean(titlesState?.saved),
+  })
 
   if (!environment) {
     return (
@@ -260,6 +255,7 @@ export function EnvironmentScreen({ environmentId }: { environmentId: string }) 
           state={titlesState}
           rowRef={titlesRow}
           onOpen={() => setSheet({ kind: 'titles' })}
+          onRetry={() => titles?.retry()}
         />
       ) : null}
       {!client ? (

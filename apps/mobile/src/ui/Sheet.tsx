@@ -35,7 +35,8 @@ export const SCRIM_OUT = FadeOut.duration(160)
  * while it is open (`coveredBySheet`, TalkBack and VoiceOver), focus moves to
  * `initialFocus` when it opens and back to `returnFocus` when it closes.
  * With `onBack`, Android's Back button is that (Cancel, say) and goes no
- * further while the sheet is open.
+ * further while the sheet is open; VoiceOver's escape gesture is `onBack`,
+ * else `onDismiss`.
  */
 export function Sheet({
   onDismiss,
@@ -86,6 +87,8 @@ export function Sheet({
       </Animated.View>
       <Animated.View
         accessibilityViewIsModal
+        // VoiceOver's two-finger scrub: the same as Back, or a tap on the scrim.
+        onAccessibilityEscape={onBack ?? onDismiss}
         entering={SHEET_IN}
         exiting={SHEET_OUT}
         style={{ position: 'absolute', left: 8, right: 8, bottom: Math.max(insets.bottom, 8) }}
