@@ -3,15 +3,16 @@ import {
   JetBrainsMono_400Regular,
   JetBrainsMono_500Medium,
 } from '@expo-google-fonts/jetbrains-mono'
-import { Stack } from 'expo-router'
+import { Stack, usePathname, useRouter } from 'expo-router'
 import * as SplashScreen from 'expo-splash-screen'
 import { StatusBar } from 'expo-status-bar'
-import { useEffect } from 'react'
+import { useEffect, useRef } from 'react'
 import { useFonts } from 'expo-font'
 import { SafeAreaProvider } from 'react-native-safe-area-context'
 
 import '../../global.css'
 import { PhoneEnvironmentProvider } from '../environment/PhoneEnvironmentProvider'
+import { pairingSession } from '../pairing/session'
 import { ThemeProvider, usePhoneTheme, useTheme } from '../theme/ThemeProvider'
 import { GlassBackdrop } from '../ui/Glass'
 
@@ -41,7 +42,7 @@ function RootNavigator() {
       >
         {/* Sessions, Inbox and Settings, with the pill nav as their tab bar. */}
         <Stack.Screen name="(tabs)" />
-        {/* Pages slide in from the side; search and the theme preview rise. */}
+        {/* Pages slide in from the side; search, pairing and the theme preview rise. */}
         <Stack.Screen name="session/[externalId]" options={{ animation: 'slide_from_right' }} />
         <Stack.Screen name="draft/new" options={{ animation: 'slide_from_right' }} />
         <Stack.Screen name="draft/[draftId]" options={{ animation: 'slide_from_right' }} />
@@ -49,10 +50,39 @@ function RootNavigator() {
           name="search"
           options={{ presentation: 'modal', animation: 'slide_from_bottom' }}
         />
+        <Stack.Screen
+          name="pair"
+          options={{ presentation: 'modal', animation: 'slide_from_bottom' }}
+        />
         <Stack.Screen name="theme-preview" options={{ presentation: 'modal' }} />
       </Stack>
+      <PairingResume />
     </GlassBackdrop>
   )
+}
+
+/**
+ * The environment provider remounts every screen once a client is accepted,
+ * which on a phone also resets the navigator to the sessions home. A pairing
+ * that connected (or is still connecting) when that happened brings its
+ * screen back, so its sheet is seen.
+ */
+function PairingResume() {
+  const router = useRouter()
+  const pathname = usePathname()
+  const at = useRef(pathname)
+  at.current = pathname
+  useEffect(() => {
+    // Asked once the navigator has settled: on web the address keeps the
+    // pairing screen, which then mounts by itself.
+    const timer = setTimeout(() => {
+      if (pairingSession.active() && !pairingSession.shown() && at.current !== '/pair') {
+        router.push('/pair')
+      }
+    }, 250)
+    return () => clearTimeout(timer)
+  }, [router])
+  return null
 }
 
 export default function RootLayout() {
