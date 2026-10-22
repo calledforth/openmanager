@@ -1,13 +1,14 @@
 import { CameraView, useCameraPermissions, type BarcodeScanningResult } from 'expo-camera'
 import { CameraIcon, FlashlightIcon, QrCodeIcon } from 'phosphor-react-native'
 import { useState } from 'react'
-import { Linking, Platform, Pressable, StyleSheet, View } from 'react-native'
+import { Linking, Platform, StyleSheet, View } from 'react-native'
 
 import { AppText } from '../components/ui/AppText'
 import { usePhoneTheme } from '../theme/ThemeProvider'
 import { Glass } from '../ui/Glass'
 import { IconButton } from '../ui/IconButton'
 import { tap } from '../ui/haptics'
+import { Press } from '../ui/Press'
 
 export const SCAN_PANEL_HEIGHT = 320
 
@@ -68,7 +69,7 @@ function NativeScan({
               : 'Allow the camera to scan the QR code your computer shows.'
           }
         />
-        <Pressable
+        <Press
           accessibilityRole="button"
           accessibilityLabel={blocked ? 'Open Settings' : 'Allow camera'}
           onPress={() => {
@@ -92,7 +93,7 @@ function NativeScan({
           <AppText variant="text-14-medium" style={{ color: theme.fg }}>
             {blocked ? 'Open Settings' : 'Allow camera'}
           </AppText>
-        </Pressable>
+        </Press>
       </Frame>
     )
   }

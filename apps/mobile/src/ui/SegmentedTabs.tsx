@@ -1,8 +1,9 @@
-import { Pressable, View } from 'react-native'
+import { View } from 'react-native'
 
 import { AppText } from '../components/ui/AppText'
 import { usePhoneTheme } from '../theme/ThemeProvider'
 import { tap } from './haptics'
+import { Press } from './Press'
 
 export interface SegmentedTab<Key extends string> {
   key: Key
@@ -26,7 +27,7 @@ export function SegmentedTabs<Key extends string>({
       {tabs.map((tab) => {
         const on = tab.key === value
         return (
-          <Pressable
+          <Press
             key={tab.key}
             accessibilityRole="tab"
             accessibilityState={{ selected: on }}
@@ -54,7 +55,7 @@ export function SegmentedTabs<Key extends string>({
                 {tab.count}
               </AppText>
             ) : null}
-          </Pressable>
+          </Press>
         )
       })}
     </View>
