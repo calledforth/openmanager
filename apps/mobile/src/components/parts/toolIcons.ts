@@ -34,6 +34,21 @@ const TOOL_ICONS: Record<string, Icon> = {
   AskUserQuestion: ChatIcon,
 }
 
-export function getToolIcon(toolName: string): Icon {
-  return TOOL_ICONS[canonicalizeToolName(toolName)] ?? WrenchIcon
+/** The protocol's tool kinds, for a call the environment names in its own words. */
+const KIND_ICONS: Record<string, Icon> = {
+  read: FileMagnifyingGlassIcon,
+  edit: NotePencilIcon,
+  delete: NotePencilIcon,
+  move: FoldersIcon,
+  search: MagnifyingGlassIcon,
+  execute: TerminalIcon,
+  fetch: DownloadSimpleIcon,
+}
+
+export function getToolIcon(toolName: string, kind?: string): Icon {
+  return (
+    TOOL_ICONS[canonicalizeToolName(toolName)] ??
+    (kind ? KIND_ICONS[kind] : undefined) ??
+    WrenchIcon
+  )
 }

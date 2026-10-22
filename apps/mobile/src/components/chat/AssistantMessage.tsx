@@ -1,15 +1,13 @@
 import { View } from 'react-native'
-
-import type { StreamMessagePart } from '@openmanager/shared/lib/remote-stream-parts'
+import type { MessagePart } from '@openmanager/app-core/logic'
 
 import { MessageParts } from '../parts/MessageParts'
 import { TextPart } from '../parts/TextPart'
 import { ShimmerText } from './ShimmerText'
 
-// Full-width assistant message (desktop `AssistantMessage`): rich parts when
-// available, else plain markdown content. While a streaming message has no
-// parts and no text yet, show the animated "Working" shimmer row (the
-// streaming tail per plan Phase 4).
+// Full-width assistant turn (web's `AssistantMessage`): its parts in the order
+// they happened when there are any, else plain markdown content. While a live
+// turn has nothing to show yet, the "Working" shimmer row stands in.
 
 export function AssistantMessage({
   content,
@@ -18,7 +16,7 @@ export function AssistantMessage({
 }: {
   content: string
   isFinal?: boolean
-  parts?: StreamMessagePart[]
+  parts?: readonly MessagePart[]
 }) {
   const hasParts = !!parts && parts.length > 0
   const isStreaming = isFinal !== true
@@ -35,9 +33,9 @@ export function AssistantMessage({
   }
 
   return (
-    <View className="w-full py-1" style={{ opacity: isStreaming ? 0.9 : 1 }}>
+    <View className="w-full py-1">
       {hasParts ? (
-        <MessageParts parts={parts as StreamMessagePart[]} isStreaming={isStreaming} />
+        <MessageParts parts={parts} isStreaming={isStreaming} />
       ) : (
         <TextPart text={content} />
       )}

@@ -1,8 +1,10 @@
 import { Fragment, useMemo, type ReactNode } from 'react'
 import { View } from 'react-native'
+import type { ArtifactSource, MessagePart } from '@openmanager/app-core/logic'
 
 import { AppText } from '../ui/AppText'
 import { CollapsibleSteps } from './CollapsibleSteps'
+import { ImagePart } from './ImagePart'
 import { TextPart } from './TextPart'
 import { ThinkingPart } from './ThinkingPart'
 import { ToolRow } from './ToolRow'
@@ -12,11 +14,7 @@ import { ToolRow } from './ToolRow'
 // collapse those steps behind a "Worked N steps" summary. Streaming keeps
 // everything expanded so the live trail stays visible.
 
-interface Part {
-  type: string
-  id: string
-  [key: string]: unknown
-}
+type Part = MessagePart
 
 function getPartKey(part: Part, index: number): string {
   const callId = (part as { callID?: string }).callID
@@ -58,6 +56,15 @@ function renderPart(part: Part, index: number, isStreaming?: boolean): ReactNode
     }
     case 'tool':
       return <ToolRow key={key} part={part as Parameters<typeof ToolRow>[0]['part']} />
+    case 'image':
+      return (
+        <View key={key} className="py-1">
+          <ImagePart
+            url={typeof part.url === 'string' ? part.url : undefined}
+            artifact={part.artifact as ArtifactSource | undefined}
+          />
+        </View>
+      )
     case 'reasoning': {
       const partTime =
         part.time && typeof part.time === 'object'
@@ -117,18 +124,22 @@ function isToolOrExploringStep(part: Part): boolean {
   )
 }
 
-export function MessageParts({ parts, isStreaming }: { parts: Part[]; isStreaming?: boolean }) {
-  const safeParts = parts ?? []
-
+export function MessageParts({
+  parts,
+  isStreaming,
+}: {
+  parts: readonly Part[]
+  isStreaming?: boolean
+}) {
   const deduped = useMemo(() => {
     const seen = new Set<string>()
-    return safeParts.filter((part, index) => {
+    return parts.filter((part, index) => {
       const id = part.id ?? (part as { callID?: string }).callID ?? getPartKey(part, index)
       if (seen.has(id)) return false
       seen.add(id)
       return true
     })
-  }, [safeParts])
+  }, [parts])
 
   const { stepParts, hasFinalText, stepsCount, finalParts } = useMemo(() => {
     let lastTextIdx = -1
@@ -171,7 +182,7 @@ export function MessageParts({ parts, isStreaming }: { parts: Part[]; isStreamin
     }
   }, [deduped])
 
-  if (safeParts.length === 0) return null
+  if (parts.length === 0) return null
 
   const renderedSteps = <>{stepParts.map((part, idx) => renderPart(part, idx, isStreaming))}</>
 

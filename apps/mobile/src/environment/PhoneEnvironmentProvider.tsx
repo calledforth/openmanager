@@ -1,3 +1,4 @@
+import { router } from 'expo-router'
 import { createContext, useContext, useEffect, useSyncExternalStore, type ReactNode } from 'react'
 import {
   EnvironmentApplicationProviders,
@@ -68,6 +69,18 @@ export function useMissingRuntimeFills(): readonly string[] {
   return usePhoneConnectionValue().missingFills
 }
 
+/**
+ * A draft's own page. Given to the application providers, it is what makes
+ * them serve the environment's draft cards (`useSidebarDrafts`), which only
+ * hosts with draft pages get.
+ */
+function navigateDraft(draftId: string, options?: { replace?: boolean }): Promise<void> {
+  const href = `/draft/${encodeURIComponent(draftId)}` as const
+  if (options?.replace) router.replace(href)
+  else router.push(href)
+  return Promise.resolve()
+}
+
 const missingFills = missingRuntimeFills(
   globalThis as unknown as RuntimeScope & { URL?: typeof URL },
 )
@@ -108,6 +121,7 @@ export function PhoneEnvironmentProvider({ children }: { children: ReactNode }) 
             key={state.selectedId ?? undefined}
             storage={phoneStorage.device}
             subscribePageExit={subscribePhonePageExit}
+            navigateDraft={navigateDraft}
           >
             {children}
           </EnvironmentApplicationProviders>

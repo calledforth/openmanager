@@ -1,13 +1,20 @@
-import { defineConfig } from 'vitest/config'
+import { defineConfig, mergeConfig } from 'vitest/config'
 
-// The live check drives the phone's connection controller against a real
-// environment server. It never runs with the unit tests: start a server, set
-// the LIVE_* variables, then `pnpm --filter @openmanager/mobile test:live`.
-export default defineConfig({
-  test: {
-    environment: 'node',
-    include: ['live/**/*.live.ts'],
-    testTimeout: 120_000,
-    hookTimeout: 120_000,
-  },
-})
+import unit from '../vitest.config'
+
+// The live checks drive the phone's connection controller (and, for the
+// sessions check, the shared providers on its client) against a real
+// environment server. They never run with the unit tests: start a server,
+// set the LIVE_* variables, then `pnpm --filter @openmanager/mobile test:live`.
+// The unit config's React resolution carries over.
+export default mergeConfig(
+  { resolve: unit.resolve },
+  defineConfig({
+    test: {
+      environment: 'node',
+      include: ['live/**/*.live.ts'],
+      testTimeout: 120_000,
+      hookTimeout: 120_000,
+    },
+  }),
+)
