@@ -1,16 +1,14 @@
-import { useEffect, useRef, useState } from 'react'
-import { TouchableOpacity, View } from 'react-native'
+import { memo, useRef, useState } from 'react'
+import { Pressable, View } from 'react-native'
+import Animated from 'react-native-reanimated'
 
-import { AppText } from '../ui/AppText'
+import { usePhoneTheme } from '../../theme/ThemeProvider'
 import { ShimmerText } from '../chat/ShimmerText'
-
-// Mirror of the desktop `ThinkingPart` (<details open={isStreaming}>): a
-// collapsed reasoning row that reads "Thought" (shimmering while streaming) and
-// expands to italic muted text. Expanded while streaming, auto-collapses when
-// streaming ends, and a manual tap takes control until the next transition.
+import { AppText } from '../ui/AppText'
+import { DisclosureChevron, revealBody } from './Disclosure'
 
 /** Sub-second thoughts read as noise, so the duration only joins the label above 1s. */
-function thoughtLabel(durationMs?: number): string {
+export function thoughtLabel(durationMs?: number): string {
   if (!durationMs || durationMs < 1000) return 'Thought'
   const totalSeconds = Math.round(durationMs / 1000)
   if (totalSeconds < 60) return `Thought for ${totalSeconds}s`
@@ -27,7 +25,14 @@ function tokenLabel(tokens?: number): string {
   return ` · ~${rounded} tokens`
 }
 
-export function ThinkingPart({
+/**
+ * Reasoning as one collapsed row: "Thinking" shimmering while it streams,
+ * "Thought" (with how long, when the environment says) once it is done. It
+ * stays folded whether live or not; a tap on a thought with text opens it,
+ * and the text fades in. A thought with no text (a provider that reports
+ * only a token count) is a plain row with nothing to open.
+ */
+export const ThinkingPart = memo(function ThinkingPart({
   text,
   duration,
   tokens,
@@ -40,71 +45,56 @@ export function ThinkingPart({
   tokens?: number
   isStreaming?: boolean
 }) {
-  const [expanded, setExpanded] = useState(isStreaming)
-  const manuallyToggledRef = useRef(false)
-  const prevStreamingRef = useRef(isStreaming)
+  const theme = usePhoneTheme()
+  const [open, setOpen] = useState(false)
+  const revealedRef = useRef(false)
 
-  useEffect(() => {
-    const prev = prevStreamingRef.current
-    prevStreamingRef.current = isStreaming
-    if (prev === isStreaming) return
-    if (isStreaming) {
-      // New streaming episode: expand and hand control back to auto behavior.
-      manuallyToggledRef.current = false
-      setExpanded(true)
-    } else if (!manuallyToggledRef.current) {
-      // Streaming ended without a manual override: collapse.
-      setExpanded(false)
-    }
-  }, [isStreaming])
-
-  const onToggle = () => {
-    manuallyToggledRef.current = true
-    setExpanded((prev) => !prev)
-  }
-
-  // A part with a token count but no text is still a real thought worth
-  // showing; only a part with nothing at all is dropped. Branching on the shape
-  // of the part rather than on the provider is deliberate.
   const body = text ?? ''
   if (!body && tokens === undefined && !isStreaming) return null
 
   const label = `${isStreaming ? 'Thinking' : thoughtLabel(duration)}${tokenLabel(tokens)}`
-  // Nothing to disclose without text, so the row is not tappable in that case.
+  const labelView = isStreaming ? (
+    <ShimmerText variant="text-13-regular">{label}</ShimmerText>
+  ) : (
+    <AppText variant="text-13-regular" style={{ color: theme.muted }}>
+      {label}
+    </AppText>
+  )
+
   if (!body) {
-    return (
-      <View className="py-px">
-        {isStreaming ? (
-          <ShimmerText variant="text-12-regular">{label}</ShimmerText>
-        ) : (
-          <AppText variant="text-12-regular" className="text-textMuted">
-            {label}
-          </AppText>
-        )}
-      </View>
-    )
+    return <View style={{ paddingVertical: 2 }}>{labelView}</View>
   }
 
   return (
-    <View className="py-px">
-      <TouchableOpacity activeOpacity={0.7} onPress={onToggle} hitSlop={6}>
-        {isStreaming ? (
-          <ShimmerText variant="text-12-regular">{label}</ShimmerText>
-        ) : (
-          <AppText variant="text-12-regular" className="text-textMuted">
-            {label}
-          </AppText>
-        )}
-      </TouchableOpacity>
-      {expanded ? (
-        <AppText
-          variant="text-12-regular"
-          className="mt-1 text-textMuted"
-          style={{ fontStyle: 'italic' }}
+    <View style={{ paddingVertical: 2 }}>
+      <Pressable
+        accessibilityRole="button"
+        accessibilityState={{ expanded: open }}
+        accessibilityLabel={label}
+        hitSlop={6}
+        onPress={() => {
+          revealedRef.current = true
+          setOpen((value) => !value)
+        }}
+        style={{ flexDirection: 'row', alignItems: 'center', gap: 8, alignSelf: 'flex-start' }}
+      >
+        <DisclosureChevron open={open} color={theme.faint} />
+        {labelView}
+      </Pressable>
+      {open ? (
+        <Animated.View
+          entering={revealedRef.current ? revealBody : undefined}
+          style={{ marginTop: 6, paddingLeft: 20 }}
         >
-          {body}
-        </AppText>
+          <AppText
+            variant="text-13-regular"
+            selectable
+            style={{ color: theme.muted, fontStyle: 'italic' }}
+          >
+            {body}
+          </AppText>
+        </Animated.View>
       ) : null}
     </View>
   )
-}
+})

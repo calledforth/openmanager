@@ -5,6 +5,7 @@ import type { ThreadState } from '@openmanager/environment-client'
 import { highlightCode, languageLabel } from '../src/components/parts/highlight'
 import type { HomeSession } from '../src/home/rows'
 import { childSessionsOf } from '../src/session/child-sessions'
+import { createFixtureThread } from '../src/session/fixture-thread'
 import {
   doneThread,
   failedThread,
@@ -186,5 +187,31 @@ describe('transcript rows', () => {
 
   it('builds the long fixture as 200 messages', () => {
     expect(projectThread(longThread(NOW)).messages).toHaveLength(200)
+  })
+})
+
+describe('fixture thread store', () => {
+  it('streams a turn the way the environment does, keeping untouched rows', () => {
+    const fixture = createFixtureThread(longThread(NOW, 3))
+    let notified = 0
+    const stop = fixture.subscribe(() => {
+      notified += 1
+    })
+    const before = fixture.getMessages()
+    fixture.driver.begin('Say more.')
+    fixture.driver.token('Hello')
+    const during = fixture.getMessages()
+    expect(during).toHaveLength(before.length + 2)
+    // The rows that were there are the same objects: memoised rows skip.
+    expect(during.slice(0, before.length).every((row, index) => row === before[index])).toBe(true)
+    const reply = during.at(-1)!
+    fixture.driver.token(' there')
+    // A token changes the reply's body, not the list.
+    expect(fixture.getMessages()).toBe(during)
+    expect(fixture.stores.streamingStore.get(reply.externalId)?.content).toBe('Hello there')
+    fixture.driver.settle()
+    expect(fixture.getMessages().at(-1)?.isFinal).toBe(true)
+    expect(notified).toBe(4)
+    stop()
   })
 })
