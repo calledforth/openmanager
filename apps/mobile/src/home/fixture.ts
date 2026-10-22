@@ -1,8 +1,9 @@
 /**
- * A realistic environment for building the shell before the phone talks to
- * one: the titles and projects are the owner's own (lifted from the mockups),
- * the shapes are the shared sidebar entries. Replaced by the environment
- * providers in the sessions-list issue; nothing here reaches a server.
+ * A realistic environment for showing the shell without a server: the titles
+ * and projects are the owner's own (lifted from the mockups), the shapes are
+ * the shared sidebar entries. The home reads it only on a phone with nothing
+ * paired, and only when the build sets `EXPO_PUBLIC_FIXTURE=1`
+ * (`source.ts`); nothing here reaches a server.
  */
 import type { WorkspaceEntry } from '@openmanager/app-core/providers/sidebar-provider'
 

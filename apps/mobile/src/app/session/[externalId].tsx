@@ -1,297 +1,76 @@
 import { useLocalSearchParams } from 'expo-router'
-import { CaretLeftIcon, DotsThreeVerticalIcon } from 'phosphor-react-native'
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import {
-  FlatList,
-  KeyboardAvoidingView,
-  Platform,
-  TouchableOpacity,
-  View,
-  type NativeScrollEvent,
-  type NativeSyntheticEvent,
-} from 'react-native'
-import { useSafeAreaInsets } from 'react-native-safe-area-context'
+import { useEnvironmentClientOptional } from '@openmanager/app-core/logic'
 
-import { Composer } from '../../components/chat/Composer'
-import { PermissionBanner } from '../../components/chat/PermissionBanner'
-import { ResolvedMessage } from '../../components/chat/ResolvedMessage'
-import { StatusDot } from '../../components/StatusDot'
-import { AppText } from '../../components/ui/AppText'
-import { confirmDestructive, showAlert, showDestructiveActionSheet } from '../../lib/dialogs'
-import { useSessionActions } from '../../data/actions'
-import { useMobileClientId } from '../../data/client-id'
-import { usePendingPermission } from '../../data/usePendingPermission'
-import { useSession } from '../../data/useSession'
-import { useSessionMessages, type SessionMessage } from '../../data/useSessionMessages'
+import { statusLineOf, statusMarkOf } from '../../home/rows'
 import { useHomeSource } from '../../home/source'
-import { useTokens } from '../../theme/useTokens'
-import { useGoBack } from '../../ui/goBack'
-import { SessionPagePlaceholder } from '../../ui/SessionPagePlaceholder'
+import { usePhoneConnection } from '../../environment/PhoneEnvironmentProvider'
+import { FixtureThreadStores, useFixtureThread } from '../../session/fixture-thread'
+import { SessionThread } from '../../session/SessionThread'
+import { useReadOnlySession } from '../../session/useReadOnlySession'
 
-// Phase 4 chat screen: header (back, 1-line title, status, overflow menu),
-// message timeline with desktop-parity auto-stick scrolling, streaming via
-// ResolvedMessage, permission banner, and the reachability-gated composer.
+const untitled = (title: string | undefined) => title?.trim() || 'Untitled session'
 
-const AUTO_SCROLL_BOTTOM_THRESHOLD_PX = 96
-const ACTIVE_STATUSES = new Set(['running', 'busy', 'waiting'])
-// How long to keep the banner hidden after a successful job queue before
-// assuming the desktop worker never cleared `pending_permissions`.
-const PERMISSION_RESOLVE_TIMEOUT_MS = 15_000
-
-function ConvexSessionScreen() {
-  const goBack = useGoBack()
-  const insets = useSafeAreaInsets()
-  const tokens = useTokens()
-  const { externalId, workspacePath } = useLocalSearchParams<{
-    externalId: string
-    workspacePath?: string
-  }>()
-
-  const clientId = useMobileClientId()
-  const { session, isReachable } = useSession(externalId)
-  const { messages, isLoading, addOptimisticMessage, removeOptimisticMessage } =
-    useSessionMessages(externalId)
-  const pendingPermission = usePendingPermission(externalId)
-  const { sendMessage, abortSession, resolvePermission, deleteSession } =
-    useSessionActions(clientId)
-
-  // Actions additionally require the workspace path (only carried via the
-  // route param — the session doc doesn't store it) and a client identity.
-  const canAct = isReachable && !!workspacePath && !!clientId
-  const isSessionActive = ACTIVE_STATUSES.has(session?.status ?? '')
-  const title = session?.title?.trim() ? session.title : 'Untitled session'
-
-  const chatMessages = useMemo(
-    () => messages.filter((message) => message.role !== 'permission'),
-    [messages],
-  )
-
-  // --- Auto-stick scrolling (port of desktop shouldAutoScroll semantics) ---
-  const listRef = useRef<FlatList<SessionMessage>>(null)
-  const shouldAutoScrollRef = useRef(true)
-  const lastOffsetRef = useRef(0)
-
-  const stickToBottom = useCallback(() => {
-    if (!shouldAutoScrollRef.current) return
-    listRef.current?.scrollToEnd({ animated: false })
-  }, [])
-
-  const handleScroll = useCallback((event: NativeSyntheticEvent<NativeScrollEvent>) => {
-    const { contentOffset, contentSize, layoutMeasurement } = event.nativeEvent
-    const distanceFromBottom = contentSize.height - layoutMeasurement.height - contentOffset.y
-    const scrolledUp = contentOffset.y < lastOffsetRef.current - 1
-    if (distanceFromBottom <= AUTO_SCROLL_BOTTOM_THRESHOLD_PX) {
-      shouldAutoScrollRef.current = true
-    } else if (scrolledUp) {
-      shouldAutoScrollRef.current = false
-    }
-    lastOffsetRef.current = contentOffset.y
-  }, [])
-
-  // --- Permission banner with optimistic hide after submit ---
-  // Hide immediately on Approve/Deny so the UI feels snappy, but only keep it
-  // hidden while Convex still shows that same requestId. If the desktop worker
-  // never clears `pending_permissions` (job never runs / fails after queue),
-  // restore the banner so the user can retry without leaving the session.
-  const [resolvedRequestId, setResolvedRequestId] = useState<string | null>(null)
-  const resolveTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null)
-
-  const clearResolveTimeout = useCallback(() => {
-    if (resolveTimeoutRef.current !== null) {
-      clearTimeout(resolveTimeoutRef.current)
-      resolveTimeoutRef.current = null
-    }
-  }, [])
-
-  useEffect(() => {
-    return () => clearResolveTimeout()
-  }, [clearResolveTimeout])
-
-  // New session → drop any in-flight optimistic hide from the previous one.
-  useEffect(() => {
-    clearResolveTimeout()
-    setResolvedRequestId(null)
-  }, [externalId, clearResolveTimeout])
-
-  useEffect(() => {
-    if (!resolvedRequestId) return
-    if (!pendingPermission || pendingPermission.requestId !== resolvedRequestId) {
-      clearResolveTimeout()
-      setResolvedRequestId(null)
-    }
-  }, [pendingPermission, resolvedRequestId, clearResolveTimeout])
-
-  const visiblePermission =
-    pendingPermission && pendingPermission.requestId !== resolvedRequestId
-      ? pendingPermission
-      : null
-
-  const handleResolvePermission = useCallback(
-    (approved: boolean) => {
-      if (!pendingPermission || !workspacePath || !externalId) return
-      const requestId = pendingPermission.requestId
-      clearResolveTimeout()
-      setResolvedRequestId(requestId)
-      resolveTimeoutRef.current = setTimeout(() => {
-        resolveTimeoutRef.current = null
-        setResolvedRequestId((current) => {
-          if (current !== requestId) return current
-          showAlert(
-            'Decision not applied',
-            'The desktop app did not clear this permission. Please try again.',
-          )
-          return null
-        })
-      }, PERMISSION_RESOLVE_TIMEOUT_MS)
-      resolvePermission({
-        workspacePath,
-        sessionExternalId: externalId,
-        permissionId: requestId,
-        approved,
-      }).catch(() => {
-        clearResolveTimeout()
-        setResolvedRequestId(null)
-        showAlert('Could not submit decision', 'Please try again.')
-      })
-    },
-    [pendingPermission, workspacePath, externalId, resolvePermission, clearResolveTimeout],
-  )
-
-  // --- Composer actions ---
-  const handleSend = useCallback(
-    (content: string) => {
-      if (!workspacePath || !externalId) return
-      const optimisticId = addOptimisticMessage(content)
-      shouldAutoScrollRef.current = true
-      sendMessage({ workspacePath, sessionExternalId: externalId, content }).catch(() => {
-        if (optimisticId) removeOptimisticMessage(optimisticId)
-        showAlert('Could not send message', 'Please try again.')
-      })
-    },
-    [workspacePath, externalId, addOptimisticMessage, removeOptimisticMessage, sendMessage],
-  )
-
-  const handleAbort = useCallback(() => {
-    if (!workspacePath || !externalId) return
-    abortSession({ workspacePath, sessionExternalId: externalId }).catch(() => {
-      showAlert('Could not stop session', 'Please try again.')
-    })
-  }, [workspacePath, externalId, abortSession])
-
-  const handleDelete = useCallback(() => {
-    if (!externalId || !workspacePath) return
-    confirmDestructive({
-      title: 'Delete this session?',
-      message: 'This removes the session from the desktop app. This cannot be undone.',
-      confirmLabel: 'Delete',
-      onConfirm: () => {
-        deleteSession({ workspacePath, sessionExternalId: externalId })
-          .then(goBack)
-          .catch(() => {
-            showAlert('Could not delete session', 'Please try again in a moment.')
-          })
-      },
-    })
-  }, [externalId, workspacePath, deleteSession, goBack])
-
-  const handleOverflowMenu = useCallback(() => {
-    // Native: two-step action sheet (menu → confirm). Web: straight to the
-    // destructive confirm via handleDelete.
-    showDestructiveActionSheet({
-      title,
-      actionLabel: 'Delete session',
-      onSelect: handleDelete,
-    })
-  }, [title, handleDelete])
-
-  const renderItem = useCallback(
-    ({ item }: { item: SessionMessage }) => (
-      <ResolvedMessage message={item} onStreamUpdate={stickToBottom} />
-    ),
-    [stickToBottom],
-  )
-
+/** A session of the paired environment, opened read-only for as long as the page is up. */
+function LiveSession({ sessionId }: { sessionId: string }) {
+  const { session, workspace, title, messages, phase, failure, retry } =
+    useReadOnlySession(sessionId)
   return (
-    <View className="flex-1 bg-background" style={{ paddingTop: insets.top }}>
-      {/* Header */}
-      <View className="flex-row items-center gap-2 border-b border-borderMuted px-3 pb-2 pt-2">
-        <TouchableOpacity
-          activeOpacity={0.7}
-          hitSlop={12}
-          onPress={goBack}
-          accessibilityRole="button"
-          accessibilityLabel="Back"
-        >
-          <CaretLeftIcon size={20} color={tokens.textMuted} />
-        </TouchableOpacity>
-        <StatusDot active={isSessionActive} />
-        <AppText variant="text-13-medium" numberOfLines={1} className="flex-1 text-textStrong">
-          {title}
-        </AppText>
-        <TouchableOpacity
-          activeOpacity={0.7}
-          hitSlop={12}
-          onPress={handleOverflowMenu}
-          accessibilityRole="button"
-          accessibilityLabel="Session options"
-        >
-          <DotsThreeVerticalIcon size={18} color={tokens.textMuted} />
-        </TouchableOpacity>
-      </View>
-
-      <KeyboardAvoidingView
-        className="flex-1"
-        behavior={Platform.OS === 'ios' ? 'padding' : undefined}
-        keyboardVerticalOffset={insets.top}
-      >
-        {/* Timeline */}
-        {chatMessages.length === 0 ? (
-          <View className="flex-1 items-center justify-center px-8">
-            <AppText variant="text-13-regular" className="text-center text-textMuted">
-              {isLoading ? 'Loading messages…' : 'Send a message to start'}
-            </AppText>
-          </View>
-        ) : (
-          <FlatList
-            ref={listRef}
-            data={chatMessages}
-            keyExtractor={(message) => message.externalId}
-            renderItem={renderItem}
-            onScroll={handleScroll}
-            scrollEventThrottle={32}
-            onContentSizeChange={stickToBottom}
-            contentContainerStyle={{ paddingHorizontal: 16, paddingTop: 8, paddingBottom: 16 }}
-            keyboardShouldPersistTaps="handled"
-          />
-        )}
-
-        {/* Permission banner pinned above the composer */}
-        {visiblePermission && canAct ? (
-          <PermissionBanner permission={visiblePermission} onResolve={handleResolvePermission} />
-        ) : null}
-
-        {/* Composer */}
-        <View style={{ paddingBottom: insets.bottom }} className="bg-background">
-          <Composer
-            isReachable={canAct}
-            isSessionActive={isSessionActive}
-            onSend={handleSend}
-            onAbort={handleAbort}
-          />
-        </View>
-      </KeyboardAvoidingView>
-    </View>
+    <SessionThread
+      title={untitled(session?.title ?? title)}
+      project={workspace?.name}
+      mark={session ? statusMarkOf(session) : undefined}
+      statusLine={session ? statusLineOf(session) : null}
+      messages={messages}
+      phase={phase}
+      failure={failure}
+      onRetry={retry}
+    />
   )
 }
 
-/**
- * A row from the fixture has no page behind it yet, whatever else is
- * configured; the placeholder says where the page is headed. The Convex-era
- * page only ever answered for Convex sessions, and only with its provider
- * mounted. The page itself is rebuilt on the environment protocol in CAL-308.
- */
+/** A fixture row: its recorded thread, through the same page. */
+function FixtureSession({ sessionId }: { sessionId: string }) {
+  const { sessions, workspaces } = useHomeSource()
+  const { messages, stores } = useFixtureThread(sessionId)
+  const session = sessions.find((row) => row.externalId === sessionId)
+  const workspace = workspaces.find((entry) => entry.path === session?.workspacePath)
+  return (
+    <FixtureThreadStores stores={stores}>
+      <SessionThread
+        title={untitled(session?.title)}
+        project={workspace?.name}
+        mark={session ? statusMarkOf(session) : undefined}
+        statusLine={session ? statusLineOf(session) : null}
+        messages={messages}
+        phase="ready"
+      />
+    </FixtureThreadStores>
+  )
+}
+
+/** No client yet: nothing paired, the first connect, or a refused token. */
+function Unreachable() {
+  const { status } = usePhoneConnection()
+  return (
+    <SessionThread
+      title="Session"
+      messages={[]}
+      phase={status === 'no_environment' || status === 'unauthorized' ? 'failed' : 'opening'}
+      failure={
+        status === 'unauthorized'
+          ? 'Your environment no longer accepts this phone. Pair it again from Settings.'
+          : 'Pair an environment from Settings to open its sessions.'
+      }
+    />
+  )
+}
+
 export default function SessionScreen() {
+  const { externalId } = useLocalSearchParams<{ externalId: string }>()
   const { kind } = useHomeSource()
-  if (kind === 'fixture' || !process.env.EXPO_PUBLIC_CONVEX_URL) return <SessionPagePlaceholder />
-  return <ConvexSessionScreen />
+  const client = useEnvironmentClientOptional()
+  const sessionId = externalId ?? ''
+  if (kind === 'fixture') return <FixtureSession sessionId={sessionId} />
+  if (!client) return <Unreachable />
+  return <LiveSession key={sessionId} sessionId={sessionId} />
 }
