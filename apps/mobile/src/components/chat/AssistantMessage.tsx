@@ -2,7 +2,6 @@ import { InfoIcon } from 'phosphor-react-native'
 import { memo, useMemo } from 'react'
 import { View } from 'react-native'
 import {
-  partitionSettledTurnParts,
   settledTurnLabel,
   UNPROMPTED_TURN_LABEL,
   type MessagePart,
@@ -12,9 +11,12 @@ import {
 import { usePhoneTheme } from '../../theme/ThemeProvider'
 import { MessageParts } from '../parts/MessageParts'
 import { TextPart } from '../parts/TextPart'
-import { toolCallCount, WorkGroup } from '../parts/WorkGroup'
+import { foldSettledTurn, toolCallCount } from '../parts/work-groups'
+import { WorkGroup } from '../parts/WorkGroup'
 import { AppText } from '../ui/AppText'
 import { ShimmerText } from './ShimmerText'
+
+const NO_PARTS: readonly MessagePart[] = []
 
 /**
  * What the environment noted about the turn, in its own words, until the
@@ -61,13 +63,13 @@ export const AssistantMessage = memo(function AssistantMessage({
   const theme = usePhoneTheme()
   const hasParts = !!parts && parts.length > 0
   const isStreaming = isFinal !== true
-  const partition = useMemo(
-    () => (hasParts && !isStreaming ? partitionSettledTurnParts(parts) : undefined),
+  const fold = useMemo(
+    () => (hasParts && !isStreaming ? foldSettledTurn(parts) : undefined),
     [hasParts, isStreaming, parts],
   )
-  const workParts = partition?.workParts ?? []
-  const finalParts = partition?.finalParts ?? []
-  const toolCount = workParts.filter((part) => part.type === 'tool').length
+  const workParts = fold?.work ?? NO_PARTS
+  const finalParts = fold?.answer ?? NO_PARTS
+  const toolCount = fold?.toolCount ?? 0
   const noted = notices && notices.length > 0 ? <NoticeRows notices={notices} /> : null
 
   if (!hasParts && !content) {

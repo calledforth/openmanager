@@ -1,8 +1,9 @@
 import { memo, useRef, useState } from 'react'
-import { Pressable, View } from 'react-native'
+import { View } from 'react-native'
 import Animated from 'react-native-reanimated'
 
 import { usePhoneTheme } from '../../theme/ThemeProvider'
+import { Press } from '../../ui/Press'
 import { ShimmerText } from '../chat/ShimmerText'
 import { AppText } from '../ui/AppText'
 import { DisclosureChevron, revealBody } from './Disclosure'
@@ -67,7 +68,7 @@ export const ThinkingPart = memo(function ThinkingPart({
 
   return (
     <View style={{ paddingVertical: 2 }}>
-      <Pressable
+      <Press
         accessibilityRole="button"
         accessibilityState={{ expanded: open }}
         accessibilityLabel={label}
@@ -76,11 +77,17 @@ export const ThinkingPart = memo(function ThinkingPart({
           revealedRef.current = true
           setOpen((value) => !value)
         }}
-        style={{ flexDirection: 'row', alignItems: 'center', gap: 8, alignSelf: 'flex-start' }}
+        style={({ pressed }) => ({
+          flexDirection: 'row',
+          alignItems: 'center',
+          gap: 8,
+          alignSelf: 'flex-start',
+          opacity: pressed ? 0.7 : 1,
+        })}
       >
         <DisclosureChevron open={open} color={theme.faint} />
         {labelView}
-      </Pressable>
+      </Press>
       {open ? (
         <Animated.View
           entering={revealedRef.current ? revealBody : undefined}

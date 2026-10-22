@@ -1,9 +1,10 @@
 import { useRef, useState, type ReactNode } from 'react'
-import { Pressable, View } from 'react-native'
+import { View } from 'react-native'
 import Animated from 'react-native-reanimated'
 
 import { countRender } from '../../session/render-probe'
 import { usePhoneTheme } from '../../theme/ThemeProvider'
+import { Press } from '../../ui/Press'
 import { ShimmerText } from '../chat/ShimmerText'
 import { AppText } from '../ui/AppText'
 import { DisclosureChevron, revealBody } from './Disclosure'
@@ -37,7 +38,7 @@ export function WorkGroup({
   const revealedRef = useRef(false)
   return (
     <View style={{ borderRadius: 12, backgroundColor: theme.hover, paddingHorizontal: 12 }}>
-      <Pressable
+      <Press
         accessibilityRole="button"
         accessibilityState={{ expanded: open }}
         accessibilityLabel={label}
@@ -46,7 +47,13 @@ export function WorkGroup({
           revealedRef.current = true
           setOpen((value) => !value)
         }}
-        style={{ flexDirection: 'row', alignItems: 'center', gap: 8, paddingVertical: 8 }}
+        style={({ pressed }) => ({
+          flexDirection: 'row',
+          alignItems: 'center',
+          gap: 8,
+          paddingVertical: 8,
+          opacity: pressed ? 0.7 : 1,
+        })}
       >
         <DisclosureChevron open={open} color={theme.faint} />
         <View style={{ flex: 1, minWidth: 0 }}>
@@ -68,7 +75,7 @@ export function WorkGroup({
             {meta}
           </AppText>
         ) : null}
-      </Pressable>
+      </Press>
       {open ? (
         <Animated.View
           entering={revealedRef.current ? revealBody : undefined}
@@ -79,9 +86,4 @@ export function WorkGroup({
       ) : null}
     </View>
   )
-}
-
-/** "1 tool call", "4 tool calls". */
-export function toolCallCount(count: number): string {
-  return `${count} tool call${count === 1 ? '' : 's'}`
 }

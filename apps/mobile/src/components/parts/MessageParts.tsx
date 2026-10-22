@@ -10,7 +10,8 @@ import { ImagePart } from './ImagePart'
 import { TextPart } from './TextPart'
 import { ThinkingPart } from './ThinkingPart'
 import { ToolRow, type ToolPartData } from './ToolRow'
-import { toolCallCount, WorkGroup } from './WorkGroup'
+import { toolCallCount, workGroupLabel } from './work-groups'
+import { WorkGroup } from './WorkGroup'
 
 // After web's `MessageParts`: parts deduplicated by id, runs of consecutive
 // tool calls folded into one work group with web's own summary wording
@@ -114,9 +115,6 @@ const SUMMARY_FIELDS = [
   'toolCount',
 ] as const satisfies readonly (keyof ActivitySummary)[]
 
-/** Web's summary starts lower-case so it can join other phrases; a label starts a line. */
-const sentence = (text: string) => (text ? text[0]!.toUpperCase() + text.slice(1) : text)
-
 /**
  * A run of tool calls as one work group. Grouping builds the run anew on
  * every render, so it is compared by what it holds: a run whose calls and
@@ -134,7 +132,7 @@ const ActivityGroupNode = memo(
   }) {
     return (
       <WorkGroup
-        label={sentence(summary.isRunning ? summary.runningText : summary.text)}
+        label={workGroupLabel(summary)}
         meta={toolCallCount(summary.toolCount)}
         running={summary.isRunning}
         // A live run shows its calls as they land; a settled one stays folded.
