@@ -2,6 +2,7 @@ import { memo, useLayoutEffect, useState, useSyncExternalStore } from 'react'
 import {
   useActiveThreadState,
   type ActiveThreadStateValue,
+  type SendRefused,
   type UploadedImageAttachment,
 } from '@openmanager/app-core/logic'
 
@@ -17,6 +18,7 @@ type ThreadCommands = Pick<ActiveThreadStateValue, 'sendMessage' | 'abortSession
 export interface ThreadPort {
   status(): string | undefined
   subscribe(listener: () => void): () => void
+  /** Rejects when the environment refused the message, with its reason. */
   send(text: string, attachments?: UploadedImageAttachment[]): Promise<void>
   abort(sessionId: string): Promise<void>
   buildPlan(sessionId: string, requestId: string, modeId?: string): Promise<void>
@@ -42,7 +44,11 @@ export function createThreadPort(): ThreadPort {
     },
     // Async, so a thread that is not open yet is a rejection the caller
     // catches, never a throw out of a press handler.
-    send: async (text, attachments) => need().sendMessage(text, attachments),
+    send: async (text, attachments) => {
+      const outcome: void | SendRefused = await need().sendMessage(text, attachments)
+      // The phone has no retry on a refused row: the composer puts the draft back.
+      if (outcome && 'refused' in outcome) throw new Error(outcome.refused)
+    },
     abort: async (sessionId) => need().abortSession(sessionId),
     buildPlan: async (sessionId, requestId, modeId) =>
       need().buildPlan(sessionId, requestId, modeId),
