@@ -1,12 +1,9 @@
 import type { HomeSession } from '../home/rows'
 
-/** The sessions the environment lists under `parentId`, newest activity first. */
+/**
+ * The sessions the environment lists under `parentId`, in the order the
+ * shared listing hands them out: the phone keeps no ordering of its own.
+ */
 export function childSessionsOf(sessions: readonly HomeSession[], parentId: string): HomeSession[] {
-  const time = (session: HomeSession) => {
-    const at = session.updatedAt ? Date.parse(session.updatedAt) : 0
-    return Number.isFinite(at) ? at : 0
-  }
-  return sessions
-    .filter((session) => session.parentExternalId === parentId)
-    .sort((a, b) => time(b) - time(a))
+  return sessions.filter((session) => session.parentExternalId === parentId)
 }

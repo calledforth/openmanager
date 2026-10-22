@@ -74,7 +74,7 @@ const GRAMMARS: Record<string, Grammar> = {
   plain: { comments: 'none', keywords: NONE },
 }
 
-const ALIASES: Record<string, keyof typeof GRAMMARS> = {
+const ALIAS_LIST: Record<string, keyof typeof GRAMMARS> = {
   js: 'js',
   jsx: 'js',
   ts: 'js',
@@ -118,11 +118,17 @@ const ALIASES: Record<string, keyof typeof GRAMMARS> = {
   scss: 'css',
 }
 
+// Maps, not plain objects: a fence is named by whatever the model wrote, and
+// `constructor` or `__proto__` must not reach an inherited property.
+const ALIASES = new Map(Object.entries(ALIAS_LIST))
+const GRAMMAR_BY_KEY = new Map(Object.entries(GRAMMARS))
+const PLAIN = GRAMMARS.plain!
+
 /** The grammar a fence's info string names; anything unknown is plain text. */
 export function grammarOf(info: string | undefined): Grammar {
   const lang = (info ?? '').trim().split(/\s+/)[0]?.toLowerCase() ?? ''
-  const key = ALIASES[lang]
-  return key ? GRAMMARS[key]! : GRAMMARS.plain!
+  const key = ALIASES.get(lang)
+  return (key !== undefined ? GRAMMAR_BY_KEY.get(key) : undefined) ?? PLAIN
 }
 
 /** The language a fence names, for its label; empty when it names none. */
