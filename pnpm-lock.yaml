@@ -282,6 +282,9 @@ importers:
       tailwindcss:
         specifier: ^3.4.17
         version: 3.4.19(yaml@2.9.0)
+      toqr:
+        specifier: 0.1.1
+        version: 0.1.1
       zod:
         specifier: 4.4.3
         version: 4.4.3
