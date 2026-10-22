@@ -47,6 +47,10 @@ function RootNavigator() {
         <Stack.Screen name="draft/new" options={{ animation: 'slide_from_right' }} />
         <Stack.Screen name="draft/[draftId]" options={{ animation: 'slide_from_right' }} />
         <Stack.Screen
+          name="environment/[environmentId]"
+          options={{ animation: 'slide_from_right' }}
+        />
+        <Stack.Screen
           name="search"
           options={{ presentation: 'modal', animation: 'slide_from_bottom' }}
         />

@@ -26,8 +26,9 @@ export type PairingController = Pick<
  * What to do with a link, decided before anything is sent anywhere.
  *
  * - `exchange`: the phone holds no token for the link's environment (never
- *   paired, or its token was refused or unreadable). The link's token is
- *   traded for one at `POST {route}/pair`.
+ *   paired, or its token was refused or unreadable), or holds one the
+ *   environment refused and must not send again (`credentialRefused`). The
+ *   link's token is traded for one at `POST {route}/pair`.
  * - `redeem`: the phone holds a token. The link is redeemed over the phone's
  *   own connection (`pairing.redeem`), so its token never goes to an
  *   address a link named.
@@ -51,13 +52,68 @@ export type PairingPlan =
       sendsSavedCredential: boolean
     }
 
-export function planPairing(link: PairingLinkRead, controller: PairingController): PairingPlan {
+/**
+ * Why the pairing screen was opened.
+ *
+ * - `pair`: a person chose to pair (Settings, the empty home, Add a route).
+ * - `repair`: the connection's own next step after the environment refused
+ *   this phone's token ("Pair again"), naming that environment.
+ */
+export type PairingIntent = { kind: 'pair' } | { kind: 'repair'; environmentId: string }
+
+const PAIR: PairingIntent = { kind: 'pair' }
+
+/**
+ * The environment refused this phone's token and the refusal still holds:
+ * the controller's latch, which stops every redial. The token may still be
+ * saved (an `unknown` refusal is forgotten only once the environment is
+ * confirmed to be the one that refused it), but it must not be sent again.
+ */
+export function credentialRefused(controller: PairingController, environmentId: string): boolean {
+  const state = controller.getState()
+  return state.selectedId === environmentId && state.status === 'unauthorized'
+}
+
+/**
+ * Whether a link for a saved environment may be redeemed over the phone's
+ * own connection rather than exchanged at its route. Redeeming needs that
+ * connection: never while the token is refused, since getting it back would
+ * mean dialling with the refused token. Pairing again on purpose redeems
+ * only over a connection that is up right now; anything else exchanges the
+ * fresh link, which sends the link's own token and never the saved one.
+ */
+export function mayRedeem(
+  controller: PairingController,
+  environmentId: string,
+  intent: PairingIntent,
+): boolean {
+  const state = controller.getState()
+  const saved = state.environments.find((item) => item.environmentId === environmentId)
+  if (!saved?.paired || credentialRefused(controller, environmentId)) return false
+  if (intent.kind === 'repair' && intent.environmentId === environmentId) {
+    return state.selectedId === environmentId && state.status === 'connected'
+  }
+  return true
+}
+
+/**
+ * The plan for a link. A saved credential is replaced only by an exchange
+ * the link's route answers as the link's environment; one that fails, or
+ * that another environment answers, leaves the saved credential as it was,
+ * so a route the phone does not trust cannot take a working token away. A
+ * new address is still asked about first.
+ */
+export function planPairing(
+  link: PairingLinkRead,
+  controller: PairingController,
+  intent: PairingIntent = PAIR,
+): PairingPlan {
   const { environmentId, route } = link.payload
   const saved = controller
     .getState()
     .environments.find((environment) => environment.environmentId === environmentId)
   if (!saved) return { kind: 'exchange' }
-  const then = saved.paired ? 'redeem' : 'exchange'
+  const then = mayRedeem(controller, environmentId, intent) ? 'redeem' : 'exchange'
   const standing = controller.classifyRoute({ environmentId, endpoint: route })
   if (standing.kind === 'new_route') {
     return {
@@ -309,14 +365,14 @@ export async function redeemLink(
   ) {
     controller.fillAppOrigin({ environmentId, appOrigin: link.appOrigin })
   }
-  const stopped =
-    state.status === 'unauthorized' ||
-    state.status === 'incompatible_protocol' ||
-    state.status === 'waiting'
+  // A refused token is never sent again to redeem: the link is exchanged
+  // instead (`planPairing`). Reached anyway, the redeem gives up at once.
+  if (credentialRefused(controller, environmentId)) return fail({ kind: 'not_connected', label })
+  const stopped = state.status === 'incompatible_protocol' || state.status === 'waiting'
   if (state.selectedId !== environmentId) controller.selectEnvironment(environmentId)
   else if (stopped) {
     // A person asked to use the link: stopped or backing off, the connection
-    // is asked again now rather than read as refused from before. Filling an
+    // is asked again now rather than read as stopped from before. Filling an
     // origin searches again but keeps a latch; this clears it.
     controller.retry()
   }

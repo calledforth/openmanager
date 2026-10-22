@@ -3,9 +3,11 @@ import {
   checkNewRoute,
   exchangeLink,
   joinRoute,
+  mayRedeem,
   planPairing,
   redeemLink,
   type PairingController,
+  type PairingIntent,
   type PairingResult,
   type PairingSuccess,
 } from './flow'
@@ -80,7 +82,8 @@ const IDLE: PairingSnapshot = { phase: { kind: 'idle' }, source: null, route: nu
  */
 export function createPairingSession() {
   let snapshot: PairingSnapshot = IDLE
-  let link: { read: PairingLinkRead; label: string | undefined } | null = null
+  let link: { read: PairingLinkRead; label: string | undefined; intent: PairingIntent } | null =
+    null
   let busy = false
   let host: PairingSessionHost | null = null
   let screens = 0
@@ -108,7 +111,7 @@ export function createPairingSession() {
     if (!current || !host) return
     const { controller, fetch: fetchImpl } = host
     busy = true
-    const plan = planPairing(current.read, controller)
+    const plan = planPairing(current.read, controller, current.intent)
     if (plan.kind === 'exchange') {
       set({ phase: { kind: 'connecting', step: 'exchanging' } })
       void exchangeLink(current.read, { label: current.label }, controller, fetchImpl).then(land)
@@ -161,8 +164,16 @@ export function createPairingSession() {
     },
     /** Whether any pairing screen is mounted to show the pairing. */
     shown: () => screens > 0,
-    /** Read a scanned or pasted link and use it. Ignored unless idle. */
-    submit(text: string, source: PairingSource, label: string | undefined) {
+    /**
+     * Read a scanned or pasted link and use it. Ignored unless idle. `intent`
+     * says why the screen was opened (`repair`: the connection's Pair again).
+     */
+    submit(
+      text: string,
+      source: PairingSource,
+      label: string | undefined,
+      intent: PairingIntent = { kind: 'pair' },
+    ) {
       if (busy || snapshot.phase.kind !== 'idle' || !host) return
       const read = readPairingLink(text)
       if (!read.ok) {
@@ -171,7 +182,7 @@ export function createPairingSession() {
         land({ ok: false, failure: read.failure })
         return
       }
-      link = { read: read.link, label }
+      link = { read: read.link, label, intent }
       set({ source, route: read.link.payload.route })
       run()
     },
@@ -186,7 +197,14 @@ export function createPairingSession() {
       const phase = snapshot.phase
       if (!current || !host || phase.kind !== 'consent' || busy) return
       busy = true
-      if (phase.then === 'exchange') {
+      // Asked again now: the token may have been refused while the question
+      // was open, and a refused token is never sent to redeem.
+      const then =
+        phase.then === 'redeem' &&
+        !mayRedeem(host.controller, current.read.payload.environmentId, current.intent)
+          ? 'exchange'
+          : phase.then
+      if (then === 'exchange') {
         set({ phase: { kind: 'connecting', step: 'exchanging', label: phase.label } })
         void exchangeLink(current.read, { label: current.label }, host.controller, host.fetch).then(
           land,

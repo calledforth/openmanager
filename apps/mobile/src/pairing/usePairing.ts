@@ -7,11 +7,17 @@ import {
   type PairingSnapshot,
   type PairingSource,
 } from './session'
+import type { PairingIntent } from './flow'
 
 export type { PairingPhase, PairingSource }
 
 export type Pairing = PairingSnapshot & {
-  submit: (text: string, source: PairingSource, label: string | undefined) => void
+  submit: (
+    text: string,
+    source: PairingSource,
+    label: string | undefined,
+    intent?: PairingIntent,
+  ) => void
   accept: () => void
   decline: () => void
   retry: () => void
@@ -30,9 +36,9 @@ export function usePairing(host: PairingSessionHost): Pairing {
   const snapshot = useSyncExternalStore(pairingSession.subscribe, pairingSession.getSnapshot)
   return {
     ...snapshot,
-    submit: (text, source, label) => {
+    submit: (text, source, label, intent) => {
       pairingSession.attach(host)
-      pairingSession.submit(text, source, label)
+      pairingSession.submit(text, source, label, intent)
     },
     accept: pairingSession.accept,
     decline: pairingSession.decline,

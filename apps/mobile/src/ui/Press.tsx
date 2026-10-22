@@ -6,9 +6,10 @@
  * no row direction. The pressed state is held here and the style resolved
  * before it reaches the wrapped Pressable.
  */
-import { useCallback, useState, type ReactNode } from 'react'
+import { useCallback, useState, type ReactNode, type Ref } from 'react'
 import {
   Pressable,
+  type View,
   type GestureResponderEvent,
   type PressableProps,
   type StyleProp,
@@ -26,6 +27,8 @@ export function Press({
 }: Omit<PressableProps, 'style' | 'children'> & {
   style?: StyleProp<ViewStyle> | ((state: PressState) => StyleProp<ViewStyle>)
   children?: ReactNode | ((state: PressState) => ReactNode)
+  /** The pressable's own view (React 19 passes `ref` as a prop). */
+  ref?: Ref<View>
 }) {
   const [pressed, setPressed] = useState(false)
   const pressIn = useCallback(

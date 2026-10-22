@@ -507,7 +507,7 @@ describe('a link for an environment the phone already knows', () => {
     expect(await redeemed).toEqual({ ok: false, failure: { kind: 'rejected', reason: 'used' } })
   })
 
-  it('asks a latched connection again before redeeming, rather than reading the old refusal', async () => {
+  it('never redials a refused token to redeem: a latched connection gives up at once', async () => {
     const h = harness({ routes: [LAN], appOrigins: { [ENV]: APP } })
     await h.controller.start()
     await flush()
@@ -515,12 +515,14 @@ describe('a link for an environment the phone already knows', () => {
     await flush()
     expect(h.state().status).toBe('unauthorized')
     const sockets = h.sockets().length
-    const redeemed = redeemLink(read(linkTo(LAN)), h.controller, { timers: h.timers })
+    const probes = h.probes.length
+    // The planner exchanges a link for a refused environment instead.
+    expect(planPairing(read(linkTo(LAN)), h.controller)).toEqual({ kind: 'exchange' })
+    const redeemed = await redeemLink(read(linkTo(LAN)), h.controller, { timers: h.timers })
     await flush()
-    expect(h.sockets().length).toBeGreaterThanOrEqual(sockets)
-    expect(h.probes.length).toBeGreaterThan(1)
-    h.timers.advance(20_000)
-    expect((await redeemed).ok).toBe(false)
+    expect(redeemed).toEqual({ ok: false, failure: { kind: 'not_connected', label: 'Studio' } })
+    expect(h.sockets().length).toBe(sockets)
+    expect(h.probes.length).toBe(probes)
   })
 
   it('gives up on redeeming when the connection does not come up', async () => {

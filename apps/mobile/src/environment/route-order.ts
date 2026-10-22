@@ -54,15 +54,21 @@ export function isLocalNetworkEndpoint(endpoint: string): boolean {
  * copy handed to the search is reordered.
  */
 export function phoneSearchOrder(environment: StoredEnvironment): StoredEnvironment {
-  const near = environment.routes.filter(
+  const routes = phoneRouteOrder(environment.routes)
+  if (routes.every((route, index) => route === environment.routes[index])) return environment
+  return { ...environment, routes }
+}
+
+/** The routes in the phone's search order (see `phoneSearchOrder`), as a new list. */
+export function phoneRouteOrder<Route extends { endpoint: string }>(
+  routes: readonly Route[],
+): Route[] {
+  const near = routes.filter(
     (route) =>
       isLoopbackEnvironmentEndpoint(route.endpoint) || isLocalNetworkEndpoint(route.endpoint),
   )
-  if (near.length === 0 || near.length === environment.routes.length) return environment
-  return {
-    ...environment,
-    routes: [...near, ...environment.routes.filter((route) => !near.includes(route))],
-  }
+  if (near.length === 0 || near.length === routes.length) return [...routes]
+  return [...near, ...routes.filter((route) => !near.includes(route))]
 }
 
 /**

@@ -5,6 +5,21 @@ import { withAlpha } from '@openmanager/app-core/lib/theme-tokens'
 
 import { AppText } from '../components/ui/AppText'
 import { usePhoneTheme } from '../theme/ThemeProvider'
+import { tap } from './haptics'
+import { Press } from './Press'
+
+/**
+ * The environment line under a top-level title: its name, a dot and a few
+ * words on the connection. `color` overrides the dot (the state's tone);
+ * with `onPress` the line opens the environment's page.
+ */
+export type TitleEnvironment = {
+  label: string
+  detail?: string
+  connected: boolean
+  color?: string
+  onPress?: () => void
+}
 
 /** The big title of a top-level screen, with the environment line under it. */
 export function BigTitle({
@@ -16,7 +31,7 @@ export function BigTitle({
   title: string
   count?: number
   trailing?: ReactNode
-  environment?: { label: string; detail?: string; connected: boolean } | null
+  environment?: TitleEnvironment | null
 }) {
   const theme = usePhoneTheme()
   return (
@@ -41,27 +56,53 @@ export function BigTitle({
         </View>
         <View className="flex-row gap-2.5">{trailing}</View>
       </View>
-      {environment ? (
-        <View className="mt-1 flex-row items-center gap-1.5">
-          <View
-            style={{
-              width: 7,
-              height: 7,
-              borderRadius: 4,
-              backgroundColor: environment.connected ? theme.status.done : theme.faint,
-            }}
-          />
-          <AppText variant="text-13-regular" style={{ color: theme.muted }}>
-            {environment.label}
-          </AppText>
-          {environment.detail ? (
-            <AppText variant="text-13-regular" style={{ color: theme.faint }}>
-              · {environment.detail}
-            </AppText>
-          ) : null}
-        </View>
+      {environment ? <EnvironmentLine environment={environment} /> : null}
+    </View>
+  )
+}
+
+function EnvironmentLine({ environment }: { environment: TitleEnvironment }) {
+  const theme = usePhoneTheme()
+  const line = (
+    <View className="mt-1 flex-row items-center gap-1.5">
+      <View
+        style={{
+          width: 7,
+          height: 7,
+          borderRadius: 4,
+          backgroundColor:
+            environment.color ?? (environment.connected ? theme.status.done : theme.faint),
+        }}
+      />
+      <AppText variant="text-13-regular" numberOfLines={1} style={{ color: theme.muted }}>
+        {environment.label}
+      </AppText>
+      {environment.detail ? (
+        <AppText
+          variant="text-13-regular"
+          numberOfLines={1}
+          style={{ color: theme.faint, flexShrink: 1 }}
+        >
+          · {environment.detail}
+        </AppText>
       ) : null}
     </View>
+  )
+  if (!environment.onPress) return line
+  const { onPress } = environment
+  return (
+    <Press
+      accessibilityRole="button"
+      accessibilityLabel={`${environment.label}${environment.detail ? `, ${environment.detail}` : ''}`}
+      hitSlop={8}
+      onPress={() => {
+        tap()
+        onPress()
+      }}
+      style={({ pressed }) => ({ alignSelf: 'flex-start', opacity: pressed ? 0.6 : 1 })}
+    >
+      {line}
+    </Press>
   )
 }
 

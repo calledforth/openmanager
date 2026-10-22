@@ -7,6 +7,7 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context'
 import { AppText } from '../../components/ui/AppText'
 import { statusMarkOf, type HomeRow } from '../../home/rows'
 import { useHomeSource } from '../../home/source'
+import { useTitleEnvironment } from '../../settings/title-environment'
 import { usePhoneTheme } from '../../theme/ThemeProvider'
 import { BigTitle, FadeOut, SectionLabel } from '../../ui/chrome'
 import { SegmentedTabs } from '../../ui/SegmentedTabs'
@@ -31,7 +32,9 @@ export default function Inbox() {
   const router = useRouter()
   const insets = useSafeAreaInsets()
   const theme = usePhoneTheme()
-  const { environment, connected, workspaces, sessions } = useHomeSource()
+  const source = useHomeSource()
+  const { workspaces, sessions } = source
+  const titleEnvironment = useTitleEnvironment(source)
   const [tab, setTab] = useState<InboxTab>('needs')
 
   const byPath = useMemo(() => new Map(workspaces.map((w) => [w.path, w])), [workspaces])
@@ -86,11 +89,7 @@ export default function Inbox() {
   return (
     <View className="flex-1" style={{ paddingTop: insets.top + 6 }}>
       {/* "Mark all seen" returns once it acknowledges on the server (acknowledgeSessionDone). */}
-      <BigTitle
-        title="Inbox"
-        count={needsCount || undefined}
-        environment={environment ? { label: environment.label, connected } : null}
-      />
+      <BigTitle title="Inbox" count={needsCount || undefined} environment={titleEnvironment} />
       <SegmentedTabs
         tabs={[
           { key: 'needs', label: 'Needs you', count: needsCount || undefined },
