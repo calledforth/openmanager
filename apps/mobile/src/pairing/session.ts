@@ -31,7 +31,14 @@ export type PairingPhase =
       /** The saved environment's label, when the phone already knows it. */
       label?: string
     }
-  | { kind: 'consent'; label: string; route: string }
+  | {
+      kind: 'consent'
+      label: string
+      route: string
+      /** What agreeing leads to, and whether it sends the saved token there. */
+      then: 'exchange' | 'redeem'
+      sendsSavedCredential: boolean
+    }
   | { kind: 'paired'; paired: PairingSuccess }
   | { kind: 'declined'; label: string }
   | { kind: 'failed'; failure: PairingFailure }
@@ -119,7 +126,15 @@ export function createPairingSession() {
         return
       }
       busy = false
-      set({ phase: { kind: 'consent', label: plan.label, route: plan.route } })
+      set({
+        phase: {
+          kind: 'consent',
+          label: plan.label,
+          route: plan.route,
+          then: plan.then,
+          sendsSavedCredential: plan.sendsSavedCredential,
+        },
+      })
     })
   }
 
@@ -161,15 +176,23 @@ export function createPairingSession() {
       run()
     },
     /**
-     * The person agreed: the link's address joins, and the link is redeemed
-     * over the phone's own connection to the environment, on whichever of its
-     * routes the controller reaches.
+     * The person agreed. With no token held the link is exchanged at its
+     * address, which joins the record with the answer. With one, the address
+     * joins, and the link is redeemed over the phone's own connection, on
+     * whichever of its routes the controller reaches.
      */
     accept() {
       const current = link
       const phase = snapshot.phase
       if (!current || !host || phase.kind !== 'consent' || busy) return
       busy = true
+      if (phase.then === 'exchange') {
+        set({ phase: { kind: 'connecting', step: 'exchanging', label: phase.label } })
+        void exchangeLink(current.read, { label: current.label }, host.controller, host.fetch).then(
+          land,
+        )
+        return
+      }
       joinRoute(current.read, host.controller)
       set({ phase: { kind: 'connecting', step: 'redeeming', label: phase.label } })
       void redeemLink(current.read, host.controller).then(land)

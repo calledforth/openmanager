@@ -52,7 +52,10 @@ export interface HomeSource {
   kind: 'fixture' | 'environment'
   environment: HomeEnvironment | null
   connected: boolean
-  /** The controller has loaded and holds no environment: the home offers pairing. */
+  /**
+   * The home offers pairing: the controller has loaded and holds no
+   * environment, or holds no token for the selected one.
+   */
   needsPairing: boolean
   workspaces: WorkspaceEntry[]
   sessions: HomeSession[]
@@ -157,7 +160,11 @@ export function homeSourceOf(
     kind: 'environment',
     environment: homeEnvironmentOf(connection),
     connected: connection.status === 'connected',
-    needsPairing: connection.status === 'no_environment',
+    // Nothing saved, or the selected environment's token is gone (refused for
+    // certain, or unreadable): either way the next step is pairing.
+    needsPairing:
+      connection.status === 'no_environment' ||
+      (connection.status !== 'starting' && selectedEnvironment(connection)?.paired === false),
     workspaces: inputs.sidebar?.workspaces ?? NO_WORKSPACES,
     sessions,
     drafts: (inputs.drafts as HomeDraft[] | null) ?? NO_DRAFTS,

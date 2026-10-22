@@ -1,4 +1,5 @@
 import * as Clipboard from 'expo-clipboard'
+import { fetch as expoFetch } from 'expo/fetch'
 import * as Device from 'expo-device'
 import { useRouter } from 'expo-router'
 import { ArrowRightIcon, ClipboardTextIcon, LinkIcon, XIcon } from 'phosphor-react-native'
@@ -47,31 +48,30 @@ export default function PairScreen() {
   const theme = usePhoneTheme()
   const controller = usePhoneConnectionController()
   const state = usePhoneConnection()
-  // What is being typed, until it reads as a whole link. A link that reads is
-  // moved out of the field into a ref at once, so its token is never shown
-  // and is not kept in React state; the field then names only its address.
-  const [draft, setDraft] = useState('')
-  const held = useRef<string | null>(null)
+  // The field is masked and uncontrolled: whatever is typed or pasted, a
+  // whole link or part of one, lives in a ref and never in React state or on
+  // screen. A link that reads is held there and the field names only its
+  // address; anything else shows as dots until it is cleared or sent.
+  const field = useRef<TextInput>(null)
+  const text = useRef('')
+  const [typed, setTyped] = useState(false)
   const [heldHost, setHeldHost] = useState<string | null>(null)
   const clearLink = () => {
-    held.current = null
+    text.current = ''
+    field.current?.clear()
+    setTyped(false)
     setHeldHost(null)
-    setDraft('')
   }
-  const takeText = (text: string) => {
-    const read = readPairingLink(text)
-    if (read.ok) {
-      held.current = text.trim()
-      setHeldHost(endpointHost(read.link.payload.route))
-      setDraft('')
-    } else {
-      setDraft(text)
-    }
+  const takeText = (input: string) => {
+    text.current = input.trim()
+    setTyped(text.current !== '')
+    const read = readPairingLink(input)
+    setHeldHost(read.ok ? endpointHost(read.link.payload.route) : null)
   }
-  const pasted = held.current ?? draft
   const pairing = usePairing({
     controller,
-    fetch: globalThis.fetch,
+    // Expo's fetch on a phone, so the exchange can refuse redirects natively.
+    fetch: Platform.OS === 'web' ? globalThis.fetch : (expoFetch as unknown as typeof fetch),
     onPaired: () => {
       success()
       // The link is used up; the phone lets go of it too.
@@ -109,8 +109,13 @@ export default function PairScreen() {
 
   const pasteFromClipboard = async () => {
     tap()
-    const text = await Clipboard.getStringAsync().catch(() => '')
-    if (text) takeText(text.trim())
+    const clip = await Clipboard.getStringAsync().catch(() => '')
+    const clipText = clip.trim()
+    if (!clipText) return
+    // A link takes its place in the field; anything else is used at once, so
+    // the sheet says what is wrong with it instead of a field of dots.
+    if (readPairingLink(clipText).ok) takeText(clipText)
+    else submitLink(clipText, 'paste')
   }
 
   const reset = () => {
@@ -180,7 +185,9 @@ export default function PairScreen() {
                 ) : (
                   <TextInput
                     accessibilityLabel="Pairing link"
-                    value={draft}
+                    ref={field}
+                    defaultValue=""
+                    secureTextEntry
                     onChangeText={takeText}
                     editable={idle}
                     placeholder="Paste a pairing link"
@@ -190,7 +197,7 @@ export default function PairScreen() {
                     spellCheck={false}
                     keyboardType={Platform.OS === 'ios' ? 'url' : 'default'}
                     returnKeyType="go"
-                    onSubmitEditing={() => pasted.trim() && submitLink(pasted, 'paste')}
+                    onSubmitEditing={() => typed && submitLink(text.current, 'paste')}
                     style={{
                       flex: 1,
                       fontFamily: 'Geist-Regular',
@@ -200,7 +207,7 @@ export default function PairScreen() {
                     }}
                   />
                 )}
-                {pasted ? (
+                {typed ? (
                   <FieldIcon label="Clear the link" onPress={clearLink}>
                     <XIcon size={16} color={theme.muted} />
                   </FieldIcon>
@@ -213,11 +220,11 @@ export default function PairScreen() {
               <Pressable
                 accessibilityRole="button"
                 accessibilityLabel="Pair with this link"
-                accessibilityState={{ disabled: !pasted.trim() || !ready }}
-                disabled={!pasted.trim() || !ready}
+                accessibilityState={{ disabled: !typed || !ready }}
+                disabled={!typed || !ready}
                 onPress={() => {
                   tap()
-                  submitLink(pasted, 'paste')
+                  submitLink(text.current, 'paste')
                 }}
                 style={({ pressed }) => ({
                   width: 52,
@@ -226,7 +233,7 @@ export default function PairScreen() {
                   alignItems: 'center',
                   justifyContent: 'center',
                   backgroundColor: pressed ? theme.actionHover : theme.actionBg,
-                  opacity: !pasted.trim() || !ready ? 0.35 : 1,
+                  opacity: !typed || !ready ? 0.35 : 1,
                 })}
               >
                 <ArrowRightIcon size={20} color={theme.actionFg} weight="bold" />

@@ -196,6 +196,14 @@ describe('pairing a fresh install: link, exchange, store', () => {
     expect(connectedRoute(h.state())).toEqual({ endpoint: TUNNEL, kind: 'tunnel' })
   })
 
+  it('refuses to follow a redirect with the token', async () => {
+    const h = freshInstall()
+    await h.controller.start()
+    const { fetchImpl, calls } = pairFetch(() => json(200, answer()))
+    await exchangeLink(read(linkTo(LAN)), {}, h.controller, fetchImpl)
+    expect(calls[0]!.init.redirect).toBe('error')
+  })
+
   it('leaves the label out when the person cleared it', async () => {
     const h = freshInstall()
     await h.controller.start()
@@ -311,6 +319,8 @@ describe('a link for an environment the phone already knows', () => {
       kind: 'consent',
       label: 'Studio',
       route: TUNNEL,
+      then: 'redeem',
+      sendsSavedCredential: true,
     })
     // Planning sends nothing and saves nothing.
     expect(h.storage.document()!.environments[0]!.routes.map((r) => r.endpoint)).toEqual([LAN])
@@ -438,16 +448,25 @@ describe('a link for an environment the phone already knows', () => {
     })
   })
 
-  it('exchanges for an environment whose token is gone, and its new address joins without asking', async () => {
+  it('asks before exchanging for an environment whose token is gone at a new address', async () => {
     const h = harness({ routes: [LAN], credentials: {} })
     await h.controller.start()
     const link = read(linkTo(TUNNEL))
-    // The shared rule: no saved token would be sent, so there is nothing to agree to.
+    // The shared rule: no saved token would be sent. The address would still
+    // join the record, so the person is asked all the same.
     expect(h.controller.classifyRoute({ environmentId: ENV, endpoint: TUNNEL })).toEqual({
       kind: 'new_route',
       sendsSavedCredential: false,
     })
-    expect(planPairing(link, h.controller)).toEqual({ kind: 'exchange' })
+    expect(planPairing(link, h.controller)).toEqual({
+      kind: 'consent',
+      label: 'Studio',
+      route: TUNNEL,
+      then: 'exchange',
+      sendsSavedCredential: false,
+    })
+    // A known address for it needs no question.
+    expect(planPairing(read(linkTo(LAN)), h.controller)).toEqual({ kind: 'exchange' })
     const { fetchImpl } = pairFetch(() => json(200, answer()))
     expect((await exchangeLink(link, {}, h.controller, fetchImpl)).ok).toBe(true)
     await h.controller.flush()

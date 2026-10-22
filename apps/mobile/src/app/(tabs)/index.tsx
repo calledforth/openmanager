@@ -44,7 +44,7 @@ const EMPTY: Record<HomeTab, { title: string; body: string }> = {
  * The home with nothing paired: the one thing to do is pair with the
  * computer the sessions live on.
  */
-function PairFirst({ onPair }: { onPair: () => void }) {
+function PairFirst({ again, onPair }: { again: string | null; onPair: () => void }) {
   const theme = usePhoneTheme()
   return (
     <View className="items-center px-10 pt-20">
@@ -62,14 +62,15 @@ function PairFirst({ onPair }: { onPair: () => void }) {
         <DesktopIcon size={32} color={theme.muted} />
       </View>
       <AppText variant="text-16-medium" style={{ color: theme.fg }}>
-        No computer paired yet
+        {again ? `Pair again with ${again}` : 'No computer paired yet'}
       </AppText>
       <AppText
         variant="text-13-regular"
         style={{ color: theme.muted, textAlign: 'center', marginTop: 4, marginBottom: 20 }}
       >
-        Open OpenManager on your computer, go to Settings, then Devices, and pair this phone. Your
-        sessions stay on that computer; the phone talks to it.
+        {again
+          ? 'This phone no longer has access to it. On the computer, open Settings, then Devices, and pair this phone again.'
+          : 'Open OpenManager on your computer, go to Settings, then Devices, and pair this phone. Your sessions stay on that computer; the phone talks to it.'}
       </AppText>
       <View style={{ alignSelf: 'stretch' }}>
         <ActionButton
@@ -164,7 +165,7 @@ export default function SessionsHome() {
           showsVerticalScrollIndicator={false}
           ListEmptyComponent={
             needsPairing ? (
-              <PairFirst onPair={() => router.push('/pair')} />
+              <PairFirst again={environment?.label ?? null} onPair={() => router.push('/pair')} />
             ) : (
               <View className="items-center px-10 pt-24">
                 <View

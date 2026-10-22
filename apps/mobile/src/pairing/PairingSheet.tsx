@@ -134,7 +134,11 @@ function SheetBody({
             mark={<LinkIcon size={26} color={theme.fg} />}
             markFill={theme.hover}
             title={`Add a new address for ${phase.label}?`}
-            body={`This link reaches ${phase.label} at ${endpointHost(phase.route)}, an address this phone has not used for it. Adding it lets the phone send its saved access there. Only add it if you made this link or trust whoever sent it.`}
+            body={`This link reaches ${phase.label} at ${endpointHost(phase.route)}, an address this phone has not used for it. ${
+              phase.sendsSavedCredential
+                ? 'Adding it lets the phone send its saved access there.'
+                : 'Adding it pairs this phone with whatever answers there as that computer.'
+            } Only add it if you made this link or trust whoever sent it.`}
           />
           <Actions>
             <ActionButton label="Add address" onPress={pairing.accept} />

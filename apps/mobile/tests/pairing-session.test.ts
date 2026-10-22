@@ -93,6 +93,8 @@ describe('the pairing session', () => {
       kind: 'consent',
       label: 'Studio',
       route: TUNNEL,
+      then: 'redeem',
+      sendsSavedCredential: true,
     })
     session.decline()
     expect(session.getSnapshot().phase).toEqual({ kind: 'declined', label: 'Studio' })

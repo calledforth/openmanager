@@ -26,32 +26,48 @@ export type PairingController = Pick<
  *
  * - `exchange`: the phone holds no token for the link's environment (never
  *   paired, or its token was refused or unreadable). The link's token is
- *   traded for one at `POST {route}/pair`. That sends no saved token, so by
- *   the shared rule a route new to a saved record joins it without asking.
- * - `redeem`: the phone holds a token and already has the link's route. The
- *   link is redeemed over the phone's own connection (`pairing.redeem`), so
- *   its token never goes to an address a link named.
- * - `consent`: the phone holds a token and the link's route is new to the
- *   environment. Reaching it would send the saved token to an address that
- *   never had it, on the word of a link anyone can forge: a person agrees
- *   first, or nothing joins.
+ *   traded for one at `POST {route}/pair`.
+ * - `redeem`: the phone holds a token. The link is redeemed over the phone's
+ *   own connection (`pairing.redeem`), so its token never goes to an
+ *   address a link named.
+ * - `consent`: the link names an environment the phone already knows, at an
+ *   address new to it. Nothing joins silently: a person agrees first, then
+ *   the pairing goes on as `then` says. With a token held, the shared rule
+ *   (`sendsSavedCredential`) is why: reaching the address would send the
+ *   saved token where it has never been, on the word of a link anyone can
+ *   forge. Without one the same question stands, since the answer would be
+ *   saved into that environment's record and used on its other routes.
  */
 export type PairingPlan =
   | { kind: 'exchange' }
   | { kind: 'redeem'; label: string }
-  | { kind: 'consent'; label: string; route: string }
+  | {
+      kind: 'consent'
+      label: string
+      route: string
+      then: 'exchange' | 'redeem'
+      /** Agreeing lets the phone send its saved token to the new address. */
+      sendsSavedCredential: boolean
+    }
 
 export function planPairing(link: PairingLinkRead, controller: PairingController): PairingPlan {
   const { environmentId, route } = link.payload
   const saved = controller
     .getState()
     .environments.find((environment) => environment.environmentId === environmentId)
-  if (!saved?.paired) return { kind: 'exchange' }
+  if (!saved) return { kind: 'exchange' }
+  const then = saved.paired ? 'redeem' : 'exchange'
   const standing = controller.classifyRoute({ environmentId, endpoint: route })
-  if (standing.kind === 'new_route' && standing.sendsSavedCredential) {
-    return { kind: 'consent', label: saved.label, route }
+  if (standing.kind === 'new_route') {
+    return {
+      kind: 'consent',
+      label: saved.label,
+      route,
+      then,
+      sendsSavedCredential: standing.sendsSavedCredential,
+    }
   }
-  return { kind: 'redeem', label: saved.label }
+  return then === 'redeem' ? { kind: 'redeem', label: saved.label } : { kind: 'exchange' }
 }
 
 export type PairingSuccess = {
@@ -104,7 +120,8 @@ export async function exchangeLink(
   const seen: { network: boolean; status: number | null } = { network: false, status: null }
   const watched: typeof fetch = async (request, init) => {
     try {
-      const response = await fetchImpl(request, { ...init, signal: deadline })
+      // A redirect would carry the token somewhere the link did not name.
+      const response = await fetchImpl(request, { ...init, signal: deadline, redirect: 'error' })
       seen.status = response.status
       return response
     } catch (error) {
