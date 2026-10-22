@@ -1,6 +1,11 @@
 import { useRouter } from 'expo-router'
-import { ArrowClockwiseIcon, ArrowsLeftRightIcon, QrCodeIcon } from 'phosphor-react-native'
-import { View } from 'react-native'
+import {
+  ArrowClockwiseIcon,
+  ArrowsLeftRightIcon,
+  QrCodeIcon,
+  WifiSlashIcon,
+} from 'phosphor-react-native'
+import { Linking, Platform, View } from 'react-native'
 import Animated, { FadeIn } from 'react-native-reanimated'
 
 import { AppText } from '../components/ui/AppText'
@@ -40,6 +45,9 @@ export function ConnectionPanel({ view }: { view: PhoneConnectionView }) {
         return
       case 'switch_environment':
         router.navigate('/settings')
+        return
+      case 'network_settings':
+        openNetworkSettings()
         return
     }
   }
@@ -92,5 +100,20 @@ function NextStepIcon({ step }: { step: PhoneNextStep }) {
       return <QrCodeIcon size={17} color={theme.fg} />
     case 'switch_environment':
       return <ArrowsLeftRightIcon size={17} color={theme.fg} />
+    case 'network_settings':
+      return <WifiSlashIcon size={17} color={theme.fg} />
   }
+}
+
+/**
+ * Android's wireless settings (airplane mode, Wi-Fi, mobile data); where that
+ * screen is missing, and on iOS, which lets an app open only its own page,
+ * the app's settings.
+ */
+function openNetworkSettings() {
+  if (Platform.OS === 'android') {
+    Linking.sendIntent('android.settings.WIRELESS_SETTINGS').catch(() => Linking.openSettings())
+    return
+  }
+  void Linking.openSettings()
 }

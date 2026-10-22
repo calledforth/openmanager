@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest'
 import type { BootstrapOutcome } from '@openmanager/environment-client/connection'
 
 import {
+  NEXT_STEP_LABELS,
   phoneConnectionInput,
   phoneConnectionView,
   retryCountdownWords,
@@ -141,7 +142,7 @@ describe('connection states in the shared words', () => {
     })
   })
 
-  it('offline: no next step, it comes back with the network', async () => {
+  it('offline: the network settings, and it comes back with the network on its own', async () => {
     const h = harness()
     await connect(h)
     h.network.set({ online: false })
@@ -152,7 +153,8 @@ describe('connection states in the shared words', () => {
       title: "You're offline",
       description: 'Reconnects when the network is back.',
     })
-    expect(v.next).toEqual([])
+    expect(v.next).toEqual(['network_settings'])
+    expect(NEXT_STEP_LABELS.network_settings).toBe('Open network settings')
     expect(v.tone).toBe('warn')
   })
 

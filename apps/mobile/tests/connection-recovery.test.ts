@@ -43,7 +43,7 @@ describe('recovers without a person', () => {
 
     h.network.set({ online: false })
     await flush()
-    expect(reads(h)).toMatchObject({ kind: 'offline', title: "You're offline", next: [] })
+    expect(reads(h)).toMatchObject({ kind: 'offline', title: "You're offline", next: ['network_settings'] })
     // Nothing is asked while there is no network, however long it lasts.
     h.timers.advance(30 * 60_000)
     await flush()

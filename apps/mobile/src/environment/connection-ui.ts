@@ -19,8 +19,16 @@ import { phoneRouteOrder, routeKindOf, type RouteKind } from './route-order'
  *   pairing link helps (the pairing screen).
  * - `switch_environment`: choose another saved environment (Settings).
  * - `pair`: nothing is saved yet; pair with a computer.
+ * - `network_settings`: the device has no network; the phone's own network
+ *   settings, where airplane mode and Wi-Fi are. The phone reconnects on its
+ *   own once the network is back.
  */
-export type PhoneNextStep = 'retry' | 'pair_again' | 'switch_environment' | 'pair'
+export type PhoneNextStep =
+  | 'retry'
+  | 'pair_again'
+  | 'switch_environment'
+  | 'pair'
+  | 'network_settings'
 
 /** How the state reads at a glance: the colour of its dot. */
 export type PhoneConnectionTone = 'ok' | 'working' | 'warn' | 'error' | 'idle'
@@ -181,8 +189,10 @@ export function phoneConnectionView(state: PhoneConnectionState): PhoneConnectio
       if (others) next.push('switch_environment')
       break
     case 'offline':
-      // Nothing to try while the device has no network: it reconnects when
-      // the network is back. Another environment is no nearer either.
+      // Retrying cannot help while the device has no network, and another
+      // environment is no nearer: the way back is the network itself. The
+      // phone reconnects on its own once it returns.
+      next.push('network_settings')
       break
     case 'connecting':
     case 'ready':
@@ -221,4 +231,5 @@ export const NEXT_STEP_LABELS: Record<PhoneNextStep, string> = {
   pair_again: 'Pair again',
   switch_environment: 'Switch environment',
   pair: 'Pair with a computer',
+  network_settings: 'Open network settings',
 }
