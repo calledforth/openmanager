@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import { encodePairingLink } from '@openmanager/environment-client'
 import type { PairingRejectionReason } from '@openmanager/protocol'
-import { connectedRoute, environmentLine } from '../src/environment/connected-route'
+import { connectedRoute } from '../src/environment/connected-route'
 import { readPhoneLabel, suggestPhoneLabel } from '../src/pairing/device-label'
 import {
   checkNewRoute,
@@ -166,7 +166,7 @@ describe('pairing a fresh install: link, exchange, store', () => {
     ])
   })
 
-  it('then connects with the app origin, and the environment line reads its label and LAN', async () => {
+  it('then connects with the app origin, on a route the controller reads as LAN', async () => {
     const h = freshInstall()
     await h.controller.start()
     const { fetchImpl } = pairFetch(() => json(200, answer()))
@@ -176,12 +176,12 @@ describe('pairing a fresh install: link, exchange, store', () => {
     const socket = h.socket()
     expect(socket.origin).toBe(APP)
     expect(socket.protocols).toContain(`openmanager.auth.${PHONE_TOKEN}`)
-    expect(environmentLine(h.state())).toEqual({ label: 'Studio', connected: false })
+    expect(connectedRoute(h.state())).toBeNull()
     socket.accept()
     await flush()
     expect(h.state().status).toBe('connected')
     expect(connectedRoute(h.state())).toEqual({ endpoint: LAN, kind: 'lan' })
-    expect(environmentLine(h.state())).toEqual({ label: 'Studio', detail: 'LAN', connected: true })
+    expect(h.state().environments[0]?.label).toBe('Studio')
   })
 
   it('reads a tunnel route as Tunnel', async () => {
@@ -193,11 +193,7 @@ describe('pairing a fresh install: link, exchange, store', () => {
     await flush()
     h.socket().accept()
     await flush()
-    expect(environmentLine(h.state())).toEqual({
-      label: 'Studio',
-      detail: 'Tunnel',
-      connected: true,
-    })
+    expect(connectedRoute(h.state())).toEqual({ endpoint: TUNNEL, kind: 'tunnel' })
   })
 
   it('leaves the label out when the person cleared it', async () => {

@@ -38,7 +38,13 @@ Package-local scripts (via `pnpm --filter @openmanager/mobile <script>`):
 `start`, `android`, `ios`, `web`, `typecheck`, `lint`, `test`, `test:live`.
 
 `test:live` drives the phone's connection controller against a running
-environment server; see `live/handshake.live.ts` for the variables it reads.
+environment server; see `live/handshake.live.ts` (pairing, origin, lifecycle) and
+`live/sessions.live.ts` (the home and a read-only thread through a live provider turn) for the
+variables they read.
+
+`EXPO_PUBLIC_FIXTURE=1` shows the dev fixture on a phone with nothing paired (the home's
+sessions and drafts from `src/home/fixture.ts`, a session page from a recorded thread); without
+it an unpaired phone shows the empty home.
 
 ## Installing dependencies
 
@@ -106,9 +112,9 @@ the token anywhere but memory:
 - **Label** (`device-label.ts`): the phone's model name from `expo-device`, editable; a link made
   with a name keeps that name.
 
-After pairing, the sheet names the route the controller connected through, and the home's
-environment line reads the controller's label and route kind (LAN or Tunnel,
-`src/environment/connected-route.ts`). `live/pairing.live.ts` drives the core against a real
+After pairing, the sheet names the route the controller connected through
+(`src/environment/connected-route.ts`), and the home's environment line reads the controller's
+label and route kind (LAN or Tunnel); with nothing paired the home offers pairing. `live/pairing.live.ts` drives the core against a real
 server.
 
 ## Shell
@@ -132,17 +138,31 @@ per session state), `ProviderMark` (a tool as its mark, never its name), `Sessio
 `SegmentedTabs`, `BigTitle`, `SectionLabel`, `FadeOut`, `IconButton`, `ProjectChip`. The home and
 the inbox are `SectionList`s, one section per group.
 
-What the home shows comes through `src/home/source.ts`. Its environment line is the connection
-controller's; until the phone speaks the session protocol the rows are a fixture, shown once an
-environment is paired (`src/home/fixture.ts`, the owner's own session titles) in the shared
-sidebar's own shapes (`SidebarSessionEntry`, `SidebarDraft`); the sessions-list issue swaps the hook
-for the shared sidebar providers without touching the screens. A session's status mark is the web
+What the home shows comes through `src/home/source.ts`: the shared sidebar providers of the paired
+environment (`SidebarDataContext`, `SidebarSessionsContext`, `useSidebarDrafts`), normalised there
+into the shell's shapes (the workspace groups become one list of rows that each know their
+workspace; every status, title and settle passes through as the environment served it), with the
+environment line (label, route kind, connected) from the phone's controller. The fixture
+(`src/home/fixture.ts`, the owner's own session titles) is the source only with nothing paired and
+`EXPO_PUBLIC_FIXTURE=1`. A session's status mark is the web
 sidebar's own mapping: `statusMarkOf` calls `sessionBusyTone` from app-core
 (`packages/app-core/src/components/sidebar/session-busy-tone.ts`, pure and import-free so Metro reads
 it), so `done`, `busy`, `ready` and the rest read the same on both, and a status with no glyph is the
 ring at rest. The pure logic in `src/home/rows.ts` (status marks, tab membership, Active groups and
-day groups, trees ranked by their most urgent member and dated by their newest, child nesting) and
-`src/home/search.ts` is unit-tested.
+day groups, trees ranked by their most urgent member and dated by their newest, child nesting),
+`src/home/search.ts` and the source's normalisation are unit-tested.
+
+A row opens `src/app/session/[externalId].tsx`, read-only for now (the composer comes later).
+`src/session/useReadOnlySession.ts` opens it as web's session route does: `session.open` once the
+socket is up, the snapshot and then the live events through the shared active-thread provider, and
+`setActiveSession(null)` when the page goes, which releases its subscriptions. It never asks for
+`session.history`. A `done` session on screen is acknowledged on the environment
+(`acknowledgeSessionDone`), which is what clears it. The rows (`src/components/chat/*`) read each
+message from the shared stores, so a streamed token re-renders only its own row: markdown, reasoning
+collapsed, bare tool rows (name and status), images through `fetchArtifact`.
+`src/session/thread-rows.ts` is the pure mapping; `tests/read-only-thread.test.tsx` mounts the
+shared providers over the mock environment client and checks the snapshot, a live turn, the
+acknowledgement, child sessions and the release, with no history call.
 
 ## Theme
 

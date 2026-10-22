@@ -94,7 +94,7 @@ export default function SessionsHome() {
   const router = useRouter()
   const insets = useSafeAreaInsets()
   const theme = usePhoneTheme()
-  const { environment, needsPairing, workspaces, sessions, drafts } = useHomeSource()
+  const { environment, connected, needsPairing, workspaces, sessions, drafts } = useHomeSource()
   const [tab, setTab] = useState<HomeTab>('all')
 
   const counts = useMemo(() => tabCounts(sessions, drafts), [sessions, drafts])
@@ -128,7 +128,15 @@ export default function SessionsHome() {
     <View className="flex-1" style={{ paddingTop: insets.top + 6 }}>
       <BigTitle
         title="Sessions"
-        environment={environment}
+        environment={
+          environment
+            ? {
+                label: environment.label,
+                detail: environment.route.kind === 'local' ? 'LAN' : 'Tunnel',
+                connected,
+              }
+            : null
+        }
         trailing={
           <IconButton label="New session" onPress={() => router.push('/draft/new')}>
             <NotePencilIcon size={18} color={theme.fg} />

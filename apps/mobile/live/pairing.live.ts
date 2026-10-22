@@ -12,7 +12,7 @@ import {
   type AppActivity,
   type PhoneNetwork,
 } from '../src/environment/controller'
-import { connectedRoute, environmentLine } from '../src/environment/connected-route'
+import { connectedRoute } from '../src/environment/connected-route'
 import type { NativeWebSocketConstructor } from '../src/environment/app-origin'
 import { describePairingFailure } from '../src/pairing/failures'
 import {
@@ -209,7 +209,7 @@ describe('phone pairing, live', () => {
         endpoint: state.endpoint,
         socketOrigin: state.socketOrigin,
         route: connectedRoute(state),
-        environmentLine: environmentLine(state),
+        label: state.environments[0]?.label,
         dials: dials.length,
         opens: opens.length,
         warnings: phone.warnings,
