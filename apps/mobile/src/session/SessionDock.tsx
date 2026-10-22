@@ -1,5 +1,5 @@
 import { EyeIcon } from 'phosphor-react-native'
-import { memo, type ReactNode } from 'react'
+import { createContext, memo, useContext, type ReactNode } from 'react'
 import { View, type LayoutChangeEvent } from 'react-native'
 
 import { AppText } from '../components/ui/AppText'
@@ -52,6 +52,26 @@ export const SessionDock = memo(function SessionDock({
     </View>
   )
 })
+
+/**
+ * Where the page's dock goes, for a composer drawn over the whole page (its
+ * sheets and its pulled-up state cover the header too): the status line, the
+ * room under the dock, and where to say how tall it is. The composer renders
+ * the `SessionDock` itself with these.
+ */
+export interface DockSlot {
+  status: StatusLineView | null
+  bottomInset: number
+  onHeight: (height: number) => void
+}
+
+export const DockSlotContext = createContext<DockSlot | null>(null)
+
+export function useDockSlot(): DockSlot {
+  const slot = useContext(DockSlotContext)
+  if (!slot) throw new Error('useDockSlot must be used inside a session page')
+  return slot
+}
 
 /** The slot's content until the composer lands: replies happen elsewhere for now. */
 export function ReadOnlyBar() {

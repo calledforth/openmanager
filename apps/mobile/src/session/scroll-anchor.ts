@@ -65,6 +65,12 @@ export interface ScrollFollower {
   onMomentumEnd(metrics: ScrollMetrics): void
   /** The content's height changed. */
   onContentHeight(height: number): void
+  /**
+   * The list's own height changed: the keyboard rose or fell under a page
+   * the window resizes for. A reader at the end stays at it; one scrolled up
+   * keeps their offset.
+   */
+  onViewportHeight(height: number): void
   /** The reader asked for the newest row (the scroll-to-latest button). */
   toLatest(): void
   /** Whether the list is following the end right now. */
@@ -113,6 +119,7 @@ export function createScrollFollower(ports: ScrollFollowerPorts): ScrollFollower
   let flingingUp = false
   let away = false
   let lastHeight = -1
+  let lastViewport = -1
   let lastOffset = 0
   let dragStartOffset = 0
   let scheduled = false
@@ -180,6 +187,12 @@ export function createScrollFollower(ports: ScrollFollowerPorts): ScrollFollower
       if (height === lastHeight) return
       lastHeight = height
       if (atEnd && !held()) follow()
+    },
+    onViewportHeight(height) {
+      if (height === lastViewport) return
+      const first = lastViewport === -1
+      lastViewport = height
+      if (!first && atEnd && !held()) follow()
     },
     toLatest() {
       flingingUp = false

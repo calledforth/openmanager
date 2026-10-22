@@ -14,6 +14,8 @@ export interface SessionActions {
   run: (id: SessionMenuItemId) => Promise<void>
   /** Asks the environment to rename it; the title on screen is the one it keeps. */
   rename: (title: string) => Promise<void>
+  /** Opens the composer's Session settings sheet; absent where there is no composer. */
+  openSettings?: () => void
 }
 
 /** No environment to ask (a sample row, nothing paired): every item says why. */
@@ -43,6 +45,7 @@ export function unavailableSessionActions(
 export function useSessionActions(
   sessionId: string,
   session: HomeSession | undefined,
+  openSettings?: () => void,
 ): SessionActions {
   const client = useEnvironmentClient()
   const { status } = usePhoneConnection()
@@ -64,9 +67,10 @@ export function useSessionActions(
         backgroundTaskCount,
         unavailable,
         supports: (command) => client.supports(command),
+        settings: openSettings ? null : undefined,
       }),
     // `unavailable` follows the connection: what the client supports is known once it connects.
-    [backgroundTaskCount, client, mark, settled, unavailable],
+    [backgroundTaskCount, client, mark, openSettings, settled, unavailable],
   )
   const run = useCallback(
     async (id: SessionMenuItemId) => {
@@ -80,7 +84,7 @@ export function useSessionActions(
         case 'stop-background':
           return client.commands.stopBackgroundTasks({ sessionId })
         default:
-          // Rename opens the title for editing; settings are not on the phone yet.
+          // Rename opens the title for editing; settings open the composer's sheet.
           return undefined
       }
     },
@@ -90,5 +94,8 @@ export function useSessionActions(
     (title: string) => client.commands.renameSession(sessionId, title),
     [client, sessionId],
   )
-  return useMemo(() => ({ menu, unavailable, run, rename }), [menu, rename, run, unavailable])
+  return useMemo(
+    () => ({ menu, unavailable, run, rename, ...(openSettings ? { openSettings } : {}) }),
+    [menu, openSettings, rename, run, unavailable],
+  )
 }
