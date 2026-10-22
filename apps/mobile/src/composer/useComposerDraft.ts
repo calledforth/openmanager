@@ -61,6 +61,15 @@ export interface DraftPorts {
    * another is dropped, never stored under the new one.
    */
   uploadOwner?: () => string | null
+  /**
+   * Store images under the session named, whatever is open by then. Given,
+   * a photo is stored under the session it was attached in, never under the
+   * one the shared uploader reads at the moment it runs.
+   */
+  uploadFor?: (
+    sessionId: string,
+    drafts: DraftImageAttachment[],
+  ) => Promise<UploadedImageAttachment[]>
 }
 
 /** Bytes of images another device (or an earlier visit) kept with the draft. */
@@ -152,12 +161,17 @@ export function useComposerDraft({
   const [error, setError] = useState<string | null>(null)
   const draftKeyRef = useRef<string | null>(draftKey)
   draftKeyRef.current = draftKey
-  useEffect(
-    () => () => {
+  // Every photo on its way, by its token: leaving the page ends them all, so
+  // none lands in a draft, or is stored, after the composer has gone.
+  const photosRef = useRef(new Set<{ cancelled: boolean }>())
+  useEffect(() => {
+    const photos = photosRef.current
+    return () => {
       draftKeyRef.current = null
-    },
-    [],
-  )
+      for (const photo of photos) photo.cancelled = true
+      photos.clear()
+    }
+  }, [])
   useEffect(() => setError(null), [draftKey])
 
   // The store saves after a pause: leaving the app, or the page, writes now.
@@ -209,7 +223,12 @@ export function useComposerDraft({
   )
 
   /** Store a photo now and name it in the draft it was attached to, wherever the reader is by then. */
-  const keep = async (key: string, attachment: DraftImageAttachment, owner: string | null) => {
+  const keep = async (
+    key: string,
+    attachment: DraftImageAttachment,
+    owner: string | null,
+    token: { cancelled: boolean },
+  ) => {
     const release = store.holdImage?.(key)
     const target = store.imageTarget?.(key)
     const stillWanted = () =>
@@ -229,15 +248,22 @@ export function useComposerDraft({
       try {
         // Checked as the upload starts: the uploader stores under the session
         // open at that moment, which must be the one the photo was attached in.
+        if (token.cancelled) return
         if (ports.uploadOwner && ports.uploadOwner() !== owner) {
           throw new Error('The session changed before it was stored.')
         }
-        ;[stored] = await uploadAttachments!([attachment])
+        // Bound to the session it was attached in, where the host can say so.
+        ;[stored] = await (ports.uploadFor && owner
+          ? ports.uploadFor(owner, [attachment])
+          : uploadAttachments!([attachment]))
         if (!stored) throw new Error('The image was not stored.')
       } catch (uploadError) {
-        if (stillWanted()) fail(reasonOf(uploadError, 'The upload failed.'))
+        if (!token.cancelled && stillWanted()) fail(reasonOf(uploadError, 'The upload failed.'))
         return
       }
+      // The composer went meanwhile: no draft is named with it (the
+      // environment lets an unnamed upload expire).
+      if (token.cancelled) return
       if (!stillWanted()) {
         settle()
         return
@@ -285,17 +311,29 @@ export function useComposerDraft({
         return
       }
       let file: File
+      const token = { cancelled: false }
+      photosRef.current.add(token)
       // Counted from here, so a send cannot go ahead of the photo being read.
       prepare(key, 1)
       try {
         file = await readPhoto(photo)
       } catch (readError) {
-        setError(`${photo.name} could not be read. ${reasonOf(readError, '')}`.trim())
+        if (!token.cancelled) {
+          setError(`${photo.name} could not be read. ${reasonOf(readError, '')}`.trim())
+        }
+        photosRef.current.delete(token)
         return
       } finally {
-        prepare(key, -1)
+        if (!token.cancelled) prepare(key, -1)
+      }
+      if (token.cancelled) return
+      if (ports.uploadOwner && ports.uploadOwner() !== owner) {
+        photosRef.current.delete(token)
+        setError(`${photo.name} was not attached. The session changed before it was stored.`)
+        return
       }
       if (file.size <= 0 || file.size > MAX_IMAGE_BYTES) {
+        photosRef.current.delete(token)
         setError(`${photo.name} must be smaller than 10 MB.`)
         return
       }
@@ -308,7 +346,11 @@ export function useComposerDraft({
       setPending(key, [...(pendingRef.current[key] ?? NO_UPLOADS), attachment])
       // An image is the draft's first content as much as text is.
       store.claim?.(key)
-      if (keepsImages) await keep(key, attachment, owner)
+      try {
+        if (keepsImages) await keep(key, attachment, owner, token)
+      } finally {
+        photosRef.current.delete(token)
+      }
     },
     // `keep` reads refs and the store only.
     // eslint-disable-next-line react-hooks/exhaustive-deps

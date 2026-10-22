@@ -9,7 +9,7 @@ import type { ComposerImage } from './model'
 
 /** A thumbnail fades in when attached and out when removed; short, on the UI thread. */
 const THUMB_IN = FadeIn.duration(180).easing(Easing.out(Easing.quad))
-const THUMB_OUT = FadeOut.duration(140).easing(Easing.in(Easing.quad))
+const THUMB_OUT = FadeOut.duration(150).easing(Easing.in(Easing.quad))
 
 const SIZE = 56
 

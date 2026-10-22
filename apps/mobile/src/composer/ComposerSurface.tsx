@@ -3,6 +3,7 @@ import { BackHandler, StyleSheet, View } from 'react-native'
 
 import { SessionDock, useDockSlot } from '../session/SessionDock'
 import { usePhoneTheme } from '../theme/ThemeProvider'
+import { coveredBySheet } from '../ui/a11y-focus'
 import { CameraCapture } from './CameraCapture'
 import { ChoicePopover } from './ChoicePopover'
 import { ComposerDock } from './ComposerDock'
@@ -57,11 +58,22 @@ export function ComposerSurface({
     if (overlay?.kind === 'plan' && !plan) ui.close()
   }, [overlay, plan, ui])
 
+  // Whatever the composer opens covers the dock and the page: a screen
+  // reader reads only the layer on top, as under a sheet.
+  const covered = expanded || overlay !== null
+  const onCovered = slot.onCovered
+  useEffect(() => {
+    onCovered(covered)
+  }, [covered, onCovered])
+  useEffect(() => () => onCovered(false), [onCovered])
+
   return (
     <View style={StyleSheet.absoluteFill} pointerEvents="box-none">
-      <SessionDock status={slot.status} bottomInset={slot.bottomInset} onHeight={slot.onHeight}>
-        <ComposerDock model={model} ui={ui} />
-      </SessionDock>
+      <View style={StyleSheet.absoluteFill} pointerEvents="box-none" {...coveredBySheet(covered)}>
+        <SessionDock status={slot.status} bottomInset={slot.bottomInset} onHeight={slot.onHeight}>
+          <ComposerDock model={model} ui={ui} />
+        </SessionDock>
+      </View>
 
       {expanded ? <ExpandedComposer model={model} ui={ui} contextName={contextName} /> : null}
 

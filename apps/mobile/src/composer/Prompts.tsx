@@ -38,7 +38,16 @@ const PAGE_CHROME = 54 + 30 + 8 + 14
  * it is up, and the footer as measured), and the footer's actions stay
  * pinned under it, always reachable.
  */
-function PromptFrame({ body, footer }: { body: ReactNode; footer: ReactNode }) {
+function PromptFrame({
+  body,
+  footer,
+  scrollKey,
+}: {
+  body: ReactNode
+  footer: ReactNode
+  /** A new value starts the body at its top again (a question's next slide). */
+  scrollKey?: string | number
+}) {
   const { height } = useWindowDimensions()
   const insets = useSafeAreaInsets()
   const keyboard = useKeyboardHeight()
@@ -50,6 +59,7 @@ function PromptFrame({ body, footer }: { body: ReactNode; footer: ReactNode }) {
   return (
     <View style={{ gap: 10, paddingTop: 6, paddingHorizontal: 6, paddingBottom: 2 }}>
       <ScrollView
+        key={scrollKey}
         style={{ maxHeight }}
         contentContainerStyle={{ gap: 10 }}
         keyboardShouldPersistTaps="handled"
@@ -220,6 +230,7 @@ export function QuestionPrompt({ prompt }: { prompt: QuestionPromptModel }) {
   const freeText = !!question && question.allowFreeText !== false
   return (
     <PromptFrame
+      scrollKey={index}
       body={
         <>
           <View style={{ gap: 2 }}>

@@ -1,29 +1,78 @@
-import { useEffect, useState } from 'react'
-
-import type { ComposerFold } from './model'
-
-/** Long enough for the fold's 200 ms ease and a frame or two either side. */
-export const FOLD_WINDOW_MS = 260
-
 /**
- * Whether the dock's height may animate now: only through a fold (rest,
- * running, prompt) or a new request arriving, for one short window. Text
- * wrapping, an image added, a notice, a question's next slide or a value
- * pushed by the environment change the dock's height too, and land at once.
+ * The fold's height animation, decided here and drawn by the dock. Only a
+ * fold (rest, running, prompt) or a new request arriving animates: the
+ * dock's box eases from its height before the change to its height after.
+ * Anything else that changes the height (text wrapping, an image, a notice,
+ * a question's next slide, a value the environment pushed) lands at once,
+ * and one that lands while a fold is easing ends the ease where it is.
  */
-export function useFoldTransition(fold: ComposerFold, requestId: string | null): boolean {
-  const key = `${fold}:${requestId ?? ''}`
-  const [seen, setSeen] = useState(key)
-  const [armed, setArmed] = useState(false)
-  // Armed in the same render the fold changes in, so that commit animates.
-  if (seen !== key) {
-    setSeen(key)
-    setArmed(true)
-  }
-  useEffect(() => {
-    if (!armed) return
-    const timer = setTimeout(() => setArmed(false), FOLD_WINDOW_MS)
-    return () => clearTimeout(timer)
-  }, [armed, seen])
-  return armed
+
+/** How long after a fold its new content may still measure itself and count as the fold. */
+export const FOLD_SETTLE_MS = 120
+
+export interface FoldPorts {
+  /** Ease the box from `from` to `to` (points), then call `onFinished`. */
+  animate(from: number, to: number): void
+  /** Drop the ease: the box takes its content's height now. */
+  snap(): void
+  /**
+   * The dock is about to be `delta` taller (or shorter): say so once, now,
+   * and keep the per-frame heights of the ease from being reported.
+   */
+  hold(delta: number): void
+  /** The ease is over: the dock reports its own height again. */
+  release(): void
+  now(): number
 }
+
+export interface FoldDriver {
+  /** The fold and the request on screen, on every render. */
+  onKey(key: string): void
+  /** The content measured itself. */
+  onContentHeight(height: number): void
+  /** The ease reached its end. */
+  onFinished(): void
+}
+
+export function createFoldDriver(ports: FoldPorts): FoldDriver {
+  let key: string | null = null
+  let foldedAt = -Infinity
+  let height = 0
+  let easing = false
+  const stop = () => {
+    if (!easing) return
+    easing = false
+    ports.snap()
+    ports.release()
+  }
+  return {
+    onKey(next) {
+      if (key !== null && next !== key) foldedAt = ports.now()
+      key = next
+    },
+    onContentHeight(next) {
+      const previous = height
+      height = next
+      if (previous <= 0 || Math.abs(next - previous) < 1) return
+      const folding = ports.now() - foldedAt <= FOLD_SETTLE_MS
+      foldedAt = -Infinity
+      if (!folding) {
+        // Not a fold, or a second change while one eases: no animation.
+        stop()
+        return
+      }
+      if (easing) stop()
+      easing = true
+      ports.hold(next - previous)
+      ports.animate(previous, next)
+    },
+    onFinished() {
+      if (!easing) return
+      easing = false
+      ports.release()
+    },
+  }
+}
+
+/** The fold's key: what changes it. */
+export const foldKey = (fold: string, requestId: string | null) => `${fold}:${requestId ?? ''}`

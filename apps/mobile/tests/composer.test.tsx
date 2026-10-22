@@ -943,30 +943,136 @@ describe('the camera shutter', () => {
   })
 })
 
-describe('the fold animation window', () => {
-  it('opens only when the dock folds or a request arrives', async () => {
-    const { useFoldTransition } = await import('../src/composer/fold-transition')
-    const seen: boolean[] = []
-    function Dock({
-      fold,
-      request,
-    }: {
-      fold: 'rest' | 'running' | 'prompt'
-      request: string | null
-    }) {
-      seen.push(useFoldTransition(fold, request))
-      return null
-    }
-    await act(() => root.render(<Dock fold="rest" request={null} />))
-    expect(seen.at(-1)).toBe(false)
-    // Content changing without a fold (a re-render with the same state) does not animate.
-    await act(() => root.render(<Dock fold="rest" request={null} />))
-    expect(seen.at(-1)).toBe(false)
-    await act(() => root.render(<Dock fold="running" request={null} />))
-    expect(seen.at(-1)).toBe(true)
-    await act(() => new Promise((resolve) => setTimeout(resolve, 300)))
-    expect(seen.at(-1)).toBe(false)
-    await act(() => root.render(<Dock fold="prompt" request="q-1" />))
-    expect(seen.at(-1)).toBe(true)
+describe('the fold', () => {
+  const driver = async () => {
+    const { createFoldDriver } = await import('../src/composer/fold-transition')
+    let now = 1_000
+    const calls: string[] = []
+    const fold = createFoldDriver({
+      now: () => now,
+      animate: (from, to) => calls.push(`animate ${from}->${to}`),
+      snap: () => calls.push('snap'),
+      hold: (delta) => calls.push(`hold ${delta}`),
+      release: () => calls.push('release'),
+    })
+    return { fold, calls, tick: (ms: number) => (now += ms) }
+  }
+
+  it('eases the box only through a fold, from its height before to its height after', async () => {
+    const { fold, calls, tick } = await driver()
+    fold.onKey('rest:')
+    fold.onContentHeight(84)
+    // Text wrapping at rest: no animation.
+    fold.onContentHeight(105)
+    expect(calls).toEqual([])
+    // A turn starts: the row folds into the chip.
+    tick(5000)
+    fold.onKey('running:')
+    tick(16)
+    fold.onContentHeight(52)
+    expect(calls).toEqual(['hold -53', 'animate 105->52'])
+    fold.onFinished()
+    expect(calls.at(-1)).toBe('release')
+  })
+
+  it('lands content changes inside the fold window at once, ending the ease', async () => {
+    const { fold, calls, tick } = await driver()
+    fold.onKey('running:')
+    fold.onContentHeight(52)
+    tick(1000)
+    fold.onKey('prompt:q-1')
+    fold.onContentHeight(180)
+    expect(calls).toEqual(['hold 128', 'animate 52->180'])
+    // The question's next slide, or an error, while it eases: no second animation.
+    tick(60)
+    fold.onContentHeight(220)
+    expect(calls).toEqual(['hold 128', 'animate 52->180', 'snap', 'release'])
+    fold.onFinished()
+    expect(calls).toHaveLength(4)
+    // A fold whose content took too long to measure is not animated late.
+    fold.onKey('rest:')
+    tick(500)
+    fold.onContentHeight(84)
+    expect(calls).toHaveLength(4)
+  })
+})
+
+describe('a photo on its way when the page goes', () => {
+  it('is never stored or named once its composer has unmounted', async () => {
+    let finish!: () => void
+    const bytes = new Blob([new Uint8Array([1, 2, 3])], { type: 'image/jpeg' })
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(
+        () =>
+          new Promise<Response>((resolve) => {
+            finish = () => resolve({ blob: async () => bytes } as unknown as Response)
+          }),
+      ),
+    )
+    const client = createMockEnvironmentClient({
+      seed: {
+        ...seed('completed'),
+        sessions: [
+          ...seed('completed').sessions!,
+          {
+            session: {
+              sessionId: 'session-2',
+              workspaceId: WORKSPACE.workspaceId,
+              title: 'Second',
+            },
+            providerId: 'claude',
+            threads: [{ threadId: 'thread-2', sessionId: 'session-2' }],
+            turns: [],
+            messages: [],
+          },
+        ],
+      },
+      respond: () => null,
+    })
+    const upload = vi.spyOn(client, 'uploadArtifact')
+    const page = (sessionId: string) =>
+      act(() =>
+        root.render(
+          <EnvironmentClientProvider client={client}>
+            <EnvironmentApplicationProviders storage={null} navigateDraft={async () => undefined}>
+              <Probe key={sessionId} sessionId={sessionId} />
+            </EnvironmentApplicationProviders>
+          </EnvironmentClientProvider>,
+        ),
+      )
+    await page(SESSION.sessionId)
+    await act(() => client.commands.openSession(SESSION.sessionId))
+    await flush()
+    await act(async () => {
+      void current().attachPhoto({ uri: 'file:///a.jpg', name: 'a.jpg', mimeType: 'image/jpeg' })
+    })
+    // The reader goes to another session: A's composer unmounts, B's mounts.
+    await page('session-2')
+    await act(() => client.commands.openSession('session-2'))
+    await flush()
+    await act(async () => finish())
+    await flush()
+    expect(upload).not.toHaveBeenCalled()
+    expect(client.getState().drafts?.[SESSION.sessionId]?.content.artifactIds).toBeUndefined()
+    expect(client.getState().drafts?.['session-2']?.content.artifactIds).toBeUndefined()
+    expect(current().images).toEqual([])
+  })
+
+  it('stores a photo under the session it was attached in', async () => {
+    const bytes = new Blob([new Uint8Array([1, 2, 3])], { type: 'image/jpeg' })
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => ({ blob: async () => bytes }) as unknown as Response),
+    )
+    const client = await open({ seed: seed('completed'), respond: () => null })
+    const upload = vi.spyOn(client, 'uploadArtifact')
+    await act(async () =>
+      current().attachPhoto({ uri: 'file:///b.jpg', name: 'b.jpg', mimeType: 'image/jpeg' }),
+    )
+    await flush()
+    expect(upload).toHaveBeenCalledWith(
+      expect.objectContaining({ sessionId: SESSION.sessionId, name: 'b.jpg' }),
+    )
   })
 })

@@ -9,7 +9,7 @@ import { tap } from '../ui/haptics'
 import { Press } from '../ui/Press'
 
 const POPUP_IN = FadeIn.duration(160).easing(Easing.out(Easing.quad))
-const POPUP_OUT = FadeOut.duration(120).easing(Easing.in(Easing.quad))
+const POPUP_OUT = FadeOut.duration(150).easing(Easing.in(Easing.quad))
 
 /**
  * The session's commands matching what is typed after `/`, above the field.

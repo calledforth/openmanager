@@ -19,7 +19,7 @@ import type { PickAnchor } from './ui-state'
 
 /**
  * A popover grows out of its pick: from 96% and clear to full size, 200 ms
- * eased, no overshoot; it fades out in 120 ms. Worklets, on the UI thread.
+ * eased, no overshoot; it fades out in 150 ms. Worklets, on the UI thread.
  */
 export function popoverIn() {
   'worklet'
@@ -32,7 +32,7 @@ export function popoverIn() {
     },
   }
 }
-export const POPOVER_OUT = FadeOut.duration(120).easing(Easing.in(Easing.quad))
+export const POPOVER_OUT = FadeOut.duration(150).easing(Easing.in(Easing.quad))
 // Typed for Reanimated's `entering`: it calls the worklet with the view's values.
 const entering = popoverIn as unknown as (
   values: EntryAnimationsValues,

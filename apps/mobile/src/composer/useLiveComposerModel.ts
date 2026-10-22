@@ -11,6 +11,7 @@ import {
   useSessionState,
   useViewActions,
   writeFavoriteModels,
+  type DraftImageAttachment,
   type FavoriteModelKey,
   type UploadedImageAttachment,
 } from '@openmanager/app-core/logic'
@@ -109,8 +110,38 @@ export function useLiveComposerModel(sessionId: string): {
     imageUploadEnabled,
     imageSupportMessage,
     ports: useMemo(
-      () => ({ uploadAttachments, send, uploadOwner: () => ownerRef.current }),
-      [send, uploadAttachments],
+      () => ({
+        uploadAttachments,
+        send,
+        uploadOwner: () => ownerRef.current,
+        // The environment's uploader, with the session named: the one the
+        // photo was attached in, not whatever is open when it runs.
+        ...(uploadAttachments && client.uploadArtifact
+          ? {
+              uploadFor: async (owner: string, drafts: DraftImageAttachment[]) => {
+                const stored: UploadedImageAttachment[] = []
+                for (const draft of drafts) {
+                  const artifact = await client.uploadArtifact!({
+                    sessionId: owner,
+                    name: draft.file.name,
+                    mimeType: draft.file.type,
+                    bytes: draft.file,
+                  })
+                  stored.push({
+                    id: artifact.artifactId,
+                    name: artifact.name,
+                    mimeType: artifact.mimeType,
+                    size: artifact.sizeBytes,
+                    previewUrl: draft.previewUrl,
+                    sessionId: owner,
+                  })
+                }
+                return stored
+              },
+            }
+          : {}),
+      }),
+      [client, send, uploadAttachments],
     ),
   })
 
