@@ -59,8 +59,9 @@ export function Pill({ children, tone }: { children: string; tone?: 'warn' | 'st
  * One row of a settings list: an icon on a fill, a title and a line under
  * it, and whatever belongs at the end. Fills, not borders: the pressed state
  * is the hover fill, a selected row the active fill. A row with `onPress`
- * shows a caret unless it has its own trailing element; a row without one is
- * not a button at all.
+ * shows a caret unless it has its own trailing element or is the destructive
+ * one (which, as in the mockup, stands alone); a row without one is not a
+ * button at all.
  */
 export function SettingsRow({
   icon,
@@ -132,7 +133,7 @@ export function SettingsRow({
           <View style={{ marginTop: 2 }}>{sub}</View>
         ) : null}
       </View>
-      {trailing ?? (onPress ? <CaretRightIcon size={14} color={theme.faint} /> : null)}
+      {trailing ?? (onPress && !danger ? <CaretRightIcon size={14} color={theme.faint} /> : null)}
     </View>
   )
   if (!onPress) return body(false)

@@ -115,15 +115,19 @@ export function EnvironmentScreen({ environmentId }: { environmentId: string }) 
       {routes.map((route) => (
         <RouteRow key={route.endpoint} route={route} />
       ))}
+      {/* Under the routes, aligned with their titles, as in the mockup. */}
+      <AppText
+        variant="text-12-regular"
+        style={{ color: theme.muted, paddingLeft: 56, paddingRight: 12, paddingVertical: 4 }}
+      >
+        Asked in this order: this device and the local network first, then the rest.
+      </AppText>
       <SettingsRow
         icon={<PlusIcon size={17} color={theme.muted} />}
         title="Add a route"
         sub="Scan or paste a pairing link that reaches it another way"
         onPress={() => router.push('/pair')}
       />
-      <AppText variant="text-12-regular" style={{ color: theme.faint, paddingHorizontal: 12 }}>
-        Asked in this order: this device and the local network first, then the rest.
-      </AppText>
 
       <View style={{ height: 20 }} />
       <SettingsRow
@@ -186,18 +190,27 @@ function RouteRow({ route }: { route: RouteRowView }) {
       icon={<Icon size={17} color={route.inUse ? theme.fg : theme.muted} />}
       title={route.title}
       sub={
-        <View>
-          <AppText variant="mono" numberOfLines={1} style={{ color: theme.muted, fontSize: 12 }}>
+        <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+          <AppText
+            variant="mono"
+            numberOfLines={1}
+            style={{ color: theme.muted, fontSize: 12, flexShrink: 1 }}
+          >
             {route.host}
           </AppText>
           {route.inUse ? null : (
-            <AppText
-              variant="text-12-regular"
-              numberOfLines={1}
-              style={{ color: theme.faint, marginTop: 1 }}
-            >
-              {health}
-            </AppText>
+            <>
+              <AppText variant="text-12-regular" style={{ color: theme.faint }}>
+                ·
+              </AppText>
+              <AppText
+                variant="text-12-regular"
+                numberOfLines={1}
+                style={{ color: theme.muted, flexShrink: 1 }}
+              >
+                {health}
+              </AppText>
+            </>
           )}
         </View>
       }
