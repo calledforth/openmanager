@@ -903,6 +903,9 @@ export function createPhoneConnectionController(
     const environment = selected()
     if (!environment) {
       cancelSearch()
+      cancelRefusalRead()
+      cancelRejectionCheck()
+      latch = null
       dropTransport()
       set({
         status: 'no_environment',

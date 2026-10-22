@@ -202,6 +202,21 @@ describe('a refused token', () => {
     expect(h.probes).toHaveLength(3)
   })
 
+  it('stops the confirmation when its environment is removed', async () => {
+    const h = harness()
+    await h.controller.start()
+    await flush()
+    h.answers.set(LAN, new Promise(() => undefined))
+    h.socket().open()
+    h.socket().drop(4401, 'unknown_client')
+    await flush()
+    const inFlight = h.signals.at(-1)!
+    h.controller.removeEnvironment(ENV)
+    await flush()
+    expect(inFlight.aborted).toBe(true)
+    expect(h.state().status).toBe('no_environment')
+  })
+
   it('is kept on a handshake auth refusal that is not the revocation close', async () => {
     const h = harness()
     await h.controller.start()
