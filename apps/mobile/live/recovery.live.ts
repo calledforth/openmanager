@@ -18,8 +18,9 @@ import {
   type PhoneNetwork,
 } from '../src/environment/controller'
 import type { NativeWebSocketConstructor } from '../src/environment/app-origin'
-import { exchangeLink } from '../src/pairing/flow'
+import { exchangeLink, planPairing } from '../src/pairing/flow'
 import { readPairingLink } from '../src/pairing/link'
+import { createPairingSession } from '../src/pairing/session'
 import { createSource, relaunchedStorage } from '../tests/support'
 
 /**
@@ -369,17 +370,26 @@ describe('connection recovery, live', () => {
       note('revoked', { kind: refused.ui.kind, title: refused.ui.title, next: refused.next })
       expect(refused.ui.kind).toBe('unauthorized')
       expect(refused.next[0]).toBe('pair_again')
-      const again = readPairingLink(await link(owner, environmentId, LAN))
+      expect(refused.environmentId).toBe(environmentId)
+      // "Pair again" as the panel opens it: the planner and the pairing
+      // session with the re-pair intent, the way the pairing screen runs it.
+      const intent = { kind: 'repair', environmentId } as const
+      const againText = await link(owner, environmentId, LAN)
+      const again = readPairingLink(againText)
       if (!again.ok) throw new Error('link did not read')
+      expect(planPairing(again.link, phone, intent)).toEqual({ kind: 'exchange' })
+      const socketsAtRefusal = dials.length
+      const session = createPairingSession()
+      session.attach({ controller: phone, fetch: phoneFetch })
       const from = Date.now()
-      const repaired = await exchangeLink(
-        again.link,
-        { label: 'Recovery phone' },
-        phone,
-        phoneFetch,
-      )
-      expect(repaired).toMatchObject({ ok: true })
+      session.submit(againText, 'paste', 'Recovery phone', intent)
+      await until('paired again', () => session.getSnapshot().phase.kind !== 'connecting')
+      expect(session.getSnapshot().phase).toMatchObject({
+        kind: 'paired',
+        paired: { how: 'exchanged' },
+      })
       await until('connected after pairing again', () => phone.getState().status === 'connected')
+      note('repaired', { newSockets: dials.length - socketsAtRefusal })
       results.pairAgain = Date.now() - from
       note('results', { results, finalEndpoint: phone.getState().endpoint })
     },
