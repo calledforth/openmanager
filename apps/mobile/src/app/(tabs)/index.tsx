@@ -168,7 +168,16 @@ export default function SessionsHome() {
           showsVerticalScrollIndicator={false}
           ListEmptyComponent={
             needsPairing ? (
-              <PairFirst again={environment?.label ?? null} onPair={() => router.push('/pair')} />
+              <PairFirst
+                again={environment?.label ?? null}
+                onPair={() =>
+                  router.push(
+                    environment
+                      ? { pathname: '/pair', params: { again: environment.environmentId } }
+                      : '/pair',
+                  )
+                }
+              />
             ) : showConnection ? (
               <View className="px-2 pt-6">
                 <ConnectionPanel view={view} />

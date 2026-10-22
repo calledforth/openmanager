@@ -32,6 +32,8 @@ export type PhoneConnectionTone = 'ok' | 'working' | 'warn' | 'error' | 'idle'
 export type PhoneConnectionView = {
   /** The shared derivation's own answer: the same kind, title and words web shows. */
   ui: ConnectionUiState
+  /** The selected environment the state is about; `null` with none saved. */
+  environmentId: string | null
   tone: PhoneConnectionTone
   /** The next steps, the first the main one. Empty when nothing is needed. */
   next: readonly PhoneNextStep[]
@@ -207,6 +209,7 @@ export function phoneConnectionView(state: PhoneConnectionState): PhoneConnectio
       : null
   return {
     ui,
+    environmentId: selectedOf(state)?.environmentId ?? null,
     tone: unpaired ? 'error' : TONES[ui.kind],
     next,
     route,
