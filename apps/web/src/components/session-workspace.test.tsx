@@ -354,7 +354,16 @@ describe('session workspace', () => {
           eventId: 'listed-late',
           timestamp,
           scope: { type: 'environment', environmentId: 'env-local' },
-          payload: { session: SESSION },
+          payload: {
+            session: {
+              ...SESSION,
+              status: 'idle',
+              providerId: 'opencode',
+              updatedAt: timestamp,
+              settledAt: null,
+              doneAt: null,
+            },
+          },
         })
         client.emit({
           type: 'event',

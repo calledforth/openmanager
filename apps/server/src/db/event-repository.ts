@@ -10,7 +10,7 @@ import {
   type SubscriptionScope,
   type SessionStatus,
 } from '@openmanager/protocol/node'
-import { createEventProjector, type EventProjectionOptions } from './event-projection.ts'
+import { createEventProjector } from './event-projection.ts'
 import { EVENT_TOMBSTONE_SQL } from './queries.ts'
 import { readSessionActivity, type SessionActivity } from './session-activity.ts'
 import { createTurnClosure } from './turn-closure.ts'
@@ -23,7 +23,7 @@ export type TerminalEvent = Extract<
 /** Events that receive durable cursors. `turn.notice` is transient and is never persisted. */
 export type DurableProofEvent = Exclude<ProofEvent, { name: 'turn.notice' }>
 
-export interface EventRepositoryOptions extends EventProjectionOptions {
+export interface EventRepositoryOptions {
   epoch?: string
   now?: () => number
   /**
@@ -95,7 +95,7 @@ export function createEventRepository(
 ): EventRepository {
   const newEpoch = options.epoch ?? randomUUID()
   const now = options.now ?? Date.now
-  const project = createEventProjector(database, options)
+  const project = createEventProjector(database)
   const closure = createTurnClosure(database)
   const statements = {
     sessionStatus: database.prepare(

@@ -1370,9 +1370,7 @@ describe('sends deduplicated by command id', () => {
 
   it('stamps the provider identity alone: no time moves, and a row on another provider is refused', async () => {
     const { database } = await createDatabase()
-    const events = createPersistentEventService(database, vi.fn(), {
-      sessionProviderId: () => 'opencode',
-    })
+    const events = createPersistentEventService(database, vi.fn(), {})
     let resolveStart!: (value: { sessionId: string; state: 'created' }) => void
     const runtime = {
       ensureSession: vi
@@ -1429,9 +1427,7 @@ describe('sends deduplicated by command id', () => {
   it('persists one turn.started per command id', async () => {
     const { database } = await createDatabase()
     const publish = vi.fn()
-    const events = createPersistentEventService(database, publish, {
-      sessionProviderId: () => 'opencode',
-    })
+    const events = createPersistentEventService(database, publish, {})
     const runtime = {
       ensureSession: vi.fn().mockResolvedValue({ sessionId: 'provider-1', state: 'created' }),
       prompt: vi.fn().mockReturnValue(new Promise(() => undefined)),
@@ -1513,7 +1509,7 @@ describe('durable session lifecycle', () => {
     const events = createPersistentEventService(
       database,
       (record) => published.push(record.event),
-      { sessionProviderId: () => 'opencode' },
+      {},
     )
     const runtime = {
       ensureSession: vi
@@ -2917,9 +2913,7 @@ describe('turn finalization and cancellation races', () => {
   async function setup() {
     const { database } = await createDatabase()
     const published: DurableEvent[] = []
-    const events = createPersistentEventService(database, (record) => published.push(record), {
-      sessionProviderId: () => 'opencode',
-    })
+    const events = createPersistentEventService(database, (record) => published.push(record), {})
     let finish!: () => void
     let rejectCancel!: (error: Error) => void
     let finishCancel!: () => void
@@ -3238,13 +3232,9 @@ describe('transcript runs', () => {
 describe('session rows on a provider other than the workspace default', () => {
   it('lists and opens a new session on its own provider before its runtime has started', async () => {
     const { database } = await createDatabase()
-    const events = createPersistentEventService(database, () => undefined, {
-      // As the host wires it: the service names the provider a session is being
-      // created on; the workspace default only stands in when it names none.
-      sessionProviderId: (session) =>
-        service.providerForSession(session.sessionId) ??
-        registered(session.workspaceId)!.providerId,
-    })
+    // The provider rides `session.created` itself; nothing is asked of the host.
+    const published: DurableEvent[] = []
+    const events = createPersistentEventService(database, (record) => published.push(record))
     const runtime = {
       // Still spawning: the row must not wait for the runtime stamp.
       ensureSession: vi.fn().mockReturnValue(new Promise(() => undefined)),
@@ -3276,11 +3266,13 @@ describe('session rows on a provider other than the workspace default', () => {
 
     const listed = ProofResponseSchemas['session.list'].parse(dispatch('session.list', {})).payload
     expect(listed.sessions).toMatchObject([{ sessionId, providerId: 'claude' }])
+    // X2: what a client hears in `session.created` is the row a listing reads.
+    const announced = published.find((record) => record.event.name === 'session.created')!
+    expect(announced.event.payload).toEqual({ session: listed.sessions[0] })
     const opened = ProofResponseSchemas['session.open'].parse(
       dispatch('session.open', { sessionId }),
     ).payload
     expect(opened.session).toMatchObject({ sessionId, providerId: 'claude' })
-    expect(service.providerForSession(sessionId)).toBe('claude')
     await vi.waitFor(() =>
       expect(runtime.ensureSession).toHaveBeenCalledWith(
         expect.objectContaining({ providerId: 'claude' }),

@@ -85,6 +85,7 @@ function Sidebar() {
           externalId: session.sessionId,
           title: session.title ?? undefined,
           status: session.status,
+          providerId: session.providerId as 'opencode',
         })),
       }))}
       activeWorkspacePath={active?.workspaceId ?? null}

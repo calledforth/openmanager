@@ -218,7 +218,11 @@ export const proofResponses = {
     requestId: 'r-3',
     payload: { sessions: [sessionSummary], nextCursor: null },
   },
-  'session.create': { type: 'response', requestId: 'r-4', payload: { session, thread } },
+  'session.create': {
+    type: 'response',
+    requestId: 'r-4',
+    payload: { session, thread, announcedAt: '2026-09-06T05:00:00Z' },
+  },
   'session.open': {
     type: 'response',
     requestId: 'r-5',
@@ -268,7 +272,12 @@ export const proofEvents = [
     scope: environmentScope,
     payload: { workspaceId: 'workspace-1' },
   },
-  { ...base, name: 'session.created', scope: environmentScope, payload: { session } },
+  {
+    ...base,
+    name: 'session.created',
+    scope: environmentScope,
+    payload: { session: { ...sessionSummary, settledAt: null, doneAt: null } },
+  },
   {
     ...base,
     name: 'session.updated',

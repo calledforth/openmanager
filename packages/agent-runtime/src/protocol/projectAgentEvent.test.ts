@@ -140,7 +140,13 @@ describe('agent to environment protocol projection', () => {
     const json = JSON.stringify(result)
     expect(json).not.toContain('provider-')
     expect(json).not.toContain('hidden')
-    expect(json).not.toContain('providerId')
+    // A new session's row names its provider, as every listing does (§4.7.2);
+    // no other event carries provider detail.
+    if (result?.name === 'session.created') {
+      expect(result.payload.session.providerId).toBe(source.providerId)
+    } else {
+      expect(json).not.toContain('providerId')
+    }
     expect(json).not.toContain('rawInput')
     expect(json).not.toContain('rawOutput')
     expect(json).not.toContain('metadata')

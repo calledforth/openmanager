@@ -712,23 +712,46 @@ describe('event repository transactions', () => {
     })
   })
 
-  it('creates a session and then its thread using host provider identity', async () => {
+  it('creates a session from its summary, and refuses one its row would not read back as', async () => {
     const { database } = await createDatabase()
     const environmentScope = { type: 'environment', environmentId: scope.environmentId } as const
-    const sessionEvent = ProofEventSchemas['session.created'].parse({
-      type: 'event',
-      name: 'session.created',
-      eventId: 'session-created',
-      timestamp: started().timestamp,
-      scope: environmentScope,
-      payload: { session: { sessionId: 'session-2', workspaceId: 'workspace-1', title: 'New' } },
-    })
-    expect(() =>
-      createEventRepository(database).appendEvents(environmentScope, [sessionEvent]),
-    ).toThrow('sessionProviderId')
+    const timestamp = new Date(Date.parse(started().timestamp)).toISOString()
+    const created = (eventId: string, session: Record<string, unknown>) =>
+      ProofEventSchemas['session.created'].parse({
+        type: 'event',
+        name: 'session.created',
+        eventId,
+        timestamp,
+        scope: environmentScope,
+        payload: {
+          session: {
+            sessionId: 'session-2',
+            workspaceId: 'workspace-1',
+            title: 'New',
+            titleSource: 'fallback',
+            status: 'idle',
+            providerId: 'cursor',
+            updatedAt: timestamp,
+            settledAt: null,
+            doneAt: null,
+            ...session,
+          },
+        },
+      })
+    const repository = createEventRepository(database)
+    // A summary the row cannot equal (a status a new row does not have, a
+    // time other than the event's) rolls the write back.
+    for (const [id, drift] of [
+      ['running', { status: 'running' }],
+      ['later', { updatedAt: new Date(Date.parse(timestamp) + 1).toISOString() }],
+      ['settled', { settledAt: timestamp }],
+    ] as const) {
+      expect(() => repository.appendEvents(environmentScope, [created(id, drift)])).toThrow(
+        /its row reads/,
+      )
+    }
     expect(database.prepare('SELECT count(*) AS count FROM event_log').get()).toEqual({ count: 0 })
-    const repository = createEventRepository(database, { sessionProviderId: () => 'cursor' })
-    repository.appendEvents(environmentScope, [sessionEvent])
+    repository.appendEvents(environmentScope, [created('session-created', {})])
     const sessionScope = {
       type: 'session',
       environmentId: scope.environmentId,
@@ -746,9 +769,11 @@ describe('event repository transactions', () => {
     ])
     expect(
       database
-        .prepare('SELECT provider_id, title, status FROM sessions WHERE session_id = ?')
+        .prepare(
+          'SELECT provider_id, title, title_source, status FROM sessions WHERE session_id = ?',
+        )
         .get('session-2'),
-    ).toEqual({ provider_id: 'cursor', title: 'New', status: 'idle' })
+    ).toEqual({ provider_id: 'cursor', title: 'New', title_source: 'fallback', status: 'idle' })
     expect(
       database.prepare('SELECT session_id FROM threads WHERE thread_id = ?').get('thread-2'),
     ).toEqual({ session_id: 'session-2' })
@@ -762,7 +787,7 @@ describe('event repository transactions', () => {
       ) VALUES ('workspace-2', 'Other', '/other', 1, 1);
     `)
     const environmentScope = { type: 'environment', environmentId: scope.environmentId } as const
-    const repository = createEventRepository(database, { sessionProviderId: () => 'cursor' })
+    const repository = createEventRepository(database)
     const created = (session: {
       sessionId: string
       workspaceId: string
@@ -773,9 +798,18 @@ describe('event repository transactions', () => {
         type: 'event',
         name: 'session.created',
         eventId: `created-${session.sessionId}`,
-        timestamp: started().timestamp,
+        timestamp: new Date(Date.parse(started().timestamp)).toISOString(),
         scope: environmentScope,
-        payload: { session },
+        payload: {
+          session: {
+            ...session,
+            status: 'idle',
+            providerId: 'cursor',
+            updatedAt: new Date(Date.parse(started().timestamp)).toISOString(),
+            settledAt: null,
+            doneAt: null,
+          },
+        },
       })
 
     repository.appendEvents(environmentScope, [
@@ -1399,7 +1433,6 @@ describe('durable server event boundary', () => {
     const publish = vi.fn()
     const events = createPersistentEventService(database, publish, {
       beforeCommit: commits,
-      sessionProviderId: () => 'cursor',
     })
     const runtime = {
       ensureSession: vi.fn().mockResolvedValue({ sessionId: 'provider-session', state: 'created' }),

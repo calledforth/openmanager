@@ -17,6 +17,7 @@ import {
   ENV,
   PROVIDER,
   SESSION,
+  SESSION_CREATED,
   SESSION_SUMMARY,
   THREAD,
   WORKSPACE,
@@ -67,19 +68,19 @@ describe('live session composer state', () => {
     expect(applyEvent(state, composerUpdated('unlisted', { modelId: 'opus' }))).toBe(state)
   })
 
-  it('takes the selection from a listing and keeps it when a bare session arrives', () => {
+  it('takes the selection from a listing and keeps it when session.created names none', () => {
     let state = applySessionList(applyWorkspaceList(createInitialState(), [WORKSPACE]), [
       { ...SESSION_SUMMARY, composer: { modelId: 'opus' } },
     ])
     expect(selectSessionComposer(state, SESSION.sessionId)).toEqual({ modelId: 'opus' })
 
-    // `session.created` and session snapshots carry no summary fields at all.
+    // `session.created` names no selection: a new row has none.
     state = applyEvent(
       state,
       event<Extract<ProofEvent, { name: 'session.created' }>>({
         name: 'session.created',
         scope: environmentScope,
-        payload: { session: SESSION },
+        payload: { session: SESSION_CREATED },
       }),
     )
     expect(selectSessionComposer(state, SESSION.sessionId)).toEqual({ modelId: 'opus' })

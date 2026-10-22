@@ -434,16 +434,6 @@ export function createThreadService(
 ) {
   const sessions = new Map<string, ThreadRecord>()
   const threads = new Map<string, ThreadRecord>()
-  /**
-   * The provider a session is being created on, from before its row is
-   * written until its record exists. The projection asks the host which
-   * provider to file the row under while `session.created` is still being
-   * appended, and the record that answers from then on is built afterwards;
-   * without this the host can only guess the workspace default, and a
-   * session on any other provider is listed and opened as that default until
-   * the runtime stamp lands.
-   */
-  const announcedProviders = new Map<string, ProviderId>()
   /** Host session per `providerId:providerSessionId` registered as a child this process. */
   const childSessionIds = new Map<string, string>()
   /**
@@ -651,27 +641,44 @@ export function createThreadService(
   }
 
   /**
-   * Announce a session and its thread. `providerId` is what `providerForSession`
-   * answers while the row is projected; the caller clears it once the record
-   * holds it, so a session never has two sources of truth. Returns the time
-   * the session was announced at.
+   * Announce a session and its thread, in one write. `session.created`
+   * carries the whole row in the canonical form a listing reads back, so a
+   * client that only hears the event holds what a fresh load would
+   * (docs/sync-foundations.md §4.7.2). Returns the time the session was
+   * announced at.
    */
   const persistCreatedThread = (
     session: Session,
     thread: Thread,
-    providerId: ProviderId,
-    alongside: readonly ProofEvent[] = [],
-    /** The provider's own id for the session, when it is known before the row exists (a child). */
-    identity?: string,
+    created: {
+      providerId: ProviderId
+      titleSource?: SessionTitleSource
+      alongside?: readonly ProofEvent[]
+      /** The provider's own id for the session, when it is known before the row exists (a child). */
+      identity?: string
+    },
   ): string => {
     const timestamp = new Date().toISOString()
-    const created = ProofEventSchemas['session.created'].parse({
+    const announced = ProofEventSchemas['session.created'].parse({
       type: 'event',
       name: 'session.created',
       eventId: randomUUID(),
       timestamp,
       scope: { type: 'environment', environmentId },
-      payload: { session },
+      payload: {
+        session: {
+          sessionId: session.sessionId,
+          workspaceId: session.workspaceId,
+          title: session.title,
+          ...(created.titleSource ? { titleSource: created.titleSource } : {}),
+          ...(session.parentSessionId ? { parentSessionId: session.parentSessionId } : {}),
+          status: 'idle',
+          providerId: created.providerId,
+          updatedAt: timestamp,
+          settledAt: null,
+          doneAt: null,
+        },
+      },
     })
     const threadCreated = ProofEventSchemas['thread.created'].parse({
       type: 'event',
@@ -681,26 +688,20 @@ export function createThreadService(
       scope: { type: 'session', environmentId, sessionId: session.sessionId },
       payload: { thread },
     })
-    announcedProviders.set(session.sessionId, providerId)
-    try {
-      if (options.appendAtomic) {
-        options.appendAtomic(
-          [created, threadCreated, ...alongside],
-          identity ? { identities: { [session.sessionId]: identity } } : undefined,
-        )
-        return timestamp
-      }
-      // Without an atomic writer there is no database (unit tests only), so
-      // there is no row for an identity to ride on.
-      appendEvent(created)
-      appendEvent(threadCreated)
-      alongside.forEach(appendEvent)
+    const alongside = created.alongside ?? []
+    if (options.appendAtomic) {
+      options.appendAtomic(
+        [announced, threadCreated, ...alongside],
+        created.identity ? { identities: { [session.sessionId]: created.identity } } : undefined,
+      )
       return timestamp
-    } catch (error) {
-      // No record follows a failed announcement, so nothing else clears it.
-      announcedProviders.delete(session.sessionId)
-      throw error
     }
+    // Without an atomic writer there is no database (unit tests only), so
+    // there is no row for an identity to ride on.
+    appendEvent(announced)
+    appendEvent(threadCreated)
+    alongside.forEach(appendEvent)
+    return timestamp
   }
 
   /**
@@ -1482,7 +1483,11 @@ export function createThreadService(
     try {
       // The identity is stored by the same write that creates the row, so a
       // child is never durable without what it resumes and deduplicates by.
-      persistCreatedThread(session, thread, parent.providerId, [], providerSessionId)
+      persistCreatedThread(session, thread, {
+        providerId: parent.providerId,
+        ...(title ? { titleSource: 'provider' as const } : {}),
+        identity: providerSessionId,
+      })
     } catch (error) {
       // The parent turn carries on; the child is offered again on the next update.
       options.onPersistenceError?.(error, 'session.created')
@@ -1504,7 +1509,6 @@ export function createThreadService(
     }
     sessions.set(session.sessionId, record)
     threads.set(thread.threadId, record)
-    announcedProviders.delete(session.sessionId)
     childSessionIds.set(key, session.sessionId)
   }
 
@@ -1788,15 +1792,6 @@ export function createThreadService(
       return threads.get(threadId)?.session.sessionId
     },
 
-    /**
-     * The provider a loaded session runs on, or the one a session still being
-     * announced was created on. Unknown for a session only the database
-     * remembers.
-     */
-    providerForSession(sessionId: string): ProviderId | undefined {
-      return sessions.get(sessionId)?.providerId ?? announcedProviders.get(sessionId)
-    },
-
     resolveRuntimeSession(sessionId: string) {
       const record = sessions.get(sessionId)
       if (!record) return undefined
@@ -1966,12 +1961,11 @@ export function createThreadService(
         // bring it back.
         let announcedAt: string
         try {
-          announcedAt = persistCreatedThread(
-            session,
-            thread,
+          announcedAt = persistCreatedThread(session, thread, {
             providerId,
-            draft ? [draft.event] : [],
-          )
+            ...(input.title !== undefined ? { titleSource: 'fallback' as const } : {}),
+            ...(draft ? { alongside: [draft.event] } : {}),
+          })
         } catch (error) {
           options.onPersistenceError?.(error, 'session.created')
           return errorResult(
@@ -2014,7 +2008,6 @@ export function createThreadService(
         }
         sessions.set(session.sessionId, record)
         threads.set(thread.threadId, record)
-        announcedProviders.delete(session.sessionId)
         if (draft) sentDrafts.set(session.sessionId, draft.restore)
         void record.runtimeSession.then(
           () => {

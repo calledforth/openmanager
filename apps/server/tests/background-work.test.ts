@@ -48,9 +48,7 @@ async function setup(durable = true, onPersistenceError?: (error: unknown) => vo
     database.exec(
       "INSERT INTO workspaces (workspace_id, name, path, created_at, updated_at) VALUES ('/workspace/project', 'Project', '/workspace/project', 1, 1)",
     )
-    events = createPersistentEventService(database, (record) => published.push(record.event), {
-      sessionProviderId: () => 'claude',
-    })
+    events = createPersistentEventService(database, (record) => published.push(record.event), {})
     closers.push(() => {
       events!.close()
       database.close()
@@ -538,7 +536,7 @@ describe('background work across a restart', () => {
     const events = createPersistentEventService(
       database,
       (record) => published.push(record.event),
-      { sessionProviderId: () => 'claude' },
+      {},
     )
     closers.push(() => {
       events.close()

@@ -214,8 +214,18 @@ export function createAgentEventTranslator(options: {
             ...envelope(event),
             name: 'session.created',
             scope: environmentScope,
+            // The whole row, as the environment announces it (§4.7.2).
             payload: {
-              session: { sessionId: event.sessionId, workspaceId: event.workspaceId, title: null },
+              session: {
+                sessionId: event.sessionId,
+                workspaceId: event.workspaceId,
+                title: null,
+                status: 'idle',
+                providerId: event.providerId,
+                updatedAt: event.timestamp,
+                settledAt: null,
+                doneAt: null,
+              },
             },
           },
           thread,

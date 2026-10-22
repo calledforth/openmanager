@@ -278,9 +278,23 @@ describe('createConvexEnvironmentClient', () => {
     const { client, convex, bridge } = setup()
     client.connect()
     bridge.emit(
-      agentEvent({ category: 'lifecycle', event: 'session_created', sessionId: 'fresh', data: {} }),
+      agentEvent({
+        category: 'lifecycle',
+        event: 'session_created',
+        sessionId: 'fresh',
+        providerId: 'cursor',
+        data: {},
+      }),
     )
-    expect(client.getState().sessions.fresh).toMatchObject({ workspaceId: 'C:/repo', title: null })
+    // The translator announces the whole row, provider and time included
+    // (protocol v17, §4.7.2), so the store needs no listing to name them.
+    expect(client.getState().sessions.fresh).toMatchObject({
+      workspaceId: 'C:/repo',
+      title: null,
+      status: 'idle',
+      providerId: 'cursor',
+      updatedAt: '2026-09-11T00:00:00.000Z',
+    })
     convex.push('sessions:listForSidebar')
     expect(client.getState().sessions.fresh).toBeDefined()
   })

@@ -2,15 +2,13 @@ import { describe, expect, it } from 'vitest'
 import { applyEvent, applySessionList, createInitialState } from '../src/state'
 import { createSettleTracker } from '../src/settle'
 import { createEnvironmentStore } from '../src/store'
-import { SESSION, environmentScope, event } from './fixtures'
+import { SESSION, SESSION_SUMMARY, environmentScope, event } from './fixtures'
 
 const STAND_IN = '2026-09-27T10:00:00.000Z'
 const KEPT = '2026-09-27T10:00:00.250Z'
 
 function setup() {
-  const store = createEnvironmentStore(
-    applySessionList(createInitialState(), [{ ...SESSION, status: 'idle' }]),
-  )
+  const store = createEnvironmentStore(applySessionList(createInitialState(), [SESSION_SUMMARY]))
   const tracker = createSettleTracker(store, () => STAND_IN)
   let renders = 0
   store.subscribe(() => renders++)

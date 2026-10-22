@@ -1289,7 +1289,7 @@ function EnvironmentSidebarDataProvider({
         // server idle means ready; legacy desktop idle clears an unread
         // completion marker, so keep the presentation alias at this boundary.
         status: summary.status === 'idle' ? (summary.doneAt ? 'done' : 'ready') : summary.status,
-        providerId: (summary.providerId as ProviderId | undefined) ?? session.defaultProviderId,
+        providerId: summary.providerId as ProviderId,
         ...(summary.parentSessionId ? { parentExternalId: summary.parentSessionId } : {}),
         // ChatView still branches on `isDriven` for the Convex IPC overlay.
         // This path has one protocol-event stream and no `stream_chunks`
@@ -1316,7 +1316,7 @@ function EnvironmentSidebarDataProvider({
     }
     shownSessions.current = reuseUnchanged(shownSessions.current, grouped)
     return shownSessions.current
-  }, [session.defaultProviderId, sessions, unsent, workspaceEntries])
+  }, [sessions, unsent, workspaceEntries])
 
   // Offered only once the environment says it can keep the change.
   const canSettle = connection.phase === 'connected' && client.supports('settleSession')

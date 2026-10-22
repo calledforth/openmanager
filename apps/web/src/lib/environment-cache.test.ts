@@ -18,6 +18,8 @@ function seed(environmentId = 'env-one') {
       workspaceId: 'workspace',
       title: 'Cached session',
       status: 'idle',
+      providerId: 'opencode',
+      updatedAt: '2026-10-01T00:00:00.000Z',
       threadIds: ['thread'],
     },
   }

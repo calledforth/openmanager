@@ -35,10 +35,12 @@ import type {
   ProofEvent,
   ProofResponse,
   Session,
+  SessionSummary,
   Thread,
   Turn,
   Workspace,
 } from '@openmanager/protocol'
+import { SESSION_LIST_EPOCH } from '@openmanager/protocol'
 import { createAgentEventTranslator } from './agent-event-translator'
 import { namesUnknownTurn } from '@agentpack/view/protocol'
 
@@ -350,6 +352,35 @@ export function createConvexEnvironmentClient(
     workspaceId,
     title: row.title ?? null,
   })
+  /**
+   * A Convex row as the shared store's session summary. Since protocol v17 a
+   * summary always names its provider and time; Convex keeps neither time nor,
+   * for older rows, the provider, so this adapter, which stands in for the
+   * environment, states what this host already shows: the row's provider (the
+   * desktop sidebar's own fallback otherwise), and every other field as the
+   * store already holds it, as a bare session used to leave it.
+   */
+  const toCatalogSummary = (
+    state: EnvironmentState,
+    row: { externalId: string; title?: string; providerId?: string },
+    workspaceId: string,
+  ): SessionSummary => {
+    const held = state.sessions[row.externalId]
+    return {
+      ...toSession(row, workspaceId),
+      ...(held?.parentSessionId ? { parentSessionId: held.parentSessionId } : {}),
+      ...(held?.titleSource ? { titleSource: held.titleSource } : {}),
+      status: held?.status ?? 'idle',
+      providerId: isProvider(row.providerId) ? row.providerId : (held?.providerId ?? 'opencode'),
+      updatedAt: held?.updatedAt ?? SESSION_LIST_EPOCH,
+      ...(held?.settledAt !== undefined ? { settledAt: held.settledAt } : {}),
+      ...(held?.doneAt !== undefined ? { doneAt: held.doneAt } : {}),
+      ...(held?.backgroundTasks ? { backgroundTasks: held.backgroundTasks } : {}),
+      ...(held?.waitingOn ? { waitingOn: held.waitingOn } : {}),
+      ...(held?.inBackground ? { inBackground: held.inBackground } : {}),
+      ...(held?.composer ? { composer: held.composer } : {}),
+    }
+  }
   const threadOf = (sessionId: string): Thread => ({ threadId: sessionId, sessionId })
 
   /** Ensures a thread exists for a session, the way `thread.created` would on the wire. */
@@ -405,7 +436,7 @@ export function createConvexEnvironmentClient(
     update((state) => {
       let next = applySessionList(
         state,
-        visible.map((row) => toSession(row, row.workspacePath)),
+        visible.map((row) => toCatalogSummary(state, row, row.workspacePath)),
       )
       for (const row of visible) {
         next = knownThread(next, row.externalId)
@@ -876,7 +907,7 @@ export function createConvexEnvironmentClient(
       update((state) => {
         let next = applySessionList(
           state,
-          rows.map((row) => toSession(row, workspaceId)),
+          rows.map((row) => toCatalogSummary(state, row, workspaceId)),
         )
         for (const row of rows) next = knownThread(next, row.externalId)
         return next
@@ -930,7 +961,11 @@ export function createConvexEnvironmentClient(
           // `idle`); a brand-new session has no history to fetch, so it is ready.
           update((state) =>
             applyThreadHydration(
-              applySessionCreated(state, { session, thread }),
+              applySessionCreated(
+                state,
+                { session, thread, announcedAt: new Date().toISOString() },
+                providerId,
+              ),
               thread.threadId,
               'ready',
             ),

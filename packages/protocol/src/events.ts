@@ -8,7 +8,7 @@ import {
   SessionScopeSchema,
   ThreadScopeSchema,
   WorkspaceSchema,
-  SessionSchema,
+  SessionSummarySchema,
   SessionStatusSchema,
   InteractionKindSchema,
   ThreadSchema,
@@ -65,10 +65,16 @@ export const ProofEventSchemas = {
     EnvironmentScopeSchema,
     z.object({ workspaceId: EntityIdSchema }),
   ),
+  /**
+   * The whole sidebar row, as the projection writes it: provider, status and
+   * time included, in the canonical form a listing reads back (null settle
+   * and done times, no activity), so a client that only hears this event
+   * holds what a fresh load would (docs/sync-foundations.md §4.7.2).
+   */
   'session.created': event(
     'session.created',
     EnvironmentScopeSchema,
-    z.object({ session: SessionSchema }),
+    z.object({ session: SessionSummarySchema }),
   ),
   'session.updated': event(
     'session.updated',

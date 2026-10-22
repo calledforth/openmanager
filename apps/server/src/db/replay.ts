@@ -3,7 +3,6 @@ import {
   DurableEventSchema,
   PAGE_LIMIT_MAX,
   ScopeSnapshotSchema,
-  SessionSchema,
   decideReplay,
   type Cursor,
   type DurableEvent,
@@ -116,7 +115,7 @@ export function createReplayReader(database: DatabaseSync, options: ReplayReader
       return ScopeSnapshotSchema.parse({
         cursor: head,
         state: {
-          session: SessionSchema.parse(summary),
+          session: summary,
           threads: listThreadsForSession(database, scope.sessionId),
         },
       })

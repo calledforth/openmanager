@@ -16,7 +16,6 @@ import { describe, expect } from 'vitest'
 import {
   environmentSnapshotNeverRemoves,
   reasoningBudgetMarker,
-  sessionCreatedPartial,
   snapshotMergeDropsOlderActivity,
 } from './causes.ts'
 import {
@@ -29,7 +28,7 @@ import {
 import { Driver, sleep, until, type Rig, type TestClient } from './harness.ts'
 import type { FrameFields, FrameRecord } from './link-proxy.ts'
 import { serverSessionsView, serverThreadView, type ThreadView } from './normalize.ts'
-import { recencyMirror, witnessOf, x2Causes } from './fixtures.ts'
+import { recencyMirror, witnessOf } from './fixtures.ts'
 import { createdAt, mirroredRecency } from './mirror.ts'
 import { afterPhase, futureTest, scenario } from './scenario.ts'
 import {
@@ -650,11 +649,7 @@ describe('§8.4 scenarios on main', () => {
         () => b.client.getState().sessions[older.sessionId],
         'B to list the older session',
       )
-      // B heard of the sessions only through session.created, which carries
-      // no provider until X2 lands in this phase.
-      const partial = (ids: string[]) =>
-        sessionCreatedPartial({ sessionIds: ids, providerId: 'opencode' })
-      await expectConvergesExcept('S8 baseline', rig, b, [partial([older.sessionId])])
+      await expectConverges('S8 baseline', rig, b)
       const created = await createSession(rig, a, { title: 'New', open: false, quiet: false })
       // Inside the 500 ms before the new session's stamp: the older one moves above it.
       await a.client.commands.renameSession(older.sessionId, 'Older, renamed')
@@ -668,7 +663,7 @@ describe('§8.4 scenarios on main', () => {
         'the new session to be stamped',
       )
       await rig.waitQuiet()
-      await expectConvergesExcept('S8', rig, b, [partial([older.sessionId, created.sessionId])])
+      await expectConverges('S8', rig, b)
       // Equal is not enough: the server's time for the new session is still the one announced.
       const server = serverSessionsView(await rig.server.readSessions()) as Array<{
         sessionId: string
@@ -713,11 +708,6 @@ describe('§8.4 scenarios on main', () => {
       ).not.toContain(child.sessionId)
       await finish(rig, a, parent, turnId)
       await expectConvergesExcept('S8 (child)', rig, b, [
-        // B heard of both sessions only through session.created (X2, this phase).
-        sessionCreatedPartial({
-          sessionIds: [parent.sessionId, child.sessionId],
-          providerId: 'opencode',
-        }),
         // The turn's status events move the workspace's recency with no
         // workspace event (X1, this phase).
         recencyMirror(rig, b),
@@ -1224,8 +1214,15 @@ describe('divergences on main that §8.4 does not list', () => {
     },
   )
 
+  /**
+   * Guard since F3 (§4.7.2): `session.created` carries the whole row, so a
+   * client that only heard the event holds what a fresh load would: the
+   * provider (no OpenCode fallback in the sidebar), the status and the time.
+   * On main it carried a bare Session (SESSION_CREATED_PARTIAL). Created on
+   * Cursor, so a guessed default would show.
+   */
   scenario(
-    'X2 a second client hears of a session only through session.created (§6.3)',
+    'X2 a second client hears of a session only through session.created (§4.7.2, guard)',
     {},
     async (rig) => {
       // A direct, so the proxy carries only B.
@@ -1233,27 +1230,33 @@ describe('divergences on main that §8.4 does not list', () => {
       const b = await rig.connect('B')
       // A valid baseline before anything is created.
       await expectConverges('X2 baseline', rig, b)
-      const target = await createSession(rig, a, { open: false, quiet: false })
+      const target = await createSession(rig, a, {
+        providerId: 'cursor',
+        open: false,
+        quiet: false,
+      })
       await until(() => b.client.getState().sessions[target.sessionId], 'B to list the new session')
       await rig.waitQuiet()
-      // Nothing follows the creation, so the runtime stamp (S8's cause) shows
-      // too: named for this session, by provenance.
-      const causes = async () =>
-        x2Causes({
-          sessionId: target.sessionId,
-          workspaceId: rig.workspaceId,
-          providerId: 'opencode',
-          createdAt: createdAt(rig.framesOf(b), target.sessionId),
-          heldRecency: mirroredRecency(rig.framesOf(b), rig.workspaceId),
-          witness: await witnessOf(rig, b),
-        })
-      await demonstrateDiff(
-        'X2',
-        rig,
-        b,
-        async () => (await causes()).primary,
-        [0, 1].map((index) => async () => (await causes()).residuals[index]!),
-      )
+      await expectConverges('X2', rig, b)
+      // Equal is not enough: B holds what it was told, from the event alone.
+      expect(b.client.getState().sessions[target.sessionId]).toMatchObject({
+        providerId: 'cursor',
+        status: 'idle',
+        updatedAt: createdAt(rig.framesOf(b), target.sessionId),
+      })
+      const listed = rig
+        .framesOf(b)
+        .filter(
+          (frame) =>
+            frame.direction === 'up' &&
+            (frame.json as { name?: string } | undefined)?.name === 'session.list',
+        ).length
+      recordEvidence({
+        scenario: 'X2',
+        bucket: 'regression-guard',
+        cause: 'session.created carries a SessionSummary',
+        observed: { sessionListReads: listed },
+      })
     },
   )
 

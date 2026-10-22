@@ -149,10 +149,8 @@ export function deriveSessionStatus(threads: readonly ThreadState[]): SessionSta
 
 function upsertSession(
   state: EnvironmentState,
-  session: Session | ProtocolSessionSummary,
+  session: ProtocolSessionSummary,
   threadIds?: readonly string[],
-  /** When the session names no `updatedAt`, the time it was announced. */
-  at?: string,
 ): EnvironmentState {
   const existing = state.sessions[session.sessionId]
   const listed = session as Partial<ProtocolSessionSummary>
@@ -165,8 +163,8 @@ function upsertSession(
     ...(titleSource ? { titleSource } : {}),
     ...(parentSessionId ? { parentSessionId } : {}),
     status: listed.status ?? existing?.status ?? 'idle',
-    providerId: listed.providerId ?? existing?.providerId,
-    updatedAt: listed.updatedAt ?? existing?.updatedAt ?? at,
+    providerId: session.providerId,
+    updatedAt: session.updatedAt,
     ...settledOf(listed.settledAt, existing?.settledAt),
     ...doneOf(listed.doneAt, existing?.doneAt),
     // A full summary is the whole truth: naming no background work means
@@ -426,11 +424,9 @@ export function applyEvent(state: EnvironmentState, event: ProofEvent): Environm
         event.payload.workspaceId,
       )
     case 'session.created':
-      // The announced session carries no `updatedAt`; without the event time
-      // it would sort as the epoch and a brand-new session would open at the
-      // bottom of the sidebar.
+      // The whole row, provider and time included (§4.7.2).
       return touchWorkspaceActivity(
-        upsertSession(state, event.payload.session, undefined, event.timestamp),
+        upsertSession(state, event.payload.session),
         event.payload.session.sessionId,
         event.timestamp,
       )
@@ -939,16 +935,40 @@ export function applyInteractionResolved(
  * `session.created` event, so it carries the announcement time: without it the
  * session would be listed as the oldest, at the bottom of the sidebar, and move
  * to the top once the event came. With it the event restates what is held.
+ *
+ * The answer is a bare `Session`; the caller fills the summary's required
+ * fields from what it already has, the provider it asked for and the
+ * announcement time, until the `pending.creates` overlay replaces this writer
+ * (docs/sync-foundations.md §4.7.2, decision D7).
  */
 export function applySessionCreated(
   state: EnvironmentState,
-  payload: { session: Session; thread: Thread; announcedAt?: string },
+  payload: { session: Session; thread: Thread; announcedAt: string },
+  providerId: string,
 ): EnvironmentState {
   const { announcedAt } = payload
-  const upserted = upsertSession(state, payload.session, [payload.thread.threadId], announcedAt)
-  const withSession = announcedAt
-    ? touchWorkspaceActivity(upserted, payload.session.sessionId, announcedAt)
-    : upserted
+  const existing = state.sessions[payload.session.sessionId]
+  const upserted = upsertSession(
+    state,
+    {
+      ...payload.session,
+      providerId,
+      // An event that already arrived is newer than this answer: keep what it said.
+      ...(existing
+        ? {
+            status: existing.status,
+            updatedAt: existing.updatedAt,
+            settledAt: existing.settledAt ?? null,
+            doneAt: existing.doneAt ?? null,
+            ...(existing.backgroundTasks ? { backgroundTasks: existing.backgroundTasks } : {}),
+            ...(existing.waitingOn ? { waitingOn: existing.waitingOn } : {}),
+            ...(existing.inBackground ? { inBackground: existing.inBackground } : {}),
+          }
+        : { status: 'idle' as const, updatedAt: announcedAt, settledAt: null, doneAt: null }),
+    },
+    [payload.thread.threadId],
+  )
+  const withSession = touchWorkspaceActivity(upserted, payload.session.sessionId, announcedAt)
   if (withSession.threads[payload.thread.threadId]) return withSession
   return {
     ...withSession,
@@ -961,7 +981,7 @@ export function applySessionCreated(
 
 export function applySessionList(
   state: EnvironmentState,
-  sessions: readonly (Session | ProtocolSessionSummary)[],
+  sessions: readonly ProtocolSessionSummary[],
 ): EnvironmentState {
   let next = state
   for (const session of sessions) next = upsertSession(next, session)

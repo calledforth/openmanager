@@ -260,8 +260,6 @@ export async function startServer(config: ServerConfig) {
       .map(({ id }) => id)
   let publishDurableEvent: (record: DurableEvent) => void = () => undefined
   let publishThreadEvent: (event: EventEnvelope) => void = () => undefined
-  // Bound once the thread service exists, which the event service predates.
-  let sessionProvider: (sessionId: string) => string | undefined = () => undefined
   const eventDatabase = openEnvironmentDatabase(config.dataDir)
   // Before anything is appended: events stored in an older format are no
   // longer replayed (docs/sync-foundations.md §4.7.7).
@@ -294,16 +292,6 @@ export async function startServer(config: ServerConfig) {
     },
     {
       epoch: eventEpoch,
-      // The row names the provider the session was created on. The thread
-      // service knows it while the create is still announcing the session; the
-      // workspace default only stands in when no service is creating one.
-      sessionProviderId: (session) => {
-        const created = sessionProvider(session.sessionId)
-        if (created) return created
-        const target = resolveWorkspace(session.workspaceId)
-        if (!target) throw new Error('Cannot persist session without a workspace provider')
-        return target.providerId
-      },
       onError: (error) => log('error', 'event persistence failed', { reason: String(error) }),
       ...config.commitHooks,
     },
@@ -388,7 +376,6 @@ export async function startServer(config: ServerConfig) {
         log('warn', 'session title was not generated', { sessionId, reason: String(error) }),
     },
   )
-  sessionProvider = (sessionId) => threadService.providerForSession(sessionId)
   closeWorkspaceSessions = (workspaceId) => {
     // Flush before the registry cascades deletion of the projected thread rows.
     eventService.flush()

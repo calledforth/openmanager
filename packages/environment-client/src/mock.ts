@@ -713,7 +713,7 @@ export function createMockEnvironmentClient(
     const session = store.getState().sessions[sessionId]
     if (!session) throw new EnvironmentClientError('not_found', 'Session not found.')
     return {
-      target: { workspaceId: session.workspaceId, providerId: session.providerId ?? 'opencode' },
+      target: { workspaceId: session.workspaceId, providerId: session.providerId },
       known: session.providerId !== undefined,
     }
   }
@@ -943,7 +943,24 @@ export function createMockEnvironmentClient(
           title: input.title ?? null,
         }
         const thread: Thread = { threadId: nextId(), sessionId: session.sessionId }
-        emit({ ...base(), name: 'session.created', scope: envScope(), payload: { session } })
+        const announcedAt = now()
+        // Like the environment: the whole row (§4.7.2).
+        emit({
+          ...base(),
+          name: 'session.created',
+          scope: envScope(),
+          payload: {
+            session: {
+              ...session,
+              ...(input.title !== undefined ? { titleSource: 'fallback' as const } : {}),
+              status: 'idle',
+              providerId: input.providerId,
+              updatedAt: announcedAt,
+              settledAt: null,
+              doneAt: null,
+            },
+          },
+        })
         // Like the environment: the sent draft goes in the same write.
         if (input.draftId !== undefined) deleteDraftRow(input.draftId)
         emit({
@@ -956,23 +973,9 @@ export function createMockEnvironmentClient(
           },
           payload: { thread },
         })
-        store.update((state) => {
-          const created = applySessionCreated(state, { session, thread })
-          const current = created.sessions[session.sessionId]
-          if (!current) return created
-          return {
-            ...created,
-            sessions: {
-              ...created.sessions,
-              [session.sessionId]: {
-                ...current,
-                status: 'idle',
-                providerId: input.providerId,
-                updatedAt: current.updatedAt ?? now(),
-              },
-            },
-          }
-        })
+        store.update((state) =>
+          applySessionCreated(state, { session, thread, announcedAt }, input.providerId),
+        )
         const firstTurn =
           input.firstMessage === undefined
             ? undefined
@@ -1028,8 +1031,8 @@ export function createMockEnvironmentClient(
               workspaceId: session.workspaceId,
               title: session.title,
               status: session.status,
-              providerId: session.providerId ?? 'opencode',
-              updatedAt: session.updatedAt ?? now(),
+              providerId: session.providerId,
+              updatedAt: session.updatedAt,
             },
             threads: session.threadIds
               .map((threadId) => state.threads[threadId]?.thread)
@@ -1656,8 +1659,8 @@ export function createMockEnvironmentClient(
               workspaceId: summary.workspaceId,
               title: summary.title,
               status: summary.status,
-              providerId: summary.providerId ?? 'opencode',
-              updatedAt: summary.updatedAt ?? now(),
+              providerId: summary.providerId,
+              updatedAt: summary.updatedAt,
             },
             threads: threadStates.map((item) => item.thread),
           })
@@ -1711,8 +1714,18 @@ function seedState(
     const threads = entry.threads ?? [
       { threadId: `${entry.session.sessionId}-thread`, sessionId: entry.session.sessionId },
     ]
+    // A seed is what the environment already holds: listed as a fresh load
+    // would list it, with no recency of its own.
+    state = applySessionOpen(state, {
+      session: {
+        ...entry.session,
+        status: entry.status ?? 'idle',
+        providerId: entry.providerId ?? 'opencode',
+        updatedAt: entry.updatedAt ?? new Date(1_700_000_000_000 + index * 1_000).toISOString(),
+      },
+      threads,
+    })
     for (const thread of threads) {
-      state = applySessionCreated(state, { session: entry.session, thread })
       state = {
         ...state,
         threads: {
@@ -1723,24 +1736,6 @@ function seedState(
             messages: (entry.messages ?? []).filter(
               (message) => message.threadId === thread.threadId,
             ),
-          },
-        },
-      }
-    }
-    const current = state.sessions[entry.session.sessionId]
-    if (current) {
-      state = {
-        ...state,
-        sessions: {
-          ...state.sessions,
-          [entry.session.sessionId]: {
-            ...current,
-            status: entry.status ?? current.status,
-            providerId: entry.providerId ?? current.providerId ?? 'opencode',
-            updatedAt:
-              entry.updatedAt ??
-              current.updatedAt ??
-              new Date(1_700_000_000_000 + index * 1_000).toISOString(),
           },
         },
       }

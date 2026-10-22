@@ -274,7 +274,7 @@ describe('turn closure', () => {
     const repository = createEventRepository(database)
     repository.appendEvents(scope, openTurn().slice(0, 2))
     // The projector alone, as a writer that skipped the closure would call it.
-    const project = createEventProjector(database, { sessionProviderId: () => 'cursor' })
+    const project = createEventProjector(database)
     expect(() => project(event('turn.completed', 'bare', { turnId: 'turn-1' }, T(2)))).toThrow(
       /cannot end with open children: tool tool-1/,
     )

@@ -1,12 +1,13 @@
 import { randomUUID } from 'node:crypto'
 import type { DatabaseSync } from 'node:sqlite'
-import type { ProofEvent } from '@openmanager/protocol/node'
+import { isDeepStrictEqual } from 'node:util'
+import { SessionSummarySchema, type ProofEvent } from '@openmanager/protocol/node'
 import type { DurableProofEvent, WriteOptions } from './event-repository.ts'
 import { prepareDraftProjection } from './draft-projection.ts'
 import { OPEN_TURN_FOR_SESSION_SQL } from './queries.ts'
+import { getSessionSummary } from './session-store.ts'
 import { createTurnClosure, reasoningIsOpen, toolIsOpen } from './turn-closure.ts'
 
-type SessionSummary = Extract<ProofEvent, { name: 'session.created' }>['payload']['session']
 type TurnStarted = Extract<ProofEvent, { name: 'turn.started' }>
 type MessageDelta = Extract<ProofEvent, { name: 'message.delta' }>
 type MessageContent = MessageDelta['payload']['content']
@@ -18,11 +19,6 @@ type TurnRow = { workspace_id: string; state: string }
 /** A turn that has ended takes no new output. */
 const finished = (turn: TurnRow) => turn.state !== 'running' && turn.state !== 'waiting'
 
-export interface EventProjectionOptions {
-  /** Host-owned provider identity, absent from the public session summary. */
-  sessionProviderId?: (session: SessionSummary) => string
-}
-
 /**
  * Apply a durable event to the relational rows it describes.
  * Every statement runs inside the caller's transaction and throws on a missing,
@@ -30,7 +26,6 @@ export interface EventProjectionOptions {
  */
 export function createEventProjector(
   database: DatabaseSync,
-  options: EventProjectionOptions,
 ): (event: DurableProofEvent, write?: WriteOptions) => void {
   const drafts = prepareDraftProjection(database)
   const closure = createTurnClosure(database)
@@ -38,8 +33,8 @@ export function createEventProjector(
     insertSession: database.prepare(
       `INSERT INTO sessions (
          session_id, workspace_id, parent_session_id, provider_id, provider_session_id, title,
-         status, created_at, updated_at
-       ) VALUES (?, ?, ?, ?, ?, ?, 'idle', ?, ?)`,
+         title_source, title_generated, status, created_at, updated_at
+       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'idle', ?, ?)`,
     ),
     updateWorkspaceName: database.prepare(
       'UPDATE workspaces SET name = ?, updated_at = ? WHERE workspace_id = ?',
@@ -407,23 +402,33 @@ export function createEventProjector(
     switch (event.name) {
       case 'session.created': {
         const session = event.payload.session
-        const providerId = options.sessionProviderId?.(session)
-        if (!providerId?.trim()) {
-          throw new Error('session.created requires a host sessionProviderId resolver')
-        }
+        // The row is the payload: the producer built every field the
+        // projection writes (docs/sync-foundations.md §4.7.2). A title the
+        // title model wrote is kept as 'provider' plus `title_generated`.
+        const source = session.titleSource
         // The composite foreign key rejects a parent from another workspace,
         // so a child can never be filed under a session it cannot belong to.
         s.insertSession.run(
           session.sessionId,
           session.workspaceId,
           session.parentSessionId ?? null,
-          providerId,
+          session.providerId,
           // Host-private: the identity rides the write, never the event.
           write?.identities?.[session.sessionId] ?? null,
           session.title,
+          source === undefined ? null : source === 'generated' ? 'provider' : source,
+          source === 'generated' ? 1 : 0,
           at,
           at,
         )
+        // Built from the row the projection wrote, checked rather than
+        // assumed: what a listing reads back equals what the event said.
+        const written = getSessionSummary(database, session.sessionId)
+        if (!isDeepStrictEqual(written, SessionSummarySchema.parse(session))) {
+          throw new Error(
+            `session.created for ${session.sessionId} says ${JSON.stringify(session)}; its row reads ${JSON.stringify(written)}`,
+          )
+        }
         return
       }
       case 'workspace.updated':
