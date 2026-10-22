@@ -1,5 +1,5 @@
-import type { ReactNode } from 'react'
-import { View } from 'react-native'
+import { useRef, type ReactNode, type RefObject } from 'react'
+import { Text, View } from 'react-native'
 
 import { AppText } from '../components/ui/AppText'
 import { ActionButton } from '../pairing/ActionButton'
@@ -9,7 +9,9 @@ import { Sheet } from './Sheet'
 /**
  * Asking before something that cannot be undone: a glass sheet with the
  * question, what follows from it, and the two answers in words. A tap on the
- * scrim is the same as Cancel.
+ * scrim, and Android's Back, are the same as Cancel (while the action runs,
+ * both wait for it). A screen reader starts on the question and goes back to
+ * `returnFocus` (what opened it) after.
  */
 export function ConfirmSheet({
   title,
@@ -19,6 +21,7 @@ export function ConfirmSheet({
   busy,
   error,
   children,
+  returnFocus,
   onConfirm,
   onCancel,
 }: {
@@ -31,14 +34,25 @@ export function ConfirmSheet({
   /** What went wrong the last time it was confirmed. */
   error?: string | null
   children?: ReactNode
+  /** What opened the sheet, for a screen reader's focus to go back to. */
+  returnFocus?: RefObject<unknown>
   onConfirm: () => void
   onCancel: () => void
 }) {
   const theme = usePhoneTheme()
+  const question = useRef<Text>(null)
   return (
-    <Sheet onDismiss={busy ? undefined : onCancel}>
+    <Sheet
+      onDismiss={busy ? undefined : onCancel}
+      onBack={() => {
+        if (!busy) onCancel()
+      }}
+      initialFocus={question}
+      returnFocus={returnFocus}
+    >
       <View style={{ paddingHorizontal: 8, paddingBottom: 8, gap: 4 }}>
         <AppText
+          ref={question}
           accessibilityRole="header"
           variant="text-16-medium"
           style={{ color: theme.fg, textAlign: 'center' }}

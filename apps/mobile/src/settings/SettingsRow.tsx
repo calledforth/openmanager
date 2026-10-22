@@ -1,5 +1,5 @@
 import { CaretRightIcon } from 'phosphor-react-native'
-import type { ReactNode } from 'react'
+import type { ReactNode, Ref } from 'react'
 import { View } from 'react-native'
 
 import { AppText } from '../components/ui/AppText'
@@ -73,6 +73,7 @@ export function SettingsRow({
   onPress,
   accessibilityLabel,
   raised,
+  pressRef,
 }: {
   icon?: ReactNode
   title: string
@@ -84,6 +85,8 @@ export function SettingsRow({
   accessibilityLabel?: string
   /** The row sits on a filled panel: its icon tile and pressed state use the stronger fill. */
   raised?: boolean
+  /** The row's pressable view, for focus to come back to. */
+  pressRef?: Ref<View>
 }) {
   const theme = usePhoneTheme()
   const body = (pressed: boolean) => (
@@ -139,6 +142,7 @@ export function SettingsRow({
   if (!onPress) return body(false)
   return (
     <Press
+      ref={pressRef}
       accessibilityRole="button"
       accessibilityLabel={accessibilityLabel ?? title}
       onPress={() => {

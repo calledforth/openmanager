@@ -8,7 +8,7 @@ import {
   TrashIcon,
   WifiHighIcon,
 } from 'phosphor-react-native'
-import { useState, type ReactNode } from 'react'
+import { useRef, useState, type ReactNode } from 'react'
 import { ScrollView, Text, View } from 'react-native'
 import Animated, { FadeIn } from 'react-native-reanimated'
 import { useSafeAreaInsets } from 'react-native-safe-area-context'
@@ -46,6 +46,7 @@ export function EnvironmentScreen({ environmentId }: { environmentId: string }) 
   const state = usePhoneConnection()
   const controller = usePhoneConnectionController()
   const [forgetting, setForgetting] = useState(false)
+  const forgetRow = useRef<View>(null)
   const environment = state.environments.find((item) => item.environmentId === environmentId)
 
   if (!environment) {
@@ -79,6 +80,7 @@ export function EnvironmentScreen({ environmentId }: { environmentId: string }) 
             title={`Forget ${environment.label}?`}
             body="Removes it, its routes and this phone's access from this phone only. The computer keeps listing this phone until you revoke it there."
             confirmLabel="Forget"
+            returnFocus={forgetRow}
             onCancel={() => setForgetting(false)}
             onConfirm={() => {
               setForgetting(false)
@@ -135,6 +137,7 @@ export function EnvironmentScreen({ environmentId }: { environmentId: string }) 
         title="Forget this environment"
         sub="Removes it from this phone only"
         danger
+        pressRef={forgetRow}
         onPress={() => setForgetting(true)}
       />
     </Page>
@@ -251,37 +254,40 @@ function Page({
   const insets = useSafeAreaInsets()
   return (
     <View style={{ flex: 1, backgroundColor: theme.bg, paddingTop: insets.top + 6 }}>
-      <View style={{ paddingHorizontal: 20 }}>
-        <View style={{ height: 44, flexDirection: 'row', alignItems: 'center' }}>
-          <IconButton label="Back" onPress={onBack}>
-            <CaretLeftIcon size={18} color={theme.fg} />
-          </IconButton>
+      {/* While a sheet is open, only the sheet can be read. */}
+      <View style={{ flex: 1 }} {...coveredBySheet(Boolean(overlay))}>
+        <View style={{ paddingHorizontal: 20 }}>
+          <View style={{ height: 44, flexDirection: 'row', alignItems: 'center' }}>
+            <IconButton label="Back" onPress={onBack}>
+              <CaretLeftIcon size={18} color={theme.fg} />
+            </IconButton>
+          </View>
+          <Text
+            accessibilityRole="header"
+            numberOfLines={2}
+            style={{
+              marginTop: 6,
+              fontFamily: 'Geist-SemiBold',
+              fontSize: 22,
+              letterSpacing: -0.3,
+              color: theme.fg,
+            }}
+          >
+            {title}
+          </Text>
+          {sub}
         </View>
-        <Text
-          accessibilityRole="header"
-          numberOfLines={2}
-          style={{
-            marginTop: 6,
-            fontFamily: 'Geist-SemiBold',
-            fontSize: 22,
-            letterSpacing: -0.3,
-            color: theme.fg,
+        <ScrollView
+          style={{ flex: 1 }}
+          contentContainerStyle={{
+            paddingHorizontal: 8,
+            paddingTop: 6,
+            paddingBottom: insets.bottom + 40,
           }}
         >
-          {title}
-        </Text>
-        {sub}
+          {children}
+        </ScrollView>
       </View>
-      <ScrollView
-        style={{ flex: 1 }}
-        contentContainerStyle={{
-          paddingHorizontal: 8,
-          paddingTop: 6,
-          paddingBottom: insets.bottom + 40,
-        }}
-      >
-        {children}
-      </ScrollView>
       {overlay}
     </View>
   )

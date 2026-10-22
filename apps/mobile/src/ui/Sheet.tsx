@@ -1,5 +1,5 @@
-import type { ReactNode } from 'react'
-import { Pressable, StyleSheet, View } from 'react-native'
+import { useEffect, useRef, type ReactNode, type RefObject } from 'react'
+import { BackHandler, Pressable, StyleSheet, View } from 'react-native'
 import Animated, {
   Easing,
   FadeIn,
@@ -10,6 +10,7 @@ import Animated, {
 import { useSafeAreaInsets } from 'react-native-safe-area-context'
 
 import { usePhoneTheme } from '../theme/ThemeProvider'
+import { focusAccessibility } from './a11y-focus'
 import { Glass } from './Glass'
 
 /**
@@ -28,10 +29,50 @@ export const SCRIM_OUT = FadeOut.duration(160)
  * its grabber. Mount it to show it and unmount it to hide it; the motion is
  * the same either way. `onDismiss`, when given, is what a tap on the scrim
  * does; without it the scrim only blocks the screen.
+ *
+ * It is modal to a screen reader: the sheet is marked modal
+ * (`accessibilityViewIsModal`, VoiceOver), the screen under it hides itself
+ * while it is open (`coveredBySheet`, TalkBack and VoiceOver), focus moves to
+ * `initialFocus` when it opens and back to `returnFocus` when it closes.
+ * With `onBack`, Android's Back button is that (Cancel, say) and goes no
+ * further while the sheet is open.
  */
-export function Sheet({ onDismiss, children }: { onDismiss?: () => void; children: ReactNode }) {
+export function Sheet({
+  onDismiss,
+  onBack,
+  initialFocus,
+  returnFocus,
+  children,
+}: {
+  onDismiss?: () => void
+  /** What Android's Back does while the sheet is open; Back is kept from the screen. */
+  onBack?: () => void
+  initialFocus?: RefObject<unknown>
+  returnFocus?: RefObject<unknown>
+  children: ReactNode
+}) {
   const theme = usePhoneTheme()
   const insets = useSafeAreaInsets()
+  const back = useRef(onBack)
+  back.current = onBack
+  const handlesBack = onBack !== undefined
+  useEffect(() => {
+    if (!handlesBack) return
+    const subscription = BackHandler.addEventListener('hardwareBackPress', () => {
+      back.current?.()
+      return true
+    })
+    return () => subscription.remove()
+  }, [handlesBack])
+  useEffect(() => {
+    const cancel = initialFocus ? focusAccessibility(initialFocus) : () => undefined
+    return () => {
+      cancel()
+      if (returnFocus) focusAccessibility(returnFocus)
+    }
+    // Once per opening: the refs are read when it opens and when it closes.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
   return (
     <View style={StyleSheet.absoluteFill} pointerEvents="box-none">
       <Animated.View entering={SCRIM_IN} exiting={SCRIM_OUT} style={StyleSheet.absoluteFill}>
@@ -44,6 +85,7 @@ export function Sheet({ onDismiss, children }: { onDismiss?: () => void; childre
         />
       </Animated.View>
       <Animated.View
+        accessibilityViewIsModal
         entering={SHEET_IN}
         exiting={SHEET_OUT}
         style={{ position: 'absolute', left: 8, right: 8, bottom: Math.max(insets.bottom, 8) }}
