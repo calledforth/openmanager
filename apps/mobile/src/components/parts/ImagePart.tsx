@@ -3,18 +3,8 @@ import { useEffect, useState } from 'react'
 import { Image, View } from 'react-native'
 import { useEnvironmentClientOptional, type ArtifactSource } from '@openmanager/app-core/logic'
 
+import { readAsDataUri } from '../../lib/dataUri'
 import { usePhoneTheme } from '../../theme/ThemeProvider'
-
-/** A Blob as a data URI the native image view can show. */
-function readAsDataUri(blob: Blob): Promise<string> {
-  return new Promise((resolve, reject) => {
-    const reader = new FileReader()
-    reader.onload = () =>
-      typeof reader.result === 'string' ? resolve(reader.result) : reject(new Error('Unreadable'))
-    reader.onerror = () => reject(reader.error ?? new Error('Unreadable'))
-    reader.readAsDataURL(blob)
-  })
-}
 
 /**
  * The bytes of a stored image, fetched through the environment client

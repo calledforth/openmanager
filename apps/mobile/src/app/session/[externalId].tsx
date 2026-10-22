@@ -1,8 +1,12 @@
 import { useIsFocused, useLocalSearchParams } from 'expo-router'
-import { useCallback, useMemo, useSyncExternalStore } from 'react'
+import { useCallback, useMemo, useState, useSyncExternalStore } from 'react'
+import { useWindowDimensions } from 'react-native'
 import { useEnvironmentClient, useEnvironmentClientOptional } from '@openmanager/app-core/logic'
 import { selectActiveThread } from '@openmanager/environment-client'
 
+import { LiveComposer } from '../../composer/LiveComposer'
+import { FixtureComposer } from '../../composer/FixtureComposer'
+import { createComposerUi, fixtureComposerUi } from '../../composer/ui-state'
 import type { HomeSession } from '../../home/rows'
 import { useHomeSource } from '../../home/source'
 import { usePhoneConnection } from '../../environment/PhoneEnvironmentProvider'
@@ -42,7 +46,15 @@ function LiveSession({ sessionId }: { sessionId: string }) {
   const status = useStatusLine(session, subscribe, getThread)
   const notices = useMemo(() => threadNoticeSource(subscribe, getThread), [getThread, subscribe])
   const childSessions = useChildSessions(sessions, sessionId)
-  const actions = useSessionActions(sessionId, session)
+  const [ui] = useState(() => createComposerUi())
+  const openSettings = useCallback(() => ui.open({ kind: 'settings' }), [ui])
+  const actions = useSessionActions(sessionId, session, openSettings)
+  const projectName = workspace?.name ?? null
+  // One element for the page's life: the thread re-rendering leaves it be.
+  const composer = useMemo(
+    () => <LiveComposer sessionId={sessionId} ui={ui} contextName={projectName} />,
+    [projectName, sessionId, ui],
+  )
   return (
     <TurnNoticesProvider source={notices}>
       <SessionThread
@@ -55,14 +67,17 @@ function LiveSession({ sessionId }: { sessionId: string }) {
         onRetry={retry}
         childSessions={childSessions}
         actions={actions}
+        composer={composer}
       />
     </TurnNoticesProvider>
   )
 }
 
 /** A fixture row: its fixture thread, through the same page. */
-function FixtureSession({ sessionId }: { sessionId: string }) {
+function FixtureSession({ sessionId, opened }: { sessionId: string; opened?: string }) {
   const { sessions, workspaces } = useHomeSource()
+  const window = useWindowDimensions()
+  const [ui] = useState(() => createComposerUi(fixtureComposerUi(opened, window)))
   const fixture = useFixtureThread(sessionId)
   const messages = useSyncExternalStore(fixture.subscribe, fixture.getMessages)
   const session = sessions.find((row) => row.externalId === sessionId)
@@ -72,6 +87,11 @@ function FixtureSession({ sessionId }: { sessionId: string }) {
   const actions = useMemo(
     () => unavailableSessionActions(session, 'A sample session: pair an environment to change it'),
     [session],
+  )
+  const projectName = workspace?.name ?? null
+  const composer = useMemo(
+    () => <FixtureComposer session={session} ui={ui} contextName={projectName} />,
+    [projectName, session, ui],
   )
   return (
     <FixtureThreadStores stores={fixture.stores}>
@@ -84,6 +104,7 @@ function FixtureSession({ sessionId }: { sessionId: string }) {
           phase="ready"
           childSessions={childSessions}
           actions={actions}
+          composer={composer}
         />
       </TurnNoticesProvider>
     </FixtureThreadStores>
@@ -114,11 +135,11 @@ function Unreachable() {
 }
 
 export default function SessionScreen() {
-  const { externalId } = useLocalSearchParams<{ externalId: string }>()
+  const { externalId, composer } = useLocalSearchParams<{ externalId: string; composer?: string }>()
   const { kind } = useHomeSource()
   const client = useEnvironmentClientOptional()
   const sessionId = externalId ?? ''
-  if (kind === 'fixture') return <FixtureSession sessionId={sessionId} />
+  if (kind === 'fixture') return <FixtureSession sessionId={sessionId} opened={composer} />
   if (!client) return <Unreachable />
   return <LiveSession key={sessionId} sessionId={sessionId} />
 }
