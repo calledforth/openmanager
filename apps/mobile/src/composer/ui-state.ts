@@ -92,6 +92,18 @@ export function useComposerUi(): ComposerUi {
   return ui
 }
 
+/**
+ * What a screen reader must not reach for the layers above it: the page and
+ * the dock under anything the composer has open, and the pulled-up editor
+ * under a sheet, popover or the camera opened from it.
+ */
+export function coveredLayers(state: ComposerUiState): { page: boolean; editor: boolean } {
+  return {
+    page: state.expanded || state.overlay !== null,
+    editor: state.expanded && state.overlay !== null,
+  }
+}
+
 /** The composer's on-screen state, re-rendering when it changes. */
 export function useComposerUiState(ui: ComposerUi): ComposerUiState {
   return useSyncExternalStore(ui.subscribe, ui.get, ui.get)

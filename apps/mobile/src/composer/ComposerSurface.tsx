@@ -14,7 +14,7 @@ import { ModelSheet } from './ModelSheet'
 import { PlanSheet } from './PlanSheet'
 import { ProjectSheet, type ProjectSource } from './ProjectSheet'
 import { SettingsSheet } from './SettingsSheet'
-import { useComposerUiState, type ComposerUi } from './ui-state'
+import { coveredLayers, useComposerUiState, type ComposerUi } from './ui-state'
 
 /**
  * The composer over the session page: the dock (status line and the docked
@@ -60,7 +60,7 @@ export function ComposerSurface({
 
   // Whatever the composer opens covers the dock and the page: a screen
   // reader reads only the layer on top, as under a sheet.
-  const covered = expanded || overlay !== null
+  const { page: covered, editor: editorCovered } = coveredLayers(state)
   const onCovered = slot.onCovered
   useEffect(() => {
     onCovered(covered)
@@ -75,7 +75,15 @@ export function ComposerSurface({
         </SessionDock>
       </View>
 
-      {expanded ? <ExpandedComposer model={model} ui={ui} contextName={contextName} /> : null}
+      {expanded ? (
+        <ExpandedComposer
+          model={model}
+          ui={ui}
+          contextName={contextName}
+          // Whatever opens from it stands over it, and a screen reader reads only that.
+          covered={editorCovered}
+        />
+      ) : null}
 
       {overlay?.kind === 'model' ? <ModelSheet model={model} onClose={ui.close} /> : null}
       {overlay?.kind === 'settings' ? <SettingsSheet model={model} onClose={ui.close} /> : null}

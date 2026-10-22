@@ -7,6 +7,7 @@ import { applySlashCommand } from '@openmanager/app-core/logic'
 
 import { AppText } from '../components/ui/AppText'
 import { usePhoneTheme } from '../theme/ThemeProvider'
+import { coveredBySheet } from '../ui/a11y-focus'
 import { IconButton } from '../ui/IconButton'
 import { ProjectSquare } from '../ui/ProjectChip'
 import { ComposerNotice } from './ComposerDock'
@@ -36,11 +37,14 @@ export function ExpandedComposer({
   model,
   ui,
   contextName,
+  covered = false,
 }: {
   model: ComposerModel
   ui: ComposerUi
   /** The project the session is in, named in the bar. */
   contextName: string | null
+  /** A sheet, popover or the camera is open over it: hidden from a screen reader until it closes. */
+  covered?: boolean
 }) {
   const theme = usePhoneTheme()
   const insets = useSafeAreaInsets()
@@ -62,7 +66,8 @@ export function ExpandedComposer({
     <Animated.View
       entering={EXPAND_IN}
       exiting={EXPAND_OUT}
-      accessibilityViewIsModal
+      accessibilityViewIsModal={!covered}
+      {...coveredBySheet(covered)}
       style={{ position: 'absolute', inset: 0, backgroundColor: theme.bg }}
     >
       {/* The page's own keyboard avoider makes the room on iOS; Android resizes the window. */}

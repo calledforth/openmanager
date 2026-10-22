@@ -18,7 +18,13 @@ import { Glass } from '../ui/Glass'
 import { tap } from '../ui/haptics'
 import { Press } from '../ui/Press'
 import { ProviderMark } from '../ui/ProviderMark'
-import { createFoldDriver, foldKey, type FoldPorts } from './fold-transition'
+import {
+  boxHeightOf,
+  createFoldDriver,
+  DOCK_PADDING,
+  foldKey,
+  type FoldPorts,
+} from './fold-transition'
 import { AttachGlyph } from './icons'
 import { ImageStrip } from './ImageStrip'
 import { composerFold, type ComposerModel } from './model'
@@ -116,7 +122,11 @@ export function ComposerDock({ model, ui }: { model: ComposerModel; ui: Composer
         shadow="none"
         radius={radius}
         style={{ flexGrow: 1 }}
-        contentStyle={{ paddingTop: 6, paddingHorizontal: 8, paddingBottom: 8 }}
+        contentStyle={{
+          paddingTop: DOCK_PADDING.top,
+          paddingHorizontal: 8,
+          paddingBottom: DOCK_PADDING.bottom,
+        }}
       >
         <View style={{ gap: 4 }} onLayout={onContentLayout}>
           {prompt?.kind === 'permission' ? (
@@ -268,7 +278,9 @@ function useFoldHeight(key: string) {
   }, [driver, key])
   const heightStyle = useAnimatedStyle(() => (height.value < 0 ? {} : { height: height.value }))
   const onContentLayout = useCallback(
-    (event: LayoutChangeEvent) => driver.onContentHeight(event.nativeEvent.layout.height),
+    // The box's height, padding included: the same box the ease sizes.
+    (event: LayoutChangeEvent) =>
+      driver.onContentHeight(boxHeightOf(event.nativeEvent.layout.height)),
     [driver],
   )
   return { onContentLayout, heightStyle }

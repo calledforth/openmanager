@@ -37,7 +37,7 @@ const {
   METER_WIDTH,
   MODEL_MIN_WIDTH,
 } = await import('../src/composer/model')
-const { createComposerUi } = await import('../src/composer/ui-state')
+const { coveredLayers, createComposerUi } = await import('../src/composer/ui-state')
 
 const WORKSPACE = {
   workspaceId: 'C:/repo',
@@ -1074,5 +1074,102 @@ describe('a photo on its way when the page goes', () => {
     expect(upload).toHaveBeenCalledWith(
       expect.objectContaining({ sessionId: SESSION.sessionId, name: 'b.jpg' }),
     )
+  })
+})
+
+describe('the fold, measured as the box it sizes', () => {
+  it('eases between the box heights, the glass padding included', async () => {
+    const { boxHeightOf, createFoldDriver, DOCK_PADDING } =
+      await import('../src/composer/fold-transition')
+    let now = 1_000
+    const calls: string[] = []
+    const fold = createFoldDriver({
+      now: () => now,
+      animate: (from, to) => calls.push(`animate ${from}->${to}`),
+      snap: () => calls.push('snap'),
+      hold: (delta) => calls.push(`hold ${delta}`),
+      release: () => calls.push('release'),
+    })
+    // The dock's content: 70 at rest (field + picks), 38 running (field + chip).
+    fold.onKey('rest:')
+    fold.onContentHeight(boxHeightOf(70))
+    now += 2_000
+    fold.onKey('running:')
+    fold.onContentHeight(boxHeightOf(38))
+    const padding = DOCK_PADDING.top + DOCK_PADDING.bottom
+    expect(padding).toBe(14)
+    expect(calls).toEqual([`hold -32`, `animate ${70 + padding}->${38 + padding}`])
+    // A notice inside the window lands at the box's new height, padding and all.
+    now += 50
+    fold.onContentHeight(boxHeightOf(56))
+    expect(calls.slice(2)).toEqual(['snap', 'release'])
+  })
+})
+
+describe('screen readers under the composer layers', () => {
+  it('hide the page under anything open, and the editor under what opens from it', () => {
+    expect(coveredLayers({ expanded: false, overlay: null })).toEqual({
+      page: false,
+      editor: false,
+    })
+    expect(coveredLayers({ expanded: true, overlay: null })).toEqual({ page: true, editor: false })
+    expect(coveredLayers({ expanded: true, overlay: { kind: 'model' } })).toEqual({
+      page: true,
+      editor: true,
+    })
+    expect(coveredLayers({ expanded: false, overlay: { kind: 'camera' } })).toEqual({
+      page: true,
+      editor: false,
+    })
+  })
+})
+
+describe('a photo whose draft is discarded elsewhere while it is read', () => {
+  it('lands nowhere, and does not bring the draft back', async () => {
+    let finish!: () => void
+    const bytes = new Blob([new Uint8Array([1, 2, 3])], { type: 'image/jpeg' })
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(
+        () =>
+          new Promise<Response>((resolve) => {
+            finish = () => resolve({ blob: async () => bytes } as unknown as Response)
+          }),
+      ),
+    )
+    const client = await open({
+      seed: seed('completed'),
+      respond: () => null,
+      draftSaveDebounceMs: 0,
+    })
+    const upload = vi.spyOn(client, 'uploadArtifact')
+    await act(async () => current().setText('A note for later'))
+    await flush(20)
+    const saved = client.getState().drafts?.[SESSION.sessionId]
+    expect(saved?.content.text).toBe('A note for later')
+    await act(async () => {
+      void current().attachPhoto({ uri: 'file:///c.jpg', name: 'c.jpg', mimeType: 'image/jpeg' })
+    })
+    // Web discards the draft while the photo is read.
+    await act(() =>
+      client.emit({
+        ...base(),
+        name: 'draft.deleted',
+        scope: environmentScope(client),
+        payload: {
+          draftId: SESSION.sessionId,
+          revision: saved!.revision + 1,
+          sessionId: SESSION.sessionId,
+        },
+      } as never),
+    )
+    await flush()
+    expect(client.getState().drafts?.[SESSION.sessionId]).toBeUndefined()
+    await act(async () => finish())
+    await flush(20)
+    expect(upload).not.toHaveBeenCalled()
+    expect(client.getState().drafts?.[SESSION.sessionId]).toBeUndefined()
+    expect(current().images).toEqual([])
+    expect(current().notice).toMatch(/sent or deleted meanwhile/)
   })
 })

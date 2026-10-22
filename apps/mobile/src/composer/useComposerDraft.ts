@@ -8,6 +8,7 @@ import {
   usePageExit,
   type ArtifactSource,
   type DraftImageAttachment,
+  type ImageTarget,
   type KeptImage,
   type UploadedImageAttachment,
 } from '@openmanager/app-core/logic'
@@ -228,9 +229,8 @@ export function useComposerDraft({
     attachment: DraftImageAttachment,
     owner: string | null,
     token: { cancelled: boolean },
+    target: ImageTarget | undefined,
   ) => {
-    const release = store.holdImage?.(key)
-    const target = store.imageTarget?.(key)
     const stillWanted = () =>
       (pendingRef.current[key] ?? NO_UPLOADS).some((each) => each.id === attachment.id)
     const settle = () =>
@@ -243,50 +243,46 @@ export function useComposerDraft({
       if (draftKeyRef.current === key)
         setError(`${attachment.file.name} was not attached. ${reason}`)
     }
+    let stored: UploadedImageAttachment | undefined
     try {
-      let stored: UploadedImageAttachment | undefined
-      try {
-        // Checked as the upload starts: the uploader stores under the session
-        // open at that moment, which must be the one the photo was attached in.
-        if (token.cancelled) return
-        if (ports.uploadOwner && ports.uploadOwner() !== owner) {
-          throw new Error('The session changed before it was stored.')
-        }
-        // Bound to the session it was attached in, where the host can say so.
-        ;[stored] = await (ports.uploadFor && owner
-          ? ports.uploadFor(owner, [attachment])
-          : uploadAttachments!([attachment]))
-        if (!stored) throw new Error('The image was not stored.')
-      } catch (uploadError) {
-        if (!token.cancelled && stillWanted()) fail(reasonOf(uploadError, 'The upload failed.'))
-        return
-      }
-      // The composer went meanwhile: no draft is named with it (the
-      // environment lets an unnamed upload expire).
+      // Checked as the upload starts: the uploader stores under the session
+      // open at that moment, which must be the one the photo was attached in.
       if (token.cancelled) return
-      if (!stillWanted()) {
-        settle()
-        return
+      if (ports.uploadOwner && ports.uploadOwner() !== owner) {
+        throw new Error('The session changed before it was stored.')
       }
-      if (target && store.imageTargetLive && !store.imageTargetLive(target)) {
-        fail('Its draft was sent or deleted meanwhile.')
-        return
-      }
-      // Its own preview first, so naming it never sends for the bytes.
-      keptPreviews.current.set(stored.id, {
-        uri: attachment.previewUrl,
-        name: attachment.file.name,
-      })
-      const current = store.getImages!(key).filter((id) => id !== stored.id)
-      if (!store.setImages!(key, [...current, stored.id])) {
-        keptPreviews.current.delete(stored.id)
-        fail('Its draft is gone.')
-        return
-      }
-      settle()
-    } finally {
-      release?.()
+      // Bound to the session it was attached in, where the host can say so.
+      ;[stored] = await (ports.uploadFor && owner
+        ? ports.uploadFor(owner, [attachment])
+        : uploadAttachments!([attachment]))
+      if (!stored) throw new Error('The image was not stored.')
+    } catch (uploadError) {
+      if (!token.cancelled && stillWanted()) fail(reasonOf(uploadError, 'The upload failed.'))
+      return
     }
+    // The composer went meanwhile: no draft is named with it (the
+    // environment lets an unnamed upload expire).
+    if (token.cancelled) return
+    if (!stillWanted()) {
+      settle()
+      return
+    }
+    if (target && store.imageTargetLive && !store.imageTargetLive(target)) {
+      fail('Its draft was sent or deleted meanwhile.')
+      return
+    }
+    // Its own preview first, so naming it never sends for the bytes.
+    keptPreviews.current.set(stored.id, {
+      uri: attachment.previewUrl,
+      name: attachment.file.name,
+    })
+    const current = store.getImages!(key).filter((id) => id !== stored.id)
+    if (!store.setImages!(key, [...current, stored.id])) {
+      keptPreviews.current.delete(stored.id)
+      fail('Its draft is gone.')
+      return
+    }
+    settle()
   }
 
   const readPhoto = ports.readPhoto ?? photoFile
@@ -310,46 +306,55 @@ export function useComposerDraft({
         setError(`${photo.name} is not a PNG, JPEG, or WebP image.`)
         return
       }
-      let file: File
       const token = { cancelled: false }
       photosRef.current.add(token)
+      // The draft the photo is for, as it is now, before anything is awaited:
+      // a discard (here or on another device) while the photo is read or
+      // stored moves it on, and the photo then lands nowhere rather than
+      // bringing the draft back. Held from here too, so the draft is not
+      // deleted for being empty while its photo is on its way.
+      const target = keepsImages ? store.imageTarget?.(key) : undefined
+      const release = keepsImages ? store.holdImage?.(key) : undefined
       // Counted from here, so a send cannot go ahead of the photo being read.
       prepare(key, 1)
       try {
-        file = await readPhoto(photo)
-      } catch (readError) {
-        if (!token.cancelled) {
-          setError(`${photo.name} could not be read. ${reasonOf(readError, '')}`.trim())
+        let file: File
+        try {
+          file = await readPhoto(photo)
+        } catch (readError) {
+          if (!token.cancelled) {
+            setError(`${photo.name} could not be read. ${reasonOf(readError, '')}`.trim())
+          }
+          return
+        } finally {
+          if (!token.cancelled) prepare(key, -1)
         }
-        photosRef.current.delete(token)
-        return
-      } finally {
-        if (!token.cancelled) prepare(key, -1)
-      }
-      if (token.cancelled) return
-      if (ports.uploadOwner && ports.uploadOwner() !== owner) {
-        photosRef.current.delete(token)
-        setError(`${photo.name} was not attached. The session changed before it was stored.`)
-        return
-      }
-      if (file.size <= 0 || file.size > MAX_IMAGE_BYTES) {
-        photosRef.current.delete(token)
-        setError(`${photo.name} must be smaller than 10 MB.`)
-        return
-      }
-      const attachment: DraftImageAttachment = {
-        id: globalThis.crypto.randomUUID(),
-        file,
-        previewUrl: photo.uri,
-      }
-      setError(null)
-      setPending(key, [...(pendingRef.current[key] ?? NO_UPLOADS), attachment])
-      // An image is the draft's first content as much as text is.
-      store.claim?.(key)
-      try {
-        if (keepsImages) await keep(key, attachment, owner, token)
+        if (token.cancelled) return
+        if (ports.uploadOwner && ports.uploadOwner() !== owner) {
+          setError(`${photo.name} was not attached. The session changed before it was stored.`)
+          return
+        }
+        if (target && store.imageTargetLive && !store.imageTargetLive(target)) {
+          setError(`${photo.name} was not attached. Its draft was sent or deleted meanwhile.`)
+          return
+        }
+        if (file.size <= 0 || file.size > MAX_IMAGE_BYTES) {
+          setError(`${photo.name} must be smaller than 10 MB.`)
+          return
+        }
+        const attachment: DraftImageAttachment = {
+          id: globalThis.crypto.randomUUID(),
+          file,
+          previewUrl: photo.uri,
+        }
+        setError(null)
+        setPending(key, [...(pendingRef.current[key] ?? NO_UPLOADS), attachment])
+        // An image is the draft's first content as much as text is.
+        store.claim?.(key)
+        if (keepsImages) await keep(key, attachment, owner, token, target)
       } finally {
         photosRef.current.delete(token)
+        release?.()
       }
     },
     // `keep` reads refs and the store only.

@@ -7,6 +7,16 @@
  * and one that lands while a fold is easing ends the ease where it is.
  */
 
+/** The dock box's own padding around its content, above and below. */
+export const DOCK_PADDING = { top: 6, bottom: 8 } as const
+
+/**
+ * The dock box's height for its content's: the box the fold sizes is the
+ * glass around the content, padding included, so the two are measured alike.
+ */
+export const boxHeightOf = (contentHeight: number) =>
+  contentHeight + DOCK_PADDING.top + DOCK_PADDING.bottom
+
 /** How long after a fold its new content may still measure itself and count as the fold. */
 export const FOLD_SETTLE_MS = 120
 
