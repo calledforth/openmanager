@@ -9,7 +9,7 @@ import { MODE_OPTIONS, familySwatches } from './appearance-options'
 import { Segmented } from './Segmented'
 
 const RING_IN = FadeIn.duration(150)
-const RING_OUT = FadeOut.duration(120)
+const RING_OUT = FadeOut.duration(150)
 
 /**
  * Appearance, as the mockup's Settings frame has it: the six theme families
