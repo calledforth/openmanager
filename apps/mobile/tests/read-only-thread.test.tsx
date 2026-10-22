@@ -9,6 +9,7 @@ import {
   useEnvironmentState,
 } from '@openmanager/app-core/logic'
 import {
+  EnvironmentClientError,
   createMockEnvironmentClient,
   type MockEnvironmentClient,
   type MockSeed,
@@ -116,20 +117,21 @@ type Seen = {
 }
 
 let seen: Seen | null = null
+const seenBy: Record<string, Seen> = {}
 let home: ReturnType<typeof useHomeSource> | null = null
 function HomeProbe() {
   home = useHomeSource()
   return null
 }
 const everything = <T,>(state: T) => state
-function Probe({ sessionId }: { sessionId: string }) {
-  const view = useReadOnlySession(sessionId)
+function Probe({ sessionId, focused = true }: { sessionId: string; focused?: boolean }) {
+  const view = useReadOnlySession(sessionId, { focused })
   const stores = useActiveThreadStores()
   // Rows on screen each subscribe to the stores; the list itself is not
   // re-rendered by a token. The probe reads every row, so it follows every
   // update.
   useEnvironmentState(everything)
-  seen = {
+  const next: Seen = {
     phase: view.phase,
     title: view.session?.title ?? view.title,
     status: view.session?.status,
@@ -139,6 +141,8 @@ function Probe({ sessionId }: { sessionId: string }) {
       isFinal: row.isFinal,
     })),
   }
+  seenBy[sessionId] = next
+  if (focused) seen = next
   return null
 }
 
@@ -147,6 +151,7 @@ let root: Root
 beforeEach(() => {
   seen = null
   home = null
+  for (const key of Object.keys(seenBy)) delete seenBy[key]
   vi.stubGlobal('IS_REACT_ACT_ENVIRONMENT', true)
   container = document.createElement('div')
   document.body.append(container)
@@ -164,14 +169,21 @@ const flush = async (rounds = 6) => {
   }
 }
 
-function mount(client: MockEnvironmentClient, sessionId: string | null) {
+/** The pages on the stack, bottom first; the last one is in front. */
+type Pages = string | null | Array<{ id: string; focused: boolean }>
+
+function mount(client: MockEnvironmentClient, pages: Pages) {
+  const stack =
+    pages === null ? [] : typeof pages === 'string' ? [{ id: pages, focused: true }] : pages
   return act(() =>
     root.render(
       <EnvironmentClientProvider client={client}>
         {/* As the phone mounts them: draft pages are what turn the draft cards on. */}
         <EnvironmentApplicationProviders storage={null} navigateDraft={navigateDraft}>
           <HomeProbe />
-          {sessionId ? <Probe key={sessionId} sessionId={sessionId} /> : null}
+          {stack.map((page) => (
+            <Probe key={page.id} sessionId={page.id} focused={page.focused} />
+          ))}
         </EnvironmentApplicationProviders>
       </EnvironmentClientProvider>,
     ),
@@ -180,11 +192,20 @@ function mount(client: MockEnvironmentClient, sessionId: string | null) {
 
 const navigateDraft = async () => undefined
 
+/** The mock, advertising event replay as the environment server does. */
+function replayingClient(options: Parameters<typeof createMockEnvironmentClient>[0]) {
+  const client = createMockEnvironmentClient(options)
+  client.setConnection({
+    capabilities: [...client.getState().connection.capabilities, 'subscription.replay'],
+  })
+  return client
+}
+
 const commandsOf = (client: MockEnvironmentClient) => client.calls.map((call) => call.command)
 
 describe('a session opened read-only on the phone', () => {
   it('opens with session.open and shows the snapshot, never asking for history', async () => {
-    const client = createMockEnvironmentClient({ seed: SEED, respond: () => null })
+    const client = replayingClient({ seed: SEED, respond: () => null })
     await mount(client, SESSION.sessionId)
     await flush()
 
@@ -200,7 +221,7 @@ describe('a session opened read-only on the phone', () => {
   })
 
   it('streams a turn another device started into the thread as its events arrive', async () => {
-    const client = createMockEnvironmentClient({ seed: SEED, respond: () => null })
+    const client = replayingClient({ seed: SEED, respond: () => null })
     await mount(client, SESSION.sessionId)
     await flush()
 
@@ -259,7 +280,7 @@ describe('a session opened read-only on the phone', () => {
   })
 
   it('asks the environment to clear "done" once the session is on screen', async () => {
-    const client = createMockEnvironmentClient({
+    const client = replayingClient({
       seed: {
         ...SEED,
         sessions: SEED.sessions!.map((entry) =>
@@ -285,7 +306,7 @@ describe('a session opened read-only on the phone', () => {
   })
 
   it('opens a child session read-only on its own', async () => {
-    const client = createMockEnvironmentClient({ seed: SEED, respond: () => null })
+    const client = replayingClient({ seed: SEED, respond: () => null })
     await mount(client, CHILD.sessionId)
     await flush()
     expect(client.calls.filter((call) => call.command === 'openSession')).toEqual([
@@ -298,7 +319,7 @@ describe('a session opened read-only on the phone', () => {
   })
 
   it('releases the session when the page goes, and when it shows another', async () => {
-    const client = createMockEnvironmentClient({ seed: SEED, respond: () => null })
+    const client = replayingClient({ seed: SEED, respond: () => null })
     await mount(client, SESSION.sessionId)
     await flush()
     expect(client.getState().activeSessionId).toBe(SESSION.sessionId)
@@ -314,7 +335,7 @@ describe('a session opened read-only on the phone', () => {
   })
 
   it('lists the environment sessions and its draft cards on the home', async () => {
-    const client = createMockEnvironmentClient({ seed: SEED, respond: () => null })
+    const client = replayingClient({ seed: SEED, respond: () => null })
     await mount(client, null)
     await flush()
     expect(home!.kind).toBe('environment')
@@ -361,8 +382,85 @@ describe('a session opened read-only on the phone', () => {
     ])
   })
 
-  it('says the session is gone when the environment deletes it while on screen', async () => {
+  it('does not open a session on an environment that cannot replay its events', async () => {
+    // Without replay the shared client fills a transcript from session.history.
     const client = createMockEnvironmentClient({ seed: SEED, respond: () => null })
+    await mount(client, SESSION.sessionId)
+    await flush()
+    expect(seen!.phase).toBe('unsupported')
+    expect(commandsOf(client)).not.toContain('openSession')
+    expect(commandsOf(client)).not.toContain('loadSessionHistory')
+  })
+
+  it('lets the page in front own the session, and takes it back when it is in front again', async () => {
+    const client = replayingClient({
+      seed: {
+        ...SEED,
+        sessions: SEED.sessions!.map((entry) =>
+          entry.session.sessionId === SESSION.sessionId
+            ? { ...entry, session: { ...entry.session, doneAt: new Date().toISOString() } }
+            : entry,
+        ),
+      },
+      respond: () => null,
+    })
+    // The child is open; then the parent is pushed over it, then popped.
+    await mount(client, CHILD.sessionId)
+    await flush()
+    expect(client.getState().activeSessionId).toBe(CHILD.sessionId)
+
+    await mount(client, [
+      { id: CHILD.sessionId, focused: false },
+      { id: SESSION.sessionId, focused: true },
+    ])
+    await flush()
+    expect(client.getState().activeSessionId).toBe(SESSION.sessionId)
+    expect(seenBy[SESSION.sessionId]!.phase).toBe('ready')
+
+    await mount(client, [{ id: CHILD.sessionId, focused: true }])
+    await flush()
+    // The parent released only what was its own; the child, in front again, opened again.
+    expect(client.getState().activeSessionId).toBe(CHILD.sessionId)
+    expect(seen).toMatchObject({ phase: 'ready', title: 'A subagent' })
+    expect(
+      client.calls.filter((call) => call.command === 'openSession').map((call) => call.input),
+    ).toEqual([CHILD.sessionId, SESSION.sessionId, CHILD.sessionId])
+
+    // A done session under another page is not acknowledged: it is not in front.
+    await mount(client, [
+      { id: SESSION.sessionId, focused: false },
+      { id: CHILD.sessionId, focused: true },
+    ])
+    await flush()
+    const acknowledged = client.calls.filter((call) => call.command === 'acknowledgeSession')
+    // Only while the parent was in front.
+    expect(acknowledged).toEqual([
+      { command: 'acknowledgeSession', input: { sessionId: SESSION.sessionId } },
+    ])
+  })
+
+  it('opens again after the connection drops under the first open', async () => {
+    const client = replayingClient({ seed: SEED, respond: () => null })
+    const open = client.commands.openSession
+    let dropped = false
+    client.commands.openSession = (sessionId) => {
+      if (dropped) return open(sessionId)
+      dropped = true
+      client.setConnection({ phase: 'reconnecting' })
+      return Promise.reject(new EnvironmentClientError('unavailable', 'The socket closed.'))
+    }
+    await mount(client, SESSION.sessionId)
+    await flush()
+    expect(seen!.phase).toBe('opening')
+
+    await act(() => client.setConnection({ phase: 'connected' }))
+    await flush()
+    expect(seen!.phase).toBe('ready')
+    expect(seen!.rows).toHaveLength(2)
+  })
+
+  it('says the session is gone when the environment deletes it while on screen', async () => {
+    const client = replayingClient({ seed: SEED, respond: () => null })
     await mount(client, SESSION.sessionId)
     await flush()
     await act(() =>

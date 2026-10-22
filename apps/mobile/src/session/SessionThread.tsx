@@ -124,9 +124,11 @@ export function SessionThread({
               >
                 {phase === 'gone'
                   ? 'This session is gone from your environment.'
-                  : phase === 'failed'
-                    ? (failure ?? 'Could not open this session.')
-                    : 'No messages yet.'}
+                  : phase === 'unsupported'
+                    ? 'This environment is older than the phone: update it to open its sessions here.'
+                    : phase === 'failed'
+                      ? (failure ?? 'Could not open this session.')
+                      : 'No messages yet.'}
               </AppText>
             )}
             {phase === 'failed' && onRetry ? (

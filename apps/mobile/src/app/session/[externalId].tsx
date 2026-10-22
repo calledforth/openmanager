@@ -1,4 +1,4 @@
-import { useLocalSearchParams } from 'expo-router'
+import { useIsFocused, useLocalSearchParams } from 'expo-router'
 import { useEnvironmentClientOptional } from '@openmanager/app-core/logic'
 
 import { statusLineOf, statusMarkOf } from '../../home/rows'
@@ -12,8 +12,13 @@ const untitled = (title: string | undefined) => title?.trim() || 'Untitled sessi
 
 /** A session of the paired environment, opened read-only for as long as the page is up. */
 function LiveSession({ sessionId }: { sessionId: string }) {
-  const { session, workspace, title, messages, phase, failure, retry } =
-    useReadOnlySession(sessionId)
+  // The page in front owns the client's active session; one left under
+  // another page keeps quiet until it is in front again.
+  const focused = useIsFocused()
+  const { session, workspace, title, messages, phase, failure, retry } = useReadOnlySession(
+    sessionId,
+    { focused },
+  )
   return (
     <SessionThread
       title={untitled(session?.title ?? title)}

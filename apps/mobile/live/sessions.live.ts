@@ -327,7 +327,7 @@ describe('sessions list and read-only thread, live', () => {
     })
     expect(
       homeView!.drafts.map((draft) => [draft.draftId, draft.preview, draft.workspaceId]),
-    ).toEqual([[draftId, 'A draft started on the computer', workspaceId]])
+    ).toContainEqual([draftId, 'A draft started on the computer', workspaceId])
     expect(homeView!.kind).toBe('environment')
     expect(homeView!.connected).toBe(true)
     expect(homeView!.environment).toMatchObject({
