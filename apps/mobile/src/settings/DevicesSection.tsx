@@ -233,6 +233,7 @@ export function DevicesSection({
   const here = currentDevice(list)
   const links = state.links
     ? waitingLinkRows(state.links, now, {
+        connected: state.connected,
         currentClientId: list.currentClientId,
         deviceLabel: (clientId) => list.clients.find((item) => item.clientId === clientId)?.label,
         madeHere: (linkId) => admin.madeLink(linkId) !== undefined,

@@ -165,8 +165,17 @@ export function formatRemaining(until: string, now: number): string | null {
   return `${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, '0')}`
 }
 
-export const isWaiting = (link: PairingLink, now: number) =>
-  link.status === 'waiting' && Date.parse(link.expiresAt) > now
+/**
+ * How long a waiting link has left, in words. The countdown is this phone's
+ * clock and only words: expiry is the environment's to report (the store
+ * asks it again when the time comes), so a link past its time here still
+ * reads as waiting until the environment says otherwise.
+ */
+export function expiryWords(link: PairingLink, now: number, connected: boolean): string {
+  const remaining = formatRemaining(link.expiresAt, now)
+  if (remaining) return `expires in ${remaining}`
+  return connected ? 'checking with the environment…' : "can't confirm while offline"
+}
 
 /** One link still waiting for a device. */
 export type PairingLinkRowView = {
@@ -179,21 +188,23 @@ export type PairingLinkRowView = {
 }
 
 /**
- * The links still waiting, newest first. Links this phone made (and still
- * holds in memory) can be shown again; one made elsewhere can only be
- * withdrawn, since its token never reached this phone.
+ * The links the environment reports as waiting, newest first (whatever this
+ * phone's clock says about them). Links this phone made (and still holds in
+ * memory) can be shown again; one made elsewhere can only be withdrawn,
+ * since its token never reached this phone.
  */
 export function waitingLinkRows(
   links: readonly PairingLink[],
   now: number,
   context: {
+    connected: boolean
     currentClientId: string
     deviceLabel: (clientId: string) => string | undefined
     madeHere: (linkId: string) => boolean
   },
 ): PairingLinkRowView[] {
   return links
-    .filter((item) => isWaiting(item, now))
+    .filter((item) => item.status === 'waiting')
     .sort((a, b) => Date.parse(b.createdAt) - Date.parse(a.createdAt))
     .map((item) => {
       const shownHere = context.madeHere(item.linkId)
@@ -206,7 +217,7 @@ export function waitingLinkRows(
         title: item.label ?? 'New device',
         sub: [
           accessWords(item.capabilities),
-          `expires in ${formatRemaining(item.expiresAt, now) ?? '0:00'}`,
+          expiryWords(item, now, context.connected),
           ...(shownHere ? [] : [origin]),
         ].join(' · '),
         shownHere,

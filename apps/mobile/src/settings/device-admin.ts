@@ -52,6 +52,12 @@ export type DeviceAdminState = {
   actionError: string | null
   /** Which command that was. */
   failed: DeviceAdminAction | null
+  /**
+   * The socket is up, so what the environment says can be asked again. While
+   * it is not, a link past its time on this phone's clock cannot be confirmed
+   * either way and stays as last reported.
+   */
+  connected: boolean
 }
 
 /** A link this phone made, and the address that opens it. Memory only. */
@@ -113,9 +119,32 @@ const INITIAL: DeviceAdminState = {
   busy: null,
   actionError: null,
   failed: null,
+  connected: false,
 }
 
-export function createDeviceAdmin(client: EnvironmentClient, environmentId: string): DeviceAdmin {
+/** Timers and clock, replaced in tests. */
+export type DeviceAdminClock = {
+  now: () => number
+  setTimeout: (fn: () => void, ms: number) => unknown
+  clearTimeout: (handle: unknown) => void
+}
+
+const REAL_CLOCK: DeviceAdminClock = {
+  now: () => Date.now(),
+  setTimeout: (fn, ms) => setTimeout(fn, ms),
+  clearTimeout: (handle) => clearTimeout(handle as ReturnType<typeof setTimeout>),
+}
+
+/** Past a link's expiry on this phone's clock: how soon it is asked about, how often again, and at most how many times. */
+export const EXPIRY_CHECK_DELAY_MS = 500
+export const EXPIRY_RECHECK_MS = 5000
+export const EXPIRY_RECHECKS = 6
+
+export function createDeviceAdmin(
+  client: EnvironmentClient,
+  environmentId: string,
+  clock: DeviceAdminClock = REAL_CLOCK,
+): DeviceAdmin {
   let state: DeviceAdminState = INITIAL
   let disposed = false
   const listeners = new Set<() => void>()
@@ -141,6 +170,42 @@ export function createDeviceAdmin(client: EnvironmentClient, environmentId: stri
     // Before the handshake nothing is known; the first read decides.
     client.getState().connection.capabilities.length === 0
 
+  /*
+   * Expiry is the environment's to say, and nothing pushes it: the phone's
+   * countdown is only words. When a waiting link reaches its time on this
+   * phone's clock the links are read again, and what the environment answers
+   * is what shows. A link it still lists as waiting (the clocks disagree) is
+   * asked about a few more times, then left as it is.
+   */
+  let expiryTimer: unknown = null
+  const rechecks = new Map<string, number>()
+  const scheduleExpiryCheck = () => {
+    if (expiryTimer !== null) clock.clearTimeout(expiryTimer)
+    expiryTimer = null
+    if (disposed || !state.connected) return
+    const now = clock.now()
+    let delay = Infinity
+    for (const link of state.links ?? []) {
+      if (link.status !== 'waiting') continue
+      const at = Date.parse(link.expiresAt)
+      if (at > now) delay = Math.min(delay, at - now + EXPIRY_CHECK_DELAY_MS)
+      else if ((rechecks.get(link.linkId) ?? 0) < EXPIRY_RECHECKS) {
+        delay = Math.min(delay, EXPIRY_RECHECK_MS)
+      }
+    }
+    if (delay === Infinity) return
+    expiryTimer = clock.setTimeout(() => {
+      expiryTimer = null
+      const at = clock.now()
+      for (const link of state.links ?? []) {
+        if (link.status === 'waiting' && Date.parse(link.expiresAt) <= at) {
+          rechecks.set(link.linkId, (rechecks.get(link.linkId) ?? 0) + 1)
+        }
+      }
+      refreshLinks()
+    }, delay)
+  }
+
   const refreshLinks = () => {
     if (disposed || state.access !== 'admin' || !client.supports('listPairingLinks')) return
     const current = ++linkGeneration
@@ -150,6 +215,7 @@ export function createDeviceAdmin(client: EnvironmentClient, environmentId: stri
         // A link that stopped waiting cannot be shown again.
         for (const link of links) if (link.status !== 'waiting') made().delete(link.linkId)
         set({ links, linksError: null })
+        scheduleExpiryCheck()
       },
       (error: unknown) => {
         if (current === linkGeneration) set({ linksError: message(error) })
@@ -190,6 +256,8 @@ export function createDeviceAdmin(client: EnvironmentClient, environmentId: stri
     stopState?.()
     stopPush = undefined
     stopState = undefined
+    if (expiryTimer !== null) clock.clearTimeout(expiryTimer)
+    expiryTimer = null
     // Answers to reads asked before this stop are not for the next start.
     listGeneration += 1
     linkGeneration += 1
@@ -294,8 +362,12 @@ export function createDeviceAdmin(client: EnvironmentClient, environmentId: stri
       })
       // Every (re)connect lists afresh.
       connected = client.getState().connection.phase === 'connected'
+      set({ connected })
       stopState = client.subscribe(() => {
         const now = client.getState().connection.phase === 'connected'
+        if (now !== connected) set({ connected: now })
+        // Offline, nothing can be confirmed: the checks wait for the reconnect's read.
+        if (!now) scheduleExpiryCheck()
         if (now && !connected) load()
         connected = now
       })

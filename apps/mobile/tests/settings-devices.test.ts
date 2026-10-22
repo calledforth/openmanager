@@ -4,12 +4,22 @@ import {
   parsePairingLink,
   type AuthorizedClient,
   type MockEnvironmentClient,
+  type PairingLink,
 } from '@openmanager/environment-client'
+import { PAIRING_LINK_LIFETIME_MS, type AccessCapability } from '@openmanager/protocol'
 
-import { createDeviceAdmin, forgetMadeLinks, type DeviceAdmin } from '../src/settings/device-admin'
+import {
+  EXPIRY_CHECK_DELAY_MS,
+  EXPIRY_RECHECK_MS,
+  EXPIRY_RECHECKS,
+  createDeviceAdmin,
+  forgetMadeLinks,
+  type DeviceAdmin,
+} from '../src/settings/device-admin'
 import {
   accessWords,
   confirmCopy,
+  expiryWords,
   defaultPairingRoute,
   deviceRows,
   grantWarnings,
@@ -61,13 +71,17 @@ afterEach(() => {
   forgetMadeLinks()
 })
 
+/** The environment's clock, which a test can move. */
+let environmentNow = NOW
+
 function phoneClient(
   authorizedClients: readonly AuthorizedClient[] = [OWNER, PHONE, LAPTOP, TABLET],
   currentClientId = PHONE.clientId,
 ) {
+  environmentNow = NOW
   const client = createMockEnvironmentClient({
     seed: { authorizedClients, currentClientId },
-    now: () => new Date(NOW).toISOString(),
+    now: () => new Date(environmentNow).toISOString(),
   })
   clients.push(client)
   return client
@@ -302,6 +316,136 @@ describe('the device admin over the shared client', () => {
   })
 })
 
+/** A clock and timers the test drives by hand. */
+function manualClock(start = NOW) {
+  let now = start
+  const timers: Array<{ at: number; fn: () => void; handle: number }> = []
+  let next = 0
+  return {
+    clock: {
+      now: () => now,
+      setTimeout: (fn: () => void, ms: number) => {
+        const handle = ++next
+        timers.push({ at: now + ms, fn, handle })
+        return handle
+      },
+      clearTimeout: (handle: unknown) => {
+        const index = timers.findIndex((timer) => timer.handle === handle)
+        if (index >= 0) timers.splice(index, 1)
+      },
+    },
+    pending: () => timers.length,
+    advance(ms: number) {
+      now += ms
+      for (const timer of [...timers].sort((a, b) => a.at - b.at)) {
+        if (timer.at > now) continue
+        timers.splice(timers.indexOf(timer), 1)
+        timer.fn()
+      }
+    },
+  }
+}
+
+describe('pairing link expiry', () => {
+  const LINK = {
+    capabilities: ['read'] as AccessCapability[],
+    route: 'http://192.168.1.4:43120',
+    appUrl: 'https://app.example.test',
+  }
+
+  it('keeps a link the environment still lists as waiting, whatever this phone’s clock says', () => {
+    const link = {
+      linkId: 'l1',
+      label: null,
+      capabilities: ['read'],
+      createdByClientId: PHONE.clientId,
+      createdAt: iso(10 * 60_000),
+      expiresAt: iso(5 * 60_000),
+      status: 'waiting',
+      usedByClientId: null,
+      usedAt: null,
+    } satisfies PairingLink
+    const context = {
+      currentClientId: PHONE.clientId,
+      deviceLabel: () => undefined,
+      madeHere: () => true,
+    }
+    expect(waitingLinkRows([link], NOW, { ...context, connected: true })[0]!.sub).toBe(
+      'View · checking with the environment…',
+    )
+    expect(waitingLinkRows([link], NOW, { ...context, connected: false })[0]!.sub).toBe(
+      "View · can't confirm while offline",
+    )
+    expect(expiryWords(link, NOW - 6 * 60_000, true)).toBe('expires in 1:00')
+  })
+
+  it('asks the environment again when a link reaches its time, and shows its answer', async () => {
+    const client = phoneClient()
+    const manual = manualClock()
+    const admin = createDeviceAdmin(client, 'env', manual.clock)
+    admins.push(admin)
+    admin.start()
+    await settle()
+    const shown = await admin.createLink(LINK)
+    await settle()
+    const reads = () => calls(client).filter((name) => name === 'listPairingLinks').length
+    const before = reads()
+    // Five minutes on: the countdown is done, and the environment is asked.
+    environmentNow = NOW + PAIRING_LINK_LIFETIME_MS + 1000
+    manual.advance(PAIRING_LINK_LIFETIME_MS + EXPIRY_CHECK_DELAY_MS)
+    await settle()
+    expect(reads()).toBe(before + 1)
+    const link = admin.getState().links!.find((item) => item.linkId === shown!.link.linkId)!
+    expect(link.status).toBe('expired')
+    expect(manual.pending()).toBe(0)
+  })
+
+  it('asks a few more times while the environment disagrees, then leaves it', async () => {
+    const client = phoneClient()
+    const manual = manualClock()
+    const admin = createDeviceAdmin(client, 'env', manual.clock)
+    admins.push(admin)
+    admin.start()
+    await settle()
+    await admin.createLink(LINK)
+    await settle()
+    const reads = () => calls(client).filter((name) => name === 'listPairingLinks').length
+    const before = reads()
+    // This phone's clock runs ahead; the environment's does not.
+    manual.advance(PAIRING_LINK_LIFETIME_MS + EXPIRY_CHECK_DELAY_MS)
+    await settle()
+    for (let round = 0; round < EXPIRY_RECHECKS + 2; round += 1) {
+      manual.advance(EXPIRY_RECHECK_MS)
+      await settle()
+    }
+    // At its time, then again until the limit: EXPIRY_RECHECKS asks in all.
+    expect(reads()).toBe(before + EXPIRY_RECHECKS)
+    expect(admin.getState().links![0]!.status).toBe('waiting')
+    expect(manual.pending()).toBe(0)
+  })
+
+  it('does not ask while offline, and asks again on the reconnect', async () => {
+    const client = phoneClient()
+    const manual = manualClock()
+    const admin = createDeviceAdmin(client, 'env', manual.clock)
+    admins.push(admin)
+    admin.start()
+    await settle()
+    await admin.createLink(LINK)
+    await settle()
+    client.setConnection({ phase: 'reconnecting' })
+    expect(admin.getState().connected).toBe(false)
+    expect(manual.pending()).toBe(0)
+    environmentNow = NOW + PAIRING_LINK_LIFETIME_MS + 1000
+    manual.advance(PAIRING_LINK_LIFETIME_MS + EXPIRY_CHECK_DELAY_MS)
+    // Still the last report: waiting.
+    expect(admin.getState().links![0]!.status).toBe('waiting')
+    client.setConnection({ phase: 'connected' })
+    await settle()
+    expect(admin.getState().links![0]!.status).toBe('expired')
+  })
+})
+
 describe('pairing links', () => {
   const ROUTES = [
     { type: 'lan', endpoint: 'http://127.0.0.1:43120', priority: 0 },
@@ -340,6 +484,7 @@ describe('pairing links', () => {
     })
     await settle()
     const rows = waitingLinkRows(admin.getState().links!, NOW + 60_000, {
+      connected: true,
       currentClientId: PHONE.clientId,
       deviceLabel: () => undefined,
       madeHere: (linkId) => admin.madeLink(linkId) !== undefined,
@@ -353,6 +498,7 @@ describe('pairing links', () => {
       },
     ])
     const elsewhere = waitingLinkRows(admin.getState().links!, NOW, {
+      connected: true,
       currentClientId: 'someone-else',
       deviceLabel: (clientId) => (clientId === PHONE.clientId ? 'Pixel 9' : undefined),
       madeHere: () => false,
