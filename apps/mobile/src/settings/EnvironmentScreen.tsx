@@ -20,7 +20,6 @@ import {
   usePhoneConnection,
   usePhoneConnectionController,
 } from '../environment/PhoneEnvironmentProvider'
-import { ROUTE_KIND_LABELS } from '../environment/route-order'
 import { usePhoneTheme } from '../theme/ThemeProvider'
 import { SectionLabel } from '../ui/chrome'
 import { ConfirmSheet } from '../ui/ConfirmSheet'
@@ -28,7 +27,7 @@ import { useGoBack } from '../ui/goBack'
 import { IconButton } from '../ui/IconButton'
 import { ConnectionPanel } from './ConnectionPanel'
 import { sinceWords } from './EnvironmentCard'
-import { routeRows, shortConnectionWords, type RouteRowView } from './environments'
+import { pageStatusWords, routeRows, type RouteRowView } from './environments'
 import { Dot, Pill, SettingsRow, toneColor } from './SettingsRow'
 
 const WORDS_IN = FadeIn.duration(180)
@@ -152,10 +151,7 @@ function EnvironmentSubLine({
     return <SubLine color={theme.status.error} words="Needs pairing again" />
   }
   if (!selected) return <SubLine color={theme.faint} words="Not in use on this phone" />
-  const words = view.route
-    ? `Connected over ${ROUTE_KIND_LABELS[view.route.kind]}`
-    : (shortConnectionWords(view) ?? view.ui.title)
-  return <SubLine color={toneColor(theme, view.tone)} words={words} />
+  return <SubLine color={toneColor(theme, view.tone)} words={pageStatusWords(view)} />
 }
 
 function SubLine({ color, words }: { color: string; words: string }) {
@@ -179,37 +175,29 @@ function RouteRow({ route }: { route: RouteRowView }) {
   const theme = usePhoneTheme()
   const Icon =
     route.title === 'This device' ? DesktopIcon : route.kind === 'lan' ? WifiHighIcon : GlobeIcon
+  // What the phone last learned about a route it is not on, and when.
   const health =
-    route.health === 'unknown'
+    route.health === 'unknown' || !route.changedAt
       ? route.healthWords
-      : `${route.healthMessage ?? route.healthWords}${route.changedAt ? ` · ${sinceWords(route.changedAt)}` : ''}`
+      : `${route.healthWords} · ${sinceWords(route.changedAt)}`
   return (
     <SettingsRow
       selected={route.inUse}
       icon={<Icon size={17} color={route.inUse ? theme.fg : theme.muted} />}
       title={route.title}
       sub={
-        <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
-          <AppText
-            variant="mono"
-            numberOfLines={1}
-            style={{ color: theme.muted, fontSize: 12, flexShrink: 1 }}
-          >
+        <View>
+          <AppText variant="mono" numberOfLines={1} style={{ color: theme.muted, fontSize: 12 }}>
             {route.host}
           </AppText>
           {route.inUse ? null : (
-            <>
-              <AppText variant="text-12-regular" style={{ color: theme.faint }}>
-                ·
-              </AppText>
-              <AppText
-                variant="text-12-regular"
-                numberOfLines={1}
-                style={{ color: theme.muted, flexShrink: 1 }}
-              >
-                {health}
-              </AppText>
-            </>
+            <AppText
+              variant="text-12-regular"
+              numberOfLines={1}
+              style={{ color: theme.faint, marginTop: 1 }}
+            >
+              {health}
+            </AppText>
           )}
         </View>
       }

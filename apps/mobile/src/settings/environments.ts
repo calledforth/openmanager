@@ -1,13 +1,19 @@
 import {
   isLoopbackEnvironmentEndpoint,
   routeHealthLabel,
+  WRONG_ENVIRONMENT_MESSAGE,
   type RouteHealthStatus,
 } from '@openmanager/environment-client/connection'
 
 import { endpointHost } from '../environment/connected-route'
 import type { PhoneConnectionView, PhoneConnectionTone } from '../environment/connection-ui'
 import type { PhoneConnectionState, PhoneEnvironment } from '../environment/controller'
-import { phoneRouteOrder, routeKindOf, type RouteKind } from '../environment/route-order'
+import {
+  ROUTE_KIND_LABELS,
+  phoneRouteOrder,
+  routeKindOf,
+  type RouteKind,
+} from '../environment/route-order'
 
 /**
  * One route of an environment as the phone shows it: where it goes, how the
@@ -22,10 +28,8 @@ export type RouteRowView = {
   title: string
   inUse: boolean
   health: RouteHealthStatus
-  /** "Available", "Unavailable", "Not checked", "Not authorized". */
+  /** "Available", "Unavailable", "Not checked", "Not authorized", or another environment answering. */
   healthWords: string
-  /** What the route last said, when it said something ("A different environment answers…"). */
-  healthMessage: string | null
   /** When that last changed (ISO), when it has been checked. */
   changedAt: string | null
 }
@@ -65,8 +69,10 @@ export function routeRows(environment: PhoneEnvironment, inUse: string | null): 
       title: routeTitle(route.endpoint, kind),
       inUse: route.endpoint === inUse,
       health: route.health.status,
-      healthWords: routeHealthLabel(route.health.status),
-      healthMessage: route.health.message ?? null,
+      healthWords:
+        route.health.message === WRONG_ENVIRONMENT_MESSAGE
+          ? 'Another environment answers here'
+          : routeHealthLabel(route.health.status),
       changedAt: route.health.changedAt ?? null,
     }
   })
@@ -87,6 +93,29 @@ export function shortConnectionWords(view: PhoneConnectionView): string | null {
     case 'reconnecting':
     case 'unreachable':
       return ui.detail ?? ui.title
+    case 'offline':
+    case 'unauthorized':
+    case 'incompatible_protocol':
+    case 'confirm_route':
+    case 'no_environment':
+      return ui.title
+  }
+}
+
+/**
+ * The line under an environment's page title, where the connection panel
+ * below already gives the title, the cause and the countdown: just the state.
+ */
+export function pageStatusWords(view: PhoneConnectionView): string {
+  const { ui } = view
+  switch (ui.kind) {
+    case 'ready':
+      return view.route ? `Connected over ${ROUTE_KIND_LABELS[view.route.kind]}` : ui.title
+    case 'connecting':
+      return 'Connecting…'
+    case 'reconnecting':
+    case 'unreachable':
+      return ui.retrying ? 'Reconnecting' : ui.title
     case 'offline':
     case 'unauthorized':
     case 'incompatible_protocol':

@@ -7,7 +7,12 @@ import {
   phoneConnectionView,
   retryCountdownWords,
 } from '../src/environment/connection-ui'
-import { environmentCards, routeRows, shortConnectionWords } from '../src/settings/environments'
+import {
+  environmentCards,
+  pageStatusWords,
+  routeRows,
+  shortConnectionWords,
+} from '../src/settings/environments'
 import { LAN, OTHER_ENV, TUNNEL, flush, harness, ready, registryWith, silent } from './support'
 
 type Harness = ReturnType<typeof harness>
@@ -62,6 +67,7 @@ describe('connection states in the shared words', () => {
     expect(v.tone).toBe('ok')
     expect(v.next).toEqual([])
     expect(shortConnectionWords(v)).toBeNull()
+    expect(pageStatusWords(v)).toBe('Connected over Tunnel')
   })
 
   it('reconnecting after a drop: retrying, with a countdown and a way to try now', async () => {
@@ -82,6 +88,8 @@ describe('connection states in the shared words', () => {
       retrying: true,
     })
     expect(v.next).toEqual(['retry'])
+    // The page's line names the state; the panel under it gives the cause.
+    expect(pageStatusWords(v)).toBe('Reconnecting')
     expect(v.retryAt).toBe(h.timers.now() + 4000)
     expect(retryCountdownWords(v.retryAt, h.timers.now())).toBe('Trying again in 4 s')
     expect(retryCountdownWords(v.retryAt, h.timers.now() + 3100)).toBe('Trying again in 1 s')
