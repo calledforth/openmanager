@@ -3,16 +3,26 @@ import { projectThread } from '@openmanager/app-core/logic'
 import type { ThreadState } from '@openmanager/environment-client'
 
 import { highlightCode, languageLabel } from '../src/components/parts/highlight'
+import { foldSettledTurn, toolCallCount, workGroupLabel } from '../src/components/parts/work-groups'
 import type { HomeSession } from '../src/home/rows'
 import { childSessionsOf } from '../src/session/child-sessions'
 import { createFixtureThread } from '../src/session/fixture-thread'
 import {
+  backgroundThread,
   doneThread,
   failedThread,
   longThread,
   permissionThread,
   workingThread,
 } from '../src/session/fixture-threads'
+import {
+  AWAY_HIDE_PX,
+  AWAY_SHOW_PX,
+  awayFromLatest,
+  FOLLOW_THRESHOLD_PX,
+  MAINTAIN_POSITION,
+} from '../src/session/scroll-anchor'
+import { sessionMenuItems, type SessionMenuInput } from '../src/session/session-menu'
 import {
   clockFromKey,
   clockKey,
@@ -213,5 +223,112 @@ describe('fixture thread store', () => {
     expect(fixture.getMessages().at(-1)?.isFinal).toBe(true)
     expect(notified).toBe(4)
     stop()
+  })
+})
+
+describe('status line in the background', () => {
+  it('counts background work from when the last turn ended', () => {
+    const thread = backgroundThread(NOW)
+    const view = statusLineView(
+      session({ status: 'running', inBackground: true, backgroundTaskCount: 2 }),
+      thread,
+    )
+    expect(view).toMatchObject({ mark: 'background', label: '2 in the background' })
+    expect(view?.clock).toEqual({ kind: 'elapsed', since: NOW - 240_000 })
+    expect(formatClock(view!.clock!, NOW)).toBe('4m')
+  })
+})
+
+describe('work groups', () => {
+  it('folds a settled turn before its answer and counts its tool calls', () => {
+    const projection = projectThread(doneThread(NOW))
+    const reply = projection.messages.find((message) => message.role === 'assistant')!
+    const fold = foldSettledTurn(projection.byId.get(reply.externalId)!.content.parts ?? [])
+    expect(fold.toolCount).toBe(3)
+    expect(fold.work.map((part) => part.type)).toEqual(['reasoning', 'tool', 'tool', 'tool'])
+    expect(fold.answer.map((part) => part.type)).toEqual(['text'])
+  })
+
+  it('labels a run as a line, live or settled', () => {
+    const summary = { text: 'read 2 files', runningText: 'reading 2 files' }
+    expect(workGroupLabel({ ...summary, isRunning: true })).toBe('Reading 2 files')
+    expect(workGroupLabel({ ...summary, isRunning: false })).toBe('Read 2 files')
+    expect(workGroupLabel({ text: '', runningText: '', isRunning: false })).toBe('')
+    expect(toolCallCount(1)).toBe('1 tool call')
+    expect(toolCallCount(4)).toBe('4 tool calls')
+  })
+})
+
+describe('scroll anchoring', () => {
+  it('follows the end only within the threshold, anchoring past the reader otherwise', () => {
+    expect(MAINTAIN_POSITION).toEqual({
+      minIndexForVisible: 0,
+      autoscrollToTopThreshold: FOLLOW_THRESHOLD_PX,
+    })
+  })
+
+  it('shows the scroll-to-latest button past one offset and hides it within a lower one', () => {
+    expect(awayFromLatest(0, false)).toBe(false)
+    expect(awayFromLatest(AWAY_SHOW_PX, false)).toBe(false)
+    expect(awayFromLatest(AWAY_SHOW_PX + 1, false)).toBe(true)
+    // Between the two, it keeps what it was: no flicker at the edge.
+    const between = (AWAY_SHOW_PX + AWAY_HIDE_PX) / 2
+    expect(awayFromLatest(between, true)).toBe(true)
+    expect(awayFromLatest(between, false)).toBe(false)
+    expect(awayFromLatest(AWAY_HIDE_PX, true)).toBe(false)
+  })
+})
+
+describe('session menu', () => {
+  const input = (patch: Partial<SessionMenuInput>): SessionMenuInput => ({
+    mark: 'done',
+    settled: false,
+    backgroundTaskCount: 0,
+    unavailable: null,
+    supports: () => true,
+    ...patch,
+  })
+  const byId = (items: ReturnType<typeof sessionMenuItems>) =>
+    Object.fromEntries(items.map((item) => [item.id, item.disabledReason]))
+
+  it('offers rename, naming and settling for a finished session', () => {
+    const items = sessionMenuItems(input({}))
+    expect(items.map((item) => item.id)).toEqual([
+      'rename',
+      'regenerate-title',
+      'settle',
+      'session-settings',
+    ])
+    expect(byId(items)).toMatchObject({
+      rename: null,
+      'regenerate-title': null,
+      settle: null,
+      'session-settings': 'Not on the phone yet',
+    })
+  })
+
+  it('will not settle live work, and offers to stop background work', () => {
+    expect(byId(sessionMenuItems(input({ mark: 'working' }))).settle).toBe(
+      'Live work cannot be settled',
+    )
+    const background = sessionMenuItems(input({ mark: 'background', backgroundTaskCount: 2 }))
+    const stop = background.find((item) => item.id === 'stop-background')
+    expect(stop).toMatchObject({ disabledReason: null, destructive: true })
+  })
+
+  it('moves a settled session back to active', () => {
+    const ids = sessionMenuItems(input({ settled: true })).map((item) => item.id)
+    expect(ids).toContain('unsettle')
+    expect(ids).not.toContain('settle')
+  })
+
+  it('says why when the environment cannot do it or cannot be reached', () => {
+    const unsupported = byId(
+      sessionMenuItems(input({ supports: (command) => command !== 'regenerateSessionTitle' })),
+    )
+    expect(unsupported['regenerate-title']).toBe('This environment cannot name sessions')
+    expect(unsupported.rename).toBeNull()
+    const offline = sessionMenuItems(input({ unavailable: 'Not connected to its environment' }))
+    expect(offline.every((item) => item.disabledReason !== null)).toBe(true)
   })
 })

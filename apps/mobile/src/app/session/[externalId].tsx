@@ -11,6 +11,7 @@ import { FixtureThreadStores, useFixtureThread } from '../../session/fixture-thr
 import { SessionThread } from '../../session/SessionThread'
 import { threadNoticeSource, TurnNoticesProvider } from '../../session/turn-notices'
 import { useReadOnlySession } from '../../session/useReadOnlySession'
+import { unavailableSessionActions, useSessionActions } from '../../session/useSessionActions'
 import { useStatusLine } from '../../session/useStatusLine'
 
 const untitled = (title: string | undefined) => title?.trim() || 'Untitled session'
@@ -41,6 +42,7 @@ function LiveSession({ sessionId }: { sessionId: string }) {
   const status = useStatusLine(session, subscribe, getThread)
   const notices = useMemo(() => threadNoticeSource(subscribe, getThread), [getThread, subscribe])
   const childSessions = useChildSessions(sessions, sessionId)
+  const actions = useSessionActions(sessionId, session)
   return (
     <TurnNoticesProvider source={notices}>
       <SessionThread
@@ -52,6 +54,7 @@ function LiveSession({ sessionId }: { sessionId: string }) {
         failure={failure}
         onRetry={retry}
         childSessions={childSessions}
+        actions={actions}
       />
     </TurnNoticesProvider>
   )
@@ -66,6 +69,10 @@ function FixtureSession({ sessionId }: { sessionId: string }) {
   const workspace = workspaces.find((entry) => entry.path === session?.workspacePath)
   const status = useStatusLine(session, fixture.subscribe, fixture.getThread)
   const childSessions = useChildSessions(sessions, sessionId)
+  const actions = useMemo(
+    () => unavailableSessionActions(session, 'A sample session: pair an environment to change it'),
+    [session],
+  )
   return (
     <FixtureThreadStores stores={fixture.stores}>
       <TurnNoticesProvider source={fixture.notices}>
@@ -76,6 +83,7 @@ function FixtureSession({ sessionId }: { sessionId: string }) {
           messages={messages}
           phase="ready"
           childSessions={childSessions}
+          actions={actions}
         />
       </TurnNoticesProvider>
     </FixtureThreadStores>
@@ -85,10 +93,15 @@ function FixtureSession({ sessionId }: { sessionId: string }) {
 /** No client yet: nothing paired, the first connect, or a refused token. */
 function Unreachable() {
   const { status } = usePhoneConnection()
+  const actions = useMemo(
+    () => unavailableSessionActions(undefined, 'Not connected to an environment'),
+    [],
+  )
   return (
     <SessionThread
       title="Session"
       status={null}
+      actions={actions}
       messages={[]}
       phase={status === 'no_environment' || status === 'unauthorized' ? 'failed' : 'opening'}
       failure={

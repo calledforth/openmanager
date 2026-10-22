@@ -1,14 +1,8 @@
 import { LinearGradient } from 'expo-linear-gradient'
-import {
-  ArrowClockwiseIcon,
-  ArrowDownIcon,
-  CaretLeftIcon,
-  WarningCircleIcon,
-} from 'phosphor-react-native'
+import { ArrowClockwiseIcon, ArrowDownIcon, WarningCircleIcon } from 'phosphor-react-native'
 import { memo, useCallback, useMemo, useRef, useState, useSyncExternalStore } from 'react'
 import {
   FlatList,
-  Text,
   View,
   type ListRenderItem,
   type NativeScrollEvent,
@@ -25,40 +19,21 @@ import { AppText } from '../components/ui/AppText'
 import type { HomeSession } from '../home/rows'
 import { usePhoneTheme } from '../theme/ThemeProvider'
 import { FadeOut as BottomFade } from '../ui/chrome'
-import { useGoBack } from '../ui/goBack'
 import { IconButton } from '../ui/IconButton'
-import { ProjectChip } from '../ui/ProjectChip'
 import { ChildSessionCards } from './ChildSessionCards'
 import { countRender } from './render-probe'
+import { awayFromLatest, MAINTAIN_POSITION } from './scroll-anchor'
 import { ReadOnlyBar, SessionDock } from './SessionDock'
+import { SessionHeader, useSessionChrome } from './SessionHeader'
+import { SessionMenu } from './SessionMenu'
+import type { SessionMenuItem } from './session-menu'
 import type { StatusLineView } from './status-line'
 import type { ReadOnlySessionPhase } from './useReadOnlySession'
+import type { SessionActions } from './useSessionActions'
 
-/**
- * Within this of the newest row, a change below the reader keeps them at the
- * end (the list's own follow); scrolled further up, nothing moves them.
- */
-const FOLLOW_THRESHOLD_PX = 48
-/** Scrolled this far from the end, the scroll-to-latest button shows. */
-const AWAY_PX = 200
 /** The dock's height before it has measured itself: the status line and a one-line slot. */
 const DOCK_ESTIMATE = 96
 const ROW_GAP_BOTTOM = 18
-
-/**
- * The transcript keeps the reader where they are and follows the end on its
- * own. The list is inverted (its offset 0 is the newest row), so a reader at
- * the end stays there as the live row grows without any scroll call, and the
- * platform's visible-content anchoring (`maintainVisibleContentPosition`)
- * holds a reader who scrolled up in place while rows below them grow, settle
- * or arrive. The anchor is the first row past the reader's position, never
- * the live row they may be reading inside; a reader within the threshold of
- * the end is brought back to it.
- */
-const MAINTAIN_POSITION = {
-  minIndexForVisible: 0,
-  autoscrollToTopThreshold: FOLLOW_THRESHOLD_PX,
-} as const
 
 const keyOf = (message: UIMessage) => message.rowKey ?? message.externalId
 const renderRow: ListRenderItem<UIMessage> = ({ item }) => <ResolvedMessage message={item} />
@@ -128,46 +103,6 @@ function ScrollToLatest({
   )
 }
 
-/** Back, then the project and the title: the top kept as clear as it can be. */
-const SessionHeader = memo(function SessionHeader({
-  title,
-  project,
-  topInset,
-}: {
-  title: string
-  project?: string
-  topInset: number
-}) {
-  const goBack = useGoBack()
-  const theme = usePhoneTheme()
-  return (
-    <View style={{ paddingTop: topInset + 6 }}>
-      <View className="flex-row items-center px-5" style={{ height: 48 }}>
-        <IconButton label="Back" onPress={goBack}>
-          <CaretLeftIcon size={18} color={theme.fg} weight="bold" />
-        </IconButton>
-      </View>
-      <View className="px-5" style={{ paddingTop: 2, paddingBottom: 10 }}>
-        {project ? <ProjectChip name={project} /> : null}
-        <Text
-          accessibilityRole="header"
-          numberOfLines={2}
-          style={{
-            fontFamily: 'Geist-SemiBold',
-            fontSize: 22,
-            lineHeight: 26.5,
-            letterSpacing: -0.33,
-            color: theme.fg,
-            marginTop: 4,
-          }}
-        >
-          {title}
-        </Text>
-      </View>
-    </View>
-  )
-})
-
 export interface SessionThreadProps {
   title: string
   project?: string
@@ -179,9 +114,12 @@ export interface SessionThreadProps {
   onRetry?: () => void
   /** The sessions it delegated to, as cards at the end of its transcript. */
   childSessions?: readonly HomeSession[]
+  /** What the ⋯ menu and the title can ask the environment; none before a client exists. */
+  actions?: SessionActions | null
 }
 
 const NO_CHILDREN: readonly HomeSession[] = []
+const NO_ITEMS: readonly SessionMenuItem[] = []
 
 /**
  * A session's page: back, project and title; the transcript, newest at the
@@ -199,6 +137,7 @@ export const SessionThread = memo(function SessionThread({
   failure,
   onRetry,
   childSessions = NO_CHILDREN,
+  actions = null,
 }: SessionThreadProps) {
   countRender('SessionThread')
   const insets = useSafeAreaInsets()
@@ -206,13 +145,14 @@ export const SessionThread = memo(function SessionThread({
   const listRef = useRef<FlatList<UIMessage>>(null)
   const [away] = useState(createFlag)
   const [dockHeight, setDockHeight] = useState(DOCK_ESTIMATE)
+  const chrome = useSessionChrome(actions, title)
 
   // Newest first: the inverted list's offset 0 is the end of the transcript.
   const rows = useMemo(() => [...messages].reverse(), [messages])
 
   const onScroll = useCallback(
     (event: NativeSyntheticEvent<NativeScrollEvent>) => {
-      away.set(event.nativeEvent.contentOffset.y > AWAY_PX)
+      away.set(awayFromLatest(event.nativeEvent.contentOffset.y, away.get()))
     },
     [away],
   )
@@ -238,7 +178,7 @@ export const SessionThread = memo(function SessionThread({
 
   return (
     <View className="flex-1">
-      <SessionHeader title={title} project={project} topInset={insets.top} />
+      <SessionHeader title={title} project={project} topInset={insets.top} chrome={chrome} />
 
       <View className="flex-1">
         {messages.length === 0 ? (
@@ -322,6 +262,15 @@ export const SessionThread = memo(function SessionThread({
           <ReadOnlyBar />
         </SessionDock>
       </View>
+
+      {chrome.menuOpen ? (
+        <SessionMenu
+          items={actions?.menu ?? NO_ITEMS}
+          top={insets.top + 6 + 48}
+          onChoose={chrome.choose}
+          onClose={chrome.closeMenu}
+        />
+      ) : null}
     </View>
   )
 })
