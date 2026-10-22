@@ -1,7 +1,7 @@
 import { useRouter } from 'expo-router'
 import { MagnifyingGlassIcon, XIcon } from 'phosphor-react-native'
 import { useMemo, useState } from 'react'
-import { Pressable, ScrollView, TextInput, View } from 'react-native'
+import { ScrollView, TextInput, View } from 'react-native'
 import { useSafeAreaInsets } from 'react-native-safe-area-context'
 
 import { AppText } from '../components/ui/AppText'
@@ -13,6 +13,7 @@ import { SectionLabel } from '../ui/chrome'
 import { useGoBack } from '../ui/goBack'
 import { ProjectSquare } from '../ui/ProjectChip'
 import { SessionRow } from '../ui/SessionRow'
+import { Press } from '../ui/Press'
 
 /**
  * Search is a layer over whatever you were on: the field at the top,
@@ -71,7 +72,7 @@ export default function Search() {
             paddingVertical: 2,
           }}
         />
-        <Pressable
+        <Press
           accessibilityRole="button"
           accessibilityLabel="Close search"
           onPress={goBack}
@@ -79,7 +80,7 @@ export default function Search() {
           style={({ pressed }) => ({ opacity: pressed ? 0.6 : 1 })}
         >
           <XIcon size={18} color={theme.muted} />
-        </Pressable>
+        </Press>
       </View>
       <ScrollView
         className="flex-1"
@@ -165,7 +166,7 @@ function ProjectRow({
 }) {
   const theme = usePhoneTheme()
   return (
-    <Pressable
+    <Press
       onPress={onPress}
       style={({ pressed }) => ({
         flexDirection: 'row',
@@ -184,6 +185,6 @@ function ProjectRow({
       <AppText variant="text-12-regular" style={{ color: theme.faint }}>
         {count} {count === 1 ? 'session' : 'sessions'}
       </AppText>
-    </Pressable>
+    </Press>
   )
 }
