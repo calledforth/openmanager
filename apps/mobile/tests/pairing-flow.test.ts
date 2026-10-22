@@ -1,0 +1,449 @@
+import { describe, expect, it } from 'vitest'
+import { encodePairingLink } from '@openmanager/environment-client'
+import type { PairingRejectionReason } from '@openmanager/protocol'
+import { connectedRoute, environmentLine } from '../src/environment/connected-route'
+import { readPhoneLabel, suggestPhoneLabel } from '../src/pairing/device-label'
+import {
+  checkNewRoute,
+  connectedClient,
+  exchangeLink,
+  joinRoute,
+  planPairing,
+  redeemLink,
+} from '../src/pairing/flow'
+import { readPairingLink, type PairingLinkRead } from '../src/pairing/link'
+import {
+  ENV,
+  LAN,
+  OTHER_ENV,
+  PAIRING_TOKEN,
+  TOKEN,
+  TUNNEL,
+  flush,
+  harness,
+  ready,
+  registryWith,
+} from './support'
+
+const APP = 'https://app.example.test'
+const PHONE_TOKEN = 'p'.repeat(43)
+
+const linkTo = (route: string, environmentId = ENV) =>
+  encodePairingLink(`${APP}/`, { route, environmentId, token: PAIRING_TOKEN })
+
+function read(text: string): PairingLinkRead {
+  const result = readPairingLink(text)
+  if (!result.ok) throw new Error(`not a link: ${JSON.stringify(result.failure)}`)
+  return result.link
+}
+
+const answer = (environmentId = ENV) => ({
+  environmentId,
+  label: 'Studio',
+  kind: 'paired',
+  clientId: 'client-phone',
+  clientLabel: 'Pixel 9',
+  grant: ['read', 'operate', 'agent'],
+  credential: PHONE_TOKEN,
+})
+
+type Call = { url: string; init: RequestInit }
+
+/** A `fetch` that answers `POST /pair` with `respond`, and records each call. */
+function pairFetch(respond: () => Response | Promise<Response>) {
+  const calls: Call[] = []
+  const fetchImpl = (async (input: RequestInfo | URL, init?: RequestInit) => {
+    calls.push({ url: String(input), init: init ?? {} })
+    return respond()
+  }) as typeof fetch
+  return { fetchImpl, calls }
+}
+
+const json = (status: number, body: unknown) =>
+  new Response(JSON.stringify(body), { status, headers: { 'content-type': 'application/json' } })
+
+const refusal = (reason: PairingRejectionReason) =>
+  json(401, { error: { code: 'auth', message: 'refused', details: { reason } } })
+
+/** A fresh install: the phone's storage holds nothing yet. */
+function freshInstall() {
+  return harness({ registry: { selectedId: null, environments: [] }, credentials: {} })
+}
+
+describe('reading a pairing link', () => {
+  it("takes the payload with the shared parser and the app origin from the link's own URL", () => {
+    const result = readPairingLink(`  ${linkTo(LAN)}\n`)
+    expect(result).toEqual({
+      ok: true,
+      link: {
+        payload: { route: LAN, environmentId: ENV, token: PAIRING_TOKEN },
+        appOrigin: APP,
+      },
+    })
+  })
+
+  it('reads a bare fragment, which names no app origin', () => {
+    const fragment = new URL(linkTo(LAN)).hash
+    expect(readPairingLink(fragment)).toMatchObject({ ok: true, link: { appOrigin: null } })
+  })
+
+  it('reports what the shared parser says is wrong', () => {
+    expect(readPairingLink('https://example.com/hello')).toEqual({
+      ok: false,
+      failure: { kind: 'link', problem: 'not_a_link' },
+    })
+    expect(readPairingLink(linkTo(LAN).replace('v=1', 'v=2'))).toEqual({
+      ok: false,
+      failure: { kind: 'link', problem: 'unsupported_version' },
+    })
+    expect(readPairingLink(linkTo(LAN).replace(/token=[^&]+/, 'token=nope'))).toEqual({
+      ok: false,
+      failure: { kind: 'link', problem: 'malformed' },
+    })
+  })
+})
+
+describe('the device label', () => {
+  it("suggests the phone's model name, else its system, else Phone", () => {
+    expect(suggestPhoneLabel({ modelName: 'Pixel 9', osName: 'Android' })).toBe('Pixel 9')
+    expect(suggestPhoneLabel({ modelName: '  ', osName: 'iOS' })).toBe('iOS')
+    expect(suggestPhoneLabel({ modelName: null, osName: null })).toBe('Phone')
+    expect(suggestPhoneLabel({ modelName: 'bad\u0007name', osName: null })).toBe('Phone')
+  })
+
+  it('sends a trimmed edit, nothing for an empty one, and refuses one the environment would', () => {
+    expect(readPhoneLabel('  Work phone ')).toEqual({ ok: true, label: 'Work phone' })
+    expect(readPhoneLabel('   ')).toEqual({ ok: true, label: undefined })
+    expect(readPhoneLabel('x'.repeat(129)).ok).toBe(false)
+    expect(readPhoneLabel('a​b').ok).toBe(false)
+  })
+})
+
+describe('pairing a fresh install: link, exchange, store', () => {
+  it('trades the token at the link route and saves token, route, label and app origin', async () => {
+    const h = freshInstall()
+    await h.controller.start()
+    expect(h.state().status).toBe('no_environment')
+    const link = read(linkTo(LAN))
+    expect(planPairing(link, h.controller)).toEqual({ kind: 'exchange' })
+
+    const { fetchImpl, calls } = pairFetch(() => json(200, answer()))
+    const result = await exchangeLink(link, { label: 'Pixel 9' }, h.controller, fetchImpl)
+    expect(result).toEqual({
+      ok: true,
+      paired: { environmentId: ENV, clientLabel: 'Pixel 9', how: 'exchanged' },
+    })
+
+    // One request, to the link's route, carrying the link's token and the
+    // label and nothing that could be a credential.
+    expect(calls).toHaveLength(1)
+    expect(calls[0]!.url).toBe(`${LAN}/pair`)
+    expect(calls[0]!.init).toMatchObject({ method: 'POST', credentials: 'omit', cache: 'no-store' })
+    expect(JSON.parse(String(calls[0]!.init.body))).toEqual({
+      token: PAIRING_TOKEN,
+      label: 'Pixel 9',
+    })
+    expect(JSON.stringify(calls[0]!.init.headers)).not.toMatch(/authorization/i)
+
+    // Saved through the registry: the token in SecureStore only, the rest in
+    // AsyncStorage, the app origin on the record.
+    await h.controller.flush()
+    expect(h.storage.secret(ENV)).toBe(PHONE_TOKEN)
+    expect(JSON.stringify(h.storage.asyncStore.dump())).not.toContain(PHONE_TOKEN)
+    expect(h.storage.document()).toMatchObject({
+      selectedId: ENV,
+      environments: [
+        {
+          environmentId: ENV,
+          label: 'Studio',
+          appOrigin: APP,
+          routes: [{ endpoint: LAN }],
+        },
+      ],
+    })
+    expect(h.state().environments).toEqual([
+      expect.objectContaining({ environmentId: ENV, paired: true, appOrigin: APP }),
+    ])
+  })
+
+  it('then connects with the app origin, and the environment line reads its label and LAN', async () => {
+    const h = freshInstall()
+    await h.controller.start()
+    const { fetchImpl } = pairFetch(() => json(200, answer()))
+    await exchangeLink(read(linkTo(LAN)), {}, h.controller, fetchImpl)
+    await flush()
+    expect(h.probes).toEqual([LAN])
+    const socket = h.socket()
+    expect(socket.origin).toBe(APP)
+    expect(socket.protocols).toContain(`openmanager.auth.${PHONE_TOKEN}`)
+    expect(environmentLine(h.state())).toEqual({ label: 'Studio', connected: false })
+    socket.accept()
+    await flush()
+    expect(h.state().status).toBe('connected')
+    expect(connectedRoute(h.state())).toEqual({ endpoint: LAN, kind: 'lan' })
+    expect(environmentLine(h.state())).toEqual({ label: 'Studio', detail: 'LAN', connected: true })
+  })
+
+  it('reads a tunnel route as Tunnel', async () => {
+    const h = freshInstall()
+    h.answers.set(TUNNEL, ready())
+    await h.controller.start()
+    const { fetchImpl } = pairFetch(() => json(200, answer()))
+    await exchangeLink(read(linkTo(TUNNEL)), {}, h.controller, fetchImpl)
+    await flush()
+    h.socket().accept()
+    await flush()
+    expect(environmentLine(h.state())).toEqual({
+      label: 'Studio',
+      detail: 'Tunnel',
+      connected: true,
+    })
+  })
+
+  it('leaves the label out when the person cleared it', async () => {
+    const h = freshInstall()
+    await h.controller.start()
+    const { fetchImpl, calls } = pairFetch(() => json(200, answer()))
+    await exchangeLink(read(linkTo(LAN)), { label: undefined }, h.controller, fetchImpl)
+    expect(JSON.parse(String(calls[0]!.init.body))).toEqual({ token: PAIRING_TOKEN })
+  })
+
+  it('saves nothing when the route answers as another environment than the link names', async () => {
+    const h = freshInstall()
+    await h.controller.start()
+    const { fetchImpl } = pairFetch(() => json(200, answer(OTHER_ENV)))
+    const result = await exchangeLink(read(linkTo(LAN)), {}, h.controller, fetchImpl)
+    expect(result).toEqual({ ok: false, failure: { kind: 'environment_mismatch', route: LAN } })
+    await h.controller.flush()
+    expect(h.state().environments).toEqual([])
+    expect(h.storage.secret(OTHER_ENV)).toBeNull()
+    expect(JSON.stringify(h.storage.asyncStore.dump())).not.toContain(PHONE_TOKEN)
+    expect(h.sockets()).toHaveLength(0)
+  })
+
+  it.each(['expired', 'used', 'invalid', 'creator_revoked', 'malformed'] as const)(
+    'reports the environment refusing the token as %s, and saves nothing',
+    async (reason) => {
+      const h = freshInstall()
+      await h.controller.start()
+      const { fetchImpl } = pairFetch(() => refusal(reason))
+      const result = await exchangeLink(read(linkTo(LAN)), {}, h.controller, fetchImpl)
+      expect(result).toEqual({ ok: false, failure: { kind: 'rejected', reason } })
+      expect(h.state().environments).toEqual([])
+    },
+  )
+
+  it('tells nothing answering apart from an HTTP refusal', async () => {
+    const h = freshInstall()
+    await h.controller.start()
+    const down = pairFetch(() => {
+      throw new TypeError('Network request failed')
+    })
+    expect(await exchangeLink(read(linkTo(LAN)), {}, h.controller, down.fetchImpl)).toEqual({
+      ok: false,
+      failure: { kind: 'unreachable', route: LAN },
+    })
+    const busy = pairFetch(() => json(429, { error: { code: 'rate_limited', message: 'slow' } }))
+    expect(await exchangeLink(read(linkTo(LAN)), {}, h.controller, busy.fetchImpl)).toEqual({
+      ok: false,
+      failure: { kind: 'rate_limited' },
+    })
+    const missing = pairFetch(() => json(404, {}))
+    expect(await exchangeLink(read(linkTo(LAN)), {}, h.controller, missing.fetchImpl)).toEqual({
+      ok: false,
+      failure: { kind: 'not_pairing', route: LAN },
+    })
+    const broken = pairFetch(() => json(500, {}))
+    expect(await exchangeLink(read(linkTo(LAN)), {}, h.controller, broken.fetchImpl)).toMatchObject(
+      {
+        ok: false,
+        failure: { kind: 'unexpected' },
+      },
+    )
+    expect(h.state().environments).toEqual([])
+  })
+})
+
+describe('a link for an environment the phone already knows', () => {
+  it('needs consent before a new address joins one it holds a token for', async () => {
+    const h = harness({ routes: [LAN] })
+    await h.controller.start()
+    const link = read(linkTo(TUNNEL))
+    expect(h.controller.classifyRoute({ environmentId: ENV, endpoint: TUNNEL })).toEqual({
+      kind: 'new_route',
+      sendsSavedCredential: true,
+    })
+    expect(planPairing(link, h.controller)).toEqual({
+      kind: 'consent',
+      label: 'Studio',
+      route: TUNNEL,
+    })
+    // Planning sends nothing and saves nothing.
+    expect(h.storage.document()!.environments[0]!.routes.map((r) => r.endpoint)).toEqual([LAN])
+  })
+
+  it('asks the new address first, and offers nothing when it answers as another environment', async () => {
+    const h = harness({ routes: [LAN] })
+    await h.controller.start()
+    h.answers.set(TUNNEL, ready(OTHER_ENV))
+    expect(await checkNewRoute(read(linkTo(TUNNEL)), h.controller)).toEqual({
+      ok: false,
+      failure: { kind: 'environment_mismatch', route: TUNNEL },
+    })
+    h.answers.delete(TUNNEL)
+    expect(await checkNewRoute(read(linkTo(TUNNEL)), h.controller)).toEqual({
+      ok: false,
+      failure: { kind: 'unreachable', route: TUNNEL },
+    })
+    h.answers.set(TUNNEL, ready())
+    expect(await checkNewRoute(read(linkTo(TUNNEL)), h.controller)).toEqual({ ok: true })
+  })
+
+  it('adds the address only once agreed, as the last route, keeping the token', async () => {
+    const h = harness({ routes: [LAN] })
+    await connect(h)
+    expect(joinRoute(read(linkTo(TUNNEL)), h.controller)).toBe(true)
+    await h.controller.flush()
+    expect(h.storage.document()!.environments[0]!.routes.map((r) => r.endpoint)).toEqual([
+      LAN,
+      TUNNEL,
+    ])
+    expect(h.storage.secret(ENV)).toBe(TOKEN)
+    // The record had no app origin; the link's fills it.
+    expect(h.storage.document()!.environments[0]!.appOrigin).toBe(APP)
+    // Joining it twice is nothing.
+    expect(joinRoute(read(linkTo(TUNNEL)), h.controller)).toBe(false)
+  })
+
+  it('keeps a saved app origin when a new address joins', async () => {
+    const h = harness({ routes: [LAN], appOrigins: { [ENV]: 'https://desk.example.test' } })
+    await connect(h)
+    joinRoute(read(linkTo(TUNNEL)), h.controller)
+    await h.controller.flush()
+    expect(h.storage.document()!.environments[0]!.appOrigin).toBe('https://desk.example.test')
+    expect(h.state().status).toBe('connected')
+  })
+
+  it('redeems a link for a known address over the phone’s own socket, never at the route', async () => {
+    const h = harness({ routes: [LAN] })
+    await h.controller.start()
+    await flush()
+    h.socket().accept(ENV, ['connection.heartbeat', 'pairing.redeem'])
+    await flush()
+    const link = read(linkTo(LAN))
+    expect(planPairing(link, h.controller)).toEqual({ kind: 'redeem', label: 'Studio' })
+    const redeemed = redeemLink(link, h.controller, { timers: h.timers })
+    await flush()
+    const socket = h.socket()
+    expect(socket.last('pairing.redeem').payload).toEqual({ token: PAIRING_TOKEN })
+    socket.respond('pairing.redeem', {
+      clientId: 'client-phone',
+      clientLabel: 'Pixel 9',
+      grant: ['read', 'operate'],
+      grantChanged: false,
+    })
+    expect(await redeemed).toEqual({
+      ok: true,
+      paired: { environmentId: ENV, clientLabel: 'Pixel 9', how: 'redeemed' },
+    })
+    expect(h.storage.secret(ENV)).toBe(TOKEN)
+  })
+
+  it('reports a redeem refusal by its reason', async () => {
+    const h = harness({ routes: [LAN] })
+    await h.controller.start()
+    await flush()
+    h.socket().accept(ENV, ['connection.heartbeat', 'pairing.redeem'])
+    await flush()
+    const redeemed = redeemLink(read(linkTo(LAN)), h.controller, { timers: h.timers })
+    await flush()
+    const socket = h.socket()
+    socket.receive({
+      type: 'error',
+      requestId: socket.last('pairing.redeem').requestId,
+      error: {
+        code: 'auth',
+        message: 'This pairing link was already used.',
+        details: { reason: 'used' },
+      },
+    })
+    expect(await redeemed).toEqual({ ok: false, failure: { kind: 'rejected', reason: 'used' } })
+  })
+
+  it('gives up on redeeming when the connection does not come up', async () => {
+    const h = harness({ routes: [LAN] })
+    await h.controller.start()
+    await flush()
+    const waiting = connectedClient(h.controller, ENV, { timers: h.timers, timeoutMs: 5000 })
+    h.timers.advance(5000)
+    expect(await waiting).toBeNull()
+    const redeemed = redeemLink(read(linkTo(LAN)), h.controller, {
+      timers: h.timers,
+      timeoutMs: 5000,
+    })
+    h.timers.advance(5000)
+    expect(await redeemed).toEqual({
+      ok: false,
+      failure: { kind: 'not_connected', label: 'Studio' },
+    })
+  })
+
+  it('exchanges for an environment whose token is gone, and its new address joins without asking', async () => {
+    const h = harness({ routes: [LAN], credentials: {} })
+    await h.controller.start()
+    const link = read(linkTo(TUNNEL))
+    // The shared rule: no saved token would be sent, so there is nothing to agree to.
+    expect(h.controller.classifyRoute({ environmentId: ENV, endpoint: TUNNEL })).toEqual({
+      kind: 'new_route',
+      sendsSavedCredential: false,
+    })
+    expect(planPairing(link, h.controller)).toEqual({ kind: 'exchange' })
+    const { fetchImpl } = pairFetch(() => json(200, answer()))
+    expect((await exchangeLink(link, {}, h.controller, fetchImpl)).ok).toBe(true)
+    await h.controller.flush()
+    expect(h.storage.secret(ENV)).toBe(PHONE_TOKEN)
+    expect(
+      h.storage
+        .document()!
+        .environments[0]!.routes.map((r) => r.endpoint)
+        .sort(),
+    ).toEqual([LAN, TUNNEL].sort())
+    expect(h.storage.document()!.environments[0]!.appOrigin).toBe(APP)
+  })
+
+  it('selects a different saved environment to redeem over its connection', async () => {
+    const h = harness({
+      registry: {
+        selectedId: OTHER_ENV,
+        environments: [
+          ...registryWith([TUNNEL], OTHER_ENV).environments,
+          ...registryWith([LAN]).environments,
+        ],
+      },
+      credentials: { [ENV]: TOKEN, [OTHER_ENV]: 'o'.repeat(43) },
+      answers: { [LAN]: ready(), [TUNNEL]: ready(OTHER_ENV) },
+    })
+    await h.controller.start()
+    await flush()
+    const redeemed = redeemLink(read(linkTo(LAN)), h.controller, { timers: h.timers })
+    await flush()
+    expect(h.state().selectedId).toBe(ENV)
+    h.socket().accept(ENV, ['connection.heartbeat', 'pairing.redeem'])
+    await flush()
+    h.socket().respond('pairing.redeem', {
+      clientId: 'client-phone',
+      clientLabel: 'Pixel 9',
+      grant: ['read'],
+      grantChanged: false,
+    })
+    expect((await redeemed).ok).toBe(true)
+  })
+})
+
+async function connect(h: ReturnType<typeof harness>) {
+  await h.controller.start()
+  await flush()
+  h.socket().accept()
+  await flush()
+  expect(h.state().status).toBe('connected')
+}
