@@ -24,11 +24,7 @@ import { phoneRouteOrder, routeKindOf, type RouteKind } from './route-order'
  *   own once the network is back.
  */
 export type PhoneNextStep =
-  | 'retry'
-  | 'pair_again'
-  | 'switch_environment'
-  | 'pair'
-  | 'network_settings'
+  'retry' | 'pair_again' | 'switch_environment' | 'pair' | 'network_settings'
 
 /** How the state reads at a glance: the colour of its dot. */
 export type PhoneConnectionTone = 'ok' | 'working' | 'warn' | 'error' | 'idle'

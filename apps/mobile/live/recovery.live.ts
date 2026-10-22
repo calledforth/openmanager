@@ -372,7 +372,12 @@ describe('connection recovery, live', () => {
       const again = readPairingLink(await link(owner, environmentId, LAN))
       if (!again.ok) throw new Error('link did not read')
       const from = Date.now()
-      const repaired = await exchangeLink(again.link, { label: 'Recovery phone' }, phone, phoneFetch)
+      const repaired = await exchangeLink(
+        again.link,
+        { label: 'Recovery phone' },
+        phone,
+        phoneFetch,
+      )
       expect(repaired).toMatchObject({ ok: true })
       await until('connected after pairing again', () => phone.getState().status === 'connected')
       results.pairAgain = Date.now() - from
