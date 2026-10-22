@@ -19,6 +19,7 @@ export type PairingController = Pick<
   | 'checkRoute'
   | 'addRoute'
   | 'retry'
+  | 'fillAppOrigin'
 >
 
 /**
@@ -281,8 +282,16 @@ export async function redeemLink(
   const label =
     state.environments.find((environment) => environment.environmentId === environmentId)?.label ??
     'this environment'
+  // A pairing saved before the phone kept app origins dials with the route's
+  // own, which the environment refuses; the link says which app it came from.
+  const filled =
+    link.appOrigin !== null &&
+    state.environments.some((item) => item.environmentId === environmentId && !item.appOrigin) &&
+    controller.fillAppOrigin({ environmentId, appOrigin: link.appOrigin })
   if (state.selectedId !== environmentId) controller.selectEnvironment(environmentId)
-  else if (
+  else if (filled) {
+    // Filling it already started a new search with the new origin.
+  } else if (
     state.status === 'unauthorized' ||
     state.status === 'incompatible_protocol' ||
     state.status === 'waiting'

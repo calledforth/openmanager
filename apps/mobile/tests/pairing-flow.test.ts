@@ -369,7 +369,7 @@ describe('a link for an environment the phone already knows', () => {
   })
 
   it('redeems a link for a known address over the phone’s own socket, never at the route', async () => {
-    const h = harness({ routes: [LAN] })
+    const h = harness({ routes: [LAN], appOrigins: { [ENV]: APP } })
     await h.controller.start()
     await flush()
     h.socket().accept(ENV, ['connection.heartbeat', 'pairing.redeem'])
@@ -393,8 +393,35 @@ describe('a link for an environment the phone already knows', () => {
     expect(h.storage.secret(ENV)).toBe(TOKEN)
   })
 
-  it('reports a redeem refusal by its reason', async () => {
+  it('fills a missing app origin from the link before redeeming, and keeps a saved one', async () => {
     const h = harness({ routes: [LAN] })
+    await h.controller.start()
+    await flush()
+    // Saved before the phone kept app origins: the socket sends the route's own.
+    expect(h.socket().origin).toBe(new URL(LAN).origin)
+    const redeemed = redeemLink(read(linkTo(LAN)), h.controller, { timers: h.timers })
+    await flush()
+    expect(h.storage.document()!.environments[0]!.appOrigin).toBe(APP)
+    expect(h.socket().origin).toBe(APP)
+    expect(h.storage.secret(ENV)).toBe(TOKEN)
+    h.socket().accept(ENV, ['connection.heartbeat', 'pairing.redeem'])
+    await flush()
+    h.socket().respond('pairing.redeem', {
+      clientId: 'client-phone',
+      clientLabel: 'Pixel 9',
+      grant: ['read'],
+      grantChanged: false,
+    })
+    expect((await redeemed).ok).toBe(true)
+    expect(
+      h.controller.fillAppOrigin({ environmentId: ENV, appOrigin: 'https://other.example.test' }),
+    ).toBe(false)
+    await h.controller.flush()
+    expect(h.storage.document()!.environments[0]!.appOrigin).toBe(APP)
+  })
+
+  it('reports a redeem refusal by its reason', async () => {
+    const h = harness({ routes: [LAN], appOrigins: { [ENV]: APP } })
     await h.controller.start()
     await flush()
     h.socket().accept(ENV, ['connection.heartbeat', 'pairing.redeem'])
@@ -415,7 +442,7 @@ describe('a link for an environment the phone already knows', () => {
   })
 
   it('asks a latched connection again before redeeming, rather than reading the old refusal', async () => {
-    const h = harness({ routes: [LAN] })
+    const h = harness({ routes: [LAN], appOrigins: { [ENV]: APP } })
     await h.controller.start()
     await flush()
     h.socket().drop(4401, 'revoked')

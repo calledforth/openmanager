@@ -235,6 +235,13 @@ export interface PhoneConnectionController {
    * or already has the address.
    */
   addRoute(input: AddRouteInput): boolean
+  /**
+   * Give a saved environment the app origin of a pairing link, when it has
+   * none (it was saved before the phone kept one), so its socket stops
+   * sending the route's own origin. A saved origin is never replaced.
+   * `false` when there was nothing to fill.
+   */
+  fillAppOrigin(input: { environmentId: string; appOrigin: string }): boolean
   /** A person asked to try again: clears a refusal and searches at once. */
   retry(): void
   /** Resolves once every registry write handed in so far has finished. */
@@ -1156,6 +1163,23 @@ export function createPhoneConnectionController(
         message: `Could not reach ${endpoint}.`,
         cause: 'network' as const,
       }))
+    },
+    fillAppOrigin(input) {
+      if (!loaded || disposed) return false
+      const appOrigin = parseAppOrigin(input.appOrigin)
+      const saved = findStoredEnvironment(registry.environments, input.environmentId)
+      if (!appOrigin || !saved || saved.appOrigin) return false
+      warnedOrigin.delete(input.environmentId)
+      // A socket dialled with the route's own origin is retired for the app's.
+      if (transport?.environmentId === input.environmentId) dropTransport()
+      commit({
+        ...registry,
+        environments: registry.environments.map((item) =>
+          item === saved ? { ...saved, appOrigin } : item,
+        ),
+      })
+      if (registry.selectedId === input.environmentId) restart('select')
+      return true
     },
     addRoute(input) {
       if (!loaded || disposed) return false
