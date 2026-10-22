@@ -1,0 +1,398 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>OpenManager mobile — 04 · Inbox and search</title>
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link href="https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet" />
+<style>
+  :root {
+    --font: 'Geist', 'Geist Variable', 'Segoe UI', ui-sans-serif, system-ui, sans-serif;
+    --mono: 'JetBrains Mono', ui-monospace, Consolas, monospace;
+    --ease: cubic-bezier(0.2, 0.8, 0.2, 1);
+    --spring: cubic-bezier(0.34, 1.3, 0.64, 1);
+  }
+  .phone[data-theme='neutral'] {
+    color-scheme: dark;
+    --bg: #171717; --fg: #ededed; --muted: #8f8f8f; --faint: #5c5c5c;
+    --rule: rgb(255 255 255 / 0.075);
+    --hover: rgb(255 255 255 / 0.06); --active: rgb(255 255 255 / 0.1);
+    --surface-2: #1e1e1e; --bubble: #363636;
+    --float-bg: #202020;
+    --float-shadow: inset 0 1px 0 0 rgb(255 255 255 / 0.05), inset 0 0 0 1px rgb(255 255 255 / 0.035),
+      0 0 0 1px rgb(0 0 0 / 0.32), 0 2px 4px rgb(0 0 0 / 0.14), 0 8px 18px -4px rgb(0 0 0 / 0.22),
+      0 24px 56px -12px rgb(0 0 0 / 0.5);
+    --float-rest: inset 0 1px 0 0 rgb(255 255 255 / 0.05), inset 0 0 0 1px rgb(255 255 255 / 0.035),
+      0 0 0 1px rgb(0 0 0 / 0.32), 0 2px 4px rgb(0 0 0 / 0.12), 0 8px 16px -8px rgb(0 0 0 / 0.2);
+    --scrim: rgb(0 0 0 / 0.32);
+    --action-bg: #ededed; --action-fg: #171717;
+    --glass: rgb(32 32 32 / 0.58); --glass-strong: rgb(32 32 32 / 0.72); --glass-sheet: rgb(32 32 32 / 0.82);
+    --status-working: #a193ff; --status-background: #6cbcf2; --status-needs: #f4b942;
+    --status-question: #f47fc4; --status-done: #5ed8a4; --status-error: #ff6f6f;
+    --wash-done: rgb(94 216 164 / 0.13); --wash-error: rgb(255 111 111 / 0.12);
+  }
+  .phone[data-theme='neutral-light'] {
+    color-scheme: light;
+    --bg: #fcfcfc; --fg: #1a1a1a; --muted: #737373; --faint: #a8a8a8;
+    --rule: #ececec;
+    --hover: rgb(0 0 0 / 0.04); --active: rgb(0 0 0 / 0.07);
+    --surface-2: #fcfcfc; --bubble: #ebebeb;
+    --float-bg: #ffffff;
+    --float-shadow: 0 0 0 1px rgb(0 0 0 / 0.045), 0 1px 2px rgb(0 0 0 / 0.04), 0 4px 10px -2px rgb(0 0 0 / 0.05),
+      0 16px 40px -8px rgb(0 0 0 / 0.12), 0 32px 72px -24px rgb(0 0 0 / 0.1);
+    --float-rest: 0 0 0 1px rgb(0 0 0 / 0.08), 0 1px 2px rgb(0 0 0 / 0.05), 0 4px 12px -4px rgb(0 0 0 / 0.08);
+    --scrim: rgb(0 0 0 / 0.18);
+    --action-bg: #1a1a1a; --action-fg: #fcfcfc;
+    --glass: rgb(255 255 255 / 0.6); --glass-strong: rgb(255 255 255 / 0.74); --glass-sheet: rgb(255 255 255 / 0.86);
+    --status-working: #6b56e0; --status-background: #1f74b0; --status-needs: #b7791f;
+    --status-question: #b8337f; --status-done: #12805a; --status-error: #c73b3b;
+    --wash-done: #e3f6ec; --wash-error: #fde7e7;
+  }
+
+  body { margin: 0; background: #0b0b0b; font-family: var(--font); color: #bbb; }
+  .board { display: flex; flex-wrap: wrap; gap: 36px; padding: 36px; align-items: flex-start; }
+  .frame { display: flex; flex-direction: column; gap: 10px; }
+  .frame > .label { font-size: 12px; color: #777; letter-spacing: 0.02em; max-width: 390px; line-height: 1.5; }
+  .frame > .label b { color: #ccc; font-weight: 500; }
+  .frame > .label .tap { color: #8fd19e; }
+
+  .phone { width: 390px; height: 844px; border-radius: 44px; overflow: hidden; position: relative;
+    background: var(--bg); color: var(--fg); font-family: var(--font); font-size: 15px;
+    box-shadow: 0 0 0 10px #1c1c1c, 0 0 0 11px #2a2a2a, 0 30px 80px -20px rgb(0 0 0 / 0.8);
+    display: flex; flex-direction: column; -webkit-font-smoothing: antialiased; user-select: none; }
+  .statusbar { height: 54px; display: flex; align-items: flex-end; justify-content: space-between; padding: 0 34px 8px; font-size: 15px; font-weight: 600; }
+  .statusbar .right { font-size: 12px; }
+  .homebar { position: absolute; bottom: 8px; left: 50%; transform: translateX(-50%); width: 134px; height: 5px; border-radius: 3px; background: var(--fg); opacity: 0.9; z-index: 50; }
+  .screen { flex: 1; display: flex; flex-direction: column; min-height: 0; }
+
+  .glass { background: var(--glass); -webkit-backdrop-filter: blur(24px) saturate(1.6); backdrop-filter: blur(24px) saturate(1.6); }
+  .header { padding: 6px 20px 0; }
+  .header .top { display: flex; align-items: center; justify-content: space-between; height: 44px; }
+  .header h1 { font-size: 28px; font-weight: 600; letter-spacing: -0.02em; margin: 0; display: flex; align-items: baseline; gap: 10px; }
+  .header h1 .n { font-size: 15px; color: var(--faint); font-weight: 500; }
+  .header .sub { font-size: 13px; color: var(--muted); margin-top: 4px; display: flex; align-items: center; gap: 6px; }
+  .iconbtn { width: 36px; height: 36px; border-radius: 50%; display: grid; place-items: center; color: var(--fg);
+    background: var(--glass); -webkit-backdrop-filter: blur(18px) saturate(1.5); backdrop-filter: blur(18px) saturate(1.5); box-shadow: var(--float-rest); }
+  .iconbtn svg { width: 18px; height: 18px; }
+  .btns { display: flex; gap: 10px; }
+  .dot { width: 8px; height: 8px; border-radius: 50%; display: inline-block; }
+  .dot.ok { background: var(--status-done); }
+
+  .tabs { display: flex; gap: 6px; padding: 14px 20px 8px; }
+  .tab { padding: 6px 12px; border-radius: 999px; font-size: 14px; color: var(--muted); font-weight: 500; display: inline-flex; align-items: center; gap: 6px; }
+  .tab.on { background: var(--active); color: var(--fg); }
+  .tab .n { color: var(--faint); font-weight: 400; }
+  .tab i { width: 7px; height: 7px; border-radius: 50%; display: inline-block; }
+
+  .list { flex: 1; overflow: hidden; padding: 0 8px 140px; }
+  .group { padding: 16px 12px 6px; font-size: 12px; color: var(--faint); font-weight: 500; letter-spacing: 0.02em; display: flex; align-items: center; }
+  .group .r { margin-left: auto; color: var(--muted); font-weight: 400; }
+  .row { display: flex; align-items: flex-start; gap: 12px; padding: 11px 12px; border-radius: 14px; position: relative; }
+  .row.sel { background: var(--active); }
+  .row .mark { width: 22px; height: 22px; flex: none; display: grid; place-items: center; margin-top: 1px; }
+  .row .body { flex: 1; min-width: 0; }
+  .row .title { font-size: 15px; font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; letter-spacing: -0.005em; }
+  .row .ask { font-size: 14px; color: var(--fg); margin-top: 3px; line-height: 1.4; }
+  .row .ask code { font-family: var(--mono); font-size: 12.5px; background: var(--hover); padding: 1px 5px; border-radius: 4px; }
+  .row .sub { display: flex; align-items: center; gap: 6px; font-size: 12.5px; color: var(--muted); margin-top: 4px; white-space: nowrap; overflow: hidden; }
+  .row .sub .proj { display: inline-flex; align-items: center; gap: 5px; flex: none; }
+  .row .sub .proj i { width: 12px; height: 12px; border-radius: 3px; display: inline-block; }
+  .row .sub .sep { color: var(--faint); }
+  .row .age { font-size: 12.5px; color: var(--faint); flex: none; margin-top: 2px; }
+  .row.seen { opacity: 0.6; }
+
+  /* inline answers under a row (one expanded as the demo) */
+  .choices { display: flex; gap: 6px; margin-top: 10px; }
+  .choice { padding: 7px 12px; border-radius: 999px; font-size: 13px; font-weight: 500; background: var(--hover); color: var(--fg); }
+  .choice.primary { background: var(--action-bg); color: var(--action-fg); }
+  .choice.quiet { color: var(--muted); }
+  .qopts { display: flex; flex-direction: column; gap: 4px; margin-top: 8px; }
+  .qopt { padding: 8px 12px; border-radius: 10px; background: var(--hover); font-size: 13.5px; }
+  .qopt.on { background: var(--active); }
+
+  /* status marks */
+  .m-working { width: 12px; height: 12px; border-radius: 50%; border: 2.5px solid var(--status-working); border-right-color: transparent; animation: spin 1.1s linear infinite; }
+  .m-background { width: 12px; height: 12px; border-radius: 50%; border: 2.5px solid var(--status-background); border-right-color: transparent; opacity: 0.8; animation: spin 2.2s linear infinite; }
+  .m-needs { width: 14px; height: 14px; border-radius: 50%; background: var(--status-needs); color: #1a1a1a; font-size: 10px; font-weight: 700; display: grid; place-items: center; }
+  .m-question { width: 14px; height: 14px; border-radius: 50%; background: var(--status-question); color: #1a1a1a; font-size: 10px; font-weight: 700; display: grid; place-items: center; }
+  .m-plan { width: 14px; height: 14px; border-radius: 4px; background: var(--status-working); color: #1a1a1a; font-size: 9px; font-weight: 700; display: grid; place-items: center; }
+  .m-done { width: 14px; height: 14px; border-radius: 50%; background: var(--status-done); display: grid; place-items: center; }
+  .m-done svg { width: 9px; height: 9px; }
+  .m-error { width: 14px; height: 14px; border-radius: 50%; background: var(--status-error); color: #1a1a1a; font-size: 10px; font-weight: 700; display: grid; place-items: center; }
+  @keyframes spin { to { transform: rotate(360deg); } }
+
+  /* swipe reveal */
+  .swipe { overflow: hidden; border-radius: 14px; position: relative; }
+  .swipe .row { transform: translateX(-96px); background: var(--bg); }
+  .swipe .act { position: absolute; top: 0; bottom: 0; right: 0; width: 96px; background: var(--status-done); color: #0f2a1e; display: grid; place-items: center; font-size: 12.5px; font-weight: 600; }
+
+  /* nav */
+  .nav { position: absolute; left: 0; right: 0; bottom: 28px; display: flex; justify-content: center; gap: 10px; padding: 0 20px; z-index: 5; }
+  .pill { display: flex; gap: 4px; padding: 6px; border-radius: 999px; background: var(--glass); -webkit-backdrop-filter: blur(24px) saturate(1.6); backdrop-filter: blur(24px) saturate(1.6); box-shadow: var(--float-shadow); }
+  .pill .it { width: 48px; height: 44px; border-radius: 999px; display: grid; place-items: center; color: var(--muted); position: relative; }
+  .pill .it.on { background: var(--active); color: var(--fg); }
+  .pill .it svg { width: 21px; height: 21px; }
+  .pill .it .badge { position: absolute; top: 7px; right: 7px; min-width: 16px; height: 16px; padding: 0 4px; border-radius: 8px; background: var(--status-needs); color: #1a1a1a; font-size: 10px; font-weight: 700; display: grid; place-items: center; box-shadow: 0 0 0 2px var(--float-bg); }
+  .fab { width: 56px; height: 56px; border-radius: 50%; display: grid; place-items: center; background: var(--glass); -webkit-backdrop-filter: blur(24px) saturate(1.6); backdrop-filter: blur(24px) saturate(1.6); box-shadow: var(--float-shadow); color: var(--fg); }
+  .fab svg { width: 22px; height: 22px; }
+  .fadeout { position: absolute; left: 0; right: 0; bottom: 0; height: 150px; pointer-events: none; background: linear-gradient(to bottom, transparent, color-mix(in oklab, var(--bg) 55%, transparent)); }
+
+  /* empty state */
+  .empty { flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 8px; padding: 0 40px 120px; text-align: center; }
+  .empty .big { width: 64px; height: 64px; border-radius: 50%; background: var(--wash-done); color: var(--status-done); display: grid; place-items: center; margin-bottom: 8px; }
+  .empty .big svg { width: 28px; height: 28px; }
+  .empty h2 { margin: 0; font-size: 20px; font-weight: 600; letter-spacing: -0.01em; }
+  .empty p { margin: 0; color: var(--muted); font-size: 14px; line-height: 1.5; }
+
+  /* search */
+  .sfield { margin: 6px 20px 0; display: flex; align-items: center; gap: 10px; padding: 11px 14px; border-radius: 16px; background: var(--hover); font-size: 16px; }
+  .sfield svg { width: 18px; height: 18px; color: var(--muted); flex: none; }
+  .sfield .q { flex: 1; color: var(--fg); }
+  .sfield .q .caret { display: inline-block; width: 2px; height: 1.1em; background: var(--fg); vertical-align: text-bottom; animation: blink 1s steps(2) infinite; margin-left: 1px; }
+  @keyframes blink { 50% { opacity: 0; } }
+  .sfield .ph { flex: 1; color: var(--faint); }
+  .sfield .cancel { color: var(--muted); font-size: 15px; }
+  .filters { display: flex; gap: 6px; padding: 12px 20px 4px; overflow: hidden; }
+  .filter { padding: 6px 11px; border-radius: 999px; font-size: 13px; color: var(--muted); background: var(--hover); white-space: nowrap; display: inline-flex; align-items: center; gap: 5px; }
+  .filter.on { background: var(--active); color: var(--fg); }
+  .filter svg { width: 12px; height: 12px; }
+  mark { background: transparent; color: var(--fg); font-weight: 600; }
+  .row .snippet { font-size: 13.5px; color: var(--muted); margin-top: 3px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .row .snippet mark { color: var(--fg); font-weight: 500; }
+  .wsic { width: 24px; height: 24px; border-radius: 7px; display: grid; place-items: center; font-size: 11px; font-weight: 600; color: #fff; flex: none; }
+  .recent { display: flex; align-items: center; gap: 10px; padding: 10px 12px; color: var(--muted); font-size: 14.5px; }
+  .recent svg { width: 15px; height: 15px; color: var(--faint); }
+  .recent .x { margin-left: auto; color: var(--faint); }
+  .keyboard { position: absolute; left: 0; right: 0; bottom: 0; background: #2b2b2b; padding: 8px 4px 34px; display: flex; flex-direction: column; gap: 10px; z-index: 6; }
+  .phone[data-theme='neutral-light'] .keyboard { background: #d1d5db; }
+  .krow { display: flex; justify-content: center; gap: 6px; }
+  .key { width: 32px; height: 42px; border-radius: 6px; background: #3a3a3a; display: grid; place-items: center; font-size: 17px; color: #fff; box-shadow: 0 1px 0 rgb(0 0 0 / 0.3); }
+  .key.wide { width: 44px; background: #262626; font-size: 13px; }
+  .key.space { width: 182px; font-size: 13px; }
+  .key.ret { width: 86px; background: #262626; font-size: 13px; }
+  .phone[data-theme='neutral-light'] .key { background: #fff; color: #111; }
+  .phone[data-theme='neutral-light'] .key.wide, .phone[data-theme='neutral-light'] .key.ret { background: #b9bec6; }
+
+  .note { max-width: 880px; color: #9a9a9a; font-size: 13.5px; line-height: 1.6; padding: 0 36px 40px; }
+  .note h2 { color: #ddd; font-size: 15px; font-weight: 600; margin: 24px 0 6px; }
+  .note b { color: #ccc; font-weight: 500; }
+  .note ul { padding-left: 18px; margin: 6px 0; }
+</style>
+</head>
+<body>
+
+<svg width="0" height="0" style="position:absolute">
+  <defs>
+    <symbol id="i-chev" viewBox="0 0 24 24"><path d="M9 6l6 6-6 6" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/></symbol>
+    <symbol id="i-search" viewBox="0 0 24 24"><circle cx="11" cy="11" r="6.5" fill="none" stroke="currentColor" stroke-width="2.2"/><path d="M16 16l4.5 4.5" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"/></symbol>
+    <symbol id="i-tick" viewBox="0 0 24 24"><path d="M5 12.5l4.5 4.5L19 7.5" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"/></symbol>
+    <symbol id="i-sessions" viewBox="0 0 24 24"><path d="M5 6.5h14M5 12h14M5 17.5h9" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"/></symbol>
+    <symbol id="i-inbox" viewBox="0 0 24 24"><path d="M4 13l2.5-7h11L20 13v5a1.5 1.5 0 0 1-1.5 1.5h-13A1.5 1.5 0 0 1 4 18z" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/><path d="M4 13h5l1.5 2.5h3L15 13h5" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/></symbol>
+    <symbol id="i-gear" viewBox="0 0 24 24"><circle cx="12" cy="12" r="3" fill="none" stroke="currentColor" stroke-width="2"/><path d="M12 3v2.5M12 18.5V21M21 12h-2.5M5.5 12H3M18.4 5.6l-1.8 1.8M7.4 16.6l-1.8 1.8M18.4 18.4l-1.8-1.8M7.4 7.4L5.6 5.6" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></symbol>
+    <symbol id="i-draft" viewBox="0 0 24 24"><path d="M5 19l1-4L16.5 4.5a2.1 2.1 0 0 1 3 3L9 18z" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/></symbol>
+    <symbol id="i-clock" viewBox="0 0 24 24"><circle cx="12" cy="12" r="8" fill="none" stroke="currentColor" stroke-width="2"/><path d="M12 8v4l3 2" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></symbol>
+    <symbol id="i-close" viewBox="0 0 24 24"><path d="M6 6l12 12M18 6L6 18" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"/></symbol>
+    <symbol id="i-check-all" viewBox="0 0 24 24"><path d="M3 13l4 4L15 9M10 17l2 2 9-9" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/></symbol>
+    <symbol id="i-folder" viewBox="0 0 24 24"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/></symbol>
+  </defs>
+</svg>
+
+<div class="board">
+
+<!-- ═══════════ 1 · Inbox (dark) ═══════════ -->
+<div class="frame">
+  <div class="label"><b>1 · Inbox</b> · everything waiting on you, newest first, grouped by what it wants. A permission or a question can be answered right here (the first row is expanded); anything else opens the session. Swipe a done row to mark it seen. The badge on the pill is this count.</div>
+  <div class="phone" data-theme="neutral">
+    <div class="statusbar"><span>9:41</span><span class="right">●●●● ◗ ▮</span></div>
+    <div class="screen">
+      <div class="header"><div class="top"><h1>Inbox <span class="n">4</span></h1><div class="btns"><div class="iconbtn" title="Mark all seen"><svg><use href="#i-check-all"/></svg></div></div></div>
+        <div class="sub"><span class="dot ok"></span>Cletus's desktop</div>
+      </div>
+      <div class="tabs"><div class="tab on">Needs you<span class="n">3</span></div><div class="tab">Done<span class="n">1</span></div><div class="tab">Failed</div></div>
+      <div class="list">
+        <div class="group">PERMISSIONS</div>
+        <div class="row sel">
+          <div class="mark"><span class="m-needs">!</span></div>
+          <div class="body">
+            <div class="title">Settings Environment Page Redesign</div>
+            <div class="ask">Run <code>rm -rf .tmp/probe</code> in openmanager?</div>
+            <div class="choices"><span class="choice primary">Allow</span><span class="choice">Always</span><span class="choice quiet">Deny</span></div>
+            <div class="sub"><span class="proj"><i style="background:#4f8ff7"></i>openmanager</span><span class="sep">·</span>Claude Code · waiting 4 min</div>
+          </div>
+          <div class="age">4m</div>
+        </div>
+
+        <div class="group">QUESTIONS</div>
+        <div class="row">
+          <div class="mark"><span class="m-question">?</span></div>
+          <div class="body">
+            <div class="title">Higgsfield Soul ID API Automation</div>
+            <div class="ask">Which auth flow should the client use?</div>
+            <div class="qopts"><div class="qopt">Browser login, store the refresh token</div><div class="qopt">API key from the dashboard</div><div class="qopt" style="color:var(--muted)">Something else…</div></div>
+            <div class="sub"><span class="proj"><i style="background:#9b6bd6"></i>ClePro</span><span class="sep">·</span>Codex · waiting 12 min</div>
+          </div>
+          <div class="age">12m</div>
+        </div>
+
+        <div class="group">PLANS</div>
+        <div class="row">
+          <div class="mark"><span class="m-plan">P</span></div>
+          <div class="body">
+            <div class="title">Codex Integration: Tool Call Payloads</div>
+            <div class="ask">Plan ready · 6 steps · touches 4 files</div>
+            <div class="choices"><span class="choice primary">Review plan</span><span class="choice quiet">Later</span></div>
+            <div class="sub"><span class="proj"><i style="background:#4f8ff7"></i>openmanager</span><span class="sep">·</span>Claude Code</div>
+          </div>
+          <div class="age">25m</div>
+        </div>
+
+        <div class="group">DONE <span class="r">unseen</span></div>
+        <div class="swipe">
+          <div class="row">
+            <div class="mark"><span class="m-done"><svg><use href="#i-tick"/></svg></span></div>
+            <div class="body">
+              <div class="title">Pricing page copy, three tiers</div>
+              <div class="snippet">Finished · 2 files changed · 1h 12m</div>
+              <div class="sub"><span class="proj"><i style="background:#e0a04f"></i>salesmaxai</span></div>
+            </div>
+            <div class="age">1h</div>
+          </div>
+          <div class="act">Seen</div>
+        </div>
+        <div class="row seen">
+          <div class="mark"><span class="m-done"><svg><use href="#i-tick"/></svg></span></div>
+          <div class="body">
+            <div class="title">Freelancer Portfolio Site</div>
+            <div class="snippet">Finished · seen on the laptop</div>
+            <div class="sub"><span class="proj"><i style="background:#9b6bd6"></i>ClePro</span></div>
+          </div>
+          <div class="age">3h</div>
+        </div>
+      </div>
+    </div>
+    <div class="fadeout"></div>
+    <div class="nav">
+      <div class="pill">
+        <div class="it"><svg><use href="#i-sessions"/></svg></div>
+        <div class="it on"><svg><use href="#i-inbox"/></svg><span class="badge">4</span></div>
+        <div class="it"><svg><use href="#i-gear"/></svg></div>
+      </div>
+      <div class="fab"><svg><use href="#i-search"/></svg></div>
+    </div>
+    <div class="homebar"></div>
+  </div>
+</div>
+
+<!-- ═══════════ 2 · Inbox empty (light) ═══════════ -->
+<div class="frame">
+  <div class="label"><b>2 · Inbox, all clear</b> · nothing waiting; the Failed tab still shows the last failure so it isn't lost.</div>
+  <div class="phone" data-theme="neutral-light">
+    <div class="statusbar"><span>9:41</span><span class="right">●●●● ◗ ▮</span></div>
+    <div class="screen">
+      <div class="header"><div class="top"><h1>Inbox</h1><div class="btns"></div></div>
+        <div class="sub"><span class="dot ok"></span>Cletus's desktop</div>
+      </div>
+      <div class="tabs"><div class="tab on">Needs you</div><div class="tab">Done</div><div class="tab">Failed<span class="n">1</span></div></div>
+      <div class="empty">
+        <div class="big"><svg><use href="#i-tick"/></svg></div>
+        <h2>All clear</h2>
+        <p>Two sessions are working. You'll hear from them here when they need you or finish.</p>
+      </div>
+    </div>
+    <div class="nav">
+      <div class="pill">
+        <div class="it"><svg><use href="#i-sessions"/></svg></div>
+        <div class="it on"><svg><use href="#i-inbox"/></svg></div>
+        <div class="it"><svg><use href="#i-gear"/></svg></div>
+      </div>
+      <div class="fab"><svg><use href="#i-search"/></svg></div>
+    </div>
+    <div class="homebar"></div>
+  </div>
+</div>
+
+<!-- ═══════════ 3 · Search (dark, typing) ═══════════ -->
+<div class="frame">
+  <div class="label"><b>3 · Search</b> · the detached button opens this over whatever you were on. Field at the top, filters under it, results as the same rows with the match highlighted, grouped by sessions then projects. Search is by title and project (what the server indexes); transcript search comes later.</div>
+  <div class="phone" data-theme="neutral">
+    <div class="statusbar"><span>9:41</span><span class="right">●●●● ◗ ▮</span></div>
+    <div class="screen">
+      <div class="sfield"><svg><use href="#i-search"/></svg><span class="q">tool pay<span class="caret"></span></span><span class="cancel">Cancel</span></div>
+      <div class="filters"><span class="filter on">All</span><span class="filter"><i class="dot" style="background:var(--status-working);width:7px;height:7px"></i>Active</span><span class="filter"><i class="dot" style="background:var(--status-needs);width:7px;height:7px"></i>Needs you</span><span class="filter"><svg><use href="#i-folder"/></svg>Project</span><span class="filter">Drafts</span></div>
+      <div class="list" style="padding-bottom:300px">
+        <div class="group">SESSIONS <span class="r">3</span></div>
+        <div class="row">
+          <div class="mark"><span class="m-working"></span></div>
+          <div class="body"><div class="title">Codex Integration: <mark>Tool</mark> Call <mark>Pay</mark>loads</div><div class="sub"><span class="proj"><i style="background:#4f8ff7"></i>openmanager</span><span class="sep">·</span>working</div></div>
+          <div class="age">now</div>
+        </div>
+        <div class="row">
+          <div class="mark"><span class="m-done"><svg><use href="#i-tick"/></svg></span></div>
+          <div class="body"><div class="title">Carry <mark>tool</mark> <mark>pay</mark>loads across the protocol</div><div class="sub"><span class="proj"><i style="background:#4f8ff7"></i>openmanager</span><span class="sep">·</span>5d</div></div>
+          <div class="age">5d</div>
+        </div>
+        <div class="row">
+          <div class="mark"><span style="width:12px;height:12px;border-radius:50%;border:1.5px solid var(--faint);display:block"></span></div>
+          <div class="body"><div class="title"><mark>Tool</mark> row <mark>pay</mark>load caps and diffs</div><div class="sub"><span class="proj"><i style="background:#4f8ff7"></i>openmanager</span><span class="sep">·</span>2w</div></div>
+          <div class="age">2w</div>
+        </div>
+        <div class="group">DRAFTS <span class="r">1</span></div>
+        <div class="row">
+          <div class="mark" style="color:var(--faint)"><svg style="width:16px;height:16px"><use href="#i-draft"/></svg></div>
+          <div class="body"><div class="title" style="font-weight:400">Add a retry to the upload ticket when the socket drops mid-PUT</div><div class="snippet">…carry the <mark>tool pay</mark>load ids through…</div></div>
+          <div class="age">2m</div>
+        </div>
+      </div>
+      <div class="keyboard">
+        <div class="krow"><span class="key">q</span><span class="key">w</span><span class="key">e</span><span class="key">r</span><span class="key">t</span><span class="key">y</span><span class="key">u</span><span class="key">i</span><span class="key">o</span><span class="key">p</span></div>
+        <div class="krow"><span class="key">a</span><span class="key">s</span><span class="key">d</span><span class="key">f</span><span class="key">g</span><span class="key">h</span><span class="key">j</span><span class="key">k</span><span class="key">l</span></div>
+        <div class="krow"><span class="key wide">⇧</span><span class="key">z</span><span class="key">x</span><span class="key">c</span><span class="key">v</span><span class="key">b</span><span class="key">n</span><span class="key">m</span><span class="key wide">⌫</span></div>
+        <div class="krow"><span class="key wide">123</span><span class="key space">space</span><span class="key ret">search</span></div>
+      </div>
+    </div>
+    <div class="homebar"></div>
+  </div>
+</div>
+
+<!-- ═══════════ 4 · Search, before typing (light) ═══════════ -->
+<div class="frame">
+  <div class="label"><b>4 · Search, empty field</b> · recent searches and the projects as shortcuts; the keyboard is up already.</div>
+  <div class="phone" data-theme="neutral-light">
+    <div class="statusbar"><span>9:41</span><span class="right">●●●● ◗ ▮</span></div>
+    <div class="screen">
+      <div class="sfield"><svg><use href="#i-search"/></svg><span class="ph">Search sessions and projects</span><span class="cancel">Cancel</span></div>
+      <div class="list" style="padding-top:8px;padding-bottom:300px">
+        <div class="group">RECENT</div>
+        <div class="recent"><svg><use href="#i-clock"/></svg>tool payloads<span class="x"><svg><use href="#i-close"/></svg></span></div>
+        <div class="recent"><svg><use href="#i-clock"/></svg>pricing<span class="x"><svg><use href="#i-close"/></svg></span></div>
+        <div class="recent"><svg><use href="#i-clock"/></svg>soul id<span class="x"><svg><use href="#i-close"/></svg></span></div>
+        <div class="group">PROJECTS</div>
+        <div class="row" style="align-items:center"><span class="wsic" style="background:#4f8ff7">O</span><div class="body"><div class="title">openmanager</div></div><span class="age">14 sessions</span></div>
+        <div class="row" style="align-items:center"><span class="wsic" style="background:#e0a04f">S</span><div class="body"><div class="title">salesmaxai</div></div><span class="age">6</span></div>
+        <div class="row" style="align-items:center"><span class="wsic" style="background:#9b6bd6">C</span><div class="body"><div class="title">ClePro</div></div><span class="age">9</span></div>
+      </div>
+      <div class="keyboard">
+        <div class="krow"><span class="key">q</span><span class="key">w</span><span class="key">e</span><span class="key">r</span><span class="key">t</span><span class="key">y</span><span class="key">u</span><span class="key">i</span><span class="key">o</span><span class="key">p</span></div>
+        <div class="krow"><span class="key">a</span><span class="key">s</span><span class="key">d</span><span class="key">f</span><span class="key">g</span><span class="key">h</span><span class="key">j</span><span class="key">k</span><span class="key">l</span></div>
+        <div class="krow"><span class="key wide">⇧</span><span class="key">z</span><span class="key">x</span><span class="key">c</span><span class="key">v</span><span class="key">b</span><span class="key">n</span><span class="key">m</span><span class="key wide">⌫</span></div>
+        <div class="krow"><span class="key wide">123</span><span class="key space">space</span><span class="key ret">search</span></div>
+      </div>
+    </div>
+    <div class="homebar"></div>
+  </div>
+</div>
+
+</div>
+
+<div class="note">
+  <h2>Decisions these screens make</h2>
+  <ul>
+    <li><b>Inbox is the reason to open the phone.</b> Its tabs are Needs you · Done · Failed; Needs you groups by kind (permissions, questions, plans) so the eye finds the quick ones first. The count on the pill badge is the Needs-you count.</li>
+    <li><b>Answer from the row.</b> A permission's provider-ordered choices and a question's options render inline under the row (CAL-303, through <code>interaction.respond</code>); a plan opens the session, since reading it needs the page. Answering on the phone settles it on web at once, because the server owns the interaction.</li>
+    <li><b>Done rows are unseen → seen</b>, swipe to mark, or the ✓✓ button for all; the row dims when seen on another device, which is the same acknowledge state web keeps.</li>
+    <li><b>Search is a layer, not a tab.</b> Field, filters (All / Active / Needs you / Project / Drafts), results as the standard rows with the match bolded, grouped Sessions then Drafts. Title + project only, because that is what the server indexes today.</li>
+  </ul>
+</div>
+</body>
+</html>

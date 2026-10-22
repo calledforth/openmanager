@@ -10,11 +10,12 @@ pipeline's output: the generated token map (CAL-306) is the source of truth on
 the phone, and the six families on the Settings frame are the ones
 `theme-families.ts` declares.
 
-| File                                  | Frames                                                                                                                                                                                                                                 | Screen issues             |
-| ------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------- |
-| `01-home-and-session.html`            | Sessions home (dark, light); session page working (dark) and needing you (light)                                                                                                                                                       | CAL-307, CAL-308          |
-| `02-composer-and-pickers.html`        | Four placements for the model/mode/effort picks (A header chips, **B composer picks row — interactive**, C one summary chip, D pulled-up composer); model sheet; effort and mode popovers; full-screen composer with tray and keyboard | CAL-309                   |
-| `03-environments-pairing-drafts.html` | Settings home; environment detail; pairing (**interactive**: scan QR or paste a link → connecting → paired); drafts tab; project picker sheet                                                                                          | CAL-310, CAL-311, CAL-313 |
+| File                                  | Frames                                                                                                                                                                                                                                                                                         | Screen issues             |
+| ------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------- |
+| `01-home-and-session.html`            | Sessions home (dark, light); session page working (dark) and needing you (light)                                                                                                                                                                                                               | CAL-307, CAL-308          |
+| `02-composer-and-pickers.html`        | Four placements for the model/mode/effort picks (A header chips, **B composer picks row — interactive**, C one summary chip, D pulled-up composer); model sheet; effort and mode popovers; full-screen composer with tray and keyboard                                                         | CAL-309                   |
+| `03-environments-pairing-drafts.html` | Settings home; environment detail; pairing (**interactive**: scan QR or paste a link → connecting → paired); drafts tab; project picker sheet                                                                                                                                                  | CAL-310, CAL-311, CAL-313 |
+| `04-inbox-and-search.html`            | Inbox (dark: needs you grouped by permissions, questions and plans, the first row answerable inline; done-unseen with swipe to mark seen; failed), inbox all clear (light); search with a typed query and highlighted matches (dark); search with an empty field, recents and projects (light) | CAL-307, CAL-303          |
 
 ## Decisions
 
@@ -59,11 +60,17 @@ Reactions recorded from the owner's review, 2026-10-20/21.
   (violet spinner), background (blue, slower spinner), needs you (amber "!"),
   question (pink "?"), done (green tick), error (red ×), idle (hollow ring).
   Colours are `--status-*`.
+- **Inbox answers in place.** A permission or a question in the inbox
+  expands to its Allow / Always / Deny (or the question's choices) on the row
+  itself; a plan or a finished session opens the session. A done row is
+  swiped to mark it seen, and the pill badge is the needs-you count.
+- **Search is a layer, not a tab.** The detached search button opens it over
+  whatever you were on; results reuse the session and project rows with the
+  match highlighted. Title and project only, which is what the environment
+  indexes; transcript search waits for server support.
 
 ### Still open
 
-- Inbox tab and search screen are not drawn yet; they follow the row and
-  sheet patterns above.
 - Tool-row detail (inputs, outputs, outcomes) waits for the server-side work
   on tool payloads and notices (CAL-315).
 - Whether the drafts tab shows other environments' drafts inline or behind a
