@@ -28,7 +28,11 @@ export const FOLD_OUT = FadeOut.duration(150).easing(Easing.in(Easing.quad))
 /** Under the field: what went wrong, or why the button cannot be used. */
 export function ComposerNotice({ model }: { model: ComposerModel }) {
   const theme = usePhoneTheme()
-  const text = model.notice ?? (model.primary.enabled ? null : model.primary.reason)
+  // Why the button is held, once there is something it would do: a message
+  // to send, or a turn to stop.
+  const wants =
+    model.primary.kind === 'stop' || model.text.trim().length > 0 || model.images.length > 0
+  const text = model.notice ?? (model.primary.enabled || !wants ? null : model.primary.reason)
   if (!text) return null
   return (
     <AppText

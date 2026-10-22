@@ -54,6 +54,9 @@ export const Pick = forwardRef<
         paddingVertical: 5,
         paddingHorizontal: label ? 9 : 7,
         borderRadius: 999,
+        // The model's name gives way first, so the row never runs past the composer.
+        flexShrink: strong ? 1 : 0,
+        minWidth: 0,
         opacity: disabled ? 0.45 : 1,
         backgroundColor:
           on || (pressed && !disabled) ? theme.active : filled ? theme.hover : 'transparent',
@@ -64,7 +67,7 @@ export const Pick = forwardRef<
         <AppText
           variant="text-12-regular"
           numberOfLines={1}
-          style={{ color: ink, fontSize: 12.5, maxWidth: 132 }}
+          style={{ color: ink, fontSize: 12.5, maxWidth: 132, flexShrink: 1 }}
         >
           {label}
         </AppText>
@@ -83,7 +86,13 @@ export function ContextMeter({ percent }: { percent: number }) {
     <View
       accessible
       accessibilityLabel={`Context ${shown}% full`}
-      style={{ flexDirection: 'row', alignItems: 'center', gap: 6, paddingHorizontal: 6 }}
+      style={{
+        flexDirection: 'row',
+        alignItems: 'center',
+        gap: 6,
+        paddingHorizontal: 6,
+        flexShrink: 0,
+      }}
     >
       <AppText variant="text-11-regular" style={{ color: theme.faint, fontSize: 11.5 }}>
         {`${shown}%`}

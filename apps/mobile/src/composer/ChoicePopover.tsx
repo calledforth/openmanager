@@ -14,6 +14,7 @@ import { usePhoneTheme } from '../theme/ThemeProvider'
 import { Glass } from '../ui/Glass'
 import { tap } from '../ui/haptics'
 import { Press } from '../ui/Press'
+import { SCRIM_IN, SCRIM_OUT } from '../ui/Sheet'
 import type { PickAnchor } from './ui-state'
 
 /**
@@ -37,7 +38,9 @@ const entering = popoverIn as unknown as (
   values: EntryAnimationsValues,
 ) => ReturnType<typeof popoverIn>
 
-const WIDTH = 220
+/** Wide enough for the hints when the provider gives any; the mockup's 164 when not. */
+const widthFor = (choices: readonly ComposerChoice[]) =>
+  choices.some((choice) => choice.description) ? 244 : 172
 
 /**
  * A popover of choices standing on the pick that opened it (mode, effort):
@@ -70,21 +73,24 @@ export function ChoicePopover({
     })
     return () => subscription.remove()
   }, [onClose])
-  const left = Math.max(8, Math.min(anchor.x, width - WIDTH - 8))
+  const popoverWidth = widthFor(choices)
+  const left = Math.max(8, Math.min(anchor.x, width - popoverWidth - 8))
   const bottom = Math.max(8, height - anchor.y + 8)
   return (
     <View style={StyleSheet.absoluteFill} pointerEvents="box-none">
-      <Pressable
-        accessibilityLabel={`Close ${label}`}
-        accessibilityRole="button"
-        onPress={onClose}
-        style={StyleSheet.absoluteFill}
-      />
+      <Animated.View entering={SCRIM_IN} exiting={SCRIM_OUT} style={StyleSheet.absoluteFill}>
+        <Pressable
+          accessibilityLabel={`Close ${label}`}
+          accessibilityRole="button"
+          onPress={onClose}
+          style={[StyleSheet.absoluteFill, { backgroundColor: theme.scrim }]}
+        />
+      </Animated.View>
       <Animated.View
         accessibilityViewIsModal
         entering={entering}
         exiting={POPOVER_OUT}
-        style={{ position: 'absolute', left, bottom, width: WIDTH, transformOrigin: 'bottom left' }}
+        style={{ position: 'absolute', left, bottom, width: popoverWidth, transformOrigin: 'bottom left' }}
       >
         <Glass strength="sheet" shadow="float" radius={14} contentStyle={{ padding: 6 }}>
           <View accessibilityRole="menu" accessibilityLabel={label}>
