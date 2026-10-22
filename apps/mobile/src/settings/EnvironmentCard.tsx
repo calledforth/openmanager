@@ -67,7 +67,11 @@ export function EnvironmentCard({
         {card.route ? (
           <>
             <RouteIcon size={13} color={theme.muted} />
-            <AppText variant="mono" numberOfLines={1} style={{ color: theme.muted, fontSize: 12 }}>
+            <AppText
+              variant="mono"
+              numberOfLines={1}
+              style={{ color: theme.muted, fontSize: 12, flexShrink: 1 }}
+            >
               {card.route.host}
             </AppText>
           </>

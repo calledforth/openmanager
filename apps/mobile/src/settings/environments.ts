@@ -56,8 +56,11 @@ function routeTitle(endpoint: string, kind: RouteKind): string {
 }
 
 /**
- * The routes in the order the phone asks them: this device and its local
- * network first, then the rest, each group in the saved order.
+ * The routes in the phone's usual order of preference: this device and its
+ * local network first, then the rest, each group in the saved order. This is
+ * not a promise about the next attempt: after a drop the controller asks the
+ * route in use first again, and a route whose socket just failed waits behind
+ * the others for a minute (`PHONE_SOCKET_FAILURE_COOLDOWN_MS`).
  */
 export function routeRows(environment: PhoneEnvironment, inUse: string | null): RouteRowView[] {
   return phoneRouteOrder(environment.routes).map((route) => {
@@ -124,6 +127,10 @@ export function pageStatusWords(view: PhoneConnectionView): string {
       return ui.title
   }
 }
+
+/** The line under the routes: the usual preference, and that failover is temporary. */
+export const ROUTE_ORDER_NOTE =
+  'Usually this device and the local network first, then the rest. After a drop the route in use is tried again first, and one that just failed waits about a minute.'
 
 const HEALTH_TONES: Record<RouteHealthStatus, PhoneConnectionTone> = {
   available: 'ok',

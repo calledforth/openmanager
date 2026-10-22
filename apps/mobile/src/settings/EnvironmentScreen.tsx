@@ -21,13 +21,14 @@ import {
   usePhoneConnectionController,
 } from '../environment/PhoneEnvironmentProvider'
 import { usePhoneTheme } from '../theme/ThemeProvider'
+import { coveredBySheet } from '../ui/a11y-focus'
 import { SectionLabel } from '../ui/chrome'
 import { ConfirmSheet } from '../ui/ConfirmSheet'
 import { useGoBack } from '../ui/goBack'
 import { IconButton } from '../ui/IconButton'
 import { ConnectionPanel } from './ConnectionPanel'
 import { sinceWords } from './EnvironmentCard'
-import { pageStatusWords, routeRows, type RouteRowView } from './environments'
+import { ROUTE_ORDER_NOTE, pageStatusWords, routeRows, type RouteRowView } from './environments'
 import { Dot, Pill, SettingsRow, toneColor } from './SettingsRow'
 
 const WORDS_IN = FadeIn.duration(180)
@@ -122,7 +123,7 @@ export function EnvironmentScreen({ environmentId }: { environmentId: string }) 
         variant="text-12-regular"
         style={{ color: theme.muted, paddingLeft: 56, paddingRight: 12, paddingVertical: 4 }}
       >
-        Asked in this order: this device and the local network first, then the rest.
+        {ROUTE_ORDER_NOTE}
       </AppText>
       <SettingsRow
         icon={<PlusIcon size={17} color={theme.muted} />}

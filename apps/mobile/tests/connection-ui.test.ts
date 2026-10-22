@@ -8,7 +8,9 @@ import {
   phoneConnectionView,
   retryCountdownWords,
 } from '../src/environment/connection-ui'
+import { PHONE_SOCKET_FAILURE_COOLDOWN_MS } from '../src/environment/controller'
 import {
+  ROUTE_ORDER_NOTE,
   environmentCards,
   pageStatusWords,
   routeRows,
@@ -277,5 +279,15 @@ describe('the environment list', () => {
       ['Local network', true, 'available'],
       ['Tunnel', false, 'unknown'],
     ])
+  })
+})
+
+describe('the route order note', () => {
+  it('says the order is the usual preference and that failover is temporary, as the controller does it', () => {
+    expect(ROUTE_ORDER_NOTE).toMatch(/^Usually this device and the local network first/)
+    expect(ROUTE_ORDER_NOTE).toContain('the route in use is tried again first')
+    // "About a minute" is the controller's cooldown for a route whose socket just failed.
+    expect(PHONE_SOCKET_FAILURE_COOLDOWN_MS).toBe(60_000)
+    expect(ROUTE_ORDER_NOTE).toContain('waits about a minute')
   })
 })
