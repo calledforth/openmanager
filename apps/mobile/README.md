@@ -88,6 +88,35 @@ pnpm --filter @openmanager/mobile add <pkg>@<sdk-compatible-version>
   keeps one React in the bundle under pnpm's isolated linker.
   `OPENMANAGER_METRO_RESOLVER_LOG=1` prints every rewrite.
 
+## Pairing
+
+`src/app/pair.tsx` is a modal in the root Stack, opened from the top row of Settings and from the
+sessions home while nothing is paired. Two doors: scan the QR code web's Pair-device dialog shows
+(`expo-camera`, QR only, `src/pairing/ScanPanel.tsx`), or paste its link (a field with a paste from
+clipboard button). Both go through the same core in `src/pairing/`, which never keeps the link or
+the token anywhere but memory:
+
+- **Read** (`link.ts`): the shared `parsePairingLink`, plus the app origin, the origin of the
+  link's own URL, which the controller sends as the socket's `Origin`.
+- **Plan** (`flow.ts`, `planPairing`): with no token for the link's environment, **exchange** the
+  link's token at `POST {route}/pair` (shared `exchangePairingToken`) and save through
+  `controller.saveEnvironment` (token to SecureStore, route, label and `appOrigin` to the
+  registry). With a token, **redeem** the link over the phone's own socket (`pairing.redeem`),
+  never at the link's route; if the link's address is new to the environment, the shared rule
+  (`classifyDiscoveredRoute`, exposed as `controller.classifyRoute`) says the saved token would go
+  there, so the address is first checked to answer as that environment, then the person is asked,
+  and only an agreed address joins (`controller.addRoute`, as the last route).
+- **Refusals** (`failures.ts`): every reason the environment reports reads as web's shared
+  message, with a title and a next step (a new link, try again, or close); unreachable, another
+  environment answering, rate limits and links this app cannot read are told apart too.
+- **Label** (`device-label.ts`): the phone's model name from `expo-device`, editable; a link made
+  with a name keeps that name.
+
+After pairing, the sheet names the route the controller connected through
+(`src/environment/connected-route.ts`), and the home's environment line reads the controller's
+label and route kind (LAN or Tunnel); with nothing paired the home offers pairing. `live/pairing.live.ts` drives the core against a real
+server.
+
 ## Shell
 
 The app is three top-level screens and a layer above them. **Sessions** (`src/app/(tabs)/index.tsx`,

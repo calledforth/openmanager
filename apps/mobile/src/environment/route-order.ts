@@ -64,3 +64,19 @@ export function phoneSearchOrder(environment: StoredEnvironment): StoredEnvironm
     routes: [...near, ...environment.routes.filter((route) => !near.includes(route))],
   }
 }
+
+/**
+ * How the phone reaches the environment over a route, as the person reads it:
+ * `lan` for this device or its local network (the routes the phone's search
+ * asks first), `tunnel` for everything else (a Cloudflare tunnel, a public
+ * host, an overlay network).
+ */
+export type RouteKind = 'lan' | 'tunnel'
+
+export function routeKindOf(endpoint: string): RouteKind {
+  return isLoopbackEnvironmentEndpoint(endpoint) || isLocalNetworkEndpoint(endpoint)
+    ? 'lan'
+    : 'tunnel'
+}
+
+export const ROUTE_KIND_LABELS: Record<RouteKind, string> = { lan: 'LAN', tunnel: 'Tunnel' }

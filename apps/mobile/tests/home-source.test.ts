@@ -253,6 +253,25 @@ describe('which source the home reads', () => {
   })
 })
 
+describe('offering pairing', () => {
+  it('offers it with nothing saved, and with no token for the selected environment', () => {
+    const none = connection({ status: 'no_environment', selectedId: null, environments: [] })
+    expect(homeSourceOf(inputs(null, { connection: none })).needsPairing).toBe(true)
+    const base = connection()
+    const refused = connection({
+      status: 'unauthorized',
+      environments: base.environments.map((item) => ({ ...item, paired: false })),
+    })
+    expect(homeSourceOf(inputs(null, { connection: refused })).needsPairing).toBe(true)
+  })
+
+  it('does not while connected, or while the phone is still reading what it saved', () => {
+    expect(homeSourceOf(inputs(null)).needsPairing).toBe(false)
+    const starting = connection({ status: 'starting', selectedId: null, environments: [] })
+    expect(homeSourceOf(inputs(null, { connection: starting })).needsPairing).toBe(false)
+  })
+})
+
 describe('the environment line', () => {
   it("is the controller's label, the route in use and whether it is connected", () => {
     expect(homeEnvironmentOf(connection())).toEqual({
