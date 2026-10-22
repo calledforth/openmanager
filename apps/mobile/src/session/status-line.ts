@@ -6,7 +6,8 @@
  * Nothing here decides a state. The state is the listed session's status
  * and detail, read through the web sidebar's mapping (`statusMarkOf`); the
  * thread only lends the times the server stamped: when the open turn
- * started, when the pending request was asked, when the last turn ended.
+ * started, when the pending request was asked, when the last turn ended
+ * (which is also when work left running in the background took over).
  * When the server stamped none, the line has no time.
  */
 import type { ThreadState } from '@openmanager/environment-client'
@@ -64,6 +65,12 @@ export function statusClockOf(
         if (asked !== null && (since === null || asked > since)) since = asked
       }
       return since === null ? null : { kind: 'waiting', since }
+    }
+    case 'background': {
+      // No turn is in flight: the work has run on its own since the last one ended.
+      const last = thread.turns[thread.turns.length - 1]
+      const since = ms(last?.finishedAt)
+      return since === null ? null : { kind: 'elapsed', since }
     }
     case 'done':
     case 'error': {

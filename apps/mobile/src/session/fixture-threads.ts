@@ -3,7 +3,8 @@
  * client holds them, so each fixture row opens on the page a real session in
  * that state would show: one working (a live turn with a thought, a run of
  * tools and its words so far), one waiting on a permission, one finished
- * (code, a table, a thought with text), one failed, and a 200-message thread
+ * (code, a table, a thought with text), one left running in the background,
+ * one failed, and a 200-message thread
  * for measuring the list. The working one starts from the recorded live run
  * (`recorded-thread.ts`). Only for the fixture; nothing here reaches a server.
  */
@@ -214,6 +215,23 @@ export function doneThread(now: number): ThreadState {
     .tool(turn, 'd-t2', 'Grep', 'search', 'completed')
     .tool(turn, 'd-t3', 'Edit', 'edit', 'completed')
     .message(turn, 'd-a1', 'assistant', PRICING_ANSWER)
+  return b.state
+}
+
+/** A finished turn that left work running: the session is in the background since it ended. */
+export function backgroundThread(now: number): ThreadState {
+  const b = new ThreadBuilder('s-mcp-server')
+  const turn = 'turn-b1'
+  b.turn(turn, 'completed', now - 262_000, now - 240_000)
+    .message(turn, 'b-user', 'user', 'Start the dev server and keep the tests watching.')
+    .tool(turn, 'b-t1', 'Bash', 'execute', 'completed')
+    .tool(turn, 'b-t2', 'Bash', 'execute', 'completed')
+    .message(
+      turn,
+      'b-a1',
+      'assistant',
+      'The dev server is up on `:5174` and `vitest --watch` is running. Both keep going in the background.',
+    )
   return b.state
 }
 

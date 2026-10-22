@@ -22,6 +22,7 @@ import {
 import type { ThreadState } from '@openmanager/environment-client'
 
 import {
+  backgroundThread,
   doneThread,
   failedThread,
   longThread,
@@ -39,6 +40,7 @@ const FIXTURE_THREADS: Record<string, (now: number) => ThreadState> = {
   's-settings-redesign': permissionThread,
   's-pricing': doneThread,
   's-sync-f2': failedThread,
+  's-mcp-server': backgroundThread,
   [LONG_THREAD_SESSION_ID]: (now) => longThread(now),
 }
 
