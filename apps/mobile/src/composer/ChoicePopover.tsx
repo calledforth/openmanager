@@ -90,7 +90,13 @@ export function ChoicePopover({
         accessibilityViewIsModal
         entering={entering}
         exiting={POPOVER_OUT}
-        style={{ position: 'absolute', left, bottom, width: popoverWidth, transformOrigin: 'bottom left' }}
+        style={{
+          position: 'absolute',
+          left,
+          bottom,
+          width: popoverWidth,
+          transformOrigin: 'bottom left',
+        }}
       >
         <Glass strength="sheet" shadow="float" radius={14} contentStyle={{ padding: 6 }}>
           <View accessibilityRole="menu" accessibilityLabel={label}>
