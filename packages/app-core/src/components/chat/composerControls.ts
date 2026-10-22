@@ -103,8 +103,15 @@ export interface ComposerControls {
 }
 
 /** The command listing as the composer's slash popup takes it. */
-const slashItems = (commands: readonly AcpCommandOption[]): SlashCommandItem[] =>
-  commands.map((command) => ({ name: command.name, description: command.description }))
+const slashItemCache = new WeakMap<readonly AcpCommandOption[], SlashCommandItem[]>()
+const slashItems = (commands: readonly AcpCommandOption[]): SlashCommandItem[] => {
+  let items = slashItemCache.get(commands)
+  if (!items) {
+    items = commands.map((command) => ({ name: command.name, description: command.description }))
+    slashItemCache.set(commands, items)
+  }
+  return items
+}
 
 /**
  * The composer's controls from the session, composer and platform state.

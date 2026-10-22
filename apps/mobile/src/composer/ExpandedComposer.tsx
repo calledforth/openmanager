@@ -1,6 +1,6 @@
 import { XIcon } from 'phosphor-react-native'
-import { useEffect, useMemo, useRef, useState } from 'react'
-import { KeyboardAvoidingView, Platform, ScrollView, TextInput, View } from 'react-native'
+import { useMemo, useRef } from 'react'
+import { ScrollView, TextInput, View } from 'react-native'
 import Animated, { Easing, SlideInDown, SlideOutDown } from 'react-native-reanimated'
 import { useSafeAreaInsets } from 'react-native-safe-area-context'
 import { applySlashCommand } from '@openmanager/app-core/logic'
@@ -45,17 +45,19 @@ export function ExpandedComposer({
   const theme = usePhoneTheme()
   const insets = useSafeAreaInsets()
   const input = useRef<TextInput>(null)
-  const [slashDismissed, setSlashDismissed] = useState(false)
-  const { query: slashQuery, matches: slashMatches } = useMemo(
-    () => slashPopupOf(model.text, model.slashCommands, slashDismissed),
-    [model.slashCommands, model.text, slashDismissed],
+  const { matches: slashMatches } = useMemo(
+    () => slashPopupOf(model.text, model.slashCommands, false),
+    [model.slashCommands, model.text],
   )
-  // Leaving slash context re-arms the popup for the next `/`.
-  useEffect(() => {
-    if (slashQuery === null) setSlashDismissed(false)
-  }, [slashQuery])
   const slashOpen = slashMatches.length > 0
-  const noCommands = model.slashCommands.length === 0
+  // A command is the whole message (providers read it at the start), so the
+  // pick starts one only in an empty field and never replaces what is typed.
+  const commandsReason =
+    model.slashCommands.length === 0
+      ? 'This session lists no commands'
+      : model.text.trim() && !model.text.startsWith('/')
+        ? 'Clear the field to pick a command'
+        : null
   return (
     <Animated.View
       entering={EXPAND_IN}
@@ -63,10 +65,8 @@ export function ExpandedComposer({
       accessibilityViewIsModal
       style={{ position: 'absolute', inset: 0, backgroundColor: theme.bg }}
     >
-      <KeyboardAvoidingView
-        style={{ flex: 1 }}
-        behavior={Platform.OS === 'ios' ? 'padding' : undefined}
-      >
+      {/* The page's own keyboard avoider makes the room on iOS; Android resizes the window. */}
+      <View style={{ flex: 1 }}>
         <View
           style={{
             flexDirection: 'row',
@@ -134,7 +134,6 @@ export function ExpandedComposer({
             commands={slashMatches}
             onPick={(command) => {
               model.setText(applySlashCommand(command))
-              setSlashDismissed(false)
               input.current?.focus()
             }}
           />
@@ -168,10 +167,9 @@ export function ExpandedComposer({
             <Pick
               accessibilityLabel="Commands"
               icon={<SlashGlyph size={14} color={theme.muted} />}
-              disabledReason={noCommands ? 'This session lists no commands' : null}
+              disabledReason={commandsReason}
               onPress={() => {
                 if (!model.text.startsWith('/')) model.setText('/')
-                setSlashDismissed(false)
                 input.current?.focus()
               }}
             />
@@ -186,7 +184,7 @@ export function ExpandedComposer({
             onStop={model.interrupt}
           />
         </View>
-      </KeyboardAvoidingView>
+      </View>
     </Animated.View>
   )
 }

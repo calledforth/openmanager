@@ -682,3 +682,28 @@ describe('Session settings in the ⋯ menu', () => {
     )
   })
 })
+
+describe('before the session is open', () => {
+  it('keeps what is typed in the page session draft, and a stop is a rejection', async () => {
+    const { createThreadPort } = await import('../src/composer/thread-port')
+    await expect(createThreadPort().abort('session-1')).rejects.toThrow(/still opening/)
+
+    const client = createMockEnvironmentClient({ seed: seed('completed'), respond: () => null })
+    await act(() =>
+      root.render(
+        <EnvironmentClientProvider client={client}>
+          <EnvironmentApplicationProviders storage={null} navigateDraft={async () => undefined}>
+            <Probe />
+          </EnvironmentApplicationProviders>
+        </EnvironmentClientProvider>,
+      ),
+    )
+    await flush()
+    await act(async () => current().setText('typed while it opens'))
+    expect(current().primary.reason).toBe('Opening the session…')
+    await act(() => client.commands.openSession(SESSION.sessionId))
+    await flush()
+    expect(current().text).toBe('typed while it opens')
+    expect(current().primary.enabled).toBe(true)
+  })
+})

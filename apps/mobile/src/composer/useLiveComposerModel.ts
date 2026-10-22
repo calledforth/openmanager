@@ -100,7 +100,9 @@ export function useLiveComposerModel(sessionId: string): {
     [pendingPlan, planState, port],
   )
   const draft = useComposerDraft({
-    draftKey: controls.draftKey,
+    // The page's own session, whatever the client has open: text typed
+    // while it opens (or after the page lets it go) stays in its draft.
+    draftKey: `session:${sessionId}`,
     imageUploadEnabled,
     imageSupportMessage,
     ports: useMemo(() => ({ uploadAttachments, send }), [send, uploadAttachments]),

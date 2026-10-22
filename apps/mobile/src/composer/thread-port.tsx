@@ -40,9 +40,12 @@ export function createThreadPort(): ThreadPort {
         listeners.delete(listener)
       }
     },
-    send: (text, attachments) => need().sendMessage(text, attachments),
-    abort: (sessionId) => need().abortSession(sessionId),
-    buildPlan: (sessionId, requestId, modeId) => need().buildPlan(sessionId, requestId, modeId),
+    // Async, so a thread that is not open yet is a rejection the caller
+    // catches, never a throw out of a press handler.
+    send: async (text, attachments) => need().sendMessage(text, attachments),
+    abort: async (sessionId) => need().abortSession(sessionId),
+    buildPlan: async (sessionId, requestId, modeId) =>
+      need().buildPlan(sessionId, requestId, modeId),
     update(next, nextCommands) {
       commands = nextCommands
       if (next === status) return
