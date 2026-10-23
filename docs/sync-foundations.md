@@ -1425,6 +1425,21 @@ row 27's preference re-read cover the same ground.
    - Nothing is ever silently skipped. This also covers re-publishing stored terminal and close
      events after a retried write.
 
+**As built (F4).** Three decisions the design above left open:
+
+- **An answer drains the queue before it is sent.** No answer overtakes a record committed before
+  it. That is what keeps `workspace.add`'s `workspace.updated` ahead of its answer, now that the
+  bypass is gone. It also means `turn.started` and `session.created`, written while their command
+  runs, now reach the socket before the answer. Point 1 says this order no longer matters to the
+  client, and the client was checked for it: overlays are laid only where server state lacks the
+  row.
+- **Recovery from a gap or a stale epoch releases the live subscription first**
+  (`subscription.unsubscribe`), then replays from the cursor. Commands are answered in order, so
+  the replay's read covers everything the released subscription would have carried.
+- **The frame that started a catch-up gets no second one.** If the answer still cannot place it,
+  it is dropped with a warning: the server stated a position its log cannot back, and asking again
+  would loop. Every other held frame goes through the full tables.
+
 **Client handling, live and during catch-up.**
 
 - From the moment `recover()` sends `subscription.replay` until its answer is applied, the
