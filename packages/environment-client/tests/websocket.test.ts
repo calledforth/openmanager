@@ -83,6 +83,7 @@ class FakeSocket implements WebSocketLike {
 
 const bootstrap = (capabilities: string[]) => ({
   protocolVersion: PROTOCOL_VERSION,
+  instanceId: 'instance-1',
   environmentId: ENV,
   capabilities,
 })
@@ -2292,7 +2293,7 @@ describe('cursor replay on reconnect', () => {
       )
 
   /** Open a session, stream two events into its thread, then drop the socket. */
-  async function dropped() {
+  async function dropped(instanceId = 'instance-1') {
     const { client, socket, timers } = await connected(REPLAY_CAPABILITIES)
     const opened = client.commands.openSession(SESSION.sessionId)
     socket.respond('session.open', { session: SESSION_SUMMARY, threads: [THREAD] })
@@ -2324,10 +2325,28 @@ describe('cursor replay on reconnect', () => {
     timers.advance(100)
     const next = FakeSocket.instances[1]!
     next.open()
-    next.respond('protocol.handshake', bootstrap(REPLAY_CAPABILITIES))
+    next.respond('protocol.handshake', { ...bootstrap(REPLAY_CAPABILITIES), instanceId })
     await flush()
     return { client, next }
   }
+
+  it('reopens the active chat when the server it reconnects to is a new process', async () => {
+    const { client, next } = await dropped('instance-2')
+    next.respond('subscription.replay', {
+      mode: 'replay',
+      subscriptionId: 'sub-thread-2',
+      from: cursor(3),
+      to: cursor(3),
+      events: [],
+    })
+    await answerCatalog(next)
+    await flush()
+    await flush()
+    // Its scopes are still held, but the restarted server has not loaded the
+    // chat: the resync opens it, so its provider starts before the user types.
+    expect(next.sent.filter((message) => message.name === 'session.open')).toHaveLength(1)
+    client.dispose()
+  })
 
   it('replaces a thread from a snapshot when a record names a turn it does not hold', async () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined)

@@ -1321,47 +1321,47 @@ describe('divergences on main that §8.4 does not list', () => {
   )
 
   /**
-   * After a restart, the open chat refuses a send. A reconnecting client
-   * does not send `session.open` again for a session whose scopes it still
-   * subscribes to (websocket.ts:1073-1083); the restarted server serves
-   * `turn.send` only for threads in memory, which only `session.open`
-   * restores (thread-service.ts:1420-1422, :2231-2314). F3 owns the fix.
-   * Nothing here compares state before the send: a fresh load opens the
-   * session itself, which would restore the thread and hide the bug.
+   * Guard since F3 (§4.7.3): after a restart the open chat accepts a send.
+   * The restarted server holds no records, and the reconnecting client still
+   * subscribes to the chat's scopes, so on main nothing reopened it and the
+   * send was refused as a missing thread. Now the server loads the chat for
+   * any command that needs it. The client also reopens its active chat when
+   * the server instance changed, as a backup, once its catalog reads are
+   * answered; the send goes out before that, and the server's request log
+   * shows it was served before any reopen, so it proves the server's path.
    */
-  scenario('S17 a send in the open chat after a server restart (F3)', {}, async (rig) => {
-    const a = await rig.connect('A')
-    const target = await createSession(rig, a, QUIET)
-    const turnId = await startTurn(a, target)
-    await finish(rig, a, target, turnId)
-    const before = a.connects
-    await rig.restart()
-    await until(() => a.connects > before, 'A to reconnect after the restart', 20_000)
-    await until(() => !a.busy(), 'A to finish its reconnect')
-    const refused = await a.client.commands
-      .sendTurn({ ...target, text: 'And now?' })
-      .then(() => undefined)
-      .catch((error: unknown) => error as { code?: string; message?: string })
-    if (!refused) throw new FlipError('S17', 'The send was accepted after the restart.')
-    expect(refused, 'refused as a missing thread').toMatchObject({
-      code: 'not_found',
-      message: 'Thread not found.',
-    })
-    // What the user must do today, and what the seeded runs do (model.test.ts):
-    // reopen the chat, which restores the thread, then send.
-    await a.client.commands.openSession(target.sessionId)
-    const retried = await startTurn(a, target, 'And now, reopened?')
-    await finish(rig, a, target, retried)
-    recordEvidence({
-      scenario: 'S17',
-      bucket: 'known-divergence',
-      cause:
-        'turn.send serves only threads in memory (thread-service.ts:1420-1422); a reconnecting ' +
-        'client does not reopen its session (websocket.ts:1073-1083), so after a restart the open ' +
-        'chat refuses a send until it is reopened.',
-      observed: { refused, afterReopen: 'accepted' },
-    })
-  })
+  scenario(
+    'S17 a send in the open chat after a server restart (§4.7.3, guard)',
+    {},
+    async (rig) => {
+      const a = await rig.connect('A')
+      const target = await createSession(rig, a, QUIET)
+      const turnId = await startTurn(a, target)
+      await finish(rig, a, target, turnId)
+      const before = a.connects
+      const mark = rig.proxy.frames.length
+      await rig.restart()
+      await until(() => a.connects > before, 'A to reconnect after the restart', 20_000, 1)
+      const after = await startTurn(a, target, 'And now?')
+      await finish(rig, a, target, after)
+      await until(() => !a.busy(), 'A to finish its reconnect')
+      await expectConverges('S17', rig, a)
+      // Served by the server's own load: on the new process, the send came
+      // before any session.open (the proxy records A's frames in order).
+      const requests = rig.proxy.frames
+        .slice(mark)
+        .filter((frame) => frame.direction === 'up')
+        .map((frame) => (frame.json as { name?: string } | undefined)?.name)
+        .filter((name) => name === 'turn.send' || name === 'session.open')
+      expect(requests[0], 'the send reached the restarted server first').toBe('turn.send')
+      recordEvidence({
+        scenario: 'S17',
+        bucket: 'regression-guard',
+        cause: 'the server loads an unloaded chat for any command that needs it',
+        observed: { requests },
+      })
+    },
+  )
 
   /**
    * S19 (S6(b)'s stray entry): a client's own resync opens its active session

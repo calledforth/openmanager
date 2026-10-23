@@ -481,6 +481,10 @@ export function createWebSocketEnvironmentClient(
     current?.close(1000, 'client_rejected')
   }
 
+  /** The server process this transport last reached, and whether the latest handshake met a new one. */
+  let serverInstance: string | undefined
+  let serverRestarted = false
+
   const handleHandshake = (command: ProtocolHandshakeCommand, raw: unknown) => {
     let result: ReturnType<typeof parseProtocolHandshakeResult>
     try {
@@ -512,6 +516,12 @@ export function createWebSocketEnvironmentClient(
     }
     environmentId = bootstrap.environmentId
     capabilities = new Set(bootstrap.capabilities)
+    // A different server process than the last one this transport reached:
+    // the resync reopens the active chat even though its scopes are still
+    // held, so the provider is loaded before the user types. A backup only:
+    // the server loads a chat for any command itself (§4.7.3).
+    serverRestarted = serverInstance !== undefined && serverInstance !== bootstrap.instanceId
+    serverInstance = bootstrap.instanceId
     // The handshake already names the environment, so views can label it
     // without an `environment.get` round trip (or a server that lacks one).
     const label = typeof bootstrap.label === 'string' ? bootstrap.label.trim() : ''
@@ -1040,6 +1050,8 @@ export function createWebSocketEnvironmentClient(
   const resync = async () => {
     if (!environmentId) return
     const generation = connectionGeneration
+    const restarted = serverRestarted
+    serverRestarted = false
     const environment = { type: 'environment', environmentId } as const
     if (!subscriptions.has(scopeKey(environment))) subscribe(environment)
     // Every scope the previous socket held is recovered now rather than after
@@ -1102,9 +1114,10 @@ export function createWebSocketEnvironmentClient(
     if (
       activeSessionId &&
       supports('openSession') &&
-      (!subscriptions.has(
-        scopeKey({ type: 'session', environmentId, sessionId: activeSessionId }),
-      ) ||
+      (restarted ||
+        !subscriptions.has(
+          scopeKey({ type: 'session', environmentId, sessionId: activeSessionId }),
+        ) ||
         !capabilities.has(REPLAY_NAME) ||
         store.getState().sessions[activeSessionId]?.threadIds.length === 0)
     ) {

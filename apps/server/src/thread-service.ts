@@ -277,6 +277,10 @@ type ThreadRecord = {
   claimedArtifacts?: string[]
 }
 
+/** Why a session the rows hold could not be loaded: the answer an open gives. */
+export type LoadRefusal = { code: ErrorCode; message: string; details?: unknown }
+type Loaded = { refused: LoadRefusal } | { session: SessionSummary; threads: Thread[] }
+
 const errorResult = (requestId: string, code: ErrorCode, message: string, details?: unknown) => ({
   type: 'error' as const,
   requestId,
@@ -602,6 +606,15 @@ export function createThreadService(
     )
   }
 
+  /** Whether the rows still hold a record's thread: a deletion takes them with it. */
+  const threadHeld = (record: ThreadRecord) => {
+    if (!options.database) return false
+    options.flush?.()
+    return listThreadsForSession(options.database, record.session.sessionId).some(
+      (thread) => thread.threadId === record.thread.threadId,
+    )
+  }
+
   const emitFailed = (
     record: ThreadRecord,
     turnId: string,
@@ -820,6 +833,65 @@ export function createThreadService(
     }
     if (records[0]) sessions.set(session.sessionId, records[0])
   }
+
+  /**
+   * Load a session the rows hold and memory does not (docs/sync-foundations.md
+   * §4.7.3), with the checks an open makes, in its order: the summary, the
+   * provider's capability and health, the workspace (with the caller's
+   * context), the threads. Then the records, whose `runtimeSession` asks the
+   * provider for the session; every prompt awaits it. Synchronous: the
+   * records exist before the caller goes on, so a second command finds them.
+   * Nothing to do for a session in memory, or in memory-only mode.
+   */
+  const loadSession = (sessionId: string, context?: CommandContext): Loaded | undefined => {
+    const database = options.database
+    if (!database || sessions.has(sessionId)) return undefined
+    options.flush?.()
+    const session = getSessionSummary(database, sessionId)
+    if (!session) return { refused: { code: 'not_found', message: 'Session not found.' } }
+    const providerId = session.providerId as ProviderId
+    if (!providers[providerId]?.capabilities.canLoadSession) {
+      return {
+        refused: { code: 'capability_missing', message: 'Provider cannot resume sessions.' },
+      }
+    }
+    const rejection = providerGate.rejection(providerId)
+    if (rejection) return { refused: rejection }
+    const providerSessionId = getProviderSessionId(database, sessionId)
+    if (!providerSessionId) {
+      return {
+        refused: { code: 'unavailable', message: 'The provider session identity is unavailable.' },
+      }
+    }
+    let target: WorkspaceRuntimeRoute | undefined
+    try {
+      target = resolveWorkspace(session.workspaceId, context)
+    } catch {
+      /* unavailable */
+    }
+    if (!target) return { refused: workspaceRefusal(session.workspaceId) }
+    const restoredThreads = listThreadsForSession(database, sessionId)
+    if (!restoredThreads.length) {
+      return { refused: { code: 'not_found', message: 'Thread not found.' } }
+    }
+    restoreSession(session, providerId, providerSessionId, target.cwd, restoredThreads)
+    return { session, threads: restoredThreads }
+  }
+
+  /** What `rejectWorkspace` answers, for the loader. */
+  const workspaceRefusal = (workspaceId: string): LoadRefusal => {
+    const availability = options.workspaceAvailability?.(workspaceId) ?? 'unknown'
+    return availability === 'missing' || availability === 'inaccessible'
+      ? {
+          code: 'workspace_unavailable',
+          message: SESSION_WORKSPACE_UNAVAILABLE,
+          details: WorkspaceUnavailableDetailsSchema.parse({ workspaceId, availability }),
+        }
+      : { code: 'not_found', message: 'Workspace not found.' }
+  }
+
+  const refused = (requestId: string, refusal: LoadRefusal) =>
+    errorResult(requestId, refusal.code, refusal.message, refusal.details)
 
   /** How to put back the draft each just-created session was sent from, until it starts. */
   const sentDrafts = new Map<string, () => void>()
@@ -1607,8 +1679,11 @@ export function createThreadService(
     // A client's own id makes the send retryable; a client that sends none
     // gets a minted one so every turn is still recorded with exactly one.
     const commandId = input.commandId ?? randomUUID()
-    const threadRecord = threads.get(input.threadId)
-    const record = threadRecord?.session.sessionId === input.sessionId ? threadRecord : undefined
+    const recordOf = () => {
+      const threadRecord = threads.get(input.threadId)
+      return threadRecord?.session.sessionId === input.sessionId ? threadRecord : undefined
+    }
+    let record = recordOf()
     // Access is settled before anything is answered, a replay included: a
     // caller who cannot reach the workspace must not learn what was sent
     // to it. A thread no longer in memory names its workspace from the log.
@@ -1629,6 +1704,13 @@ export function createThreadService(
         ? record.commandTurns.get(input.commandId)
         : findPersistedTurn(input.sessionId, input.threadId, input.commandId)
     if (replayed) return turnSendResult(command.requestId, replayed)
+    if (!record) {
+      // A chat the rows hold and this process has not loaded (after a
+      // restart): load it as an open would, then serve the send (§4.7.3).
+      const loaded = loadSession(input.sessionId, context)
+      if (loaded && 'refused' in loaded) return refused(command.requestId, loaded.refused)
+      record = recordOf()
+    }
     if (!record) {
       return errorResult(command.requestId, 'not_found', 'Thread not found.')
     }
@@ -1726,12 +1808,19 @@ export function createThreadService(
         // Deleting the session or closing the workspace drops the record while
         // the provider session is still resolving. Starting provider work for a
         // record nothing points at any more would outlive the session itself.
-        if (
-          threads.get(record.thread.threadId) !== record ||
-          record.activeTurn !== active ||
-          active.interruptRequested
-        )
+        if (threads.get(record.thread.threadId) !== record) {
+          // Dropped for another reason, its rows still there (another thread
+          // of the session failed to load): its turn ends through the
+          // terminal path, or the rows would hold it open until the next boot
+          // (§4.7.3 point 4). A deletion took the rows too and needs no end.
+          if (record.activeTurn === active && threadHeld(record)) {
+            emitFailed(record, turn.turnId)
+            turn.state = 'failed'
+            record.activeTurn = undefined
+          }
           return
+        }
+        if (record.activeTurn !== active || active.interruptRequested) return
         active.promptStarted = true
         return runtime.prompt({
           ...route(record, sessionId),
@@ -1845,7 +1934,14 @@ export function createThreadService(
       return threads.get(threadId)?.session.sessionId
     },
 
-    resolveRuntimeSession(sessionId: string) {
+    /**
+     * The provider session a composer setter acts on, loading a session the
+     * rows hold as an open would, with the caller's context (§4.7.3). A
+     * refusal is the answer the open would give.
+     */
+    resolveRuntimeSession(sessionId: string, context?: CommandContext) {
+      const loaded = loadSession(sessionId, context)
+      if (loaded && 'refused' in loaded) return loaded.refused
       const record = sessions.get(sessionId)
       if (!record) return undefined
       return record.runtimeSession.then((providerSessionId) => ({
@@ -2437,49 +2533,13 @@ export function createThreadService(
         if (!parsed.success) {
           return errorResult(command.requestId, 'validation', 'Invalid session open request.')
         }
-        if (options.database && !sessions.has(parsed.data.payload.sessionId)) {
-          options.flush?.()
-          const session = getSessionSummary(options.database, parsed.data.payload.sessionId)
-          if (!session) return errorResult(command.requestId, 'not_found', 'Session not found.')
-          const providerId = session.providerId as ProviderId
-          if (!providers[providerId]?.capabilities.canLoadSession) {
-            return errorResult(
-              command.requestId,
-              'capability_missing',
-              'Provider cannot resume sessions.',
-            )
-          }
-          const rejection = rejectProvider(command.requestId, providerId)
-          if (rejection) return rejection
-          const providerSessionId = getProviderSessionId(options.database, session.sessionId)
-          if (!providerSessionId) {
-            return errorResult(
-              command.requestId,
-              'unavailable',
-              'The provider session identity is unavailable.',
-            )
-          }
-          let target: WorkspaceRuntimeRoute | undefined
-          try {
-            target = resolveWorkspace(session.workspaceId, context)
-          } catch {
-            /* unavailable */
-          }
-          if (!target) {
-            return rejectWorkspace(
-              command.requestId,
-              session.workspaceId,
-              SESSION_WORKSPACE_UNAVAILABLE,
-            )
-          }
-          const restoredThreads = listThreadsForSession(options.database, session.sessionId)
-          if (!restoredThreads.length)
-            return errorResult(command.requestId, 'not_found', 'Thread not found.')
-          restoreSession(session, providerId, providerSessionId, target.cwd, restoredThreads)
+        const loaded = loadSession(parsed.data.payload.sessionId, context)
+        if (loaded && 'refused' in loaded) return refused(command.requestId, loaded.refused)
+        if (loaded) {
           return ProofResponseSchemas['session.open'].parse({
             type: 'response',
             requestId: command.requestId,
-            payload: { session, threads: restoredThreads },
+            payload: { session: loaded.session, threads: loaded.threads },
           })
         }
         const record = sessions.get(parsed.data.payload.sessionId)
@@ -2616,7 +2676,18 @@ export function createThreadService(
           })
         }
         if (!record || record.session.sessionId !== parsed.data.payload.sessionId) {
-          return errorResult(command.requestId, 'not_found', 'Thread not found.')
+          // A thread the rows hold is not unknown because this process has
+          // not loaded it: nothing runs on it, so its turn is not in
+          // progress (§4.7.3).
+          const held =
+            !record &&
+            options.database !== undefined &&
+            listThreadsForSession(options.database, sessionId).some(
+              (thread) => thread.threadId === threadId,
+            )
+          return held
+            ? errorResult(command.requestId, 'conflict', 'Turn is not in progress.')
+            : errorResult(command.requestId, 'not_found', 'Thread not found.')
         }
         const providerRejection = rejectProvider(command.requestId, record.providerId)
         if (providerRejection) return providerRejection

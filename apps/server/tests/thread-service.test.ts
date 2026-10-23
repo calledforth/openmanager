@@ -2760,6 +2760,114 @@ describe('durable session lifecycle', () => {
     }
   })
 
+  it('serves a send for a chat the rows hold after a restart, loading it as an open would', async () => {
+    const h = setup()
+    try {
+      const { sessionId } = h.created.session
+      await h.service.resolveRuntimeSession(sessionId)
+      const restarted = h.fresh()
+      h.runtime.ensureSession.mockClear()
+      // No session.open: the reconnecting client still holds the chat's scopes.
+      expect(
+        h.dispatch(restarted, 'turn.send', { ...h.created.thread, text: 'After the restart' }),
+      ).toMatchObject({ type: 'response' })
+      await vi.waitFor(() =>
+        expect(h.runtime.prompt).toHaveBeenCalledWith(
+          expect.objectContaining({ sessionId: 'provider-persisted' }),
+        ),
+      )
+      expect(h.runtime.ensureSession).toHaveBeenCalledWith(
+        expect.objectContaining({ sessionId: 'provider-persisted' }),
+      )
+      await vi.waitFor(() =>
+        expect(
+          h.database.prepare("SELECT COUNT(*) AS count FROM turns WHERE state = 'running'").get(),
+        ).toMatchObject({ count: 0 }),
+      )
+    } finally {
+      h.close()
+    }
+  })
+
+  it('loads an unloaded chat for a composer setter, and answers as an open would otherwise', async () => {
+    const h = setup()
+    try {
+      const { sessionId } = h.created.session
+      await h.service.resolveRuntimeSession(sessionId)
+      const restarted = h.fresh()
+      const target = await restarted.resolveRuntimeSession(sessionId)
+      expect(target).toMatchObject({ sessionId: 'provider-persisted' })
+      expect(restarted.sessionForThread(h.created.thread.threadId)).toBe(sessionId)
+      // A session the rows do not hold gets the open's own answer.
+      expect(h.fresh().resolveRuntimeSession('missing')).toMatchObject({ code: 'not_found' })
+    } finally {
+      h.close()
+    }
+  })
+
+  it('answers an interrupt on a thread the rows hold, but no process runs, as not in progress', async () => {
+    const h = setup()
+    try {
+      const { sessionId } = h.created.session
+      await h.service.resolveRuntimeSession(sessionId)
+      const restarted = h.fresh()
+      expect(
+        h.dispatch(restarted, 'turn.interrupt', { ...h.created.thread, turnId: 'turn-gone' }),
+      ).toMatchObject({ error: { code: 'conflict', message: 'Turn is not in progress.' } })
+      expect(
+        h.dispatch(restarted, 'turn.interrupt', {
+          sessionId,
+          threadId: 'never-held',
+          turnId: 'turn-gone',
+        }),
+      ).toMatchObject({ error: { code: 'not_found' } })
+    } finally {
+      h.close()
+    }
+  })
+
+  it('ends a turn whose records were dropped before its provider session resolved', async () => {
+    const h = setup()
+    try {
+      const { sessionId } = h.created.session
+      const firstThreadId = h.created.thread.threadId
+      await h.service.resolveRuntimeSession(sessionId)
+      h.database
+        .prepare(
+          `INSERT INTO threads (thread_id, session_id, workspace_id, created_at, updated_at)
+           VALUES (?, ?, '/workspace/project', 1, 1)`,
+        )
+        .run('thread-second', sessionId)
+      const restarted = h.fresh()
+      // The first thread's provider session is slow; the second fails to load,
+      // which drops every record of the session while their rows stay.
+      let resolveFirst!: (value: { sessionId: string; state: 'loaded' }) => void
+      h.runtime.ensureSession.mockImplementation((args: { threadId: string }) =>
+        args.threadId === firstThreadId
+          ? new Promise((resolve) => {
+              resolveFirst = resolve
+            })
+          : Promise.reject(new Error('provider gone')),
+      )
+      expect(h.dispatch(restarted, 'session.open', { sessionId })).toMatchObject({
+        type: 'response',
+      })
+      expect(
+        h.dispatch(restarted, 'turn.send', { sessionId, threadId: firstThreadId, text: 'Go' }),
+      ).toMatchObject({ type: 'response' })
+      await vi.waitFor(() => expect(restarted.sessionForThread(firstThreadId)).toBeUndefined())
+      resolveFirst({ sessionId: 'provider-persisted', state: 'loaded' })
+      // The turn ends through the terminal path instead of staying open in the
+      // rows until the next boot (§4.7.3 point 4).
+      await vi.waitFor(() =>
+        expect(h.database.prepare('SELECT state FROM turns').all()).toEqual([{ state: 'failed' }]),
+      )
+      expect(h.runtime.prompt).not.toHaveBeenCalled()
+    } finally {
+      h.close()
+    }
+  })
+
   it('restores and abandons every thread of a multi-thread session together', async () => {
     const h = setup()
     try {
@@ -2798,10 +2906,17 @@ describe('durable session lifecycle', () => {
       })
       await vi.waitFor(() => {
         for (const threadId of [firstThreadId, 'thread-second'])
-          expect(
-            h.dispatch(failed, 'turn.send', { sessionId, threadId, text: 'Hello' }),
-          ).toMatchObject({ error: { code: 'not_found' } })
+          expect(failed.sessionForThread(threadId)).toBeUndefined()
       })
+      // And the next command loads it again, as an open would (§4.7.3).
+      expect(
+        h.dispatch(failed, 'turn.send', { sessionId, threadId: firstThreadId, text: 'Again' }),
+      ).toMatchObject({ type: 'response' })
+      await vi.waitFor(() =>
+        expect(
+          h.database.prepare("SELECT COUNT(*) AS count FROM turns WHERE state = 'running'").get(),
+        ).toMatchObject({ count: 0 }),
+      )
     } finally {
       h.close()
     }
