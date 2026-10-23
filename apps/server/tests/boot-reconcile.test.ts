@@ -102,6 +102,43 @@ const openTurn = (thread: number) => {
 }
 
 describe('boot reconcile', () => {
+  it('logs and skips a thread whose stored child cannot be read, and repairs the others', async () => {
+    const database = await createDatabase()
+    const before = createEventRepository(database, { epoch: 'epoch-before' })
+    for (const thread of [1, 2]) {
+      before.appendEvents(scopeOf(thread), openTurn(thread))
+      before.finalizeTurn(scopeOf(thread), [
+        event(thread, 'turn.completed', `done-${thread}`, { turnId: `turn-${thread}` }),
+      ])
+    }
+    // Rows a server before F3 left behind: open children under ended turns,
+    // one of them unreadable ('null' passes the column's json_valid check).
+    database.exec(`
+      UPDATE turn_activity SET state_json = json_set(state_json, '$.status', 'in_progress')
+        WHERE kind = 'tool';
+      UPDATE turn_activity SET state_json = json_set(state_json, '$.phase', 'delta')
+        WHERE kind = 'reasoning';
+      UPDATE turn_activity SET state_json = 'null' WHERE kind = 'tool' AND thread_id = 'thread-1';
+    `)
+    const repository = createEventRepository(database, { epoch: 'epoch-after' })
+    const report = reconcileAfterRestart(database, repository, ENV)
+    expect(report.failures).toMatchObject([
+      { kind: 'repair', ids: { sessionId: 'session-1', threadId: 'thread-1' } },
+    ])
+    expect(report).toMatchObject({ threadsRepaired: 1, toolsCancelled: 1, thoughtsClosed: 1 })
+    expect(
+      database
+        .prepare("SELECT kind, state_json FROM turn_activity WHERE thread_id = 'thread-2'")
+        .all()
+        .map((row) => JSON.parse((row as { state_json: string }).state_json)),
+    ).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ status: 'cancelled' }),
+        expect.objectContaining({ phase: 'stop' }),
+      ]),
+    )
+  })
+
   it('ends each open turn with events on its own stream, one transaction per turn', async () => {
     const database = await createDatabase()
     const before = createEventRepository(database, { epoch: 'epoch-before' })

@@ -113,51 +113,54 @@ export function reconcileAfterRestart(
     }
   }
 
-  const legacy = (
-    database
-      .prepare(
-        `SELECT turn_activity.activity_id, turn_activity.kind, turn_activity.state_json,
-                turn_activity.turn_id, turn_activity.thread_id, threads.session_id
-         FROM turn_activity
-         JOIN turns ON turns.turn_id = turn_activity.turn_id
-         JOIN threads ON threads.thread_id = turn_activity.thread_id
-         WHERE turns.state NOT IN ('running', 'waiting')
-         ORDER BY turn_activity.thread_id, turn_activity.ordinal`,
-      )
-      .all() as LegacyChildRow[]
-  ).filter((row) => {
-    const state = JSON.parse(row.state_json) as { status?: string; phase?: string }
-    return row.kind === 'tool' ? toolIsOpen(state) : reasoningIsOpen(state)
-  })
+  // Grouped by thread before anything reads them: a stored row that cannot
+  // be read (`state_json` = 'null' passes the column's json_valid check)
+  // fails its own thread's repair, logged below, and never the boot.
+  const finished = database
+    .prepare(
+      `SELECT turn_activity.activity_id, turn_activity.kind, turn_activity.state_json,
+              turn_activity.turn_id, turn_activity.thread_id, threads.session_id
+       FROM turn_activity
+       JOIN turns ON turns.turn_id = turn_activity.turn_id
+       JOIN threads ON threads.thread_id = turn_activity.thread_id
+       WHERE turns.state NOT IN ('running', 'waiting')
+       ORDER BY turn_activity.thread_id, turn_activity.ordinal`,
+    )
+    .all() as LegacyChildRow[]
   const byThread = new Map<string, LegacyChildRow[]>()
-  for (const row of legacy) {
+  for (const row of finished) {
     const rows = byThread.get(row.thread_id) ?? []
     rows.push(row)
     byThread.set(row.thread_id, rows)
   }
   for (const [threadId, rows] of byThread) {
     const scope = scopeOf(rows[0]!)
-    const timestamp = new Date(now()).toISOString()
-    const events: DurableProofEvent[] = rows.map((row) =>
-      row.kind === 'tool'
-        ? ProofEventSchemas['tool.updated'].parse({
-            type: 'event',
-            name: 'tool.updated',
-            eventId: `repair:tool:${row.activity_id}`,
-            timestamp,
-            scope,
-            payload: { toolCallId: row.activity_id, turnId: row.turn_id, status: 'cancelled' },
-          })
-        : ProofEventSchemas['message.reasoning'].parse({
-            type: 'event',
-            name: 'message.reasoning',
-            eventId: `repair:reasoning:${row.activity_id}`,
-            timestamp,
-            scope,
-            payload: { messageId: row.activity_id, turnId: row.turn_id, phase: 'stop' },
-          }),
-    )
     try {
+      const open = rows.filter((row) => {
+        const state = JSON.parse(row.state_json) as { status?: string; phase?: string }
+        return row.kind === 'tool' ? toolIsOpen(state) : reasoningIsOpen(state)
+      })
+      if (open.length === 0) continue
+      const timestamp = new Date(now()).toISOString()
+      const events: DurableProofEvent[] = open.map((row) =>
+        row.kind === 'tool'
+          ? ProofEventSchemas['tool.updated'].parse({
+              type: 'event',
+              name: 'tool.updated',
+              eventId: `repair:tool:${row.activity_id}`,
+              timestamp,
+              scope,
+              payload: { toolCallId: row.activity_id, turnId: row.turn_id, status: 'cancelled' },
+            })
+          : ProofEventSchemas['message.reasoning'].parse({
+              type: 'event',
+              name: 'message.reasoning',
+              eventId: `repair:reasoning:${row.activity_id}`,
+              timestamp,
+              scope,
+              payload: { messageId: row.activity_id, turnId: row.turn_id, phase: 'stop' },
+            }),
+      )
       count(repository.appendEvents(scope, events))
       report.threadsRepaired += 1
     } catch (error) {
