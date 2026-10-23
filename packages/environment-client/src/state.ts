@@ -480,9 +480,7 @@ export function applyEvent(state: EnvironmentState, event: ProofEvent): Environm
 
   switch (event.name) {
     case 'turn.started':
-      return patchThread(state, thread, (current) =>
-        confirmTurnStart(current, event.payload, event.timestamp),
-      )
+      return patchThread(state, thread, (current) => applyStart(current, event.payload))
     case 'turn.completed':
     case 'turn.interrupted':
     case 'turn.failed':
@@ -562,7 +560,7 @@ export function applySnapshot(state: EnvironmentState, snapshot: ScopeSnapshot):
     // answered yet is still the client's to show, unless the snapshot is
     // itself the answer. Which messages were this client's echoes is the
     // client's own knowledge and survives the replacement.
-    ...reconcileOutbox(existing, threadSnapshot.messages),
+    ...reconcileOutbox(existing, threadSnapshot.turns, threadSnapshot.messages),
     turns: threadSnapshot.turns,
     messages,
     // Older pages the client keeps in front of the snapshot place their
@@ -700,7 +698,7 @@ export function applySessionHistory(
       reasoning,
       tools,
       order,
-      ...reconcileOutbox(current, payload.messages),
+      ...reconcileOutbox(current, payload.turns, payload.messages),
       interactions:
         !older && (interactions.length > 0 || current.hydration !== 'ready')
           ? interactions
@@ -719,77 +717,59 @@ export function applySessionHistory(
   }
 }
 
-/** The plain text of a message, for matching an echo against what arrived. */
-const messageText = (message: Message): string =>
-  message.content.map((block) => (block.type === 'text' ? block.text : '')).join('')
-
 /**
- * Drop failed echoes the environment turns out to have accepted. A send whose
- * connection dropped is reported as failed even though its turn may well have
- * started; when an authoritative snapshot or history page then brings back a
- * user message this client never had, that message is the echo. Each arriving
- * message clears at most one echo, so a prompt deliberately sent twice keeps
- * the copy that really did fail. A cleared echo is recorded as confirmed by
- * that message, the way a `turn.started` records it.
+ * Settle the echoes whose turns the environment has, by command id
+ * (`Turn.commandId`; docs/sync-foundations.md §3.6 rows 21 and 22). A send
+ * whose connection dropped is reported as failed although its turn may well
+ * have started; a snapshot or history page that brings that turn back ends
+ * the echo, pending or failed, and records which message took its place, the
+ * way a `turn.started` does.
  */
 function reconcileOutbox(
   current: ThreadState,
-  incoming: readonly Message[],
+  turns: readonly Turn[],
+  messages: readonly Message[],
 ): Pick<ThreadState, 'outbox' | 'confirmedEchoes'> {
   const unchanged = {
     outbox: current.outbox,
     ...(current.confirmedEchoes ? { confirmedEchoes: current.confirmedEchoes } : {}),
   }
-  if (!current.outbox.some((entry) => entry.status === 'failed')) return unchanged
-  const known = new Set(current.messages.map((message) => message.messageId))
-  const arrived = incoming.filter(
-    (message) => message.role === 'user' && !known.has(message.messageId),
-  )
-  if (arrived.length === 0) return unchanged
-  const texts = arrived.map(messageText)
+  if (current.outbox.length === 0) return unchanged
+  const started = new Map<string, Turn>()
+  for (const turn of turns) if (turn.commandId) started.set(turn.commandId, turn)
   const confirmedEchoes = { ...current.confirmedEchoes }
   const outbox = current.outbox.filter((entry) => {
-    if (entry.status !== 'failed') return true
-    const index = texts.indexOf(entry.text)
-    if (index === -1) return true
-    confirmedEchoes[arrived[index]!.messageId] = entry.commandId
-    texts.splice(index, 1)
-    arrived.splice(index, 1)
+    const turn = started.get(entry.commandId)
+    if (!turn) return true
+    const prompt = messages.find(
+      (message) => message.turnId === turn.turnId && message.role === 'user',
+    )
+    if (prompt) confirmedEchoes[prompt.messageId] = entry.commandId
     return false
   })
   return outbox.length === current.outbox.length ? unchanged : { outbox, confirmedEchoes }
 }
 
 /**
- * The confirmed start of a turn: the real turn and user message replace the
- * echo its command id created, and the message is recorded as that echo's.
- * Keyed by ID throughout, so the `turn.send`
- * response and the `turn.started` event may arrive in either order and only
- * the first of them changes anything.
+ * A turn's start, as `turn.started` states it: the turn, its prompt, and the
+ * echo its command id settles, with the message recorded as that echo's (see
+ * `confirmedEchoes`). A start the thread already holds (a replayed tail) is
+ * no change: the turn may have moved on since.
  */
-function confirmTurnStart(
-  current: ThreadState,
-  payload: TurnStarted,
-  startedAt?: string,
-): ThreadState {
-  const { commandId } = payload
+function applyStart(current: ThreadState, payload: TurnStarted): ThreadState {
+  const commandId = payload.commandId ?? payload.turn.commandId
   const outbox = commandId
     ? current.outbox.filter((entry) => entry.commandId !== commandId)
     : current.outbox
-  // A delayed send response must not rewind a turn that already progressed.
-  // The `turn.started` event's time is when the work began; a `turn.send`
-  // response carries none, so whichever arrives second may only fill that in.
-  const existing = current.turns.find((turn) => turn.turnId === payload.turn.turnId)
-  const turn = existing
-    ? existing.startedAt || !startedAt
-      ? existing
-      : { ...existing, startedAt }
-    : { ...payload.turn, ...(startedAt && !payload.turn.startedAt ? { startedAt } : {}) }
-  const turns = upsertById(current.turns, (item) => item.turnId, turn)
+  const known = current.turns.some((turn) => turn.turnId === payload.turn.turnId)
+  const turns = known ? current.turns : [...current.turns, payload.turn]
   // A turn the provider began by itself has no prompt: a background task
   // finished and the agent is acting on the result.
   const { userMessage } = payload
-  if (!userMessage) return turns === current.turns ? current : { ...current, turns }
+  const settled = outbox.length !== current.outbox.length
+  if (!userMessage) {
+    return known && !settled ? current : { ...current, turns, ...(settled ? { outbox } : {}) }
+  }
   return {
     ...current,
     turns,
@@ -799,23 +779,13 @@ function confirmTurnStart(
       id: userMessage.messageId,
       turnId: payload.turn.turnId,
     }),
-    // The message is what the echo now shows as; see `confirmedEchoes`.
-    ...(commandId && outbox.length !== current.outbox.length
+    ...(settled
       ? {
           outbox,
-          confirmedEchoes: { ...current.confirmedEchoes, [userMessage.messageId]: commandId },
+          confirmedEchoes: { ...current.confirmedEchoes, [userMessage.messageId]: commandId! },
         }
       : {}),
   }
-}
-
-/** Same shape as `turn.started`; used to fold a `turn.send` response in before the event arrives. */
-export function applyTurnStarted(
-  state: EnvironmentState,
-  thread: Thread,
-  payload: TurnStart,
-): EnvironmentState {
-  return patchThread(state, thread, (current) => confirmTurnStart(current, payload))
 }
 
 /**
@@ -871,10 +841,14 @@ export function applyTurnSending(
     ...(send.artifactIds?.length ? { artifactIds: send.artifactIds } : {}),
     status: 'pending',
   }
-  return patchThread(state, thread, (current) => ({
-    ...current,
-    outbox: upsertById(current.outbox, (item) => item.commandId, entry),
-  }))
+  return patchThread(state, thread, (current) =>
+    // A retry of a send whose turn this client already holds: the answer
+    // comes from the environment's log and no event follows, so there is
+    // nothing to echo.
+    current.turns.some((turn) => turn.commandId === send.commandId)
+      ? current
+      : { ...current, outbox: upsertById(current.outbox, (item) => item.commandId, entry) },
+  )
 }
 
 /** Mark an echoed send failed, keeping it on screen with the reason. */

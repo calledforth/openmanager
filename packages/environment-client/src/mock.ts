@@ -51,7 +51,6 @@ import {
   applySessionOpening,
   applyTurnSendFailed,
   applyTurnSending,
-  applyTurnStarted,
   applyWorkspaceList,
   createInitialState,
   createThreadState,
@@ -764,11 +763,8 @@ export function createMockEnvironmentClient(
 
   const startTurn = (input: SendTurnInput & { commandId: string }) => {
     const replayed = startedCommands.get(commandKey(input, input.commandId))
-    if (replayed) {
-      // The retry still confirms its echo, exactly as the first send did.
-      store.update((state) => applyTurnStarted(state, input, replayed))
-      return replayed
-    }
+    // A retry is answered from what the first send started, and changes nothing.
+    if (replayed) return replayed
     const thread = requireThread(input)
     if (thread.turns.some((turn) => turn.state === 'running' || turn.state === 'waiting')) {
       throw new EnvironmentClientError('conflict', 'A turn is already in progress.')
@@ -804,10 +800,7 @@ export function createMockEnvironmentClient(
     }
     const started: TurnStart = { turn, userMessage, commandId: input.commandId }
     startedCommands.set(commandKey(input, input.commandId), started)
-    // Fold the user echo in before the event, the way the WebSocket client
-    // applies `turn.send` before `turn.started` arrives. The event is then
-    // a no-op instead of a second bubble.
-    store.update((state) => applyTurnStarted(state, input, started))
+    // The event settles the echo by its command id, as the environment's does.
     emit({ ...base(), name: 'turn.started', scope: threadScope(input), payload: started })
     const context: MockTurnContext = { ...input, turnId: turn.turnId }
     const chunks = respond ? respond(context) : null

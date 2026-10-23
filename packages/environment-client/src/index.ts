@@ -78,7 +78,6 @@ export {
   applyThreadHydration,
   applyTurnSendFailed,
   applyTurnSending,
-  applyTurnStarted,
   applyWorkspaceList,
   applyWorkspaceRemoved,
   createInitialState,

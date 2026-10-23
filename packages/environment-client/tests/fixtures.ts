@@ -58,6 +58,8 @@ export const turnStarted = (turnId = 'turn-1', text = 'hello', commandId?: strin
       threadId: THREAD.threadId,
       state: 'running',
       startedAt: '2026-09-10T00:00:00.000Z',
+      // The environment records the send's id on its turn (protocol v17).
+      ...(commandId ? { commandId } : {}),
     },
     userMessage: {
       messageId: `${turnId}-user`,
