@@ -18,10 +18,8 @@ import {
   reasoningBudgetMarker,
   runtimeStamp,
   sessionCreatedPartial,
-  silentRecovery,
   snapshotMergeDropsOlderActivity,
   stampMovesRecency,
-  thoughtClosedByFold,
 } from './causes.ts'
 import {
   FlipError,
@@ -297,18 +295,23 @@ async function demonstrateHeartbeatLoop(
 const QUIET = { quiet: true } as const
 
 /**
- * Tool status at turn end on this build. Main never settles a tool, on either
- * side (event-projection.ts:528-570). F3 writes `tool.updated {cancelled}`
- * before the terminal (§4.3); that phase changes this to 'cancelled'.
+ * Tool status at turn end. Main never settled a tool, on either side; F3
+ * writes `tool.updated {cancelled}` before the terminal (§4.3, turn-closure.ts).
  */
-const TOOL_STATUS_AFTER_TURN_END = 'in_progress'
+const TOOL_STATUS_AFTER_TURN_END = 'cancelled'
 
 // ---------------------------------------------------------------------------
 // Scenarios
 // ---------------------------------------------------------------------------
 
 describe('§8.4 scenarios on main', () => {
-  scenario('S1 crash mid-turn: the client resumes from its cursor (W1)', {}, async (rig) => {
+  /**
+   * Guard since F3 (§4.1): the restarted server ends the turn with events on
+   * the thread's own stream, closing its tool, thought and question first, so
+   * the client's replay from its cursor brings exactly that. On main the
+   * replay came back empty (SILENT_RECOVERY).
+   */
+  scenario('S1 crash mid-turn: the client resumes from its cursor (W1, guard)', {}, async (rig) => {
     const a = await rig.connect('A')
     const target = await createSession(rig, a, QUIET)
     const turnId = await startTurn(a, target)
@@ -329,8 +332,6 @@ describe('§8.4 scenarios on main', () => {
     // the workspace recency the question moved (X1, an interaction event is
     // not one the client mirrors it on), named with its fingerprint.
     await expectConvergesExcept('S1 baseline', rig, a, [recencyMirror(rig, a)])
-    // What A holds, as the server's own read says it (the baseline above
-    // showed they agree): the interactions and the turn state recovery rewrites.
     const held = await serverThread(rig, target)
     const openTurn = (held.turns as Array<{ turnId: string; state: string }>).find(
       (turn) => turn.turnId === turnId,
@@ -339,34 +340,82 @@ describe('§8.4 scenarios on main', () => {
     const before = a.connects
     await rig.crash()
     await until(() => a.connects > before, 'A to reconnect after the crash', 20_000)
-    await demonstrateDiff(
-      'S1',
-      rig,
-      a,
-      silentRecovery({
-        threadId: target.threadId,
-        turnId,
-        openState: 'waiting',
-        interactions: held.interactions,
-      }),
-    )
+    await until(() => !a.busy(), 'A to finish its reconnect')
+    const result = await expectConverges('S1', rig, a)
+    // Equal is not enough: everything recovery closed is closed on all three.
+    const views = [result.view, result.fresh].map((view) => view.active!.threads[target.threadId]!)
+    views.push(result.server.threads[target.threadId]!)
+    for (const view of views) {
+      expect(view.turns).toContainEqual(
+        expect.objectContaining({
+          turnId,
+          state: 'interrupted',
+          interruptedBy: 'server_restarted',
+        }),
+      )
+      expect(Object.values(view.tools).map((tool) => (tool as { status?: string }).status)).toEqual(
+        ['cancelled'],
+      )
+      expect(
+        Object.values(view.reasoning).map((thought) => (thought as { phase?: string }).phase),
+      ).toEqual(['stop'])
+      expect(view.interactions).toEqual({})
+    }
+    recordEvidence({
+      scenario: 'S1',
+      bucket: 'regression-guard',
+      cause: 'recovery events replayed from the cursor',
+      observed: { turn: 'interrupted (server_restarted)', tool: 'cancelled', thought: 'stop' },
+    })
   })
 
-  scenario('S2 a thought followed by text, connected throughout', {}, async (rig) => {
+  /**
+   * Guard since F3 (§4.3.3): the server closes the thought with its own
+   * `message.reasoning {phase: 'stop'}` where the text begins, so the client,
+   * a fresh load and the rows all hold it closed. On main the fold closed it
+   * and the row kept `delta` (THOUGHT_CLOSED_BY_FOLD).
+   */
+  scenario('S2 a thought followed by text, connected throughout (guard)', {}, async (rig) => {
     const a = await rig.connect('A')
     const target = await createSession(rig, a, QUIET)
     const turnId = await startTurn(a, target)
     await rig.provider({ op: 'emitThought', sessionId: target.sessionId, text: 'Thinking' })
     await rig.provider({ op: 'emitText', sessionId: target.sessionId, text: 'The answer.' })
+    // Closed by the text, while the turn is still running: the turn's end
+    // would close it too, so checking only after it would prove nothing.
+    await untilThread(
+      a,
+      target,
+      (state) => state.reasoning[0]?.phase === 'stop',
+      'A to hold the thought closed while the turn runs',
+    )
+    expect(turnState(a, target, turnId)).toBe('running')
+    await rig.waitQuiet()
+    const running = await serverThread(rig, target)
+    expect(
+      (running.turns as Array<{ turnId: string; state: string }>).find(
+        (turn) => turn.turnId === turnId,
+      )?.state,
+    ).toBe('running')
+    expect(
+      Object.values(running.reasoning).map((thought) => (thought as { phase?: string }).phase),
+    ).toEqual(['stop'])
     await finish(rig, a, target, turnId)
     const thoughts = Object.keys((await serverThread(rig, target)).reasoning)
     expect(thoughts).toHaveLength(1)
-    await demonstrateDiff(
-      'S2',
-      rig,
-      a,
-      thoughtClosedByFold({ threadId: target.threadId, messageIds: thoughts }),
+    const result = await expectConverges('S2', rig, a)
+    const phases = [result.view, result.fresh].map((view) =>
+      Object.values(view.active!.threads[target.threadId]!.reasoning).map(
+        (thought) => (thought as { phase?: string }).phase,
+      ),
     )
+    phases.push(
+      Object.values(result.server.threads[target.threadId]!.reasoning).map(
+        (thought) => (thought as { phase?: string }).phase,
+      ),
+    )
+    for (const seen of phases) expect(seen, 'the thought is closed everywhere').toEqual(['stop'])
+    recordEvidence({ scenario: 'S2', bucket: 'regression-guard', cause: 'phase', observed: phases })
   })
 
   scenario('S3 a tool left open when the turn completes (guard)', {}, async (rig) => {
@@ -409,16 +458,11 @@ describe('§8.4 scenarios on main', () => {
       const early = await buildLongThread(rig, a, target, { turns: 52, activityTurns: 2 })
       await walkHistory(a, target)
       expect(thread(a, target)?.messages.length).toBe(104)
-      // A valid baseline: before the gap A differs from the server only by
-      // the fold closing the early thoughts (S2), exactly those.
+      // A valid baseline: before the gap A agrees with the server (since F3
+      // the server closes the thoughts, so S2's cause no longer shows here).
       const server = await serverThread(rig, target)
       const older = olderActivity(server, target.threadId, early)
-      await expectConvergesExcept('S4 baseline', rig, a, [
-        thoughtClosedByFold({
-          threadId: target.threadId,
-          messageIds: Object.keys(older.reasoning),
-        }),
-      ])
+      await expectConverges('S4 baseline', rig, a)
       rig.proxy.down()
       rig.proxy.cut()
       await until(() => a.client.getState().connection.phase !== 'connected', 'A to notice the cut')
@@ -863,12 +907,7 @@ describe('§8.4 scenarios on main', () => {
       await walkHistory(a, target)
       expect(thread(a, target)?.messages.length).toBe(104)
       const older = olderActivity(await serverThread(rig, target), target.threadId, early)
-      await expectConvergesExcept('S10 baseline', rig, a, [
-        thoughtClosedByFold({
-          threadId: target.threadId,
-          messageIds: Object.keys(older.reasoning),
-        }),
-      ])
+      await expectConverges('S10 baseline', rig, a)
       // Recording is always on; what follows is judged from here.
       const mark = rig.proxy.frames.length
       const reloaded = await rig.reload(a)
@@ -1017,7 +1056,15 @@ describe('§8.4 scenarios on main', () => {
           durationMs: 60_000,
         })
         .catch(() => undefined)
-      const samples: Array<{ atMs: number; bufferedAmount: number; proxyQueued: number }> = []
+      // `producedBytes` is what the provider had handed the server: the
+      // construction needs it near 100 KiB/s, so a run that cannot push that
+      // through the batcher and SQLite shows why it missed the threshold.
+      const samples: Array<{
+        atMs: number
+        bufferedAmount: number
+        proxyQueued: number
+        producedBytes: number
+      }> = []
       const started = rig.now()
       while (proxiedCloses(rig, 'slow_consumer').length === 0 && rig.now() - started < 70_000) {
         const sockets = await rig.server.sampleSockets()
@@ -1025,12 +1072,14 @@ describe('§8.4 scenarios on main', () => {
           (socket) =>
             socket.remotePort !== undefined && rig.proxy.serverSidePorts.has(socket.remotePort),
         )
+        const produced = await rig.server.call<{ bytes: number }>({ op: 'readStreamed' })
         samples.push({
           atMs: rig.now() - started,
           bufferedAmount: proxied.reduce((total, socket) => total + socket.bufferedAmount, 0),
           proxyQueued: rig.proxy
             .backlog()
             .reduce((total, entry) => total + entry.down + entry.inspecting, 0),
+          producedBytes: produced.bytes,
         })
         await sleep(1_000)
       }
@@ -1038,6 +1087,22 @@ describe('§8.4 scenarios on main', () => {
       await streaming
       const closes = proxiedCloses(rig, 'slow_consumer')
       if (closes.length === 0) {
+        // What the server and the link held meanwhile, so a flip can be judged.
+        recordEvidence({
+          scenario: 'S15',
+          bucket: 'flip-diagnostics',
+          cause: 'no slow_consumer close',
+          observed: {
+            samples,
+            serverCloses: rig.server.closes.map(({ code, reason, at }) => ({
+              code,
+              reason,
+              atMs: rig.since(at) - started,
+            })),
+            clientCloses: a.closes,
+            fatals: rig.server.fatals,
+          },
+        })
         throw new FlipError('S15', 'No slow_consumer close in 70 s; enable its after-F5a half.')
       }
       recordEvidence({

@@ -13,6 +13,7 @@ import {
 import { createEventProjector, type EventProjectionOptions } from './event-projection.ts'
 import { EVENT_TOMBSTONE_SQL } from './queries.ts'
 import { readSessionActivity, type SessionActivity } from './session-activity.ts'
+import { createTurnClosure } from './turn-closure.ts'
 
 type ThreadScope = Extract<SubscriptionScope, { type: 'thread' }>
 export type TerminalEvent = Extract<
@@ -25,8 +26,14 @@ export type DurableProofEvent = Exclude<ProofEvent, { name: 'turn.notice' }>
 export interface EventRepositoryOptions extends EventProjectionOptions {
   epoch?: string
   now?: () => number
-  /** Test seam used to stop a child process after writes but before COMMIT. */
-  beforeCommit?: () => void
+  /**
+   * Test seams around every write, with the records it commits: `beforeCommit`
+   * runs after every write of the transaction and just before COMMIT,
+   * `afterCommit` just after it. A test stops a child process in either to
+   * prove the rows and the log are both present or both absent.
+   */
+  beforeCommit?: (records: readonly DurableEvent[]) => void
+  afterCommit?: (records: readonly DurableEvent[]) => void
 }
 
 /** Events for one scope; several groups may commit in one transaction. */
@@ -75,6 +82,7 @@ export function createEventRepository(
   const newEpoch = options.epoch ?? randomUUID()
   const now = options.now ?? Date.now
   const project = createEventProjector(database, options)
+  const closure = createTurnClosure(database)
   const statements = {
     sessionStatus: database.prepare(
       'SELECT session_id, status, settled_at, done_at, background_tasks_json FROM sessions WHERE session_id = ?',
@@ -112,10 +120,35 @@ export function createEventRepository(
     return row ? { ...row, activity: readSessionActivity(database, row) } : undefined
   }
 
+  /**
+   * The sessions one transaction touches, for the status pass that runs once
+   * every group of it is projected (docs/sync-foundations.md §4.3, §4.7.8).
+   * `announced` starts as the row before the first event that touched the
+   * session, and takes in whatever the transaction's own `session.updated`
+   * events state, so the pass only says what nothing in the transaction said.
+   */
+  type Tracked = {
+    environmentId: string
+    announced: StatusState
+    lastEventId: string
+    lastTimestamp: string
+  }
+  /**
+   * One transaction's state, passed down its writes rather than kept between
+   * them: the sessions it touched, and the status records of retried events,
+   * re-published with their original cursors. Derived writes pass none: they
+   * state the pass itself.
+   */
+  type Transaction = {
+    tracked: Map<string, Tracked>
+    retriedStatus: { environmentId: string; event: DurableProofEvent }[]
+  }
+
   const writeScope = (
     scope: SubscriptionScope,
     events: readonly DurableProofEvent[],
     writtenAt: number,
+    transaction?: Transaction,
   ): DurableEvent[] => {
     const key = scopeKey(scope)
     statements.ensureStream.run(
@@ -130,15 +163,44 @@ export function createEventRepository(
     const stream = statements.selectStream.get(key) as StreamRow | undefined
     if (!stream) throw new Error(`Event stream ${key} vanished inside its transaction`)
     const records: DurableEvent[] = []
-    const statusEvents: DurableProofEvent[] = []
     const replayStatus = (event: DurableProofEvent) => {
-      if (!changesSessionStatus(event)) return
+      if (!statusSessionOf(event) || !transaction) return
       const statusRecord = statements.selectByEventId.get(`${event.eventId}:status`) as
         ExistingEventRow | undefined
-      if (statusRecord) statusEvents.push(JSON.parse(statusRecord.event_json) as DurableProofEvent)
+      if (statusRecord) {
+        transaction.retriedStatus.push({
+          environmentId: scope.environmentId,
+          event: JSON.parse(statusRecord.event_json) as DurableProofEvent,
+        })
+      }
     }
     let head = stream.head_sequence
-    for (const event of events) {
+    // A turn's end closes what the turn left open, before the terminal and in
+    // its transaction (turn-closure.ts). The closes are read from the rows
+    // when the terminal is reached, so a child the same batch already closed
+    // is not closed twice. A terminal already written brings back the closes
+    // it wrote, so a retried publish carries them again with their cursors.
+    const queue: DurableProofEvent[] = [...events]
+    const closed = new Set<string>()
+    for (let index = 0; index < queue.length; index++) {
+      const event = queue[index]!
+      if (scope.type === 'thread' && isTerminal(event) && !closed.has(event.eventId)) {
+        closed.add(event.eventId)
+        const written =
+          statements.selectByEventId.get(event.eventId) !== undefined ||
+          statements.selectTombstone.get(event.eventId) !== undefined
+        const closes = written
+          ? closure.closedBy(event.eventId).map((eventId) => {
+              const row = statements.selectByEventId.get(eventId) as unknown as ExistingEventRow
+              return JSON.parse(row.event_json) as DurableProofEvent
+            })
+          : closure.closesFor(event)
+        if (closes.length > 0) {
+          queue.splice(index, 0, ...closes)
+          index -= 1
+          continue
+        }
+      }
       const record = DurableEventSchema.parse({
         cursor: { scope, epoch: stream.epoch, sequence: head + 1 },
         event,
@@ -188,51 +250,25 @@ export function createEventRepository(
         JSON.stringify(record.event),
         Date.parse(event.timestamp),
       )
-      const sessionId =
-        changesSessionStatus(event) && event.scope.type === 'thread'
-          ? event.scope.sessionId
-          : undefined
-      const before = sessionId ? readStatus(sessionId) : undefined
+      const sessionId = transaction ? statusSessionOf(event) : undefined
+      let entry = sessionId ? transaction!.tracked.get(sessionId) : undefined
+      if (sessionId && !entry) {
+        const before = readStatus(sessionId)
+        if (before) {
+          entry = {
+            environmentId: scope.environmentId,
+            announced: before,
+            lastEventId: event.eventId,
+            lastTimestamp: event.timestamp,
+          }
+          transaction!.tracked.set(sessionId, entry)
+        }
+      }
       project(event)
-      const after = sessionId ? readStatus(sessionId) : undefined
-      // Activity that unsettles a session rides the same environment event as
-      // its status, so a sidebar that never loads the thread still sees it.
-      const unsettled = !!before?.settled_at && after?.settled_at === null
-      // Done rides it too: set when a turn completes, cleared when the next starts.
-      const doneChanged = !!before && !!after && before.done_at !== after.done_at
-      // So does what the status alone does not say: a second request can
-      // change what a session waits on, and a turn ending or starting can
-      // leave it running only for its background work, or no longer.
-      const activityChanged =
-        !!before &&
-        !!after &&
-        (before.activity.waitingOn !== after.activity.waitingOn ||
-          before.activity.inBackground !== after.activity.inBackground)
-      if (
-        sessionId &&
-        before &&
-        after &&
-        (before.status !== after.status || unsettled || doneChanged || activityChanged)
-      ) {
-        statusEvents.push(
-          ProofEventSchemas['session.updated'].parse({
-            type: 'event',
-            name: 'session.updated',
-            eventId: `${event.eventId}:status`,
-            timestamp: event.timestamp,
-            scope: { type: 'environment', environmentId: scope.environmentId },
-            payload: {
-              sessionId,
-              status: after.status,
-              // Only when they apply: a status without them clears them.
-              ...after.activity,
-              ...(unsettled ? { settledAt: null } : {}),
-              ...(doneChanged
-                ? { doneAt: after.done_at === null ? null : new Date(after.done_at).toISOString() }
-                : {}),
-            },
-          }),
-        )
+      if (entry) {
+        entry.lastEventId = event.eventId
+        entry.lastTimestamp = event.timestamp
+        if (event.name === 'session.updated') entry.announced = stated(entry.announced, event)
       }
       head = record.cursor.sequence
       records.push(record)
@@ -241,18 +277,68 @@ export function createEventRepository(
     if (head !== stream.head_sequence) {
       statements.advanceHead.run(head, stream.head_sequence + 1, writtenAt, key)
     }
-    // Both streams and the session row commit together. Clients subscribed
-    // only to the environment receive status without loading thread history.
-    if (statusEvents.length > 0) {
-      records.push(
-        ...writeScope(
-          { type: 'environment', environmentId: scope.environmentId },
-          statusEvents,
-          writtenAt,
-        ),
+    return records
+  }
+
+  /**
+   * Once per session per transaction: one `session.updated` for whatever the
+   * transaction changed in the session's status, activity, settling or done
+   * time that its own events did not already state. It commits with the rows,
+   * so clients subscribed only to the environment see the status without
+   * loading thread history, and a batch that closes a question and then ends
+   * the turn publishes one change, not two.
+   */
+  const deriveStatus = (transaction: Transaction, writtenAt: number): DurableEvent[] => {
+    const byEnvironment = new Map<string, DurableProofEvent[]>()
+    const add = (environmentId: string, event: DurableProofEvent) => {
+      const list = byEnvironment.get(environmentId) ?? []
+      list.push(event)
+      byEnvironment.set(environmentId, list)
+    }
+    for (const { environmentId, event } of transaction.retriedStatus) add(environmentId, event)
+    for (const [sessionId, entry] of transaction.tracked) {
+      const after = readStatus(sessionId)
+      if (!after) continue
+      const before = entry.announced
+      // Activity that unsettles a session rides the same event as its status.
+      const unsettled = before.settled_at !== null && after.settled_at === null
+      // Done rides it too: set when a turn completes, cleared when the next starts.
+      const doneChanged = before.done_at !== after.done_at
+      // So does what the status alone does not say: a second request can
+      // change what a session waits on, and a turn ending or starting can
+      // leave it running only for its background work, or no longer.
+      const activityChanged =
+        before.activity.waitingOn !== after.activity.waitingOn ||
+        before.activity.inBackground !== after.activity.inBackground
+      if (before.status === after.status && !unsettled && !doneChanged && !activityChanged) {
+        continue
+      }
+      add(
+        entry.environmentId,
+        ProofEventSchemas['session.updated'].parse({
+          type: 'event',
+          name: 'session.updated',
+          eventId: `${entry.lastEventId}:status`,
+          timestamp: entry.lastTimestamp,
+          scope: { type: 'environment', environmentId: entry.environmentId },
+          payload: {
+            sessionId,
+            status: after.status,
+            // Only when they apply: a status without them clears them.
+            ...after.activity,
+            ...(unsettled ? { settledAt: null } : {}),
+            ...(doneChanged
+              ? { doneAt: after.done_at === null ? null : new Date(after.done_at).toISOString() }
+              : {}),
+          },
+        }),
       )
     }
-    return records
+    // The derived records are written with no transaction state: they state
+    // the pass itself.
+    return [...byEnvironment].flatMap(([environmentId, events]) =>
+      writeScope({ type: 'environment', environmentId }, events, writtenAt),
+    )
   }
 
   const write = (groups: readonly EventGroup[]): DurableEvent[] => {
@@ -268,9 +354,14 @@ export function createEventRepository(
     database.exec('BEGIN IMMEDIATE')
     try {
       const writtenAt = now()
-      const records = pending.flatMap(({ scope, events }) => writeScope(scope, events, writtenAt))
-      options.beforeCommit?.()
+      const transaction: Transaction = { tracked: new Map(), retriedStatus: [] }
+      const records = pending.flatMap(({ scope, events }) =>
+        writeScope(scope, events, writtenAt, transaction),
+      )
+      records.push(...deriveStatus(transaction, writtenAt))
+      options.beforeCommit?.(records)
       database.exec('COMMIT')
+      options.afterCommit?.(records)
       return records
     } catch (error) {
       try {
@@ -334,14 +425,50 @@ type SessionStatusRow = {
   background_tasks_json: string | null
 }
 
-function changesSessionStatus(event: ProofEvent): boolean {
-  return (
-    event.name === 'turn.started' ||
-    isTerminal(event) ||
-    event.name === 'interaction.requested' ||
-    event.name === 'interaction.resolved' ||
-    event.name === 'interaction.expired'
-  )
+type StatusState = SessionStatusRow & { activity: SessionActivity }
+
+/**
+ * The session an event can change the status of: a turn's start and end and
+ * every request event, and any `session.updated` (a background roster moves a
+ * resting session between idle and running; a producer may state a status).
+ */
+function statusSessionOf(event: ProofEvent): string | undefined {
+  if (event.scope.type === 'thread') {
+    return event.name === 'turn.started' ||
+      isTerminal(event) ||
+      event.name === 'interaction.requested' ||
+      event.name === 'interaction.resolved' ||
+      event.name === 'interaction.expired' ||
+      event.name === 'interaction.cancelled'
+      ? event.scope.sessionId
+      : undefined
+  }
+  return event.name === 'session.updated' ? event.payload.sessionId : undefined
+}
+
+/** What a `session.updated` itself states, laid over what was known before it. */
+function stated(
+  before: StatusState,
+  event: Extract<ProofEvent, { name: 'session.updated' }>,
+): StatusState {
+  const { status, settledAt, doneAt, waitingOn, inBackground } = event.payload
+  return {
+    ...before,
+    ...(status === undefined
+      ? {}
+      : {
+          status,
+          // A status says what goes with it; one that leaves these out clears them.
+          activity: {
+            ...(waitingOn ? { waitingOn } : {}),
+            ...(inBackground ? { inBackground: true as const } : {}),
+          },
+        }),
+    ...(settledAt === undefined
+      ? {}
+      : { settled_at: settledAt === null ? null : Date.parse(settledAt) }),
+    ...(doneAt === undefined ? {} : { done_at: doneAt === null ? null : Date.parse(doneAt) }),
+  }
 }
 
 function eventTurnId(event: DurableProofEvent): string | undefined {
@@ -357,6 +484,7 @@ function eventTurnId(event: DurableProofEvent): string | undefined {
     case 'interaction.requested':
     case 'interaction.resolved':
     case 'interaction.expired':
+    case 'interaction.cancelled':
       return event.payload.turnId
     default:
       return undefined

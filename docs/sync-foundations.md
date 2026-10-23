@@ -1,10 +1,12 @@
 # Sync foundations: design (phase F1)
 
-Status: revision 3.1. Revision 2 took in the gpt-6.1 and Fable reviews; revision 3 reworked liveness
+Status: revision 3.2. Revision 2 took in the gpt-6.1 and Fable reviews; revision 3 reworked liveness
 and flow control (§7.2, D13) after gpt-6.1's confirmation pass; 3.1 caps fragment size at 8 KiB so a
 sudden rate drop cannot trip the browser watchdog (C4). Appendix B says what was accepted,
 changed or rejected. No code in this phase. **Approved by the user on 2026-10-18**, with Q2
-(sidebar in F5) decided as "include".
+(sidebar in F5) decided as "include". Revision 3.2 adds §4.7: what the user decided after F2
+(X1, X2, S17, S18, S19, the crash-window seam), what stored events need across F3's format change,
+and the corrections F3's verification found. §4.7 cites the tree at ad1e856, not 606e2cc.
 Base: `main` at 606e2cc, protocol v16, migrations 1–19. PR #219 (session states, migration 20) is
 assumed to merge first; §10.2 lists every place it touches the same code.
 Audience: the builders and reviewers of phases F2–F7.
@@ -26,7 +28,7 @@ uncommitted working tree, `#219:` = `session-states` at 4c46f08).
 | D3  | Legacy open tools and thoughts under turns that have already ended | An idempotent **boot repair** through the repository emits close-only events for them (`tool.updated {status:'cancelled'}`, `message.reasoning {phase:'stop'}`). For a finished turn, the projector accepts only these monotonic closes and rejects every other late event. No migration rewrites rows and no epoch is bumped                                                                                                                                                                                                                                                                                                                                                 | Rule 2 has no exception. It ships in F3                                                                                                                                                                                                                                                                                                                                                                        |
 | D4  | Turn end: child events, or a terminal that carries the children?   | **Explicit child events, written before the terminal event in the same transaction.** The server builds them from the rows inside that transaction. The terminal's projection asserts nothing is left open. The derived `session.updated` is computed **once per session per transaction**                                                                                                                                                                                                                                                                                                                                                                                    | One write path per entity on both sides. Replay equals live. No `waiting→running→error` flicker                                                                                                                                                                                                                                                                                                                |
 | D5  | Turn `waiting`/`running` while questions are open                  | Every interaction event carries `turnState`                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   | The client sets the state, never derives it                                                                                                                                                                                                                                                                                                                                                                    |
-| D6  | Command responses                                                  | A response acknowledges its command and settles the client's overlay entry. **Only events and snapshots change server-owned state.** A response that must carry a change carries its durable record, applied by cursor; nothing on the chat path needs one. An overlay entry lives until its command **fails**, or until server state no longer shows the item pending                                                                                                                                                                                                                                                                                                        | One authoritative path. No regression from a retried `turn.send`. No flicker on `interaction.respond`                                                                                                                                                                                                                                                                                                          |
+| D6  | Command responses                                                  | A mutation's response acknowledges its command and settles the client's overlay entry. **Only events, snapshots and read answers (§4.7.10) change server-owned state.** A response that must carry a change carries its durable record, applied by cursor; nothing on the chat path needs one. An overlay entry lives until its command **fails**, or until server state no longer shows the item pending                                                                                                                                                                                                                                                                     | One authoritative path. No regression from a retried `turn.send`. No flicker on `interaction.respond`                                                                                                                                                                                                                                                                                                          |
 | D7  | The ordered queue                                                  | Take #213's `event-delivery.ts` and extend it into one process-wide FIFO. `workspace.*` no longer skips it. A transient flushes the batcher first, carries `after` (its scope's head cursor), and goes only to subscribers. The client applies a transient only when `after` equals its cursor. A send that fails closes that connection. The batcher stays                                                                                                                                                                                                                                                                                                                   | Delivery order = commit order. Lost records are detected                                                                                                                                                                                                                                                                                                                                                       |
 | D8  | Replay framing                                                     | One logical answer, built in the same tick the subscription is registered, with no cap. The transport splits it into fragments. The answer is complete at its last fragment. Live events follow it in the FIFO                                                                                                                                                                                                                                                                                                                                                                                                                                                                | Point-in-time consistency and an atomic apply, without holding SQLite read snapshots open                                                                                                                                                                                                                                                                                                                      |
 | D9  | Replay or snapshot                                                 | Snapshot when the log no longer has the events. Otherwise compare **exact** sizes: replay bytes are `SUM(octet_length(event_json))` plus the exact envelope. The snapshot is serialized only when replay bytes exceed a cheap exact lower bound on its size. Ties go to replay                                                                                                                                                                                                                                                                                                                                                                                                | A comparison, as rule 4 says, with no estimation constants                                                                                                                                                                                                                                                                                                                                                     |
@@ -107,8 +109,10 @@ Each phase must establish or preserve these, and the reviewers check against the
   watchdog, and it closes only silent connections. Flow control (a send window and the lagging
   rule) bounds server memory, and it never closes a live connection or drops content.
 - **I9, convergence.** The F2 property holds (§8).
-- **I10, responses do not author state.** A command response settles its command and its overlay
-  entry. It never writes server-owned client state.
+- **I10, mutation responses do not author state.** A **mutation** command's response settles its
+  command and its overlay entry, and never writes server-owned client state. A **read** command's
+  answer is the server stating a fact and is applied as such until F5's whole-environment snapshot
+  replaces it (§4.7.10).
 - **I11, rows are the truth.** Server memory (thread records, caches, the workspace registry)
   follows committed records and never runs ahead of a failed write.
 
@@ -208,8 +212,8 @@ to read one on demand, and the ticket ordering goes (§3.6 row 26).
 Specified with the rule that needs them: §4.5 (rule 2), §5.3 (rule 3), §6.3 (rule 4). The ones
 only rule 1 needs:
 
-- **Responses keep their shapes.** The client uses them only for ids and for settling overlay
-  entries. That needs no schema change, and so no compatibility break beyond the version bump.
+- **Responses keep their shapes.** The client uses a mutation's response only for ids and for
+  settling overlay entries; read answers stay applied as facts (§4.7.10). That needs no schema change, and so no compatibility break beyond the version bump.
   - The `turn.send` answer's `TurnStart` is used for its `turnId` and `commandId`.
   - The `session.create` answer is used for its `sessionId` and `threadId`.
 - `TurnSchema` gains `commandId` (from the existing `turns.command_id` column), so
@@ -515,7 +519,7 @@ The batcher keeps their order: `coalesceDeltas` merges only delta into delta
 | --------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----- |
 | Workspace **register**                                                | `upsert` inserts the row (`workspaces.ts:178-179`), `refresh` may write availability (`:309`), then `register` emits (`:397-398`). Each step is its own statement, outside any event transaction                                                                           | One `workspace.updated` whose projection inserts the row, in one transaction                                                                                                                                                                                                                                                                                                                      | F3    |
 | Workspace **rename**                                                  | `statements.rename` (`workspaces.ts:166`) writes before the event; the projector writes the name again (`event-projection.ts:388-394`). Two writers                                                                                                                        | The projection is the only writer                                                                                                                                                                                                                                                                                                                                                                 | F3    |
-| Workspace **availability and git**                                    | `refresh` writes availability (`workspaces.ts:309`) and emits. It is called from `list()` (`:417-423`), so **building the environment snapshot writes and appends events** (`server.ts:306` → `replay.ts:86`)                                                              | Observation is a separate step, run on command paths (`resolve`, `get`, `availability`, `resolvePath`, register, `markUsed`). It appends `workspace.updated` only when availability or the git reading changed. `list()` and the snapshot read rows only. The git reading is stored (`workspaces.git_json`, migration 21), so a row fully describes the workspace without touching the filesystem | F3    |
+| Workspace **availability and git**                                    | `refresh` writes availability (`workspaces.ts:309`) and emits. It is called from `list()` (`:417-423`), so **building the environment snapshot writes and appends events** (`server.ts:306` → `replay.ts:86`)                                                              | Observation is a separate step, run on command paths (`resolve`, `get`, `availability`, `resolvePath`, register, `markUsed`). It appends `workspace.updated` only when availability or the git reading changed. `list()` and the snapshot read rows only. The git reading is stored (`workspaces.git_json`, migration 22), so a row fully describes the workspace without touching the filesystem | F3    |
 | Workspace **recency**                                                 | `markUsed` writes `last_used_at` (`workspaces.ts:523`) and emits. `lastActivityAt` is computed at read time from `MAX(sessions.updated_at)` (`:151`, `:242-245`), and the client mirrors it (§3.6 row 14)                                                                  | `markUsed` becomes an event. When a session's `updated_at` moves its workspace's `lastActivityAt`, the repository emits a derived `workspace.updated` in the same transaction, once per workspace per transaction, built from rows only                                                                                                                                                           | F3    |
 | Workspace **capabilities.providers**                                  | Computed per listing from provider health (`server.ts:247-251` → `workspaces.ts:238`), so it changes with health without any workspace event                                                                                                                               | It leaves the durable workspace record. Provider health entries gain a server-computed `available` flag (`ready \|\| warning`, today's rule at `server.ts:247-251`), and the composer reads it there. A current reading stays a current reading                                                                                                                                                   | F3    |
 | Workspace **removal**                                                 | `DELETE FROM workspaces` (`workspaces.ts:145`, `:404-413`) cascades through FKs (`migrations.ts:72-141`); only `workspace.removed` is emitted, and its projection is a no-op (`event-projection.ts:395-397`)                                                               | One transaction: a `session.deleted` per session (deepest children first), a `draft.deleted` for each cascaded draft, then `workspace.removed`, whose projection deletes the row. The registry cache changes after commit                                                                                                                                                                         | F3    |
@@ -566,12 +570,12 @@ bookmark converges.
 - Provider health entries gain `available: boolean`.
 - `composer.preferences.updated` gains `revision`. The preference set commands' acknowledgements
   carry it.
-- **Migration 21:** additive only.
-  - `turns.failure_message TEXT` (`failure_reason` exists but is never read: `queries.ts:60-65`,
-    `session-store.ts:274-286`);
-  - `turns.interrupted_by TEXT`;
-  - `workspaces.git_json TEXT`;
-  - `workspace_composer_preferences.revision INTEGER NOT NULL DEFAULT 0`.
+- **Migrations 21 and 22** (additive only; numbering per §4.7.9):
+  - 21 (PR A): `turns.failure_message TEXT` (`failure_reason` is selected but dropped when mapped,
+    §4.7.8 item 6); `turns.interrupted_by TEXT`; `event_streams.replay_floor` and the stored-format
+    record (§4.7.7);
+  - 22 (PR B): `workspaces.git_json TEXT`; `workspace_composer_preferences.revision INTEGER NOT NULL
+DEFAULT 0`.
 - **Protocol** v16 → v17, unless #219 takes v17 first. As written it does not bump (its
   `docs/session-status.md`). The handshake requires an exact match (`negotiation.ts:131`).
 
@@ -598,6 +602,765 @@ bookmark converges.
 - `updated_at` in `persistRuntimeSession` (`thread-service.ts:422`).
 - The response-driven writers, and then `confirmTurnStart` (§3.4).
 - #212's epoch bump and SQL tool cancel, never ported.
+
+### 4.7 Additions decided after F2 (revision 3.2)
+
+The user decided these on 2026-10-20, after F2's harness found them. All of them are F3 work.
+The section was reworked on 2026-10-21 after the gpt-6.1 and Fable reviews.
+
+References in this section are to ad1e856, the F2 branch: main at 4fc221d (with #219) plus tests.
+Main has since moved to 49e3515 (#222, #223). `apps/server/src`, `packages/protocol/src` and
+`packages/agent-runtime/src` are byte-identical there. Of the client files, only
+`environment-client/src/{state,types}.ts` moved, with #222, and their references here are to
+ad1e856.
+
+#### 4.7.1 X1: a title is not activity
+
+**(a) Today**
+
+- Every title write stamps `sessions.updated_at` with the event time. That is `updateSessionTitle`
+  (`apps/server/src/db/event-projection.ts:45-59`, `updated_at = ?4` at `:55`), and every source
+  reaches it:
+  - a rename (`thread-service.ts:2071-2135`);
+  - a generated title, and a regenerated one;
+  - the first-prompt fallback and a provider's own name (`applyTitle`, `:1097-1125`).
+- The client does the same: any `session.updated` with a title sets `updatedAt` to the event time
+  (`packages/environment-client/src/state.ts:471`).
+- The server computes `lastActivityAt` at read time, as
+  `max(MAX(sessions.updated_at), workspaces.last_used_at)` (`workspaces.ts:149-152`, `:223-246`).
+  A rename therefore moves the workspace's recency on the server. The client's mirror
+  (`touchWorkspaceActivity`, `state.ts:271-288`) moves only on `session.created` and turn events
+  (`:427-435`, `:534`). That gap is F2's X1.
+- In-memory mode stamps titles too, in three places: `applyTitle` (`thread-service.ts:1124`),
+  `saveGeneratedTitle` (`:1205`) and rename (`:2120`).
+
+**(b) Target**
+
+- **No title write moves `updated_at`, whatever its source:** `user`, `generated`, `provider` or
+  `fallback`. The user named rename, generated and fallback. A provider's name for its session is
+  the same bookkeeping, so it follows the same rule.
+- **The stored provenance mapping does not change.** The wire's `'generated'` is stored as
+  `title_source = 'provider'` plus `title_generated = 1` (`event-projection.ts:409-415`). The
+  column's CHECK allows only `fallback`, `provider` and `user` (`migrations.ts:78-80`).
+- **Activity is unchanged otherwise.** Activity is everything that moves `updated_at` today, minus
+  titles:
+  - `session.created`;
+  - every projection that sets `sessions.status`: `turn.started`, the terminals, and the
+    interaction events (`event-projection.ts:60-62` and its callers);
+  - a producer's status-bearing `session.updated`.
+- **Every move of `updated_at` is announced.** The per-transaction pass of §4.3 compares
+  `updated_at` as well as status and activity. Its `session.updated` carries `updatedAt`, read
+  from the row. This covers moves that today emit nothing, such as a second request while a session
+  is already `waiting` (§4.7.8, item 3).
+- **Workspace recency is derived in the same pass.** For each workspace whose sessions or
+  `last_used_at` the transaction touched, the pass computes `lastActivityAt` from the rows before
+  and after, with the registry's own function. When it changed, the pass emits one
+  `workspace.updated` built from the rows. The change may go backwards: deleting a workspace's
+  newest session lowers its `lastActivityAt`.
+- **The client reads `updatedAt` only from payloads:** the `session.created` summary (§4.7.2),
+  `session.updated.updatedAt`, listings, snapshots and `session.open`.
+
+**(c) Protocol and schema**
+
+- `session.updated.updatedAt` (already in §4.5).
+- The derived `workspace.updated` needs a workspace that rows alone describe, so X1's recency half
+  ships with §4.4's `git_json` and the removal of `capabilities.providers`.
+- No migration for X1 itself.
+
+**(d) Deleted**
+
+- `updated_at = ?4` in `updateSessionTitle`.
+- The event-time rule at `state.ts:471`.
+- `touchWorkspaceActivity` and its three callers (§3.6 row 14).
+- The three in-memory title stamps (`thread-service.ts:1124`, `:1205`, `:2120`).
+
+**(e) Edge cases**
+
+- **Rows already stamped by a title stay as they are.** The value is not wrong; an old policy
+  produced it. A repair would emit events for nothing.
+- **A fallback title in the same batch as `turn.started`.** The turn moves the time and the title
+  does not, so the session keeps the turn's time.
+- **Session paging.** `session.list` pages by `(updated_at, session_id)` (`session-store.ts:175-197`).
+  Renames stop reordering pages while a client walks them.
+- **The harness.** S9 moves the catalog under the walk with renames (F2 evidence, S9). After X1
+  renames no longer move it, so S9 would converge because its construction lost its mover, not
+  because F5 fixed it. F3 rebuilds that mover from real activity (turns on the renamed sessions)
+  and keeps the cause. The renames still make the replay gap.
+
+#### 4.7.2 X2: `session.created` carries a `SessionSummary`
+
+This moves from F5 (§3.3, §6.3) into F3.
+
+**(a) Today**
+
+- **The payload is a bare `Session`** (`packages/protocol/src/events.ts:63-67`,
+  `domains.ts:87-97`), with no provider, status or time.
+- **The client fills the gaps.** `upsertSession` takes the event time and what it already holds
+  (`state.ts:151-196`, `:427-435`). `providerId` stays absent until a listing, so the sidebar falls
+  back to OpenCode (`DEFAULT_PROVIDER_ID`, `WorkspaceSidebarView.tsx:77`, used at `:1343`, `:1810`,
+  `:1853`).
+- **The projection learns the provider from a host resolver.** That is
+  `sessionProviderId` (`server.ts:290-299`), fed by the thread service's `announcedProviders`
+  (`thread-service.ts:594-637`).
+- **The session-scope snapshot also strips the summary to a bare `Session`**
+  (`apps/server/src/db/replay.ts:98-106`).
+- **Title provenance disagrees between memory and row at creation.** The insert writes no
+  `title_source` (`event-projection.ts:31-35`). The in-memory record says `fallback` for a session
+  created with a title (`thread-service.ts:1888`) and `provider` for a child its provider named
+  (`:1374`).
+
+**(b) Target**
+
+- **The payload is a `SessionSummary`.** The producer builds every field the projection will
+  write:
+  - `providerId`;
+  - `title`, and `titleSource` with the value the in-memory record holds;
+  - `status: 'idle'`;
+  - `updatedAt`: the event time;
+  - `parentSessionId`;
+  - `settledAt: null` and `doneAt: null`.
+
+  The payload is in the **canonical form** `sessionRowToSummary` emits. That form writes
+  `settledAt` and `doneAt` as `null` (`session-store.ts:163-164`) and leaves out what a new row
+  does not have: background work, `waitingOn`, `inBackground` and `composer`.
+
+- **The projection inserts the row from the payload,** including `provider_id` and `title_source`.
+  Inside the same transaction it reads the row back with `sessionRowToSummary` and **asserts the
+  two canonical forms are equal**. "Built from the row the projection wrote" is checked, not assumed.
+- Child sessions are announced the same way, with the parent's provider.
+- **The session-scope snapshot carries the `SessionSummary`** that it already reads.
+- **The client's `SessionSummary` makes `providerId` and `updatedAt` required.** Every source
+  carries both: `session.created`, listings, both snapshots and `session.open`.
+  - The `?? DEFAULT_PROVIDER_ID` fallbacks are deleted, so the type checker proves that no path
+    lacks a provider.
+  - **The response writers stay until their overlay lands.** The `createSession` writer (§3.6 row 9) and the rename and regenerate writers (row 28) stay until `pending.creates` and
+    `pending.renames` replace them, in the same PR as `pending.sends` (§4.7.10).
+  - Until then `createSession` fills the required fields from what it already has:
+    `input.providerId` and the answer's `announcedAt` (`websocket.ts:1229`).
+- Stored `session.created` events in the old shape: §4.7.7.
+
+**(c) Protocol and schema**
+
+- `session.created.payload.session` becomes `SessionSummarySchema`.
+- The session-scope snapshot's `session` becomes a `SessionSummary`.
+- No migration.
+
+**(d) Deleted**
+
+- The `sessionProviderId` resolver and `announcedProviders`.
+- The client's `at` fallback in `upsertSession`.
+- The `?? DEFAULT_PROVIDER_ID` fallbacks.
+
+**(e) Edge cases**
+
+- **A session created with a title now stores `title_source = 'fallback'`** where the row held
+  NULL. Every reader treats the two alike: the projector's guard, `shouldReplaceSessionTitle`, and
+  no UI reads `titleSource`. Memory and row now agree from the start.
+- **The row's own defaults** (`status`, timestamps, the `null` settle and done times) must equal
+  the payload. The assertion rolls back any drift.
+- **A canonical `null`** also lets the client tell "none" from "not said", which its
+  `settledOf`/`doneOf` merge cannot do with an absent field.
+- **The desktop app** builds summaries from its own Convex data. A required `providerId` in the
+  shared type is part of the §3.5 gate.
+
+#### 4.7.3 S17: a command for a chat that is not in memory
+
+**(a) Today**
+
+- **After a restart the thread service holds no records.** Only `session.open` rebuilds them
+  (`restoreSession`, `thread-service.ts:710-753`; its only call is `:2321`).
+- **Thread and session commands answer as if the chat did not exist:**
+  - `turn.send` answers "Thread not found." (`:1466-1468`), unless the send is a retry the log
+    already holds (`:1460-1465`);
+  - `turn.interrupt` does the same (`:2420-2423`);
+  - `interaction.respond` checks the log first and answers "already resolved" for an interaction
+    only the log knows (`:2496-2511`);
+  - the composer's model, mode and config setters resolve the runtime through
+    `resolveRuntimeSession` (`thread-service.ts:1682-1689`) and answer "Session not found."
+    (`composer-service.ts:291-297`).
+- **The client does not reopen a session it still subscribes to** (`websocket.ts:1073-1083`).
+  `recover()` resubscribes every scope first (`:1022-1023`), so a reconnect after a restart never
+  sends `session.open`.
+- **The wire has no per-process identity.** Stream epochs survive restarts (§4.1), and the
+  bootstrap carries none (`server.ts:461-468`).
+
+**(b) Target**
+
+1. **One loader.** `loadSession(sessionId, context)` is factored out of `session.open`'s branch for
+   a session not in memory (`:2283-2327`). It runs the same checks in the same order:
+   1. summary;
+   2. provider capability;
+   3. provider health;
+   4. workspace;
+   5. threads.
+
+   Then it asks the runtime for the session and stamps whatever identity comes back (§4.7.4).
+   `session.open` becomes the loader plus its answer.
+
+   - **Access checks stay where they are.** The transport's authorization runs first
+     (`apps/server/src/websocket.ts:409`).
+   - `turn.send` still resolves the workspace with the caller's context before it answers anything,
+     a cached retry included (`thread-service.ts:1447-1455`).
+
+2. **Every command that needs a session's records loads it first, then serves the command as if
+   the session had been open.**
+   - `turn.send` loads the session.
+   - So do the composer setters, through `resolveRuntimeSession`.
+     - Today `resolveRuntimeSession(sessionId)` takes no `CommandContext`, and
+       `composer-service.ts:292-298` has none to give.
+     - F3 passes the caller's context through to the loader, so the workspace check audits the
+       right client.
+   - `turn.interrupt` does not need the provider, but it no longer answers "not found" for a thread
+     the log holds:
+     - when the rows hold no open turn, it answers "Turn is not in progress.";
+     - when they hold one (a failed recovery, §4.1 point 4), it writes `turn.interrupted {reason:
+'user'}` through the terminal path.
+   - `interaction.respond` keeps its log check.
+3. **Loading is synchronous.** The records exist before the command returns. The provider load is
+   the record's `runtimeSession`, which every prompt already awaits. A send right after a restart
+   is accepted at once, and its prompt waits for the provider.
+4. **Records dropped while their rows survive end every turn started on them.** Each such turn
+   ends with `turn.failed {reason: 'provider_error'}` through the terminal path, before the records
+   are dropped.
+
+   What main does, re-verified after Fable's review (revision 3.2 first described it wrongly):
+   - **A single-thread session whose own load fails ends its turn correctly.** The restore catch
+     (`:743-748`) calls `dropSessionRecords` (`:647-668`), which only forgets the records and does
+     not call `abandonTurn`. `sendTurn`'s catch (`:1584-1594`) then still sees its own active turn
+     and writes `turn.failed`.
+   - **The gap is a record dropped by something else while its own `runtimeSession` succeeds.**
+     For example, another thread of a multi-thread session fails to load. The send's `.then` returns
+     early (`:1552-1557`) because the record is no longer in the map. `promptStarted` stays unset,
+     so the next handler (`:1574`) writes no terminal, and the turn row stays `running` until the
+     next boot.
+   - **Session deletion and workspace closing are not affected.** They also drop records
+     (`:1662`, `:2128` → `abandon`), but their rows go with them, so they need no terminal.
+
+   The C3 unit test: records dropped before `runtimeSession` settles → the turn still ends through
+   the terminal path.
+
+5. **The client's backup.** The server reports a per-process `instanceId` (random per boot) in the
+   bootstrap and the handshake answer. The client remembers it per environment. When it changes,
+   the resync reopens the active session even though it still holds the session's scopes.
+   - This is not the fix: with points 1 to 3, a send works without it.
+   - It starts the provider before the user types.
+   - It re-checks the session, and an open failure shows as it does today.
+
+**(c) Protocol and schema**
+
+- `BootstrapResponse` gains `instanceId`, required in the bumped version.
+- No migration. S18 adds one error code (§4.7.4).
+
+**(d) Deleted**
+
+- "Thread not found." for a thread the log holds (`turn.send`, `turn.interrupt`).
+- "Session not found." from the composer setters for a persisted session.
+- The reopen workaround in the harness: S17's reopen, and the seeded runs' `stale` reopen
+  (`model.test.ts:48-58`, `:265`).
+
+**(e) Edge cases**
+
+- **The provider is unhealthy, the workspace is missing, or the provider cannot load sessions.**
+  The command gets the answer `session.open` would give, not "not found".
+- **Two commands race for one unloaded session.** The first creates the records synchronously and
+  the second finds them.
+- **A retried `turn.send`** that the log holds is answered from the log, without loading
+  (`:1460-1465`).
+- **A thread whose recovery failed** (§4.1 point 4) refuses a new send with `conflict` after
+  loading.
+- **The client's reopen racing the user's open** is S19 (§4.7.5).
+- **A composer change loads the session,** which may start a provider process. The user asked to
+  change that session, so that is expected.
+- **In-memory mode** has nothing to load and is unchanged.
+
+#### 4.7.4 S18: a session left without a provider identity
+
+**(a) Today**
+
+- **Creating a session writes the session before the provider exists.**
+  - `session.create` writes `session.created` and `thread.created` in one `appendAtomic`
+    (`thread-service.ts:1849-1864`), then answers.
+  - Only then does it ask the provider for a session (`ensureSession`, `:1866-1881`), and only
+    after that does it stamp the identity (`persistRuntimeSession`, `:436-443`).
+  - A first message writes `turn.started` before the provider session exists (`:1952-1981`,
+    `:1506-1528`). `runtime.prompt` runs only after the stamp, because it awaits `runtimeSession`
+    (`:1547-1571`), which includes the stamp.
+- **A hard kill between the two leaves a row with `provider_session_id` NULL.** `session.open`
+  refuses it on every attempt ("The provider session identity is unavailable.", `:2297-2304`).
+- **Only a hard kill shows it.** A graceful shutdown waits for pending starts
+  (`packages/agent-runtime/src/session/SessionRuntimeRegistryImpl.ts:388`).
+- **Child sessions have their own window.** The rows and the stamp are two commits with no await
+  between them (`thread-service.ts:1364`, `:1391-1393`).
+- **The runtimes already recreate a session whose stored identity they do not know.**
+  - ACP: a `session/load` answered "not found" falls through to `session/new`
+    (`AcpSessionRuntimeImpl.ts:531-552`); any other load failure fails the start.
+  - Claude: `resolvableSessionId` drops an id the CLI does not know and starts fresh
+    (`claude/ClaudeSessionRuntime.ts:647-665`).
+
+  Both report `state: 'created' | 'loaded'` (`AcpSessionRuntimeImpl.ts:524-528`, `:570`;
+  `backends/Backend.ts:10`).
+
+- **Nobody re-stamps on resume.** `restoreSession` resolves `runtimeSession` to the id the
+  runtime returns (`thread-service.ts:729-734`), but stamps nothing. After a fallthrough the row
+  keeps the stale id, so the next boot loads it again. OpenCode keeps every session it opens, so it
+  gains one empty session each time.
+
+**What each provider does** (only three exist: `packages/agent-contract/src/providers.ts:4`):
+
+| Provider | Creation                                                                                                                                    | Created twice                                                                                                                                                                          | Abandoned half-way                                                                             | Fresh creation on the next open             |
+| -------- | ------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------- | ------------------------------------------- |
+| OpenCode | ACP `session/new` (`AcpSessionRuntimeImpl.ts:554-570`); the agent assigns the id                                                            | One extra empty "New session" in OpenCode's own history (`opencode.ts:98-101`)                                                                                                         | Same: if the agent finished, one empty session remains in its storage. No prompt was ever sent | Safe; at worst one empty orphan in OpenCode |
+| Cursor   | ACP `session/new`; nothing is kept for a session that was never prompted (`cursor.ts:286-292`)                                              | Nothing left behind                                                                                                                                                                    | Nothing durable remains                                                                        | Safe                                        |
+| Claude   | The runtime picks a UUID before the CLI starts (`ClaudeSessionRuntime.ts:461-467`); `query()` starts with an empty input queue (`:523-527`) | Two UUIDs; at most one orphan transcript, if the CLI writes one before any prompt (not verified; the probe passes `persistSession: false` to avoid one, `ClaudeProbeRuntime.ts:94-97`) | No prompt was pushed                                                                           | Safe                                        |
+| Codex    | No runtime in this repo. It appears only in a plan (`docs/claude-codex-integration-plan.md`) and title generation                           | —                                                                                                                                                                                      | —                                                                                              | Decided by the same invariant when it lands |
+
+**(b) Target: one path, driven by what the runtime reports**
+
+- **The loader (§4.7.3) always calls `ensureSession(route(record, identity?))`,** passing the
+  stored identity when there is one. It **stamps the identity the runtime returns before any prompt
+  may use it** whenever:
+  - the result's `state` is `'created'`; or
+  - the returned `sessionId` differs from the stored identity.
+
+  The stamp is §4.4's identity-only stamp, and it is part of `runtimeSession`, which every prompt
+  awaits.
+
+  This applies to **root sessions**. A child session is loaded under a load-only policy that
+  never creates (see (e)).
+
+- **For a root session, that one rule covers three cases:**
+  - a NULL identity (S18): the runtime creates;
+  - an identity the agent no longer knows: today's silent fallthrough, now stamped;
+  - identity drift on resume.
+
+  A test drives the ACP fallthrough (load answers "not found", then `session/new`) and checks that
+  the new identity is durable before the prompt.
+
+- **Why recreating is safe: one invariant, now stated and tested.** No prompt reaches a provider
+  before the session's identity is durable.
+  - For a created session this holds by construction today: the prompt awaits `runtimeSession`
+    (`:1547-1571`), and the stamp is part of it (`:1866-1881`).
+  - F3 extends it to every load and adds a test for the order.
+  - A row without an identity is therefore a session whose provider never received anything.
+- **The first turn.** Boot recovery (§4.1) has already interrupted it with events. The user
+  resends; nothing is replayed to the provider automatically.
+- **A failed start keeps the session eligible.** `rollbackSession` (`session.deleted`) applies only
+  while `session.create` is in flight. Later:
+  - a start that fails before any prompt leaves the row as it was, with no identity;
+  - any turn it had started ends with `turn.failed` (§4.7.3 point 4);
+  - the next command retries.
+
+  Such a failure is not "prior provider output", because the prompt never left: it waits for the
+  stamp. A test checks that a retry succeeds after one transient start failure.
+
+- **The legacy-output exception of the first draft is dropped.** It would have refused a
+  recreation that the runtimes already do silently on every stale identity. The question was
+  whether the user's database holds root rows it would apply to: it holds none.
+  - Measured on a copy, 2026-10-21: 133 sessions, **0 without a provider identity** (roots or
+    children).
+  - A10 counts again before PR A merges. If that count is not zero, the rows and their ages go to
+    the user for a decision before the rule ships.
+- **A permanent refusal is explicit.** Only a child session can be refused now (below).
+  - It gets a distinct error code, `session_unrecoverable`, with retry policy `never`.
+  - The message says why and what to do: "This chat's history lives in the agent and can't be
+    reopened. Delete it to remove it."
+  - The open-failure UI (`ChatWorkspace.tsx:37-79`) offers **delete**, not "Try again", for this
+    code.
+  - No new session status.
+- **The alternative, an evented "could not start" state with retry and delete, is not needed.**
+  No provider makes recreation unsafe. That state would add a session status, a retry command and
+  UI for a case the server fixes by itself.
+
+**(c) Protocol and schema**
+
+`ErrorCodeSchema` gains `session_unrecoverable` (`packages/protocol/src/errors.ts:3-14`), with
+retry policy `never`.
+
+**(d) Deleted**
+
+- The refusal at `:2297-2304` for root sessions.
+- The model run's orphan bookkeeping (`model.test.ts`, `orphaned`).
+
+**(e) Edge cases**
+
+- **Child sessions are not recreated.** Their transcript lives in the provider, so a fresh session
+  would lose it.
+  - **F3 closes their window.** A child's identity travels with the write that creates its row:
+    it is an option on that `appendAtomic` call, and the `session.created` projection reads it from
+    the call. There is no long-lived resolver map to clear.
+  - **A legacy child row without an identity gets `session_unrecoverable`.** The copy has none.
+  - **A child with an identity is loaded with an explicit load-only policy** (added after
+    gpt-6.1's confirmation pass). Today the route carries no such policy
+    (`thread-service.ts:428`), and the runtimes fall through to a new session when the stored id is
+    unknown (`AcpSessionRuntimeImpl.ts:531-552`, `claude/ClaudeSessionRuntime.ts:647-665`).
+    - The route gains `load: 'require'`, set for every session with a `parentSessionId`. The
+      runtime keeps the policy for the thread, so its own respawn inside `runtime.prompt` uses it
+      too (`AgentRuntime.ts:1222-1254`).
+    - Under that policy a "not found" load fails the start with a typed "session unknown" error,
+      instead of creating. The loader maps that error to `session_unrecoverable` before anything
+      is created, stamped or prompted. The stored identity is unchanged.
+    - The stamping rule of (b) therefore never sees `created` for a child.
+    - Test (C4): a child with a non-null identity whose load answers "not found" creates no
+      session, keeps its stored identity, and gets the non-retryable failure. The test covers both
+      the initial load and a respawn.
+- **The workspace or the provider is unavailable.** The loader gives the same answers as any open.
+  The row stays as it is, and the next command retries.
+- **The new identity cannot collide** with `UNIQUE (provider_id, provider_session_id)`
+  (`migrations.ts:87`): it is new.
+- **The runtime's own respawn.** A provider process the registry reaped and respawns inside
+  `runtime.prompt` loads with `args.sessionId ?? remembered` (`AgentRuntime.ts:1222-1254`).
+  - If that load also fell through to `session/new`, the server would not see the new id.
+  - Build step C4 checks whether that path can create.
+  - If it can, the runtime reports the new identity through a callback, and the server stamps it
+    before the prompt is sent. If it cannot, a test pins that.
+
+#### 4.7.5 S19: an overtaken open resolves early
+
+**(a) Today**
+
+- `openSession` bumps a generation (`packages/environment-client/src/websocket.ts:1243`).
+- An open that a newer one overtook returns as soon as its own answer lands (`:1281`), before the
+  chat is hydrated or subscribed.
+- After a reload, the resync's own reopen (`:1078-1083`) overtakes the user's open. F2 saw this 15
+  times in 15. A turn sent at that moment is not owed to the client live, and the chat arrives later
+  by snapshot.
+
+**(b) Target**
+
+- **An open resolves successfully only when its chat is loaded and subscribed:** every thread
+  `ready` and the session's scopes subscribed.
+  - A thread whose hydration fails makes the open reject with that failure. The store still marks
+    the thread `failed`, and the history retry shows as today.
+  - Today an open resolves even then (`websocket.ts:1295-1308` catches per thread).
+- **Something else may overtake it.** `openGeneration` moves on another open, on
+  `setActiveSession` (`:1600`), on a close (`:416`) and on `dispose` (`:1645`). Each source has its
+  own outcome:
+  - **A newer open of the same session:** the overtaken open follows the newest open's outcome,
+    through the chain until no newer open of that session exists.
+  - **An open of another session, or `setActiveSession`:** it rejects with a distinct, typed client
+    error, `superseded`. Callers treat it as "nothing to do".
+  - **A close or `dispose`:** it rejects with the transport's error, as a pending command does
+    (`rejectAllPending`). That rejection is never swallowed.
+- **The generation is checked again after hydration,** not only when the answer lands. An open
+  that hydrated after being overtaken therefore never reports success for the old selection.
+- **No caller shows an error for `superseded`.** The callers, checked:
+  - `environment-application.tsx:754`: `openSessionLatest`, awaited at `:1013`, `:1016` and
+    `:1104`, and `.catch(fail)` at `:931` and `:1107`;
+  - `environment-application.tsx:1715`: the history retry sets an error;
+  - `ChatWorkspace.tsx:72` and `apps/web/src/components/session-workspace.tsx:71`, `:85`: these
+    catch everything already.
+
+  `fail`, `openSessionLatest` and the history retry gain an `isSuperseded(error)` check. The mock
+  client (`mock.ts`) follows the same rules. Desktop has its own `openSession` and is not affected.
+
+**(c) Protocol and schema**
+
+None. `superseded` is a client-side error code of `EnvironmentClientError`, not a wire code.
+
+**(d) Deleted**
+
+The silent returns at `:1281` and `:1328` for an overtaken open.
+
+**(e) Edge cases**
+
+- **The newest open of the same session fails:** the overtaken one rejects with the same error.
+- **A chain cannot hang.** A disconnect fails every pending command, and each thread's hydration
+  settles.
+- **Opens of A, then B, then A.** The first open of A follows the third, which is the newest open
+  of A when the first one's answer lands. The open of B rejects `superseded`.
+- **Only the newest open applies a `not_found` removal or an open failure** to the store, as
+  today.
+
+#### 4.7.6 The crash-window seam (W1–W7)
+
+**(a) Today**
+
+- **The repository has the hook.** `EventRepositoryOptions.beforeCommit`
+  (`event-repository.ts:28-29`) runs once per write, just before `COMMIT` (`:272`). It covers
+  `appendEvents`, `appendGroups`, `appendAtomic` and `finalizeTurn`.
+- **`startServer` cannot pass it.** `createPersistentEventService` accepts it, but `startServer`
+  passes only `epoch`, `sessionProviderId` and `onError` (`server.ts:286-301`), and `ServerConfig`
+  has no field for it (`config.ts:18-81`). Only `tests/event-repository.test.ts` uses it.
+- **§4.4 says it "exists for exactly this". That is not true of today's windows.** The workspace
+  and composer row writes run on their own connections (`workspaces.ts:128`,
+  `composer-store.ts:33`), and the runtime stamp runs outside `write()`. The seam becomes the
+  right one only once F3 makes those writes projections.
+
+**(b) Target**
+
+- **A test-only `ServerConfig` field, inert unless a test supplies it:**
+  `commitHooks?: { beforeCommit?(records), afterCommit?(records) }`, passed to the repository.
+  - `beforeCommit` now receives the records about to commit. Existing callers ignore the argument.
+  - `afterCommit` runs after `COMMIT`, before `write` returns.
+- **The server child arms them over IPC:** "SIGKILL at `before` (or `after`) on the next commit
+  whose records include an event matching this name and predicate".
+  - `before` proves both the row and the event are absent.
+  - `after` proves both are present, and the event, never published, reaches a client by replay.
+- **The tests.** Each kills, restarts on the same data, and checks two things: the rows and the
+  log agree, and a client that resumes from its pre-kill bookmark converges.
+
+| Test | Pair                    | Kill on the commit holding                                                                                                                                                                | After the restart                                                                                                                                                                |
+| ---- | ----------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| W1   | workspace register      | the `workspace.updated` of a new workspace                                                                                                                                                | before: no row, no event, and adding it again works. After: both, replayed                                                                                                       |
+| W2   | workspace rename        | the `workspace.updated` that renames it                                                                                                                                                   | the old name in both, or the new name in both                                                                                                                                    |
+| W3   | availability (and git)  | the `workspace.updated` an observation appends (the folder moved away, then a command resolves it)                                                                                        | the stored availability equals the last announced one                                                                                                                            |
+| W4   | recency (`markUsed`)    | the `workspace.updated` carrying `lastUsedAt`                                                                                                                                             | `last_used_at` equals the last announced value                                                                                                                                   |
+| W5   | workspace removal       | the cascade: `session.deleted` (deepest first), the drafts, then `workspace.removed`                                                                                                      | before: workspace, sessions and drafts all present. After: all gone, with no client cascade                                                                                      |
+| W6   | composer                | `composer.preferences.updated` (with `revision`), and a profile's `provider.catalog.updated`                                                                                              | the stored preference and revision equal the last announced ones                                                                                                                 |
+| W7   | the runtime stamp       | root: no event (the identity is host-private), so the kill comes between `session.created` and the stamp, through a delayed `newSession`, as in S18. Child: the child's `session.created` | root: the session opens through §4.7.4 and a send works. Child: before, neither row nor identity, and the next `subtask_update` registers it once. After, both, and no duplicate |
+| W8   | create, then first turn | **known and not covered:** see below                                                                                                                                                      | —                                                                                                                                                                                |
+
+**W8, the two-transaction create.** `session.create` with a first message commits twice:
+
+1. `session.created`, `thread.created` and the sent draft's `draft.deleted` (`thread-service.ts:1849-1864`);
+2. then `turn.started` (`:1506-1528`), from `sendTurn`, re-entered at `:1952-1981`.
+
+A kill between the two leaves a session with no message, and the draft is already gone, so the
+user's text is lost. That is a durability gap, not a sync divergence: rows and log agree on both
+sides of it.
+
+Closing it is not cheap. `turn.started` would have to join the first transaction, which means
+splitting `sendTurn` into a part that validates and builds the events and a part that starts the
+prompt. The artifact claim for draft images (`:1926-1946`) and its rollback would then have to
+move inside the same transaction. That reaches into the server's ownership of draft images (#199),
+well outside F3's rules.
+
+F3 lists it here as a known window. It gets its own follow-up, with a W8 test written when it is
+closed.
+
+#### 4.7.7 Stored events across F3's format change
+
+**(a) Today**
+
+- **The replay reader parses every stored event with the current schema**
+  (`apps/server/src/db/replay.ts:170-175`).
+- **F3 changes events that are already in the log:**
+  - §4.5 makes fields required (`turn.interrupted.reason`, `turnState` on interaction events);
+  - X2 changes `session.created`;
+  - §4.4 adds the preference `revision`.
+
+  A replay that crosses the upgrade would throw, or would send a shape the client has to guess
+  about. The doc did not cover this.
+
+- **Upcasting at read time cannot be exact:**
+  - an old `interaction.resolved`'s `turnState` depends on the turn's other interactions at that
+    moment;
+  - old deletions carry no child `session.deleted`;
+  - an old `session.created` for a session deleted since has no provider anywhere.
+
+**(b) Target: a replay floor per stream**
+
+- **The floor.** `event_streams.replay_floor` (migration 21, default 0). A protocol constant,
+  `EVENT_FORMAT_VERSION`, names the shape of stored events, and the database records the version
+  its log was written in.
+- **Raising it.** At boot, before recovery, when the recorded version is older than the server's,
+  one transaction sets every stream's `replay_floor` to its `head_sequence` and records the new
+  version.
+- **Reading.** The replay reader treats sequences at or below the floor as not retained. A cursor
+  below the floor gets a snapshot (`gap_expired`, an existing reason, so no client change). A cursor
+  at the floor replays normally. Log rows are never rewritten, and retention is unchanged.
+- **Why this is right.** Rule 4 already says "snapshot when the log no longer has the events". A
+  log that has them only in a form the protocol can no longer state is that case.
+- **Keeping the version honest.** A test pins a digest of the event schemas against
+  `EVENT_FORMAT_VERSION`. Changing a schema without bumping the version fails it.
+  - F3 is one release (§4.7.9), so it bumps the version once, from 1 to 2.
+  - PRs A, B and C each update version 2's digest while the release is unmerged.
+
+**Can a real client reach the floor, and with it the lossy snapshot? No.** Checked against the
+code:
+
+1. **Bookmarks live only in the transport's memory.** A cursor is a field of the transport's
+   `Subscription` (`packages/environment-client/src/websocket.ts:336`, set at `:585`, `:867`,
+   `:874`).
+   - The store holds no cursors.
+   - `cacheState` (`environment-client/src/cache-state.ts`) keeps store state only.
+2. **A reload therefore never resumes from a bookmark.** It builds a new transport with an empty
+   subscription map. Its opens hydrate each thread with `cursor: null` (`:903-911`), which is an
+   `initial` snapshot. Its environment and session scopes subscribe without a cursor (`:807-811`).
+3. **A transport cannot survive the upgrade.** The upgrade restarts the server, so every socket
+   closes. The reconnect's handshake carries the old `PROTOCOL_VERSION`, and the exact match
+   refuses it on both sides (`packages/protocol/src/negotiation.ts:131`, `:210-216`). The page has
+   to reload to the new bundle, which by point 2 holds no bookmarks.
+4. **A cursor below a floor therefore cannot occur** while event formats change only with the
+   protocol version. F3 keeps that true with one bump that covers every format change (§4.7.9).
+
+The floor stays as the server's guarantee for any client that might keep bookmarks in future, and
+in case a format ever changes without a protocol bump. For today's clients it is unreachable.
+
+**The cached state is a separate case.** The upgrade reload starts from the IndexedDB cache, a
+v16-shaped state. It has no cursors, but it has:
+
+- old fold output: `failures`, open tools and thoughts;
+- sessions without `providerId`.
+
+`applySnapshot` would merge that state into the `initial` snapshots, and older pages would keep
+their stale reasoning and tools: S10's cause, which exists on main for every reload. For the
+upgrade reload F3 closes it:
+
+- **PR A adds the discard.** The web cache records `PROTOCOL_VERSION` with the state
+  (`apps/web/src/lib/environment-cache.ts`), and a read under any other version drops the cache.
+  Today it checks only `environmentId` and the state's shape (`:56-66`).
+- **A web test** writes a cached state under version N and checks that a client at N+1 drops it.
+
+The first load after the upgrade is therefore a fresh load. F3 adds no new lossy path; the
+ordinary reload's merge (S10) stays F5's.
+
+**(c) Protocol and schema**
+
+- `EVENT_FORMAT_VERSION`.
+- Migration 21: `event_streams.replay_floor`, plus a record of the format version. Log metadata
+  only, so I1 holds.
+
+**(e) Edge cases**
+
+- **A floor at or above the head.** The reader treats the stream as having no retained events.
+  `decideReplay`'s null case (`packages/protocol/src/replay.ts:305-310`) then replays a cursor at
+  the head as empty and sends a snapshot for a lower one. A floor passed as "oldest" would trip
+  its range check (`:294-300`).
+- **New streams** start at floor 0.
+- **Paths that read stored events without the schema are unaffected:** the repository's dedupe
+  compares raw JSON (`event-repository.ts:154-162`), and migration 11's backfill reads raw JSON.
+
+#### 4.7.8 Corrections to revision 3.1
+
+F3's verification found these against ad1e856.
+
+1. **Status derivation.**
+   - The repository derives status per causing event. It collects the results per `writeScope`
+     call and writes them through a nested environment `writeScope` (`event-repository.ts:191-254`).
+   - #219 added activity (`waitingOn`, `inBackground`) to its trigger (`:206-215`) and to its
+     payload (`:228`).
+   - The per-transaction pass keeps both, and every status event carries the activity, because the
+     client clears it on a status without it (`state.ts:440-464`).
+   - `changesSessionStatus` is at `:337-345`.
+2. **Three producers write status themselves, with activity from memory**, bypassing the
+   derivation:
+   - `applyBackgroundTasks` (`thread-service.ts:957-1003`, `:983`);
+   - `emitStatus` on an idle process exit (`:1303-1327`, called at `:2658`);
+   - `forgetStaleBackgroundWork` (`:1611-1638`).
+
+   With a per-transaction derivation they would double up. The rule (corrected after review): **a
+   producer carries `status` only when rows cannot derive it.**
+   - `applyBackgroundTasks` and `forgetStaleBackgroundWork` emit only their fact, the roster.
+     Status and activity then come from the pass, which reads the roster and the open turn rows.
+     Today the producer reads `!record.activeTurn` from memory (`:969`).
+   - **An idle process exit is a fact rows cannot derive.** The provider died with no turn open,
+     and nothing else records it. It stays an explicit, persisted `session.updated {status:
+'error', updatedAt}` (`emitStatus`, `:1303-1327`, called at `:2658`).
+   - `error` carries no activity, so memory's activity never reaches it.
+   - **The pass must not double it.** It emits a derived `session.updated` for a session only for
+     what the transaction's own `session.updated` events have not already stated. That is the
+     final row compared with the last state those events announced, not with the state before the
+     transaction.
+
+3. **`sessions.updated_at` moves on every projection that sets status**
+   (`event-projection.ts:60-62`), even when no `session.updated` follows (same status, same
+   activity). §4.5's `updatedAt` is therefore compared in the pass, not added by intent (§4.7.1).
+4. **The cached `turn.send` answer.** §3.1 says it is the turn "as it was at the start". It is the
+   live turn object, mutated as the turn advances (`thread-service.ts:1505`, `:1579`, `:1590`). After
+   a restart it is the row's state (`session-store.ts:439-457`). It can still disagree with a
+   client that holds `waiting`, because memory never says `waiting`. The conclusion stands:
+   responses stop writing turns, then `confirmTurnStart` goes.
+5. **Workspace removal also detaches new-session drafts.** `drafts.workspace_id` is
+   `ON DELETE SET NULL` (`migrations.ts:651`), and the client mirrors it in `detachWorkspaceDrafts`
+   (`state.ts:422-426`). §4.4's removal row lists only `draft.deleted`. F3 also emits a
+   `draft.saved` with `workspaceId: null` for each detached draft, in the same transaction, and
+   §3.6 row 13 covers this mirror too.
+6. **`turns.failure_reason` is read.** It is selected (`queries.ts:76-81`) and then dropped when
+   mapped (`session-store.ts:276-287`, `:454`).
+7. **The crash-window seam is not reachable and does not cover today's windows** (§4.7.6).
+8. **A turn row stays `running` when its record is dropped by something other than its own load
+   failure** (§4.7.3 point 4). Revision 3.2's first draft named the wrong mechanism: a session's
+   own failed load does end its turn.
+9. **A child's identity is a second commit** (§4.7.4).
+10. **Stored events and the new required fields** (§4.7.7).
+11. **`startedAt` is not read when a retry is answered from the log.** `findTurnByCommandId`
+    (`session-store.ts:453-457`) builds the turn without `startedAt`, and `TURN_FOR_COMMAND_ID_SQL`
+    (`queries.ts:104-107`) does not select `started_at`. Once `startedAt` is required (§4.5), the
+    first retry across a restart would fail validation. F3 selects and maps it.
+12. **The registry's and the composer store's own connections** (§4.7.11).
+13. **Line drift since 606e2cc**, in the files F3 touches:
+    - `event-repository.ts`: +8 to +16;
+    - `thread-service.ts`: +17 to +47;
+    - `state.ts`: +18 to +39;
+    - `domains.ts`: +13;
+    - `queries.ts`: +16.
+
+    `database.ts`, `event-projection.ts`, `event-batcher.ts`, `event-service.ts`, `server.ts`,
+    `workspaces.ts`, the composer files, the client's `websocket.ts`, `settle.ts` and
+    `foldProtocolEvent.ts` have not changed.
+
+#### 4.7.9 What this section changes elsewhere
+
+- **X2 moves into F3.** §3.3's last bullet and §9's F5 row no longer carry it.
+- **F3 is built and reviewed as three stacked PRs (A, B, C) but released as one.**
+  - All three carry one protocol bump, **v17**, and migrations **21** and **22**.
+  - They merge to main together, with one server release, and each PR description says so.
+  - Main never holds an intermediate wire, so the user's web app breaks against their server once,
+    not three times.
+- **Later numbers:** one bump per phase. F4 takes v18, F5 v19 (and v20 if F5a and F5b release
+  apart). F6 takes migration 23 and F7 migration 24.
+- The cut and the build order are in the F3 plan.
+
+#### 4.7.10 Read answers and mutation answers
+
+**The distinction.** Rule 1 forbids the client to invent, or to pre-apply, the effect of its own
+**mutations**. The answer to a **read** is the server stating a fact.
+
+- **Read answers keep being applied, as the server's facts,** until F5's whole-environment snapshot
+  replaces them.
+- **Mutation answers become acknowledgements:** they settle an overlay entry (§3.2) and write
+  nothing server-owned.
+
+Every response writer in `packages/environment-client/src/websocket.ts`:
+
+| Command                                                  | Writer today                                                         | Kind     | After F3 (PR)                                                                                                                                                                                |
+| -------------------------------------------------------- | -------------------------------------------------------------------- | -------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `environment.get`                                        | `applyEnvironment` (`:1163`)                                         | read     | kept                                                                                                                                                                                         |
+| `workspace.list`                                         | `applyWorkspaceList`, removing unlisted ones (`:1166-1176`)          | read     | kept (until F5)                                                                                                                                                                              |
+| `session.list`                                           | `applySessionList` (`:1197`)                                         | read     | kept (until F5, with the catalog walk)                                                                                                                                                       |
+| `session.open`                                           | `applySessionOpen`: the summary and thread identities (`:1282-1287`) | read     | kept                                                                                                                                                                                         |
+| `session.history`                                        | `applySessionHistory` (`:1336`)                                      | read     | kept (until F5)                                                                                                                                                                              |
+| `composer.preferences.get`                               | `applyComposerPreference`, ordered by client tickets (`:1108-1136`)  | read     | kept, ordered by the server's `revision`: applied only when its revision is newer than the one held (C1). The tickets go                                                                     |
+| `provider.catalog.get`, `provider.probe`, workspace icon | `applyProviderCatalog`, `applyProviderProbe` (`:1430`, `:1435`)      | reading  | kept (current readings, §3.2)                                                                                                                                                                |
+| `workspace.add`                                          | `applyWorkspaceList([workspace])` (`:1180`)                          | mutation | acknowledgement. The registration's `workspace.updated` reaches the socket before the answer, because `workspace.*` publishes synchronously (`server.ts:284-285`). No overlay is needed (C1) |
+| `workspace.remove`                                       | `applyWorkspaceRemoved` (`:1188`)                                    | mutation | `pending.removals` (C1)                                                                                                                                                                      |
+| `session.create`                                         | `applySessionCreated` plus an invented status (`:1216-1239`)         | mutation | kept through B, filled from `input.providerId` and `announcedAt`; then `pending.creates` (C1)                                                                                                |
+| `session.rename`, `session.title.regenerate`             | `applySessionTitle` with an invented source (`:1348`, `:1352`)       | mutation | rename: `pending.renames` (shows the requested title until server state has it or a newer title, or the command fails). Regenerate: no overlay; the event brings the title (C1)              |
+| `session.settle`                                         | the settle tracker's masking (`settle.ts`)                           | mutation | `pending.settles` (C1)                                                                                                                                                                       |
+| `session.acknowledge`                                    | `applySessionAcknowledged` (`:1364`)                                 | mutation | `pending.acks` (C1)                                                                                                                                                                          |
+| `session.delete`                                         | `applySessionRemoved` (`:1372`)                                      | mutation | `pending.removals` (C1)                                                                                                                                                                      |
+| `turn.send`                                              | `applyTurnStarted` (`:1387`)                                         | mutation | `pending.sends` by `commandId` (C1, C2)                                                                                                                                                      |
+| `interaction.respond`                                    | `applyInteractionResolved` (`:1409`)                                 | mutation | `pending.answers` (C1)                                                                                                                                                                       |
+| composer set commands                                    | `applyComposerPreference` (`:1135`)                                  | mutation | `pending.preferences`, settled by the acknowledgement's `revision` (C1)                                                                                                                      |
+
+**The overlay table of §3.2 gains `pending.renames`.**
+
+**A fresh browser still gets its facts.** The environment scope recovers without a cursor by
+subscribing only (`websocket.ts:807-811`). The resync then reads the environment, the workspaces,
+the first session page and the provider catalog (`:1024-1072`), and the composer reads its
+preferences. All of these are reads, so all are kept. After a gap, the environment snapshot plus
+row 27's preference re-read cover the same ground.
+
+#### 4.7.11 One writer for workspace and composer rows
+
+- **Today** the registry (`workspaces.ts:128`) and the composer store (`composer-store.ts:33`)
+  each open their own connection and write their rows on it.
+- **After B3 and B4,** every client-visible write to `workspaces`,
+  `workspace_composer_preferences` and `provider_profiles` is a projection on the event
+  repository's connection.
+  - The two modules stop opening connections. They read through the event database's connection,
+    so there is one writer and no second WAL reader to go stale.
+- **Their caches** (the registry's `byId`, the composer store's maps) change only from committed
+  records.
+  - The persistent event service already calls its record callback after `COMMIT`, once per
+    record, and synchronously for `appendAtomic` (`event-service.ts:59-97`; the callback is at
+    `server.ts:268-286`).
+  - The registry and composer writes go through `appendAtomic`, and the two modules apply each
+    committed `workspace.*` or `composer.*` record from that production listener.
+  - This is not §4.7.6's test-only `afterCommit`.
+  - A command that writes reads its own result from the cache only after `appendAtomic` returns,
+    which is after the listener ran.
 
 ---
 
@@ -1278,15 +2041,15 @@ than the batcher window, `normalize(clientUnderTest) == normalize(freshClient)`.
 
 ## 9. Protocol and schema summary
 
-| Phase        | Protocol                                             | Migration                                                                                                                            | Changes                                                                                                                                                                                                                                                                                                                                                                                                                                                                                             |
-| ------------ | ---------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| #219 (first) | none (additive)                                      | **20**: `turns_thread_state_idx`                                                                                                     | `waitingOn`, `inBackground`                                                                                                                                                                                                                                                                                                                                                                                                                                                                         |
-| F2           | none                                                 | none                                                                                                                                 | tests; the `cacheState` export                                                                                                                                                                                                                                                                                                                                                                                                                                                                      |
-| F3           | **v17** (or the next free number)                    | **21** (additive): `turns.failure_message`, `turns.interrupted_by`, `workspaces.git_json`, `workspace_composer_preferences.revision` | `cancelled` tool status; `interaction.cancelled`; `turn_ended` and `server_restarted` reasons; `turnState`; `turn.interrupted.reason`; `Turn.commandId`/`.failure`/`.interruptedBy`; `startedAt` always set; `session.updated.updatedAt`; workspace events for every workspace write, plus derived recency; `capabilities.providers` replaced by health `available`; preference `revision`; cascade `session.deleted`/`draft.deleted`; boot recovery and the legacy repair (events, not migrations) |
-| F4           | **v18**                                              | none                                                                                                                                 | `subscription.transient {after}`; close-on-send-failure                                                                                                                                                                                                                                                                                                                                                                                                                                             |
-| F5           | **v19** (v19 and v20 if F5a and F5b ship separately) | none                                                                                                                                 | fragments, `beat`, `keepalive`, `ack`, the send window, `subscription.lagging`/`subscription.catchup`, `pong` removed; `snapshot_smaller`; whole snapshots (environment with preferences); `session.history`, `composer.preferences.get` and probably `session.list` deleted; `SessionSummary` in `session.created`                                                                                                                                                                                 |
-| F6           | next                                                 | **22**: tool payload columns (from #212's 20)                                                                                        | tool payload fields, `declined`; no caps                                                                                                                                                                                                                                                                                                                                                                                                                                                            |
-| F7           | next                                                 | **23**: #213's notices table                                                                                                         | durable notices; typed failure `detail`; transient retry notices through F4                                                                                                                                                                                                                                                                                                                                                                                                                         |
+| Phase        | Protocol                                             | Migration                                                                                                                                                               | Changes                                                                                                                                                                                                                                                                                                                                                                                                                                                                                             |
+| ------------ | ---------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| #219 (first) | none (additive)                                      | **20**: `turns_thread_state_idx`                                                                                                                                        | `waitingOn`, `inBackground`                                                                                                                                                                                                                                                                                                                                                                                                                                                                         |
+| F2           | none                                                 | none                                                                                                                                                                    | tests; the `cacheState` export                                                                                                                                                                                                                                                                                                                                                                                                                                                                      |
+| F3           | **v17** (or the next free number)                    | **21** (A): `turns.failure_message`, `turns.interrupted_by`, `event_streams.replay_floor`; **22** (B): `workspaces.git_json`, `workspace_composer_preferences.revision` | `cancelled` tool status; `interaction.cancelled`; `turn_ended` and `server_restarted` reasons; `turnState`; `turn.interrupted.reason`; `Turn.commandId`/`.failure`/`.interruptedBy`; `startedAt` always set; `session.updated.updatedAt`; workspace events for every workspace write, plus derived recency; `capabilities.providers` replaced by health `available`; preference `revision`; cascade `session.deleted`/`draft.deleted`; boot recovery and the legacy repair (events, not migrations) |
+| F4           | **v18**                                              | none                                                                                                                                                                    | `subscription.transient {after}`; close-on-send-failure                                                                                                                                                                                                                                                                                                                                                                                                                                             |
+| F5           | **v19** (v19 and v20 if F5a and F5b ship separately) | none                                                                                                                                                                    | fragments, `beat`, `keepalive`, `ack`, the send window, `subscription.lagging`/`subscription.catchup`, `pong` removed; `snapshot_smaller`; whole snapshots (environment with preferences); `session.history`, `composer.preferences.get` and probably `session.list` deleted; `SessionSummary` in `session.created`                                                                                                                                                                                 |
+| F6           | next                                                 | **22**: tool payload columns (from #212's 20)                                                                                                                           | tool payload fields, `declined`; no caps                                                                                                                                                                                                                                                                                                                                                                                                                                                            |
+| F7           | next                                                 | **23**: #213's notices table                                                                                                                                            | durable notices; typed failure `detail`; transient retry notices through F4                                                                                                                                                                                                                                                                                                                                                                                                                         |
 
 ---
 
@@ -1526,21 +2289,21 @@ coordinator's summary rather than the full text, and were checked against the co
 
 ### gpt-6.1 (verdict: rework)
 
-| #   | Finding                                                                                                                            | Response                                                     | Note                                                                                                                                                                                                                                                                                                                                                                         |
-| --- | ---------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| G1  | Workspace register, rename, availability and recency commit rows before their events; `list()` writes during snapshot construction | **Accepted**                                                 | Verified at `workspaces.ts:166`, `:179`, `:309`, `:398`, `:523`, and at `:417-423` via `server.ts:306`. Extended: composer preferences and profiles have the same pattern, and `capabilities.providers` is a live reading inside a durable record (§4.4)                                                                                                                     |
-| G2  | Responses are not safe upserts; a retried `turn.send` can rewind; rename invents provenance; preference ordering is client-issued  | **Accepted, with a narrower mechanism**                      | Verified: cached answer at `thread-service.ts:1414-1419`, guard at `state.ts:777-785`, `titleSource` invented at `websocket.ts:1346-1355` (the response is a bare `Session`, `commands.ts:251`), tickets at `:1089-1130`. Responses never write state (I10). Durable-record responses are specified but not needed on the chat path. Preferences get a server revision in F3 |
-| G3a | Use periodic client beats independent of bytes                                                                                     | **Changed (revision 3: adopted)**                            | Revision 2 rejected beats because they do not bound buffering. Revision 3 bounds buffering with a separate send window and the lagging rule, so beats are now right for liveness (§7.2)                                                                                                                                                                                      |
-| G3b | The throughput floor is an artificial limit                                                                                        | **Changed (revision 3)**                                     | The server no longer has one. The browser's is about 12 B/s in steady state and about 182 B/s during a sudden drop, set by rate-sized fragments capped at 8 KiB and a 45 s watchdog over whole frames. Both are physically unavoidable and stated (§7.2)                                                                                                                     |
-| G3c | Use application chunks with SQLite snapshot isolation instead of binary reassembly                                                 | **Considered, not adopted (reason corrected in revision 3)** | Chunks could be materialized first, so they need no long transaction. They are not adopted because byte fragments serve every message type (including one huge live event) without per-type chunkers or re-encoding, and they double as the pacing unit (§7.2)                                                                                                               |
-| G3d | Watchdog during assembly and processing                                                                                            | **Accepted**                                                 | The browser watchdog resets per frame. Beats come from timers, so processing only delays them (the server tolerates 30 s) (§7.2)                                                                                                                                                                                                                                             |
-| G4  | A transient ahead of the cursor must trigger recovery                                                                              | **Accepted**                                                 | Apply only at `after == cursor`; behind → drop; ahead or another epoch → recover (§5.2). The test "final durable record lost, then only a transient" is S13. Also: send failures close the connection                                                                                                                                                                        |
-| G5  | The size estimator misses interaction bodies and its constants have no error bound                                                 | **Accepted**                                                 | Exact replay bytes. The snapshot is serialized when replay exceeds an exact lower bound (§6.1)                                                                                                                                                                                                                                                                               |
-| G6  | The legacy epoch migration is an unnecessary exception                                                                             | **Accepted**                                                 | Boot repair with close-only transitions (§4.2). I1 has no migration exception                                                                                                                                                                                                                                                                                                |
-| G7a | S8: resume does not call `persistRuntimeSession`                                                                                   | **Accepted**                                                 | Verified: `restoreSession` (`:712`) does not stamp; the stamp is in `session.create` (`:1833`) and child registration (`:1348`). S8 now uses a delayed `newSession`                                                                                                                                                                                                          |
-| G7b | S7: 300 KB at 20 KB/s need not fail                                                                                                | **Accepted**                                                 | Verified against `heartbeat.ts:12-16`. Now about 600 KB at 10 KB/s                                                                                                                                                                                                                                                                                                           |
-| G7c | S9: a multi-page walk does not prevent reconciliation; retained deletions cascade                                                  | **Accepted**                                                 | Verified at `websocket.ts:977-993` and `state.ts:353-391`, `:912-931`. S9 now states the gap, size and concurrency conditions, and becomes a regression guard if it cannot be made to fail                                                                                                                                                                                   |
-| G8  | Desktop depends on contracts, not just reducers                                                                                    | **Accepted**                                                 | Verified at `convex-environment-client.ts:192`, `:941` and `types.ts:443-449`. The legacy contract is isolated in desktop; typecheck is a gate (§3.5)                                                                                                                                                                                                                        |
+| #   | Finding                                                                                                                            | Response                                                     | Note                                                                                                                                                                                                                                                                                                                                                                                                      |
+| --- | ---------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| G1  | Workspace register, rename, availability and recency commit rows before their events; `list()` writes during snapshot construction | **Accepted**                                                 | Verified at `workspaces.ts:166`, `:179`, `:309`, `:398`, `:523`, and at `:417-423` via `server.ts:306`. Extended: composer preferences and profiles have the same pattern, and `capabilities.providers` is a live reading inside a durable record (§4.4)                                                                                                                                                  |
+| G2  | Responses are not safe upserts; a retried `turn.send` can rewind; rename invents provenance; preference ordering is client-issued  | **Accepted, with a narrower mechanism**                      | Verified: cached answer at `thread-service.ts:1414-1419`, guard at `state.ts:777-785`, `titleSource` invented at `websocket.ts:1346-1355` (the response is a bare `Session`, `commands.ts:251`), tickets at `:1089-1130`. Mutation responses never write state (I10, refined in §4.7.10). Durable-record responses are specified but not needed on the chat path. Preferences get a server revision in F3 |
+| G3a | Use periodic client beats independent of bytes                                                                                     | **Changed (revision 3: adopted)**                            | Revision 2 rejected beats because they do not bound buffering. Revision 3 bounds buffering with a separate send window and the lagging rule, so beats are now right for liveness (§7.2)                                                                                                                                                                                                                   |
+| G3b | The throughput floor is an artificial limit                                                                                        | **Changed (revision 3)**                                     | The server no longer has one. The browser's is about 12 B/s in steady state and about 182 B/s during a sudden drop, set by rate-sized fragments capped at 8 KiB and a 45 s watchdog over whole frames. Both are physically unavoidable and stated (§7.2)                                                                                                                                                  |
+| G3c | Use application chunks with SQLite snapshot isolation instead of binary reassembly                                                 | **Considered, not adopted (reason corrected in revision 3)** | Chunks could be materialized first, so they need no long transaction. They are not adopted because byte fragments serve every message type (including one huge live event) without per-type chunkers or re-encoding, and they double as the pacing unit (§7.2)                                                                                                                                            |
+| G3d | Watchdog during assembly and processing                                                                                            | **Accepted**                                                 | The browser watchdog resets per frame. Beats come from timers, so processing only delays them (the server tolerates 30 s) (§7.2)                                                                                                                                                                                                                                                                          |
+| G4  | A transient ahead of the cursor must trigger recovery                                                                              | **Accepted**                                                 | Apply only at `after == cursor`; behind → drop; ahead or another epoch → recover (§5.2). The test "final durable record lost, then only a transient" is S13. Also: send failures close the connection                                                                                                                                                                                                     |
+| G5  | The size estimator misses interaction bodies and its constants have no error bound                                                 | **Accepted**                                                 | Exact replay bytes. The snapshot is serialized when replay exceeds an exact lower bound (§6.1)                                                                                                                                                                                                                                                                                                            |
+| G6  | The legacy epoch migration is an unnecessary exception                                                                             | **Accepted**                                                 | Boot repair with close-only transitions (§4.2). I1 has no migration exception                                                                                                                                                                                                                                                                                                                             |
+| G7a | S8: resume does not call `persistRuntimeSession`                                                                                   | **Accepted**                                                 | Verified: `restoreSession` (`:712`) does not stamp; the stamp is in `session.create` (`:1833`) and child registration (`:1348`). S8 now uses a delayed `newSession`                                                                                                                                                                                                                                       |
+| G7b | S7: 300 KB at 20 KB/s need not fail                                                                                                | **Accepted**                                                 | Verified against `heartbeat.ts:12-16`. Now about 600 KB at 10 KB/s                                                                                                                                                                                                                                                                                                                                        |
+| G7c | S9: a multi-page walk does not prevent reconciliation; retained deletions cascade                                                  | **Accepted**                                                 | Verified at `websocket.ts:977-993` and `state.ts:353-391`, `:912-931`. S9 now states the gap, size and concurrency conditions, and becomes a regression guard if it cannot be made to fail                                                                                                                                                                                                                |
+| G8  | Desktop depends on contracts, not just reducers                                                                                    | **Accepted**                                                 | Verified at `convex-environment-client.ts:192`, `:941` and `types.ts:443-449`. The legacy contract is isolated in desktop; typecheck is a gate (§3.5)                                                                                                                                                                                                                                                     |
 
 ### Fable (verdict: approve with changes)
 

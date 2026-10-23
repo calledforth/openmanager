@@ -34,7 +34,12 @@ const sessionSummary = {
   updatedAt: '2026-09-06T05:00:00Z',
 }
 const thread = { threadId: 'thread-1', sessionId: 'session-1' }
-const turn = { turnId: 'turn-1', threadId: 'thread-1', state: 'running' } as const
+const turn = {
+  turnId: 'turn-1',
+  threadId: 'thread-1',
+  state: 'running',
+  startedAt: '2026-01-01T00:00:00.000Z',
+} as const
 const userMessage = {
   messageId: 'message-1',
   threadId: 'thread-1',
@@ -374,7 +379,12 @@ export const proofEvents = [
     payload: { turn, userMessage: { ...userMessage, content: [...userMessage.content] } },
   },
   { ...base, name: 'turn.completed', scope: threadScope, payload: { turnId: 'turn-1' } },
-  { ...base, name: 'turn.interrupted', scope: threadScope, payload: { turnId: 'turn-1' } },
+  {
+    ...base,
+    name: 'turn.interrupted',
+    scope: threadScope,
+    payload: { turnId: 'turn-1', reason: 'user' },
+  },
   {
     ...base,
     name: 'turn.failed',
@@ -421,6 +431,7 @@ export const proofEvents = [
         interactionId: 'interaction-1',
         questions: [{ questionId: 'q-1', prompt: 'Continue?', options: [], allowFreeText: true }],
       },
+      turnState: 'waiting',
     },
   },
   {
@@ -434,6 +445,7 @@ export const proofEvents = [
         interactionId: 'interaction-1',
         outcome: { outcome: 'answered', answers: [{ questionId: 'q-1', text: 'Yes' }] },
       },
+      turnState: 'running',
     },
   },
   {
@@ -447,6 +459,21 @@ export const proofEvents = [
         interactionId: 'interaction-1',
         outcome: { outcome: 'cancelled', reason: 'timeout' },
       },
+      turnState: 'running',
+    },
+  },
+  {
+    ...base,
+    name: 'interaction.cancelled',
+    scope: threadScope,
+    payload: {
+      turnId: 'turn-1',
+      response: {
+        kind: 'question',
+        interactionId: 'interaction-1',
+        outcome: { outcome: 'cancelled', reason: 'turn_ended' },
+      },
+      turnState: 'running',
     },
   },
 ] satisfies ProofEvent[]

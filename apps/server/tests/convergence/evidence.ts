@@ -39,7 +39,7 @@ export class WrongCauseError extends Error {
 
 export interface Evidence {
   scenario: string
-  bucket: 'known-divergence' | 'regression-guard' | 'timing'
+  bucket: 'known-divergence' | 'regression-guard' | 'timing' | 'flip-diagnostics'
   cause: string
   residualCauses?: string[]
   observed: unknown

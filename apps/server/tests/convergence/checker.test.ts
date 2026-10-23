@@ -16,7 +16,6 @@ import {
   runtimeStamp,
   sessionCreatedPartial,
   snapshotMergeDropsOlderActivity,
-  thoughtClosedByFold,
   workspaceRecencyMirror,
 } from './causes.ts'
 import { judge } from './expectation.ts'
@@ -311,17 +310,6 @@ describe('the demonstration checker', () => {
     expect(judge(changed, cause).outcome).toBe('unexpected')
   })
 
-  it('fails on the thought cause for a thought it was not told about', () => {
-    const cause = thoughtClosedByFold({ threadId: T, messageIds: ['r1'] })
-    const at = `active.threads.${T}`
-    const diff = ['fresh', 'server'].map((comparison) =>
-      e(comparison, `${at}.reasoning.r1.phase`, 'stop', 'delta'),
-    )
-    expect(judge(diff, cause).outcome).toBe('primary-remains')
-    expect(
-      judge([...diff, e('fresh', `${at}.reasoning.r2.phase`, 'stop', 'delta')], cause).outcome,
-    ).toBe('unexpected')
-  })
 })
 
 /** The smallest result the fingerprints look at. */
@@ -476,7 +464,7 @@ describe('the seeded runs’ fingerprints', () => {
     )
   })
 
-  it('explain a closed thought only when something followed it or its turn ended', () => {
+  it('no longer explain a thought closed only on the client: F3 removed that cause', () => {
     const at = `active.threads.${T}`
     const entries = [e('fresh', `${at}.reasoning.r1.phase`, 'stop', 'delta')]
     const threadWith = (order: unknown[], state: string) => ({
@@ -492,7 +480,6 @@ describe('the seeded runs’ fingerprints', () => {
             order,
             unplaced: { reasoning: [], tools: [] },
             interactions: {},
-            failures: {},
           },
         },
       },
@@ -500,16 +487,17 @@ describe('the seeded runs’ fingerprints', () => {
     const alone = [{ kind: 'reasoning', id: 'r1', turnId: 'u1' }]
     const followed = [...alone, { kind: 'message', id: 'm1', turnId: 'u1' }]
     const context = contextOf(new Story())
-    expect(classify(result(entries, {}, threadWith(followed, 'running')), context)[0]!.cause).toBe(
-      'THOUGHT_CLOSED_BY_FOLD',
-    )
-    expect(classify(result(entries, {}, threadWith(alone, 'completed')), context)[0]!.cause).toBe(
-      'THOUGHT_CLOSED_BY_FOLD',
-    )
-    // An open thought nothing followed, in a running turn: the fold had no reason to close it.
-    expect(
-      classify(result(entries, {}, threadWith(alone, 'running')), context)[0]!.cause,
-    ).toBeUndefined()
+    // The server closes thoughts now (§4.3.3); a client that disagrees has a
+    // bug no fingerprint may excuse, whatever followed the thought.
+    for (const [order, state] of [
+      [followed, 'running'],
+      [alone, 'completed'],
+      [alone, 'running'],
+    ] as const) {
+      expect(
+        classify(result(entries, {}, threadWith([...order], state)), context)[0]!.cause,
+      ).toBeUndefined()
+    }
   })
 
   it('never explain a fresh-vs-server disagreement', () => {

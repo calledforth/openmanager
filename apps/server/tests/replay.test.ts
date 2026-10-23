@@ -3,12 +3,22 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import type { DatabaseSync } from 'node:sqlite'
 import { afterEach, describe, expect, it } from 'vitest'
-import { ProofEventSchemas, ReplayCursorError, type Cursor } from '@openmanager/protocol/node'
+import {
+  EVENT_FORMAT_VERSION,
+  ProofEventSchemas,
+  ReplayCursorError,
+  type Cursor,
+} from '@openmanager/protocol/node'
 import { openEnvironmentDatabase } from '../src/db/database.js'
 import { createEventRepository, type DurableProofEvent } from '../src/db/event-repository.js'
 import { createEventRetention } from '../src/db/event-retention.js'
 import { createReplayReader } from '../src/db/replay.js'
-import { listSessionHistory, listSessionSummaries } from '../src/db/session-store.js'
+import { raiseReplayFloors, storedEventFormat } from '../src/db/replay-floor.js'
+import {
+  findTurnByCommandId,
+  listSessionHistory,
+  listSessionSummaries,
+} from '../src/db/session-store.js'
 import { SESSION_PAGE_BYTE_BUDGET } from '../src/session-pagination.js'
 
 const directories: string[] = []
@@ -58,7 +68,12 @@ const started = (index: number, at = T0): DurableProofEvent =>
     timestamp: new Date(at).toISOString(),
     scope: threadScope,
     payload: {
-      turn: { turnId: `turn-${index}`, threadId: 'thread-1', state: 'running' },
+      turn: {
+        turnId: `turn-${index}`,
+        threadId: 'thread-1',
+        state: 'running',
+        startedAt: new Date(at).toISOString(),
+      },
       userMessage: {
         messageId: `user-${index}`,
         threadId: 'thread-1',
@@ -335,5 +350,78 @@ describe('replay reader', () => {
     expect(() =>
       reader.read(sessionScope, { scope: threadScope, epoch: 'epoch-1', sequence: 1 }),
     ).toThrow(ReplayCursorError)
+  })
+})
+
+describe('the replay floor (docs/sync-foundations.md §4.7.7)', () => {
+  const setup = async (options: { boot?: boolean } = {}) => {
+    const database = await createDatabase()
+    // A server raises the floors at boot, before it appends anything.
+    if (options.boot) raiseReplayFloors(database)
+    const repository = createEventRepository(database, { epoch: 'epoch-1' })
+    const reader = createReplayReader(database, {
+      epoch: 'epoch-1',
+      environment: () => environment,
+      workspaces: () => [workspace],
+    })
+    repository.appendEvents(threadScope, [started(1), delta(1, 'Hel')])
+    repository.finalizeTurn(threadScope, [delta(1, 'lo'), completed(1)])
+    const at = (sequence: number): Cursor => ({ scope: threadScope, epoch: 'epoch-1', sequence })
+    return { database, repository, reader, at }
+  }
+
+  it('hides every event stored in an older format, once', async () => {
+    const { database, repository, reader, at } = await setup()
+    // A log written before the format record existed reads as format 1.
+    database.exec('DELETE FROM event_format')
+    expect(storedEventFormat(database)).toBe(1)
+    expect(raiseReplayFloors(database)).toBeGreaterThan(0)
+    expect(storedEventFormat(database)).toBe(EVENT_FORMAT_VERSION)
+    expect(raiseReplayFloors(database)).toBe(0)
+
+    // At the head: nothing to replay, and nothing is lost.
+    expect(reader.read(threadScope, at(4))).toMatchObject({ mode: 'replay', events: [] })
+    // Below it: the stored events are not replayed; a snapshot replaces them.
+    expect(reader.read(threadScope, at(1))).toMatchObject({
+      mode: 'snapshot',
+      reason: 'gap_expired',
+    })
+
+    // Events written after the floor replay as usual from the floor on.
+    repository.appendEvents(threadScope, [started(2), delta(2, 'Again')])
+    const replay = reader.read(threadScope, at(4))
+    expect(replay).toMatchObject({ mode: 'replay' })
+    expect(
+      replay.mode === 'replay' ? replay.events.map((record) => record.cursor.sequence) : [],
+    ).toEqual([5, 6])
+    expect(reader.read(threadScope, at(3))).toMatchObject({ mode: 'snapshot' })
+  })
+
+  it('leaves a log already in the current format alone', async () => {
+    const { database, reader, at } = await setup({ boot: true })
+    expect(raiseReplayFloors(database)).toBe(0)
+    expect(reader.read(threadScope, at(1))).toMatchObject({ mode: 'replay' })
+  })
+
+  it('answers a retried send from the log with when the turn started', async () => {
+    const database = await createDatabase()
+    const repository = createEventRepository(database, { epoch: 'epoch-1' })
+    const event = started(1, T0 + 5)
+    repository.appendEvents(threadScope, [
+      { ...event, payload: { ...event.payload, commandId: 'command-1' } } as DurableProofEvent,
+    ])
+    expect(
+      findTurnByCommandId(database, {
+        sessionId: 'session-1',
+        threadId: 'thread-1',
+        commandId: 'command-1',
+      })?.turn,
+    ).toEqual({
+      turnId: 'turn-1',
+      threadId: 'thread-1',
+      state: 'running',
+      startedAt: new Date(T0 + 5).toISOString(),
+      commandId: 'command-1',
+    })
   })
 })

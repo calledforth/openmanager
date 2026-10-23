@@ -37,6 +37,7 @@ import {
   type ChildEvent,
   type ChildMessage,
   type ChildRequest,
+  type KillAt,
   type ScriptStep,
   type ServerThreadRead,
   type SocketSample,
@@ -481,7 +482,23 @@ if (existsSync(join(config.dataDir, DATABASE_FILENAME))) {
 }
 
 const claudeSdk = new FakeClaudeSdk()
+// The crash-window seam: a kill inside a chosen event-log commit.
+let armedKill: KillAt | undefined = config.killAt ? { ...config.killAt } : undefined
+const killAtCommit =
+  (phase: KillAt['phase']) =>
+  (records: readonly { event: { name: string } }[]): void => {
+    const armed = armedKill
+    if (!armed || armed.phase !== phase) return
+    if (!records.some((record) => record.event.name === armed.name)) return
+    if ((armed.skip ?? 0) > 0) {
+      armed.skip = (armed.skip ?? 0) - 1
+      return
+    }
+    process.kill(process.pid, 'SIGKILL')
+  }
+
 const server = await startServer({
+  commitHooks: { beforeCommit: killAtCommit('before'), afterCommit: killAtCommit('after') },
   port: 0,
   dataDir: config.dataDir,
   logLevel: 'error',
@@ -757,6 +774,9 @@ function readThread(sessionId: string, threadId: string): ServerThreadRead {
   }
 }
 
+/** What the current `streamText` has handed the server so far (S15's achieved rate). */
+let streamed = { bytes: 0, startedAt: 0 }
+
 async function handle(request: ChildRequest): Promise<unknown> {
   switch (request.op) {
     case 'emitText':
@@ -867,9 +887,11 @@ async function handle(request: ChildRequest): Promise<unknown> {
       const end = performance.now() + request.durationMs
       let next = performance.now()
       let bytes = 0
+      streamed = { bytes: 0, startedAt: performance.now() }
       while (performance.now() < end && activePrompts.get(active.providerSessionId) === active) {
         await update(active, { sessionUpdate: 'agent_message_chunk', content: text(chunk) })
         bytes += chunk.length
+        streamed.bytes = bytes
         next += tickMs
         await sleep(Math.max(0, next - performance.now()))
       }
@@ -962,6 +984,14 @@ async function handle(request: ChildRequest): Promise<unknown> {
           readyState: ws.readyState,
           bufferedAmount: ws.bufferedAmount,
         }))
+    case 'readStreamed':
+      return {
+        bytes: streamed.bytes,
+        elapsedMs: streamed.startedAt ? Math.round(performance.now() - streamed.startedAt) : 0,
+      }
+    case 'armKill':
+      armedKill = request.at ? { ...request.at } : undefined
+      return null
     case 'shutdown':
       await server.close()
       readDatabase?.close()

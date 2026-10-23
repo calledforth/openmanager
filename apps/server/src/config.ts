@@ -12,6 +12,7 @@ import {
   type TunnelSupervisorOptions,
 } from './tunnel.ts'
 import type { WorkspaceRuntimeResolver } from './thread-service.ts'
+import type { EventRepositoryOptions } from './db/event-repository.ts'
 
 export const LOG_LEVELS = ['debug', 'info', 'warn', 'error', 'silent'] as const
 export type LogLevel = (typeof LOG_LEVELS)[number]
@@ -76,6 +77,12 @@ export interface ServerConfig {
    * hostname is added to the `Host` allowlist. See docs/cloudflare-tunnel.md.
    */
   tunnel?: TunnelConfig
+  /**
+   * Test-only hooks around every event-log commit, with the records it
+   * commits (see `EventRepositoryOptions`). Inert unless a test supplies them;
+   * the convergence harness uses them to kill the server inside a write.
+   */
+  commitHooks?: Pick<EventRepositoryOptions, 'beforeCommit' | 'afterCommit'>
   /** Test-only connector seams (fake cloudflared, fake self-check, short timers). */
   tunnelOptions?: Pick<TunnelSupervisorOptions, 'spawn' | 'fetch' | 'now' | 'timing' | 'env'>
 }

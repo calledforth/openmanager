@@ -7,6 +7,7 @@ import {
   pageThreadMessages,
   BACKGROUND_TASKS_MAX,
   shouldReplaceSessionTitle,
+  TURN_FAILURE_MESSAGES,
   titleFromPrompt,
   WorkspaceUnavailableDetailsSchema,
   type BackgroundTask,
@@ -39,6 +40,8 @@ import {
   type RuntimeSessionArgs,
 } from '@agentpack/runtime/node'
 import {
+  cancelledInteractionIds,
+  findOpenTurnId,
   findSessionIdByProviderSession,
   findTurnByCommandId,
   getProviderSessionId,
@@ -117,6 +120,12 @@ type ActiveTurn = {
    */
   textRunId?: string
   reasoningRunId?: string
+  /**
+   * Thoughts of this turn that no `stop` has closed yet, by host message id.
+   * ACP providers never frame their thoughts, so the server closes them when
+   * the provider moves on to text or a tool (docs/sync-foundations.md §4.3.3).
+   */
+  openReasoning?: Set<string>
   /** The mode the host is starting this turn in (a plan build), if it chose one. */
   modeId?: string
   generatedImages?: Set<string>
@@ -290,6 +299,11 @@ function sameAnswer(first: InteractionAnswer, second: InteractionAnswer): boolea
 /** Why a response does not fit the request it answers, if it does not. */
 function invalidResponse(interaction: Interaction, response: InteractionResponse): string | null {
   if (interaction.kind !== response.kind) return 'Response does not match the interaction kind.'
+  if (
+    response.outcome.outcome === 'cancelled' &&
+    (response.outcome.reason === 'turn_ended' || response.outcome.reason === 'server_restarted')
+  )
+    return 'Only the environment cancels a request for that reason.'
   if (interaction.kind === 'permission' && response.kind === 'permission') {
     const { outcome } = response
     if (
@@ -326,6 +340,13 @@ function invalidResponse(interaction: Interaction, response: InteractionResponse
 export function createThreadService(
   runtime: InteractionRuntime,
   providerGate: ProviderGate,
+  /**
+   * Where durable events go. With a database (`options.database`) they reach
+   * the event repository, whose terminal path closes a turn's open children
+   * with their own events (db/turn-closure.ts). Without one (unit tests
+   * only) nothing writes those closes, unlike the environment-client mock,
+   * which plays the server and does (docs/sync-foundations.md §4.3 (e)).
+   */
   appendEvent: (event: ProofEvent) => void,
   publishTransient: (event: EventEnvelope) => void = () => undefined,
   // Routing is by registered workspace ID only (D9): there is no default that
@@ -337,6 +358,11 @@ export function createThreadService(
     flush?: () => void
     /** Commit several host events together; falls back to one append per event. */
     appendAtomic?: (events: readonly ProofEvent[]) => void
+    /**
+     * Write one turn's end now, throwing when it fails instead of keeping it
+     * for a retry. Falls back to `appendEvent`.
+     */
+    finalizeNow?: (event: ProofEvent) => void
     /**
      * A failed write on the provider-driven path is reported here and the
      * batch stays queued for the next append. Without a handler it throws.
@@ -474,12 +500,17 @@ export function createThreadService(
 
   // Provider callbacks and turn settlement must not fail because a write did:
   // the in-memory turn still settles, and the host decides how to report it.
-  const appendRuntimeEvent = (event: ProofEvent) => {
+  // Answers whether the event committed, so what memory records about the
+  // event itself (requests, their answers, open thoughts) follows only a
+  // committed write (I11).
+  const appendRuntimeEvent = (event: ProofEvent): boolean => {
+    let committed = true
     try {
       appendEvent(event)
     } catch (error) {
       if (!options.onPersistenceError) throw error
       options.onPersistenceError(error, event.name)
+      committed = false
     }
     if (
       event.name === 'turn.completed' ||
@@ -498,8 +529,18 @@ export function createThreadService(
       // Deferred until the caller has marked the turn completed, which it
       // does right after announcing it.
       if (record && event.name === 'turn.completed') queueMicrotask(() => refineTitle(record))
-      for (const entry of record?.interactions.values() ?? []) {
+      // The requests the turn left open were closed by `interaction.cancelled`
+      // events committed with its end (db/turn-closure.ts). Memory follows
+      // those committed rows, never a write that failed (I11). Without a
+      // database (unit tests only) there are no rows; the turn's end settles
+      // every request it left open.
+      const cancelled =
+        committed && options.database
+          ? cancelledInteractionIds(options.database, event.payload.turnId)
+          : undefined
+      for (const entry of committed ? (record?.interactions.values() ?? []) : []) {
         if (entry.turnId !== event.payload.turnId || entry.settled) continue
+        if (cancelled && !cancelled.has(entry.interaction.interactionId)) continue
         entry.settled = true
         if (entry.interaction.lifecycle) {
           entry.interaction = {
@@ -513,9 +554,14 @@ export function createThreadService(
         }
       }
     }
+    return committed
   }
 
-  const emitInterrupted = (record: ThreadRecord, turnId: string) => {
+  const emitInterrupted = (
+    record: ThreadRecord,
+    turnId: string,
+    reason: 'user' | 'server_restarted' = 'user',
+  ) => {
     appendRuntimeEvent(
       ProofEventSchemas['turn.interrupted'].parse({
         type: 'event',
@@ -528,7 +574,7 @@ export function createThreadService(
           sessionId: record.session.sessionId,
           threadId: record.thread.threadId,
         },
-        payload: { turnId },
+        payload: { turnId, reason },
       }),
     )
   }
@@ -561,12 +607,7 @@ export function createThreadService(
         payload: {
           turnId,
           reason,
-          message:
-            reason === 'provider_process_crashed'
-              ? 'The provider process crashed before the turn completed.'
-              : reason === 'provider_process_exited'
-                ? 'The provider process exited before the turn completed.'
-                : 'The provider failed to complete the turn.',
+          message: TURN_FAILURE_MESSAGES[reason],
         },
       }),
     )
@@ -826,6 +867,24 @@ export function createThreadService(
     }
   }
 
+  /** Close every thought of the turn still open (see `ActiveTurn.openReasoning`). */
+  const closeOpenReasoning = (record: ThreadRecord, active: ActiveTurn, timestamp: string) => {
+    if (!active.openReasoning?.size) return
+    for (const messageId of active.openReasoning) {
+      appendRuntimeEvent(
+        ProofEventSchemas['message.reasoning'].parse({
+          type: 'event',
+          name: 'message.reasoning',
+          eventId: randomUUID(),
+          timestamp,
+          scope: threadScope(record),
+          payload: { messageId, turnId: active.turn.turnId, phase: 'stop' },
+        }),
+      )
+    }
+    active.openReasoning.clear()
+  }
+
   const projectOwnEvent = (
     record: ThreadRecord,
     event: RuntimeEvent,
@@ -877,6 +936,14 @@ export function createThreadService(
           : undefined,
       completionState,
       failureReason,
+      // A request settled here leaves its turn waiting only on the others.
+      turnState:
+        active &&
+        [...active.pendingInteractions.keys()].some(
+          (id) => id !== stableId(active.interactionIds, providerInteractionId),
+        )
+          ? 'waiting'
+          : 'running',
     })
     if (!projected) return
     if (projected.name === 'message.delta' && projected.payload.content.type === 'image' && options.artifacts) {
@@ -899,8 +966,30 @@ export function createThreadService(
     // own signals would only repeat them.
     if (projected.name === 'session.created') return
     if (options.database && projected.name === 'turn.started') return
+    // A thought ends where the provider moves on to its answer or a tool: the
+    // server says so, with an event, instead of every client guessing it.
+    if (
+      active &&
+      ((projected.name === 'message.delta' && projected.payload.role === 'assistant') ||
+        projected.name === 'tool.updated')
+    ) {
+      closeOpenReasoning(record, active, projected.timestamp)
+    }
+    // What memory records here may run ahead of a write that failed, and
+    // that is safe: the batcher never drops an appended event. It keeps a
+    // failed batch, and every event appended behind it, and writes them in
+    // order before anything later (event-batcher.ts), so the request this
+    // records reaches the rows before its answer can, or the answer is not
+    // written either. That holds for a second request that arrives while
+    // the first one's write is still failing. Dropping it here would lose a
+    // request the next flush commits.
     if (projected.name === 'turn.notice') publishTransient(projected)
     else appendRuntimeEvent(projected)
+    if (active && projected.name === 'message.reasoning') {
+      active.openReasoning ??= new Set()
+      if (projected.payload.phase === 'stop') active.openReasoning.delete(projected.payload.messageId)
+      else active.openReasoning.add(projected.payload.messageId)
+    }
     if (active && projected.name === 'interaction.requested') {
       const { interaction } = projected.payload
       active.pendingInteractions.set(interaction.interactionId, {
@@ -967,8 +1056,6 @@ export function createThreadService(
       return { taskId, kind: task.kind, description: task.description.slice(0, 1000) }
     })
     const rests = !record.activeTurn && (record.status === 'idle' || record.status === 'running')
-    // Restated even when it matches what this process believes: the row is
-    // what clients read, and an earlier write may not have reached it yet.
     const status = rests ? (tasks.length ? 'running' : 'idle') : undefined
     const updated = ProofEventSchemas['session.updated'].parse({
       type: 'event',
@@ -979,8 +1066,13 @@ export function createThreadService(
       payload: {
         sessionId: record.session.sessionId,
         backgroundTasks: tasks,
-        // Nothing is in flight here, so running is running for this work alone.
-        ...(status ? { status, ...(status === 'running' ? { inBackground: true } : {}) } : {}),
+        // With SQLite the event states only the roster: the projection derives
+        // the resting status from the rows and the status pass announces it
+        // (docs/sync-foundations.md §4.7.8). The in-memory seam has no rows,
+        // so there the roster event also carries the status that follows.
+        ...(status && !options.database
+          ? { status, ...(status === 'running' ? { inBackground: true } : {}) }
+          : {}),
       },
     })
     try {
@@ -1022,6 +1114,7 @@ export function createThreadService(
       turnId: randomUUID(),
       threadId: record.thread.threadId,
       state: 'running',
+      startedAt: event.timestamp,
       origin: 'background',
     }
     const started = ProofEventSchemas['turn.started'].parse({
@@ -1471,6 +1564,14 @@ export function createThreadService(
     if (record.activeTurn || record.cancellation || record.pendingBuild) {
       return errorResult(command.requestId, 'conflict', 'A turn is already in progress.')
     }
+    // The rows may hold a turn no process runs: one whose recovery failed at
+    // boot. A second turn beside it would leave the thread with two open.
+    if (options.database) {
+      options.flush?.()
+      if (findOpenTurnId(options.database, input)) {
+        return errorResult(command.requestId, 'conflict', 'A turn is already in progress.')
+      }
+    }
     let promptImages: { type: 'image'; mimeType: string; data: string }[] = []
     const artifactContent: Message['content'] = []
     try {
@@ -1486,10 +1587,13 @@ export function createThreadService(
     } catch {
       return errorResult(command.requestId, 'unavailable', 'An attachment could not be read.')
     }
+    const startedAt = new Date().toISOString()
     const turn: Turn = {
       turnId: randomUUID(),
       threadId: record.thread.threadId,
       state: 'running',
+      startedAt,
+      commandId,
     }
     const userMessage: Message = {
       messageId: randomUUID(),
@@ -1509,7 +1613,7 @@ export function createThreadService(
           type: 'event',
           name: 'turn.started',
           eventId: randomUUID(),
-          timestamp: new Date().toISOString(),
+          timestamp: startedAt,
           scope: threadScope(record),
           payload: started,
         })
@@ -1624,12 +1728,10 @@ export function createThreadService(
           eventId: randomUUID(),
           timestamp,
           scope: { type: 'environment', environmentId },
-          payload: {
-            sessionId: row.session_id,
-            backgroundTasks: [],
-            // A turn cut off by the restart already reads as failed.
-            ...(row.status === 'running' ? { status: 'idle' } : {}),
-          },
+          // Only the roster: a resting session it kept running becomes idle
+          // in the projection, and a turn cut off by the restart already
+          // reads as failed.
+          payload: { sessionId: row.session_id, backgroundTasks: [] },
         }),
       )
       if (options.appendAtomic) options.appendAtomic(events)
@@ -2418,6 +2520,46 @@ export function createThreadService(
           return errorResult(command.requestId, 'validation', 'Invalid interrupt request.')
         }
         const record = threads.get(parsed.data.payload.threadId)
+        // A turn the rows hold open with no process running it (its recovery
+        // failed at boot) has no provider work to stop: interrupting it is
+        // writing its end, through the same terminal path as any other.
+        const { sessionId, threadId, turnId } = parsed.data.payload
+        const running = record?.activeTurn?.turn.turnId === turnId
+        let heldOpen = false
+        if (options.database && !running) {
+          options.flush?.()
+          heldOpen = findOpenTurnId(options.database, { sessionId, threadId }) === turnId
+        }
+        if (heldOpen) {
+          // The answer says what the rows say: a write that rolled back is
+          // an error, not a success (I10). A turn whose end cannot be
+          // written at all stays open until its rows are fixed or its
+          // session is deleted.
+          try {
+            ;(options.finalizeNow ?? appendEvent)(
+              ProofEventSchemas['turn.interrupted'].parse({
+                type: 'event',
+                name: 'turn.interrupted',
+                eventId: randomUUID(),
+                timestamp: new Date().toISOString(),
+                scope: { type: 'thread', environmentId, sessionId, threadId },
+                payload: { turnId, reason: 'user' },
+              }),
+            )
+          } catch (error) {
+            options.onPersistenceError?.(error, 'turn.interrupted')
+            return errorResult(
+              command.requestId,
+              'unavailable',
+              'The turn could not be ended. Try again, or delete the session.',
+            )
+          }
+          return ProofResponseSchemas['turn.interrupt'].parse({
+            type: 'response',
+            requestId: command.requestId,
+            payload: { turnId },
+          })
+        }
         if (!record || record.session.sessionId !== parsed.data.payload.sessionId) {
           return errorResult(command.requestId, 'not_found', 'Thread not found.')
         }
@@ -2533,15 +2675,37 @@ export function createThreadService(
         const providerRejection = rejectProvider(command.requestId, record.providerId)
         if (providerRejection) return providerRejection
         const target = { providerId: record.providerId, requestId: entry.providerRequestId }
+        // `invalidResponse` refused the reasons only the environment gives
+        // (`turn_ended`, `server_restarted`); what is left is the provider's.
+        type Forwarded<T> = T extends { outcome: 'cancelled' }
+          ? {
+              outcome: 'cancelled'
+              reason?: Exclude<T['reason' & keyof T], 'turn_ended' | 'server_restarted'>
+            }
+          : T
+        // The one cast: what `invalidResponse` let through is the provider's.
+        const forwarded = <T>(outcome: T) => outcome as Forwarded<T>
         const forward =
           response.kind === 'permission'
             ? runtime.respondPermission &&
-              (() => runtime.respondPermission!({ ...target, outcome: response.outcome }))
+              (() =>
+                runtime.respondPermission!({
+                  ...target,
+                  outcome: forwarded(response.outcome),
+                }))
             : response.kind === 'question'
               ? runtime.respondQuestion &&
-                (() => runtime.respondQuestion!({ ...target, outcome: response.outcome }))
+                (() =>
+                  runtime.respondQuestion!({
+                    ...target,
+                    outcome: forwarded(response.outcome),
+                  }))
               : runtime.respondPlan &&
-                (() => runtime.respondPlan!({ ...target, outcome: response.outcome }))
+                (() =>
+                  runtime.respondPlan!({
+                    ...target,
+                    outcome: forwarded(response.outcome),
+                  }))
         if (!forward) {
           return errorResult(
             command.requestId,

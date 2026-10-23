@@ -571,8 +571,11 @@ describe('background work across a restart', () => {
     const session = getSessionSummary(h.database, 'session-1')!
     expect(session.status).toBe('idle')
     expect(session.backgroundTasks).toBeUndefined()
+    // The roster is the fact; the status that follows is derived from the rows
+    // in the same transaction (docs/sync-foundations.md §4.7.8 item 2).
     expect(h.published.map((event) => [event.name, event.payload])).toEqual([
-      ['session.updated', { sessionId: 'session-1', backgroundTasks: [], status: 'idle' }],
+      ['session.updated', { sessionId: 'session-1', backgroundTasks: [] }],
+      ['session.updated', { sessionId: 'session-1', status: 'idle' }],
     ])
     // Nothing left to say the second time.
     expect(h.service.forgetStaleBackgroundWork()).toBe(0)

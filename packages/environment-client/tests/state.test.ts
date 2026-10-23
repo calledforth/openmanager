@@ -308,7 +308,7 @@ describe('applyEvent', () => {
     expect(selectActiveTurn(state)).toBeNull()
   })
 
-  it('closes an open thought on the next assistant text or tool update, and a later thought reopens it', () => {
+  it('leaves a thought open until the environment closes it', () => {
     const thought = (text: string) =>
       event({
         name: 'message.reasoning',
@@ -328,24 +328,23 @@ describe('applyEvent', () => {
       })
     const phase = (state: EnvironmentState) => selectActiveThread(state)!.reasoning[0]?.phase
 
-    // ACP providers only ever send deltas; text after the thought ends it.
-    let state = applyEvent(applyEvent(seeded(), turnStarted()), thought('plan'))
-    expect(phase(state)).toBe('delta')
-    state = applyEvent(state, delta('turn-1', 'assistant-1', 'Hello'))
-    expect(phase(state)).toBe('stop')
-    // Closing is idempotent: nothing to close means the thread is untouched.
-    const closedThread = selectActiveThread(state)
-    expect(
-      selectActiveThread(applyEvent(state, delta('turn-1', 'assistant-1', '!')))!.reasoning,
-    ).toBe(closedThread!.reasoning)
+    const stop = event({
+      name: 'message.reasoning',
+      scope: threadScope,
+      payload: { turnId: 'turn-1', messageId: 'reasoning-1', phase: 'stop' },
+    })
 
-    // A tool call ends a thought too, and thinking again after it reopens the block.
-    state = applyEvent(state, thought(' more'))
-    expect(phase(state)).toBe('delta')
+    // Text or a tool after a thought changes nothing about the thought: the
+    // environment says when it ends (docs/sync-foundations.md §4.3.3).
+    let state = applyEvent(applyEvent(seeded(), turnStarted()), thought('plan'))
+    state = applyEvent(state, delta('turn-1', 'assistant-1', 'Hello'))
     state = applyEvent(state, tool('in_progress'))
+    expect(phase(state)).toBe('delta')
+    state = applyEvent(state, stop)
     expect(phase(state)).toBe('stop')
+    // The close names no content: the thought keeps what it said.
     expect(selectActiveThread(state)!.reasoning[0]?.content).toEqual([
-      { type: 'text', text: 'plan more' },
+      { type: 'text', text: 'plan' },
     ])
     expect(selectActiveThread(state)!.tools).toHaveLength(1)
   })
@@ -389,8 +388,9 @@ describe('applyEvent', () => {
       'tool:tool-2',
       'message:assistant-2',
     ])
-    // The second thought is its own block; the first stays closed.
-    expect(thread.reasoning.map((entry) => entry.phase)).toEqual(['stop', 'stop'])
+    // The second thought is its own block; neither is closed until the
+    // environment says so.
+    expect(thread.reasoning.map((entry) => entry.phase)).toEqual(['delta', 'delta'])
     expect(thread.messages.at(-1)?.content).toEqual([{ type: 'text', text: 'Found it' }])
   })
 
@@ -513,8 +513,15 @@ describe('applyEvent', () => {
   })
 
   it('stamps a turn with when it started and finished', () => {
-    const start = turnStarted()
-    let state = applyEvent(seeded(), { ...start, timestamp: '2026-09-24T10:00:00.000Z' })
+    const at = '2026-09-24T10:00:00.000Z'
+    const sent = turnStarted()
+    // The server always says when a turn started (protocol v17).
+    const start = {
+      ...sent,
+      timestamp: at,
+      payload: { ...sent.payload, turn: { ...sent.payload.turn, startedAt: at } },
+    }
+    let state = applyEvent(seeded(), start)
     expect(selectActiveTurn(state)?.startedAt).toBe('2026-09-24T10:00:00.000Z')
     // The send response arriving second may not rewind the start.
     state = applyTurnStarted(state, THREAD, start.payload)
@@ -546,7 +553,7 @@ describe('applyEvent', () => {
       event({
         name: 'interaction.requested',
         scope: threadScope,
-        payload: { turnId: 'turn-1', interaction: permission },
+        payload: { turnId: 'turn-1', interaction: permission, turnState: 'waiting' },
       }),
     )
     expect(selectPendingInteractions(state)).toHaveLength(1)
@@ -567,6 +574,8 @@ describe('applyEvent', () => {
             interactionId: permission.interactionId,
             outcome,
           },
+          // The environment says what state the turn is in now.
+          turnState: 'running',
         },
       }),
     )
@@ -582,7 +591,7 @@ describe('applyEvent', () => {
       event({
         name: 'interaction.requested',
         scope: threadScope,
-        payload: { turnId: 'turn-1', interaction: permission },
+        payload: { turnId: 'turn-1', interaction: permission, turnState: 'waiting' },
       }),
     )
     state = applyInteractionResolved(state, THREAD, permission.interactionId)
@@ -602,13 +611,14 @@ describe('applyEvent', () => {
             interactionId: permission.interactionId,
             outcome: { outcome: 'selected', optionId: 'allow' },
           },
+          turnState: 'running',
         },
       }),
     )
     expect(replayed).toBe(state)
   })
 
-  it('records turn failures without guessing the session status', () => {
+  it('records a failure on its turn, as a snapshot carries it, without guessing the session status', () => {
     let state = applyEvent(seeded(), turnStarted())
     state = applyEvent(
       state,
@@ -618,10 +628,80 @@ describe('applyEvent', () => {
         payload: { turnId: 'turn-1', reason: 'provider_error', message: 'boom' },
       }),
     )
-    expect(selectActiveThread(state)?.failures).toEqual([
-      { turnId: 'turn-1', reason: 'provider_error', message: 'boom' },
-    ])
+    expect(selectActiveThread(state)?.turns[0]).toMatchObject({
+      state: 'failed',
+      failure: { reason: 'provider_error', message: 'boom' },
+    })
     expect(selectSessionList(state)[0]?.status).toBe('idle')
+  })
+
+  it('records who interrupted a turn', () => {
+    let state = applyEvent(seeded(), turnStarted())
+    state = applyEvent(
+      state,
+      event({
+        name: 'turn.interrupted',
+        scope: threadScope,
+        payload: { turnId: 'turn-1', reason: 'server_restarted' },
+      }),
+    )
+    expect(selectActiveThread(state)?.turns[0]).toMatchObject({
+      state: 'interrupted',
+      interruptedBy: 'server_restarted',
+    })
+  })
+
+  it('takes a turn state from the interaction event, and a cancelled request goes', () => {
+    let state = applyEvent(seeded(), turnStarted())
+    for (const interactionId of ['first', 'second']) {
+      state = applyEvent(
+        state,
+        event({
+          name: 'interaction.requested',
+          scope: threadScope,
+          payload: {
+            turnId: 'turn-1',
+            interaction: { ...permission, interactionId },
+            turnState: 'waiting',
+          },
+        }),
+      )
+    }
+    const cancel = (interactionId: string, turnState: 'running' | 'waiting') =>
+      event({
+        name: 'interaction.cancelled',
+        scope: threadScope,
+        payload: {
+          turnId: 'turn-1',
+          response: {
+            kind: 'permission',
+            interactionId,
+            outcome: { outcome: 'cancelled', reason: 'turn_ended' },
+          },
+          turnState,
+        },
+      })
+    state = applyEvent(state, cancel('first', 'waiting'))
+    expect(selectPendingInteractions(state).map((item) => item.interaction.interactionId)).toEqual([
+      'second',
+    ])
+    expect(selectActiveTurn(state)?.state).toBe('waiting')
+    state = applyEvent(state, cancel('second', 'running'))
+    expect(selectPendingInteractions(state)).toEqual([])
+    expect(selectActiveTurn(state)?.state).toBe('running')
+  })
+
+  it('invents no turn for an event that names one it does not hold', () => {
+    const state = seeded()
+    const next = applyEvent(
+      state,
+      event({
+        name: 'turn.completed',
+        scope: threadScope,
+        payload: { turnId: 'turn-unknown' },
+      }),
+    )
+    expect(selectActiveThread(next)?.turns ?? []).toEqual([])
   })
 
   it('removes a workspace and its sessions when the environment announces the removal', () => {
@@ -1376,7 +1456,7 @@ describe('background work', () => {
 
 describe('protocol turn finalization', () => {
   it.each(['turn.completed', 'turn.interrupted', 'turn.failed'] as const)(
-    'settles %s, preserves partial text, closes reasoning and rejects late parts',
+    'settles %s with the closes the environment sent before it, and keeps partial text',
     (name) => {
       let state = applyEvent(seeded(), turnStarted())
       state = applyEvent(state, delta('turn-1', 'assistant-1', 'partial'))
@@ -1398,9 +1478,33 @@ describe('protocol turn finalization', () => {
         event({
           name: 'interaction.requested',
           scope: threadScope,
-          payload: { turnId: 'turn-1', interaction: permission },
+          payload: { turnId: 'turn-1', interaction: permission, turnState: 'waiting' },
         }),
       )
+      // What the environment writes before a turn's end: a close for each
+      // child still open (docs/sync-foundations.md §4.3).
+      for (const close of [
+        event({
+          name: 'message.reasoning',
+          scope: threadScope,
+          payload: { turnId: 'turn-1', messageId: 'reasoning-1', phase: 'stop' },
+        }),
+        event({
+          name: 'interaction.cancelled',
+          scope: threadScope,
+          payload: {
+            turnId: 'turn-1',
+            response: {
+              kind: 'permission',
+              interactionId: permission.interactionId,
+              outcome: { outcome: 'cancelled', reason: 'turn_ended' },
+            },
+            turnState: 'running',
+          },
+        }),
+      ]) {
+        state = applyEvent(state, close)
+      }
       const terminal =
         name === 'turn.failed'
           ? event({
@@ -1408,7 +1512,9 @@ describe('protocol turn finalization', () => {
               scope: threadScope,
               payload: { turnId: 'turn-1', reason: 'provider_error', message: 'Failed' },
             })
-          : event({ name, scope: threadScope, payload: { turnId: 'turn-1' } })
+          : name === 'turn.interrupted'
+            ? event({ name, scope: threadScope, payload: { turnId: 'turn-1', reason: 'user' } })
+            : event({ name, scope: threadScope, payload: { turnId: 'turn-1' } })
       state = applyEvent(state, terminal)
       const settled = state.threads[THREAD.threadId]!
       expect(settled.turns[0]?.state).toBe(name.slice(5))
@@ -1416,11 +1522,9 @@ describe('protocol turn finalization', () => {
       expect(settled.reasoning[0]?.phase).toBe('stop')
       expect(settled.interactions).toEqual([])
       expect(selectActiveTurn(state)).toBeNull()
-      expect(applyEvent(state, terminal).threads[THREAD.threadId]).toBe(settled)
-      expect(
-        applyEvent(state, delta('turn-1', 'assistant-1', 'late')).threads[THREAD.threadId],
-      ).toBe(settled)
-      expect(applyEvent(state, completed()).threads[THREAD.threadId]).toBe(settled)
+      // Folding the same terminal again yields the same thread (the transport
+      // drops repeats by cursor before they get here).
+      expect(applyEvent(state, terminal).threads[THREAD.threadId]).toEqual(settled)
       expect(applyEvent(state, turnStarted()).threads[THREAD.threadId]?.turns[0]?.state).toBe(
         name.slice(5),
       )

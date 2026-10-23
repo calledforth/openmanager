@@ -3,6 +3,8 @@ import type { DatabaseSync } from 'node:sqlite'
 import type { ProofEvent } from '@openmanager/protocol/node'
 import type { DurableProofEvent } from './event-repository.ts'
 import { prepareDraftProjection } from './draft-projection.ts'
+import { OPEN_TURN_FOR_SESSION_SQL } from './queries.ts'
+import { createTurnClosure, reasoningIsOpen, toolIsOpen } from './turn-closure.ts'
 
 type SessionSummary = Extract<ProofEvent, { name: 'session.created' }>['payload']['session']
 type TurnStarted = Extract<ProofEvent, { name: 'turn.started' }>
@@ -11,6 +13,10 @@ type MessageContent = MessageDelta['payload']['content']
 type MessageReasoning = Extract<ProofEvent, { name: 'message.reasoning' }>
 type ToolUpdated = Extract<ProofEvent, { name: 'tool.updated' }>
 type ActivityRow = { turn_id: string; thread_id: string; kind: string; state_json: string }
+type TurnRow = { workspace_id: string; state: string }
+
+/** A turn that has ended takes no new output. */
+const finished = (turn: TurnRow) => turn.state !== 'running' && turn.state !== 'waiting'
 
 export interface EventProjectionOptions {
   /** Host-owned provider identity, absent from the public session summary. */
@@ -27,6 +33,7 @@ export function createEventProjector(
   options: EventProjectionOptions,
 ): (event: DurableProofEvent) => void {
   const drafts = prepareDraftProjection(database)
+  const closure = createTurnClosure(database)
   const s = {
     insertSession: database.prepare(
       `INSERT INTO sessions (
@@ -80,6 +87,8 @@ export function createEventProjector(
     hasBackgroundTasks: database.prepare(
       'SELECT 1 FROM sessions WHERE session_id = ? AND background_tasks_json IS NOT NULL',
     ),
+    selectSessionStatus: database.prepare('SELECT status FROM sessions WHERE session_id = ?'),
+    openTurnForSession: database.prepare(OPEN_TURN_FOR_SESSION_SQL),
     // Not a sidebar-ordering change, so `updated_at` stays put.
     updateSessionComposer: database.prepare(
       'UPDATE sessions SET composer_json = ? WHERE session_id = ?',
@@ -100,7 +109,7 @@ export function createEventProjector(
        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
     ),
     selectTurnWorkspace: database.prepare(
-      'SELECT workspace_id FROM turns WHERE turn_id = ? AND thread_id = ?',
+      'SELECT workspace_id, state FROM turns WHERE turn_id = ? AND thread_id = ?',
     ),
     /** Only an unfinished turn may change state; late events for finished turns roll back. */
     updateOpenTurnState: database.prepare(
@@ -109,7 +118,8 @@ export function createEventProjector(
     ),
     finishOpenTurn: database.prepare(
       `UPDATE turns
-       SET state = ?, failure_reason = ?, finished_at = ?, updated_at = ?
+       SET state = ?, failure_reason = ?, failure_message = ?, interrupted_by = ?,
+           finished_at = ?, updated_at = ?
        WHERE turn_id = ? AND thread_id = ? AND state IN ('running', 'waiting')`,
     ),
     insertInteraction: database.prepare(
@@ -126,10 +136,7 @@ export function createEventProjector(
     pendingInteractions: database.prepare(
       "SELECT 1 FROM interactions WHERE turn_id = ? AND state = 'pending' LIMIT 1",
     ),
-    cancelPendingInteractions: database.prepare(
-      `UPDATE interactions SET state = 'cancelled', resolved_at = ?, updated_at = ?
-       WHERE turn_id = ? AND state = 'pending'`,
-    ),
+
     selectMessage: database.prepare(
       'SELECT turn_id, thread_id, role, is_final FROM messages WHERE message_id = ?',
     ),
@@ -253,9 +260,9 @@ export function createEventProjector(
 
   function projectMessageDelta(event: MessageDelta, at: number): void {
     const { messageId, turnId, role, content } = event.payload
-    const turn = s.selectTurnWorkspace.get(turnId, event.scope.threadId) as
-      { workspace_id: string } | undefined
+    const turn = s.selectTurnWorkspace.get(turnId, event.scope.threadId) as TurnRow | undefined
     if (!turn) throw new Error(`Cannot project message for missing turn ${turnId}`)
+    if (finished(turn)) throw new Error(`Cannot add a message to finished turn ${turnId}`)
     const existing = s.selectMessage.get(messageId) as
       { turn_id: string; thread_id: string; role: string; is_final: number } | undefined
     if (
@@ -292,10 +299,15 @@ export function createEventProjector(
     next: (existing: unknown | undefined) => unknown,
   ): void {
     const { turnId } = event.payload
-    const turn = s.selectTurnWorkspace.get(turnId, event.scope.threadId) as
-      { workspace_id: string } | undefined
+    const turn = s.selectTurnWorkspace.get(turnId, event.scope.threadId) as TurnRow | undefined
     if (!turn) throw new Error(`Cannot project ${kind} for missing turn ${turnId}`)
     const existing = s.selectActivity.get(activityId) as ActivityRow | undefined
+    // A finished turn takes exactly one kind of child event: the close of a
+    // child it left open (the legacy repair, docs/sync-foundations.md §4.2).
+    // Anything else, a second close included, rolls the write back (I2).
+    if (finished(turn) && !closesOpenChild(event, existing)) {
+      throw new Error(`Cannot change ${kind} ${activityId} of finished turn ${turnId}`)
+    }
     if (existing) {
       if (
         existing.turn_id !== turnId ||
@@ -320,6 +332,33 @@ export function createEventProjector(
       JSON.stringify(next(undefined)),
       at,
       at,
+    )
+  }
+
+  /** Whether an event only closes an open child: tool to `cancelled`, thought to `stop`. */
+  function closesOpenChild(
+    event: MessageReasoning | ToolUpdated,
+    existing: ActivityRow | undefined,
+  ): boolean {
+    if (!existing) return false
+    const state = JSON.parse(existing.state_json) as { status?: string; phase?: string }
+    if (event.name === 'tool.updated') {
+      const { status, title, kind } = event.payload
+      return (
+        existing.kind === 'tool' &&
+        toolIsOpen(state) &&
+        status === 'cancelled' &&
+        title === undefined &&
+        kind === undefined
+      )
+    }
+    const { phase, content, tokens } = event.payload
+    return (
+      existing.kind === 'reasoning' &&
+      reasoningIsOpen(state) &&
+      phase === 'stop' &&
+      content === undefined &&
+      tokens === undefined
     )
   }
 
@@ -436,6 +475,24 @@ export function createEventProjector(
               : null,
             event.payload.sessionId,
           )
+          // Between turns the roster is all that says whether the session is
+          // working, so the rows say it: a resting session runs while it has
+          // background work and is idle once it has none. A failed session
+          // stays failed, and a turn in flight owns the status. The status
+          // pass announces the change (event-repository.ts).
+          if (event.payload.status === undefined) {
+            const row = s.selectSessionStatus.get(event.payload.sessionId) as
+              | { status: string }
+              | undefined
+            if (
+              row &&
+              (row.status === 'idle' || row.status === 'running') &&
+              !s.openTurnForSession.get(event.payload.sessionId)
+            ) {
+              const rests = event.payload.backgroundTasks.length > 0 ? 'running' : 'idle'
+              if (rests !== row.status) s.updateSessionStatus.run(rests, at, event.payload.sessionId)
+            }
+          }
         }
         return
       case 'session.composer.updated':
@@ -493,6 +550,9 @@ export function createEventProjector(
           at,
           at,
         )
+        if (event.payload.turnState !== 'waiting') {
+          throw new Error(`A request leaves turn ${turnId} waiting, not ${event.payload.turnState}`)
+        }
         if (s.updateOpenTurnState.run('waiting', at, turnId, event.scope.threadId).changes !== 1) {
           throw new Error(`Cannot mark missing or finished turn ${turnId} as waiting`)
         }
@@ -501,10 +561,15 @@ export function createEventProjector(
         return
       }
       case 'interaction.resolved':
-      case 'interaction.expired': {
+      case 'interaction.expired':
+      case 'interaction.cancelled': {
         const { response, turnId } = event.payload
         const resolved = s.resolvePendingInteraction.run(
-          event.name === 'interaction.expired' ? 'expired' : 'resolved',
+          event.name === 'interaction.expired'
+            ? 'expired'
+            : event.name === 'interaction.cancelled'
+              ? 'cancelled'
+              : 'resolved',
           JSON.stringify(response),
           at,
           at,
@@ -519,6 +584,12 @@ export function createEventProjector(
           )
         }
         const status = s.pendingInteractions.get(turnId) ? 'waiting' : 'running'
+        // The producer states the turn's state; the rows must agree (I2).
+        if (event.payload.turnState !== status) {
+          throw new Error(
+            `${event.name} says turn ${turnId} is ${event.payload.turnState}; its requests say ${status}`,
+          )
+        }
         if (s.updateOpenTurnState.run(status, at, turnId, event.scope.threadId).changes !== 1) {
           throw new Error(`Cannot resume missing or finished turn ${turnId}`)
         }
@@ -529,6 +600,12 @@ export function createEventProjector(
       case 'turn.interrupted':
       case 'turn.failed': {
         const turnId = event.payload.turnId
+        // Each open child got its own close event before this one (I3,
+        // turn-closure.ts); a terminal that would leave one open rolls back.
+        const open = closure.openChildren(turnId, event.scope.threadId)
+        if (open.length > 0) {
+          throw new Error(`Turn ${turnId} cannot end with open children: ${open.join(', ')}`)
+        }
         const state =
           event.name === 'turn.completed'
             ? 'completed'
@@ -538,6 +615,8 @@ export function createEventProjector(
         const finished = s.finishOpenTurn.run(
           state,
           event.name === 'turn.failed' ? event.payload.reason : null,
+          event.name === 'turn.failed' ? event.payload.message : null,
+          event.name === 'turn.interrupted' ? event.payload.reason : null,
           at,
           at,
           turnId,
@@ -547,12 +626,16 @@ export function createEventProjector(
           throw new Error(`Cannot finalize missing or finished turn ${turnId}`)
         }
         s.finalizeTurnMessages.run(at, turnId)
-        s.cancelPendingInteractions.run(at, at, turnId)
         // The turn is over but the session is not resting while work it
         // started is still running in the background.
         const working = !!s.hasBackgroundTasks.get(event.scope.sessionId)
+        // A restart cut the turn off: nobody asked it to stop, so the session
+        // shows the failure, as a failed turn does.
+        const failedHere =
+          event.name === 'turn.failed' ||
+          (event.name === 'turn.interrupted' && event.payload.reason === 'server_restarted')
         const session = s.updateSessionStatus.run(
-          event.name === 'turn.failed' ? 'error' : working ? 'running' : 'idle',
+          failedHere ? 'error' : working ? 'running' : 'idle',
           at,
           event.scope.sessionId,
         )

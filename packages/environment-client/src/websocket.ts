@@ -36,6 +36,7 @@ import {
   WorkspaceUnavailableDetailsSchema,
 } from '@openmanager/protocol'
 import { z } from 'zod'
+import { namesUnknownTurn } from '@agentpack/view/protocol'
 import { EnvironmentClientError, isEnvironmentClientError } from './errors'
 import { applyDraftList, applyDraftsUnlisted } from './draft-state'
 import { createDraftSync } from './draft-sync'
@@ -200,6 +201,12 @@ type Subscription = {
   cursor: Cursor | null
   recovery?: Promise<void>
   buffered?: DurableEvent[]
+  /**
+   * A record named a turn the thread does not hold: a protocol error the
+   * client answers with a fresh snapshot of the scope, never by inventing the
+   * turn (docs/sync-foundations.md §3.5).
+   */
+  needsSnapshot?: boolean
 }
 
 const scopeKey = (scope: SubscriptionScope) =>
@@ -582,9 +589,39 @@ export function createWebSocketEnvironmentClient(
       ) {
         return
       }
+      const scope = record.cursor.scope
+      const thread = scope.type === 'thread' ? store.getState().threads[scope.threadId] : undefined
+      if (thread && namesUnknownTurn(thread, record.event)) {
+        subscription.needsSnapshot = true
+        return
+      }
       subscription.cursor = record.cursor
     }
     foldEvent(record.event)
+  }
+
+  /** Scopes already reported for a record naming a turn they do not hold. */
+  const reportedUnknownTurns = new Set<string>()
+
+  /** Replace a scope that received a record it cannot place (see `needsSnapshot`). */
+  const resnapshot = (subscription: Subscription) => {
+    if (!subscription.needsSnapshot || subscription.recovery) return
+    subscription.needsSnapshot = false
+    // A server bug, not a network one: said once per scope, so it is seen
+    // without flooding. Each such record costs one snapshot, no more.
+    const key = scopeKey(subscription.scope)
+    if (!reportedUnknownTurns.has(key)) {
+      reportedUnknownTurns.add(key)
+      console.warn(
+        'environment-client: a record named a turn this thread does not hold; replacing the thread from a snapshot',
+        { scope: subscription.scope },
+      )
+    }
+    if (subscription.subscriptionId) sendUnsubscribe(subscription.subscriptionId)
+    subscription.subscriptionId = null
+    subscription.inflight = false
+    subscription.cursor = null
+    void recover(subscription).catch(() => undefined)
   }
 
   /**
@@ -611,6 +648,7 @@ export function createWebSocketEnvironmentClient(
         return
       }
       applyRecord(record)
+      resnapshot(subscription)
       return
     }
     // The device list goes to admin holders as a whole current reading.
@@ -895,6 +933,7 @@ export function createWebSocketEnvironmentClient(
     })
     const tracked = recovery.finally(() => {
       if (subscription.recovery === tracked) subscription.recovery = undefined
+      resnapshot(subscription)
     })
     subscription.recovery = tracked
     return tracked

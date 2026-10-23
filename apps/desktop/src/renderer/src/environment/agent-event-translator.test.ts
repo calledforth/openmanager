@@ -136,11 +136,52 @@ describe('createAgentEventTranslator', () => {
         payload: { messageId: 'asst-1', turnId: 'asst-1', role: 'assistant' },
       },
       { name: 'message.reasoning', payload: { messageId: 'asst-1', phase: 'delta', tokens: 12 } },
+      // The tool ends the thought: closed with its own event, as the
+      // environment does (docs/sync-foundations.md §4.3.3).
+      { name: 'message.reasoning', payload: { messageId: 'asst-1', phase: 'stop' } },
       {
         name: 'tool.updated',
         payload: { toolCallId: 'tool-1', turnId: 'asst-1', status: 'completed' },
       },
     ])
+  })
+
+  it('closes what the turn left open before its end', () => {
+    const t = translator()
+    t.translate(promptStarted())
+    t.translate(
+      agentEvent({
+        category: 'tool',
+        event: 'tool_call',
+        messageId: 'asst-1',
+        data: { toolCallId: 'tool-1', title: 'Edit', status: 'in_progress' },
+      }),
+    )
+    t.translate(
+      agentEvent({
+        category: 'stream',
+        event: 'agent_thought_chunk',
+        messageId: 'asst-1',
+        data: { phase: 'delta', content: { type: 'text', text: 'Hmm' } },
+      }),
+    )
+    const events = valid(
+      t.translate(
+        agentEvent({
+          category: 'lifecycle',
+          event: 'prompt_completed',
+          messageId: 'asst-1',
+          data: { stopReason: 'end_turn' },
+        }),
+      ),
+    )
+    expect(events.map((event) => event.name)).toEqual([
+      'tool.updated',
+      'message.reasoning',
+      'turn.completed',
+    ])
+    expect(events[0]).toMatchObject({ payload: { toolCallId: 'tool-1', status: 'cancelled' } })
+    expect(events[1]).toMatchObject({ payload: { messageId: 'asst-1', phase: 'stop' } })
   })
 
   it('infers the turn from the message id when it joins a turn mid-flight', () => {

@@ -888,7 +888,12 @@ describe('the shared application over the environment client', () => {
           threadId: THREAD.threadId,
         },
         payload: {
-          turn: { turnId: 'turn-1', threadId: THREAD.threadId, state: 'completed' },
+          turn: {
+            turnId: 'turn-1',
+            threadId: THREAD.threadId,
+            state: 'completed',
+            startedAt: '2026-09-12T00:00:00.000Z',
+          },
           userMessage: {
             messageId: 'user-1',
             threadId: THREAD.threadId,

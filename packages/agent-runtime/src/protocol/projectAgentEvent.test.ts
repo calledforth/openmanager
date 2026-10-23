@@ -23,6 +23,7 @@ const context: ProtocolEventContext = {
   interactionId: 'host-interaction',
   toolCallId: 'host-tool',
   completionState: 'completed',
+  turnState: 'running',
 }
 const fixtures: AgentEvent[] = [
   { ...base, category: 'lifecycle', event: 'session_created', data: {} },

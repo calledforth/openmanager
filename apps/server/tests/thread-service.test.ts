@@ -16,6 +16,7 @@ import {
 import { createThreadService, type WorkspaceRuntimeResolver } from '../src/thread-service.js'
 import type { ArtifactStore } from '../src/artifacts.js'
 import { createPersistentEventService } from '../src/event-service.js'
+import { reconcileAfterRestart } from '../src/db/boot-reconcile.js'
 import { openEnvironmentDatabase } from '../src/db/database.js'
 
 /** The registry seam: every ID the tests use maps to one canonical root. */
@@ -509,7 +510,7 @@ describe('thread command provider routing', () => {
       expect(events).toContainEqual(
         expect.objectContaining({
           name: 'turn.interrupted',
-          payload: { turnId: sent.payload.turn.turnId },
+          payload: { turnId: sent.payload.turn.turnId, reason: 'user' },
         }),
       ),
     )
@@ -1463,7 +1464,11 @@ describe('durable session lifecycle', () => {
       prompt: vi.fn().mockResolvedValue(undefined),
       cancel: vi.fn().mockResolvedValue(undefined),
     }
+    // A new service on the same rows is a new process: it boots as the host
+    // does, closing what the last one left open (db/boot-reconcile.ts).
     const fresh = (onPersistenceError?: (error: unknown, eventName: string) => void) => {
+      events.flush()
+      reconcileAfterRestart(database, events.repository, 'environment-1')
       const service = createThreadService(
         runtime as unknown as Pick<AgentRuntime, 'ensureSession' | 'prompt' | 'cancel'>,
         { rejection: () => undefined },
@@ -1474,6 +1479,7 @@ describe('durable session lifecycle', () => {
           database,
           flush: events.flush,
           appendAtomic: events.appendAtomic,
+          finalizeNow: events.finalizeNow,
           ...(onPersistenceError ? { onPersistenceError } : {}),
         },
       )
@@ -1511,6 +1517,48 @@ describe('durable session lifecycle', () => {
   }
 
   type Harness = ReturnType<typeof setup>
+
+  it('refuses a send beside a turn the rows hold open, and interrupts that turn by writing its end', async () => {
+    const h = setup()
+    try {
+      h.runtime.prompt.mockReturnValue(new Promise(() => undefined))
+      const target = h.created.thread
+      const sent = ProofResponseSchemas['turn.send'].parse(
+        h.dispatch(h.service, 'turn.send', { ...target, text: 'Long work' }),
+      ).payload
+      // The provider session is stamped, so a restart can open it again.
+      await h.service.resolveRuntimeSession(target.sessionId)
+      h.events.flush()
+      // The next boot cannot recover this turn (docs/sync-foundations.md §4.1 point 4).
+      h.database.exec(`CREATE TEMP TRIGGER refuse_recovery BEFORE UPDATE OF state ON turns
+        WHEN new.state = 'interrupted' BEGIN SELECT RAISE(ABORT, 'boom'); END`)
+      const restarted = h.fresh()
+      expect(h.database.prepare('SELECT state FROM turns').get()).toEqual({ state: 'running' })
+      h.dispatch(restarted, 'session.open', { sessionId: target.sessionId })
+      expect(h.dispatch(restarted, 'turn.send', { ...target, text: 'Another' })).toMatchObject({
+        type: 'error',
+        error: { code: 'conflict' },
+      })
+      // While the turn's end still cannot be written, the interrupt says so.
+      expect(
+        h.dispatch(restarted, 'turn.interrupt', { ...target, turnId: sent.turn.turnId }),
+      ).toMatchObject({ type: 'error', error: { code: 'unavailable' } })
+      expect(h.database.prepare('SELECT state FROM turns').get()).toEqual({ state: 'running' })
+      // Nothing of the failed write is kept to retry later.
+      h.events.flush()
+      expect(h.database.prepare('SELECT state FROM turns').get()).toEqual({ state: 'running' })
+      h.database.exec('DROP TRIGGER refuse_recovery')
+      expect(
+        h.dispatch(restarted, 'turn.interrupt', { ...target, turnId: sent.turn.turnId }),
+      ).toMatchObject({ type: 'response', payload: { turnId: sent.turn.turnId } })
+      expect(h.database.prepare('SELECT state, interrupted_by FROM turns').get()).toEqual({
+        state: 'interrupted',
+        interrupted_by: 'user',
+      })
+    } finally {
+      h.close()
+    }
+  })
 
   it('persists an idle process crash once, ignores expected exits, and recovers on the next prompt', async () => {
     const h = setup()
@@ -2024,6 +2072,153 @@ describe('durable session lifecycle', () => {
         })
         expect(h.runtime.ensureSession).not.toHaveBeenCalled()
       }
+    } finally {
+      h.close()
+    }
+  })
+
+  it('keeps a request whose write failed, because the retry writes it before its answer', async () => {
+    const failures: string[] = []
+    const h = setup((_error, eventName) => failures.push(eventName))
+    try {
+      await h.service.resolveRuntimeSession(h.created.session.sessionId)
+      h.runtime.prompt.mockReturnValueOnce(new Promise(() => undefined))
+      const sent = ProofResponseSchemas['turn.send'].parse(
+        h.dispatch(h.service, 'turn.send', { ...h.created.thread, text: 'Go' }),
+      ).payload
+      const base = {
+        providerId: 'opencode' as const,
+        threadId: h.created.thread.threadId,
+        workspaceId: '/workspace/project',
+        sessionId: 'provider-persisted',
+        messageId: 'assistant-1',
+        timestamp: new Date().toISOString(),
+      }
+      h.service.onRuntimeEvent({
+        ...base,
+        id: 'started',
+        seq: 1,
+        category: 'lifecycle',
+        event: 'prompt_started',
+        data: { prompt: 'Go', userMessageId: sent.userMessage.messageId },
+      })
+      h.database.exec(`CREATE TEMP TRIGGER refuse_request BEFORE INSERT ON interactions
+        BEGIN SELECT RAISE(ABORT, 'boom'); END`)
+      h.service.onRuntimeEvent({
+        ...base,
+        id: 'asked',
+        seq: 2,
+        category: 'permission',
+        event: 'permission_request',
+        data: {
+          requestId: 'provider-permission',
+          sessionId: 'provider-persisted',
+          toolCall: { toolCallId: 'tool-1', title: 'Run tests' },
+          options: [{ optionId: 'allow', name: 'Allow', kind: 'allow_once' }],
+        },
+      })
+      h.database.exec('DROP TRIGGER refuse_request')
+      expect(failures).toEqual(['interaction.requested'])
+      expect(h.database.prepare('SELECT count(*) AS n FROM interactions').get()).toEqual({ n: 0 })
+      // The answer comes; the batcher first writes the request it kept, then
+      // the answer, in order, so memory and the rows agree again.
+      h.service.onRuntimeEvent({
+        ...base,
+        id: 'settled',
+        seq: 3,
+        category: 'permission',
+        event: 'permission_resolved',
+        data: {
+          requestId: 'provider-permission',
+          outcome: { outcome: 'selected', optionId: 'allow' },
+        },
+      })
+      h.events.flush()
+      expect(failures).toEqual(['interaction.requested'])
+      expect(h.database.prepare('SELECT state FROM interactions').all()).toEqual([
+        { state: 'resolved' },
+      ])
+      expect(h.database.prepare('SELECT state FROM turns').get()).toEqual({ state: 'running' })
+    } finally {
+      h.close()
+    }
+  })
+
+  it('keeps a second request that arrives while the write of the first is still failing', async () => {
+    const failures: string[] = []
+    const h = setup((_error, eventName) => failures.push(eventName))
+    try {
+      const { sessionId } = h.created.session
+      await h.service.resolveRuntimeSession(sessionId)
+      h.runtime.prompt.mockReturnValueOnce(new Promise(() => undefined))
+      const sent = ProofResponseSchemas['turn.send'].parse(
+        h.dispatch(h.service, 'turn.send', { ...h.created.thread, text: 'Go' }),
+      ).payload
+      const base = {
+        providerId: 'opencode' as const,
+        threadId: h.created.thread.threadId,
+        workspaceId: '/workspace/project',
+        sessionId: 'provider-persisted',
+        messageId: 'assistant-1',
+        timestamp: new Date().toISOString(),
+      }
+      h.service.onRuntimeEvent({
+        ...base,
+        id: 'started',
+        seq: 1,
+        category: 'lifecycle',
+        event: 'prompt_started',
+        data: { prompt: 'Go', userMessageId: sent.userMessage.messageId },
+      })
+      const ask = (seq: number, requestId: string, toolCallId: string) =>
+        h.service.onRuntimeEvent({
+          ...base,
+          id: `asked-${requestId}`,
+          seq,
+          category: 'permission',
+          event: 'permission_request',
+          data: {
+            requestId,
+            sessionId: 'provider-persisted',
+            toolCall: { toolCallId, title: 'Run tests' },
+            options: [{ optionId: 'allow', name: 'Allow', kind: 'allow_once' }],
+          },
+        })
+      const answer = (seq: number, requestId: string) =>
+        h.service.onRuntimeEvent({
+          ...base,
+          id: `settled-${requestId}`,
+          seq,
+          category: 'permission',
+          event: 'permission_resolved',
+          data: { requestId, outcome: { outcome: 'selected', optionId: 'allow' } },
+        })
+      // Both requests arrive while no request can be written: the second
+      // waits behind the first instead of being dropped from the write queue.
+      h.database.exec(`CREATE TEMP TRIGGER refuse_request BEFORE INSERT ON interactions
+        BEGIN SELECT RAISE(ABORT, 'boom'); END`)
+      ask(2, 'permission-a', 'tool-1')
+      ask(3, 'permission-b', 'tool-2')
+      h.database.exec('DROP TRIGGER refuse_request')
+      expect(failures).toEqual(['interaction.requested', 'interaction.requested'])
+      // Storage is back. The first answer leaves the turn waiting on the
+      // second request, as memory says, and the rows hold that request too.
+      answer(4, 'permission-a')
+      h.events.flush()
+      expect(failures).toHaveLength(2)
+      expect(
+        h.database.prepare('SELECT state FROM interactions ORDER BY created_at, rowid').all(),
+      ).toEqual([{ state: 'resolved' }, { state: 'pending' }])
+      expect(h.database.prepare('SELECT state FROM turns').get()).toEqual({ state: 'waiting' })
+      // And nothing behind it is blocked.
+      answer(5, 'permission-b')
+      h.events.flush()
+      expect(failures).toHaveLength(2)
+      expect(h.database.prepare('SELECT state FROM interactions').all()).toEqual([
+        { state: 'resolved' },
+        { state: 'resolved' },
+      ])
+      expect(h.database.prepare('SELECT state FROM turns').get()).toEqual({ state: 'running' })
     } finally {
       h.close()
     }
@@ -2945,6 +3140,15 @@ describe('transcript runs', () => {
     thought('Check again')
     thought('', 'stop')
     thought('One more')
+    // A tool closes the open thought too, and the close comes first.
+    service.onRuntimeEvent({
+      ...base(),
+      category: 'tool',
+      event: 'tool_call',
+      data: { toolCallId: 'call-2', title: 'Edit file', kind: 'edit', status: 'in_progress' },
+    })
+    const names = events.map((event) => event.name)
+    expect(names.lastIndexOf('message.reasoning')).toBeLessThan(names.lastIndexOf('tool.updated'))
 
     const reasoningIds = events
       .filter((event) => event.name === 'message.reasoning')
@@ -2954,10 +3158,19 @@ describe('transcript runs', () => {
       .filter((event) => (event.payload as { role: string }).role === 'assistant')
       .map((event) => (event.payload as { messageId: string }).messageId)
 
-    // Same run, same id; each boundary starts a new one.
-    expect(reasoningIds).toHaveLength(5)
+    const reasoningPhases = events
+      .filter((event) => event.name === 'message.reasoning')
+      .map((event) => (event.payload as { phase: string }).phase)
+
+    // Same run, same id; each boundary starts a new one. The first thought is
+    // closed by the server where the text begins (docs/sync-foundations.md
+    // §4.3.3); the framed one closed itself; the last is closed by the tool.
+    expect(reasoningIds).toHaveLength(7)
+    expect(reasoningPhases).toEqual(['delta', 'delta', 'stop', 'delta', 'stop', 'delta', 'stop'])
+    expect(reasoningIds[6]).toBe(reasoningIds[5])
     expect(reasoningIds[0]).toBe(reasoningIds[1])
-    expect(reasoningIds[2]).toBe(reasoningIds[3])
+    expect(reasoningIds[2]).toBe(reasoningIds[0])
+    expect(reasoningIds[3]).toBe(reasoningIds[4])
     expect(new Set(reasoningIds).size).toBe(3)
     expect(textIds).toHaveLength(3)
     expect(textIds[0]).toBe(textIds[1])

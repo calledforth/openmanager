@@ -775,6 +775,45 @@ export const MIGRATIONS: readonly Migration[] = [
       )
     },
   },
+  {
+    version: 21,
+    name: 'server_truth_turns_and_replay_floor',
+    up(database) {
+      // Additive only (docs/sync-foundations.md §4.5, §4.7.7). A failed turn
+      // keeps the message its `turn.failed` carried and an interrupted one who
+      // interrupted it, so a snapshot says what the live event said. Each
+      // stream gets a replay floor: sequences at or below it are not replayed,
+      // because they were written in an event format this server can no
+      // longer state. `event_format` records the format the log is written
+      // in; no row means the format before it existed (1). Boot raises the
+      // floors when the format moves (db/replay-floor.ts).
+      const columns = (table: string) =>
+        new Set(
+          (database.prepare(`PRAGMA table_info(${table})`).all() as { name: string }[]).map(
+            (column) => column.name,
+          ),
+        )
+      const turns = columns('turns')
+      if (!turns.has('failure_message')) {
+        database.exec('ALTER TABLE turns ADD COLUMN failure_message TEXT')
+      }
+      if (!turns.has('interrupted_by')) {
+        database.exec(`ALTER TABLE turns ADD COLUMN interrupted_by TEXT
+          CHECK (interrupted_by IN ('user', 'server_restarted'))`)
+      }
+      if (!columns('event_streams').has('replay_floor')) {
+        database.exec(`ALTER TABLE event_streams ADD COLUMN replay_floor INTEGER NOT NULL DEFAULT 0
+          CHECK (replay_floor >= 0)`)
+      }
+      database.exec(`
+        CREATE TABLE IF NOT EXISTS event_format (
+          id INTEGER PRIMARY KEY NOT NULL CHECK (id = 1),
+          version INTEGER NOT NULL CHECK (version >= 1),
+          updated_at INTEGER NOT NULL
+        ) STRICT;
+      `)
+    },
+  },
 ]
 
 type RetainedActivityRow = {

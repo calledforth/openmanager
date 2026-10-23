@@ -92,7 +92,26 @@ export function createPersistentEventService(
       batcher.flush()
       repository.appendGroups(groups satisfies readonly EventGroup[]).forEach(publish)
     },
+    /**
+     * Write one turn's end now, through the terminal path (its closes first),
+     * after anything already buffered. Unlike `append`, a failed write is
+     * not kept for a retry: it throws, and the caller answers the failure.
+     */
+    finalizeNow(event: ProofEvent) {
+      const terminal = durable(event)
+      if (!isTerminal(terminal) || terminal.scope.type !== 'thread') {
+        throw new Error('finalizeNow writes one terminal turn event')
+      }
+      batcher.flush()
+      repository.finalizeTurn(terminal.scope, [terminal]).forEach(publish)
+    },
     flush: batcher.flush,
     close: batcher.close,
+    /**
+     * The repository itself, for the boot reconcile, which writes before any
+     * client can be connected (db/boot-reconcile.ts). Its records are not
+     * published: nobody is subscribed yet, and every one of them replays.
+     */
+    repository,
   }
 }

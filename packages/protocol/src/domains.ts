@@ -175,6 +175,29 @@ export const SessionListCursorSchema = z.object({
 export const HistoryCursorSchema = z.object({
   ordinal: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER),
 })
+/** Why a turn failed: the host's classification, never a provider's own words. */
+export const TurnFailureReasonSchema = z.enum([
+  'provider_process_exited',
+  'provider_process_crashed',
+  'provider_error',
+  'authentication_required',
+  'capability_missing',
+])
+export type TurnFailureReason = z.infer<typeof TurnFailureReasonSchema>
+/**
+ * What a failed turn says, per reason: the one table every writer and reader
+ * uses, so the live event, the stored row and an older row read back agree.
+ */
+export const TURN_FAILURE_MESSAGES: Record<TurnFailureReason, string> = {
+  provider_process_exited: 'The provider process exited before the turn completed.',
+  provider_process_crashed: 'The provider process crashed before the turn completed.',
+  provider_error: 'The provider failed to complete the turn.',
+  authentication_required: 'The provider requires authentication.',
+  capability_missing: 'The provider does not support this operation.',
+}
+/** Who ended an interrupted turn: the user, or a restart that cut it off. */
+export const TurnInterruptionSchema = z.enum(['user', 'server_restarted'])
+export type TurnInterruption = z.infer<typeof TurnInterruptionSchema>
 export const TurnSchema = z.object({
   turnId: EntityIdSchema,
   threadId: EntityIdSchema,
@@ -192,6 +215,15 @@ export const TurnSchema = z.object({
    * on a turn the user sent, and on older environments.
    */
   origin: z.enum(['background']).optional(),
+  /**
+   * The command that started the turn, so a client matches its own send to
+   * the turn by id rather than by text. Absent on a turn nobody sent.
+   */
+  commandId: EntityIdSchema.optional(),
+  /** Why a `failed` turn failed, as its `turn.failed` said. Persisted, so a snapshot carries it. */
+  failure: z.object({ reason: TurnFailureReasonSchema, message: z.string() }).optional(),
+  /** Who interrupted an `interrupted` turn, as its `turn.interrupted` said. */
+  interruptedBy: TurnInterruptionSchema.optional(),
 })
 export const ArtifactReferenceSchema = z.object({
   type: z.literal('artifact'),
@@ -249,7 +281,17 @@ export const ToolKindSchema = z.enum([
   'switch_mode',
   'other',
 ])
-export const ToolCallStatusSchema = z.enum(['pending', 'in_progress', 'completed', 'failed'])
+/**
+ * `cancelled`: the turn ended, or the server restarted, while the tool was
+ * still open; the server closes it with an explicit `tool.updated`.
+ */
+export const ToolCallStatusSchema = z.enum([
+  'pending',
+  'in_progress',
+  'completed',
+  'failed',
+  'cancelled',
+])
 /** What a `tool.updated` event carries, and what the environment keeps of a tool call. */
 export const ToolCallStateSchema = z.object({
   toolCallId: EntityIdSchema,
@@ -296,6 +338,10 @@ const CancellationReasonSchema = z.enum([
   'session_closed',
   'tool_cancelled',
   'runtime_disposed',
+  /** The turn ended while the request was still open. */
+  'turn_ended',
+  /** The server restarted while the request was still open. */
+  'server_restarted',
 ])
 const CancelledSchema = z.object({
   outcome: z.literal('cancelled'),
