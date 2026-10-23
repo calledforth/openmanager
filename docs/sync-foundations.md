@@ -1940,6 +1940,26 @@ closing a live connection or losing content.
     `binaryType = 'arraybuffer'`, and the fakes need binary frames;
   - the server exposes per-connection queued and in-flight byte counts to tests (S15).
 
+**As built (F5a, protocol v19).** Decisions the design above left open:
+
+- **Small messages stay text.** A message that fits in one fragment (at the current rate) is an
+  ordinary text frame; only a larger one is cut into binary fragments `[flag][UTF-8 slice]`. Acks
+  count a text frame's UTF-8 length and a binary frame's byte length, flag included; the server
+  never re-encodes to count.
+- **Acks** go every 32 KiB (1/8 of the initial window; the client does not know the current one)
+  or 250 ms after the last frame while anything is unacknowledged.
+- **Keepalives** go when nothing has been written for 15 s and no message is half-written. They do
+  not wait for the window: a few bytes, and what tells the browser the server lives while acks lag.
+- **The lagging cursor** is the newest cursor the connection was sure to deliver: the last record
+  written, or a queued replay answer's cursor (answers are never dropped).
+- **The window** follows twice the delivery rate times the minimum delivery delay seen over the last
+  10 s (the minimum, so a queue in a proxy does not inflate it).
+- **Server code:** `apps/server/src/connection-writer.ts` (queue, window, fragments, backlog,
+  lagging) and `websocket.ts` (liveness, catch-up through the replay reader). Until F5b removes the
+  replay caps, a catch-up past 500 events or 256 KiB is a `gap_expired` snapshot.
+- **S15** is checked with the link healed once the producer stops: delivering ~6 MB at 10 KiB/s
+  takes ten minutes whatever the protocol does.
+
 ### 7.3 (c) Protocol (F5)
 
 - **Client messages:** `beat`; `ack {received}`. `pong` is removed.

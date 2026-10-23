@@ -25,7 +25,11 @@ import { startServer } from '../../src/server.ts'
 import type { Delivery } from '../../src/event-delivery.ts'
 import { DATABASE_FILENAME } from '../../src/db/database.ts'
 import { isDerivedRecord, scopeKey } from '../../src/db/event-repository.ts'
-import type { ProofEvent, SubscriptionScope } from '@openmanager/protocol/node'
+import {
+  FragmentAssembler,
+  type ProofEvent,
+  type SubscriptionScope,
+} from '@openmanager/protocol/node'
 import {
   listSessionHistory,
   listSessionSummaries,
@@ -274,13 +278,23 @@ const prototype = WebSocket.prototype as unknown as {
   emit: (event: string | symbol, ...args: unknown[]) => boolean
 }
 const originalSend = prototype.send
+/** Fragmented messages in progress, per socket (protocol v19 framing). */
+const assemblers = new Map<WebSocket, FragmentAssembler>()
 prototype.send = function (this: WebSocket, ...args: unknown[]) {
   socketId(this)
-  if (typeof args[0] === 'string') {
-    if (publishing && args[0].startsWith('{"type":"event","name":"subscription.event"')) {
+  let text: string | undefined
+  if (typeof args[0] === 'string') text = args[0]
+  else if (Buffer.isBuffer(args[0])) {
+    let assembler = assemblers.get(this)
+    if (!assembler) assemblers.set(this, (assembler = new FragmentAssembler()))
+    const whole = assembler.push(new Uint8Array(args[0]))
+    if (whole) text = Buffer.from(whole).toString('utf8')
+  }
+  if (text !== undefined) {
+    if (publishing && text.startsWith('{"type":"event","name":"subscription.event"')) {
       publishing.add(this)
     }
-    answered(this, args[0])
+    answered(this, text)
   }
   return originalSend.apply(this, args)
 }
@@ -995,15 +1009,26 @@ async function handle(request: ChildRequest): Promise<unknown> {
           .prepare('SELECT session_id FROM sessions WHERE provider_session_id IS NULL')
           .all() as Array<{ session_id: string }>
       ).map((row) => row.session_id)
-    case 'sampleSockets':
+    case 'sampleSockets': {
+      // What each connection's writer holds: queued (not yet written) and
+      // in flight (written, not yet acknowledged), §7.2 (e).
+      const flow = new Map(server.sockets.flowStats().map((stats) => [stats.ws, stats]))
       return [...sockets.entries()]
         .filter(([ws]) => ws.readyState === WebSocket.OPEN)
-        .map(([ws, socket]): SocketSample => ({
-          socket,
-          remotePort: remotePortOf(ws),
-          readyState: ws.readyState,
-          bufferedAmount: ws.bufferedAmount,
-        }))
+        .map(([ws, socket]): SocketSample => {
+          const stats = flow.get(ws)
+          return {
+            socket,
+            remotePort: remotePortOf(ws),
+            readyState: ws.readyState,
+            bufferedAmount: ws.bufferedAmount,
+            queued: stats?.queued ?? 0,
+            inFlight: stats?.inFlight ?? 0,
+            window: stats?.window ?? 0,
+            lagging: stats?.lagging.length ?? 0,
+          }
+        })
+    }
     case 'readStreamed':
       return {
         bytes: streamed.bytes,
