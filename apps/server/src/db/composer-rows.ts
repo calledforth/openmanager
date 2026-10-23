@@ -83,8 +83,7 @@ export function preferenceFromRow(row: PreferenceRow): WorkspaceComposerPreferen
   })
 }
 
-const json = (value: unknown): string | null =>
-  value === undefined ? null : JSON.stringify(value)
+const json = (value: unknown): string | null => (value === undefined ? null : JSON.stringify(value))
 
 /** The projection's statements for both rows, run inside the event transaction. */
 export function prepareComposerProjection(database: DatabaseSync) {

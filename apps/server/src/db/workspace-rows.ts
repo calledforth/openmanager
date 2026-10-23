@@ -68,9 +68,7 @@ export function lastSessionActivity(database: DatabaseSync, workspaceId: string)
 /** Latest session `updated_at` per workspace, in one grouped read. */
 export function lastSessionActivities(database: DatabaseSync): Map<string, number> {
   const rows = database
-    .prepare(
-      'SELECT workspace_id, MAX(updated_at) AS at FROM sessions GROUP BY workspace_id',
-    )
+    .prepare('SELECT workspace_id, MAX(updated_at) AS at FROM sessions GROUP BY workspace_id')
     .all() as { workspace_id: string; at: number | null }[]
   const activity = new Map<string, number>()
   for (const row of rows) if (row.at !== null) activity.set(row.workspace_id, row.at)

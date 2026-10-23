@@ -28,6 +28,7 @@ import {
   type GitReading,
   type WorkspaceRow,
 } from './db/workspace-rows.ts'
+import { workspaceRemovalEvents } from './db/deletions.ts'
 import {
   canonicalizeRoot,
   canonicalizeUnavailableRoot,
@@ -167,23 +168,22 @@ export function openWorkspaceRegistry(
     return undefined
   }
 
-  const announce = (
-    name: 'workspace.updated' | 'workspace.removed',
-    payload: { workspace: Workspace } | { workspaceId: string },
-  ) => {
-    const schema = ProofEventSchemas[name] as { parse(input: unknown): ProofEvent }
-    const committed = store.appendAtomic([
-      schema.parse({
+  /** Commit events together and follow what committed. */
+  const commit = (events: readonly ProofEvent[]) => {
+    for (const record of store.appendAtomic(events)) apply(record.event)
+  }
+
+  const announce = (workspace: Workspace) =>
+    commit([
+      ProofEventSchemas['workspace.updated'].parse({
         type: 'event',
-        name,
+        name: 'workspace.updated',
         eventId: randomUUID(),
         timestamp: new Date(clock()).toISOString(),
         scope: { type: 'environment', environmentId: store.environmentId },
-        payload,
+        payload: { workspace },
       }),
     ])
-    for (const record of committed) apply(record.event)
-  }
 
   /** Follow one committed record: the cache never runs ahead of the rows (I11). */
   const apply = (event: ProofEvent): void => {
@@ -211,9 +211,7 @@ export function openWorkspaceRegistry(
    */
   const write = (row: WorkspaceRow): RegisteredWorkspace => {
     store.flush()
-    announce('workspace.updated', {
-      workspace: workspaceFromRow(row, lastSessionActivity(database, row.workspace_id)),
-    })
+    announce(workspaceFromRow(row, lastSessionActivity(database, row.workspace_id)))
     const written = byId.get(row.workspace_id)
     if (!written) throw new Error(`Workspace ${row.workspace_id} was written but not applied`)
     return written
@@ -376,13 +374,18 @@ export function openWorkspaceRegistry(
     return { ok: true, workspace }
   }
 
-  /** Forget a workspace. Sessions recorded under it go with it (FK cascade). */
+  /**
+   * Forget a workspace. One transaction says everything that goes with it:
+   * each of its sessions, deepest first, its new-session drafts detached,
+   * then the workspace itself (db/deletions.ts).
+   */
   const unregister = (workspaceId: string): boolean => {
     const workspace = byId.get(workspaceId)
     if (!workspace) return false
     options.onUnregister?.(workspaceId)
     icons.invalidate(workspace.root)
-    announce('workspace.removed', { workspaceId })
+    store.flush()
+    commit(workspaceRemovalEvents(database, store.environmentId, workspaceId, clock()))
     return true
   }
 

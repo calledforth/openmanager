@@ -198,6 +198,35 @@ type Waiter<T> = { resolve: (value: T) => void; reject: (error: Error) => void }
 
 const isProvider = (value: unknown): value is ProviderId => typeof value === 'string'
 
+/**
+ * Drop a session and every child under it. The shared reducers drop only
+ * what each event names, because the environment announces every session a
+ * deletion takes; Convex does not, so the desktop keeps the cascade itself
+ * (docs/sync-foundations.md §3.5).
+ */
+function removeSessionTree(state: EnvironmentState, sessionId: string): EnvironmentState {
+  const removed: string[] = []
+  const pending = [sessionId]
+  while (pending.length) {
+    const id = pending.pop()!
+    if (removed.includes(id)) continue
+    removed.push(id)
+    for (const session of Object.values(state.sessions)) {
+      if (session.parentSessionId === id) pending.push(session.sessionId)
+    }
+  }
+  return removed.reduceRight(applySessionRemoved, state)
+}
+
+/** Drop a workspace with its sessions, the desktop's own cascade as above. */
+function removeWorkspaceTree(state: EnvironmentState, workspaceId: string): EnvironmentState {
+  let next = state
+  for (const session of Object.values(state.sessions)) {
+    if (session.workspaceId === workspaceId) next = removeSessionTree(next, session.sessionId)
+  }
+  return applyWorkspaceRemoved(next, workspaceId)
+}
+
 export function createConvexEnvironmentClient(
   options: ConvexEnvironmentClientOptions,
 ): EnvironmentClient {
@@ -401,7 +430,7 @@ export function createConvexEnvironmentClient(
     update((state) => {
       let next = applyWorkspaceList(state, workspaces)
       for (const id of state.workspaceOrder) {
-        if (!paths.has(id)) next = applyWorkspaceRemoved(next, id)
+        if (!paths.has(id)) next = removeWorkspaceTree(next, id)
       }
       return next
     })
@@ -443,7 +472,7 @@ export function createConvexEnvironmentClient(
         next = seedCatalogStatus(next, row.externalId, row.status)
       }
       for (const sessionId of convexSessions) {
-        if (!ids.has(sessionId)) next = applySessionRemoved(next, sessionId)
+        if (!ids.has(sessionId)) next = removeSessionTree(next, sessionId)
       }
       return next
     })
@@ -889,7 +918,7 @@ export function createConvexEnvironmentClient(
         path: workspaceId,
       })
       if (row) await convex.mutation(api.workspaces.remove, { id: row._id })
-      update((state) => applyWorkspaceRemoved(state, workspaceId))
+      update((state) => removeWorkspaceTree(state, workspaceId))
     },
     async listSessions(input = {}) {
       gate()
@@ -1056,7 +1085,7 @@ export function createConvexEnvironmentClient(
         sessionId,
       )
       convexSessions.delete(sessionId)
-      update((state) => applySessionRemoved(state, sessionId))
+      update((state) => removeSessionTree(state, sessionId))
     },
     async sendTurn(input) {
       gate()

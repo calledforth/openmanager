@@ -116,6 +116,16 @@ export function createEventProjector(
       'UPDATE sessions SET composer_json = ? WHERE session_id = ?',
     ),
     deleteSession: database.prepare('DELETE FROM sessions WHERE session_id = ?'),
+    // What a deletion must already have said, so no foreign key removes a
+    // client-visible row silently (db/deletions.ts).
+    childOfSession: database.prepare('SELECT 1 FROM sessions WHERE parent_session_id = ? LIMIT 1'),
+    liveSessionDraft: database.prepare(
+      'SELECT 1 FROM drafts WHERE session_id = ? AND deleted_at IS NULL LIMIT 1',
+    ),
+    sessionInWorkspace: database.prepare('SELECT 1 FROM sessions WHERE workspace_id = ? LIMIT 1'),
+    liveWorkspaceDraft: database.prepare(
+      'SELECT 1 FROM drafts WHERE workspace_id = ? AND deleted_at IS NULL LIMIT 1',
+    ),
     selectSessionWorkspace: database.prepare(
       'SELECT workspace_id FROM sessions WHERE session_id = ?',
     ),
@@ -485,12 +495,21 @@ export function createEventProjector(
         }
         return
       }
-      case 'workspace.removed':
-        // Sessions still cascade with the row until removal announces them.
-        if (s.deleteWorkspace.run(event.payload.workspaceId).changes !== 1) {
-          throw new Error(`Cannot remove missing workspace ${event.payload.workspaceId}`)
+      case 'workspace.removed': {
+        // Its sessions were deleted and its drafts detached by events before
+        // this one; nothing is left for the foreign keys to take silently.
+        const { workspaceId } = event.payload
+        if (s.sessionInWorkspace.get(workspaceId)) {
+          throw new Error(`Workspace ${workspaceId} still has sessions; delete them first`)
+        }
+        if (s.liveWorkspaceDraft.get(workspaceId)) {
+          throw new Error(`Workspace ${workspaceId} still has drafts; detach them first`)
+        }
+        if (s.deleteWorkspace.run(workspaceId).changes !== 1) {
+          throw new Error(`Cannot remove missing workspace ${workspaceId}`)
         }
         return
+      }
       case 'session.updated':
         if (event.payload.status !== undefined) {
           if (
@@ -571,10 +590,8 @@ export function createEventProjector(
         const { workspaceId, providerId, preference, revision } = event.payload
         composer.preference({ workspaceId, providerId }, preference, revision, at)
         const row = readPreferenceRow(database, workspaceId, providerId)
-        if (
-          !row ||
-          !isDeepStrictEqual(preferenceFromRow(row), WorkspaceComposerPreferenceSchema.parse(preference))
-        ) {
+        const announced = WorkspaceComposerPreferenceSchema.parse(preference)
+        if (!row || !isDeepStrictEqual(preferenceFromRow(row), announced)) {
           throw new Error(`Preference ${workspaceId}/${providerId} does not read back as announced`)
         }
         return
@@ -591,9 +608,20 @@ export function createEventProjector(
         }
         return
       }
-      case 'session.deleted':
-        s.deleteSession.run(event.payload.sessionId)
+      case 'session.deleted': {
+        // Children first and its draft first, each with its own event.
+        const { sessionId } = event.payload
+        if (s.childOfSession.get(sessionId)) {
+          throw new Error(`Session ${sessionId} still has child sessions; delete them first`)
+        }
+        if (s.liveSessionDraft.get(sessionId)) {
+          throw new Error(`Session ${sessionId} still has a draft; delete it first`)
+        }
+        if (s.deleteSession.run(sessionId).changes !== 1) {
+          throw new Error(`Cannot delete missing session ${sessionId}`)
+        }
         return
+      }
       case 'thread.created': {
         const session = s.selectSessionWorkspace.get(event.scope.sessionId) as
           { workspace_id: string } | undefined

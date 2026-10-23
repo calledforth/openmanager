@@ -1908,7 +1908,7 @@ describe('durable session lifecycle', () => {
       expect(h.dispatch(h.service, 'session.delete', { sessionId })).toMatchObject({
         type: 'response',
       })
-      // SQLite cascades the child row; only the parent is announced.
+      // Each row that goes is announced, the child before its parent.
       expect(sessionCount(h)).toBe(0)
       expect(h.database.prepare('SELECT COUNT(*) AS count FROM threads').get()).toMatchObject({
         count: 0,
@@ -1920,6 +1920,7 @@ describe('durable session lifecycle', () => {
       ).toMatchObject({ count: 0 })
       expect(listed(h, h.service)).toEqual([])
       expect(h.published.filter((event) => event.name === 'session.deleted')).toMatchObject([
+        { payload: { sessionId: child.session_id } },
         { payload: { sessionId } },
       ])
       await vi.waitFor(() =>

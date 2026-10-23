@@ -53,7 +53,6 @@ import {
   applyTurnSending,
   applyTurnStarted,
   applyWorkspaceList,
-  applyWorkspaceRemoved,
   createInitialState,
   createThreadState,
   deriveSessionStatus,
@@ -838,6 +837,35 @@ export function createMockEnvironmentClient(
     return tombstone
   }
 
+  /**
+   * Delete sessions as the environment does: every session under them too,
+   * deepest first, each after a deletion of its draft.
+   */
+  const deleteSessionTree = (sessionIds: readonly string[]) => {
+    const sessions = Object.values(store.getState().sessions)
+    const depth = new Map<string, number>()
+    const visit = (sessionId: string, at: number) => {
+      if ((depth.get(sessionId) ?? -1) >= at) return
+      depth.set(sessionId, at)
+      for (const session of sessions) {
+        if (session.parentSessionId === sessionId) visit(session.sessionId, at + 1)
+      }
+    }
+    for (const sessionId of sessionIds) visit(sessionId, 0)
+    const ordered = [...depth]
+      .sort(([left, a], [right, b]) => b - a || left.localeCompare(right))
+      .map(([sessionId]) => sessionId)
+    cancelScriptsForThreads(
+      ordered.flatMap((sessionId) => store.getState().sessions[sessionId]?.threadIds ?? []),
+    )
+    for (const sessionId of ordered) {
+      if (draftRows.get(sessionId)?.draft) deleteDraftRow(sessionId)
+      // The draft's row, tombstone included, goes with the session.
+      draftRows.delete(sessionId)
+      emit({ ...base(), name: 'session.deleted', scope: envScope(), payload: { sessionId } })
+    }
+  }
+
   const commands: EnvironmentCommands = {
     getEnvironment: () =>
       run('getEnvironment', null, () => {
@@ -879,10 +907,28 @@ export function createMockEnvironmentClient(
         if (!store.getState().workspaces[workspaceId]) {
           throw new EnvironmentClientError('not_found', 'Workspace not found.')
         }
-        cancelScriptsForThreads(
-          selectSessionList(store.getState(), workspaceId).flatMap((session) => session.threadIds),
+        // As the environment does: its sessions, its drafts detached, then itself.
+        deleteSessionTree(
+          Object.values(store.getState().sessions)
+            .filter((session) => session.workspaceId === workspaceId)
+            .map((session) => session.sessionId),
         )
-        store.update((state) => applyWorkspaceRemoved(state, workspaceId))
+        for (const [draftId, row] of draftRows) {
+          const target = row.draft?.target
+          if (!row.draft || target?.type !== 'new_session' || target.workspaceId !== workspaceId) {
+            continue
+          }
+          const draft: Draft = {
+            ...row.draft,
+            target: { ...target, workspaceId: null },
+            revision: row.revision + 1,
+            updatedAt: now(),
+            updatedByClientId: null,
+          }
+          draftRows.set(draftId, { ...row, draft, revision: draft.revision })
+          emit({ ...base(), name: 'draft.saved', scope: envScope(), payload: { draft } })
+        }
+        emit({ ...base(), name: 'workspace.removed', scope: envScope(), payload: { workspaceId } })
       }),
     listSessions: (input = {}) =>
       run('listSessions', input, () => {
@@ -1165,8 +1211,7 @@ export function createMockEnvironmentClient(
       run('deleteSession', sessionId, () => {
         const session = store.getState().sessions[sessionId]
         if (!session) throw new EnvironmentClientError('not_found', 'Session not found.')
-        cancelScriptsForThreads(session.threadIds)
-        emit({ ...base(), name: 'session.deleted', scope: envScope(), payload: { sessionId } })
+        deleteSessionTree([sessionId])
       }),
     sendTurn: (input) => {
       const commandId = input.commandId ?? nextId()

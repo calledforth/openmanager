@@ -717,7 +717,7 @@ describe('applyEvent', () => {
     expect(selectActiveThread(next)?.turns ?? []).toEqual([])
   })
 
-  it('removes a workspace and its sessions when the environment announces the removal', () => {
+  it('removes only the workspace: its sessions go on their own announcements', () => {
     const state = seeded()
     const next = applyEvent(
       state,
@@ -728,8 +728,10 @@ describe('applyEvent', () => {
       }),
     )
     expect(next.workspaceOrder).toEqual([])
-    expect(next.sessionOrder).toEqual([])
-    expect(next.activeSessionId).toBeNull()
+    // The environment announces each session before the workspace; the
+    // client mirrors no cascade of its own.
+    expect(next.sessionOrder).toEqual([SESSION.sessionId])
+    expect(next.activeSessionId).toBe(SESSION.sessionId)
     expect(
       applyEvent(
         next,
@@ -836,7 +838,7 @@ describe('applyEvent', () => {
     expect(state.sessions[SESSION.sessionId]).not.toHaveProperty('parentSessionId')
   })
 
-  it('cascades a parent deletion to its descendants and leaves other sessions alone', () => {
+  it('drops exactly the session each deletion names, children announced before their parent', () => {
     const nested = (sessionId: string, parentSessionId: string) => ({
       session: { sessionId, workspaceId: WORKSPACE.workspaceId, title: sessionId, parentSessionId },
       thread: { threadId: `${sessionId}-thread`, sessionId },
@@ -880,14 +882,18 @@ describe('applyEvent', () => {
       sessionOpenFailure: { sessionId: 'session-child', message: 'boom', code: 'internal' },
     }
 
-    const deleted = applyEvent(
-      state,
-      event({
-        name: 'session.deleted',
-        scope: environmentScope,
-        payload: { sessionId: SESSION.sessionId },
-      }),
-    )
+    const remove = (current: typeof state, sessionId: string) =>
+      applyEvent(
+        current,
+        event({ name: 'session.deleted', scope: environmentScope, payload: { sessionId } }),
+      )
+    // The root's own announcement takes the root alone.
+    expect(Object.keys(remove(state, SESSION.sessionId).sessions).sort()).toEqual([
+      'session-child',
+      'session-grandchild',
+      'session-other',
+    ])
+    const deleted = ['session-grandchild', 'session-child', SESSION.sessionId].reduce(remove, state)
     expect(Object.keys(deleted.sessions)).toEqual(['session-other'])
     expect(deleted.sessionOrder).toEqual(['session-other'])
     expect(Object.keys(deleted.threads)).toEqual(['thread-other'])
@@ -896,7 +902,7 @@ describe('applyEvent', () => {
     expect(deleted.sessionOpenFailure).toBeNull()
   })
 
-  it('removes a loaded child when its never-loaded parent is deleted', () => {
+  it('removes a loaded child on its own announcement, whether or not its parent was loaded', () => {
     const child = {
       sessionId: 'session-child',
       workspaceId: WORKSPACE.workspaceId,
@@ -918,13 +924,13 @@ describe('applyEvent', () => {
     )
     expect(state.sessionOrder).toContain(child.sessionId)
 
-    const deleted = applyEvent(
+    const deleted = [child.sessionId, 'parent-1'].reduce(
+      (current, sessionId) =>
+        applyEvent(
+          current,
+          event({ name: 'session.deleted', scope: environmentScope, payload: { sessionId } }),
+        ),
       state,
-      event({
-        name: 'session.deleted',
-        scope: environmentScope,
-        payload: { sessionId: 'parent-1' },
-      }),
     )
     expect(deleted.sessions[child.sessionId]).toBeUndefined()
     expect(deleted.threads['session-child-thread']).toBeUndefined()

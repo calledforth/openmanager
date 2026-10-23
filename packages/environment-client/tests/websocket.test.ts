@@ -299,8 +299,10 @@ describe('websocket environment client', () => {
     socket.respond('workspace.list', { workspaces: [] })
     await refresh
     expect(client.getState().workspaces).toEqual({})
-    expect(client.getState().sessions).toEqual({})
-    expect(client.getState().threads).toEqual({})
+    // The workspace listing answers for workspaces only: each session is
+    // dropped by its own announcement or by the session catalog's answer.
+    expect(Object.keys(client.getState().sessions)).toEqual([SESSION.sessionId])
+    expect(client.getState().threads[THREAD.threadId]).toBe(state.threads[THREAD.threadId])
     client.dispose()
   })
 
@@ -2905,6 +2907,14 @@ describe('composer commands', () => {
       ...TARGET,
       preference: { modeId: 'plan' },
     })
+    // As the environment announces a removal: its session first, then itself.
+    socket.receive(
+      event({
+        name: 'session.deleted',
+        scope: { type: 'environment', environmentId: ENV },
+        payload: { sessionId: SESSION.sessionId },
+      }),
+    )
     socket.receive(
       event({
         name: 'workspace.removed',

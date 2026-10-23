@@ -33,7 +33,7 @@ import type {
 import {
   applyDraftDeleted,
   applyDraftSaved,
-  detachWorkspaceDrafts,
+  detachWorkspaceEdits,
   removeSessionDrafts,
 } from './draft-state'
 
@@ -368,24 +368,13 @@ function resolveInteraction(current: ThreadState, interactionId: string): Thread
 }
 
 /**
- * Drop a session and every child under it. The environment deletes children
- * with their parent and announces only the parent, so the client mirrors the
- * cascade instead of leaving orphaned subagent rows in the sidebar.
+ * Drop one session, its threads and its draft. The environment announces
+ * every session a deletion takes, each child before its parent, so the
+ * client mirrors no cascade (docs/sync-foundations.md §3.6 row 12).
  */
 function removeSession(state: EnvironmentState, sessionId: string): EnvironmentState {
-  // The parent itself may never have been loaded (a paginated list can bring
-  // a child in first), so descendants are searched for regardless.
-  const removed = new Set<string>()
-  const pending = [sessionId]
-  while (pending.length) {
-    const id = pending.pop()!
-    if (removed.has(id)) continue
-    removed.add(id)
-    for (const session of Object.values(state.sessions)) {
-      if (session.parentSessionId === id) pending.push(session.sessionId)
-    }
-  }
-  if (![...removed].some((id) => id in state.sessions)) return removeSessionDrafts(state, removed)
+  const removed = new Set([sessionId])
+  if (!(sessionId in state.sessions)) return removeSessionDrafts(state, removed)
   const sessions = { ...state.sessions }
   const threads = { ...state.threads }
   for (const id of removed) {
@@ -419,7 +408,8 @@ export function applyEvent(state: EnvironmentState, event: ProofEvent): Environm
     case 'workspace.updated':
       return upsertWorkspace(state, event.payload.workspace)
     case 'workspace.removed':
-      return detachWorkspaceDrafts(
+      // Its sessions went, and its drafts were detached, on events before it (row 13).
+      return detachWorkspaceEdits(
         applyWorkspaceRemoved(state, event.payload.workspaceId),
         event.payload.workspaceId,
       )
@@ -997,6 +987,10 @@ export function applyWorkspaceList(
   return next
 }
 
+/**
+ * Drop a workspace and what is read per workspace. Its sessions and drafts
+ * are not touched here: the environment announces each change to them.
+ */
 export function applyWorkspaceRemoved(
   state: EnvironmentState,
   workspaceId: string,
@@ -1006,16 +1000,12 @@ export function applyWorkspaceRemoved(
   delete workspaces[workspaceId]
   const composerPreferences = { ...state.composerPreferences }
   delete composerPreferences[workspaceId]
-  let next: EnvironmentState = {
+  return {
     ...state,
     workspaces,
     workspaceOrder: state.workspaceOrder.filter((id) => id !== workspaceId),
     composerPreferences,
   }
-  for (const session of Object.values(state.sessions)) {
-    if (session.workspaceId === workspaceId) next = removeSession(next, session.sessionId)
-  }
-  return next
 }
 
 const sameJson = (left: unknown, right: unknown) => JSON.stringify(left) === JSON.stringify(right)

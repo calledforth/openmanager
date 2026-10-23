@@ -54,6 +54,7 @@ import {
 import type { ArtifactStore } from './artifacts.ts'
 import { waitingKind } from './db/session-activity.ts'
 import type { WriteOptions } from './db/event-repository.ts'
+import { sessionDeletionEvents } from './db/deletions.ts'
 import { pageSessionSummaries } from './session-pagination.ts'
 import type { CommandContext } from './command-context.ts'
 import { formatTitleContext, type TitleContextMessage } from './session-titles/context.ts'
@@ -823,6 +824,31 @@ export function createThreadService(
   /** How to put back the draft each just-created session was sent from, until it starts. */
   const sentDrafts = new Map<string, () => void>()
 
+  /**
+   * Delete a session in one write that says everything going with it: each
+   * session under it, deepest first, and each one's draft (db/deletions.ts).
+   * Without a database (unit tests only) there is nothing under it to read.
+   */
+  const deleteSessions = (sessionId: string) => {
+    if (!options.database) {
+      appendEvent(
+        ProofEventSchemas['session.deleted'].parse({
+          type: 'event',
+          name: 'session.deleted',
+          eventId: randomUUID(),
+          timestamp: new Date().toISOString(),
+          scope: { type: 'environment', environmentId },
+          payload: { sessionId },
+        }),
+      )
+      return
+    }
+    options.flush?.()
+    const events = sessionDeletionEvents(options.database, environmentId, [sessionId], Date.now())
+    if (options.appendAtomic) options.appendAtomic(events)
+    else events.forEach(appendEvent)
+  }
+
   const rollbackSession = (record: ThreadRecord) => {
     if (sessions.get(record.session.sessionId) !== record) return
     sessions.delete(record.session.sessionId)
@@ -836,16 +862,12 @@ export function createThreadService(
         options.onPersistenceError?.(error, 'session.deleted')
       }
     }
-    appendRuntimeEvent(
-      ProofEventSchemas['session.deleted'].parse({
-        type: 'event',
-        name: 'session.deleted',
-        eventId: randomUUID(),
-        timestamp: new Date().toISOString(),
-        scope: { type: 'environment', environmentId },
-        payload: { sessionId: record.session.sessionId },
-      }),
-    )
+    try {
+      deleteSessions(record.session.sessionId)
+    } catch (error) {
+      if (!options.onPersistenceError) throw error
+      options.onPersistenceError(error, 'session.deleted')
+    }
     // The send never happened as far as anyone can see, so neither did the
     // draft's deletion: the retry starts from what the user wrote.
     const restoreDraft = sentDrafts.get(record.session.sessionId)
@@ -2191,7 +2213,7 @@ export function createThreadService(
           (options.database ? getSessionSummary(options.database, sessionId) : undefined)
         if (!session) return errorResult(command.requestId, 'not_found', 'Session not found.')
         const timestamp = new Date().toISOString()
-        const event =
+        const rename =
           parsed.data.name === 'session.rename'
             ? ProofEventSchemas['session.updated'].parse({
                 type: 'event',
@@ -2201,22 +2223,16 @@ export function createThreadService(
                 scope: { type: 'environment', environmentId },
                 payload: { sessionId, title: parsed.data.payload.title, titleSource: 'user' },
               })
-            : ProofEventSchemas['session.deleted'].parse({
-                type: 'event',
-                name: 'session.deleted',
-                eventId: randomUUID(),
-                timestamp,
-                scope: { type: 'environment', environmentId },
-                payload: { sessionId },
-              })
+            : undefined
         if (parsed.data.name === 'session.delete' && session.parentSessionId) forgetChild(sessionId)
         // Deleted, or renamed: a title still being written is not wanted.
         if (parsed.data.name === 'session.delete') forgetTitleWork(sessionId)
         else titleWork.get(sessionId)?.controller?.abort()
         try {
-          appendEvent(event)
+          if (rename) appendEvent(rename)
+          else deleteSessions(sessionId)
         } catch (error) {
-          options.onPersistenceError?.(error, event.name)
+          options.onPersistenceError?.(error, rename ? rename.name : 'session.deleted')
           return errorResult(
             command.requestId,
             'unavailable',

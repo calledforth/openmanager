@@ -225,6 +225,38 @@ describe('mock environment client', () => {
     expect(client.getState().threads[THREAD.threadId]).toBeUndefined()
   })
 
+  it('announces a deletion as the environment does: the child, then its parent', async () => {
+    const child = { ...SESSION, sessionId: 'child', parentSessionId: SESSION.sessionId }
+    const client = createMockEnvironmentClient({
+      seed: {
+        workspaces: [WORKSPACE],
+        sessions: [
+          { session: SESSION, threads: [THREAD] },
+          { session: child, threads: [{ threadId: 'child-thread', sessionId: 'child' }] },
+        ],
+      },
+    })
+    await client.commands.deleteSession(SESSION.sessionId)
+    expect(client.getState().sessions).toEqual({})
+  })
+
+  it('removing a workspace detaches its new-session drafts with a new revision', async () => {
+    const client = createMockEnvironmentClient({ seed })
+    const target = { type: 'new_session', workspaceId: WORKSPACE.workspaceId, sessionId: 'next' }
+    await client.commands.saveDraft({
+      draftId: 'draft-1',
+      baseRevision: 0,
+      target: target as never,
+      content: { text: 'kept' },
+    })
+    await client.commands.removeWorkspace(WORKSPACE.workspaceId)
+    expect(client.getState().sessions).toEqual({})
+    expect(client.getState().drafts['draft-1']).toMatchObject({
+      target: { ...target, workspaceId: null },
+      revision: 2,
+    })
+  })
+
   it('rejects delayed commands when disposed instead of leaving them pending', async () => {
     const client = createMockEnvironmentClient({ seed, latencyMs: 1000 })
     const pending = client.commands.listWorkspaces()

@@ -410,8 +410,15 @@ describe('composer drafts across clients', () => {
     const requestId = first.command('workspace.remove', { workspaceId: host.workspaceId })
     expect(await nextResponse(first, requestId)).toMatchObject({ type: 'response' })
 
+    // The server detaches it with an event of its own: a new revision, by no client.
     expect((await list(first)).drafts).toEqual([
-      { ...draft, target: { ...draft.target, workspaceId: null } },
+      {
+        ...draft,
+        target: { ...draft.target, workspaceId: null },
+        revision: draft.revision + 1,
+        updatedAt: expect.any(String),
+        updatedByClientId: null,
+      },
     ])
     // A save naming the removed project keeps the draft, without the project.
     const after = await saved(first, 'draft-f', 1, draft.target, { text: 'still here' })
