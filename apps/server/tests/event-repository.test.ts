@@ -19,6 +19,8 @@ import { openEnvironmentDatabase } from '../src/db/database.js'
 import {
   createRepositoryEventBatcher,
   createStreamingEventBatcher,
+  DroppedWrite,
+  RefusedBatch,
 } from '../src/db/event-batcher.js'
 import { createEventRepository, type EventRepository } from '../src/db/event-repository.js'
 import { reconcileAfterRestart } from '../src/db/boot-reconcile.js'
@@ -1239,6 +1241,31 @@ describe('streaming event batching', () => {
     expect(written).toEqual([['first'], ['text', 'done']])
   })
 
+  it('drops a refused write, reports it, and lets every later write through', () => {
+    const written: string[][] = []
+    const refused: string[] = []
+    const batcher = createStreamingEventBatcher(
+      (_batchScope, events) => {
+        if (events.some((event) => event.eventId === 'bad')) {
+          throw new RefusedBatch(new Error('the projection refuses it'))
+        }
+        written.push(events.map((event) => event.eventId))
+      },
+      { onRefused: (_error, event) => refused.push(event.eventId) },
+    )
+    // Its own caller hears of it; the queue does not keep it.
+    expect(() => batcher.append(started('bad'))).toThrow(DroppedWrite)
+    batcher.append(started('after'))
+    expect(written).toEqual([['after']])
+    // A refused event batched with text costs only itself: the text is
+    // written on its own, then the next write goes through.
+    batcher.append(delta('Hello', 'text'))
+    expect(() => batcher.append(completed('bad'))).toThrow(DroppedWrite)
+    batcher.append(started('later'))
+    expect(refused).toEqual(['bad', 'bad'])
+    expect(written.slice(1)).toEqual([['text'], ['later']])
+  })
+
   it('keeps a barrier event whose buffered text could not be written first', () => {
     let failing = false
     const written: string[][] = []
@@ -1269,6 +1296,38 @@ describe('streaming event batching', () => {
 })
 
 describe('durable server event boundary', () => {
+  it('drops a write its projection refuses instead of retrying it ahead of every later write', async () => {
+    const { database } = await createDatabase()
+    database.exec("UPDATE sessions SET title = 'Mine', title_source = 'user'")
+    const refused = vi.fn()
+    const events = createPersistentEventService(database, vi.fn(), { onRefused: refused })
+    const environment = { type: 'environment', environmentId: 'environment-1' } as const
+    const titled = (eventId: string, titleSource: 'provider' | 'user') =>
+      ProofEventSchemas['session.updated'].parse({
+        type: 'event',
+        name: 'session.updated',
+        eventId,
+        timestamp: '2026-09-10T10:00:00.000Z',
+        scope: environment,
+        payload: { sessionId: 'session-1', title: `By ${titleSource}`, titleSource },
+      })
+    // A bug in a producer: an agent's title over the user's.
+    expect(() => events.append(titled('agent', 'provider'))).toThrow(DroppedWrite)
+    expect(refused).toHaveBeenCalledExactlyOnceWith(
+      expect.objectContaining({ name: 'ProjectionRefusal' }),
+      expect.objectContaining({ eventId: 'agent' }),
+    )
+    // Nothing is held back behind it.
+    events.append(titled('rename', 'user'))
+    events.append(started())
+    events.flush()
+    expect(database.prepare('SELECT title FROM sessions').get()).toEqual({ title: 'By user' })
+    expect(database.prepare('SELECT state FROM turns').get()).toEqual({ state: 'running' })
+    expect(
+      database.prepare("SELECT count(*) AS n FROM event_log WHERE event_id = 'agent'").get(),
+    ).toEqual({ n: 0 })
+  })
+
   it('hydrates completed history, summaries, and threads from SQLite after restart and retention', async () => {
     const { database, directory } = await createDatabase()
     const publish = vi.fn((record) => {

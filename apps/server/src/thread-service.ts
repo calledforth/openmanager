@@ -1241,13 +1241,36 @@ export function createThreadService(
    * fallback, and the fallback only ever fills a placeholder — so the first
    * meaningful turn names the session and later turns leave it alone.
    */
+  /**
+   * The title and its source as the rows hold them, everything queued
+   * written first. The projection judges a title against these (I2), so the
+   * producer decides against them too, not against memory: memory can lag a
+   * write that failed and landed on a later retry. Memory takes them on the
+   * way. Undefined when the rows cannot be read now; a title can wait.
+   */
+  const committedTitle = (record: ThreadRecord) => {
+    if (!options.database) return { title: record.session.title, source: record.titleSource }
+    try {
+      options.flush?.()
+    } catch {
+      return undefined
+    }
+    const summary = getSessionSummary(options.database, record.session.sessionId)
+    if (!summary) return undefined
+    record.session.title = summary.title
+    record.titleSource = summary.titleSource
+    return { title: summary.title, source: summary.titleSource }
+  }
+
   const applyTitle = (record: ThreadRecord, title: string, source: SessionTitleSource): void => {
     const nextTitle = title.trim()
     if (!nextTitle) return
+    const stored = committedTitle(record)
+    if (!stored) return
     // A user title that happens to look generated is still the user's.
-    if (record.titleSource === 'user' && source !== 'user') return
-    if (!shouldReplaceSessionTitle(record.session.title, record.titleSource, source)) return
-    if (record.session.title === nextTitle && record.titleSource === source) return
+    if (stored.source === 'user' && source !== 'user') return
+    if (!shouldReplaceSessionTitle(stored.title, stored.source, source)) return
+    if (stored.title === nextTitle && stored.source === source) return
     // Announced before it is believed. A name is bookkeeping, so a failed write
     // must not fail the turn that triggered it, and leaving the record on its
     // old title keeps it a placeholder that the next turn names again.

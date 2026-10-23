@@ -1506,10 +1506,17 @@ describe('durable session lifecycle', () => {
       "INSERT INTO workspaces (workspace_id, name, path, created_at, updated_at) VALUES ('/workspace/project', 'Project', '/workspace/project', 1, 1)",
     )
     const published: EventEnvelope[] = []
+    // A transient failure a test can switch on: commits that hold a matching
+    // event fail as a full disk would, so the batcher keeps and retries them.
+    let failing: ((records: readonly DurableEvent[]) => boolean) | undefined
     const events = createPersistentEventService(
       database,
       (record) => published.push(record.event),
-      {},
+      {
+        beforeCommit: (records) => {
+          if (failing?.(records)) throw new Error('disk full')
+        },
+      },
     )
     const runtime = {
       ensureSession: vi
@@ -1563,6 +1570,9 @@ describe('durable session lifecycle', () => {
       service,
       created,
       dispatch,
+      failCommits: (when?: (records: readonly DurableEvent[]) => boolean) => {
+        failing = when
+      },
       close: () => {
         events.close()
         database.close()
@@ -2151,8 +2161,9 @@ describe('durable session lifecycle', () => {
         event: 'prompt_started',
         data: { prompt: 'Go', userMessageId: sent.userMessage.messageId },
       })
-      h.database.exec(`CREATE TEMP TRIGGER refuse_request BEFORE INSERT ON interactions
-        BEGIN SELECT RAISE(ABORT, 'boom'); END`)
+      h.failCommits((records) =>
+        records.some((record) => record.event.name === 'interaction.requested'),
+      )
       h.service.onRuntimeEvent({
         ...base,
         id: 'asked',
@@ -2166,7 +2177,7 @@ describe('durable session lifecycle', () => {
           options: [{ optionId: 'allow', name: 'Allow', kind: 'allow_once' }],
         },
       })
-      h.database.exec('DROP TRIGGER refuse_request')
+      h.failCommits(undefined)
       expect(failures).toEqual(['interaction.requested'])
       expect(h.database.prepare('SELECT count(*) AS n FROM interactions').get()).toEqual({ n: 0 })
       // The answer comes; the batcher first writes the request it kept, then
@@ -2244,11 +2255,12 @@ describe('durable session lifecycle', () => {
         })
       // Both requests arrive while no request can be written: the second
       // waits behind the first instead of being dropped from the write queue.
-      h.database.exec(`CREATE TEMP TRIGGER refuse_request BEFORE INSERT ON interactions
-        BEGIN SELECT RAISE(ABORT, 'boom'); END`)
+      h.failCommits((records) =>
+        records.some((record) => record.event.name === 'interaction.requested'),
+      )
       ask(2, 'permission-a', 'tool-1')
       ask(3, 'permission-b', 'tool-2')
-      h.database.exec('DROP TRIGGER refuse_request')
+      h.failCommits(undefined)
       expect(failures).toEqual(['interaction.requested', 'interaction.requested'])
       // Storage is back. The first answer leaves the turn waiting on the
       // second request, as memory says, and the rows hold that request too.
@@ -2642,6 +2654,55 @@ describe('durable session lifecycle', () => {
         ).payload.settledAt,
       ).toEqual(expect.any(String))
       h.events.flush()
+    } finally {
+      h.close()
+    }
+  })
+
+  it('judges an agent title against the committed title, not memory, after a rename that landed late', async () => {
+    const failures: string[] = []
+    const h = setup((_error, eventName) => failures.push(eventName))
+    try {
+      const { sessionId } = h.created.session
+      await h.service.resolveRuntimeSession(sessionId)
+      // The rename's write fails as a full disk would: the client hears
+      // "unavailable" and memory keeps the old title, but the batcher keeps
+      // the write and it lands on the next flush.
+      h.failCommits((records) => records.some((record) => record.event.name === 'session.updated'))
+      expect(h.dispatch(h.service, 'session.rename', { sessionId, title: 'Mine' })).toMatchObject({
+        error: { code: 'unavailable' },
+      })
+      h.failCommits(undefined)
+      const announced = h.published.length
+      h.service.onRuntimeEvent({
+        providerId: 'opencode',
+        threadId: h.created.thread.threadId,
+        workspaceId: '/workspace/project',
+        sessionId: 'provider-persisted',
+        id: 'info',
+        seq: 1,
+        timestamp: new Date().toISOString(),
+        category: 'session',
+        event: 'session_info_update',
+        data: { title: 'Agent name' },
+      })
+      h.events.flush()
+      // The rename landed; the agent's title was never emitted, so nothing
+      // was refused and nothing is stuck.
+      expect(h.database.prepare('SELECT title, title_source FROM sessions').get()).toEqual({
+        title: 'Mine',
+        title_source: 'user',
+      })
+      expect(
+        h.published
+          .slice(announced)
+          .filter((event) => event.name === 'session.updated')
+          .flatMap((event) => {
+            const title = (event.payload as { title?: string } | null)?.title
+            return title === undefined ? [] : [title]
+          }),
+      ).toEqual(['Mine'])
+      expect(failures).toEqual(['session.updated'])
     } finally {
       h.close()
     }

@@ -234,6 +234,14 @@ export async function startServer(config: ServerConfig) {
     {
       epoch: eventEpoch,
       onError: (error) => log('error', 'event persistence failed', { reason: String(error) }),
+      // A producer emitted what its projection refuses: a bug. The write is
+      // dropped so it cannot block every write behind it (write-errors.ts).
+      onRefused: (error, event) =>
+        log('error', 'a refused write was dropped', {
+          event: event.name,
+          eventId: event.eventId,
+          reason: String(error),
+        }),
       ...config.commitHooks,
     },
   )

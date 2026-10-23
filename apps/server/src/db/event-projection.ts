@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto'
 import type { DatabaseSync } from 'node:sqlite'
+import { ProjectionRefusal } from './write-errors.ts'
 import { isDeepStrictEqual } from 'node:util'
 import {
   ProviderComposerProfileSchema,
@@ -271,7 +272,8 @@ export function createEventProjector(
   function projectTurnStarted(event: TurnStarted, at: number): void {
     const thread = s.selectThreadWorkspace.get(event.scope.threadId) as
       { workspace_id: string } | undefined
-    if (!thread) throw new Error(`Cannot project turn for missing thread ${event.scope.threadId}`)
+    if (!thread)
+      throw new ProjectionRefusal(`Cannot project turn for missing thread ${event.scope.threadId}`)
     s.insertTurn.run(
       event.payload.turn.turnId,
       event.scope.threadId,
@@ -296,8 +298,9 @@ export function createEventProjector(
   function projectMessageDelta(event: MessageDelta, at: number): void {
     const { messageId, turnId, role, content } = event.payload
     const turn = s.selectTurnWorkspace.get(turnId, event.scope.threadId) as TurnRow | undefined
-    if (!turn) throw new Error(`Cannot project message for missing turn ${turnId}`)
-    if (finished(turn)) throw new Error(`Cannot add a message to finished turn ${turnId}`)
+    if (!turn) throw new ProjectionRefusal(`Cannot project message for missing turn ${turnId}`)
+    if (finished(turn))
+      throw new ProjectionRefusal(`Cannot add a message to finished turn ${turnId}`)
     const existing = s.selectMessage.get(messageId) as
       { turn_id: string; thread_id: string; role: string; is_final: number } | undefined
     if (
@@ -307,7 +310,7 @@ export function createEventProjector(
         existing.role !== role ||
         existing.is_final !== 0)
     ) {
-      throw new Error(`Cannot append to mismatched or finalized message ${messageId}`)
+      throw new ProjectionRefusal(`Cannot append to mismatched or finalized message ${messageId}`)
     }
     if (!existing) {
       insertMessage(
@@ -335,13 +338,13 @@ export function createEventProjector(
   ): void {
     const { turnId } = event.payload
     const turn = s.selectTurnWorkspace.get(turnId, event.scope.threadId) as TurnRow | undefined
-    if (!turn) throw new Error(`Cannot project ${kind} for missing turn ${turnId}`)
+    if (!turn) throw new ProjectionRefusal(`Cannot project ${kind} for missing turn ${turnId}`)
     const existing = s.selectActivity.get(activityId) as ActivityRow | undefined
     // A finished turn takes exactly one kind of child event: the close of a
     // child it left open (the legacy repair, docs/sync-foundations.md §4.2).
     // Anything else, a second close included, rolls the write back (I2).
     if (finished(turn) && !closesOpenChild(event, existing)) {
-      throw new Error(`Cannot change ${kind} ${activityId} of finished turn ${turnId}`)
+      throw new ProjectionRefusal(`Cannot change ${kind} ${activityId} of finished turn ${turnId}`)
     }
     if (existing) {
       if (
@@ -349,7 +352,7 @@ export function createEventProjector(
         existing.thread_id !== event.scope.threadId ||
         existing.kind !== kind
       ) {
-        throw new Error(`Cannot update mismatched ${kind} ${activityId}`)
+        throw new ProjectionRefusal(`Cannot update mismatched ${kind} ${activityId}`)
       }
       s.updateActivity.run(JSON.stringify(next(JSON.parse(existing.state_json))), at, activityId)
       return
@@ -402,8 +405,7 @@ export function createEventProjector(
     const { messageId, turnId, phase, content, tokens } = event.payload
     upsertActivity(event, messageId, 'reasoning', at, (existing) => {
       const previous = existing as
-        | { content: MessageContent[]; tokens?: number; phase: string }
-        | undefined
+        { content: MessageContent[]; tokens?: number; phase: string } | undefined
       const blocks = previous?.content ?? []
       const last = blocks.at(-1)
       const merged =
@@ -465,7 +467,7 @@ export function createEventProjector(
         // assumed: what a listing reads back equals what the event said.
         const written = getSessionSummary(database, session.sessionId)
         if (!isDeepStrictEqual(written, SessionSummarySchema.parse(session))) {
-          throw new Error(
+          throw new ProjectionRefusal(
             `session.created for ${session.sessionId} says ${JSON.stringify(session)}; its row reads ${JSON.stringify(written)}`,
           )
         }
@@ -492,7 +494,7 @@ export function createEventProjector(
         // is what the event said (I2).
         const written = readWorkspace(database, workspace.workspaceId)
         if (!isDeepStrictEqual(written, WorkspaceSchema.parse(workspace))) {
-          throw new Error(
+          throw new ProjectionRefusal(
             `workspace.updated for ${workspace.workspaceId} says ${JSON.stringify(workspace)}; its row reads ${JSON.stringify(written)}`,
           )
         }
@@ -503,13 +505,17 @@ export function createEventProjector(
         // this one; nothing is left for the foreign keys to take silently.
         const { workspaceId } = event.payload
         if (s.sessionInWorkspace.get(workspaceId)) {
-          throw new Error(`Workspace ${workspaceId} still has sessions; delete them first`)
+          throw new ProjectionRefusal(
+            `Workspace ${workspaceId} still has sessions; delete them first`,
+          )
         }
         if (s.liveWorkspaceDraft.get(workspaceId)) {
-          throw new Error(`Workspace ${workspaceId} still has drafts; detach them first`)
+          throw new ProjectionRefusal(
+            `Workspace ${workspaceId} still has drafts; detach them first`,
+          )
         }
         if (s.deleteWorkspace.run(workspaceId).changes !== 1) {
-          throw new Error(`Cannot remove missing workspace ${workspaceId}`)
+          throw new ProjectionRefusal(`Cannot remove missing workspace ${workspaceId}`)
         }
         return
       }
@@ -523,11 +529,15 @@ export function createEventProjector(
             s.updateSessionStatus.run(event.payload.status, movedAt ?? at, event.payload.sessionId)
               .changes !== 1
           ) {
-            throw new Error(`Cannot update status for missing session ${event.payload.sessionId}`)
+            throw new ProjectionRefusal(
+              `Cannot update status for missing session ${event.payload.sessionId}`,
+            )
           }
         } else if (movedAt !== undefined) {
           if (s.updateSessionTime.run(movedAt, event.payload.sessionId).changes !== 1) {
-            throw new Error(`Cannot move the time of missing session ${event.payload.sessionId}`)
+            throw new ProjectionRefusal(
+              `Cannot move the time of missing session ${event.payload.sessionId}`,
+            )
           }
         }
         if (event.payload.title !== undefined) {
@@ -539,7 +549,7 @@ export function createEventProjector(
             event.payload.sessionId,
           )
           if (titled.changes !== 1) {
-            throw new Error(
+            throw new ProjectionRefusal(
               `Session ${event.payload.sessionId} is missing or keeps its title over a ${titleSource ?? 'source-less'} one`,
             )
           }
@@ -548,13 +558,15 @@ export function createEventProjector(
           const settledAt =
             event.payload.settledAt === null ? null : Date.parse(event.payload.settledAt)
           if (s.updateSessionSettled.run(settledAt, event.payload.sessionId).changes !== 1) {
-            throw new Error(`Cannot settle missing session ${event.payload.sessionId}`)
+            throw new ProjectionRefusal(`Cannot settle missing session ${event.payload.sessionId}`)
           }
         }
         if (event.payload.doneAt !== undefined) {
           const doneAt = event.payload.doneAt === null ? null : Date.parse(event.payload.doneAt)
           if (s.updateSessionDone.run(doneAt, event.payload.sessionId).changes !== 1) {
-            throw new Error(`Cannot acknowledge missing session ${event.payload.sessionId}`)
+            throw new ProjectionRefusal(
+              `Cannot acknowledge missing session ${event.payload.sessionId}`,
+            )
           }
         }
         if (event.payload.backgroundTasks !== undefined) {
@@ -567,7 +579,7 @@ export function createEventProjector(
             event.payload.sessionId,
           )
           if (rostered.changes !== 1) {
-            throw new Error(
+            throw new ProjectionRefusal(
               `Cannot record background work for missing session ${event.payload.sessionId}`,
             )
           }
@@ -578,15 +590,15 @@ export function createEventProjector(
           // pass announces the change (event-repository.ts).
           if (event.payload.status === undefined) {
             const row = s.selectSessionStatus.get(event.payload.sessionId) as
-              | { status: string }
-              | undefined
+              { status: string } | undefined
             if (
               row &&
               (row.status === 'idle' || row.status === 'running') &&
               !s.openTurnForSession.get(event.payload.sessionId)
             ) {
               const rests = event.payload.backgroundTasks.length > 0 ? 'running' : 'idle'
-              if (rests !== row.status) s.updateSessionStatus.run(rests, at, event.payload.sessionId)
+              if (rests !== row.status)
+                s.updateSessionStatus.run(rests, at, event.payload.sessionId)
             }
           }
         }
@@ -601,7 +613,7 @@ export function createEventProjector(
             event.payload.sessionId,
           ).changes !== 1
         ) {
-          throw new Error(
+          throw new ProjectionRefusal(
             `Cannot record a selection for missing session ${event.payload.sessionId}`,
           )
         }
@@ -619,7 +631,9 @@ export function createEventProjector(
         const row = readPreferenceRow(database, workspaceId, providerId)
         const announced = WorkspaceComposerPreferenceSchema.parse(preference)
         if (!row || !isDeepStrictEqual(preferenceFromRow(row), announced)) {
-          throw new Error(`Preference ${workspaceId}/${providerId} does not read back as announced`)
+          throw new ProjectionRefusal(
+            `Preference ${workspaceId}/${providerId} does not read back as announced`,
+          )
         }
         return
       }
@@ -631,7 +645,9 @@ export function createEventProjector(
           !row ||
           !isDeepStrictEqual(profileFromRow(row), ProviderComposerProfileSchema.parse(profile))
         ) {
-          throw new Error(`Profile ${profile.providerId} does not read back as announced`)
+          throw new ProjectionRefusal(
+            `Profile ${profile.providerId} does not read back as announced`,
+          )
         }
         return
       }
@@ -639,13 +655,15 @@ export function createEventProjector(
         // Children first and its draft first, each with its own event.
         const { sessionId } = event.payload
         if (s.childOfSession.get(sessionId)) {
-          throw new Error(`Session ${sessionId} still has child sessions; delete them first`)
+          throw new ProjectionRefusal(
+            `Session ${sessionId} still has child sessions; delete them first`,
+          )
         }
         if (s.liveSessionDraft.get(sessionId)) {
-          throw new Error(`Session ${sessionId} still has a draft; delete it first`)
+          throw new ProjectionRefusal(`Session ${sessionId} still has a draft; delete it first`)
         }
         if (s.deleteSession.run(sessionId).changes !== 1) {
-          throw new Error(`Cannot delete missing session ${sessionId}`)
+          throw new ProjectionRefusal(`Cannot delete missing session ${sessionId}`)
         }
         return
       }
@@ -653,7 +671,9 @@ export function createEventProjector(
         const session = s.selectSessionWorkspace.get(event.scope.sessionId) as
           { workspace_id: string } | undefined
         if (!session) {
-          throw new Error(`Cannot project thread for missing session ${event.scope.sessionId}`)
+          throw new ProjectionRefusal(
+            `Cannot project thread for missing session ${event.scope.sessionId}`,
+          )
         }
         s.insertThread.run(
           event.payload.thread.threadId,
@@ -684,10 +704,12 @@ export function createEventProjector(
           at,
         )
         if (event.payload.turnState !== 'waiting') {
-          throw new Error(`A request leaves turn ${turnId} waiting, not ${event.payload.turnState}`)
+          throw new ProjectionRefusal(
+            `A request leaves turn ${turnId} waiting, not ${event.payload.turnState}`,
+          )
         }
         if (s.updateOpenTurnState.run('waiting', at, turnId, event.scope.threadId).changes !== 1) {
-          throw new Error(`Cannot mark missing or finished turn ${turnId} as waiting`)
+          throw new ProjectionRefusal(`Cannot mark missing or finished turn ${turnId} as waiting`)
         }
         s.updateSessionStatus.run('waiting', at, event.scope.sessionId)
         s.unsettleSession.run(event.scope.sessionId)
@@ -712,19 +734,19 @@ export function createEventProjector(
           response.kind,
         )
         if (resolved.changes !== 1) {
-          throw new Error(
+          throw new ProjectionRefusal(
             `Cannot resolve missing, mismatched, or settled interaction ${response.interactionId}`,
           )
         }
         const status = s.pendingInteractions.get(turnId) ? 'waiting' : 'running'
         // The producer states the turn's state; the rows must agree (I2).
         if (event.payload.turnState !== status) {
-          throw new Error(
+          throw new ProjectionRefusal(
             `${event.name} says turn ${turnId} is ${event.payload.turnState}; its requests say ${status}`,
           )
         }
         if (s.updateOpenTurnState.run(status, at, turnId, event.scope.threadId).changes !== 1) {
-          throw new Error(`Cannot resume missing or finished turn ${turnId}`)
+          throw new ProjectionRefusal(`Cannot resume missing or finished turn ${turnId}`)
         }
         s.updateSessionStatus.run(status, at, event.scope.sessionId)
         return
@@ -737,7 +759,9 @@ export function createEventProjector(
         // turn-closure.ts); a terminal that would leave one open rolls back.
         const open = closure.openChildren(turnId, event.scope.threadId)
         if (open.length > 0) {
-          throw new Error(`Turn ${turnId} cannot end with open children: ${open.join(', ')}`)
+          throw new ProjectionRefusal(
+            `Turn ${turnId} cannot end with open children: ${open.join(', ')}`,
+          )
         }
         const state =
           event.name === 'turn.completed'
@@ -756,7 +780,7 @@ export function createEventProjector(
           event.scope.threadId,
         )
         if (finished.changes !== 1) {
-          throw new Error(`Cannot finalize missing or finished turn ${turnId}`)
+          throw new ProjectionRefusal(`Cannot finalize missing or finished turn ${turnId}`)
         }
         s.finalizeTurnMessages.run(at, turnId)
         // The turn is over but the session is not resting while work it
@@ -773,7 +797,9 @@ export function createEventProjector(
           event.scope.sessionId,
         )
         if (session.changes !== 1) {
-          throw new Error(`Cannot finalize turn for missing session ${event.scope.sessionId}`)
+          throw new ProjectionRefusal(
+            `Cannot finalize turn for missing session ${event.scope.sessionId}`,
+          )
         }
         // Only a completed turn is news, and only once nothing is left running:
         // the turn that reports the background result is the one that is done.

@@ -1,4 +1,5 @@
 import type { DatabaseSync } from 'node:sqlite'
+import { ProjectionRefusal } from './write-errors.ts'
 import {
   ProviderComposerProfileSchema,
   WorkspaceComposerPreferenceSchema,
@@ -139,7 +140,7 @@ export function prepareComposerProjection(database: DatabaseSync) {
       const stored = readPreferenceRow(database, target.workspaceId, target.providerId)
       const expected = (stored?.revision ?? 0) + 1
       if (revision !== expected) {
-        throw new Error(
+        throw new ProjectionRefusal(
           `Preference ${target.workspaceId}/${target.providerId} is at revision ${expected - 1}; a change to ${revision} is out of order`,
         )
       }

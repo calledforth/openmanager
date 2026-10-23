@@ -1,6 +1,7 @@
 import { createHash, randomUUID } from 'node:crypto'
 import { isDeepStrictEqual } from 'node:util'
 import type { DatabaseSync } from 'node:sqlite'
+import { ProjectionRefusal } from './write-errors.ts'
 import {
   DurableEventSchema,
   ProofEventSchemas,
@@ -263,7 +264,9 @@ export function createEventRepository(
       if (existing) {
         const storedEvent: unknown = JSON.parse(existing.event_json)
         if (existing.scope_key !== key || !isDeepStrictEqual(storedEvent, record.event)) {
-          throw new Error(`Event ID ${event.eventId} already belongs to a different event`)
+          throw new ProjectionRefusal(
+            `Event ID ${event.eventId} already belongs to a different event`,
+          )
         }
         records.push(
           DurableEventSchema.parse({
@@ -285,7 +288,9 @@ export function createEventRepository(
           tombstone.scope_key !== key ||
           !hashEvent(serialized).equals(Buffer.from(tombstone.event_hash))
         ) {
-          throw new Error(`Event ID ${event.eventId} already belongs to a different event`)
+          throw new ProjectionRefusal(
+            `Event ID ${event.eventId} already belongs to a different event`,
+          )
         }
         records.push(
           DurableEventSchema.parse({
@@ -451,7 +456,7 @@ export function createEventRepository(
     for (const { scope, events } of pending) {
       for (const event of events) {
         if (!sameScope(scope, event.scope)) {
-          throw new Error('Every appended event must belong to the requested scope')
+          throw new ProjectionRefusal('Every appended event must belong to the requested scope')
         }
       }
     }
@@ -465,7 +470,7 @@ export function createEventRepository(
       )
       for (const sessionId of Object.keys(writeOptions.identities)) {
         if (!created.has(sessionId)) {
-          throw new Error(
+          throw new ProjectionRefusal(
             `An identity was given for session ${sessionId}, which this write does not create`,
           )
         }
@@ -503,10 +508,12 @@ export function createEventRepository(
     finalizeTurn(scope, events) {
       const terminal = events.at(-1)
       if (!terminal || !isTerminal(terminal)) {
-        throw new Error('finalizeTurn requires a terminal turn event as the final event')
+        throw new ProjectionRefusal(
+          'finalizeTurn requires a terminal turn event as the final event',
+        )
       }
       if (events.slice(0, -1).some(isTerminal)) {
-        throw new Error('finalizeTurn accepts exactly one terminal turn event')
+        throw new ProjectionRefusal('finalizeTurn accepts exactly one terminal turn event')
       }
       const terminalTurnId = terminal.payload.turnId
       if (
@@ -514,7 +521,7 @@ export function createEventRepository(
           (event) => eventTurnId(event) !== undefined && eventTurnId(event) !== terminalTurnId,
         )
       ) {
-        throw new Error('finalizeTurn events must all belong to the terminal turn')
+        throw new ProjectionRefusal('finalizeTurn events must all belong to the terminal turn')
       }
       return write([{ scope, events }])
     },
