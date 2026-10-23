@@ -820,8 +820,11 @@ export function createWebSocketEnvironmentClient(
     }
     store.update((state) => applySnapshot(state, payload.snapshot))
     subscription.cursor = payload.snapshot.cursor
-    // Drafts are not in the snapshot; they are listed again.
-    if (subscription.scope.type === 'environment') store.update(applyDraftsUnlisted)
+    // Drafts are not in the snapshot; after a gap they are listed again. A
+    // first snapshot needs no second listing: the draft sync lists on connect.
+    if (subscription.scope.type === 'environment' && payload.reason !== 'initial') {
+      store.update(applyDraftsUnlisted)
+    }
   }
 
   /**
@@ -1212,6 +1215,9 @@ export function createWebSocketEnvironmentClient(
     const generation = connectionGeneration
     const restarted = serverRestarted
     serverRestarted = false
+    // The chat that was on screen when the connection came up: an open the
+    // user makes meanwhile is theirs, and this does not repeat it.
+    const activeAtStart = store.getState().activeSessionId
     const environment = { type: 'environment', environmentId } as const
     const key = scopeKey(environment)
     if (!subscriptions.has(key)) {
@@ -1233,7 +1239,8 @@ export function createWebSocketEnvironmentClient(
       await commands.getProviderCatalog().catch(() => undefined)
     }
     if (generation !== connectionGeneration || !ready) return
-    const activeSessionId = store.getState().activeSessionId
+    const activeSessionId =
+      store.getState().activeSessionId === activeAtStart ? activeAtStart : null
     if (
       activeSessionId &&
       supports('openSession') &&
