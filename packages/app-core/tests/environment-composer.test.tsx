@@ -217,11 +217,10 @@ describe('the composer over the environment client', () => {
       modes: { currentModeId: 'build' },
     })
     expect(probe.composer.draftSessionState?.models?.availableModels).toHaveLength(2)
-    // The workspace's last-used preference is read for the draft it seeds.
-    expect(inputOf(client, 'getComposerPreference')).toEqual({
-      workspaceId: WORKSPACE.workspaceId,
-      providerId: 'opencode',
-    })
+    // The workspace's last-used preference came with the environment; nothing reads it.
+    expect(client.calls.some((call) => call.command === ('getComposerPreference' as never))).toBe(
+      false,
+    )
   })
 
   it('opens a draft on what the workspace last used', async () => {
@@ -290,7 +289,7 @@ describe('the composer over the environment client', () => {
     })
     expect(probe.composer.composerConfigValues).toEqual({ effort: 'high', fast: true })
     expect(commandsOf(client)).not.toContain('setComposerPreference')
-    expect(client.getState().composerPreferences[WORKSPACE.workspaceId]?.opencode).toEqual({})
+    expect(client.getState().composerPreferences[WORKSPACE.workspaceId]?.opencode).toBeUndefined()
     // Picks alone are no draft: nothing is saved for them.
     expect(client.getState().draftEdits).toEqual({})
     expect(client.getState().drafts).toEqual({})

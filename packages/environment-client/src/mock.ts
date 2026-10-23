@@ -209,6 +209,16 @@ const defaultIds = () => {
   return () => `mock-${++counter}`
 }
 
+/** A held session as the environment states it: the summary without the client's thread list. */
+function withoutThreadIds<T extends { threadIds: readonly string[] }>(
+  session: T,
+): Omit<T, 'threadIds'> {
+  return Object.fromEntries(Object.entries(session).filter(([key]) => key !== 'threadIds')) as Omit<
+    T,
+    'threadIds'
+  >
+}
+
 export function createMockEnvironmentClient(
   options: MockEnvironmentClientOptions = {},
 ): MockEnvironmentClient {
@@ -1128,15 +1138,9 @@ export function createMockEnvironmentClient(
           throw new EnvironmentClientError('session_unrecoverable', message)
         }
         store.update((state) => {
+          // The whole summary, as the environment states it.
           let next = applySessionOpen(state, {
-            session: {
-              sessionId: session.sessionId,
-              workspaceId: session.workspaceId,
-              title: session.title,
-              status: session.status,
-              providerId: session.providerId,
-              updatedAt: session.updatedAt,
-            },
+            session: withoutThreadIds(session),
             threads: session.threadIds
               .map((threadId) => state.threads[threadId]?.thread)
               .filter((thread): thread is Thread => thread !== undefined),
@@ -1741,15 +1745,9 @@ export function createMockEnvironmentClient(
           .map((id) => state.threads[id])
           .filter((thread): thread is NonNullable<typeof thread> => thread !== undefined)
         store.update((current) => {
+          // The whole summary, as the environment states it.
           let next = applySessionOpen(current, {
-            session: {
-              sessionId: summary.sessionId,
-              workspaceId: summary.workspaceId,
-              title: summary.title,
-              status: summary.status,
-              providerId: summary.providerId,
-              updatedAt: summary.updatedAt,
-            },
+            session: withoutThreadIds(summary),
             threads: threadStates.map((item) => item.thread),
           })
           for (const item of threadStates) {
