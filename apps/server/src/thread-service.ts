@@ -14,7 +14,7 @@ import {
   type CommandEnvelope,
   type DraftContent,
   type ErrorCode,
-  type EventEnvelope,
+  type TransientEvent,
   type Interaction,
   type InteractionKind,
   type InteractionResponse,
@@ -355,7 +355,8 @@ export function createThreadService(
    * which plays the server and does (docs/sync-foundations.md §4.3 (e)).
    */
   appendEvent: (event: ProofEvent) => void,
-  publishTransient: (event: EventEnvelope) => void = () => undefined,
+  /** A transient (`turn.notice`): the event service places it among the durable events. */
+  publishTransient: (event: TransientEvent) => void = () => undefined,
   // Routing is by registered workspace ID only (D9): there is no default that
   // treats the ID as a path, so an unregistered workspace can never run.
   resolveWorkspace: WorkspaceRuntimeResolver = () => undefined,

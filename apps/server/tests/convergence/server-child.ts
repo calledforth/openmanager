@@ -526,7 +526,7 @@ Object.assign(server.rateLimiter, {
 })
 // Everything the server sends is activity.
 const sockets$ = server.sockets as unknown as Record<string, (...args: unknown[]) => unknown>
-for (const name of ['publish', 'publishEvent', 'publishToFollowers']) {
+for (const name of ['deliver']) {
   const original = sockets$[name]!.bind(server.sockets)
   sockets$[name] = (...args: unknown[]) => {
     touch()

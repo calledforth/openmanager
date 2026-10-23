@@ -1448,10 +1448,12 @@ export function createWebSocketEnvironmentClient(
         )
       }
       const payload = await request('session.create', input)
-      // The answer reaches the client before `session.created` does. The
-      // session and its first message show from it as an overlay entry, which
-      // goes once server state lists the session and its chat holds the turn
-      // (pending.creates, overlay.ts). Listed as it will be: at its
+      // `session.created` is committed while the command runs, so it reaches
+      // the client before this answer (the server never lets an answer
+      // overtake a record). The session and its first message show from the
+      // answer as an overlay entry, laid only where server state lacks them,
+      // which goes once server state lists the session and its chat holds the
+      // turn (pending.creates, overlay.ts). Listed as it will be: at its
       // announcement time, working on the first message if there is one.
       store.update((state) =>
         updateOverlay(state, 'creates', (entries) => ({
