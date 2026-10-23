@@ -80,7 +80,6 @@ import type {
   EnvironmentClient,
   EnvironmentCommandName,
   EnvironmentCommands,
-  EnvironmentState,
   WorkspaceComposerPreference,
 } from './types'
 import {

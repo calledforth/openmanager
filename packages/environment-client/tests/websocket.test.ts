@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest'
-import { PROTOCOL_VERSION, ProofCommandSchemas } from '@openmanager/protocol'
+import { PROTOCOL_VERSION } from '@openmanager/protocol'
 import {
   DEFAULT_RECONNECT,
   createWebSocketEnvironmentClient,

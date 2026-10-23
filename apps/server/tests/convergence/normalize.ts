@@ -175,21 +175,18 @@ export function sessionsWithoutThreads(view: NormalizedView): unknown[] {
 
 /**
  * `activeSessionId` is the client under test's selection; a fresh load opens
- * the same one. `preferencePairs` are compared as held (`null`: not loaded).
+ * the same one. Every composer preference held is compared.
  */
-export function normalize(
-  state: EnvironmentState,
-  activeSessionId: string | null,
-  preferencePairs: readonly PreferencePair[] = [],
-): NormalizedView {
+export function normalize(state: EnvironmentState, activeSessionId: string | null): NormalizedView {
   const session = activeSessionId ? state.sessions[activeSessionId] : undefined
   return canonical({
     environment: state.environment,
     workspaces: state.workspaces,
     workspaceOrder: state.workspaceOrder.filter((id) => state.workspaces[id] !== undefined),
     drafts: state.drafts,
+    // Every preference: the environment snapshot carries all of them (§6.2).
     composerPreferences: Object.fromEntries(
-      preferencePairs.map((pair) => [
+      heldPreferencePairs(state).map((pair) => [
         preferenceKey(pair),
         state.composerPreferences[pair.workspaceId]?.[pair.providerId] ?? null,
       ]),

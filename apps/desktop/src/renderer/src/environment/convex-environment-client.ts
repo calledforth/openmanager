@@ -17,7 +17,6 @@ import {
   createEnvironmentStore,
   deriveSessionStatus,
   EnvironmentClientError,
-  selectSessionList,
   WIRE_COMMANDS,
   type EnvironmentClient,
   type EnvironmentCommandName,

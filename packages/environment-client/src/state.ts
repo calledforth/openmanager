@@ -19,7 +19,6 @@ import type {
   WorkspaceComposerPreference,
 } from '@openmanager/protocol'
 import type {
-  ActivityRef,
   ConnectionState,
   EnvironmentState,
   OutboxEntry,

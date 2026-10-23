@@ -84,7 +84,7 @@ export type ProviderOp =
 export type ServerOp =
   /** Resolves once nothing was published, provided or dispatched for `quietMs`. */
   | { op: 'waitQuiet'; quietMs: number; timeoutMs: number }
-  /** The server's own read of a thread: `listSessionHistory` walked to the start. */
+  /** The server's own read of a thread: `readThreadState`, the whole thread. */
   | { op: 'readThread'; sessionId: string; threadId: string }
   /** The threads the server holds for a session (`listThreadsForSession`), whatever any client knows. */
   | { op: 'readSessionThreads'; sessionId: string }

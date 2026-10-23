@@ -12,7 +12,7 @@ import {
   selectComposerPreference,
   selectSessionComposer,
 } from '../src/state'
-import { applySessionList, loadThread } from './seed'
+import { applySessionList } from './seed'
 import {
   ENV,
   PROVIDER,

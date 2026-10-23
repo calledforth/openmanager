@@ -10,7 +10,7 @@ import {
   selectProviderCatalog,
 } from '../src/state'
 import type { EnvironmentCommandName } from '../src/types'
-import { BARE_PROVIDER, PROVIDER, SESSION, THREAD, WORKSPACE, event } from './fixtures'
+import { BARE_PROVIDER, PROVIDER, SESSION, THREAD, WORKSPACE } from './fixtures'
 
 const TARGET = { workspaceId: WORKSPACE.workspaceId, providerId: PROVIDER.id }
 const COMPOSER_COMMANDS = [

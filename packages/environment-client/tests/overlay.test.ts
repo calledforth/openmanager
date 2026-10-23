@@ -9,7 +9,7 @@ import {
   applyWorkspaceList,
   createInitialState,
 } from '../src/state'
-import { applySessionList, loadThread } from './seed'
+import { applySessionList } from './seed'
 import { createEnvironmentStore } from '../src/store'
 import {
   SESSION,

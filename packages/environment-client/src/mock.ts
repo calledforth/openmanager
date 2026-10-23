@@ -55,7 +55,6 @@ import {
   createInitialState,
   createThreadState,
   deriveSessionStatus,
-  selectSessionList,
 } from './state'
 import { dropOverlayEntry, settleAnswered, updateOverlay } from './overlay'
 import { applyDraftList } from './draft-state'

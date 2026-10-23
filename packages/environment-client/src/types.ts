@@ -15,7 +15,6 @@ import type {
   EnvironmentSettingsPatch,
   ErrorCode,
   FilesystemListing,
-  Interaction,
   InteractionKind,
   InteractionResponse,
   Message,
