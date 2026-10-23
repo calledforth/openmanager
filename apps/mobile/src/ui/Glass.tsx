@@ -130,8 +130,17 @@ export function GlassContent({
         {...props}
         // expo-blur types the ref as an object; a callback is what React passes on.
         ref={ref as never}
-        style={[styles.fill, { backgroundColor: background ?? theme.bg }, style]}
+        style={[styles.fill, style]}
       >
+        {/*
+         * The canvas as the target's first child, not its background: the
+         * blur records the target's children only, and a background left out
+         * would let the window behind the app tint every glass.
+         */}
+        <View
+          pointerEvents="none"
+          style={[StyleSheet.absoluteFill, { backgroundColor: background ?? theme.bg }]}
+        />
         {children}
       </BlurTargetView>
     </GlassTargetContext.Provider>
