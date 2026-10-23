@@ -12,8 +12,10 @@
  *   - a client that held its bookmark across the kill replays to the rows'
  *     state: it converges with a fresh load.
  *
- * W7's root half (a session stamped by a later write) is PR C's (S18); its
- * child half is here.
+ * W7's root half has no event for the stamp (the identity is host-private):
+ * killed just after `session.created` commits, the session is listed with no
+ * identity, and the next open creates its provider session and stamps it
+ * (§4.7.4). Its child half: a child's identity commits with its row.
  */
 import { rm } from 'node:fs/promises'
 import { describe, expect } from 'vitest'
@@ -25,7 +27,7 @@ import { scenario } from './scenario.ts'
 import { createSession, startTurn, type Target } from './steps.ts'
 
 type Workspace = { workspaceId: string; name: string; path: string; lastUsedAt: string | null }
-type Session = { sessionId: string; parentSessionId?: string }
+type Session = { sessionId: string; parentSessionId?: string; title?: string | null }
 
 const workspaces = (result: ConvergenceResult) =>
   Object.values(result.fresh.workspaces) as Workspace[]
@@ -168,6 +170,36 @@ const WINDOWS: Window<unknown>[] = [
         providerId: 'opencode',
         title: 'Starts the provider',
       }),
+  }),
+  window({
+    id: 'W7 (root)',
+    was: 'the runtime stamp: a session row, then its identity in a second write',
+    at: { name: 'session.created' },
+    prepare: async () => undefined,
+    trigger: (rig, a) =>
+      a.client.commands.createSession({
+        environmentId: rig.environmentId,
+        workspaceId: rig.workspaceId,
+        providerId: 'opencode',
+        title: 'Stamped later',
+      }),
+    landed: async (rig, result) => {
+      const session = sessions(result).find((item) => item.title === 'Stamped later')
+      if (!session) return false
+      // Listed with no identity: the next open starts it and stamps it.
+      expect(await rig.server.readUnidentified()).toContain(session.sessionId)
+      const probe = await rig.connect('probe', { link: 'direct' })
+      try {
+        await probe.client.commands.openSession(session.sessionId)
+        await until(
+          async () => !(await rig.server.readUnidentified()).includes(session.sessionId),
+          'the opened session to be stamped',
+        )
+      } finally {
+        probe.dispose()
+      }
+      return true
+    },
   }),
   window({
     id: 'W7 (child)',

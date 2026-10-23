@@ -5,8 +5,9 @@ import { DatabaseSync } from 'node:sqlite'
 import { runMigrations } from '../src/db/migrate.js'
 import { MIGRATIONS } from '../src/db/migrations.js'
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import type { AgentRuntime } from '@agentpack/runtime/node'
+import { SessionUnknownError, type AgentRuntime } from '@agentpack/runtime/node'
 import {
+  ERROR_RETRY_POLICY,
   ProofEventSchemas,
   ProofResponseSchemas,
   type EventEnvelope,
@@ -1873,9 +1874,56 @@ describe('durable session lifecycle', () => {
         payload: { session: { sessionId: child.session_id, parentSessionId: sessionId } },
       })
       await restarted.resolveRuntimeSession(child.session_id)
+      // Loaded, never created: the runtime may not replace a sub-agent's session.
       expect(h.runtime.ensureSession).toHaveBeenCalledExactlyOnceWith(
-        expect.objectContaining({ sessionId: 'provider-child' }),
+        expect.objectContaining({ sessionId: 'provider-child', load: 'require' }),
       )
+    } finally {
+      h.close()
+    }
+  })
+
+  it('creates nothing for a sub-agent the agent forgot, keeps its identity, and refuses it for good', async () => {
+    const h = setup()
+    h.runtime.prompt.mockImplementation(() => new Promise(() => undefined))
+    try {
+      const { sessionId } = h.created.session
+      await h.service.resolveRuntimeSession(sessionId)
+      await delegate(h, h.service, 'assistant-1', {
+        title: 'Explore the repo',
+        childSessionId: 'provider-child',
+      })
+      const child = childRow(h)!
+      const restarted = h.fresh()
+      h.runtime.ensureSession.mockRejectedValueOnce(
+        new SessionUnknownError('opencode', 'provider-child'),
+      )
+      // The open is answered before the provider load; the load then fails.
+      expect(h.dispatch(restarted, 'session.open', { sessionId: child.session_id })).toMatchObject({
+        type: 'response',
+      })
+      await vi.waitFor(() =>
+        expect(
+          h.dispatch(restarted, 'session.open', { sessionId: child.session_id }),
+        ).toMatchObject({
+          error: {
+            code: 'session_unrecoverable',
+            message:
+              "This chat's history lives in the agent and can't be reopened. Delete it to remove it.",
+          },
+        }),
+      )
+      expect(childRow(h)?.provider_session_id).toBe('provider-child')
+      expect(ERROR_RETRY_POLICY.session_unrecoverable).toBe('never')
+      // A legacy sub-agent row with no identity is refused before anything starts.
+      h.database
+        .prepare('UPDATE sessions SET provider_session_id = NULL WHERE session_id = ?')
+        .run(child.session_id)
+      h.runtime.ensureSession.mockClear()
+      expect(h.dispatch(h.fresh(), 'session.open', { sessionId: child.session_id })).toMatchObject({
+        error: { code: 'session_unrecoverable' },
+      })
+      expect(h.runtime.ensureSession).not.toHaveBeenCalled()
     } finally {
       h.close()
     }
@@ -2991,15 +3039,97 @@ describe('durable session lifecycle', () => {
     }
   })
 
-  it('rejects resume without a load capability or stored provider identity', async () => {
+  it('creates a session left with no identity, and stamps it before any prompt', async () => {
     const h = setup()
     try {
       const { sessionId } = h.created.session
       await h.service.resolveRuntimeSession(sessionId)
+      // A crash between the session's creation and its stamp (S18).
       h.database.prepare('UPDATE sessions SET provider_session_id = NULL').run()
-      expect(h.dispatch(h.fresh(), 'session.open', { sessionId })).toMatchObject({
-        error: { code: 'unavailable' },
+      const identityAtPrompt: unknown[] = []
+      h.runtime.prompt.mockImplementation(async () => {
+        identityAtPrompt.push(h.database.prepare('SELECT provider_session_id FROM sessions').get())
       })
+      h.runtime.ensureSession.mockClear()
+      h.runtime.ensureSession.mockResolvedValueOnce({ sessionId: 'provider-new', state: 'created' })
+      const restarted = h.fresh()
+      expect(h.dispatch(restarted, 'session.open', { sessionId })).toMatchObject({
+        type: 'response',
+      })
+      expect(
+        h.dispatch(restarted, 'turn.send', { ...h.created.thread, text: 'Start over' }),
+      ).toMatchObject({ type: 'response' })
+      await vi.waitFor(() => expect(identityAtPrompt).toHaveLength(1))
+      expect(h.runtime.ensureSession).toHaveBeenCalledWith(
+        expect.not.objectContaining({ sessionId: expect.anything() }),
+      )
+      expect(identityAtPrompt).toEqual([{ provider_session_id: 'provider-new' }])
+    } finally {
+      h.close()
+    }
+  })
+
+  it('stamps a fresh session the runtime created for an identity the agent forgot', async () => {
+    const h = setup()
+    try {
+      const { sessionId } = h.created.session
+      await h.service.resolveRuntimeSession(sessionId)
+      h.runtime.ensureSession.mockResolvedValueOnce({
+        sessionId: 'provider-fresh',
+        state: 'created',
+      })
+      const restarted = h.fresh()
+      await restarted.resolveRuntimeSession(sessionId)
+      expect(h.database.prepare('SELECT provider_session_id FROM sessions').get()).toEqual({
+        provider_session_id: 'provider-fresh',
+      })
+      // A respawn inside a prompt reports its new session, and is stamped at once.
+      restarted.onRuntimeEvent({
+        providerId: 'opencode',
+        threadId: h.created.thread.threadId,
+        workspaceId: '/workspace/project',
+        sessionId: 'provider-respawned',
+        id: 'created',
+        seq: 1,
+        timestamp: new Date().toISOString(),
+        category: 'lifecycle',
+        event: 'session_created',
+        data: {},
+      } as never)
+      expect(h.database.prepare('SELECT provider_session_id FROM sessions').get()).toEqual({
+        provider_session_id: 'provider-respawned',
+      })
+    } finally {
+      h.close()
+    }
+  })
+
+  it('keeps a session eligible after one failed start, and the next command loads it', async () => {
+    const h = setup()
+    try {
+      const { sessionId } = h.created.session
+      await h.service.resolveRuntimeSession(sessionId)
+      const restarted = h.fresh()
+      h.runtime.ensureSession.mockRejectedValueOnce(new Error('provider is starting'))
+      await expect(restarted.resolveRuntimeSession(sessionId)).rejects.toThrow(
+        'provider is starting',
+      )
+      await vi.waitFor(() =>
+        expect(restarted.sessionForThread(h.created.thread.threadId)).toBeUndefined(),
+      )
+      await expect(restarted.resolveRuntimeSession(sessionId)).resolves.toMatchObject({
+        sessionId: 'provider-persisted',
+      })
+    } finally {
+      h.close()
+    }
+  })
+
+  it('rejects resume on a provider that cannot load sessions', async () => {
+    const h = setup()
+    try {
+      const { sessionId } = h.created.session
+      await h.service.resolveRuntimeSession(sessionId)
       h.database.prepare("UPDATE sessions SET provider_id = 'unsupported'").run()
       expect(h.dispatch(h.fresh(), 'session.open', { sessionId })).toMatchObject({
         error: { code: 'capability_missing' },

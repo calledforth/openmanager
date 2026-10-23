@@ -99,6 +99,8 @@ export interface MockSeed {
    */
   composerPreferences?: Record<string, Record<string, WorkspaceComposerPreference>>
   sessions?: MockSeedSession[]
+  /** Sessions the environment can never open again (a sub-agent's chat the agent forgot). */
+  unrecoverableSessions?: readonly string[]
   activeSessionId?: string | null
   /** Stored bytes by artifact ID; what `fetchArtifact` and a send's `artifactIds` resolve. */
   artifacts?: Record<string, Blob>
@@ -1103,6 +1105,15 @@ export function createMockEnvironmentClient(
             workspaceId: session.workspaceId,
             availability,
           })
+        }
+        if (options.seed?.unrecoverableSessions?.includes(sessionId)) {
+          const message =
+            "This chat's history lives in the agent and can't be reopened. Delete it to remove it."
+          store.update((state) => ({
+            ...applyActiveSession(state, sessionId),
+            sessionOpenFailure: { sessionId, message, code: 'session_unrecoverable' },
+          }))
+          throw new EnvironmentClientError('session_unrecoverable', message)
         }
         store.update((state) => {
           let next = applySessionOpen(state, {

@@ -194,6 +194,21 @@ describe('session workspace', () => {
     await waitFor(() => expect(screen.queryByText('Sidebar move')).not.toBeInTheDocument())
   })
 
+  it('offers only deletion for a chat the environment can never reopen', async () => {
+    const user = userEvent.setup()
+    const { client } = renderConnected('/sessions/session-1', {
+      ...SEED,
+      unrecoverableSessions: [SESSION.sessionId],
+    })
+    const panel = await screen.findByRole('region', { name: 'Session recovery' })
+    expect(within(panel).getByText('This chat can’t be reopened')).toBeInTheDocument()
+    // Trying again would fail the same way.
+    expect(within(panel).queryByRole('button', { name: 'Try again' })).not.toBeInTheDocument()
+    await user.click(within(panel).getByRole('button', { name: 'Delete session' }))
+    await user.click(within(panel).getByRole('button', { name: 'Delete permanently' }))
+    await waitFor(() => expect(client.getState().sessions[SESSION.sessionId]).toBeUndefined())
+  })
+
   it('keeps an unrecoverable session and reports why when deleting it fails', async () => {
     const user = userEvent.setup()
     const { client } = renderConnected('/sessions/session-1', {

@@ -13,7 +13,7 @@ export type {
   InteractionResolution,
   InteractionSettlement,
 } from './core/InteractionBroker.js'
-export { AuthRequiredError, CapabilityMissingError } from './core/errors.js'
+export { AuthRequiredError, CapabilityMissingError, SessionUnknownError } from './core/errors.js'
 export {
   PROVIDER_CATALOG_REFRESH_INTERVAL_MS,
   PROVIDER_CATALOG_TIMEOUT_MS,

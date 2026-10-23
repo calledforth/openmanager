@@ -30,6 +30,12 @@ export type SessionRuntimeSpec = {
    * `session/new`. Load may fail ("Session not found" for a session that was
    * created but never prompted) — the runtime falls back to `session/new`. */
   sessionId?: string
+  /**
+   * `'require'`: the session must be loaded, never created. A load the agent
+   * answers "not found", or no session id at all, fails the start with
+   * `SessionUnknownError` instead of falling through to a new session.
+   */
+  load?: 'require'
   resumeCursor?: string
   /** Applied once, immediately after the session exists, while the cache is
    * warm from the `session/new` response. Not re-applied per prompt. */

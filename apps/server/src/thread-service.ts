@@ -34,6 +34,7 @@ import {
 import {
   projectAgentEvent,
   providers,
+  SessionUnknownError,
   type AgentRuntime,
   type HostDeps,
   type ProtocolEventContext,
@@ -457,7 +458,41 @@ export function createThreadService(
     workspaceId: record.session.workspaceId,
     cwd: record.cwd,
     ...(sessionId ? { sessionId } : {}),
+    // A sub-agent's transcript lives in the agent: a fresh session in its
+    // place would lose it, so the runtime may only load it, on every start and
+    // every respawn (docs/sync-foundations.md §4.7.4 (e)).
+    ...(record.session.parentSessionId ? { load: 'require' as const } : {}),
   })
+
+  /**
+   * Sessions this process learned it can never open: a sub-agent's chat the
+   * agent no longer knows. The loader answers them `session_unrecoverable`.
+   */
+  const unrecoverable = new Set<string>()
+  const UNRECOVERABLE: LoadRefusal = {
+    code: 'session_unrecoverable',
+    message:
+      "This chat's history lives in the agent and can't be reopened. Delete it to remove it.",
+  }
+
+  /**
+   * Make the identity a runtime reports durable, when it differs from the
+   * stored one: a session created because there was none (a crash between
+   * creation and its stamp), or because the agent had forgotten the stored
+   * one. Before any prompt may use it: every prompt awaits `runtimeSession`,
+   * and a respawn inside a prompt reports through `session_created`, which
+   * stamps before the prompt is sent (§4.7.4).
+   */
+  const stampIdentity = (record: ThreadRecord, providerSessionId: string): string => {
+    // A sub-agent's session is only ever loaded, never created (see `route`).
+    if (!options.database || record.session.parentSessionId) return providerSessionId
+    const row = options.database
+      .prepare('SELECT provider_session_id FROM sessions WHERE session_id = ?')
+      .get(record.session.sessionId) as { provider_session_id: string | null } | undefined
+    // Deleted while its provider session resolved: nothing left to stamp.
+    if (!row || row.provider_session_id === providerSessionId) return providerSessionId
+    return persistRuntimeSession(record, providerSessionId)
+  }
   /**
    * Persist the opaque identity before allowing prompts to use the provider
    * session. Host-private and not activity (docs/sync-foundations.md §4.4):
@@ -792,7 +827,7 @@ export function createThreadService(
   const restoreSession = (
     session: SessionSummary,
     providerId: ProviderId,
-    providerSessionId: string,
+    providerSessionId: string | undefined,
     cwd: string,
     restoredThreads: Thread[],
   ) => {
@@ -812,7 +847,7 @@ export function createThreadService(
           if (threads.get(thread.threadId) !== record) throw new Error('Session was closed.')
           return runtime
             .ensureSession(route(record, providerSessionId))
-            .then((result) => result.sessionId)
+            .then((result) => stampIdentity(record, result.sessionId))
         }),
         turns: [],
         messages: [],
@@ -822,7 +857,10 @@ export function createThreadService(
         status: session.status,
         updatedAt: Date.parse(session.updatedAt),
       }
-      void record.runtimeSession.catch(() => {
+      void record.runtimeSession.catch((error: unknown) => {
+        // A sub-agent's chat the agent no longer knows can never be opened:
+        // nothing was created in its place and its identity is kept.
+        if (error instanceof SessionUnknownError) unrecoverable.add(session.sessionId)
         // One thread failing to load leaves the session half attached, so the
         // whole restore is abandoned and a later open retries it from SQLite.
         const current = sessions.get(session.sessionId)
@@ -849,20 +887,24 @@ export function createThreadService(
     options.flush?.()
     const session = getSessionSummary(database, sessionId)
     if (!session) return { refused: { code: 'not_found', message: 'Session not found.' } }
+    if (unrecoverable.has(sessionId)) return { refused: UNRECOVERABLE }
     const providerId = session.providerId as ProviderId
-    if (!providers[providerId]?.capabilities.canLoadSession) {
+    // No identity means the provider never received anything: a crash came
+    // between the session's creation and its stamp. A root session is
+    // created now and stamped before any prompt (§4.7.4); a sub-agent's
+    // cannot be, because its transcript would be lost.
+    const providerSessionId = getProviderSessionId(database, sessionId) ?? undefined
+    if (!providerSessionId && session.parentSessionId) return { refused: UNRECOVERABLE }
+    if (
+      !providers[providerId] ||
+      (providerSessionId && !providers[providerId].capabilities.canLoadSession)
+    ) {
       return {
         refused: { code: 'capability_missing', message: 'Provider cannot resume sessions.' },
       }
     }
     const rejection = providerGate.rejection(providerId)
     if (rejection) return { refused: rejection }
-    const providerSessionId = getProviderSessionId(database, sessionId)
-    if (!providerSessionId) {
-      return {
-        refused: { code: 'unavailable', message: 'The provider session identity is unavailable.' },
-      }
-    }
     let target: WorkspaceRuntimeRoute | undefined
     try {
       target = resolveWorkspace(session.workspaceId, context)
@@ -2915,6 +2957,17 @@ export function createThreadService(
     onRuntimeEvent(event: RuntimeEvent) {
       const record = threads.get(event.threadId)
       if (!record) return
+
+      // A runtime that created a session where it meant to load one (no
+      // identity, or one the agent had forgotten), including a respawn inside
+      // a prompt: stamped now, synchronously, before that prompt is sent.
+      if (event.event === 'session_created' && event.sessionId && !record.session.parentSessionId) {
+        try {
+          stampIdentity(record, event.sessionId)
+        } catch (error) {
+          options.onPersistenceError?.(error, 'session.created')
+        }
+      }
 
       if (event.event === 'background_tasks_update') {
         applyBackgroundTasks(record, event.data.tasks)
