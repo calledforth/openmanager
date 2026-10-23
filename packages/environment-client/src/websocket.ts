@@ -9,10 +9,10 @@ import {
   SESSION_CREATE_EXPLICIT_CAPABILITY,
   SERVER_SHUTDOWN_CLOSE_CODE,
   SERVER_SHUTDOWN_CLOSE_REASON,
-  ProofEventSchema,
   ProviderHealthChangedEventSchema,
   ServerMessageSchema,
   SubscriptionEventSchema,
+  SubscriptionTransientSchema,
   advanceClientHeartbeat,
   artifactPath,
   createClientHeartbeatState,
@@ -32,6 +32,7 @@ import {
   type ReplayCommand,
   type SubscriptionScope,
   type Thread,
+  type TransientEvent,
   UploadResultSchema,
   WorkspaceUnavailableDetailsSchema,
 } from '@openmanager/protocol'
@@ -40,6 +41,7 @@ import { namesUnknownTurn } from '@agentpack/view/protocol'
 import { EnvironmentClientError, isEnvironmentClientError } from './errors'
 import { applyDraftList, applyDraftsUnlisted } from './draft-state'
 import { createDraftSync } from './draft-sync'
+import { placeRecord, placeTransient } from './placement'
 import {
   applyActiveSession,
   applyActiveThread,
@@ -193,6 +195,14 @@ type Pending = {
   reject: (error: EnvironmentClientError) => void
 }
 
+/** One frame of a scope, as the server sent it. */
+type Frame =
+  | { kind: 'record'; record: DurableEvent }
+  | { kind: 'transient'; after: Cursor; event: TransientEvent }
+
+/** A frame waiting for a catch-up; `trigger` marks the one that started it. */
+type Held = { frame: Frame; trigger?: true }
+
 type Subscription = {
   scope: SubscriptionScope
   subscriptionId: string | null
@@ -201,7 +211,13 @@ type Subscription = {
   /** Last applied durable event of the scope; what a reconnect resumes from. */
   cursor: Cursor | null
   recovery?: Promise<void>
-  buffered?: DurableEvent[]
+  /**
+   * Set from the moment a catch-up (`subscription.replay`) is sent until its
+   * answer is applied: every frame of the scope waits here, in arrival
+   * order, and is placed against the answer's cursor afterwards
+   * (docs/sync-foundations.md §5.2).
+   */
+  held?: Held[]
   /**
    * A record named a turn the thread does not hold: a protocol error the
    * client answers with a fresh snapshot of the scope, never by inventing the
@@ -341,7 +357,6 @@ export function createWebSocketEnvironmentClient(
   const clientListListeners = new Set<(list: AuthorizedClientList) => void>()
   const queued: Array<() => void> = []
   const subscriptions = new Map<string, Subscription>()
-  const transientIds = new Set<string>()
 
   const patchConnection = (patch: Parameters<typeof applyConnection>[1]) =>
     store.update((state) => applyConnection(state, patch))
@@ -428,7 +443,7 @@ export function createWebSocketEnvironmentClient(
     for (const subscription of subscriptions.values()) {
       subscription.subscriptionId = null
       subscription.inflight = false
-      subscription.buffered = undefined
+      subscription.held = undefined
       subscription.recovery = undefined
     }
     rejectAllPending(closedError)
@@ -583,32 +598,86 @@ export function createWebSocketEnvironmentClient(
   }
 
   /**
-   * Fold one durable record in, at most once. Cursors belong to scopes, not
-   * sockets or subscription IDs, so the scope is the stable key even while an
-   * acknowledgement is in flight, and a record at or below the last applied
-   * sequence of the same epoch is a repeat: a replayed tail overlapping what
-   * arrived live, or a live event the environment sent twice.
+   * Fold one durable record the placement table said to apply, and advance
+   * the scope's cursor to it. Cursors belong to scopes, not sockets or
+   * subscription IDs, so the scope is the stable key even while an
+   * acknowledgement is in flight.
    */
-  const applyRecord = (record: DurableEvent) => {
-    const subscription = subscriptions.get(scopeKey(record.cursor.scope))
-    if (subscription) {
-      const cursor = subscription.cursor
-      if (
-        cursor &&
-        cursor.epoch === record.cursor.epoch &&
-        record.cursor.sequence <= cursor.sequence
-      ) {
-        return
-      }
-      const scope = record.cursor.scope
-      const thread = scope.type === 'thread' ? store.getState().threads[scope.threadId] : undefined
-      if (thread && namesUnknownTurn(thread, record.event)) {
-        subscription.needsSnapshot = true
-        return
-      }
-      subscription.cursor = record.cursor
+  const applyRecord = (subscription: Subscription, record: DurableEvent) => {
+    const scope = record.cursor.scope
+    const thread = scope.type === 'thread' ? store.getState().threads[scope.threadId] : undefined
+    if (thread && namesUnknownTurn(thread, record.event)) {
+      subscription.needsSnapshot = true
+      return
     }
+    subscription.cursor = record.cursor
     foldEvent(record.event)
+  }
+
+  /**
+   * Place one frame against the scope's cursor (placement.ts) and act on
+   * it. `live` frames arrived outside any catch-up; `held` ones waited for
+   * one; `retry` is the frame that started the catch-up just answered. That
+   * one gets no second recovery: if the answer still cannot place it, the
+   * server said something it cannot back, and it is dropped.
+   */
+  const route = (subscription: Subscription, frame: Frame, mode: 'live' | 'held' | 'retry') => {
+    const placement =
+      frame.kind === 'record'
+        ? placeRecord(subscription.cursor, frame.record.cursor)
+        : placeTransient(subscription.cursor, frame.after, mode !== 'live')
+    if (placement === 'apply') {
+      if (frame.kind === 'record') applyRecord(subscription, frame.record)
+      else foldEvent(frame.event)
+    } else if (placement === 'recover') {
+      if (mode === 'retry') {
+        console.warn('environment-client: a frame still does not follow the caught-up cursor', {
+          scope: subscription.scope,
+          kind: frame.kind,
+        })
+      } else recoverFrom(subscription, frame)
+    }
+  }
+
+  /**
+   * Something this client should have received is missing, or its epoch is
+   * stale: catch up from the cursor, holding `frame` until the answer. The
+   * live subscription is released first; the server answers commands in
+   * order, so the replay's read covers everything it would have carried.
+   */
+  const recoverFrom = (subscription: Subscription, frame: Frame) => {
+    if (subscription.held) {
+      subscription.held.push({ frame })
+      return
+    }
+    if (subscription.subscriptionId) sendUnsubscribe(subscription.subscriptionId)
+    subscription.subscriptionId = null
+    subscription.inflight = false
+    void recover(subscription, { frame, trigger: true }).catch(() => undefined)
+  }
+
+  /** A frame of a scope: held during a catch-up, placed at once otherwise. */
+  const receive = (subscription: Subscription, frame: Frame) => {
+    if (subscription.held) {
+      subscription.held.push({ frame })
+      return
+    }
+    route(subscription, frame, 'live')
+    resnapshot(subscription)
+  }
+
+  /**
+   * Place what waited for a catch-up, in arrival order. A frame that starts
+   * the next catch-up takes the rest along behind it.
+   */
+  const release = (subscription: Subscription, held: readonly Held[]) => {
+    for (const [index, entry] of held.entries()) {
+      if (subscription.held) {
+        subscription.held.push(...held.slice(index))
+        return
+      }
+      route(subscription, entry.frame, entry.trigger ? 'retry' : 'held')
+    }
   }
 
   /** Scopes already reported for a record naming a turn they do not hold. */
@@ -642,13 +711,17 @@ export function createWebSocketEnvironmentClient(
     if (live.success) {
       const record = live.data.payload.record
       const subscription = subscriptions.get(scopeKey(record.cursor.scope))
-      if (!subscription) return
-      if (subscription.buffered) {
-        subscription.buffered.push(record)
-        return
-      }
-      applyRecord(record)
-      resnapshot(subscription)
+      if (subscription) receive(subscription, { kind: 'record', record })
+      return
+    }
+    // A transient goes only to the subscriptions of its scope, placed after
+    // the record it followed; a scope this client does not hold has no use
+    // for it.
+    const transient = SubscriptionTransientSchema.safeParse(raw)
+    if (transient.success) {
+      const { after, event } = transient.data.payload
+      const subscription = subscriptions.get(scopeKey(after.scope))
+      if (subscription) receive(subscription, { kind: 'transient', after, event })
       return
     }
     // The device list goes to admin holders as a whole current reading.
@@ -663,13 +736,6 @@ export function createWebSocketEnvironmentClient(
     if (health.success) {
       const { providerId, health: next } = health.data.payload
       store.update((state) => applyProviderHealth(state, providerId, next))
-      return
-    }
-    const transient = ProofEventSchema.safeParse(raw)
-    if (transient.success && !transientIds.has(transient.data.eventId)) {
-      transientIds.add(transient.data.eventId)
-      if (transientIds.size > 4096) transientIds.delete(transientIds.values().next().value!)
-      foldEvent(transient.data)
     }
   }
 
@@ -838,8 +904,12 @@ export function createWebSocketEnvironmentClient(
     }
   }
 
-  /** Snapshot and live registration share one server boundary; reconnect uses its cursor. */
-  const recover = (subscription: Subscription): Promise<void> => {
+  /**
+   * Snapshot and live registration share one server boundary; reconnect uses
+   * its cursor. Frames of the scope are held from the request until the
+   * answer is applied, `first` (the frame that asked for it) ahead of them.
+   */
+  const recover = (subscription: Subscription, first?: Held): Promise<void> => {
     if (subscription.recovery) return subscription.recovery
     if (subscription.subscriptionId || subscription.inflight) return Promise.resolve()
     if (
@@ -857,11 +927,11 @@ export function createWebSocketEnvironmentClient(
       name: REPLAY_NAME,
       payload: { scope: subscription.scope, cursor: subscription.cursor },
     }
-    subscription.buffered = []
+    subscription.held = first ? [first] : []
     const recovery = new Promise<void>((resolve, reject) => {
       const fail = (error: EnvironmentClientError) => {
         subscription.inflight = false
-        subscription.buffered = undefined
+        subscription.held = undefined
         if (subscriptions.get(key) === subscription && generation === connectionGeneration) {
           if (subscription.scope.type === 'thread') {
             const threadId = subscription.scope.threadId
@@ -901,7 +971,12 @@ export function createWebSocketEnvironmentClient(
           }
           subscription.subscriptionId = payload.subscriptionId
           if (payload.mode === 'replay') {
-            for (const record of payload.events) applyRecord(record)
+            // The exact tail after the cursor; one already held is a repeat.
+            for (const record of payload.events) {
+              if (placeRecord(subscription.cursor, record.cursor) !== 'drop') {
+                applyRecord(subscription, record)
+              }
+            }
             subscription.cursor = payload.to
             if (subscription.scope.type === 'thread') {
               const threadId = subscription.scope.threadId
@@ -918,9 +993,12 @@ export function createWebSocketEnvironmentClient(
             // Drafts are not in the snapshot either; they are listed again.
             if (subscription.scope.type === 'environment') store.update(applyDraftsUnlisted)
           }
-          const buffered = subscription.buffered ?? []
-          subscription.buffered = undefined
-          for (const record of buffered) applyRecord(record)
+          // The catch-up is over: what waited is placed against its cursor,
+          // and may start the next one.
+          const held = subscription.held ?? []
+          subscription.held = undefined
+          subscription.recovery = undefined
+          release(subscription, held)
           resolve()
         },
         reject: fail,

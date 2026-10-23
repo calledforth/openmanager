@@ -30,6 +30,7 @@ import {
   environmentScope,
   event,
   permission,
+  threadScope,
   turnStarted,
 } from './fixtures'
 
@@ -75,6 +76,27 @@ class FakeSocket implements WebSocketLike {
   }
   respond(name: string, payload: unknown) {
     this.receive({ type: 'response', requestId: this.last(name).requestId, payload })
+  }
+  private sequences = new Map<string, number>()
+  /**
+   * A durable event as the server sends it live: a record of its scope,
+   * numbered after the last one this socket published there. For scopes
+   * the client subscribed to without a replay, whose first record sets its
+   * cursor.
+   */
+  publish(event: { scope: { type: string; sessionId?: string; threadId?: string } }) {
+    const { type, sessionId, threadId } = event.scope
+    const key = `${type}:${sessionId ?? ''}:${threadId ?? ''}`
+    const sequence = (this.sequences.get(key) ?? 0) + 1
+    this.sequences.set(key, sequence)
+    this.receive({
+      type: 'event',
+      name: 'subscription.event',
+      payload: {
+        subscriptionId: 'live',
+        record: { cursor: { scope: event.scope, epoch: 'live', sequence }, event },
+      },
+    })
   }
   private dispatch(type: string, event: unknown) {
     for (const listener of this.listeners.get(type) ?? []) listener(event as never)
@@ -343,7 +365,7 @@ describe('websocket environment client', () => {
     const added = client.commands.addWorkspace({ path: '/other' })
     const other = { ...WORKSPACE, workspaceId: '/other', path: '/other' }
     // The registration's event reaches the socket before its answer.
-    socket.receive(
+    socket.publish(
       event({ name: 'workspace.updated', scope: environmentScope, payload: { workspace: other } }),
     )
     socket.respond('workspace.add', { workspace: other })
@@ -814,7 +836,7 @@ describe('websocket environment client', () => {
     })
     await regenerate
     expect(client.getState().sessions[SESSION.sessionId]?.title).toBe(SESSION_SUMMARY.title)
-    socket.receive(
+    socket.publish(
       event({
         name: 'session.updated',
         scope: environmentScope,
@@ -1404,7 +1426,7 @@ describe('websocket environment client', () => {
     expect(result.turn.turnId).toBe('turn-9')
     // A mutation answer is an acknowledgement (§4.7.10): the echo waits for the event.
     expect(client.getState().threads).toBe(before)
-    socket.receive(turnStarted('turn-9', 'go', 'cmd-1'))
+    socket.publish(turnStarted('turn-9', 'go', 'cmd-1'))
     expect(selectActiveThread(client.getState())?.turns[0]?.state).toBe('running')
     expect(selectActiveThread(client.getState())?.outbox).toEqual([])
   })
@@ -1425,7 +1447,7 @@ describe('websocket environment client', () => {
     socket.respond('turn.send', turnStarted('turn-9', 'go', sent.commandId).payload)
     await sending
     expect(selectActiveThread(client.getState())?.outbox).toHaveLength(1)
-    socket.receive(turnStarted('turn-9', 'go', sent.commandId))
+    socket.publish(turnStarted('turn-9', 'go', sent.commandId))
     expect(selectActiveThread(client.getState())?.outbox).toEqual([])
     expect(selectActiveThread(client.getState())?.messages).toHaveLength(1)
   })
@@ -1437,8 +1459,8 @@ describe('websocket environment client', () => {
     await flush()
     await flush()
     await opened.catch(() => undefined)
-    socket.receive(turnStarted('turn-9', 'go', 'cmd-1'))
-    socket.receive(
+    socket.publish(turnStarted('turn-9', 'go', 'cmd-1'))
+    socket.publish(
       event({
         name: 'turn.completed',
         scope: { type: 'thread', environmentId: ENV, ...THREAD },
@@ -1462,12 +1484,12 @@ describe('websocket environment client', () => {
     await flush()
     await opened.catch(() => undefined)
     const sending = client.commands.sendTurn({ ...THREAD, text: 'go', commandId: 'cmd-1' })
-    socket.receive(turnStarted('turn-9', 'go', 'cmd-1'))
+    socket.publish(turnStarted('turn-9', 'go', 'cmd-1'))
     expect(selectActiveThread(client.getState())?.outbox).toEqual([])
     expect(selectActiveThread(client.getState())?.messages).toHaveLength(1)
     socket.respond('turn.send', turnStarted('turn-9', 'go', 'cmd-1').payload)
     await sending
-    socket.receive(turnStarted('turn-9', 'go', 'cmd-1'))
+    socket.publish(turnStarted('turn-9', 'go', 'cmd-1'))
     expect(selectActiveThread(client.getState())?.messages).toHaveLength(1)
     expect(selectActiveThread(client.getState())?.turns).toHaveLength(1)
   })
@@ -1497,7 +1519,7 @@ describe('websocket environment client', () => {
     ])
     socket.respond('turn.send', turnStarted('turn-9', 'go', 'cmd-1').payload)
     await retry
-    socket.receive(turnStarted('turn-9', 'go', 'cmd-1'))
+    socket.publish(turnStarted('turn-9', 'go', 'cmd-1'))
     expect(selectActiveThread(client.getState())?.outbox).toEqual([])
     expect(selectActiveThread(client.getState())?.messages).toHaveLength(1)
   })
@@ -2704,6 +2726,214 @@ describe('cursor replay on reconnect', () => {
   })
 })
 
+describe('one ordered queue on the client (§5.2)', () => {
+  const REPLAY_CAPABILITIES = [...FULL_CAPABILITIES, 'subscription.replay']
+  const cursor = (sequence: number, epoch = 'e') => ({ scope: threadScope, epoch, sequence })
+  const live = (sequence: number, event: unknown, epoch = 'e') => ({
+    type: 'event',
+    name: 'subscription.event',
+    payload: { subscriptionId: 'sub-thread', record: { cursor: cursor(sequence, epoch), event } },
+  })
+  const notice = (after: number, message: string, epoch = 'e') => ({
+    type: 'event',
+    name: 'subscription.transient',
+    payload: {
+      subscriptionId: 'sub-thread',
+      after: cursor(after, epoch),
+      event: event({
+        name: 'turn.notice',
+        scope: threadScope,
+        payload: { turnId: 'turn-1', message },
+      }),
+    },
+  })
+  const snapshotAt = (sequence: number, turns: unknown[] = [], epoch = 'e') => ({
+    mode: 'snapshot',
+    subscriptionId: 'sub-thread',
+    reason: 'initial',
+    snapshot: {
+      cursor: cursor(sequence, epoch),
+      state: {
+        thread: THREAD,
+        turns,
+        messages: [],
+        reasoning: [],
+        tools: [],
+        interactions: [],
+        nextCursor: null,
+      },
+    },
+  })
+  const RUNNING = {
+    turnId: 'turn-1',
+    threadId: THREAD.threadId,
+    state: 'running',
+    startedAt: '2026-09-10T00:00:00.000Z',
+  }
+  const notices = (client: EnvironmentClient) =>
+    client.getState().threads[THREAD.threadId]?.notices.map((item) => item.message)
+  const text = (client: EnvironmentClient) =>
+    client
+      .getState()
+      .threads[THREAD.threadId]?.messages.filter((message) => message.role === 'assistant')
+      .map((message) =>
+        message.content.map((block) => (block.type === 'text' ? block.text : '')).join(''),
+      )
+  const replays = (socket: FakeSocket) =>
+    socket.sent.filter((message) => message.name === 'subscription.replay')
+
+  /** Open the session; its thread's first catch-up is sent and not yet answered. */
+  async function opening() {
+    const { client, socket } = await connected(REPLAY_CAPABILITIES)
+    const opened = client.commands.openSession(SESSION.sessionId)
+    socket.respond('session.open', { session: SESSION_SUMMARY, threads: [THREAD] })
+    await flush()
+    expect(replays(socket)).toHaveLength(1)
+    return { client, socket, opened }
+  }
+
+  /** The same, with the catch-up answered at sequence 1: a running turn-1. */
+  async function caughtUp() {
+    const { client, socket, opened } = await opening()
+    socket.respond('subscription.replay', snapshotAt(1, [RUNNING]))
+    await opened
+    return { client, socket }
+  }
+
+  it('holds every frame during a catch-up and places it against the answer', async () => {
+    const { client, socket, opened } = await opening()
+    // Sent before the answer: a record the snapshot already holds, the next
+    // one, a notice placed after it, and a notice older than the snapshot.
+    socket.receive(live(1, turnStarted()))
+    socket.receive(notice(0, 'too old'))
+    socket.receive(live(2, delta('turn-1', 'a-1', 'Hi')))
+    socket.receive(notice(2, 'after the text'))
+    expect(notices(client) ?? []).toEqual([])
+    socket.respond('subscription.replay', snapshotAt(1, [RUNNING]))
+    await opened
+    expect(text(client)).toEqual(['Hi'])
+    expect(notices(client)).toEqual(['after the text'])
+    expect(replays(socket)).toHaveLength(1)
+    client.dispose()
+  })
+
+  it('applies a notice at the cursor and drops one behind it', async () => {
+    const { client, socket } = await caughtUp()
+    socket.receive(notice(1, 'now'))
+    socket.receive(live(2, delta('turn-1', 'a-1', 'Hi')))
+    socket.receive(notice(1, 'before the text'))
+    expect(notices(client)).toEqual(['now'])
+    expect(replays(socket)).toHaveLength(1)
+    client.dispose()
+  })
+
+  it('catches up from its cursor when a record is missing, then applies what it held', async () => {
+    const { client, socket } = await caughtUp()
+    socket.receive(live(3, delta('turn-1', 'a-1', ' there')))
+    expect(text(client)).toEqual([])
+    // The live subscription is released and the gap read from the cursor.
+    expect(socket.last('subscription.unsubscribe').payload).toEqual({
+      subscriptionId: 'sub-thread',
+    })
+    expect(replays(socket).at(-1)!.payload).toEqual({ scope: threadScope, cursor: cursor(1) })
+    socket.receive(notice(3, 'held behind the catch-up'))
+    socket.respond('subscription.replay', {
+      mode: 'replay',
+      subscriptionId: 'sub-thread-2',
+      from: cursor(1),
+      to: cursor(3),
+      events: [
+        { cursor: cursor(2), event: delta('turn-1', 'a-1', 'Hi') },
+        { cursor: cursor(3), event: delta('turn-1', 'a-1', ' there') },
+      ],
+    })
+    await flush()
+    expect(text(client)).toEqual(['Hi there'])
+    expect(notices(client)).toEqual(['held behind the catch-up'])
+    client.dispose()
+  })
+
+  it('loses a final record, then sees only a notice: it catches up and applies the notice (§5.5)', async () => {
+    const { client, socket } = await caughtUp()
+    // Record 2 never arrives; the notice that followed it does.
+    socket.receive(notice(2, 'Retrying'))
+    expect(notices(client)).toEqual([])
+    expect(replays(socket).at(-1)!.payload).toEqual({ scope: threadScope, cursor: cursor(1) })
+    socket.respond('subscription.replay', {
+      mode: 'replay',
+      subscriptionId: 'sub-thread-2',
+      from: cursor(1),
+      to: cursor(2),
+      events: [{ cursor: cursor(2), event: delta('turn-1', 'a-1', 'Hi') }],
+    })
+    await flush()
+    expect(text(client)).toEqual(['Hi'])
+    expect(notices(client)).toEqual(['Retrying'])
+    client.dispose()
+  })
+
+  it('drops the notice that asked for a catch-up the answer cannot place it after', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined)
+    const { client, socket } = await caughtUp()
+    socket.receive(notice(5, 'from nowhere'))
+    socket.respond('subscription.replay', {
+      mode: 'replay',
+      subscriptionId: 'sub-thread-2',
+      from: cursor(1),
+      to: cursor(1),
+      events: [],
+    })
+    await flush()
+    // No second catch-up: the server said something its log cannot back.
+    expect(replays(socket)).toHaveLength(2)
+    expect(notices(client)).toEqual([])
+    expect(warn).toHaveBeenCalledTimes(1)
+    warn.mockRestore()
+    client.dispose()
+  })
+
+  it('catches up when a frame comes from another epoch, and keeps only the answer’s', async () => {
+    const { client, socket } = await caughtUp()
+    socket.receive(live(1, turnStarted(), 'f'))
+    expect(replays(socket).at(-1)!.payload).toEqual({ scope: threadScope, cursor: cursor(1) })
+    socket.receive(notice(1, 'old epoch', 'e'))
+    socket.receive(notice(1, 'new epoch', 'f'))
+    socket.respond('subscription.replay', {
+      ...snapshotAt(1, [RUNNING], 'f'),
+      reason: 'stream_reset',
+    })
+    await flush()
+    expect(notices(client)).toEqual(['new epoch'])
+    expect(replays(socket)).toHaveLength(2)
+    client.dispose()
+  })
+
+  it('ignores a notice for a thread it does not hold, and a bare event', async () => {
+    const { client, socket } = await caughtUp()
+    const other = { ...threadScope, threadId: 'thread-other' }
+    socket.receive({
+      type: 'event',
+      name: 'subscription.transient',
+      payload: {
+        subscriptionId: 'sub-other',
+        after: { scope: other, epoch: 'e', sequence: 0 },
+        event: event({ name: 'turn.notice', scope: other, payload: { turnId: 't', message: 'x' } }),
+      },
+    })
+    // Nothing durable or transient arrives outside a subscription any more.
+    socket.receive(
+      event({
+        name: 'turn.notice',
+        scope: threadScope,
+        payload: { turnId: 'turn-1', message: 'y' },
+      }),
+    )
+    expect(notices(client)).toEqual([])
+    expect(client.getState().threads['thread-other']).toBeUndefined()
+    client.dispose()
+  })
+})
+
 describe('reconnectDelayMs', () => {
   const policy = { initialDelayMs: 500, maxDelayMs: 15_000, multiplier: 2, jitter: 1 }
 
@@ -3027,7 +3257,7 @@ describe('composer commands', () => {
     await flush()
     const read = client.commands.getComposerPreference(TARGET)
     // Another client changed the model while this read was in flight.
-    socket.receive(
+    socket.publish(
       event({
         name: 'composer.preferences.updated',
         scope: { type: 'environment', environmentId: ENV },
@@ -3043,7 +3273,7 @@ describe('composer commands', () => {
 
   it('follows a session selection pushed by the environment', async () => {
     const { client, socket } = await composing()
-    socket.receive(
+    socket.publish(
       event({
         name: 'session.composer.updated',
         scope: { type: 'environment', environmentId: ENV },
@@ -3070,14 +3300,14 @@ describe('composer commands', () => {
       preference: { modeId: 'plan' },
     })
     // As the environment announces a removal: its session first, then itself.
-    socket.receive(
+    socket.publish(
       event({
         name: 'session.deleted',
         scope: { type: 'environment', environmentId: ENV },
         payload: { sessionId: SESSION.sessionId },
       }),
     )
-    socket.receive(
+    socket.publish(
       event({
         name: 'workspace.removed',
         scope: { type: 'environment', environmentId: ENV },
