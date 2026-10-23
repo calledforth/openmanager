@@ -7,7 +7,7 @@ import {
   type MockSeed,
   type ProviderCatalogEntry,
 } from '@openmanager/environment-client'
-import { ENVIRONMENT_STORAGE_KEY } from '../lib/environment-store'
+import { ENVIRONMENT_STORAGE_KEY } from '@openmanager/environment-client/connection'
 import { renderWebApp } from '../test-utils'
 
 const WORKSPACE = {

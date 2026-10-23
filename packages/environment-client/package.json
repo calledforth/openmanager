@@ -9,6 +9,10 @@
     ".": {
       "types": "./src/index.ts",
       "default": "./src/index.ts"
+    },
+    "./connection": {
+      "types": "./src/connection/index.ts",
+      "default": "./src/connection/index.ts"
     }
   },
   "scripts": {

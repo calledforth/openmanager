@@ -1,12 +1,12 @@
 import { describe, expect, it, vi } from 'vitest'
-import { EnvironmentClientError } from '@openmanager/environment-client'
+import { EnvironmentClientError } from '../../src/errors'
 import {
   exchangePairingToken,
   pairingExchangeUrl,
   pairingRejectionReason,
   PairingExchangeError,
   suggestDeviceLabel,
-} from './pairing'
+} from '../../src/connection/pairing'
 
 const ANSWER = {
   environmentId: 'env-remote',

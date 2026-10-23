@@ -1,6 +1,14 @@
 import { PROTOCOL_VERSION } from '@openmanager/protocol'
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { bootstrapUrl, fetchBootstrap, interpretBootstrapResponse } from './bootstrap'
+import {
+  bootstrapUrl,
+  fetchBootstrap,
+  interpretBootstrapResponse,
+  noLoopbackGate,
+} from '../../src/connection/bootstrap'
+
+/** For the cases that are not about the loopback check. */
+const NO_GATE = { loopbackAccessDenied: noLoopbackGate }
 
 afterEach(() => {
   vi.unstubAllGlobals()
@@ -15,7 +23,7 @@ describe('fetchBootstrap', () => {
       throw new TypeError('Failed to fetch')
     })
     vi.stubGlobal('fetch', fetch)
-    expect(await fetchBootstrap('https://tunnel.example')).toMatchObject({
+    expect(await fetchBootstrap('https://tunnel.example', NO_GATE)).toMatchObject({
       status: 'unreachable',
       cause: 'opaque',
     })
@@ -30,7 +38,7 @@ describe('fetchBootstrap', () => {
         throw new TypeError('Failed to fetch')
       }),
     )
-    expect(await fetchBootstrap('https://tunnel.example')).toMatchObject({
+    expect(await fetchBootstrap('https://tunnel.example', NO_GATE)).toMatchObject({
       cause: 'opaque_redirect',
     })
 
@@ -40,7 +48,9 @@ describe('fetchBootstrap', () => {
         throw new TypeError('Failed to fetch')
       }),
     )
-    expect(await fetchBootstrap('https://tunnel.example')).toMatchObject({ cause: 'network' })
+    expect(await fetchBootstrap('https://tunnel.example', NO_GATE)).toMatchObject({
+      cause: 'network',
+    })
   })
 
   it('still asks where AbortSignal.any is missing', async () => {
@@ -55,7 +65,7 @@ describe('fetchBootstrap', () => {
     vi.stubGlobal('fetch', fetch)
     const controller = new AbortController()
     expect(
-      await fetchBootstrap('https://tunnel.example', { signal: controller.signal }),
+      await fetchBootstrap('https://tunnel.example', { signal: controller.signal, ...NO_GATE }),
     ).toMatchObject({ cause: 'opaque' })
     expect(fetch.mock.calls[1]![1]!.signal).toBeInstanceOf(RealAbortSignal)
   })
@@ -68,7 +78,7 @@ describe('fetchBootstrap', () => {
     const controller = new AbortController()
     controller.abort()
     expect(
-      await fetchBootstrap('https://tunnel.example', { signal: controller.signal }),
+      await fetchBootstrap('https://tunnel.example', { signal: controller.signal, ...NO_GATE }),
     ).toMatchObject({ cause: 'network' })
     expect(fetch).toHaveBeenCalledTimes(1)
   })
@@ -143,17 +153,13 @@ describe('interpretBootstrapResponse', () => {
   })
 
   it('maps other failures and invalid payloads to unreachable', () => {
-    expect(
-      interpretBootstrapResponse({ ok: false, status: 502, body: null }),
-    ).toEqual({
+    expect(interpretBootstrapResponse({ ok: false, status: 502, body: null })).toEqual({
       status: 'unreachable',
       message: 'The environment server responded with HTTP 502.',
       cause: 'http',
       httpStatus: 502,
     })
-    expect(
-      interpretBootstrapResponse({ ok: true, status: 200, body: { hello: true } }),
-    ).toEqual({
+    expect(interpretBootstrapResponse({ ok: true, status: 200, body: { hello: true } })).toEqual({
       status: 'unreachable',
       message: 'The environment responded, but the bootstrap payload was not valid.',
       cause: 'invalid',
@@ -166,17 +172,16 @@ describe('fetchBootstrap', () => {
     vi.unstubAllGlobals()
   })
 
-  function failFetchWithPermission(state: string) {
+  function failFetch() {
     vi.stubGlobal('fetch', vi.fn().mockRejectedValue(new TypeError('Failed to fetch')))
-    vi.stubGlobal('navigator', {
-      ...navigator,
-      permissions: { query: async () => ({ state }) },
-    })
   }
 
-  it('tells a browser that blocked this device apart from nothing listening', async () => {
-    failFetchWithPermission('denied')
-    await expect(fetchBootstrap('http://127.0.0.1:43120')).resolves.toEqual({
+  it('tells a host that blocked this device apart from nothing listening', async () => {
+    failFetch()
+    const loopbackAccessDenied = vi.fn(async () => true)
+    await expect(
+      fetchBootstrap('http://127.0.0.1:43120', { loopbackAccessDenied }),
+    ).resolves.toEqual({
       status: 'unreachable',
       message:
         'This browser blocked this page from reaching http://127.0.0.1:43120 on this device.',
@@ -184,19 +189,27 @@ describe('fetchBootstrap', () => {
     })
   })
 
-  it('keeps a failure as a network failure when the permission was not refused', async () => {
-    failFetchWithPermission('prompt')
-    await expect(fetchBootstrap('http://127.0.0.1:43120')).resolves.toMatchObject({
+  it('keeps a failure as a network failure when access was not refused', async () => {
+    failFetch()
+    await expect(
+      fetchBootstrap('http://127.0.0.1:43120', { loopbackAccessDenied: async () => false }),
+    ).resolves.toMatchObject({ status: 'unreachable', cause: 'network' })
+  })
+
+  it('reads a loopback failure as a network failure for a host with no loopback gate', async () => {
+    failFetch()
+    await expect(fetchBootstrap('http://127.0.0.1:43120', NO_GATE)).resolves.toMatchObject({
       status: 'unreachable',
       cause: 'network',
     })
   })
 
-  it('never blames the loopback permission for a remote route', async () => {
-    failFetchWithPermission('denied')
-    await expect(fetchBootstrap('https://env.example.com')).resolves.toMatchObject({
-      status: 'unreachable',
-      cause: 'network',
-    })
+  it('never asks the loopback check about a remote route', async () => {
+    failFetch()
+    const loopbackAccessDenied = vi.fn(async () => true)
+    await expect(
+      fetchBootstrap('https://env.example.com', { loopbackAccessDenied }),
+    ).resolves.toMatchObject({ status: 'unreachable', cause: 'network' })
+    expect(loopbackAccessDenied).not.toHaveBeenCalled()
   })
 })
