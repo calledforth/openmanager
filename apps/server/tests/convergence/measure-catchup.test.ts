@@ -24,6 +24,7 @@ import {
   type WebSocketConstructor,
 } from '@openmanager/environment-client'
 import {
+  FragmentAssembler,
   ProofResponseSchemas,
   ReplayResponseSchema,
   parseReplayResult,
@@ -309,6 +310,8 @@ function instrumentedClient(
   class MeasuredWebSocket extends WebSocket {
     constructor(_url: string, protocols?: string[]) {
       super(url, protocols)
+      const assembler = new FragmentAssembler()
+      const partial = { bytes: 0, listenerMs: 0 }
       const add = this.addEventListener.bind(this) as (
         type: string,
         listener: (event: unknown) => void,
@@ -319,8 +322,26 @@ function instrumentedClient(
           type === 'message'
             ? (event) => {
                 const data = (event as { data: unknown }).data
-                const text = typeof data === 'string' ? data : String(data)
-                const tag = tagOf(text, log.sentAt)
+                // A binary frame is a fragment (protocol v19): the message it
+                // belongs to is counted once, at its last fragment.
+                let text: string | undefined
+                let bytes: number
+                if (typeof data === 'string') {
+                  text = data
+                  bytes = Buffer.byteLength(data)
+                } else {
+                  const frame =
+                    data instanceof ArrayBuffer
+                      ? new Uint8Array(data)
+                      : new Uint8Array(
+                          (data as Uint8Array).buffer,
+                          (data as Uint8Array).byteOffset,
+                          (data as Uint8Array).byteLength,
+                        )
+                  bytes = frame.byteLength
+                  const whole = assembler.push(frame.slice())
+                  if (whole) text = Buffer.from(whole).toString('utf8')
+                }
                 const started = performance.now()
                 log.inListener = true
                 try {
@@ -328,12 +349,17 @@ function instrumentedClient(
                 } finally {
                   log.inListener = false
                 }
+                partial.bytes += bytes
+                partial.listenerMs += performance.now() - started
+                if (text === undefined) return
                 log.received.push({
                   at: started,
-                  bytes: Buffer.byteLength(text),
-                  listenerMs: performance.now() - started,
-                  tag,
+                  bytes: partial.bytes,
+                  listenerMs: partial.listenerMs,
+                  tag: tagOf(text, log.sentAt),
                 })
+                partial.bytes = 0
+                partial.listenerMs = 0
               }
             : listener,
         )
