@@ -3,7 +3,6 @@ import {
   COMPOSER_CONFIG_OPTION_SET_CAPABILITY,
   COMPOSER_MODEL_SET_CAPABILITY,
   COMPOSER_MODE_SET_CAPABILITY,
-  COMPOSER_PREFERENCES_GET_CAPABILITY,
   COMPOSER_PREFERENCES_SET_CAPABILITY,
   ComposerCommandOptionSchema,
   ComposerCommandSchemas,
@@ -50,11 +49,7 @@ type ProviderSource = {
 }
 type RuntimeControl = Pick<
   AgentRuntime,
-  | 'setModel'
-  | 'setMode'
-  | 'setConfigOption'
-  | 'applyDesiredConfig'
-  | 'modelImageInputSupport'
+  'setModel' | 'setMode' | 'setConfigOption' | 'applyDesiredConfig' | 'modelImageInputSupport'
 >
 
 type ComposerEventName = 'session.composer.updated'
@@ -294,7 +289,6 @@ export function createComposerService(
 
   const response = (
     capability:
-      | typeof COMPOSER_PREFERENCES_GET_CAPABILITY
       | typeof COMPOSER_PREFERENCES_SET_CAPABILITY
       | typeof COMPOSER_MODEL_SET_CAPABILITY
       | typeof COMPOSER_MODE_SET_CAPABILITY
@@ -556,24 +550,9 @@ export function createComposerService(
         })
       }
 
-      if (command.name === COMPOSER_PREFERENCES_GET_CAPABILITY) {
-        const parsed = ComposerCommandSchemas[COMPOSER_PREFERENCES_GET_CAPABILITY].safeParse(command)
-        if (!parsed.success) {
-          return errorResult(command.requestId, 'validation', 'Invalid composer preference request.')
-        }
-        const { workspaceId, providerId } = parsed.data.payload
-        if (!providerExists(providerId)) {
-          return errorResult(command.requestId, 'not_found', 'Provider not found.')
-        }
-        return response(
-          COMPOSER_PREFERENCES_GET_CAPABILITY,
-          command.requestId,
-          store.readPreference(workspaceId, providerId),
-        )
-      }
-
       if (command.name === COMPOSER_PREFERENCES_SET_CAPABILITY) {
-        const parsed = ComposerCommandSchemas[COMPOSER_PREFERENCES_SET_CAPABILITY].safeParse(command)
+        const parsed =
+          ComposerCommandSchemas[COMPOSER_PREFERENCES_SET_CAPABILITY].safeParse(command)
         if (!parsed.success) {
           return errorResult(command.requestId, 'validation', 'Invalid composer preference update.')
         }
@@ -764,19 +743,23 @@ function defined<T extends object>(value: T): Partial<T> {
   ) as Partial<T>
 }
 
-function modelPatch(models: {
-  availableModels?: Array<{
-    id: string
-    displayName: string
-    description?: string
-    contextWindowTokens?: number
-    effortLevels?: string[]
-    supportsFastMode?: boolean
-    supportsAutoMode?: boolean
-    supportsImageInput?: boolean
-    configOptions?: readonly unknown[]
-  }>
-} | undefined) {
+function modelPatch(
+  models:
+    | {
+        availableModels?: Array<{
+          id: string
+          displayName: string
+          description?: string
+          contextWindowTokens?: number
+          effortLevels?: string[]
+          supportsFastMode?: boolean
+          supportsAutoMode?: boolean
+          supportsImageInput?: boolean
+          configOptions?: readonly unknown[]
+        }>
+      }
+    | undefined,
+) {
   const availableModels = models?.availableModels
   if (availableModels === undefined) return {}
   return {
@@ -877,9 +860,13 @@ function promptCapabilitiesPatch(
   }
 }
 
-function modePatch(modes: {
-  availableModes?: Array<{ id: string; displayName: string; description?: string }>
-} | undefined) {
+function modePatch(
+  modes:
+    | {
+        availableModes?: Array<{ id: string; displayName: string; description?: string }>
+      }
+    | undefined,
+) {
   const availableModes = modes?.availableModes
   if (availableModes === undefined) return {}
   return {

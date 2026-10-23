@@ -11,6 +11,7 @@ import {
 } from '@openmanager/protocol/node'
 import { DATABASE_FILENAME, openEnvironmentDatabase } from '../src/db/database.js'
 import { MIGRATIONS } from '../src/db/migrations.js'
+import { readThreadState } from '../src/db/session-store.js'
 import { startServer } from '../src/server.js'
 import {
   cleanupProtocolHosts,
@@ -21,6 +22,7 @@ import {
   subscribe,
   type ProtocolClient,
   type ProtocolHost,
+  listedSessions,
 } from './helpers/protocol-client.js'
 import { promptSessionId, startStubHost } from './helpers/proof-slice.js'
 
@@ -91,6 +93,16 @@ function attachmentRows(dataDir: string) {
   }
 }
 
+/** The whole thread as the rows hold it, read beside a running server. */
+function threadAfterRestart(dataDir: string, sessionId: string, threadId: string) {
+  const database = new DatabaseSync(join(dataDir, DATABASE_FILENAME), { readOnly: true })
+  try {
+    return readThreadState(database, { sessionId, threadId })
+  } finally {
+    database.close()
+  }
+}
+
 function restart(host: ProtocolHost, connections: FakeConnectionFactory) {
   return startServer({
     port: 0,
@@ -134,7 +146,9 @@ describe('artifact metadata', () => {
     try {
       expect(
         database
-          .prepare('SELECT attachment_id, session_id, source FROM attachments ORDER BY attachment_id')
+          .prepare(
+            'SELECT attachment_id, session_id, source FROM attachments ORDER BY attachment_id',
+          )
           .all(),
       ).toEqual([
         { attachment_id: 'bound', session_id: 'session-1', source: 'prompt' },
@@ -210,17 +224,8 @@ describe('artifact metadata', () => {
     await host.server.close()
     const restarted = await restart(host, connections)
     try {
-      expect(
-        restarted.threadService.dispatch({
-          type: 'command',
-          requestId: 'history-after-restart',
-          name: 'session.history',
-          payload: { sessionId, threadId },
-        }),
-      ).toMatchObject({
-        payload: {
-          messages: [{ role: 'user', content: [{ type: 'text', text: 'what is this?' }, reference] }],
-        },
+      expect(threadAfterRestart(host.dataDir, sessionId, threadId)).toMatchObject({
+        messages: [{ role: 'user', content: [{ type: 'text', text: 'what is this?' }, reference] }],
       })
       const path = `/artifacts/${sessionId}/${artifact.artifactId}`
       const bytes = await get(restarted.url, path, host.token)
@@ -361,11 +366,7 @@ describe('artifact metadata', () => {
       type: 'error',
       error: { code: 'not_found' },
     })
-    const listId = client.command('session.list', {})
-    expect(
-      ProofResponseSchemas['session.list'].parse(await nextResponse(client, listId)).payload
-        .sessions,
-    ).toHaveLength(1)
+    expect(await listedSessions(client, host.server.identity.environmentId)).toHaveLength(1)
     await host.server.close()
   })
 
@@ -412,20 +413,11 @@ describe('artifact metadata', () => {
     await host.server.close()
     const restarted = await restart(host, connections)
     try {
-      expect(
-        restarted.threadService.dispatch({
-          type: 'command',
-          requestId: 'history-after-restart',
-          name: 'session.history',
-          payload: { sessionId, threadId },
-        }),
-      ).toMatchObject({
-        payload: {
-          messages: [
-            { role: 'user' },
-            { role: 'assistant', content: [{ type: 'artifact', artifactId }] },
-          ],
-        },
+      expect(threadAfterRestart(host.dataDir, sessionId, threadId)).toMatchObject({
+        messages: [
+          { role: 'user' },
+          { role: 'assistant', content: [{ type: 'artifact', artifactId }] },
+        ],
       })
       const bytes = await get(restarted.url, `/artifacts/${sessionId}/${artifactId}`, host.token)
       expect(bytes.status).toBe(200)
@@ -534,12 +526,22 @@ describe('artifact metadata', () => {
     expect(anonymous.headers.get('cache-control')).toBe('no-store')
     expect((await get(host.server.url, path, 'not-a-credential')).status).toBe(401)
     expect(
-      (await get(host.server.url, `/artifacts/${second.sessionId}/${artifact.artifactId}`, host.token))
-        .status,
+      (
+        await get(
+          host.server.url,
+          `/artifacts/${second.sessionId}/${artifact.artifactId}`,
+          host.token,
+        )
+      ).status,
     ).toBe(404)
     expect(
-      (await get(host.server.url, `/artifacts/${first.sessionId}/..%2F..%2Fidentity.json`, host.token))
-        .status,
+      (
+        await get(
+          host.server.url,
+          `/artifacts/${first.sessionId}/..%2F..%2Fidentity.json`,
+          host.token,
+        )
+      ).status,
     ).toBe(404)
     expect((await get(host.server.url, path, host.token)).status).toBe(200)
   })

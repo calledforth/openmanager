@@ -59,6 +59,18 @@ export function readPreferenceRow(
     .get(workspaceId, providerId) as PreferenceRow | undefined
 }
 
+/** Every workspace's preferences, for the environment snapshot. */
+export function readPreferenceRows(
+  database: DatabaseSync,
+): Array<PreferenceRow & { workspace_id: string; provider_id: string }> {
+  return database
+    .prepare(
+      `SELECT workspace_id, provider_id, model_id, mode_id, config_values_json, revision
+       FROM workspace_composer_preferences ORDER BY workspace_id, provider_id`,
+    )
+    .all() as unknown as Array<PreferenceRow & { workspace_id: string; provider_id: string }>
+}
+
 export function profileFromRow(row: ProfileRow): ProviderComposerProfile {
   return ProviderComposerProfileSchema.parse({
     providerId: row.provider_id,

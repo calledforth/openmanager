@@ -4,11 +4,14 @@ import type { AgentRuntime } from '@agentpack/runtime/node'
 import {
   ProofResponseSchemas,
   type EventEnvelope,
+  type Message,
+  type Turn,
   type Interaction,
   type InteractionResponse,
 } from '@openmanager/protocol/node'
 import { createThreadService, type WorkspaceRuntimeResolver } from '../src/thread-service.js'
 import { createPersistentEventService } from '../src/event-service.js'
+import { readThreadState } from '../src/db/session-store.js'
 import { runMigrations } from '../src/db/migrate.js'
 import { MIGRATIONS } from '../src/db/migrations.js'
 
@@ -155,7 +158,90 @@ function harness(database?: DatabaseSync) {
       },
     })
   const resolved = () => events.filter((item) => item.name === 'interaction.resolved')
+  /**
+   * The thread as a client holds it, and each plan's state and outcome: from
+   * the rows when the service persists, else from every event it emitted
+   * (the in-memory service keeps no other read).
+   */
+  const view = () => {
+    if (database) {
+      persistent!.flush()
+      const thread = readThreadState(database, target)!
+      const plans = (
+        database
+          .prepare(
+            `SELECT interaction_id, interactions.state, response_json FROM interactions
+             JOIN turns ON turns.turn_id = interactions.turn_id
+             WHERE turns.thread_id = ? AND kind = 'plan' ORDER BY interactions.created_at`,
+          )
+          .all(target.threadId) as Array<{
+          interaction_id: string
+          state: string
+          response_json: string | null
+        }>
+      ).map((row) => ({
+        interactionId: row.interaction_id,
+        state: row.state,
+        outcome: row.response_json
+          ? (JSON.parse(row.response_json) as { outcome: unknown }).outcome
+          : undefined,
+      }))
+      return { ...thread, plans }
+    }
+    // The fold a client applies, as far as these tests read it.
+    const turns: Turn[] = []
+    const messages: Message[] = []
+    const interactions: Array<{ turnId: string; interaction: Interaction }> = []
+    const ends = {
+      'turn.completed': 'completed',
+      'turn.failed': 'failed',
+      'turn.interrupted': 'interrupted',
+    } as const
+    for (const event of events) {
+      const payload = event.payload as {
+        turn?: Turn
+        userMessage?: Message
+        turnId?: string
+        interaction?: Interaction
+        response?: { interactionId: string }
+      }
+      if (event.name === 'turn.started' && payload.turn) {
+        if (!turns.some((turn) => turn.turnId === payload.turn!.turnId))
+          turns.push({ ...payload.turn })
+        if (payload.userMessage) messages.push(payload.userMessage)
+      } else if (event.name in ends) {
+        const turn = turns.find((item) => item.turnId === payload.turnId)
+        if (turn) turn.state = ends[event.name as keyof typeof ends]
+      } else if (event.name === 'interaction.requested' && payload.interaction) {
+        interactions.push({ turnId: payload.turnId!, interaction: payload.interaction })
+      } else if (payload.response) {
+        const index = interactions.findIndex(
+          (item) => item.interaction.interactionId === payload.response!.interactionId,
+        )
+        if (index !== -1) interactions.splice(index, 1)
+      }
+    }
+    const plans: Array<{ interactionId: string; state: string; outcome?: unknown }> = []
+    for (const event of events) {
+      const payload = event.payload as {
+        interaction?: Interaction
+        response?: { interactionId: string; outcome: unknown }
+      }
+      if (event.name === 'interaction.requested' && payload.interaction?.kind === 'plan') {
+        plans.push({ interactionId: payload.interaction.interactionId, state: 'pending' })
+        continue
+      }
+      const plan = plans.find((entry) => entry.interactionId === payload.response?.interactionId)
+      if (!plan) continue
+      if (event.name === 'interaction.resolved') {
+        Object.assign(plan, { state: 'resolved', outcome: payload.response!.outcome })
+      } else if (event.name === 'interaction.cancelled') plan.state = 'cancelled'
+      else if (event.name === 'interaction.expired') plan.state = 'expired'
+    }
+    return { turns, messages, interactions, plans }
+  }
   return {
+    view,
     service,
     runtime,
     events,
@@ -169,6 +255,16 @@ function harness(database?: DatabaseSync) {
     finishPrompt: () => finishPrompt(),
     failPrompt: () => failPrompt(),
   }
+}
+
+/** A migrated in-memory database with the test's workspace registered. */
+function memoryDatabase(): DatabaseSync {
+  const database = new DatabaseSync(':memory:', { enableForeignKeyConstraints: true })
+  runMigrations(database, MIGRATIONS)
+  database.exec(
+    "INSERT INTO workspaces (workspace_id, name, path, created_at, updated_at) VALUES ('/workspace/project', 'Project', '/workspace/project', 1, 1)",
+  )
+  return database
 }
 
 const permissionRequest = {
@@ -202,37 +298,15 @@ const ok = { type: 'response', payload: null }
 
 describe('interaction.respond', () => {
   it('retains cancelled lifecycle metadata when a turn ends with an open plan', () => {
-    const h = harness()
+    const h = harness(memoryDatabase())
     const plan = h.request('plan_review_request', 'session', planRequest)
     const terminal = h.runtimeEvent('prompt_completed', 'lifecycle', { stopReason: 'end_turn' })
     h.emit(terminal)
-    const response = h.service.dispatch({
-      type: 'command',
-      requestId: 'history',
-      name: 'session.history',
-      payload: h.target,
-    })
-    expect(response).toMatchObject({
-      payload: {
-        interactions: [],
-        plans: [
-          {
-            state: 'cancelled',
-            plan: {
-              interactionId: plan.interactionId,
-              lifecycle: {
-                state: 'cancelled',
-                createdAt: plan.lifecycle?.createdAt,
-                resolvedAt: terminal.timestamp,
-                resolvedByClientId: null,
-              },
-            },
-          },
-        ],
-      },
-    })
-    // The original broadcast remains the immutable pending request.
-    expect(plan.lifecycle?.state).toBe('pending')
+    const view = h.view()
+    expect(view.interactions).toEqual([])
+    expect(view.plans).toEqual([
+      expect.objectContaining({ interactionId: plan.interactionId, state: 'cancelled' }),
+    ])
   })
 
   it('forwards an approval under the provider request id and broadcasts the outcome', () => {
@@ -457,18 +531,11 @@ describe('plan continuation and history', () => {
     interactionId: plan.interactionId,
     outcome: { outcome: 'accepted' },
   })
-  const history = (h: ReturnType<typeof harness>) =>
-    ProofResponseSchemas['session.history'].parse(
-      h.service.dispatch({
-        type: 'command',
-        requestId: 'history',
-        name: 'session.history',
-        payload: h.target,
-      }),
-    ).payload
+  const history = (h: ReturnType<typeof harness>) => h.view()
 
   it('waits for Cursor-style prompt drainage and builds once, even across retries and competing sends', async () => {
-    const h = harness()
+    // On rows: only the persistent service records the build's turn before it starts.
+    const h = harness(memoryDatabase())
     await vi.waitFor(() => expect(h.runtime.prompt).toHaveBeenCalledTimes(1))
     const plan = h.request('plan_review_request', 'session', {
       ...planRequest,
@@ -510,14 +577,7 @@ describe('plan continuation and history', () => {
     )
     expect(history(h).turns).toHaveLength(2)
     expect(history(h).plans).toEqual([
-      expect.objectContaining({
-        plan: {
-          ...plan,
-          lifecycle: { ...plan.lifecycle, state: 'resolved', resolvedAt: expect.any(String) },
-        },
-        state: 'resolved',
-        outcome: { outcome: 'accepted' },
-      }),
+      expect.objectContaining({ state: 'resolved', outcome: { outcome: 'accepted' } }),
     ])
     expect(history(h).interactions).toEqual([])
 

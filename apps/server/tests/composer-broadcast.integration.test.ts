@@ -197,12 +197,20 @@ describe('composer state across clients', () => {
       composerOf(records, sessionId).some((composer) => composer.modeId === 'plan'),
     )
 
-    // A client that was away replays exactly what it missed.
+    // A client that was away catches up from its cursor: the events it missed,
+    // or the snapshot when that is smaller (§6.1).
     const returning = await connectProtocol(host)
     await handshake(returning)
     const replayed = await replay(returning, scope, cursor)
-    if (replayed.payload.mode !== 'replay') throw new Error('expected a replay')
-    expect(composerOf(replayed.payload.events, sessionId).at(-1)).toMatchObject({ modeId: 'plan' })
+    const caughtUp =
+      replayed.payload.mode === 'replay'
+        ? composerOf(replayed.payload.events, sessionId).at(-1)
+        : 'sessions' in replayed.payload.snapshot.state
+          ? replayed.payload.snapshot.state.sessions.find(
+              (session) => session.sessionId === sessionId,
+            )?.composer
+          : undefined
+    expect(caughtUp).toMatchObject({ modeId: 'plan' })
 
     // A client with no cursor gets it on the session summary instead.
     const fresh = await connectProtocol(host)
@@ -213,11 +221,6 @@ describe('composer state across clients', () => {
     if (!('sessions' in state)) throw new Error('expected an environment snapshot')
     expect(
       state.sessions.find((session) => session.sessionId === sessionId)?.composer,
-    ).toMatchObject({ modeId: 'plan' })
-
-    const listed = await expectCommand(fresh, 'session.list', {}, 'list')
-    expect(
-      listed.payload.sessions.find((session) => session.sessionId === sessionId)?.composer,
     ).toMatchObject({ modeId: 'plan' })
   })
 })

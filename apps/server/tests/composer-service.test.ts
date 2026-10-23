@@ -5,7 +5,6 @@ import {
   COMPOSER_CONFIG_OPTION_SET_CAPABILITY,
   COMPOSER_MODEL_SET_CAPABILITY,
   COMPOSER_MODE_SET_CAPABILITY,
-  COMPOSER_PREFERENCES_GET_CAPABILITY,
   COMPOSER_PREFERENCES_SET_CAPABILITY,
   PROVIDER_CATALOG_CAPABILITY,
   type ProviderBootstrap,
@@ -94,16 +93,9 @@ async function harness() {
 }
 
 describe('composer service commands', () => {
-  it('gets and patches preferences scoped by workspace and provider', async () => {
-    const { service } = await harness()
-    expect(
-      service.dispatch({
-        type: 'command',
-        requestId: 'get-1',
-        name: COMPOSER_PREFERENCES_GET_CAPABILITY,
-        payload: { workspaceId: 'workspace-1', providerId: 'cursor' },
-      }),
-    ).toMatchObject({ payload: { preference: {} } })
+  it('patches preferences scoped by workspace and provider', async () => {
+    const { service, store } = await harness()
+    expect(store.getPreference('workspace-1', 'cursor')).toEqual({})
 
     expect(
       service.dispatch({
@@ -369,7 +361,11 @@ describe('composer service commands', () => {
       service.observeCatalog('cursor', {
         models: {
           availableModels: [
-            { id: 'claude-opus-5-5', displayName: 'Claude Opus 5.5', configOptions: [context(['300k'])] },
+            {
+              id: 'claude-opus-5-5',
+              displayName: 'Claude Opus 5.5',
+              configOptions: [context(['300k'])],
+            },
           ],
         },
       })
@@ -387,7 +383,11 @@ describe('composer service commands', () => {
 
       expect(store.getProfile('cursor')?.availableModels).toEqual([
         // Wording stays as held; the settings are the catalog's newest answer.
-        { modelId: 'claude-opus-5-5', name: 'Claude Opus 5.5', configOptions: [context(['300k', '1m'])] },
+        {
+          modelId: 'claude-opus-5-5',
+          name: 'Claude Opus 5.5',
+          configOptions: [context(['300k', '1m'])],
+        },
       ])
     })
 
@@ -626,10 +626,14 @@ describe('what a provider and its models accept in a prompt', () => {
 
   it('asks the runtime which listed models read images and lands the answers on the rows', async () => {
     const { runtime, service, store } = await harness()
-    runtime.modelImageInputSupport.mockImplementation(async (_provider: string, ids: string[]) =>
-      new Map(
-        ids.map((id) => [id, id === 'anthropic/sonnet' ? true : id === 'openai/o1' ? false : null]),
-      ),
+    runtime.modelImageInputSupport.mockImplementation(
+      async (_provider: string, ids: string[]) =>
+        new Map(
+          ids.map((id) => [
+            id,
+            id === 'anthropic/sonnet' ? true : id === 'openai/o1' ? false : null,
+          ]),
+        ),
     )
     service.onRuntimeEvent({
       id: 'event-1',
@@ -791,8 +795,8 @@ describe('what a provider and its models accept in a prompt', () => {
       .mockImplementationOnce(
         () => new Promise<Map<string, boolean | null>>((resolve) => (release = resolve)),
       )
-      .mockImplementation(async (_provider: string, ids: string[]) =>
-        new Map(ids.map((id) => [id, true])),
+      .mockImplementation(
+        async (_provider: string, ids: string[]) => new Map(ids.map((id) => [id, true])),
       )
     const listing = (seq: number, ids: string[]) => ({
       id: `event-${seq}`,
@@ -849,8 +853,8 @@ describe('durable runtime config mapping', () => {
   it("restores the session's own mode", () => {
     // A restarted process launches in the provider's default otherwise, and
     // a session left in bypassPermissions quietly starts asking again.
-    expect(
-      desiredSessionConfig({ modeId: 'plan' }, { modeId: 'bypassPermissions' }),
-    ).toEqual({ modeId: 'bypassPermissions' })
+    expect(desiredSessionConfig({ modeId: 'plan' }, { modeId: 'bypassPermissions' })).toEqual({
+      modeId: 'bypassPermissions',
+    })
   })
 })

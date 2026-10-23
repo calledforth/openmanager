@@ -12,6 +12,7 @@ import {
   subscribe,
   startProtocolHost,
   type ProtocolClient,
+  listedSessions,
 } from './helpers/protocol-client.js'
 
 afterEach(async () => {
@@ -138,11 +139,8 @@ async function titleUpdates(
   )
 }
 
-async function listedSession(client: ProtocolClient, sessionId: string) {
-  const id = client.command('session.list', {})
-  const { sessions } = ProofResponseSchemas['session.list'].parse(
-    await nextResponse(client, id),
-  ).payload
+async function listedSession(client: ProtocolClient, sessionId: string, environmentId: string) {
+  const sessions = await listedSessions(client, environmentId)
   return sessions.find((session) => session.sessionId === sessionId)
 }
 
@@ -173,7 +171,9 @@ describe('generated session titles', () => {
       }),
       expect.objectContaining({ title: 'Fix Websocket Reconnect Loop', titleSource: 'generated' }),
     ])
-    expect(await listedSession(client, session.sessionId)).toMatchObject({
+    expect(
+      await listedSession(client, session.sessionId, host.server.identity.environmentId),
+    ).toMatchObject({
       title: 'Fix Websocket Reconnect Loop',
       titleSource: 'generated',
     })
@@ -202,7 +202,9 @@ describe('generated session titles', () => {
     await titleUpdates(client, environment, (all) =>
       all.some((u) => u.title === 'Fix Websocket Retry Backoff'),
     )
-    expect(await listedSession(client, session.sessionId)).toMatchObject({
+    expect(
+      await listedSession(client, session.sessionId, host.server.identity.environmentId),
+    ).toMatchObject({
       title: 'Fix Websocket Retry Backoff',
       titleSource: 'generated',
     })
@@ -226,7 +228,9 @@ describe('generated session titles', () => {
     // And naming it again on the next turn does not undo the generated title.
     await send(client, session.sessionId, thread.threadId, 'and add a test')
     await titleUpdates(client, environment, (all) => all.some((u) => u.status === 'idle'))
-    expect(await listedSession(client, session.sessionId)).toMatchObject({
+    expect(
+      await listedSession(client, session.sessionId, host.server.identity.environmentId),
+    ).toMatchObject({
       title: 'Fix Reconnect Loop',
       titleSource: 'generated',
     })
@@ -248,7 +252,9 @@ describe('generated session titles', () => {
     // Let the answer settle before checking nothing was saved.
     await new Promise((resolve) => setTimeout(resolve, 100))
 
-    expect(await listedSession(client, session.sessionId)).toMatchObject({
+    expect(
+      await listedSession(client, session.sessionId, host.server.identity.environmentId),
+    ).toMatchObject({
       title: 'My name for it',
       titleSource: 'user',
     })
@@ -284,7 +290,9 @@ describe('generated session titles', () => {
       type: 'response',
       payload: { session: { title: 'Fix Reconnect Loop' } },
     })
-    expect(await listedSession(client, session.sessionId)).toMatchObject({
+    expect(
+      await listedSession(client, session.sessionId, host.server.identity.environmentId),
+    ).toMatchObject({
       title: 'Fix Reconnect Loop',
       titleSource: 'generated',
     })
@@ -329,7 +337,9 @@ describe('generated session titles', () => {
       sessionId: session.sessionId,
       title: 'Fix Reconnect Loop',
     })
-    expect(await listedSession(client, session.sessionId)).toMatchObject({
+    expect(
+      await listedSession(client, session.sessionId, host.server.identity.environmentId),
+    ).toMatchObject({
       title: 'Fix Reconnect Loop',
       titleSource: 'generated',
     })
@@ -351,7 +361,9 @@ describe('generated session titles', () => {
       type: 'error',
       error: { code: 'unavailable', message: 'The model could not answer.' },
     })
-    expect(await listedSession(client, session.sessionId)).toMatchObject({
+    expect(
+      await listedSession(client, session.sessionId, host.server.identity.environmentId),
+    ).toMatchObject({
       title: 'Fix Reconnect Loop',
     })
   })

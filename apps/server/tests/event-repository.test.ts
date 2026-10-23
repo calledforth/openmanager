@@ -25,9 +25,9 @@ import {
 import { createEventRepository, type EventRepository } from '../src/db/event-repository.js'
 import { reconcileAfterRestart } from '../src/db/boot-reconcile.js'
 import {
-  REASONING_TEXT_BUDGET_BYTES,
   getSessionSummary,
-  listSessionHistory,
+  listAllSessionSummaries,
+  readThreadState,
 } from '../src/db/session-store.js'
 
 const directories: string[] = []
@@ -1453,11 +1453,9 @@ describe('durable server event boundary', () => {
         name,
         payload,
       })
-    expect(dispatch('session.list', {})).toMatchObject({
-      payload: {
-        sessions: [{ sessionId: 'session-1', status: 'idle', providerId: 'cursor' }],
-      },
-    })
+    expect(listAllSessionSummaries(reopened)).toMatchObject([
+      { sessionId: 'session-1', status: 'idle', providerId: 'cursor' },
+    ])
     expect(dispatch('session.open', { sessionId: 'session-1' })).toMatchObject({
       payload: {
         session: { sessionId: 'session-1' },
@@ -1465,16 +1463,13 @@ describe('durable server event boundary', () => {
       },
     })
     expect(
-      dispatch('session.history', { sessionId: 'session-1', threadId: 'thread-1' }),
+      readThreadState(reopened, { sessionId: 'session-1', threadId: 'thread-1' }),
     ).toMatchObject({
-      payload: {
-        turns: [{ turnId: 'turn-1', state: 'completed' }],
-        messages: [
-          { role: 'user', content: [{ type: 'text', text: 'Prompt' }] },
-          { role: 'assistant', content: [{ type: 'text', text: 'Hello world' }] },
-        ],
-        nextCursor: null,
-      },
+      turns: [{ turnId: 'turn-1', state: 'completed' }],
+      messages: [
+        { role: 'user', content: [{ type: 'text', text: 'Prompt' }] },
+        { role: 'assistant', content: [{ type: 'text', text: 'Hello world' }] },
+      ],
     })
     await service.resolveRuntimeSession('session-1')
     expect(runtime.ensureSession).toHaveBeenCalledWith(
@@ -1714,7 +1709,7 @@ describe('durable turn activity', () => {
       completed(),
     ])
 
-    const page = listSessionHistory(database, { sessionId: 'session-1', threadId: 'thread-1' })!
+    const page = readThreadState(database, { sessionId: 'session-1', threadId: 'thread-1' })!
     expect(page.order.map((ref) => `${ref.kind}:${ref.id}`)).toEqual([
       'message:message-user',
       'reasoning:thought-1',
@@ -1765,27 +1760,6 @@ describe('durable turn activity', () => {
       },
     ])
 
-    // Pages partition activity by where it happened: the newest page carries
-    // what came after its oldest message's predecessor, the older page the rest,
-    // so prepending the older page restores the exact interleaving.
-    const newest = listSessionHistory(database, {
-      sessionId: 'session-1',
-      threadId: 'thread-1',
-      limit: 1,
-    })!
-    expect(newest.messages.map((message) => message.messageId)).toEqual(['text-2'])
-    expect(newest.order.map((ref) => ref.id)).toEqual(['tool-1', 'thought-2', 'text-2'])
-    const older = listSessionHistory(database, {
-      sessionId: 'session-1',
-      threadId: 'thread-1',
-      cursor: newest.nextCursor!,
-      limit: 5,
-    })!
-    expect(older.order.map((ref) => ref.id)).toEqual(['message-user', 'thought-1', 'text-1'])
-    expect([...older.order, ...newest.order].map((ref) => ref.id)).toEqual(
-      page.order.map((ref) => ref.id),
-    )
-
     // Activity of a turn the thread no longer has goes with it.
     const foreign = createOtherThread(database)
     expect(() =>
@@ -1793,7 +1767,7 @@ describe('durable turn activity', () => {
     ).toThrow(/missing turn/)
   })
 
-  it('elides the oldest reasoning text once a page exceeds its budget', async () => {
+  it('keeps every thought whole, however large: there is no budget', async () => {
     const { database } = await createDatabase()
     const repository = createEventRepository(database)
     const big = 'x'.repeat(200 * 1024)
@@ -1820,117 +1794,17 @@ describe('durable turn activity', () => {
       delta('done', 't1'),
       completed(),
     ])
-    const page = listSessionHistory(database, { sessionId: 'session-1', threadId: 'thread-1' })!
-    // 600 KiB of thinking against a 384 KiB budget: the newest block stays
-    // whole, the one before it keeps the tail that still fits behind a note of
-    // what was left out, the oldest keeps the note alone. Tokens survive on all.
-    expect(page.reasoning.map((block) => block.messageId)).toEqual([
+    const thread = readThreadState(database, { sessionId: 'session-1', threadId: 'thread-1' })!
+    // 600 KiB of thinking, and no note of anything left out (rule 5).
+    expect(thread.reasoning.map((block) => block.messageId)).toEqual([
       'thought-1',
       'thought-2',
       'thought-3',
     ])
-    expect(page.reasoning[2]?.content).toEqual([{ type: 'text', text: big }])
-    const middle = page.reasoning[1]?.content[0]
-    const middleText = middle?.type === 'text' ? middle.text : ''
-    expect(middleText).toMatch(/^\[\d+ characters of thinking not loaded\]\nx+$/)
-    expect(middleText.length).toBeGreaterThan(100 * 1024)
-    expect(middleText.length).toBeLessThan(big.length)
-    // The oldest block gets whatever the middle one left: the note, perhaps a short tail.
-    const oldest = page.reasoning[0]?.content[0]
-    const oldestText = oldest?.type === 'text' ? oldest.text : ''
-    expect(oldestText).toMatch(/^\[\d+ characters of thinking not loaded\](\nx+)?$/)
-    expect(oldestText.length).toBeLessThan(middleText.length)
-    expect(page.reasoning.every((block) => block.tokens === 50_000)).toBe(true)
-    expect(Buffer.byteLength(JSON.stringify(page))).toBeLessThan(512 * 1024)
-
-    // One block larger than the whole budget keeps its newest text, not a note alone.
-    const huge = 'y'.repeat(500 * 1024)
-    const other = createOtherThread(database)
-    const otherStart = started('other-started')
-    repository.appendEvents(other, [
-      {
-        ...otherStart,
-        scope: other,
-        payload: {
-          turn: {
-            turnId: 'turn-2',
-            threadId: 'thread-2',
-            state: 'running',
-            startedAt: '2026-09-10T10:00:00.000Z',
-          },
-          userMessage: {
-            ...otherStart.payload.userMessage,
-            messageId: 'other-user',
-            threadId: 'thread-2',
-            turnId: 'turn-2',
-          },
-        },
-      },
-      {
-        ...thought('other-r1', 'thought-huge'),
-        scope: other,
-        payload: {
-          ...thought('other-r1', 'thought-huge').payload,
-          turnId: 'turn-2',
-          content: { type: 'text', text: huge },
-        },
-      },
-      { ...completed('other-completed'), scope: other, payload: { turnId: 'turn-2' } },
-    ])
-    const otherPage = listSessionHistory(database, {
-      sessionId: 'session-2',
-      threadId: 'thread-2',
-    })!
-    const only = otherPage.reasoning[0]?.content[0]
-    const onlyText = only?.type === 'text' ? only.text : ''
-    expect(onlyText).toMatch(/^\[\d+ characters of thinking not loaded\]\ny+$/)
-    expect(onlyText.length).toBeGreaterThan(300 * 1024)
-    expect(Buffer.byteLength(JSON.stringify(otherPage))).toBeLessThan(512 * 1024)
-
-    // Text that doubles when encoded (one newline per character) is budgeted
-    // as the frame carries it, so the page still fits.
-    const dense = 'z\n'.repeat(400 * 1024)
-    // In a turn of its own: a finished turn takes no new thought (close-only, I2).
-    repository.appendEvents(other, [
-      {
-        ...otherStart,
-        eventId: 'other-started-3',
-        scope: other,
-        payload: {
-          turn: {
-            turnId: 'turn-3',
-            threadId: 'thread-2',
-            state: 'running',
-            startedAt: '2026-09-10T10:00:00.000Z',
-          },
-          userMessage: {
-            ...otherStart.payload.userMessage,
-            messageId: 'other-user-3',
-            threadId: 'thread-2',
-            turnId: 'turn-3',
-          },
-        },
-      },
-      {
-        ...thought('other-r2', 'thought-dense'),
-        scope: other,
-        payload: {
-          ...thought('other-r2', 'thought-dense').payload,
-          turnId: 'turn-3',
-          content: { type: 'text', text: dense },
-        },
-      },
-    ])
-    const densePage = listSessionHistory(database, {
-      sessionId: 'session-2',
-      threadId: 'thread-2',
-    })!
-    const denseBlock = densePage.reasoning.at(-1)?.content[0]
-    const denseText = denseBlock?.type === 'text' ? denseBlock.text : ''
-    expect(denseText).toMatch(/characters of thinking not loaded\]\n\n?(z\n)+$/)
-    expect(Buffer.byteLength(JSON.stringify(densePage.reasoning))).toBeLessThan(
-      REASONING_TEXT_BUDGET_BYTES + 1024,
-    )
+    for (const block of thread.reasoning) {
+      expect(block.content).toEqual([{ type: 'text', text: big }])
+      expect(block.tokens).toBe(50_000)
+    }
   })
 
   it('backfills the activity of turns that happened before the table existed', async () => {
@@ -1982,7 +1856,7 @@ describe('durable turn activity', () => {
 
     const upgraded = openEnvironmentDatabase(directory)
     databases.push(upgraded)
-    const page = listSessionHistory(upgraded, { sessionId: 'session-1', threadId: 'thread-1' })!
+    const page = readThreadState(upgraded, { sessionId: 'session-1', threadId: 'thread-1' })!
     // Rows are back, folded as the projector would have; the turn reads as it
     // did before the table existed: thoughts, then tools, then its text.
     expect(page.tools).toEqual([
@@ -2007,21 +1881,14 @@ describe('durable turn activity', () => {
       'message-user',
       'message-assistant',
     ])
-    // Message ordinals are untouched, so a cursor held across the upgrade still
-    // pages, and the next live entry takes the integer above the fractions.
+    // Message ordinals are untouched, and the next live entry takes the
+    // integer above the fractions.
     expect(
       upgraded.prepare('SELECT message_id, ordinal FROM messages ORDER BY ordinal').all(),
     ).toEqual([
       { message_id: 'message-user', ordinal: 0 },
       { message_id: 'message-assistant', ordinal: 1 },
     ])
-    expect(
-      listSessionHistory(upgraded, {
-        sessionId: 'session-1',
-        threadId: 'thread-1',
-        cursor: { ordinal: 1 },
-      })!.messages.map((message) => message.messageId),
-    ).toEqual(['message-user'])
     expect(upgraded.prepare('SELECT ordinal FROM turn_activity ORDER BY ordinal').all()).toEqual([
       { ordinal: 1 / 3 },
       { ordinal: 2 / 3 },
@@ -2059,9 +1926,9 @@ describe('durable turn activity', () => {
     databases.splice(databases.indexOf(upgraded), 1)
     const again = openEnvironmentDatabase(directory)
     databases.push(again)
-    expect(
-      listSessionHistory(again, { sessionId: 'session-1', threadId: 'thread-1' })!.order,
-    ).toEqual([...page.order, { kind: 'message', id: 'later', turnId: 'turn-2' }])
+    expect(readThreadState(again, { sessionId: 'session-1', threadId: 'thread-1' })!.order).toEqual(
+      [...page.order, { kind: 'message', id: 'later', turnId: 'turn-2' }],
+    )
   })
 })
 
