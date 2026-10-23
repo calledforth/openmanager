@@ -218,6 +218,61 @@ function removeSessionTree(state: EnvironmentState, sessionId: string): Environm
   return removed.reduceRight(applySessionRemoved, state)
 }
 
+/** Move a session's workspace `lastActivityAt` forward to `at`, never back. */
+function touchWorkspaceActivity(
+  state: EnvironmentState,
+  sessionId: string,
+  at: string,
+): EnvironmentState {
+  const workspaceId = state.sessions[sessionId]?.workspaceId
+  const workspace = workspaceId ? state.workspaces[workspaceId] : undefined
+  if (!workspace) return state
+  const current = workspace.lastActivityAt ? Date.parse(workspace.lastActivityAt) : -Infinity
+  if (!(Date.parse(at) > current)) return state
+  return {
+    ...state,
+    workspaces: {
+      ...state.workspaces,
+      [workspace.workspaceId]: { ...workspace, lastActivityAt: at },
+    },
+  }
+}
+
+/**
+ * The times the shared reducers took from events before the environment
+ * announced them (docs/sync-foundations.md §4.7.1). Convex announces neither
+ * a session's time nor a workspace's recency, so the desktop keeps the old
+ * rules here (§3.5): a new session or a turn moves its workspace's recency
+ * forward, and a title or a status moves the session's time.
+ */
+function legacyActivity(state: EnvironmentState, event: ProofEvent): EnvironmentState {
+  switch (event.name) {
+    case 'session.created':
+      return touchWorkspaceActivity(state, event.payload.session.sessionId, event.timestamp)
+    case 'turn.started':
+    case 'turn.completed':
+    case 'turn.interrupted':
+    case 'turn.failed':
+      return touchWorkspaceActivity(state, event.scope.sessionId, event.timestamp)
+    case 'session.updated': {
+      const session = state.sessions[event.payload.sessionId]
+      const { title, status, updatedAt } = event.payload
+      if (!session || updatedAt !== undefined || (title === undefined && status === undefined)) {
+        return state
+      }
+      return {
+        ...state,
+        sessions: {
+          ...state.sessions,
+          [session.sessionId]: { ...session, updatedAt: event.timestamp },
+        },
+      }
+    }
+    default:
+      return state
+  }
+}
+
 /** Drop a workspace with its sessions, the desktop's own cascade as above. */
 function removeWorkspaceTree(state: EnvironmentState, workspaceId: string): EnvironmentState {
   let next = state
@@ -328,8 +383,8 @@ export function createConvexEnvironmentClient(
         // so this adapter, which stands in for the environment, announces
         // the turn first, the way the environment would.
         const unannounced = backgroundTurnStart(next, proof)
-        if (unannounced) next = applyEvent(next, unannounced)
-        next = applyEvent(next, proof)
+        if (unannounced) next = legacyActivity(applyEvent(next, unannounced), unannounced)
+        next = legacyActivity(applyEvent(next, proof), proof)
         if (proof.scope.type === 'thread') {
           next = refreshLegacySessionStatus(next, proof.scope.sessionId)
         }
@@ -988,12 +1043,13 @@ export function createConvexEnvironmentClient(
           const thread = threadOf(sessionId)
           // The IPC announcement may have created the thread already (as
           // `idle`); a brand-new session has no history to fetch, so it is ready.
+          const announcedAt = new Date().toISOString()
           update((state) =>
             applyThreadHydration(
-              applySessionCreated(
-                state,
-                { session, thread, announcedAt: new Date().toISOString() },
-                providerId,
+              touchWorkspaceActivity(
+                applySessionCreated(state, { session, thread, announcedAt }, providerId),
+                sessionId,
+                announcedAt,
               ),
               thread.threadId,
               'ready',

@@ -262,10 +262,13 @@ describe('event repository transactions', () => {
       )
     }
     // What it waits on rides along: a question outranks the plan asked before
-    // it and the permission asked after, and each answer moves it on.
+    // it and the permission asked after, and each answer moves it on. The
+    // plan's answer changes neither, but it moves the session's time, and
+    // every move is announced (§4.7.1).
     expect(statuses).toEqual([
       'running',
       'waiting:plan',
+      'waiting:question',
       'waiting:question',
       'waiting:permission',
       'running',
@@ -285,7 +288,7 @@ describe('event repository transactions', () => {
       database
         .prepare("SELECT count(*) AS n FROM event_log WHERE event_name = 'session.updated'")
         .get(),
-    ).toEqual({ n: 6 })
+    ).toEqual({ n: 7 })
   })
 
   it('ranks generated titles above the agent and below nothing the user asked for', async () => {
@@ -362,12 +365,22 @@ describe('event repository transactions', () => {
     expect(row()).toEqual({ settled_at: Date.parse('2026-09-10T09:00:00.000Z'), updated_at: 1 })
 
     expect(broadcasts(repository.appendEvents(scope, [started()]))).toEqual([
-      { sessionId: 'session-1', status: 'running', settledAt: null },
+      {
+        sessionId: 'session-1',
+        status: 'running',
+        updatedAt: '2026-09-10T10:00:00.000Z',
+        settledAt: null,
+      },
     ])
     expect(row()).toMatchObject({ settled_at: null })
     // Only the transition carries it; later status changes leave settling alone.
     expect(broadcasts(repository.appendEvents(scope, [completed()]))).toEqual([
-      { sessionId: 'session-1', status: 'idle', doneAt: expect.any(String) },
+      {
+        sessionId: 'session-1',
+        status: 'idle',
+        updatedAt: '2026-09-10T10:00:02.000Z',
+        doneAt: expect.any(String),
+      },
     ])
 
     repository.appendEvents(environment, [settle('settle-2', '2026-09-10T11:00:00.000Z')])
@@ -424,12 +437,17 @@ describe('event repository transactions', () => {
 
     // Starting is not news.
     expect(broadcasts(repository.appendEvents(scope, [started()]))).toEqual([
-      { sessionId: 'session-1', status: 'running' },
+      { sessionId: 'session-1', status: 'running', updatedAt: '2026-09-10T10:00:00.000Z' },
     ])
     expect(doneAt()).toBeNull()
 
     const [finished] = broadcasts(repository.appendEvents(scope, [completed()]))
-    expect(finished).toEqual({ sessionId: 'session-1', status: 'idle', doneAt: expect.any(String) })
+    expect(finished).toEqual({
+      sessionId: 'session-1',
+      status: 'idle',
+      updatedAt: '2026-09-10T10:00:02.000Z',
+      doneAt: expect.any(String),
+    })
     expect(doneAt()).toBe(Date.parse(finished!.doneAt!))
 
     // Acknowledging clears it and leaves the session's place in the list alone.
@@ -469,7 +487,14 @@ describe('event repository transactions', () => {
           }),
         ]),
       ),
-    ).toEqual([{ sessionId: 'session-1', status: 'running', doneAt: null }])
+    ).toEqual([
+      {
+        sessionId: 'session-1',
+        status: 'running',
+        updatedAt: '2026-09-10T10:00:00.000Z',
+        doneAt: null,
+      },
+    ])
     expect(doneAt()).toBeNull()
 
     // A failed turn is not done: it shows as the error status instead.
@@ -486,7 +511,7 @@ describe('event repository transactions', () => {
           }),
         ]),
       ),
-    ).toEqual([{ sessionId: 'session-1', status: 'error' }])
+    ).toEqual([{ sessionId: 'session-1', status: 'error', updatedAt: '2026-09-10T10:09:00.000Z' }])
     expect(doneAt()).toBeNull()
 
     expect(() =>
@@ -562,6 +587,9 @@ describe('event repository transactions', () => {
 
   it('retries a retained status broadcast even after its triggering thread event is pruned', async () => {
     const { database } = await createDatabase()
+    // Used later than the turn starts, so the start moves no recency: the
+    // environment stream holds the status broadcast alone.
+    database.exec(`UPDATE workspaces SET last_used_at = ${Date.parse('2026-09-11T00:00:00.000Z')}`)
     const repository = createEventRepository(database)
     const original = repository.appendEvents(scope, [started()])
     repository.appendEvents(scope, [delta('Hello', 'event-delta')])
@@ -593,10 +621,11 @@ describe('event repository transactions', () => {
       })
       const records = repository.finalizeTurn(scope, [terminal])
       const status = name === 'turn.failed' ? 'error' : 'idle'
-      expect(records.at(-1)?.event).toMatchObject({
-        name: 'session.updated',
-        payload: { sessionId: 'session-1', status },
-      })
+      // The status, then the workspace's recency the turn's end moved.
+      expect(records.slice(-2).map((record) => record.event)).toMatchObject([
+        { name: 'session.updated', payload: { sessionId: 'session-1', status } },
+        { name: 'workspace.updated', payload: { workspace: { workspaceId: 'workspace-1' } } },
+      ])
       expect(
         database.prepare('SELECT status FROM sessions WHERE session_id = ?').get('session-1'),
       ).toEqual({ status })
@@ -630,7 +659,8 @@ describe('event repository transactions', () => {
     expect(
       database
         .prepare(
-          `SELECT sequence FROM event_log WHERE event_name != 'session.updated' ORDER BY sequence`,
+          `SELECT sequence FROM event_log
+           WHERE event_name NOT IN ('session.updated', 'workspace.updated') ORDER BY sequence`,
         )
         .all(),
     ).toEqual([{ sequence: 1 }, { sequence: 2 }, { sequence: 3 }])
@@ -1088,7 +1118,8 @@ describe('event repository transactions', () => {
     expect(
       recovered
         .prepare(
-          `SELECT sequence FROM event_log WHERE event_name != 'session.updated' ORDER BY sequence`,
+          `SELECT sequence FROM event_log
+           WHERE event_name NOT IN ('session.updated', 'workspace.updated') ORDER BY sequence`,
         )
         .all(),
     ).toEqual([{ sequence: 1 }])
@@ -1097,8 +1128,8 @@ describe('event repository transactions', () => {
     expect(
       recovered
         .prepare(
-          `SELECT sequence, event_name FROM event_log WHERE event_name != 'session.updated'
-           ORDER BY sequence`,
+          `SELECT sequence, event_name FROM event_log
+           WHERE event_name NOT IN ('session.updated', 'workspace.updated') ORDER BY sequence`,
         )
         .all(),
     ).toEqual([
@@ -1252,7 +1283,8 @@ describe('durable server event boundary', () => {
     events.append(started())
     events.append(delta('Hello', 'first'))
     events.append(delta(' world', 'second'))
-    expect(publish).toHaveBeenCalledTimes(2)
+    // The start, its status and the workspace recency it moved.
+    expect(publish).toHaveBeenCalledTimes(3)
     events.append(completed())
     expect(
       publish.mock.calls
@@ -1382,7 +1414,8 @@ describe('durable server event boundary', () => {
     for (let i = 0; i < 1024; i++) events.append(delta('x', `token-${i}`))
     expect(commits).toHaveBeenCalledTimes(17)
     expect(database.prepare('SELECT n FROM part_writes').get()).toEqual({ n: 17 })
-    expect(database.prepare('SELECT count(*) AS count FROM event_log').get()).toEqual({ count: 18 })
+    // The start's status and recency records ride its transaction.
+    expect(database.prepare('SELECT count(*) AS count FROM event_log').get()).toEqual({ count: 19 })
     events.append(delta('!', 'sparse'))
     vi.advanceTimersByTime(99)
     expect(commits).toHaveBeenCalledTimes(17)
@@ -1417,7 +1450,7 @@ describe('durable server event boundary', () => {
     expect(database.prepare('SELECT count(*) AS count FROM turns').get()).toEqual({ count: 0 })
     fail = false
     events.flush()
-    expect(publish).toHaveBeenCalledTimes(2)
+    expect(publish).toHaveBeenCalledTimes(3)
     expect(() =>
       events.append({ ...started(), name: 'turn.notice' } as unknown as ProofEvent),
     ).toThrow('transient')
@@ -1478,9 +1511,11 @@ describe('durable server event boundary', () => {
     commits.mockClear()
     const created = ProofResponseSchemas['session.create'].parse(create('create-2'))
     expect(commits).toHaveBeenCalledTimes(1)
+    // The new session is its workspace's newest activity, said in the same commit.
     expect(publish.mock.calls.map(([record]) => record.event.name)).toEqual([
       'session.created',
       'thread.created',
+      'workspace.updated',
     ])
     expect(
       database
@@ -1929,10 +1964,20 @@ describe('session status, once per session per transaction (docs/sync-foundation
         eventId: 'exit-error',
         timestamp: '2026-09-10T10:00:05.000Z',
         scope: environment,
-        payload: { sessionId: 'session-1', status: 'error', doneAt: null },
+        payload: {
+          sessionId: 'session-1',
+          status: 'error',
+          updatedAt: '2026-09-10T10:00:05.000Z',
+          doneAt: null,
+        },
       }),
     ])
-    expect(records.map((record) => record.event.eventId)).toEqual(['exit-error'])
+    // The status says all a session.updated could; the move it made to the
+    // workspace's recency is the pass's to say.
+    expect(records.map((record) => record.event.eventId)).toEqual([
+      'exit-error',
+      'exit-error:recency',
+    ])
     expect(database.prepare('SELECT status FROM sessions').get()).toEqual({ status: 'error' })
   })
 
@@ -1950,18 +1995,69 @@ describe('session status, once per session per transaction (docs/sync-foundation
       })
     const task = { taskId: 'task-1', kind: 'shell', description: 'watch' }
     const working = repository.appendEvents(environment, [roster('roster-1', [task])])
+    const at = '2026-09-10T10:00:05.000Z'
+    // The resting status moves the session's time, and so its workspace's recency.
     expect(working.map((record) => record.event.payload)).toEqual([
       { sessionId: 'session-1', backgroundTasks: [task] },
-      { sessionId: 'session-1', status: 'running', inBackground: true },
+      { sessionId: 'session-1', status: 'running', updatedAt: at, inBackground: true },
+      { workspace: expect.objectContaining({ workspaceId: 'workspace-1', lastActivityAt: at }) },
     ])
     const resting = repository.appendEvents(environment, [roster('roster-2', [])])
+    // Same time, so nothing more for the workspace.
     expect(resting.map((record) => record.event.payload)).toEqual([
       { sessionId: 'session-1', backgroundTasks: [] },
-      { sessionId: 'session-1', status: 'idle' },
+      { sessionId: 'session-1', status: 'idle', updatedAt: at },
     ])
     // A failed session stays failed whatever its roster says.
     database.exec("UPDATE sessions SET status = 'error'")
     const failed = repository.appendEvents(environment, [roster('roster-3', [task])])
     expect(failed.map((record) => record.event.eventId)).toEqual(['roster-3'])
+  })
+})
+
+describe('a title is not activity; recency is derived (docs/sync-foundations.md §4.7.1)', () => {
+  const environment = { type: 'environment', environmentId: 'environment-1' } as const
+  const titled = (eventId: string, titleSource: 'user' | 'generated' | 'provider' | 'fallback') =>
+    ProofEventSchemas['session.updated'].parse({
+      type: 'event',
+      name: 'session.updated',
+      eventId,
+      timestamp: '2026-09-10T11:00:00.000Z',
+      scope: environment,
+      payload: { sessionId: 'session-1', title: `A ${titleSource} title`, titleSource },
+    })
+
+  it('moves neither the session nor its workspace for any title source', async () => {
+    const { database } = await createDatabase()
+    const repository = createEventRepository(database)
+    for (const source of ['fallback', 'provider', 'generated', 'user'] as const) {
+      const records = repository.appendEvents(environment, [titled(`title-${source}`, source)])
+      expect(records.map((record) => record.event.eventId)).toEqual([`title-${source}`])
+    }
+    expect(database.prepare('SELECT title, updated_at FROM sessions').get()).toEqual({
+      title: 'A user title',
+      updated_at: 1,
+    })
+  })
+
+  it('re-publishes a derived recency with its cursor when its transaction is retried', async () => {
+    const { database } = await createDatabase()
+    const repository = createEventRepository(database)
+    const original = repository.appendEvents(scope, [started()])
+    expect(original.map((record) => record.event.eventId)).toEqual([
+      'event-started',
+      'event-started:status',
+      'event-started:recency',
+    ])
+    expect(original.at(-1)?.event).toMatchObject({
+      name: 'workspace.updated',
+      payload: { workspace: { lastActivityAt: '2026-09-10T10:00:00.000Z' } },
+    })
+    expect(repository.appendEvents(scope, [started()])).toEqual(original)
+    expect(
+      database
+        .prepare("SELECT count(*) AS n FROM event_log WHERE event_name = 'workspace.updated'")
+        .get(),
+    ).toEqual({ n: 1 })
   })
 })

@@ -571,9 +571,14 @@ describe('background work across a restart', () => {
     expect(session.backgroundTasks).toBeUndefined()
     // The roster is the fact; the status that follows is derived from the rows
     // in the same transaction (docs/sync-foundations.md §4.7.8 item 2).
+    // The status change moves the session's time, and its workspace's recency.
     expect(h.published.map((event) => [event.name, event.payload])).toEqual([
       ['session.updated', { sessionId: 'session-1', backgroundTasks: [] }],
-      ['session.updated', { sessionId: 'session-1', status: 'idle' }],
+      [
+        'session.updated',
+        { sessionId: 'session-1', status: 'idle', updatedAt: expect.any(String) },
+      ],
+      ['workspace.updated', { workspace: expect.objectContaining({ workspaceId: 'workspace-1' }) }],
     ])
     // Nothing left to say the second time.
     expect(h.service.forgetStaleBackgroundWork()).toBe(0)

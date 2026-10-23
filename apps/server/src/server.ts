@@ -73,6 +73,7 @@ import { openEnvironmentDatabase } from './db/database.ts'
 import { raiseReplayFloors } from './db/replay-floor.ts'
 import { reconcileAfterRestart } from './db/boot-reconcile.ts'
 import { createEventRetention } from './db/event-retention.ts'
+import { isDerivedRecord } from './db/event-repository.ts'
 import { createReplayReader } from './db/replay.ts'
 import { getSessionSummary } from './db/session-store.ts'
 import { createLogger, resolveLogSink } from './logger.ts'
@@ -209,7 +210,9 @@ export async function startServer(config: ServerConfig) {
   // microtask; a workspace record goes at once, so a registration reaches the
   // socket before its answer, and it takes every record committed before it
   // along first. Otherwise a workspace record committed with session
-  // records (a removal's cascade, a derived recency) would overtake them.
+  // records (a removal's cascade) would overtake them. A derived recency
+  // record keeps its source's timing: it must not pull a turn's records
+  // ahead of the answer that started it.
   const waiting: DurableEvent[] = []
   let drainQueued = false
   const drain = () => {
@@ -221,7 +224,7 @@ export async function startServer(config: ServerConfig) {
     (record) => {
       if (record.event.name.startsWith('workspace.')) followWorkspaceRecord(record)
       waiting.push(record)
-      if (record.event.name.startsWith('workspace.')) drain()
+      if (record.event.name.startsWith('workspace.') && !isDerivedRecord(record.event)) drain()
       else if (!drainQueued) {
         drainQueued = true
         queueMicrotask(drain)

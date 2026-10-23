@@ -264,26 +264,6 @@ function composerOf(
   return composer ? { composer } : {}
 }
 
-/** Move a session's workspace `lastActivityAt` forward to `at`, never back. */
-function touchWorkspaceActivity(
-  state: EnvironmentState,
-  sessionId: string,
-  at: string,
-): EnvironmentState {
-  const workspaceId = state.sessions[sessionId]?.workspaceId
-  const workspace = workspaceId ? state.workspaces[workspaceId] : undefined
-  if (!workspace) return state
-  const current = workspace.lastActivityAt ? Date.parse(workspace.lastActivityAt) : -Infinity
-  if (!(Date.parse(at) > current)) return state
-  return {
-    ...state,
-    workspaces: {
-      ...state.workspaces,
-      [workspace.workspaceId]: { ...workspace, lastActivityAt: at },
-    },
-  }
-}
-
 function upsertWorkspace(state: EnvironmentState, workspace: Workspace): EnvironmentState {
   return {
     ...state,
@@ -414,16 +394,13 @@ export function applyEvent(state: EnvironmentState, event: ProofEvent): Environm
         event.payload.workspaceId,
       )
     case 'session.created':
-      // The whole row, provider and time included (§4.7.2).
-      return touchWorkspaceActivity(
-        upsertSession(state, event.payload.session),
-        event.payload.session.sessionId,
-        event.timestamp,
-      )
+      // The whole row, provider and time included (§4.7.2). Its workspace's
+      // recency comes on the environment's own `workspace.updated` (§4.7.1).
+      return upsertSession(state, event.payload.session)
     case 'session.updated': {
       const session = state.sessions[event.payload.sessionId]
       if (!session) return state
-      const { title, status, settledAt, doneAt, backgroundTasks } = event.payload
+      const { title, status, updatedAt, settledAt, doneAt, backgroundTasks } = event.payload
       const {
         backgroundTasks: heldTasks,
         waitingOn: heldWaitingOn,
@@ -454,8 +431,8 @@ export function applyEvent(state: EnvironmentState, event: ProofEvent): Environm
         ...(status !== undefined ? { status } : {}),
         ...(settledAt !== undefined ? { settledAt } : {}),
         ...(doneAt !== undefined ? { doneAt } : {}),
-        // Settling or acknowledging alone is not activity; the session keeps its place.
-        ...(title !== undefined || status !== undefined ? { updatedAt: event.timestamp } : {}),
+        // The session's place moves only when the environment says so (§4.7.1).
+        ...(updatedAt !== undefined ? { updatedAt } : {}),
       }
       // An event that restates what the client already holds (the echo of a
       // command whose answer it applied) must not hand every reader a new
@@ -510,19 +487,6 @@ export function applyEvent(state: EnvironmentState, event: ProofEvent): Environm
   const scope = event.scope
   if (scope.type !== 'thread') return state
   const thread: Thread = { threadId: scope.threadId, sessionId: scope.sessionId }
-
-  switch (event.name) {
-    case 'turn.started':
-    case 'turn.completed':
-    case 'turn.interrupted':
-    case 'turn.failed':
-      // A turn is session activity; keep the workspace's recency current
-      // between listings instead of waiting for the next handshake.
-      state = touchWorkspaceActivity(state, thread.sessionId, event.timestamp)
-      break
-    default:
-      break
-  }
 
   switch (event.name) {
     case 'turn.started':
@@ -958,7 +922,7 @@ export function applySessionCreated(
     },
     [payload.thread.threadId],
   )
-  const withSession = touchWorkspaceActivity(upserted, payload.session.sessionId, announcedAt)
+  const withSession = upserted
   if (withSession.threads[payload.thread.threadId]) return withSession
   return {
     ...withSession,

@@ -243,15 +243,35 @@ describe('applyEvent', () => {
       'session-old',
     ])
 
-    // Activity moves a session back to the top.
+    // A title, whenever it arrives, moves nothing (§4.7.1).
     state = applyEvent(state, {
       ...event({
         name: 'session.updated' as const,
-        scope: sessionScope,
-        payload: { sessionId: 'session-old', status: 'running' },
+        scope: environmentScope,
+        payload: { sessionId: 'session-old', title: 'Renamed', titleSource: 'user' },
       }),
       timestamp: '2026-09-13T00:00:00.000Z',
     })
+    expect(selectSessionList(state).map((session) => session.sessionId)).toEqual([
+      'session-new',
+      SESSION.sessionId,
+      'session-old',
+    ])
+
+    // Activity moves a session back to the top, at the time the environment states.
+    state = applyEvent(state, {
+      ...event({
+        name: 'session.updated' as const,
+        scope: environmentScope,
+        payload: {
+          sessionId: 'session-old',
+          status: 'running',
+          updatedAt: '2026-09-13T00:00:00.000Z',
+        },
+      }),
+      timestamp: '2026-09-14T00:00:00.000Z',
+    })
+    expect(state.sessions['session-old']?.updatedAt).toBe('2026-09-13T00:00:00.000Z')
     expect(selectSessionList(state).map((session) => session.sessionId)).toEqual([
       'session-old',
       'session-new',
@@ -269,7 +289,8 @@ describe('applyEvent', () => {
       'session-new',
       SESSION.sessionId,
     ])
-    expect(created.workspaces[WORKSPACE.workspaceId]?.lastActivityAt).toBe(announcedAt)
+    // The workspace's recency is the environment's to announce.
+    expect(created.workspaces).toEqual(seeded().workspaces)
 
     // The event then restates it: nothing the sidebar reads changes again.
     const announced = applyEvent(created, {
@@ -1241,7 +1262,7 @@ describe('snapshots', () => {
     expect(selectSessionList(state)).toHaveLength(1)
   })
 
-  it('moves workspace activity forward on session starts and turns without a relisting', () => {
+  it("takes a workspace's recency only from the environment's workspace.updated", () => {
     let state = createInitialState()
     state = applyEvent(
       state,
@@ -1261,21 +1282,26 @@ describe('snapshots', () => {
         payload: { session: SESSION_CREATED },
       }),
     )
-    expect(state.workspaces[WORKSPACE.workspaceId]?.lastActivityAt).toBe('2026-09-10T00:00:00.000Z')
-    expect(selectRecentWorkspaces(state).map((w) => w.workspaceId)).toEqual([WORKSPACE.workspaceId])
-
+    // Neither a new session nor a turn moves it here: the client mirrors no rule.
+    expect(state.workspaces[WORKSPACE.workspaceId]?.lastActivityAt).toBe(WORKSPACE.lastActivityAt)
     state = applyEvent(
       state,
       event({ name: 'thread.created', scope: sessionScope, payload: { thread: THREAD } }),
     )
-    const later = { ...turnStarted(), timestamp: '2026-09-11T00:00:00.000Z' }
-    state = applyEvent(state, later)
-    expect(state.workspaces[WORKSPACE.workspaceId]?.lastActivityAt).toBe('2026-09-11T00:00:00.000Z')
+    state = applyEvent(state, { ...turnStarted(), timestamp: '2026-09-11T00:00:00.000Z' })
+    expect(state.workspaces[WORKSPACE.workspaceId]?.lastActivityAt).toBe(WORKSPACE.lastActivityAt)
 
-    // A stale event (older timestamp) never moves activity backwards.
-    const stale = { ...completed(), timestamp: '2026-09-09T00:00:00.000Z' }
-    state = applyEvent(state, stale)
-    expect(state.workspaces[WORKSPACE.workspaceId]?.lastActivityAt).toBe('2026-09-11T00:00:00.000Z')
+    const announced = (lastActivityAt: string | null) =>
+      event({
+        name: 'workspace.updated',
+        scope: environmentScope,
+        payload: { workspace: { ...WORKSPACE, lastActivityAt } },
+      })
+    state = applyEvent(state, announced('2026-09-11T00:00:00.000Z'))
+    expect(selectRecentWorkspaces(state).map((w) => w.workspaceId)).toEqual([WORKSPACE.workspaceId])
+    // It can go back, as when the newest session is deleted.
+    state = applyEvent(state, announced(null))
+    expect(selectRecentWorkspaces(state)).toEqual([])
   })
 
   it('orders recent workspaces by last activity and skips unused or missing ones', () => {

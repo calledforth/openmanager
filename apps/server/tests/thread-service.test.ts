@@ -2434,10 +2434,11 @@ describe('durable session lifecycle', () => {
             .prepare('SELECT COUNT(*) AS count FROM event_streams WHERE session_id = ?')
             .get(sessionId),
         ).toMatchObject({ count: 0 })
-        expect(h.published.at(-1)).toMatchObject({
-          name: 'session.deleted',
-          payload: { sessionId },
-        })
+        // Its only session gone, the workspace's recency falls back to none.
+        expect(h.published.slice(-2)).toMatchObject([
+          { name: 'session.deleted', payload: { sessionId } },
+          { name: 'workspace.updated', payload: { workspace: { lastActivityAt: null } } },
+        ])
         expect(h.dispatch(service, 'session.delete', { sessionId })).toMatchObject({
           error: { code: 'not_found' },
         })

@@ -85,6 +85,11 @@ export const ProofEventSchemas = {
       title: z.string().nullable().optional(),
       titleSource: SessionTitleSourceSchema.optional(),
       status: SessionStatusSchema.optional(),
+      /**
+       * Present when the session's activity time moved: its place in the
+       * list. A title never moves it. The client reads it only from here.
+       */
+      updatedAt: TimestampSchema.optional(),
       /** Present only when the session was settled (a time) or brought back (null). */
       settledAt: TimestampSchema.nullable().optional(),
       /** Present only when a turn completed (a time) or the user acknowledged it (null). */

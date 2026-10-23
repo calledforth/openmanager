@@ -385,7 +385,10 @@ export function createMockEnvironmentClient(
                 ? null
                 : undefined
         const doneChanged = doneAt !== undefined && doneAt !== (session.doneAt ?? null)
-        if (status !== session.status || unsettle || doneChanged || activityChanged)
+        // Each of these events sets the status, so each moves the session's
+        // place in the list; the environment announces every move (§4.7.1).
+        const moved = parsed.timestamp !== session.updatedAt
+        if (status !== session.status || unsettle || doneChanged || activityChanged || moved) {
           emit({
             ...base(),
             name: 'session.updated',
@@ -393,14 +396,39 @@ export function createMockEnvironmentClient(
             payload: {
               sessionId: session.sessionId,
               status,
+              updatedAt: parsed.timestamp,
               ...(waitingOn ? { waitingOn } : {}),
               ...(inBackground ? { inBackground } : {}),
               ...(unsettle ? { settledAt: null } : {}),
               ...(doneChanged ? { doneAt } : {}),
             },
           })
+          announceRecency(session.workspaceId)
+        }
       }
     }
+  }
+
+  /**
+   * As the environment does: a workspace's recency is its newest session's
+   * time or its own last use, whichever is later, and announced when it moves.
+   */
+  const announceRecency = (workspaceId: string) => {
+    const state = store.getState()
+    const workspace = state.workspaces[workspaceId]
+    if (!workspace) return
+    const times = Object.values(state.sessions)
+      .filter((session) => session.workspaceId === workspaceId)
+      .map((session) => Date.parse(session.updatedAt))
+    if (workspace.lastUsedAt) times.push(Date.parse(workspace.lastUsedAt))
+    const lastActivityAt = times.length ? new Date(Math.max(...times)).toISOString() : null
+    if (lastActivityAt === workspace.lastActivityAt) return
+    emit({
+      ...base(),
+      name: 'workspace.updated',
+      scope: envScope(),
+      payload: { workspace: { ...workspace, lastActivityAt } },
+    })
   }
 
   const envScope = () =>
@@ -858,12 +886,16 @@ export function createMockEnvironmentClient(
     cancelScriptsForThreads(
       ordered.flatMap((sessionId) => store.getState().sessions[sessionId]?.threadIds ?? []),
     )
+    const workspaces = new Set<string>()
     for (const sessionId of ordered) {
+      const workspaceId = store.getState().sessions[sessionId]?.workspaceId
+      if (workspaceId) workspaces.add(workspaceId)
       if (draftRows.get(sessionId)?.draft) deleteDraftRow(sessionId)
       // The draft's row, tombstone included, goes with the session.
       draftRows.delete(sessionId)
       emit({ ...base(), name: 'session.deleted', scope: envScope(), payload: { sessionId } })
     }
+    return workspaces
   }
 
   const commands: EnvironmentCommands = {
@@ -1011,6 +1043,7 @@ export function createMockEnvironmentClient(
             },
           },
         })
+        announceRecency(session.workspaceId)
         // Like the environment: the sent draft goes in the same write.
         if (input.draftId !== undefined) deleteDraftRow(input.draftId)
         emit({
@@ -1190,10 +1223,11 @@ export function createMockEnvironmentClient(
             session.status === 'running' &&
             deriveSessionStatus(session.threadIds.map((id) => store.getState().threads[id]!)) ===
               'idle'
-              ? { status: 'idle' as const }
+              ? { status: 'idle' as const, updatedAt: now() }
               : {}),
           },
         })
+        announceRecency(session.workspaceId)
       }),
     acknowledgeSession: (sessionId) =>
       run('acknowledgeSession', { sessionId }, () => {
@@ -1211,7 +1245,8 @@ export function createMockEnvironmentClient(
       run('deleteSession', sessionId, () => {
         const session = store.getState().sessions[sessionId]
         if (!session) throw new EnvironmentClientError('not_found', 'Session not found.')
-        deleteSessionTree([sessionId])
+        // Deleting the newest session lowers its workspace's recency.
+        for (const workspaceId of deleteSessionTree([sessionId])) announceRecency(workspaceId)
       }),
     sendTurn: (input) => {
       const commandId = input.commandId ?? nextId()

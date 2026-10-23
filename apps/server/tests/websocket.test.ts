@@ -1267,6 +1267,7 @@ it('broadcasts session.updated and session.deleted to a second environment subsc
   })
   const { session } = ProofResponseSchemas['session.create'].parse(await first.next()).payload
   await second.next()
+  await second.next() // the workspace recency the new session moved
   await second.next() // workspace.updated after the provider session starts
   first.command('session.rename', { sessionId: session.sessionId, title: 'Shared title' })
   expect(await first.next()).toMatchObject({

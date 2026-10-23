@@ -211,6 +211,33 @@ describe('createConvexEnvironmentClient', () => {
     )
   })
 
+  it('keeps workspace recency and title times itself, since Convex announces neither', () => {
+    const { client, bridge } = setup()
+    client.connect()
+    expect(client.getState().workspaces['C:/repo']?.lastActivityAt).toBeNull()
+    bridge.emit(
+      agentEvent({
+        category: 'lifecycle',
+        event: 'prompt_started',
+        messageId: 'asst-1',
+        data: { prompt: 'q', userMessageId: 'usr-1' },
+      }),
+    )
+    expect(client.getState().workspaces['C:/repo']?.lastActivityAt).toBe('2026-09-11T00:00:00.000Z')
+    bridge.emit(
+      agentEvent({
+        category: 'lifecycle',
+        event: 'session_info_update',
+        timestamp: '2026-09-12T00:00:00.000Z',
+        data: { title: 'Named' },
+      }),
+    )
+    expect(client.getState().sessions['session-1']).toMatchObject({
+      title: 'Named',
+      updatedAt: '2026-09-12T00:00:00.000Z',
+    })
+  })
+
   it('seeds session status from the catalog until a local turn knows better', () => {
     const { client, convex, bridge } = setup()
     client.connect()

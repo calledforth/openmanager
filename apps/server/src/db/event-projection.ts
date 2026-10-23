@@ -71,7 +71,8 @@ export function createEventProjector(
     // kept as 'provider' plus `title_generated` (see migration 15), and
     // neither the agent's name for its session nor a first-prompt fallback
     // replaces it. `IS` keeps a source-less update from reading as NULL.
-    // ?1 title, ?2 stored source, ?3 source as sent, ?4 time, ?5 session.
+    // A title is not activity: `updated_at` stays put (§4.7.1).
+    // ?1 title, ?2 stored source, ?3 source as sent, ?4 session.
     updateSessionTitle: database.prepare(
       `UPDATE sessions
           SET title = ?1,
@@ -80,15 +81,15 @@ export function createEventProjector(
                 WHEN ?3 IS NULL THEN title_generated
                 WHEN ?3 = 'generated' THEN 1
                 ELSE 0
-              END,
-              updated_at = ?4
-        WHERE session_id = ?5
+              END
+        WHERE session_id = ?4
           AND (?3 IN ('user', 'generated') OR title_source IS NULL OR title_source <> 'user')
           AND NOT ((?3 IS 'provider' OR ?3 IS 'fallback') AND title_generated = 1)`,
     ),
     updateSessionStatus: database.prepare(
       'UPDATE sessions SET status = ?, updated_at = ? WHERE session_id = ?',
     ),
+    updateSessionTime: database.prepare('UPDATE sessions SET updated_at = ? WHERE session_id = ?'),
     // Neither is settling: the session keeps its place when it comes back.
     updateSessionSettled: database.prepare(
       'UPDATE sessions SET settled_at = ? WHERE session_id = ?',
@@ -510,13 +511,21 @@ export function createEventProjector(
         }
         return
       }
-      case 'session.updated':
+      case 'session.updated': {
+        // The activity time it states, when it states one: the status pass
+        // restates the row's own, so projecting it again changes nothing.
+        const movedAt =
+          event.payload.updatedAt === undefined ? undefined : Date.parse(event.payload.updatedAt)
         if (event.payload.status !== undefined) {
           if (
-            s.updateSessionStatus.run(event.payload.status, at, event.payload.sessionId).changes !==
-            1
+            s.updateSessionStatus.run(event.payload.status, movedAt ?? at, event.payload.sessionId)
+              .changes !== 1
           ) {
             throw new Error(`Cannot update status for missing session ${event.payload.sessionId}`)
+          }
+        } else if (movedAt !== undefined) {
+          if (s.updateSessionTime.run(movedAt, event.payload.sessionId).changes !== 1) {
+            throw new Error(`Cannot move the time of missing session ${event.payload.sessionId}`)
           }
         }
         if (event.payload.title !== undefined) {
@@ -525,7 +534,6 @@ export function createEventProjector(
             event.payload.title,
             titleSource === 'generated' ? 'provider' : titleSource,
             titleSource,
-            at,
             event.payload.sessionId,
           )
         }
@@ -571,6 +579,7 @@ export function createEventProjector(
           }
         }
         return
+      }
       case 'session.composer.updated':
         // A selection reported while its session is being deleted has no row
         // left to describe; that is not worth rolling the batch back for.

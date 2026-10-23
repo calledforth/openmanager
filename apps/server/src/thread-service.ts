@@ -1106,11 +1106,12 @@ export function createThreadService(
     })
     const rests = !record.activeTurn && (record.status === 'idle' || record.status === 'running')
     const status = rests ? (tasks.length ? 'running' : 'idle') : undefined
+    const timestamp = new Date().toISOString()
     const updated = ProofEventSchemas['session.updated'].parse({
       type: 'event',
       name: 'session.updated',
       eventId: randomUUID(),
-      timestamp: new Date().toISOString(),
+      timestamp,
       scope: { type: 'environment', environmentId },
       payload: {
         sessionId: record.session.sessionId,
@@ -1120,7 +1121,11 @@ export function createThreadService(
         // (docs/sync-foundations.md §4.7.8). The in-memory seam has no rows,
         // so there the roster event also carries the status that follows.
         ...(status && !options.database
-          ? { status, ...(status === 'running' ? { inBackground: true } : {}) }
+          ? {
+              status,
+              ...(status === 'running' ? { inBackground: true } : {}),
+              ...(status !== record.status ? { updatedAt: timestamp } : {}),
+            }
           : {}),
       },
     })
@@ -1139,7 +1144,7 @@ export function createThreadService(
     if (status) record.announced = { waitingOn: null, inBackground: status === 'running' }
     if (status && status !== record.status) {
       record.status = status
-      record.updatedAt = Date.now()
+      record.updatedAt = Date.parse(timestamp)
     }
   }
 
@@ -1261,9 +1266,9 @@ export function createThreadService(
       options.onPersistenceError?.(error, 'session.updated')
       return
     }
+    // A title is not activity: the session keeps its place (§4.7.1).
     record.session.title = nextTitle
     record.titleSource = source
-    record.updatedAt = Date.now()
   }
 
   /**
@@ -1344,7 +1349,6 @@ export function createThreadService(
       if (item.session.sessionId !== sessionId) continue
       item.session.title = title
       item.titleSource = 'generated'
-      item.updatedAt = Date.now()
     }
     return true
   }
@@ -1450,16 +1454,20 @@ export function createThreadService(
     if (status === 'running' || status === 'waiting') record.doneAt = undefined
     const activity = activityOf(record, status)
     record.announced = activity
+    // A status moves the session's place in the list, and says so.
+    record.updatedAt = Date.now()
+    const timestamp = new Date(record.updatedAt).toISOString()
     appendRuntimeEvent(
       ProofEventSchemas['session.updated'].parse({
         type: 'event',
         name: 'session.updated',
         eventId: randomUUID(),
-        timestamp: new Date().toISOString(),
+        timestamp,
         scope: { type: 'environment', environmentId },
         payload: {
           sessionId: record.session.sessionId,
           status,
+          updatedAt: timestamp,
           ...summaryActivity(activity),
           ...(unsettle ? { settledAt: null } : {}),
           doneAt: record.doneAt === undefined ? null : new Date(record.doneAt).toISOString(),
@@ -2244,7 +2252,6 @@ export function createThreadService(
             if (item.session.sessionId !== sessionId) continue
             item.titleSource = 'user'
             item.session.title = parsed.data.payload.title
-            item.updatedAt = Date.parse(timestamp)
           }
           return ProofResponseSchemas['session.rename'].parse({
             type: 'response',
