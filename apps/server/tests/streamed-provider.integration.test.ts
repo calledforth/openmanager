@@ -124,9 +124,11 @@ describe('streamed provider through the server', () => {
             ProofEventSchemas['session.updated'].parse(record.event).payload.status === 'idle',
         ),
       )
-      const sidebarUpdates = sidebarCompleted.map(
-        (record) => ProofEventSchemas['session.updated'].parse(record.event).payload,
-      )
+      // The sidebar also hears the workspace recency each turn moves.
+      const sidebarUpdates = sidebarCompleted
+        .filter((record) => record.event.name === 'session.updated')
+        .map((record) => ProofEventSchemas['session.updated'].parse(record.event).payload)
+      expect(sidebarCompleted.map((record) => record.event.name)).toContain('workspace.updated')
       expect(
         sidebarUpdates.flatMap((payload) => (payload.status ? [payload.status] : [])),
       ).toEqual(['running', 'idle'])
@@ -181,9 +183,9 @@ describe('streamed provider through the server', () => {
           ),
       )
       expect(
-        sidebarInterrupted.map(
-          (record) => ProofEventSchemas['session.updated'].parse(record.event).payload.status,
-        ),
+        sidebarInterrupted
+          .filter((record) => record.event.name === 'session.updated')
+          .map((record) => ProofEventSchemas['session.updated'].parse(record.event).payload.status),
       ).toEqual(['running', 'idle'])
 
       await host.server.close()

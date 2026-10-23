@@ -539,6 +539,24 @@ describe('what a provider and its models accept in a prompt', () => {
     },
   })
 
+  it('announces no selection for a session whose row is gone (its projection asserts the row)', async () => {
+    const { runtime, store } = await harness()
+    const announced: string[] = []
+    const service = createComposerService(
+      runtime,
+      { snapshot: () => [provider], rejection: () => undefined },
+      store,
+      () => undefined,
+      {
+        publish: (_name, payload) => announced.push(payload.sessionId),
+        hasSession: (sessionId) => sessionId === 'kept',
+      },
+    )
+    service.recordSessionMode('deleted', 'plan')
+    service.recordSessionMode('kept', 'plan')
+    expect(announced).toEqual(['kept'])
+  })
+
   it('records the handshake answer on the profile and publishes it', async () => {
     const { service, store, committed: published } = await harness()
     const publishing = createComposerService(

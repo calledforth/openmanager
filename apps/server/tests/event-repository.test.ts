@@ -7,6 +7,7 @@ import type { DatabaseSync } from 'node:sqlite'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import {
   ProofEventSchemas,
+  shouldReplaceSessionTitle,
   ProofResponseSchemas,
   type ProofEvent,
   type SubscriptionScope,
@@ -324,14 +325,15 @@ describe('event repository transactions', () => {
     expect(summary()).toMatchObject({ title: 'Fix Login Redirect', titleSource: 'generated' })
 
     // Neither the agent renaming its own session afterwards nor a later
-    // prompt's fallback undoes it.
-    title('ACP Session 1234abcd', 'provider')
-    title('another prompt', 'fallback')
+    // prompt's fallback undoes it: the producers do not emit them, and the
+    // projection refuses them outright (I2).
+    expect(() => title('ACP Session 1234abcd', 'provider')).toThrow(/keeps its title/)
+    expect(() => title('another prompt', 'fallback')).toThrow(/keeps its title/)
     expect(summary()).toMatchObject({ title: 'Fix Login Redirect', titleSource: 'generated' })
 
     title('Mine', 'user')
     expect(row()).toEqual({ title: 'Mine', title_source: 'user', title_generated: 0 })
-    title('Agent title', 'provider')
+    expect(() => title('Agent title', 'provider')).toThrow(/keeps its title/)
     expect(summary()).toMatchObject({ title: 'Mine', titleSource: 'user' })
 
     // Regenerating is the user asking, so it may replace their own name.
@@ -2059,5 +2061,92 @@ describe('a title is not activity; recency is derived (docs/sync-foundations.md 
         .prepare("SELECT count(*) AS n FROM event_log WHERE event_name = 'workspace.updated'")
         .get(),
     ).toEqual({ n: 1 })
+  })
+})
+
+describe('producer guards are assertions (docs/sync-foundations.md §4.4, I2)', () => {
+  const environment = { type: 'environment', environmentId: 'environment-1' } as const
+  type Stored = 'none' | 'fallback' | 'provider' | 'generated' | 'user'
+  const STORED: readonly Stored[] = ['none', 'fallback', 'provider', 'generated', 'user']
+  const INCOMING = ['fallback', 'provider', 'generated', 'user'] as const
+  const update = (eventId: string, payload: Record<string, unknown>) =>
+    ProofEventSchemas['session.updated'].parse({
+      type: 'event',
+      name: 'session.updated',
+      eventId,
+      timestamp: '2026-09-10T11:00:00.000Z',
+      scope: environment,
+      payload: { sessionId: 'session-1', ...payload },
+    })
+  /** What `applyTitle` and the title model's save decide, from the row's provenance. */
+  const producerEmits = (stored: Stored, incoming: (typeof INCOMING)[number], title: string) => {
+    const source = stored === 'none' ? undefined : stored
+    if (incoming === 'user' || incoming === 'generated') return true
+    if (source === 'user') return false
+    return shouldReplaceSessionTitle(title, source, incoming)
+  }
+
+  for (const stored of STORED) {
+    for (const incoming of INCOMING) {
+      it(`a ${incoming} title over a ${stored} one: refused only where no producer emits it`, async () => {
+        const { database } = await createDatabase()
+        // A placeholder, so the fallback rule turns on provenance alone.
+        database
+          .prepare(
+            'UPDATE sessions SET title = ?, title_source = ?, title_generated = ? WHERE session_id = ?',
+          )
+          .run(
+            'New session - 1',
+            stored === 'none' ? null : stored === 'generated' ? 'provider' : stored,
+            stored === 'generated' ? 1 : 0,
+            'session-1',
+          )
+        const repository = createEventRepository(database)
+        const write = () =>
+          repository.appendEvents(environment, [
+            update(`title-${stored}-${incoming}`, { title: 'Incoming', titleSource: incoming }),
+          ])
+        const refused =
+          (incoming === 'provider' || incoming === 'fallback') &&
+          (stored === 'user' || stored === 'generated')
+        if (refused) {
+          expect(write).toThrow(/keeps its title/)
+          expect(database.prepare('SELECT count(*) AS n FROM event_log').get()).toEqual({ n: 0 })
+        } else {
+          expect(write().map((record) => record.event.eventId)).toEqual([
+            `title-${stored}-${incoming}`,
+          ])
+          expect(database.prepare('SELECT title FROM sessions').get()).toEqual({
+            title: 'Incoming',
+          })
+        }
+        // The producer never emits what the projection refuses.
+        if (refused) expect(producerEmits(stored, incoming, 'New session - 1')).toBe(false)
+      })
+    }
+  }
+
+  it('refuses a roster, a selection or a title for a session without its row', async () => {
+    const { database } = await createDatabase()
+    const repository = createEventRepository(database)
+    const missing = (payload: Record<string, unknown>) => () =>
+      repository.appendEvents(environment, [
+        { ...update('missing', payload), payload: { ...payload, sessionId: 'gone' } } as never,
+      ])
+    expect(missing({ backgroundTasks: [] })).toThrow(/missing session gone/)
+    expect(missing({ title: 'Named', titleSource: 'user' })).toThrow(/gone is missing/)
+    expect(() =>
+      repository.appendEvents(environment, [
+        ProofEventSchemas['session.composer.updated'].parse({
+          type: 'event',
+          name: 'session.composer.updated',
+          eventId: 'selection',
+          timestamp: '2026-09-10T11:00:00.000Z',
+          scope: environment,
+          payload: { sessionId: 'gone', composer: { modeId: 'plan' } },
+        }),
+      ]),
+    ).toThrow(/missing session gone/)
+    expect(database.prepare('SELECT count(*) AS n FROM event_log').get()).toEqual({ n: 0 })
   })
 })

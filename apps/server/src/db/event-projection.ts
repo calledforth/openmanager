@@ -71,6 +71,8 @@ export function createEventProjector(
     // kept as 'provider' plus `title_generated` (see migration 15), and
     // neither the agent's name for its session nor a first-prompt fallback
     // replaces it. `IS` keeps a source-less update from reading as NULL.
+    // The producer applies the same rule before it emits (thread-service.ts
+    // `applyTitle`), so a title this refuses is a bug, not a race (I2).
     // A title is not activity: `updated_at` stays put (§4.7.1).
     // ?1 title, ?2 stored source, ?3 source as sent, ?4 session.
     updateSessionTitle: database.prepare(
@@ -530,12 +532,17 @@ export function createEventProjector(
         }
         if (event.payload.title !== undefined) {
           const titleSource = event.payload.titleSource ?? null
-          s.updateSessionTitle.run(
+          const titled = s.updateSessionTitle.run(
             event.payload.title,
             titleSource === 'generated' ? 'provider' : titleSource,
             titleSource,
             event.payload.sessionId,
           )
+          if (titled.changes !== 1) {
+            throw new Error(
+              `Session ${event.payload.sessionId} is missing or keeps its title over a ${titleSource ?? 'source-less'} one`,
+            )
+          }
         }
         if (event.payload.settledAt !== undefined) {
           const settledAt =
@@ -551,14 +558,19 @@ export function createEventProjector(
           }
         }
         if (event.payload.backgroundTasks !== undefined) {
-          // A roster reported while its session is being deleted has no row
-          // left to describe; that is not worth rolling the batch back for.
-          s.updateSessionBackground.run(
+          // Only a live session's runtime reports a roster, and a deletion
+          // drops the record first, so a missing row is a bug (I2).
+          const rostered = s.updateSessionBackground.run(
             event.payload.backgroundTasks.length > 0
               ? JSON.stringify(event.payload.backgroundTasks)
               : null,
             event.payload.sessionId,
           )
+          if (rostered.changes !== 1) {
+            throw new Error(
+              `Cannot record background work for missing session ${event.payload.sessionId}`,
+            )
+          }
           // Between turns the roster is all that says whether the session is
           // working, so the rows say it: a resting session runs while it has
           // background work and is idle once it has none. A failed session
@@ -581,12 +593,18 @@ export function createEventProjector(
         return
       }
       case 'session.composer.updated':
-        // A selection reported while its session is being deleted has no row
-        // left to describe; that is not worth rolling the batch back for.
-        s.updateSessionComposer.run(
-          JSON.stringify(event.payload.composer),
-          event.payload.sessionId,
-        )
+        // The composer service publishes a selection only for a session that
+        // still has its row (composer-service.ts), so a missing one is a bug (I2).
+        if (
+          s.updateSessionComposer.run(
+            JSON.stringify(event.payload.composer),
+            event.payload.sessionId,
+          ).changes !== 1
+        ) {
+          throw new Error(
+            `Cannot record a selection for missing session ${event.payload.sessionId}`,
+          )
+        }
         return
       case 'draft.saved':
         drafts.saved(event.payload.draft)

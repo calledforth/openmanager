@@ -2654,28 +2654,42 @@ describe('durable session lifecycle', () => {
       // Settle the provider session write before close, or it lands on a closed database.
       await h.service.resolveRuntimeSession(sessionId)
       h.dispatch(h.service, 'session.rename', { sessionId, title: 'My title' })
-      const providerTitle = (title: string, titleSource?: 'provider') =>
-        h.events.append(
+      h.events.flush()
+      const announced = h.published.length
+      const stored = () =>
+        h.database
+          .prepare('SELECT title, title_source FROM sessions WHERE session_id = ?')
+          .get(sessionId)
+      // The agent naming its session afterwards does not outrank a rename:
+      // the producer does not emit it, since the projection would refuse it.
+      h.service.onRuntimeEvent({
+        providerId: 'opencode',
+        threadId: h.created.thread.threadId,
+        workspaceId: '/workspace/project',
+        sessionId: 'provider-persisted',
+        id: 'info',
+        seq: 1,
+        timestamp: new Date().toISOString(),
+        category: 'session',
+        event: 'session_info_update',
+        data: { title: 'Provider wins' },
+      })
+      h.events.flush()
+      expect(stored()).toMatchObject({ title: 'My title', title_source: 'user' })
+      expect(h.published.slice(announced).map((event) => event.name)).toEqual([])
+      // And an event that tried anyway would be refused outright (I2).
+      expect(() =>
+        h.events.repository.appendEvents({ type: 'environment', environmentId: 'environment-1' }, [
           ProofEventSchemas['session.updated'].parse({
             type: 'event',
             name: 'session.updated',
             eventId: crypto.randomUUID(),
             timestamp: new Date().toISOString(),
             scope: { type: 'environment', environmentId: 'environment-1' },
-            payload: { sessionId, title, ...(titleSource ? { titleSource } : {}) },
+            payload: { sessionId, title: 'Provider guess' },
           }),
-        )
-      const stored = () =>
-        h.database
-          .prepare('SELECT title, title_source FROM sessions WHERE session_id = ?')
-          .get(sessionId)
-      // Neither an unlabelled title nor a declared provider title outranks a rename.
-      providerTitle('Provider guess')
-      h.events.flush()
-      expect(stored()).toMatchObject({ title: 'My title', title_source: 'user' })
-      providerTitle('Provider wins', 'provider')
-      h.events.flush()
-      expect(stored()).toMatchObject({ title: 'My title', title_source: 'user' })
+        ]),
+      ).toThrow(/keeps its title/)
       // Another rename is the only thing that replaces one.
       h.dispatch(h.service, 'session.rename', { sessionId, title: 'My second title' })
       h.events.flush()

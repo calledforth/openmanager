@@ -65,6 +65,12 @@ export interface ComposerServiceOptions {
   /** The session's persisted selection. Without it selections live in memory. */
   readSessionComposer?: (sessionId: string) => SessionComposerState | undefined
   /**
+   * Whether the session still has its row. A selection reported for one
+   * being deleted is not announced: its projection would have no row to
+   * write (I2). Without it every session is taken to exist.
+   */
+  hasSession?: (sessionId: string) => boolean
+  /**
    * How long to wait before asking again about models the lookup could not
    * answer *right now* (its CLI failed or is held after a failure). Defaults
    * to the runtime's own failure hold, so the retry lands once it has lifted.
@@ -236,6 +242,10 @@ export function createComposerService(
     const current = selectionOf(sessionId)
     const merged = SessionComposerStateSchema.safeParse({ ...current, ...defined(patch) })
     if (!merged.success || isDeepStrictEqual(merged.data, current)) return current
+    if (options.hasSession && !options.hasSession(sessionId)) {
+      memorySelections.delete(sessionId)
+      return current
+    }
     const persisted = publish('session.composer.updated', { sessionId, composer: merged.data })
     if (persisted && options.readSessionComposer) memorySelections.delete(sessionId)
     else memorySelections.set(sessionId, merged.data)

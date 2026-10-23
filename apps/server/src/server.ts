@@ -186,6 +186,7 @@ export async function startServer(config: ServerConfig) {
   // the runtime exist, which both commit through the event service.
   let followWorkspaceRecord: (record: DurableEvent) => void = () => undefined
   const eventDatabase = openEnvironmentDatabase(config.dataDir)
+  const sessionRowExists = eventDatabase.prepare('SELECT 1 FROM sessions WHERE session_id = ?')
   // Before anything is appended: events stored in an older format are no
   // longer replayed (docs/sync-foundations.md §4.7.7).
   const floorsRaised = raiseReplayFloors(eventDatabase)
@@ -427,6 +428,7 @@ export async function startServer(config: ServerConfig) {
         } as ProofEvent),
       sessionForThread: (threadId) => threadService.sessionForThread(threadId),
       readSessionComposer: (sessionId) => getSessionSummary(eventDatabase, sessionId)?.composer,
+      hasSession: (sessionId) => sessionRowExists.get(sessionId) !== undefined,
     },
   )
   desiredConfigFor = (args) => composerService.desiredFor(args)
