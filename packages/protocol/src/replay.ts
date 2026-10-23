@@ -21,9 +21,13 @@ import {
   ToolCallStateSchema,
   ActivityRefSchema,
   InteractionSchema,
-  HistoryCursorSchema,
   type SubscriptionScope,
 } from './domains.js'
+import {
+  PreferenceRevisionSchema,
+  ProviderComposerProfileSchema,
+  WorkspaceComposerPreferenceSchema,
+} from './composer.js'
 import { ProofEventSchema, ProofEventSchemas, type ProofEvent } from './events.js'
 
 export const SequenceSchema = z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER)
@@ -91,21 +95,42 @@ export const DurableEventSchema = z
   })
 export type DurableEvent = z.infer<typeof DurableEventSchema>
 
+/**
+ * Why a catch-up is a snapshot: no cursor (`initial`), another epoch
+ * (`stream_reset`), a cursor ahead of the head (`cursor_ahead`), events the
+ * log no longer has (`gap_expired`), or a replay that would be larger than
+ * the snapshot (`snapshot_smaller`, docs/sync-foundations.md §6.1).
+ */
 export const SnapshotReasonSchema = z.enum([
   'initial',
   'gap_expired',
   'cursor_ahead',
   'stream_reset',
+  'snapshot_smaller',
 ])
 export type SnapshotReason = z.infer<typeof SnapshotReasonSchema>
 
 const EnvironmentSnapshotSchema = z
   .object({
     cursor: CursorSchema.extend({ scope: EnvironmentScopeSchema }),
+    /**
+     * The whole environment (docs/sync-foundations.md §6.2): every workspace,
+     * every session, every composer preference with its revision, and every
+     * provider's composer profile. A client replaces its copy with it.
+     */
     state: z.object({
       environment: EnvironmentSchema,
       workspaces: z.array(WorkspaceSchema),
       sessions: z.array(SessionSummarySchema),
+      preferences: z.array(
+        z.object({
+          workspaceId: EntityIdSchema,
+          providerId: EntityIdSchema,
+          preference: WorkspaceComposerPreferenceSchema,
+          revision: PreferenceRevisionSchema,
+        }),
+      ),
+      providerProfiles: z.array(ProviderComposerProfileSchema),
     }),
   })
   .superRefine((snapshot, ctx) => {
@@ -122,6 +147,13 @@ const EnvironmentSnapshotSchema = z
         code: 'custom',
         path: ['state', 'sessions'],
         message: 'Snapshot session references a missing workspace',
+      })
+    }
+    if (snapshot.state.preferences.some((entry) => !workspaceIds.has(entry.workspaceId))) {
+      ctx.addIssue({
+        code: 'custom',
+        path: ['state', 'preferences'],
+        message: 'Snapshot preference references a missing workspace',
       })
     }
   })
@@ -146,18 +178,15 @@ const SessionSnapshotSchema = z
 const ThreadSnapshotSchema = z
   .object({
     cursor: CursorSchema.extend({ scope: ThreadScopeSchema }),
+    /** The whole thread (docs/sync-foundations.md §6.2): a client replaces its copy with it. */
     state: z.object({
       thread: ThreadSchema,
       turns: z.array(TurnSchema),
       messages: z.array(MessageSchema),
-      nextCursor: HistoryCursorSchema.nullable().optional(),
       reasoning: z.array(ReasoningBlockSchema),
       tools: z.array(ToolCallStateSchema),
-      /**
-       * Messages, reasoning and tools of the page in the order they happened.
-       * Absent from an older environment, which lists its messages only.
-       */
-      order: z.array(ActivityRefSchema).optional(),
+      /** Every message, reasoning block and tool of the thread, in the order they happened. */
+      order: z.array(ActivityRefSchema),
       interactions: z.array(z.object({ turnId: EntityIdSchema, interaction: InteractionSchema })),
     }),
   })

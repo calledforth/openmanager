@@ -25,13 +25,13 @@ import { ProofCommandSchema, parseProofResult } from '@openmanager/protocol'
 const command = ProofCommandSchema.parse({
   type: 'command',
   requestId: 'request-1',
-  name: 'session.list',
-  payload: { workspaceId: 'workspace-1' },
+  name: 'session.open',
+  payload: { sessionId: 'session-1' },
 })
 const result = parseProofResult(command, {
   type: 'response',
   requestId: 'request-1',
-  payload: { sessions: [] },
+  payload: { session, threads: [] },
 })
 ```
 
@@ -44,10 +44,8 @@ IDs refer to host-owned identities, not a provider's session or thread IDs.
 | -------------------------- | ----------------------------------- | ------------------------------------------------------ |
 | `environment.get`          | `null`                              | `{ environment }` with environment ID and display name |
 | `workspace.list`           | `null`                              | `{ workspaces }`                                       |
-| `session.list`             | `{ workspaceId?, cursor?, limit? }` | `{ sessions, nextCursor }` of summaries                |
 | `session.create`           | `{ workspaceId, title? }`           | `{ session, thread }` with the initial thread          |
 | `session.open`             | `{ sessionId }`                     | `{ session, threads }` — no transcript                 |
-| `session.history`          | `{ sessionId, threadId, cursor?, limit? }` | `{ messages, turns, interactions, nextCursor }` |
 | `turn.send`                | `{ sessionId, threadId, text, commandId? }` | `{ turn, userMessage, commandId }`             |
 | `turn.interrupt`           | `{ sessionId, threadId, turnId }`   | `{ turnId }` acknowledging the interrupt request       |
 | `interaction.respond`      | `{ sessionId, threadId, response, commandId? }` | `null`                                     |
@@ -57,19 +55,15 @@ IDs refer to host-owned identities, not a provider's session or thread IDs.
 `environment.get` provides domain discovery over the command channel. It does
 not replace the future HTTP bootstrap or promise version negotiation.
 
-`session.list` returns lightweight summaries (`sessionId`, `title`, `status`,
-`workspaceId`, `providerId`, `updatedAt`) with newest-first cursor pagination.
-A sidebar must not open sessions or request history to render the catalog.
-`workspaceId` is optional so one environment-wide page can feed a multi-workspace
-sidebar. Omit `cursor` for the first page; `nextCursor` is the last row of the
-returned page, or `null` when that page is the last. `limit` defaults to 50 and
-is capped at 100.
+The sidebar (every session summary, workspace, composer preference and provider
+profile) and each chat's transcript come from `subscription.replay`: a replay of
+what changed since the client's cursor, or a snapshot of the whole scope that
+replaces the client's copy (see [replay](./replay.md)). Nothing is paged.
 
 `session.open` loads the session summary and its thread identities so a client
 can subscribe. It does not start a turn, implicitly subscribe, or carry
-messages. `session.history` pages one thread's transcript backwards by message
-ordinal; the first page is the newest slice. Consistent snapshot/live handoff
-is specified with replay work.
+messages; the thread's transcript arrives as the snapshot or replay of its
+thread scope.
 Each open interaction includes its thread ID. The host must enforce resource
 ownership, session/thread/turn membership, and consistent references in results.
 Shape validation alone cannot establish those database relationships.
@@ -125,12 +119,6 @@ or deleted proposing turn never starts a build. Retrying the winning command
 reuses its successful result; a failed follow-up start can be retried after its
 cause recovers, without forwarding acceptance again. Changing build intent is a conflict. A restart does not
 resume queued work, and a stale build request receives a resolved conflict.
-
-`session.history` optionally includes `plans`, separate from its pending
-`interactions`: each entry contains `threadId`, `turnId`, the complete plan,
-lifecycle state, and its outcome when resolved. All plans of the requested thread
-are returned, independent of the message page. SQLite retains these records
-across restarts; clients must not treat historical entries as pending dialogs.
 
 ## Subscriptions and event ownership
 

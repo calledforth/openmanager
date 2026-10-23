@@ -7,7 +7,6 @@ import { ComposerConfigOptionSchema, ComposerConfigValuesSchema } from './sessio
 export * from './session-composer.js'
 
 export const PROVIDER_CATALOG_CAPABILITY = 'provider.catalog.get' as const
-export const COMPOSER_PREFERENCES_GET_CAPABILITY = 'composer.preferences.get' as const
 export const COMPOSER_PREFERENCES_SET_CAPABILITY = 'composer.preferences.set' as const
 export const COMPOSER_MODEL_SET_CAPABILITY = 'composer.model.set' as const
 export const COMPOSER_MODE_SET_CAPABILITY = 'composer.mode.set' as const
@@ -109,10 +108,6 @@ const sessionTarget = z.strictObject({ sessionId: EntityIdSchema })
 
 export const ComposerCommandSchemas = {
   [PROVIDER_CATALOG_CAPABILITY]: command(PROVIDER_CATALOG_CAPABILITY, z.null()),
-  [COMPOSER_PREFERENCES_GET_CAPABILITY]: command(
-    COMPOSER_PREFERENCES_GET_CAPABILITY,
-    preferenceTarget,
-  ),
   [COMPOSER_PREFERENCES_SET_CAPABILITY]: command(
     COMPOSER_PREFERENCES_SET_CAPABILITY,
     preferenceTarget.extend({ preference: WorkspaceComposerPreferenceSchema }),
@@ -137,12 +132,6 @@ export const ComposerCommandSchemas = {
 export const ComposerResponseSchemas = {
   [PROVIDER_CATALOG_CAPABILITY]: response(
     z.strictObject({ providers: z.array(ProviderCatalogEntrySchema).max(64) }),
-  ),
-  [COMPOSER_PREFERENCES_GET_CAPABILITY]: response(
-    z.strictObject({
-      preference: WorkspaceComposerPreferenceSchema,
-      revision: PreferenceRevisionSchema,
-    }),
   ),
   [COMPOSER_PREFERENCES_SET_CAPABILITY]: response(
     z.strictObject({

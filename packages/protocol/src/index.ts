@@ -32,7 +32,6 @@ export type {
 } from './errors.js'
 export * from './domains.js'
 export * from './session-title.js'
-export * from './pagination.js'
 export * from './commands.js'
 export * from './events.js'
 export * from './replay.js'

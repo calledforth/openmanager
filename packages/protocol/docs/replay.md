@@ -38,6 +38,7 @@ decision below.
 | Cursor older than the oldest retained event | snapshot, `gap_expired` |
 | Cursor sequence ahead of the host's head | snapshot, `cursor_ahead` |
 | Cursor epoch differs from the host's epoch | snapshot, `stream_reset` |
+| Replay larger than the snapshot (exact UTF-8 sizes; ties replay) | snapshot, `snapshot_smaller` |
 | Cursor from another environment or scope | `validation` error; no snapshot is offered |
 
 A snapshot's `reason` must be consistent with the requested cursor; clients

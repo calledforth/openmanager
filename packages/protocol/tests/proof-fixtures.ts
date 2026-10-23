@@ -107,12 +107,6 @@ export const proofCommands = [
   },
   {
     type: 'command',
-    requestId: 'r-3',
-    name: 'session.list',
-    payload: { workspaceId: 'workspace-1', limit: 50 },
-  },
-  {
-    type: 'command',
     requestId: 'r-4',
     name: 'session.create',
     payload: {
@@ -123,12 +117,6 @@ export const proofCommands = [
     },
   },
   { type: 'command', requestId: 'r-5', name: 'session.open', payload: { sessionId: 'session-1' } },
-  {
-    type: 'command',
-    requestId: 'r-13',
-    name: 'session.history',
-    payload: { sessionId: 'session-1', threadId: 'thread-1', limit: 50 },
-  },
   {
     type: 'command',
     requestId: 'r-6',
@@ -213,11 +201,6 @@ export const proofResponses = {
     requestId: 'r-14',
     payload: { iconDataUrl: 'data:image/svg+xml;base64,PHN2Zz48L3N2Zz4=' },
   },
-  'session.list': {
-    type: 'response',
-    requestId: 'r-3',
-    payload: { sessions: [sessionSummary], nextCursor: null },
-  },
   'session.create': {
     type: 'response',
     requestId: 'r-4',
@@ -227,11 +210,6 @@ export const proofResponses = {
     type: 'response',
     requestId: 'r-5',
     payload: { session: sessionSummary, threads: [thread] },
-  },
-  'session.history': {
-    type: 'response',
-    requestId: 'r-13',
-    payload: { messages: [], turns: [turn], interactions: [], nextCursor: null },
   },
   'turn.send': {
     type: 'response',
