@@ -15,7 +15,6 @@ import { BARE_PROVIDER, PROVIDER, SESSION, THREAD, WORKSPACE, event } from './fi
 const TARGET = { workspaceId: WORKSPACE.workspaceId, providerId: PROVIDER.id }
 const COMPOSER_COMMANDS = [
   'getProviderCatalog',
-  'getComposerPreference',
   'setComposerPreference',
   'setSessionModel',
   'setSessionMode',
@@ -80,7 +79,6 @@ describe('mock composer commands', () => {
     const { commands } = client
     const attempts = [
       commands.getProviderCatalog(),
-      commands.getComposerPreference(TARGET),
       commands.setComposerPreference({ ...TARGET, preference: { modelId: 'opus' } }),
       commands.setSessionModel({ sessionId: SESSION.sessionId, modelId: 'opus' }),
       commands.setSessionMode({ sessionId: SESSION.sessionId, modeId: 'plan' }),
@@ -101,9 +99,11 @@ describe('mock composer commands', () => {
   it('gates each composer command on its own capability', async () => {
     const client = createMockEnvironmentClient({ seed, capabilities: ['getProviderCatalog'] })
     expect(await client.commands.getProviderCatalog()).toEqual([PROVIDER])
-    await expect(client.commands.getComposerPreference(TARGET)).rejects.toMatchObject({
+    await expect(
+      client.commands.setComposerPreference({ ...TARGET, preference: { modelId: 'opus' } }),
+    ).rejects.toMatchObject({
       code: 'capability_missing',
-      details: { command: 'getComposerPreference' },
+      details: { command: 'setComposerPreference' },
     })
   })
 
@@ -118,7 +118,7 @@ describe('mock composer commands', () => {
     expect(provider?.profile?.availableModes?.map((mode) => mode.id)).toEqual(['build', 'plan'])
   })
 
-  it('loads a remembered preference into state only once it is read', async () => {
+  it('holds a remembered preference from the start, as the environment snapshot carries it', async () => {
     const client = createMockEnvironmentClient({
       seed: {
         ...seed,
@@ -127,8 +127,6 @@ describe('mock composer commands', () => {
     })
     const read = () =>
       selectComposerPreference(client.getState(), TARGET.workspaceId, TARGET.providerId)
-    expect(read()).toBeNull()
-    expect(await client.commands.getComposerPreference(TARGET)).toEqual({ modelId: 'opus' })
     expect(read()).toEqual({ modelId: 'opus' })
   })
 
@@ -175,7 +173,11 @@ describe('mock composer commands', () => {
   it('rejects unknown providers, unknown sessions and wire-invalid input', async () => {
     const client = createMockEnvironmentClient({ seed })
     await expect(
-      client.commands.getComposerPreference({ ...TARGET, providerId: 'missing' }),
+      client.commands.setComposerPreference({
+        ...TARGET,
+        providerId: 'missing',
+        preference: { modelId: 'opus' },
+      }),
     ).rejects.toMatchObject({ code: 'not_found' })
     await expect(
       client.commands.setSessionModel({ sessionId: 'missing', modelId: 'opus' }),

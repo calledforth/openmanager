@@ -4,8 +4,6 @@ import {
   applyEnvironment,
   applyEvent,
   applySessionCreated,
-  applySessionHistory,
-  applySessionList,
   applySessionOpen,
   applySnapshot,
   applyTurnSendFailed,
@@ -18,6 +16,7 @@ import {
   selectSessionList,
   selectWorkspaces,
 } from '../src/state'
+import { applySessionList, loadThread } from './seed'
 import type { EnvironmentState } from '../src/types'
 import {
   ENV,
@@ -102,11 +101,10 @@ describe('applyEvent', () => {
         payload: { sessionId: SESSION.sessionId, status: 'waiting' },
       }),
     )
-    state = applySessionHistory(state, THREAD, {
+    state = loadThread(state, THREAD, {
       turns: [{ turnId: 'old', threadId: THREAD.threadId, state: 'completed' }],
       messages: [],
       interactions: [],
-      nextCursor: null,
     })
     expect(state.sessions[SESSION.sessionId]?.status).toBe('waiting')
     state = applyEvent(state, turnStarted())
@@ -417,47 +415,7 @@ describe('applyEvent', () => {
     expect(thread.messages.at(-1)?.content).toEqual([{ type: 'text', text: 'Found it' }])
   })
 
-  it('keeps the place of live activity that arrived while a history page loaded', () => {
-    // Without replay the client subscribes before it loads history, so a
-    // running turn can place a thought or tool before the page answers.
-    let state = applyEvent(seeded(), turnStarted())
-    state = {
-      ...state,
-      threads: {
-        ...state.threads,
-        [THREAD.threadId]: { ...state.threads[THREAD.threadId]!, hydration: 'loading' },
-      },
-    }
-    state = applyEvent(
-      state,
-      event({
-        name: 'message.reasoning',
-        scope: threadScope,
-        payload: {
-          turnId: 'turn-1',
-          messageId: 'thought-live',
-          phase: 'delta',
-          content: { type: 'text', text: 'plan' },
-        },
-      }),
-    )
-    const userMessage = state.threads[THREAD.threadId]!.messages[0]!
-    state = applySessionHistory(state, THREAD, {
-      messages: [userMessage],
-      turns: [{ turnId: 'turn-1', threadId: THREAD.threadId, state: 'running' }],
-      interactions: [],
-      nextCursor: null,
-    })
-    const thread = state.threads[THREAD.threadId]!
-    expect(thread.hydration).toBe('ready')
-    expect(thread.reasoning).toHaveLength(1)
-    expect(thread.order.map((ref) => `${ref.kind}:${ref.id}`)).toEqual([
-      'message:turn-1-user',
-      'reasoning:thought-live',
-    ])
-  })
-
-  it('restores reasoning, tools and their order from a history page and a snapshot', () => {
+  it('restores reasoning, tools and their order from a snapshot', () => {
     const turn = { turnId: 'turn-1', threadId: THREAD.threadId, state: 'completed' as const }
     const message = (messageId: string, role: 'user' | 'assistant', text: string) => ({
       messageId,
@@ -487,11 +445,10 @@ describe('applyEvent', () => {
     }
     const messages = [message('user-1', 'user', 'hi'), message('assistant-1', 'assistant', 'done')]
 
-    const fromHistory = applySessionHistory(seeded(), THREAD, {
+    const fromHistory = loadThread(seeded(), THREAD, {
       messages,
       turns: [turn],
       interactions: [],
-      nextCursor: null,
       ...activity,
     }).threads[THREAD.threadId]!
     expect(fromHistory.reasoning).toEqual(activity.reasoning)
@@ -505,34 +462,6 @@ describe('applyEvent', () => {
     expect(fromSnapshot.reasoning).toEqual(activity.reasoning)
     expect(fromSnapshot.tools).toEqual(activity.tools)
     expect(fromSnapshot.order).toEqual(activity.order)
-
-    // An older page prepends its entries; the newer ones keep what the client holds.
-    const olderPage = applySessionHistory(
-      { ...seeded(), threads: { [THREAD.threadId]: fromHistory } },
-      THREAD,
-      {
-        messages: [message('user-0', 'user', 'earlier')],
-        turns: [{ ...turn, turnId: 'turn-0' }, turn],
-        interactions: [],
-        nextCursor: null,
-        reasoning: [],
-        tools: [{ toolCallId: 'tool-0', turnId: 'turn-0', status: 'completed' }],
-        order: [
-          { kind: 'message', id: 'user-0', turnId: 'turn-0' },
-          { kind: 'tool', id: 'tool-0', turnId: 'turn-0' },
-        ],
-      },
-      true,
-    ).threads[THREAD.threadId]!
-    expect(olderPage.order.map((ref) => ref.id)).toEqual([
-      'user-0',
-      'tool-0',
-      'user-1',
-      'thought-1',
-      'tool-1',
-      'assistant-1',
-    ])
-    expect(olderPage.tools.map((tool) => tool.toolCallId)).toEqual(['tool-1', 'tool-0'])
   })
 
   it('stamps a turn with when it started and finished', () => {
@@ -801,6 +730,9 @@ describe('applyEvent', () => {
       workspaceId: WORKSPACE.workspaceId,
       title: 'Subagent',
       parentSessionId: SESSION.sessionId,
+      status: 'idle' as const,
+      providerId: 'opencode',
+      updatedAt: '2026-09-10T00:00:00.000Z',
     }
     const state = applyEvent(
       seeded(),
@@ -985,6 +917,7 @@ describe('optimistic sends', () => {
         messages: confirmed.threads[THREAD.threadId]!.messages,
         reasoning: [],
         tools: [],
+        order: [],
         interactions: [],
       },
     })
@@ -1034,6 +967,7 @@ describe('optimistic sends', () => {
         ],
         reasoning: [],
         tools: [],
+        order: [],
         interactions: [],
       },
     })
@@ -1059,6 +993,7 @@ describe('optimistic sends', () => {
         ],
         reasoning: [],
         tools: [],
+        order: [],
         interactions: [],
       },
     })
@@ -1079,11 +1014,10 @@ describe('optimistic sends', () => {
     )
     // The history page only re-states the message this client already has, so
     // the second send is still the one that failed.
-    const hydrated = applySessionHistory(state, THREAD, {
+    const hydrated = loadThread(state, THREAD, {
       messages: state.threads[THREAD.threadId]!.messages,
       turns: state.threads[THREAD.threadId]!.turns,
       interactions: [],
-      nextCursor: null,
     })
     expect(hydrated.threads[THREAD.threadId]?.outbox).toEqual([
       { commandId: 'cmd-2', text: 'hello', status: 'failed', error: 'Connection lost' },
@@ -1100,6 +1034,7 @@ describe('optimistic sends', () => {
         messages: [],
         reasoning: [],
         tools: [],
+        order: [],
         interactions: [],
       },
     })
@@ -1125,6 +1060,7 @@ describe('snapshots', () => {
         ],
         reasoning: [],
         tools: [{ toolCallId: 'tool-1', turnId: 'turn-1', status: 'completed' }],
+        order: [],
         interactions: [],
       },
     }
@@ -1137,116 +1073,54 @@ describe('snapshots', () => {
     expect(state.sessions[SESSION.sessionId]?.status).toBe('idle')
   })
 
-  it('keeps loaded older pages in front of the newest page a snapshot carries', () => {
-    const message = (messageId: string, text: string) => ({
-      messageId,
-      threadId: THREAD.threadId,
-      turnId: 'turn-1',
-      role: 'assistant' as const,
-      content: [{ type: 'text' as const, text }],
-    })
-    let state = applyEvent(seeded(), turnStarted())
-    state = applySessionHistory(state, THREAD, {
-      messages: [message('m-old', 'from an earlier page'), message('m-1', 'streamed so far')],
-      turns: [{ turnId: 'turn-1', threadId: THREAD.threadId, state: 'running' }],
-      interactions: [],
-      nextCursor: { ordinal: 1 },
-    })
-    const replaced = applySnapshot(state, {
-      cursor: { scope: threadScope, epoch: 'epoch', sequence: 9 },
-      state: {
-        thread: THREAD,
-        turns: [{ turnId: 'turn-1', threadId: THREAD.threadId, state: 'completed' }],
-        messages: [message('m-1', 'the whole answer'), message('m-2', 'and a follow-up')],
-        reasoning: [],
-        tools: [],
-        interactions: [],
-      },
-    })
-    expect(replaced.threads[THREAD.threadId]?.messages.map((item) => item.messageId)).toEqual([
-      'm-old',
-      'm-1',
-      'm-2',
-    ])
-    expect(replaced.threads[THREAD.threadId]?.messages[1]?.content).toEqual([
-      { type: 'text', text: 'the whole answer' },
-    ])
-
-    expect(replaced.threads[THREAD.threadId]?.historyCursor).toEqual({ ordinal: 1 })
-
-    // Only what precedes the page counts as older; a message the client holds
-    // after that point and the page does not name is not moved in front of it.
-    const withStray = applyEvent(state, delta('turn-1', 'm-stray', 'never persisted'))
-    const settled = applySnapshot(withStray, {
-      cursor: { scope: threadScope, epoch: 'epoch', sequence: 10 },
-      state: {
-        thread: THREAD,
-        turns: [{ turnId: 'turn-1', threadId: THREAD.threadId, state: 'completed' }],
-        messages: [message('m-1', 'the whole answer'), message('m-2', 'and a follow-up')],
-        reasoning: [],
-        tools: [],
-        interactions: [],
-      },
-    })
-    expect(settled.threads[THREAD.threadId]?.messages.map((item) => item.messageId)).toEqual([
-      'm-old',
-      'm-1',
-      'm-2',
-    ])
-  })
-
-  it('keeps an exhausted cursor when reopening a contiguous cached transcript', () => {
-    const start = turnStarted()
-    let state = applyEvent(seeded(), start)
-    state = applyEvent(state, delta('turn-1', 'assistant-1', 'answer'))
-    state = applySessionHistory(state, THREAD, {
-      messages: state.threads[THREAD.threadId]!.messages,
-      turns: [start.payload.turn],
-      interactions: [],
-      nextCursor: null,
-    })
-    state = {
-      ...state,
-      threads: {
-        ...state.threads,
-        [THREAD.threadId]: { ...state.threads[THREAD.threadId]!, hydration: 'loading' },
-      },
+  it('replaces the whole environment with its snapshot, keeping what did not change', () => {
+    const summary = {
+      ...SESSION,
+      status: 'idle' as const,
+      providerId: 'opencode',
+      updatedAt: '2026-09-10T00:00:00.000Z',
     }
-    const snapshot: ScopeSnapshot = {
-      cursor: { scope: threadScope, epoch: 'epoch', sequence: 4 },
-      state: {
-        thread: THREAD,
-        turns: [start.payload.turn],
-        messages: [state.threads[THREAD.threadId]!.messages[1]!],
-        reasoning: [],
-        tools: [],
-        interactions: [],
-        nextCursor: { ordinal: 1 },
-      },
-    }
-    const restored = applySnapshot(state, snapshot).threads[THREAD.threadId]!
-    expect(restored.messages).toHaveLength(2)
-    expect(restored.historyCursor).toBeNull()
-  })
-
-  it('applies an environment snapshot to workspaces and sessions', () => {
-    const state = applySnapshot(createInitialState(), {
+    const gone = { ...summary, sessionId: 'session-gone' }
+    const environmentSnapshot = (sessions: (typeof summary)[], modelId: string) => ({
       cursor: { scope: environmentScope, epoch: 'epoch', sequence: 1 },
       state: {
         environment: { environmentId: ENV, name: 'Local' },
         workspaces: [WORKSPACE],
-        sessions: [
+        sessions,
+        preferences: [
           {
-            ...SESSION,
-            status: 'idle',
+            workspaceId: WORKSPACE.workspaceId,
             providerId: 'opencode',
-            updatedAt: '2026-09-10T00:00:00.000Z',
+            preference: { modelId },
+            revision: 3,
           },
         ],
+        providerProfiles: [],
       },
     })
-    expect(state.environment?.name).toBe('Local')
-    expect(selectSessionList(state)).toHaveLength(1)
+    const first = applySnapshot(
+      loadThread(
+        applySnapshot(createInitialState(), environmentSnapshot([summary, gone], 'a')),
+        { threadId: 'thread-gone', sessionId: 'session-gone' },
+        { turns: [], messages: [] },
+      ),
+      environmentSnapshot([summary, gone], 'a'),
+    )
+    expect(first.environment?.name).toBe('Local')
+    expect(selectSessionList(first)).toHaveLength(2)
+    expect(first.composerPreferences[WORKSPACE.workspaceId]?.opencode).toEqual({ modelId: 'a' })
+    expect(first.composerRevisions[WORKSPACE.workspaceId]?.opencode).toBe(3)
+    // A deletion the client missed: the snapshot is the whole list, so it goes,
+    // with its threads.
+    const second = applySnapshot(first, environmentSnapshot([summary], 'b'))
+    expect(selectSessionList(second).map((session) => session.sessionId)).toEqual([
+      SESSION.sessionId,
+    ])
+    expect(second.threads['thread-gone']).toBeUndefined()
+    expect(second.composerPreferences[WORKSPACE.workspaceId]?.opencode).toEqual({ modelId: 'b' })
+    // What did not change keeps its identity.
+    expect(second.sessions[SESSION.sessionId]).toBe(first.sessions[SESSION.sessionId])
+    expect(second.workspaces).toBe(first.workspaces)
   })
 
   it("takes a workspace's recency only from the environment's workspace.updated", () => {
@@ -1312,6 +1186,8 @@ describe('snapshots', () => {
           at('middle', '2026-09-10T00:00:00.000Z'),
         ],
         sessions: [],
+        preferences: [],
+        providerProfiles: [],
       },
     })
     // Listing order is preserved for the sidebar; recents are a separate view.
@@ -1326,7 +1202,7 @@ describe('snapshots', () => {
     expect(selectRecentWorkspaces(state, 2).map((w) => w.name)).toEqual(['fresh', 'middle'])
   })
 
-  it('hydrates identities from session.open and the transcript from session.history', () => {
+  it('hydrates identities from session.open and the transcript from the thread snapshot', () => {
     const opened = applySessionOpen(createInitialState(), {
       session: {
         ...SESSION,
@@ -1338,11 +1214,10 @@ describe('snapshots', () => {
     })
     expect(opened.sessions[SESSION.sessionId]?.threadIds).toEqual([THREAD.threadId])
     expect(opened.threads[THREAD.threadId]?.hydration).toBe('loading')
-    const state = applySessionHistory(opened, THREAD, {
+    const state = loadThread(opened, THREAD, {
       turns: [{ turnId: 'turn-1', threadId: THREAD.threadId, state: 'waiting' }],
       messages: [],
-      interactions: [{ threadId: THREAD.threadId, interaction: permission }],
-      nextCursor: null,
+      interactions: [{ interaction: permission }],
     })
     expect(state.sessions[SESSION.sessionId]?.status).toBe('idle')
     expect(selectPendingInteractions(state, THREAD.threadId)[0]?.turnId).toBe('turn-1')

@@ -6,13 +6,13 @@ import {
   applyComposerPreferencesReset,
   applyEvent,
   applyProviderCatalog,
-  applySessionList,
   applySnapshot,
   applyWorkspaceList,
   createInitialState,
   selectComposerPreference,
   selectSessionComposer,
 } from '../src/state'
+import { applySessionList, loadThread } from './seed'
 import {
   ENV,
   PROVIDER,
@@ -68,13 +68,13 @@ describe('live session composer state', () => {
     expect(applyEvent(state, composerUpdated('unlisted', { modelId: 'opus' }))).toBe(state)
   })
 
-  it('takes the selection from a listing and keeps it when session.created names none', () => {
+  it('takes the selection from a listing, and a whole summary that names none clears it', () => {
     let state = applySessionList(applyWorkspaceList(createInitialState(), [WORKSPACE]), [
       { ...SESSION_SUMMARY, composer: { modelId: 'opus' } },
     ])
     expect(selectSessionComposer(state, SESSION.sessionId)).toEqual({ modelId: 'opus' })
 
-    // `session.created` names no selection: a new row has none.
+    // `session.created` is the whole row: one that names no selection has none.
     state = applyEvent(
       state,
       event<Extract<ProofEvent, { name: 'session.created' }>>({
@@ -83,7 +83,7 @@ describe('live session composer state', () => {
         payload: { session: SESSION_CREATED },
       }),
     )
-    expect(selectSessionComposer(state, SESSION.sessionId)).toEqual({ modelId: 'opus' })
+    expect(selectSessionComposer(state, SESSION.sessionId)).toBeNull()
   })
 
   it('restores the selection from an environment snapshot after a reconnect', () => {
@@ -93,6 +93,8 @@ describe('live session composer state', () => {
         environment: { environmentId: ENV, name: 'Local' },
         workspaces: [WORKSPACE],
         sessions: [{ ...SESSION_SUMMARY, composer: { modelId: 'opus', modeId: 'plan' } }],
+        preferences: [],
+        providerProfiles: [],
       },
     })
     expect(selectSessionComposer(state, SESSION.sessionId)).toEqual({

@@ -1,6 +1,5 @@
 import {
   PLAN_BUILD_CAPABILITY,
-  PAGE_LIMIT_MAX,
   CLIENT_REVOKED_CLOSE_CODE,
   CLIENT_REVOKED_CLOSE_REASON,
   ClientListChangedEventSchema,
@@ -28,7 +27,6 @@ import {
   type ClientLivenessState,
   type ReplayResponse,
   type Cursor,
-  type SessionListCursor,
   type DurableEvent,
   type ErrorCode,
   type ProofEvent,
@@ -49,7 +47,6 @@ import { placeRecord, placeTransient } from './placement'
 import {
   applyActiveSession,
   applyActiveThread,
-  applyComposerPreference,
   applyComposerPreferencesReset,
   applyConnection,
   applyEnvironment,
@@ -58,8 +55,6 @@ import {
   applyProviderCatalog,
   applyProviderHealth,
   applyProviderProbe,
-  applySessionHistory,
-  applySessionList,
   applySessionOpen,
   applySessionOpening,
   applySessionRemoved,
@@ -186,9 +181,6 @@ const HANDSHAKE_NAME = 'protocol.handshake'
 const SUBSCRIBE_NAME = 'subscription.subscribe'
 const UNSUBSCRIBE_NAME = 'subscription.unsubscribe'
 const REPLAY_NAME = 'subscription.replay'
-/** Catalog re-reads before a refresh gives up on dropping omitted sessions. */
-const RECONCILE_PASSES = 3
-
 const SubscribeResponseSchema = z.object({
   payload: z.object({ subscriptionId: z.string(), scope: z.any() }),
 })
@@ -795,27 +787,41 @@ export function createWebSocketEnvironmentClient(
    */
   const applyAnswer = (subscription: Subscription, payload: AnswerPayload) => {
     if (payload.mode === 'replay') {
-      // The exact tail after the cursor; one already held is a repeat.
-      for (const record of payload.events) {
-        if (placeRecord(subscription.cursor, record.cursor) !== 'drop') {
-          applyRecord(subscription, record)
+      // The exact tail after the cursor, folded in one store update however
+      // long it is; one already held is a repeat. A record that names a turn
+      // the thread does not hold stops the fold: the scope is replaced from a
+      // snapshot instead (docs/sync-foundations.md §3.5).
+      const scope = subscription.scope
+      let cursor = subscription.cursor
+      let unknownTurn = false
+      store.update((state) => {
+        let next = state
+        for (const record of payload.events) {
+          if (placeRecord(cursor, record.cursor) === 'drop') continue
+          const thread = scope.type === 'thread' ? next.threads[scope.threadId] : undefined
+          if (thread && namesUnknownTurn(thread, record.event)) {
+            unknownTurn = true
+            break
+          }
+          next = applyEvent(next, record.event)
+          cursor = record.cursor
         }
+        if (scope.type === 'thread' && !unknownTurn) {
+          next = applyThreadHydration(next, scope.threadId, 'ready')
+        }
+        return next
+      })
+      if (unknownTurn) {
+        subscription.cursor = cursor
+        subscription.needsSnapshot = true
+        return
       }
       subscription.cursor = payload.to
-      if (subscription.scope.type === 'thread') {
-        const threadId = subscription.scope.threadId
-        store.update((state) => applyThreadHydration(state, threadId, 'ready'))
-      }
       return
     }
     store.update((state) => applySnapshot(state, payload.snapshot))
     subscription.cursor = payload.snapshot.cursor
-    // Preference events were missed along with the rest of the gap and
-    // the snapshot does not carry them, so held ones read as unloaded.
-    if (subscription.scope.type === 'environment' && payload.reason !== 'initial') {
-      store.update(applyComposerPreferencesReset)
-    }
-    // Drafts are not in the snapshot either; they are listed again.
+    // Drafts are not in the snapshot; they are listed again.
     if (subscription.scope.type === 'environment') store.update(applyDraftsUnlisted)
   }
 
@@ -1085,10 +1091,7 @@ export function createWebSocketEnvironmentClient(
   const recover = (subscription: Subscription, first?: Held): Promise<void> => {
     if (subscription.recovery) return subscription.recovery
     if (subscription.subscriptionId || subscription.inflight) return Promise.resolve()
-    if (
-      !capabilities.has(REPLAY_NAME) ||
-      (!subscription.cursor && subscription.scope.type !== 'thread')
-    ) {
+    if (!capabilities.has(REPLAY_NAME)) {
       subscribe(subscription.scope)
       return Promise.resolve()
     }
@@ -1170,7 +1173,8 @@ export function createWebSocketEnvironmentClient(
     return tracked
   }
 
-  const hydrateThread = (scope: SubscriptionScope) => {
+  /** Recover a scope from its cursor (or whole, without one): every scope catches up by replay. */
+  const hydrateScope = (scope: SubscriptionScope) => {
     const key = scopeKey(scope)
     let subscription = subscriptions.get(key)
     if (!subscription) {
@@ -1199,81 +1203,6 @@ export function createWebSocketEnvironmentClient(
   }
 
   /**
-   * Drops cached sessions a full catalog walk did not return, e.g. sessions
-   * deleted while this client was offline, whose deletion event is gone.
-   *
-   * Keyset pages are not one snapshot: an update during a multi-page read
-   * moves a session ahead of the cursor, so it is absent without being
-   * deleted. Such a session's `updatedAt` is now at least the newest one that
-   * read started from, so the newest pages are read again down to that point.
-   * A re-read that spans pages can miss a session the same way, so it repeats
-   * from its own newest until one pass fits in a single page, which the
-   * environment answers from one query; a walk that was one page needs no
-   * re-read. Nothing is dropped if no pass settles. A session live data
-   * touched since the walk began, the active session (its `session.open` is
-   * authoritative), and an ancestor of a listed session are always kept.
-   */
-  const reconcileCachedSessions = async (
-    generation: number,
-    cached: EnvironmentState['sessions'],
-    listed: Set<string>,
-    newestUpdatedAt: string | undefined,
-    /** The walk was one page, so one query: it already proves absence. */
-    atomic: boolean,
-  ) => {
-    const missing = () => {
-      const state = store.getState()
-      // Removal cascades to descendants, so every ancestor of a listed session stays.
-      const parents = new Set<string>()
-      for (const id of listed) {
-        let parent = state.sessions[id]?.parentSessionId
-        while (parent && !parents.has(parent)) {
-          parents.add(parent)
-          parent = state.sessions[parent]?.parentSessionId
-        }
-      }
-      return Object.keys(cached).filter(
-        (id) =>
-          !listed.has(id) &&
-          state.sessions[id] === cached[id] &&
-          state.activeSessionId !== id &&
-          !parents.has(id),
-      )
-    }
-    const floorOf = (updatedAt: string | undefined) =>
-      updatedAt ? Date.parse(updatedAt) : Number.NEGATIVE_INFINITY
-    let floor = floorOf(newestUpdatedAt)
-    let settled = atomic
-    for (let pass = 0; pass < RECONCILE_PASSES && !settled; pass++) {
-      if (missing().length === 0) return
-      let cursor: SessionListCursor | null | undefined
-      let pages = 0
-      let nextFloor = floor
-      do {
-        if (generation !== connectionGeneration || !ready) return
-        const page = await commands.listSessions({
-          limit: PAGE_LIMIT_MAX,
-          ...(cursor ? { cursor } : {}),
-        })
-        if (pages++ === 0) nextFloor = floorOf(page.sessions[0]?.updatedAt)
-        for (const session of page.sessions) listed.add(session.sessionId)
-        const oldest = page.sessions.at(-1)?.updatedAt
-        cursor = oldest !== undefined && Date.parse(oldest) < floor ? null : page.nextCursor
-      } while (cursor)
-      settled = pages === 1
-      floor = nextFloor
-    }
-    if (!settled || generation !== connectionGeneration || !ready) return
-    const removed = missing()
-    if (removed.length === 0) return
-    store.update((state) => {
-      let next = state
-      for (const id of removed) next = applySessionRemoved(next, id)
-      return next
-    })
-  }
-
-  /**
    * After every handshake: environment scope, catalog reads, and the active
    * session. If the connection drops or re-handshakes while the catalog reads
    * are in flight, this run stops so it cannot queue a second `session.open`
@@ -1285,62 +1214,25 @@ export function createWebSocketEnvironmentClient(
     const restarted = serverRestarted
     serverRestarted = false
     const environment = { type: 'environment', environmentId } as const
-    if (!subscriptions.has(scopeKey(environment))) subscribe(environment)
-    // Every scope the previous socket held is recovered now rather than after
-    // the catalog reads: a server subscription is per-socket, so until it
-    // lands the open session's events are not sent at all. Recovery is
-    // idempotent, so the session.open below is free to ask for the same
-    // scopes again.
+    const key = scopeKey(environment)
+    if (!subscriptions.has(key)) {
+      subscriptions.set(key, {
+        scope: environment,
+        subscriptionId: null,
+        inflight: false,
+        cursor: null,
+      })
+    }
+    // Every scope recovers now, the environment first: its catch-up (a
+    // replay from the cursor, or the whole environment) is the sidebar, the
+    // workspaces and the composer preferences. A server subscription is
+    // per-socket, so until it lands nothing of the scope is sent at all.
     for (const subscription of [...subscriptions.values()])
       void recover(subscription).catch(() => undefined)
-    const reads: Promise<unknown>[] = []
-    if (supports('getEnvironment')) reads.push(commands.getEnvironment().catch(() => undefined))
-    if (supports('listWorkspaces')) reads.push(commands.listWorkspaces().catch(() => undefined))
-    if (supports('listSessions'))
-      reads.push(
-        (async () => {
-          if (!options.store) {
-            // Pages are cut by size as well as count, so one page is not the
-            // whole catalog: the rest follow in the background, as below.
-            const first = await commands.listSessions()
-            if (generation !== connectionGeneration || !ready) return
-            void (async () => {
-              let cursor: SessionListCursor | null = first.nextCursor
-              while (cursor) {
-                if (generation !== connectionGeneration || !ready) return
-                cursor = (await commands.listSessions({ cursor })).nextCursor
-              }
-            })().catch(() => undefined)
-            return
-          }
-          const cached = store.getState().sessions
-          // Recover the active session after the first page; older catalog
-          // pages continue in the background and never open inactive runtimes.
-          const first = await commands.listSessions({ limit: PAGE_LIMIT_MAX })
-          if (generation !== connectionGeneration || !ready) return
-          void (async () => {
-            const listed = new Set(first.sessions.map((session) => session.sessionId))
-            let cursor: SessionListCursor | null = first.nextCursor
-            while (cursor) {
-              if (generation !== connectionGeneration || !ready) return
-              const page = await commands.listSessions({ limit: PAGE_LIMIT_MAX, cursor })
-              for (const session of page.sessions) listed.add(session.sessionId)
-              cursor = page.nextCursor
-            }
-            if (generation !== connectionGeneration || !ready) return
-            await reconcileCachedSessions(
-              generation,
-              cached,
-              listed,
-              first.sessions[0]?.updatedAt,
-              first.nextCursor === null,
-            )
-          })().catch(() => undefined)
-        })().catch(() => undefined),
-      )
-    if (supports('getProviderCatalog'))
-      reads.push(commands.getProviderCatalog().catch(() => undefined))
-    await Promise.all(reads)
+    // The provider catalog is a current reading (models, health), not synced state.
+    if (supports('getProviderCatalog')) {
+      await commands.getProviderCatalog().catch(() => undefined)
+    }
     if (generation !== connectionGeneration || !ready) return
     const activeSessionId = store.getState().activeSessionId
     if (
@@ -1368,26 +1260,6 @@ export function createWebSocketEnvironmentClient(
   const nextTicket = () => ++overlayTickets
 
   type PreferenceAnswer = { preference: WorkspaceComposerPreference; revision: number }
-
-  /**
-   * A read: the server's preference at its revision, applied only when newer
-   * than the one held, so an answer and an event are ordered by the server's
-   * number, never by arrival. The pair is resolved when the answer arrives: a
-   * workspace removed meanwhile must not get its preference back.
-   */
-  const composerRead = async (
-    payload: ComposerPreferenceTarget,
-    resolveTarget: () => ComposerPreferenceTarget | null,
-  ): Promise<WorkspaceComposerPreference> => {
-    const answer = await request('composer.preferences.get', payload)
-    const target = resolveTarget()
-    if (target) {
-      store.update((state) =>
-        applyComposerPreference(state, target, answer.preference, answer.revision),
-      )
-    }
-    return answer.preference
-  }
 
   /**
    * A write: the requested pick shows at once as an overlay entry. Its
@@ -1575,10 +1447,12 @@ export function createWebSocketEnvironmentClient(
     // A thread that fails to load fails the open; the store still marks it.
     let hydrationFailure: unknown
     if (capabilities.has(REPLAY_NAME) && environmentId) {
-      subscribe({ type: 'session', environmentId, sessionId })
+      // The session's own scope (its summary and thread list) recovers like
+      // any other; the open waits only for its threads.
+      void hydrateScope({ type: 'session', environmentId, sessionId }).catch(() => undefined)
       await Promise.all(
         payload.threads.map((thread) =>
-          hydrateThread({ type: 'thread', environmentId: environmentId!, ...thread })
+          hydrateScope({ type: 'thread', environmentId: environmentId!, ...thread })
             .then(() => {
               if (generation === openGeneration)
                 store.update((state) => applyThreadHydration(state, thread.threadId, 'ready'))
@@ -1596,27 +1470,13 @@ export function createWebSocketEnvironmentClient(
       if (hydrationFailure) throw hydrationFailure
       return
     }
-    if (supports('loadSessionHistory')) {
-      await Promise.all(
-        payload.threads.map((thread) =>
-          commands
-            .loadSessionHistory({ sessionId, threadId: thread.threadId })
-            .catch((error: unknown) => {
-              hydrationFailure ??= error
-              if (generation !== openGeneration) return
-              store.update((state) => applyThreadHydration(state, thread.threadId, 'failed'))
-            }),
-        ),
-      )
-    } else {
-      store.update((state) => {
-        let next = state
-        for (const thread of payload.threads) {
-          next = applyThreadHydration(next, thread.threadId, 'ready')
-        }
-        return next
-      })
-    }
+    store.update((state) => {
+      let next = state
+      for (const thread of payload.threads) {
+        next = applyThreadHydration(next, thread.threadId, 'ready')
+      }
+      return next
+    })
     if (generation !== openGeneration) return overtaken(sessionId)
     if (hydrationFailure) throw hydrationFailure
     for (const scope of sessionScopes(sessionId)) subscribe(scope)
@@ -1657,20 +1517,6 @@ export function createWebSocketEnvironmentClient(
       const payload = await request('workspace.icon', { workspaceId })
       return payload.iconDataUrl
     },
-    async listSessions(input = {}) {
-      const query = typeof input === 'string' ? { workspaceId: input } : input
-      const payload = await request('session.list', query)
-      store.update((state) => applySessionList(state, payload.sessions))
-      const listed = store.getState().sessions
-      return {
-        sessions: payload.sessions
-          .map((session) => listed[session.sessionId])
-          .filter(
-            (session): session is NonNullable<(typeof listed)[string]> => session !== undefined,
-          ),
-        nextCursor: payload.nextCursor,
-      }
-    },
     async createSession(input) {
       if (!store.getState().connection.capabilities.includes(SESSION_CREATE_EXPLICIT_CAPABILITY)) {
         throw new EnvironmentClientError(
@@ -1710,21 +1556,6 @@ export function createWebSocketEnvironmentClient(
       const done = openSessionAt(sessionId, openGeneration)
       overtaker = { kind: 'open', sessionId, done }
       return done
-    },
-    async loadSessionHistory(input) {
-      const generation = connectionGeneration
-      const selection = openGeneration
-      const payload = await request('session.history', input)
-      if (generation !== connectionGeneration || selection !== openGeneration) return payload
-      store.update((state) =>
-        applySessionHistory(
-          state,
-          { threadId: input.threadId, sessionId: input.sessionId },
-          payload,
-          input.cursor !== undefined,
-        ),
-      )
-      return payload
     },
     async renameSession(sessionId, title) {
       // The requested title shows until server state has it, or a newer one.
@@ -1851,11 +1682,6 @@ export function createWebSocketEnvironmentClient(
       store.update((state) => applyProviderProbe(state, payload.provider))
       return payload.provider
     },
-    getComposerPreference: (input) =>
-      composerRead(
-        { workspaceId: input.workspaceId, providerId: input.providerId },
-        workspacePreferenceTarget(input),
-      ),
     setComposerPreference: (input) =>
       composerWrite(
         'composer.preferences.set',

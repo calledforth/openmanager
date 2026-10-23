@@ -15,19 +15,16 @@ import type {
   EnvironmentSettingsPatch,
   ErrorCode,
   FilesystemListing,
-  HistoryCursor,
   Interaction,
   InteractionKind,
   InteractionResponse,
   Message,
   PairingLink,
   PairingRedeemResponse,
-  PlanHistoryEntry,
   ProviderBootstrap,
   ProviderCatalogEntry,
   Session,
   SessionComposerState,
-  SessionListCursor,
   SessionStatus,
   SessionTitleSource,
   Thread,
@@ -96,32 +93,6 @@ export interface SessionSummary extends Session {
   threadIds: string[]
 }
 
-export interface SessionListPage {
-  sessions: SessionSummary[]
-  nextCursor: SessionListCursor | null
-}
-
-export interface SessionHistoryPage {
-  messages: Message[]
-  turns: Turn[]
-  interactions: Array<{ threadId: string; interaction: Interaction }>
-  plans?: PlanHistoryEntry[]
-  nextCursor: HistoryCursor | null
-}
-
-export interface ListSessionsInput {
-  workspaceId?: string
-  cursor?: SessionListCursor
-  limit?: number
-}
-
-export interface LoadSessionHistoryInput {
-  sessionId: string
-  threadId: string
-  cursor?: HistoryCursor
-  limit?: number
-}
-
 /**
  * A user message echoed locally the moment it was sent, before the
  * environment confirmed it. Keyed by the command id the send carries, so the
@@ -170,8 +141,6 @@ export interface ThreadState {
    */
   confirmedEchoes?: Readonly<Record<string, string>>
   hydration: HydrationState
-  /** Exclusive boundary for the next older persisted page. */
-  historyCursor?: HistoryCursor | null
 }
 
 export type ConnectionPhase = 'idle' | 'connecting' | 'connected' | 'reconnecting' | 'closed'
@@ -461,13 +430,14 @@ export interface EnvironmentCommands {
   removeWorkspace(workspaceId: string): Promise<void>
   /** The workspace's icon as a data URL, or null when the folder has none. Not stored. */
   resolveWorkspaceIcon(workspaceId: string): Promise<string | null>
-  listSessions(input?: ListSessionsInput | string): Promise<SessionListPage>
   createSession(
     input: CreateSessionInput,
   ): Promise<{ session: Session; thread: Thread; firstTurn?: { turn: Turn; userMessage: Message } }>
-  /** Loads thread identities, then the newest history page for each thread. */
+  /**
+   * Loads thread identities, then each whole thread (its snapshot, or a
+   * replay from the cursor the client holds).
+   */
   openSession(sessionId: string): Promise<void>
-  loadSessionHistory(input: LoadSessionHistoryInput): Promise<SessionHistoryPage>
   renameSession(sessionId: string, title: string | null): Promise<void>
   /**
    * Name the session again from its conversation with the environment's
@@ -496,7 +466,6 @@ export interface EnvironmentCommands {
   getProviderCatalog(): Promise<ProviderCatalogEntry[]>
   /** Re-checks one provider now; resolves with its entry once the probe settles. */
   probeProvider(input: ProbeProviderInput): Promise<ProviderBootstrap>
-  getComposerPreference(input: ComposerPreferenceTarget): Promise<WorkspaceComposerPreference>
   setComposerPreference(input: SetComposerPreferenceInput): Promise<WorkspaceComposerPreference>
   /**
    * The session setters change the live session and remember the choice for

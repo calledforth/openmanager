@@ -46,9 +46,9 @@ import {
   applyProviderCatalog,
   applyProviderProbe,
   applySessionCreated,
-  applySessionHistory,
   applySessionOpen,
   applySessionOpening,
+  applyThreadHydration,
   applyTurnSendFailed,
   applyTurnSending,
   applyWorkspaceList,
@@ -61,7 +61,6 @@ import { dropOverlayEntry, settleAnswered, updateOverlay } from './overlay'
 import { applyDraftList } from './draft-state'
 import { createDraftSync } from './draft-sync'
 import { createEnvironmentStore } from './store'
-import { pageSessionSummaries, pageThreadMessages } from './pagination'
 import type {
   ComposerPreferenceTarget,
   SessionComposerState,
@@ -744,6 +743,16 @@ export function createMockEnvironmentClient(
     if (known) store.update((state) => applyComposerPreference(state, target, next, revision))
     return next
   }
+  // The environment snapshot carries every preference (docs/sync-foundations.md
+  // §6.2): the mock's store holds the seeded ones from the start, as a
+  // connected client does.
+  for (const [key, preference] of preferences) {
+    const [workspaceId, providerId] = JSON.parse(key) as [string, string]
+    preferenceRevisions.set(key, 1)
+    store.update((state) =>
+      applyComposerPreference(state, { workspaceId, providerId }, preference, 1),
+    )
+  }
 
   /**
    * The environment always knows a session's provider; the client only does
@@ -969,11 +978,6 @@ export function createMockEnvironmentClient(
         }
         emit({ ...base(), name: 'workspace.removed', scope: envScope(), payload: { workspaceId } })
       }),
-    listSessions: (input = {}) =>
-      run('listSessions', input, () => {
-        const query = typeof input === 'string' ? { workspaceId: input } : input
-        return pageSessionSummaries(selectSessionList(store.getState()), query)
-      }),
     createSession: (input) =>
       run('createSession', input, () => {
         if (
@@ -1141,15 +1145,8 @@ export function createMockEnvironmentClient(
           for (const threadId of session.threadIds) {
             const thread = next.threads[threadId]
             if (!thread) continue
-            next = applySessionHistory(next, thread.thread, {
-              messages: thread.messages,
-              turns: thread.turns,
-              interactions: thread.interactions.map((item) => ({
-                threadId: item.threadId,
-                interaction: item.interaction,
-              })),
-              nextCursor: null,
-            })
+            // The mock's store already holds the whole thread.
+            next = applyThreadHydration(next, threadId, 'ready')
           }
           return applyActiveSession(next, sessionId)
         })
@@ -1157,24 +1154,6 @@ export function createMockEnvironmentClient(
       overtaker = { sessionId, done }
       return done
     },
-    loadSessionHistory: (input) =>
-      run('loadSessionHistory', input, () => {
-        const thread = requireThread(input)
-        const page = pageThreadMessages(thread.messages, input)
-        const payload = {
-          messages: page.messages,
-          turns: thread.turns,
-          interactions: thread.interactions.map((item) => ({
-            threadId: item.threadId,
-            interaction: item.interaction,
-          })),
-          nextCursor: page.nextCursor,
-        }
-        store.update((state) =>
-          applySessionHistory(state, thread.thread, payload, input.cursor !== undefined),
-        )
-        return payload
-      }),
     renameSession: (sessionId, title) =>
       run('renameSession', { sessionId, title }, () => {
         if (!store.getState().sessions[sessionId]) {
@@ -1361,12 +1340,6 @@ export function createMockEnvironmentClient(
         }
         store.update((state) => applyProviderProbe(state, provider))
         return provider
-      }),
-    getComposerPreference: (input) =>
-      run('getComposerPreference', input, () => {
-        parseComposerPayload('composer.preferences.get', input)
-        requireProvider(input.providerId)
-        return writePreference(input, {})
       }),
     setComposerPreference: (input) =>
       run('setComposerPreference', input, () => {
@@ -1781,15 +1754,7 @@ export function createMockEnvironmentClient(
             threads: threadStates.map((item) => item.thread),
           })
           for (const item of threadStates) {
-            next = applySessionHistory(next, item.thread, {
-              messages: item.messages,
-              turns: item.turns,
-              interactions: item.interactions.map((pending) => ({
-                threadId: pending.threadId,
-                interaction: pending.interaction,
-              })),
-              nextCursor: null,
-            })
+            next = applyThreadHydration(next, item.thread.threadId, 'ready')
           }
           return applyActiveSession(next, sessionId)
         })
