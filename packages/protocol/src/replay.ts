@@ -24,7 +24,7 @@ import {
   HistoryCursorSchema,
   type SubscriptionScope,
 } from './domains.js'
-import { ProofEventSchema, type ProofEvent } from './events.js'
+import { ProofEventSchema, ProofEventSchemas, type ProofEvent } from './events.js'
 
 export const SequenceSchema = z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER)
 export const CursorSchema = z.object({
@@ -265,6 +265,35 @@ export const SubscriptionEventSchema = EventEnvelopeSchema.extend({
   payload: z.object({ subscriptionId: EntityIdSchema, record: DurableEventSchema }),
 })
 export type SubscriptionEvent = z.infer<typeof SubscriptionEventSchema>
+
+/**
+ * An event that is never stored: it has no cursor of its own and is not in
+ * any replay or snapshot. Only `turn.notice` today.
+ */
+export const TransientEventSchema = z.discriminatedUnion('name', [ProofEventSchemas['turn.notice']])
+export type TransientEvent = z.infer<typeof TransientEventSchema>
+
+/**
+ * Live delivery of a transient to one subscription of its scope. `after` is
+ * the scope's head when the server published it: the transient happened
+ * after exactly that durable record, so a client applies it only once its
+ * cursor is there (docs/sync-foundations.md §5.2).
+ */
+export const SubscriptionTransientSchema = EventEnvelopeSchema.extend({
+  name: z.literal('subscription.transient'),
+  payload: z
+    .object({ subscriptionId: EntityIdSchema, after: CursorSchema, event: TransientEventSchema })
+    .superRefine((payload, ctx) => {
+      if (!sameScope(payload.after.scope, payload.event.scope)) {
+        ctx.addIssue({
+          code: 'custom',
+          path: ['event', 'scope'],
+          message: 'A transient must belong to the scope it is placed in',
+        })
+      }
+    }),
+})
+export type SubscriptionTransient = z.infer<typeof SubscriptionTransientSchema>
 
 /** Runtime can turn this into a correlated validation error without exposing a foreign snapshot. */
 export class ReplayCursorError extends Error {

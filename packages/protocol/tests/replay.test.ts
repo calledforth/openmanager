@@ -7,6 +7,8 @@ import {
   ReplayResponseSchema,
   ScopeSnapshotSchema,
   SubscriptionEventSchema,
+  SubscriptionTransientSchema,
+  TransientEventSchema,
   decideReplay,
   parseReplayResult,
   ReplayCursorError,
@@ -87,6 +89,53 @@ describe('cursor decisions', () => {
   )
   it.each([0, -1, 1.5, 11, Infinity])('rejects invalid retention boundary %s', (oldest) => {
     expect(() => decideReplay(threadScope, replayCursor, head, oldest)).toThrow(ReplayCursorError)
+  })
+})
+
+describe('transient delivery', () => {
+  const notice = proofEvents.find((event) => event.name === 'turn.notice')!
+  const transient = {
+    type: 'event',
+    name: 'subscription.transient',
+    payload: { subscriptionId: 'sub-1', after: replayCursor, event: notice },
+  }
+
+  it('round-trips a notice placed after a cursor of its own scope', () => {
+    expect(SubscriptionTransientSchema.parse(JSON.parse(JSON.stringify(transient)))).toEqual(
+      transient,
+    )
+  })
+
+  it('accepts the empty stream as a position', () => {
+    const after = { ...replayCursor, sequence: 0 }
+    expect(
+      SubscriptionTransientSchema.safeParse({
+        ...transient,
+        payload: { ...transient.payload, after },
+      }).success,
+    ).toBe(true)
+  })
+
+  it('refuses a notice placed in another scope', () => {
+    const after = { ...replayCursor, scope: { ...threadScope, threadId: 'other-thread' } }
+    expect(
+      SubscriptionTransientSchema.safeParse({
+        ...transient,
+        payload: { ...transient.payload, after },
+      }).success,
+    ).toBe(false)
+  })
+
+  it('carries only events that are never stored', () => {
+    expect(TransientEventSchema.safeParse(notice).success).toBe(true)
+    const durable = proofEvents.find((event) => event.name === 'message.delta')!
+    expect(TransientEventSchema.safeParse(durable).success).toBe(false)
+    expect(
+      SubscriptionTransientSchema.safeParse({
+        ...transient,
+        payload: { ...transient.payload, event: durable },
+      }).success,
+    ).toBe(false)
   })
 })
 
