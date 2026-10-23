@@ -22,6 +22,7 @@ import {
   type FakeAcpConnection,
 } from '@agentpack/runtime/testing'
 import { startServer } from '../../src/server.ts'
+import type { Delivery } from '../../src/event-delivery.ts'
 import { DATABASE_FILENAME } from '../../src/db/database.ts'
 import { isDerivedRecord, scopeKey } from '../../src/db/event-repository.ts'
 import type { ProofEvent, SubscriptionScope } from '@openmanager/protocol/node'
@@ -524,13 +525,31 @@ Object.assign(server.rateLimiter, {
   consume: () => ({ allowed: true, remaining: Number.MAX_SAFE_INTEGER }),
   blocked: () => ({ allowed: true, remaining: Number.MAX_SAFE_INTEGER }),
 })
-// Everything the server sends is activity.
-const sockets$ = server.sockets as unknown as Record<string, (...args: unknown[]) => unknown>
-for (const name of ['deliver']) {
-  const original = sockets$[name]!.bind(server.sockets)
-  sockets$[name] = (...args: unknown[]) => {
+// Everything the server sends is activity. Every item leaves the delivery
+// queue through `deliver`, which is also where the S13 seam drops a record.
+let dropArmed: string | undefined
+const dropped: Array<{ threadId: string; sequence: number; event: string }> = []
+{
+  const send = server.sockets.deliver.bind(server.sockets)
+  server.sockets.deliver = (item: Delivery) => {
     touch()
-    return original(...args)
+    const scope = item.kind === 'record' ? item.record.cursor.scope : undefined
+    if (
+      dropArmed !== undefined &&
+      item.kind === 'record' &&
+      scope?.type === 'thread' &&
+      scope.threadId === dropArmed &&
+      item.record.event.name === 'message.delta'
+    ) {
+      dropArmed = undefined
+      dropped.push({
+        threadId: scope.threadId,
+        sequence: item.record.cursor.sequence,
+        event: item.record.event.name,
+      })
+      return
+    }
+    send(item)
   }
 }
 
@@ -682,13 +701,12 @@ function readAudit(): AuditRow[] {
 }
 
 // Every durable record the server publishes: who held its scope, who got it.
+// A record the S13 seam drops shows as withheld: owed, open, not sent.
 {
-  const previous = sockets$.publish!
-  sockets$.publish = (...args: unknown[]) => {
-    const record = args[0] as {
-      cursor: { scope: unknown; sequence: number }
-      event: { name: string }
-    }
+  const previous = server.sockets.deliver.bind(server.sockets)
+  server.sockets.deliver = (item: Delivery) => {
+    if (item.kind !== 'record') return previous(item)
+    const record = item.record
     const key = keyOf(record.cursor.scope)
     const owed: WebSocket[] = []
     const pending: string[] = []
@@ -706,7 +724,7 @@ function readAudit(): AuditRow[] {
     const sent = new Set<WebSocket>()
     publishing = sent
     try {
-      return previous(...args)
+      return previous(item)
     } finally {
       publishing = undefined
       deliver(undefined, {
@@ -994,6 +1012,11 @@ async function handle(request: ChildRequest): Promise<unknown> {
     case 'armKill':
       armedKill = request.at ? { ...request.at } : undefined
       return null
+    case 'dropNextRecord':
+      dropArmed = request.threadId
+      return null
+    case 'readDropped':
+      return dropped
     case 'shutdown':
       await server.close()
       readDatabase?.close()
