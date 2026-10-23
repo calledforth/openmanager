@@ -21,6 +21,8 @@ import { environmentCards } from '../../settings/environments'
 import { SettingsRow } from '../../settings/SettingsRow'
 import { usePhoneTheme } from '../../theme/ThemeProvider'
 import { BigTitle, FadeOut, SectionLabel } from '../../ui/chrome'
+import { GlassContent } from '../../ui/Glass'
+import { Screen } from '../../ui/Screen'
 import { Press } from '../../ui/Press'
 
 /** What this phone calls itself, the way it names itself when it pairs. */
@@ -49,53 +51,55 @@ export default function SettingsScreen() {
   const paired = connection.environments.filter((item) => item.paired).length
 
   return (
-    <View className="flex-1" style={{ paddingTop: insets.top + 6 }}>
-      <BigTitle title="Settings" />
-      <View className="flex-1">
-        <ScrollView
-          contentContainerStyle={{
-            paddingHorizontal: 8,
-            // The pill nav floats over the end of the list.
-            paddingBottom: insets.bottom + 140,
-          }}
-          showsVerticalScrollIndicator={false}
-        >
-          <SectionLabel>Environments</SectionLabel>
-          {cards.length === 0 ? (
-            <PairRow onPress={() => router.push('/pair')} />
-          ) : (
-            <>
-              {cards.map((card) => (
-                <EnvironmentCard
-                  key={card.environmentId}
-                  card={card}
-                  onPress={() =>
-                    router.push(`/environment/${encodeURIComponent(card.environmentId)}`)
-                  }
-                />
-              ))}
-              <AddEnvironment onPress={() => router.push('/pair')} />
-            </>
-          )}
+    <Screen tab="settings">
+      <GlassContent style={{ paddingTop: insets.top + 6 }}>
+        <BigTitle title="Settings" />
+        <View className="flex-1">
+          <ScrollView
+            contentContainerStyle={{
+              paddingHorizontal: 8,
+              // The pill nav floats over the end of the list.
+              paddingBottom: insets.bottom + 140,
+            }}
+            showsVerticalScrollIndicator={false}
+          >
+            <SectionLabel>Environments</SectionLabel>
+            {cards.length === 0 ? (
+              <PairRow onPress={() => router.push('/pair')} />
+            ) : (
+              <>
+                {cards.map((card) => (
+                  <EnvironmentCard
+                    key={card.environmentId}
+                    card={card}
+                    onPress={() =>
+                      router.push(`/environment/${encodeURIComponent(card.environmentId)}`)
+                    }
+                  />
+                ))}
+                <AddEnvironment onPress={() => router.push('/pair')} />
+              </>
+            )}
 
-          <SectionLabel>Appearance</SectionLabel>
-          <AppearanceSection />
+            <SectionLabel>Appearance</SectionLabel>
+            <AppearanceSection />
 
-          <SectionLabel>This phone</SectionLabel>
-          <SettingsRow
-            icon={<DeviceMobileIcon size={17} color={theme.muted} />}
-            title="This device"
-            sub={`${PHONE_NAME} · paired with ${paired === 1 ? '1 environment' : `${paired} environments`}`}
-          />
-          <SettingsRow
-            icon={<InfoIcon size={17} color={theme.muted} />}
-            title="About"
-            sub={`OpenManager ${version} · protocol ${protocol}`}
-          />
-        </ScrollView>
-        <FadeOut />
-      </View>
-    </View>
+            <SectionLabel>This phone</SectionLabel>
+            <SettingsRow
+              icon={<DeviceMobileIcon size={17} color={theme.muted} />}
+              title="This device"
+              sub={`${PHONE_NAME} · paired with ${paired === 1 ? '1 environment' : `${paired} environments`}`}
+            />
+            <SettingsRow
+              icon={<InfoIcon size={17} color={theme.muted} />}
+              title="About"
+              sub={`OpenManager ${version} · protocol ${protocol}`}
+            />
+          </ScrollView>
+          <FadeOut />
+        </View>
+      </GlassContent>
+    </Screen>
   )
 }
 

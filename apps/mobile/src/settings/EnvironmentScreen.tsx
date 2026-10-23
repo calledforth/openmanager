@@ -25,8 +25,10 @@ import { usePhoneTheme } from '../theme/ThemeProvider'
 import { coveredBySheet } from '../ui/a11y-focus'
 import { SectionLabel } from '../ui/chrome'
 import { ConfirmSheet } from '../ui/ConfirmSheet'
+import { GlassContent } from '../ui/Glass'
 import { useGoBack } from '../ui/goBack'
 import { IconButton } from '../ui/IconButton'
+import { Screen, ScreenBar } from '../ui/Screen'
 import { ConnectionPanel } from './ConnectionPanel'
 import type { DeviceAdmin, DeviceAdminState } from './device-admin'
 import { DeviceSheet } from './DeviceSheet'
@@ -374,7 +376,11 @@ function RouteRow({ route }: { route: RouteRowView }) {
   )
 }
 
-/** A page above the tabs: back, the title and its status line, then a scrolling list. */
+/**
+ * A page above the tabs: back, the title and its status line, then a
+ * scrolling list. Back floats in glass over the page's content; the sheets
+ * (`overlay`) rise over it, beside the content too.
+ */
 function Page({
   title,
   sub,
@@ -391,43 +397,50 @@ function Page({
   const theme = usePhoneTheme()
   const insets = useSafeAreaInsets()
   return (
-    <View style={{ flex: 1, backgroundColor: theme.bg, paddingTop: insets.top + 6 }}>
+    <Screen>
       {/* While a sheet is open, only the sheet can be read. */}
       <View style={{ flex: 1 }} {...coveredBySheet(Boolean(overlay))}>
-        <View style={{ paddingHorizontal: 20 }}>
-          <View style={{ height: 44, flexDirection: 'row', alignItems: 'center' }}>
+        <ScreenBar
+          top={insets.top + 6}
+          height={44}
+          left={
             <IconButton label="Back" onPress={onBack}>
               <CaretLeftIcon size={18} color={theme.fg} />
             </IconButton>
+          }
+        />
+        <GlassContent style={{ paddingTop: insets.top + 6 }}>
+          <View style={{ paddingHorizontal: 20 }}>
+            <View style={{ height: 44 }} />
+            <Text
+              accessibilityRole="header"
+              numberOfLines={2}
+              style={{
+                marginTop: 6,
+                fontFamily: 'Geist-SemiBold',
+                fontSize: 22,
+                letterSpacing: -0.3,
+                color: theme.fg,
+              }}
+            >
+              {title}
+            </Text>
+            {sub}
           </View>
-          <Text
-            accessibilityRole="header"
-            numberOfLines={2}
-            style={{
-              marginTop: 6,
-              fontFamily: 'Geist-SemiBold',
-              fontSize: 22,
-              letterSpacing: -0.3,
-              color: theme.fg,
+          <ScrollView
+            style={{ flex: 1 }}
+            contentContainerStyle={{
+              paddingHorizontal: 8,
+              paddingTop: 6,
+              paddingBottom: insets.bottom + 40,
             }}
           >
-            {title}
-          </Text>
-          {sub}
-        </View>
-        <ScrollView
-          style={{ flex: 1 }}
-          contentContainerStyle={{
-            paddingHorizontal: 8,
-            paddingTop: 6,
-            paddingBottom: insets.bottom + 40,
-          }}
-        >
-          {children}
-        </ScrollView>
+            {children}
+          </ScrollView>
+        </GlassContent>
       </View>
       {overlay}
-    </View>
+    </Screen>
   )
 }
 

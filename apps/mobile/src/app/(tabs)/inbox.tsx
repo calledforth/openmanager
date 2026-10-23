@@ -10,6 +10,8 @@ import { useHomeSource } from '../../home/source'
 import { useTitleEnvironment } from '../../settings/title-environment'
 import { usePhoneTheme } from '../../theme/ThemeProvider'
 import { BigTitle, FadeOut, SectionLabel } from '../../ui/chrome'
+import { GlassContent } from '../../ui/Glass'
+import { Screen } from '../../ui/Screen'
 import { SegmentedTabs } from '../../ui/SegmentedTabs'
 import { SessionRow } from '../../ui/SessionRow'
 
@@ -87,58 +89,60 @@ export default function Inbox() {
   )
 
   return (
-    <View className="flex-1" style={{ paddingTop: insets.top + 6 }}>
-      {/* "Mark all seen" returns once it acknowledges on the server (acknowledgeSessionDone). */}
-      <BigTitle title="Inbox" count={needsCount || undefined} environment={titleEnvironment} />
-      <SegmentedTabs
-        tabs={[
-          { key: 'needs', label: 'Needs you', count: needsCount || undefined },
-          { key: 'done', label: 'Done', count: doneCount || undefined },
-          { key: 'failed', label: 'Failed', count: failedCount || undefined },
-        ]}
-        value={tab}
-        onChange={setTab}
-      />
-      <View className="flex-1">
-        {sections[tab].length === 0 ? (
-          <View className="flex-1 items-center justify-center px-10 pb-32">
-            <View
-              style={{
-                width: 64,
-                height: 64,
-                borderRadius: 32,
-                backgroundColor: theme.statusWash.done,
-                alignItems: 'center',
-                justifyContent: 'center',
-                marginBottom: 10,
-              }}
-            >
-              <CheckIcon size={28} color={theme.status.done} weight="bold" />
+    <Screen tab="inbox">
+      <GlassContent style={{ paddingTop: insets.top + 6 }}>
+        {/* "Mark all seen" returns once it acknowledges on the server (acknowledgeSessionDone). */}
+        <BigTitle title="Inbox" count={needsCount || undefined} environment={titleEnvironment} />
+        <SegmentedTabs
+          tabs={[
+            { key: 'needs', label: 'Needs you', count: needsCount || undefined },
+            { key: 'done', label: 'Done', count: doneCount || undefined },
+            { key: 'failed', label: 'Failed', count: failedCount || undefined },
+          ]}
+          value={tab}
+          onChange={setTab}
+        />
+        <View className="flex-1">
+          {sections[tab].length === 0 ? (
+            <View className="flex-1 items-center justify-center px-10 pb-32">
+              <View
+                style={{
+                  width: 64,
+                  height: 64,
+                  borderRadius: 32,
+                  backgroundColor: theme.statusWash.done,
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  marginBottom: 10,
+                }}
+              >
+                <CheckIcon size={28} color={theme.status.done} weight="bold" />
+              </View>
+              <AppText variant="text-20-medium" style={{ color: theme.fg }}>
+                All clear
+              </AppText>
+              <AppText
+                variant="text-14-regular"
+                style={{ color: theme.muted, textAlign: 'center', marginTop: 4 }}
+              >
+                {EMPTY_COPY[tab]}
+              </AppText>
             </View>
-            <AppText variant="text-20-medium" style={{ color: theme.fg }}>
-              All clear
-            </AppText>
-            <AppText
-              variant="text-14-regular"
-              style={{ color: theme.muted, textAlign: 'center', marginTop: 4 }}
-            >
-              {EMPTY_COPY[tab]}
-            </AppText>
-          </View>
-        ) : (
-          <SectionList
-            className="flex-1"
-            sections={sections[tab]}
-            keyExtractor={(row) => row.session.externalId}
-            renderItem={renderItem}
-            renderSectionHeader={({ section }) => <SectionLabel>{section.label}</SectionLabel>}
-            stickySectionHeadersEnabled={false}
-            contentContainerStyle={{ paddingHorizontal: 8, paddingBottom: insets.bottom + 140 }}
-            showsVerticalScrollIndicator={false}
-          />
-        )}
-        <FadeOut />
-      </View>
-    </View>
+          ) : (
+            <SectionList
+              className="flex-1"
+              sections={sections[tab]}
+              keyExtractor={(row) => row.session.externalId}
+              renderItem={renderItem}
+              renderSectionHeader={({ section }) => <SectionLabel>{section.label}</SectionLabel>}
+              stickySectionHeadersEnabled={false}
+              contentContainerStyle={{ paddingHorizontal: 8, paddingBottom: insets.bottom + 140 }}
+              showsVerticalScrollIndicator={false}
+            />
+          )}
+          <FadeOut />
+        </View>
+      </GlassContent>
+    </Screen>
   )
 }
