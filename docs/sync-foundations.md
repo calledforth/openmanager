@@ -1711,6 +1711,30 @@ row 27's preference re-read cover the same ground.
 - Fragments, beats, keepalives, acks, the send window and lagging catch-ups (§7.2).
 - Protocol bump. No migration.
 
+### 6.4 As built (F5b, protocol v20)
+
+Decisions the design above left open, or where the code differed:
+
+- **Replay answers are the stored JSON.** The reader concatenates each row's `event_json` inside the
+  fixed record wrapper and the socket sends that text as is, so `replayBytes` (`octet_length` sum,
+  wrapper, digit count, envelope) is exactly what is sent. A unit test compares the formula with the
+  serialized answer. Snapshots are validated once (`ScopeSnapshotSchema`) and serialized once.
+- **The environment snapshot also carries provider profiles.** `provider.catalog.updated` is an
+  environment-scope event and profiles are client-visible rows; a server-initiated catch-up runs no
+  resync, so a missed profile change would otherwise wait for the next reconnect. Drafts stay out:
+  the client marks them unlisted on every environment snapshot and `draft-sync` relists.
+- **`session.list`, `session.history` and `composer.preferences.get` are deleted from the server
+  too**, with `HistoryCursorSchema`, the session list cursor, `PAGE_LIMIT_*` and the pagers. The
+  thread service keeps `summaries()` and `threadState()` as inspection reads for tests.
+- **`readThreadState`** reads a thread with one query per table (turns, messages, parts, activity,
+  pending requests); the old reader hydrated each message and each turn's requests separately.
+- **Every scope recovers by `subscription.replay`**, the session scope included; the client folds
+  a replay answer in one `store.update`. A replace keeps the identity of unchanged objects
+  (`share`), so a catch-up that changes nothing re-renders nothing.
+- **Small scopes now often catch up by snapshot.** For a short chat a snapshot is frequently smaller
+  than even a short replay; that is the rule working, not a fallback.
+- **Desktop** files its whole Convex transcript through its own `legacy-history.ts`.
+
 ---
 
 ## 7. Rule 5: no artificial limits, liveness and flow control
