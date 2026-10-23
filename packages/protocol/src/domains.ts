@@ -37,13 +37,14 @@ export const EnvironmentSchema = z.object({ environmentId: EntityIdSchema, name:
  * so a folder moved or deleted since registration reads as missing.
  */
 /**
- * A cheap summary of what a workspace offers, computed when it is listed and
- * never by walking the tree: whether the root is a git checkout (one `.git`
- * stat) and which providers the environment can start right now.
+ * A cheap summary of what a workspace offers, observed on a command that uses
+ * the workspace and stored with it, never by walking the tree: whether the
+ * root is a git checkout (one `.git` stat). Which providers can start a
+ * session is a current reading of provider health (`ProviderHealth.available`),
+ * not a fact about the workspace (docs/sync-foundations.md §4.4).
  */
 export const WorkspaceCapabilitiesSchema = z.object({
   git: z.boolean(),
-  providers: z.array(EntityIdSchema),
 })
 /**
  * Where a git workspace's checkout points, read from `HEAD` when the workspace
@@ -69,7 +70,7 @@ export const WorkspaceSchema = z.object({
   /** Omitted by older environments; fall back to `exists` in that case. */
   availability: z.enum(['available', 'missing', 'inaccessible']).optional(),
   /** Defaulted for the same reason: an older environment reads as offering nothing. */
-  capabilities: WorkspaceCapabilitiesSchema.default({ git: false, providers: [] }),
+  capabilities: WorkspaceCapabilitiesSchema.default({ git: false }),
   /** Absent outside a git checkout and on older environments. */
   git: WorkspaceGitSchema.optional(),
 })

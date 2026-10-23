@@ -1,11 +1,14 @@
 import { randomUUID } from 'node:crypto'
 import { existsSync, readFileSync, statSync } from 'node:fs'
 import { basename, join, resolve } from 'node:path'
+import type { DatabaseSync } from 'node:sqlite'
+import { isDeepStrictEqual } from 'node:util'
 import {
   ProofCommandSchemas,
   ProofEventSchemas,
   ProofResponseSchemas,
   type CommandEnvelope,
+  type DurableEvent,
   type ErrorCode,
   type ProofEvent,
   type Workspace,
@@ -13,7 +16,19 @@ import {
 } from '@openmanager/protocol/node'
 import { auditValue, type AuditLog } from './audit.ts'
 import type { CommandContext } from './command-context.ts'
-import { openEnvironmentDatabase } from './db/database.ts'
+import {
+  gitJsonOf,
+  gitReadingOf,
+  lastSessionActivity,
+  readWorkspace,
+  readWorkspaceRow,
+  readWorkspaceRows,
+  readWorkspaces,
+  workspaceFromRow,
+  type GitReading,
+  type WorkspaceRow,
+} from './db/workspace-rows.ts'
+import { workspaceRemovalEvents } from './db/deletions.ts'
 import {
   canonicalizeRoot,
   canonicalizeUnavailableRoot,
@@ -51,6 +66,12 @@ export function readWorkspaceGit(root: string): WorkspaceGit | undefined {
   }
 }
 
+/** What a folder's checkout looks like now: one `.git` stat and its `HEAD`. */
+export function readGitReading(root: string): GitReading {
+  const git = readWorkspaceGit(root)
+  return { checkout: existsSync(join(root, '.git')), ...(git ? { git } : {}) }
+}
+
 export interface RegisteredWorkspace {
   readonly workspaceId: string
   readonly name: string
@@ -69,26 +90,33 @@ export type WorkspaceRegistration =
   | { ok: true; workspace: Workspace }
   | { ok: false; code: Extract<ErrorCode, 'validation' | 'not_found'>; message: string }
 
+/**
+ * Where the registry reads and writes: the event database's connection, and
+ * the event service's atomic append (docs/sync-foundations.md §4.7.11). The
+ * registry opens no connection of its own and writes no row itself: every
+ * change is a `workspace.*` event whose projection is the one writer, and its
+ * cache follows committed records only: those its own writes return, and any
+ * other the host hands it through `apply`.
+ */
+export interface WorkspaceStore {
+  database: DatabaseSync
+  environmentId: string
+  /** Commit events in one transaction and answer the records that committed. */
+  appendAtomic(events: readonly ProofEvent[]): readonly DurableEvent[]
+  /** Write whatever the batcher holds, so session times read from rows are current. */
+  flush(): void
+}
+
 export interface WorkspaceRegistryOptions {
   clock?: () => number
-  /** Where registration changes are announced so every connected client sees them. */
-  events?: { environmentId: string; emit: (event: ProofEvent) => void }
   /** Runs before a removal is announced, so live work in the folder can be stopped. */
   onUnregister?: (workspaceId: string) => void
   /**
-   * Provider IDs the environment can start a session with right now. Read
-   * each time workspaces are listed, so health changes show up without a
-   * restart. Defaults to none.
+   * A change an observation found could not be written. The command that
+   * observed it still routes by what the folder is now; the row and every
+   * client keep the last state that was written until the next observation.
    */
-  availableProviders?: () => readonly string[]
-}
-
-type WorkspaceRow = {
-  workspace_id: string
-  name: string
-  path: string
-  last_used_at: number | null
-  availability: RegisteredWorkspace['availability']
+  onObservationError?: (workspaceId: string, error: unknown) => void
 }
 
 function hasCode(error: unknown, ...codes: string[]): boolean {
@@ -105,9 +133,15 @@ function hasCode(error: unknown, ...codes: string[]): boolean {
  * restart; roots passed on the command line are registered the same way on
  * every start. A registered folder that has since been moved or deleted stays
  * listed, flagged as missing, until it is unregistered or comes back.
+ *
+ * Every write is an event (docs/sync-foundations.md §4.4): registering,
+ * renaming, what an observation of the folder found (availability and the
+ * git reading), the last-used stamp and removal. The folder is observed on
+ * the command paths that use it; a listing and the environment snapshot
+ * read rows only.
  */
 export function openWorkspaceRegistry(
-  dataDir: string,
+  store: WorkspaceStore,
   roots: readonly string[],
   audit: AuditLog,
   options: WorkspaceRegistryOptions = {},
@@ -125,192 +159,131 @@ export function openWorkspaceRegistry(
     }
   }
   const clock = options.clock ?? Date.now
-  const database = openEnvironmentDatabase(dataDir)
+  const { database } = store
   const byId = new Map<string, RegisteredWorkspace>()
   const icons = createWorkspaceIconCache()
-  const statements = {
-    availability: database.prepare(
-      'UPDATE workspaces SET availability = ?, updated_at = ? WHERE workspace_id = ?',
-    ),
-    byPath: database.prepare(
-      'SELECT workspace_id, name, path, last_used_at FROM workspaces WHERE path = ?',
-    ),
-    insert: database.prepare(`
-      INSERT INTO workspaces (workspace_id, name, path, availability, created_at, updated_at)
-      VALUES (?, ?, ?, 'available', ?, ?)
-    `),
-    rename: database.prepare(
-      'UPDATE workspaces SET name = ?, updated_at = ? WHERE workspace_id = ?',
-    ),
-    remove: database.prepare('DELETE FROM workspaces WHERE workspace_id = ?'),
-    markUsed: database.prepare(
-      'UPDATE workspaces SET last_used_at = ?, updated_at = ? WHERE workspace_id = ?',
-    ),
-    // One grouped read over the (workspace_id, updated_at) index; no per-row query.
-    lastActivity: database.prepare(
-      'SELECT workspace_id, MAX(updated_at) AS last_activity_at FROM sessions GROUP BY workspace_id',
-    ),
-  }
 
   const findByRoot = (root: string): RegisteredWorkspace | undefined => {
-    const row = statements.byPath.get(root) as WorkspaceRow | undefined
-    return row ? byId.get(row.workspace_id) : undefined
+    for (const workspace of byId.values()) if (workspace.root === root) return workspace
+    return undefined
   }
 
-  /** Register a canonical root, or return the existing registration for it. */
-  const upsert = (root: string, name: string | undefined): RegisteredWorkspace => {
-    const now = clock()
-    const existing = findByRoot(root)
-    if (existing) {
-      if (name === undefined || name === existing.name) return existing
-      statements.rename.run(name, now, existing.workspaceId)
-      const renamed = Object.freeze({ ...existing, name })
-      byId.set(existing.workspaceId, renamed)
-      return renamed
-    }
-    const workspaceId = randomUUID()
-    const workspace = Object.freeze({
-      workspaceId,
-      name: name ?? basename(root) ?? root,
-      root,
-      lastUsedAt: null,
-      availability: 'available' as const,
-    })
-    statements.insert.run(workspaceId, workspace.name, root, now, now)
-    byId.set(workspaceId, workspace)
-    return workspace
+  /** Commit events together and follow what committed. */
+  const commit = (events: readonly ProofEvent[]) => {
+    for (const record of store.appendAtomic(events)) apply(record.event)
   }
 
-  try {
-    const rows = database
-      .prepare(
-        'SELECT workspace_id, name, path, last_used_at, availability FROM workspaces ORDER BY created_at, rowid',
-      )
-      .all() as WorkspaceRow[]
-    for (const row of rows) {
-      byId.set(
-        row.workspace_id,
-        Object.freeze({
-          workspaceId: row.workspace_id,
-          name: row.name,
-          root: row.path,
-          lastUsedAt: row.last_used_at,
-          availability: row.availability,
-        }),
-      )
-    }
-    // New invalid roots are startup errors; known unavailable roots retain
-    // their registration and sessions so the user can recover them.
-    for (const configured of roots) {
-      let root: string
-      try {
-        root = canonicalizeRoot(configured)
-      } catch (error) {
-        if (findByRoot(canonicalizeUnavailableRoot(configured))) continue
-        throw error
-      }
-      upsert(root, undefined)
-    }
-  } catch (error) {
-    database.close()
-    throw error
-  }
-
-  const toIso = (epochMs: number | null): string | null =>
-    epochMs === null ? null : new Date(epochMs).toISOString()
-
-  /** Latest session `updated_at` per workspace, read once per listing. */
-  const readSessionActivity = (): Map<string, number> => {
-    const rows = statements.lastActivity.all() as {
-      workspace_id: string
-      last_activity_at: number | null
-    }[]
-    const activity = new Map<string, number>()
-    for (const row of rows) {
-      if (row.last_activity_at !== null) activity.set(row.workspace_id, row.last_activity_at)
-    }
-    return activity
-  }
-
-  const toPublic = (
-    workspace: RegisteredWorkspace,
-    sessionActivity: Map<string, number> = readSessionActivity(),
-    providers: readonly string[] = options.availableProviders?.() ?? [],
-  ): Workspace => {
-    const exists = workspace.availability === 'available'
-    const sessionLast = sessionActivity.get(workspace.workspaceId) ?? null
-    const lastActivityAt =
-      sessionLast === null
-        ? workspace.lastUsedAt
-        : Math.max(sessionLast, workspace.lastUsedAt ?? sessionLast)
-    return {
-      workspaceId: workspace.workspaceId,
-      name: workspace.name,
-      path: workspace.root,
-      lastUsedAt: toIso(workspace.lastUsedAt),
-      lastActivityAt: toIso(lastActivityAt),
-      exists,
-      availability: workspace.availability,
-      capabilities: {
-        // A single stat of `<root>/.git`; never a tree walk (D9 cost budget).
-        git: exists && existsSync(join(workspace.root, '.git')),
-        providers: [...providers],
-      },
-      ...gitOf(workspace),
-    }
-  }
-
-  // The checkout each workspace was last announced on, so a branch switch
-  // made outside the app reaches clients the next time the workspace is used.
-  const announcedGit = new Map<string, string>()
-  const gitOf = (workspace: RegisteredWorkspace): { git?: WorkspaceGit } => {
-    const git =
-      workspace.availability === 'available' ? readWorkspaceGit(workspace.root) : undefined
-    announcedGit.set(workspace.workspaceId, JSON.stringify(git ?? null))
-    return git ? { git } : {}
-  }
-  const gitChanged = (workspace: RegisteredWorkspace): boolean => {
-    const previous = announcedGit.get(workspace.workspaceId)
-    if (previous === undefined || workspace.availability !== 'available') return false
-    return previous !== JSON.stringify(readWorkspaceGit(workspace.root) ?? null)
-  }
-
-  const emit = (
-    name: 'workspace.updated' | 'workspace.removed',
-    payload: { workspace: Workspace } | { workspaceId: string },
-  ) => {
-    if (!options.events) return
-    const schema = ProofEventSchemas[name] as { parse(input: unknown): ProofEvent }
-    options.events.emit(
-      schema.parse({
+  const announce = (workspace: Workspace) =>
+    commit([
+      ProofEventSchemas['workspace.updated'].parse({
         type: 'event',
-        name,
+        name: 'workspace.updated',
         eventId: randomUUID(),
         timestamp: new Date(clock()).toISOString(),
-        scope: { type: 'environment', environmentId: options.events.environmentId },
-        payload,
+        scope: { type: 'environment', environmentId: store.environmentId },
+        payload: { workspace },
+      }),
+    ])
+
+  /** Follow one committed record: the cache never runs ahead of the rows (I11). */
+  const apply = (event: ProofEvent): void => {
+    if (event.name === 'workspace.updated') {
+      const workspace = event.payload.workspace
+      byId.set(
+        workspace.workspaceId,
+        Object.freeze({
+          workspaceId: workspace.workspaceId,
+          name: workspace.name,
+          root: workspace.path,
+          lastUsedAt: workspace.lastUsedAt === null ? null : Date.parse(workspace.lastUsedAt),
+          availability: workspace.availability ?? (workspace.exists ? 'available' : 'missing'),
+        }),
+      )
+    } else if (event.name === 'workspace.removed') {
+      byId.delete(event.payload.workspaceId)
+    }
+  }
+
+  /**
+   * Announce a workspace as `row` describes it; the projection writes it and
+   * the committed record updates the cache before this returns. Built after
+   * a flush, so the recency it states is what the rows say.
+   */
+  const write = (row: WorkspaceRow): RegisteredWorkspace => {
+    store.flush()
+    announce(workspaceFromRow(row, lastSessionActivity(database, row.workspace_id)))
+    const written = byId.get(row.workspace_id)
+    if (!written) throw new Error(`Workspace ${row.workspace_id} was written but not applied`)
+    return written
+  }
+
+  /**
+   * Look at the folder and announce what changed: availability, and the git
+   * reading while it is available. Answers the workspace as the folder is
+   * now, so routing never follows a stale row, even when the write failed.
+   */
+  const observe = (workspace: RegisteredWorkspace): RegisteredWorkspace => {
+    const availability = availabilityOf(workspace.root)
+    const reading = availability === 'available' ? readGitReading(workspace.root) : undefined
+    const row = readWorkspaceRow(database, workspace.workspaceId)
+    if (!row) return workspace
+    const stored = row.availability === 'available' ? gitReadingOf(row) : undefined
+    if (row.availability === availability && isDeepStrictEqual(stored, reading)) return workspace
+    try {
+      return write({ ...row, availability, git_json: gitJsonOf(availability, reading) })
+    } catch (error) {
+      options.onObservationError?.(workspace.workspaceId, error)
+      return Object.freeze({ ...workspace, availability })
+    }
+  }
+
+  /** Register a canonical root, or rename the registration it already has. */
+  const upsert = (root: string, name: string | undefined): RegisteredWorkspace => {
+    const existing = findByRoot(root)
+    if (existing) {
+      const current = observe(existing)
+      if (name === undefined || name === current.name) return current
+      const row = readWorkspaceRow(database, existing.workspaceId)
+      if (!row) throw new Error(`Workspace ${existing.workspaceId} has no row`)
+      return write({ ...row, name })
+    }
+    const availability = availabilityOf(root)
+    return write({
+      workspace_id: randomUUID(),
+      name: name ?? basename(root) ?? root,
+      path: root,
+      availability,
+      last_used_at: null,
+      git_json: gitJsonOf(
+        availability,
+        availability === 'available' ? readGitReading(root) : undefined,
+      ),
+    })
+  }
+
+  for (const row of readWorkspaceRows(database)) {
+    byId.set(
+      row.workspace_id,
+      Object.freeze({
+        workspaceId: row.workspace_id,
+        name: row.name,
+        root: row.path,
+        lastUsedAt: row.last_used_at,
+        availability: row.availability,
       }),
     )
   }
-
-  /** Filesystem truth is persisted and published on list and every open. */
-  const refresh = (
-    workspace: RegisteredWorkspace,
-    sessionActivity?: Map<string, number>,
-    providers?: readonly string[],
-  ): RegisteredWorkspace => {
-    const availability = availabilityOf(workspace.root)
-    if (workspace.availability === availability) {
-      if (gitChanged(workspace)) {
-        emit('workspace.updated', { workspace: toPublic(workspace, sessionActivity, providers) })
-      }
-      return workspace
+  // New invalid roots are startup errors; known unavailable roots retain
+  // their registration and sessions so the user can recover them.
+  for (const configured of roots) {
+    let root: string
+    try {
+      root = canonicalizeRoot(configured)
+    } catch (error) {
+      if (findByRoot(canonicalizeUnavailableRoot(configured))) continue
+      throw error
     }
-    statements.availability.run(availability, clock(), workspace.workspaceId)
-    const updated = Object.freeze({ ...workspace, availability })
-    byId.set(workspace.workspaceId, updated)
-    emit('workspace.updated', { workspace: toPublic(updated, sessionActivity, providers) })
-    return updated
+    if (!findByRoot(root)) upsert(root, undefined)
   }
 
   const rejectWorkspace = (
@@ -395,31 +368,29 @@ export function openWorkspaceRegistry(
         'That folder path cannot be resolved on this environment.',
       )
     }
-    const workspace = toPublic(refresh(upsert(root, input.name?.trim() || undefined)))
-    emit('workspace.updated', { workspace })
+    const registered = upsert(root, input.name?.trim() || undefined)
+    const workspace = readWorkspace(database, registered.workspaceId)
+    if (!workspace) throw new Error(`Workspace ${registered.workspaceId} has no row`)
     return { ok: true, workspace }
   }
 
-  /** Forget a workspace. Sessions recorded under it go with it (FK cascade). */
+  /**
+   * Forget a workspace. One transaction says everything that goes with it:
+   * each of its sessions, deepest first, its new-session drafts detached,
+   * then the workspace itself (db/deletions.ts).
+   */
   const unregister = (workspaceId: string): boolean => {
     const workspace = byId.get(workspaceId)
     if (!workspace) return false
     options.onUnregister?.(workspaceId)
     icons.invalidate(workspace.root)
-    statements.remove.run(workspaceId)
-    byId.delete(workspaceId)
-    emit('workspace.removed', { workspaceId })
+    store.flush()
+    commit(workspaceRemovalEvents(database, store.environmentId, workspaceId, clock()))
     return true
   }
 
-  let closed = false
-  const list = (): Workspace[] => {
-    const sessionActivity = readSessionActivity()
-    const providers = options.availableProviders?.() ?? []
-    return [...byId.values()].map((workspace) =>
-      toPublic(refresh(workspace, sessionActivity, providers), sessionActivity, providers),
-    )
-  }
+  /** Rows only: what was last observed and announced. Never writes. */
+  const list = (): Workspace[] => readWorkspaces(database)
 
   return {
     list,
@@ -427,12 +398,19 @@ export function openWorkspaceRegistry(
     unregister,
 
     /**
+     * Follow a committed record written elsewhere. The host hands over every
+     * record the event service commits; the registry's own are already
+     * applied, and applying one twice changes nothing.
+     */
+    apply,
+
+    /**
      * The folder most recently worked in that can still be opened: where a
      * provider is probed before any client has named a workspace. Folders
      * never used keep their registration order behind the used ones.
      *
-     * Reads the filesystem but records nothing. A listing or an open persists
-     * and announces what it finds; this is asked from inside those very
+     * Reads the filesystem but records nothing. A command that uses a
+     * workspace announces what it finds; this is asked from inside those very
      * announcements, so it must not make one of its own.
      */
     mostRecent(): RegisteredWorkspace | undefined {
@@ -448,13 +426,13 @@ export function openWorkspaceRegistry(
      */
     availability(workspaceId: string): 'unknown' | RegisteredWorkspace['availability'] {
       const workspace = byId.get(workspaceId)
-      return workspace ? refresh(workspace).availability : 'unknown'
+      return workspace ? observe(workspace).availability : 'unknown'
     },
 
     /** Look a workspace up without auditing; for callers that will report a miss themselves. */
     get(workspaceId: string): RegisteredWorkspace | undefined {
       const workspace = byId.get(workspaceId)
-      const current = workspace && refresh(workspace)
+      const current = workspace && observe(workspace)
       return current?.availability === 'available' ? current : undefined
     },
 
@@ -469,7 +447,7 @@ export function openWorkspaceRegistry(
         rejectWorkspace(workspaceId, 'unknown', context)
         return undefined
       }
-      const current = refresh(workspace)
+      const current = observe(workspace)
       if (current.availability !== 'available') {
         rejectWorkspace(workspaceId, current.availability, context)
         return undefined
@@ -492,7 +470,7 @@ export function openWorkspaceRegistry(
         rejectWorkspace(workspaceId, 'unknown', context)
         return { ok: false, reason: 'unknown_workspace' }
       }
-      const current = refresh(workspace)
+      const current = observe(workspace)
       if (current.availability !== 'available') {
         rejectWorkspace(workspaceId, current.availability, context)
         return { ok: false, reason: 'unknown_workspace' }
@@ -519,13 +497,12 @@ export function openWorkspaceRegistry(
     markUsed(workspaceId: string): void {
       const workspace = byId.get(workspaceId)
       if (!workspace) return
-      const now = clock()
-      statements.markUsed.run(now, now, workspaceId)
-      const used = Object.freeze({ ...workspace, lastUsedAt: now })
-      byId.set(workspaceId, used)
+      observe(workspace)
+      const row = readWorkspaceRow(database, workspaceId)
+      if (!row) return
       // Connected clients order recents from their cached workspaces, so a
       // start must reach them now rather than on their next handshake.
-      emit('workspace.updated', { workspace: toPublic(refresh(used)) })
+      write({ ...row, last_used_at: clock() })
     },
 
     /**
@@ -553,6 +530,10 @@ export function openWorkspaceRegistry(
           if (!parsed.success) {
             return errorResult(command.requestId, 'validation', 'Invalid workspace list request.')
           }
+          // A read that also looks at every folder (plan risk 8): a folder
+          // deleted outside the app is noticed on the next listing, as
+          // before, and announced to every client. The snapshot only reads.
+          for (const workspace of [...byId.values()]) observe(workspace)
           return ProofResponseSchemas['workspace.list'].parse({
             type: 'response',
             requestId: command.requestId,
@@ -609,11 +590,8 @@ export function openWorkspaceRegistry(
       }
     },
 
-    close(): void {
-      if (closed) return
-      closed = true
-      database.close()
-    },
+    /** Nothing to release: the registry holds no connection of its own. */
+    close(): void {},
   }
 }
 

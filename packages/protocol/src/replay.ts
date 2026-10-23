@@ -13,7 +13,6 @@ import {
   ThreadScopeSchema,
   EnvironmentSchema,
   WorkspaceSchema,
-  SessionSchema,
   SessionSummarySchema,
   ThreadSchema,
   TurnSchema,
@@ -129,7 +128,7 @@ const EnvironmentSnapshotSchema = z
 const SessionSnapshotSchema = z
   .object({
     cursor: CursorSchema.extend({ scope: SessionScopeSchema }),
-    state: z.object({ session: SessionSchema, threads: z.array(ThreadSchema) }),
+    state: z.object({ session: SessionSummarySchema, threads: z.array(ThreadSchema) }),
   })
   .superRefine((snapshot, ctx) => {
     const id = snapshot.cursor.scope.sessionId

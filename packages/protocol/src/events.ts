@@ -8,7 +8,7 @@ import {
   SessionScopeSchema,
   ThreadScopeSchema,
   WorkspaceSchema,
-  SessionSchema,
+  SessionSummarySchema,
   SessionStatusSchema,
   InteractionKindSchema,
   ThreadSchema,
@@ -23,6 +23,7 @@ import {
 } from './domains.js'
 import {
   ComposerPreferenceTargetSchema,
+  PreferenceRevisionSchema,
   ProviderComposerProfileSchema,
   SessionComposerStateSchema,
   WorkspaceComposerPreferenceSchema,
@@ -65,10 +66,16 @@ export const ProofEventSchemas = {
     EnvironmentScopeSchema,
     z.object({ workspaceId: EntityIdSchema }),
   ),
+  /**
+   * The whole sidebar row, as the projection writes it: provider, status and
+   * time included, in the canonical form a listing reads back (null settle
+   * and done times, no activity), so a client that only hears this event
+   * holds what a fresh load would (docs/sync-foundations.md §4.7.2).
+   */
   'session.created': event(
     'session.created',
     EnvironmentScopeSchema,
-    z.object({ session: SessionSchema }),
+    z.object({ session: SessionSummarySchema }),
   ),
   'session.updated': event(
     'session.updated',
@@ -78,6 +85,11 @@ export const ProofEventSchemas = {
       title: z.string().nullable().optional(),
       titleSource: SessionTitleSourceSchema.optional(),
       status: SessionStatusSchema.optional(),
+      /**
+       * Present when the session's activity time moved: its place in the
+       * list. A title never moves it. The client reads it only from here.
+       */
+      updatedAt: TimestampSchema.optional(),
       /** Present only when the session was settled (a time) or brought back (null). */
       settledAt: TimestampSchema.nullable().optional(),
       /** Present only when a turn completed (a time) or the user acknowledged it (null). */
@@ -107,11 +119,17 @@ export const ProofEventSchemas = {
     EnvironmentScopeSchema,
     z.object({ sessionId: EntityIdSchema, composer: SessionComposerStateSchema }),
   ),
-  /** The remembered selection a new draft in this workspace opens with. */
+  /**
+   * The remembered selection a new draft in this workspace opens with, and
+   * the revision this change gave it.
+   */
   'composer.preferences.updated': event(
     'composer.preferences.updated',
     EnvironmentScopeSchema,
-    ComposerPreferenceTargetSchema.extend({ preference: WorkspaceComposerPreferenceSchema }),
+    ComposerPreferenceTargetSchema.extend({
+      preference: WorkspaceComposerPreferenceSchema,
+      revision: PreferenceRevisionSchema,
+    }),
   ),
   /**
    * A composer draft as last saved, by any paired client. The whole draft, so

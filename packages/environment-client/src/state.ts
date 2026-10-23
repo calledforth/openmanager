@@ -33,7 +33,7 @@ import type {
 import {
   applyDraftDeleted,
   applyDraftSaved,
-  detachWorkspaceDrafts,
+  detachWorkspaceEdits,
   removeSessionDrafts,
 } from './draft-state'
 
@@ -149,10 +149,8 @@ export function deriveSessionStatus(threads: readonly ThreadState[]): SessionSta
 
 function upsertSession(
   state: EnvironmentState,
-  session: Session | ProtocolSessionSummary,
+  session: ProtocolSessionSummary,
   threadIds?: readonly string[],
-  /** When the session names no `updatedAt`, the time it was announced. */
-  at?: string,
 ): EnvironmentState {
   const existing = state.sessions[session.sessionId]
   const listed = session as Partial<ProtocolSessionSummary>
@@ -165,8 +163,8 @@ function upsertSession(
     ...(titleSource ? { titleSource } : {}),
     ...(parentSessionId ? { parentSessionId } : {}),
     status: listed.status ?? existing?.status ?? 'idle',
-    providerId: listed.providerId ?? existing?.providerId,
-    updatedAt: listed.updatedAt ?? existing?.updatedAt ?? at,
+    providerId: session.providerId,
+    updatedAt: session.updatedAt,
     ...settledOf(listed.settledAt, existing?.settledAt),
     ...doneOf(listed.doneAt, existing?.doneAt),
     // A full summary is the whole truth: naming no background work means
@@ -266,26 +264,6 @@ function composerOf(
   return composer ? { composer } : {}
 }
 
-/** Move a session's workspace `lastActivityAt` forward to `at`, never back. */
-function touchWorkspaceActivity(
-  state: EnvironmentState,
-  sessionId: string,
-  at: string,
-): EnvironmentState {
-  const workspaceId = state.sessions[sessionId]?.workspaceId
-  const workspace = workspaceId ? state.workspaces[workspaceId] : undefined
-  if (!workspace) return state
-  const current = workspace.lastActivityAt ? Date.parse(workspace.lastActivityAt) : -Infinity
-  if (!(Date.parse(at) > current)) return state
-  return {
-    ...state,
-    workspaces: {
-      ...state.workspaces,
-      [workspace.workspaceId]: { ...workspace, lastActivityAt: at },
-    },
-  }
-}
-
 function upsertWorkspace(state: EnvironmentState, workspace: Workspace): EnvironmentState {
   return {
     ...state,
@@ -370,24 +348,13 @@ function resolveInteraction(current: ThreadState, interactionId: string): Thread
 }
 
 /**
- * Drop a session and every child under it. The environment deletes children
- * with their parent and announces only the parent, so the client mirrors the
- * cascade instead of leaving orphaned subagent rows in the sidebar.
+ * Drop one session, its threads and its draft. The environment announces
+ * every session a deletion takes, each child before its parent, so the
+ * client mirrors no cascade (docs/sync-foundations.md §3.6 row 12).
  */
 function removeSession(state: EnvironmentState, sessionId: string): EnvironmentState {
-  // The parent itself may never have been loaded (a paginated list can bring
-  // a child in first), so descendants are searched for regardless.
-  const removed = new Set<string>()
-  const pending = [sessionId]
-  while (pending.length) {
-    const id = pending.pop()!
-    if (removed.has(id)) continue
-    removed.add(id)
-    for (const session of Object.values(state.sessions)) {
-      if (session.parentSessionId === id) pending.push(session.sessionId)
-    }
-  }
-  if (![...removed].some((id) => id in state.sessions)) return removeSessionDrafts(state, removed)
+  const removed = new Set([sessionId])
+  if (!(sessionId in state.sessions)) return removeSessionDrafts(state, removed)
   const sessions = { ...state.sessions }
   const threads = { ...state.threads }
   for (const id of removed) {
@@ -421,23 +388,19 @@ export function applyEvent(state: EnvironmentState, event: ProofEvent): Environm
     case 'workspace.updated':
       return upsertWorkspace(state, event.payload.workspace)
     case 'workspace.removed':
-      return detachWorkspaceDrafts(
+      // Its sessions went, and its drafts were detached, on events before it (row 13).
+      return detachWorkspaceEdits(
         applyWorkspaceRemoved(state, event.payload.workspaceId),
         event.payload.workspaceId,
       )
     case 'session.created':
-      // The announced session carries no `updatedAt`; without the event time
-      // it would sort as the epoch and a brand-new session would open at the
-      // bottom of the sidebar.
-      return touchWorkspaceActivity(
-        upsertSession(state, event.payload.session, undefined, event.timestamp),
-        event.payload.session.sessionId,
-        event.timestamp,
-      )
+      // The whole row, provider and time included (§4.7.2). Its workspace's
+      // recency comes on the environment's own `workspace.updated` (§4.7.1).
+      return upsertSession(state, event.payload.session)
     case 'session.updated': {
       const session = state.sessions[event.payload.sessionId]
       if (!session) return state
-      const { title, status, settledAt, doneAt, backgroundTasks } = event.payload
+      const { title, status, updatedAt, settledAt, doneAt, backgroundTasks } = event.payload
       const {
         backgroundTasks: heldTasks,
         waitingOn: heldWaitingOn,
@@ -468,8 +431,8 @@ export function applyEvent(state: EnvironmentState, event: ProofEvent): Environm
         ...(status !== undefined ? { status } : {}),
         ...(settledAt !== undefined ? { settledAt } : {}),
         ...(doneAt !== undefined ? { doneAt } : {}),
-        // Settling or acknowledging alone is not activity; the session keeps its place.
-        ...(title !== undefined || status !== undefined ? { updatedAt: event.timestamp } : {}),
+        // The session's place moves only when the environment says so (§4.7.1).
+        ...(updatedAt !== undefined ? { updatedAt } : {}),
       }
       // An event that restates what the client already holds (the echo of a
       // command whose answer it applied) must not hand every reader a new
@@ -524,19 +487,6 @@ export function applyEvent(state: EnvironmentState, event: ProofEvent): Environm
   const scope = event.scope
   if (scope.type !== 'thread') return state
   const thread: Thread = { threadId: scope.threadId, sessionId: scope.sessionId }
-
-  switch (event.name) {
-    case 'turn.started':
-    case 'turn.completed':
-    case 'turn.interrupted':
-    case 'turn.failed':
-      // A turn is session activity; keep the workspace's recency current
-      // between listings instead of waiting for the next handshake.
-      state = touchWorkspaceActivity(state, thread.sessionId, event.timestamp)
-      break
-    default:
-      break
-  }
 
   switch (event.name) {
     case 'turn.started':
@@ -939,16 +889,40 @@ export function applyInteractionResolved(
  * `session.created` event, so it carries the announcement time: without it the
  * session would be listed as the oldest, at the bottom of the sidebar, and move
  * to the top once the event came. With it the event restates what is held.
+ *
+ * The answer is a bare `Session`; the caller fills the summary's required
+ * fields from what it already has, the provider it asked for and the
+ * announcement time, until the `pending.creates` overlay replaces this writer
+ * (docs/sync-foundations.md §4.7.2, decision D7).
  */
 export function applySessionCreated(
   state: EnvironmentState,
-  payload: { session: Session; thread: Thread; announcedAt?: string },
+  payload: { session: Session; thread: Thread; announcedAt: string },
+  providerId: string,
 ): EnvironmentState {
   const { announcedAt } = payload
-  const upserted = upsertSession(state, payload.session, [payload.thread.threadId], announcedAt)
-  const withSession = announcedAt
-    ? touchWorkspaceActivity(upserted, payload.session.sessionId, announcedAt)
-    : upserted
+  const existing = state.sessions[payload.session.sessionId]
+  const upserted = upsertSession(
+    state,
+    {
+      ...payload.session,
+      providerId,
+      // An event that already arrived is newer than this answer: keep what it said.
+      ...(existing
+        ? {
+            status: existing.status,
+            updatedAt: existing.updatedAt,
+            settledAt: existing.settledAt ?? null,
+            doneAt: existing.doneAt ?? null,
+            ...(existing.backgroundTasks ? { backgroundTasks: existing.backgroundTasks } : {}),
+            ...(existing.waitingOn ? { waitingOn: existing.waitingOn } : {}),
+            ...(existing.inBackground ? { inBackground: existing.inBackground } : {}),
+          }
+        : { status: 'idle' as const, updatedAt: announcedAt, settledAt: null, doneAt: null }),
+    },
+    [payload.thread.threadId],
+  )
+  const withSession = upserted
   if (withSession.threads[payload.thread.threadId]) return withSession
   return {
     ...withSession,
@@ -961,7 +935,7 @@ export function applySessionCreated(
 
 export function applySessionList(
   state: EnvironmentState,
-  sessions: readonly (Session | ProtocolSessionSummary)[],
+  sessions: readonly ProtocolSessionSummary[],
 ): EnvironmentState {
   let next = state
   for (const session of sessions) next = upsertSession(next, session)
@@ -977,6 +951,10 @@ export function applyWorkspaceList(
   return next
 }
 
+/**
+ * Drop a workspace and what is read per workspace. Its sessions and drafts
+ * are not touched here: the environment announces each change to them.
+ */
 export function applyWorkspaceRemoved(
   state: EnvironmentState,
   workspaceId: string,
@@ -986,16 +964,12 @@ export function applyWorkspaceRemoved(
   delete workspaces[workspaceId]
   const composerPreferences = { ...state.composerPreferences }
   delete composerPreferences[workspaceId]
-  let next: EnvironmentState = {
+  return {
     ...state,
     workspaces,
     workspaceOrder: state.workspaceOrder.filter((id) => id !== workspaceId),
     composerPreferences,
   }
-  for (const session of Object.values(state.sessions)) {
-    if (session.workspaceId === workspaceId) next = removeSession(next, session.sessionId)
-  }
-  return next
 }
 
 const sameJson = (left: unknown, right: unknown) => JSON.stringify(left) === JSON.stringify(right)

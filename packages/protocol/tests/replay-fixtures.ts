@@ -48,7 +48,7 @@ export const scopeSnapshots: ScopeSnapshot[] = [
           path: 'workspace-1',
           lastUsedAt: null,
           lastActivityAt: null,
-          capabilities: { git: false, providers: [] },
+          capabilities: { git: false },
           exists: true,
         },
       ],
@@ -67,7 +67,14 @@ export const scopeSnapshots: ScopeSnapshot[] = [
   {
     cursor: { scope: sessionScope, epoch: 'epoch-session', sequence: 1 },
     state: {
-      session: { sessionId: 'session-1', workspaceId: 'workspace-1', title: 'Example' },
+      session: {
+        sessionId: 'session-1',
+        workspaceId: 'workspace-1',
+        title: 'Example',
+        status: 'idle',
+        providerId: 'opencode',
+        updatedAt: '2026-09-06T05:00:00Z',
+      },
       threads: [{ threadId: 'thread-1', sessionId: 'session-1' }],
     },
   },

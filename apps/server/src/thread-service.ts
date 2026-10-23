@@ -53,6 +53,8 @@ import {
 } from './db/session-store.ts'
 import type { ArtifactStore } from './artifacts.ts'
 import { waitingKind } from './db/session-activity.ts'
+import type { WriteOptions } from './db/event-repository.ts'
+import { sessionDeletionEvents } from './db/deletions.ts'
 import { pageSessionSummaries } from './session-pagination.ts'
 import type { CommandContext } from './command-context.ts'
 import { formatTitleContext, type TitleContextMessage } from './session-titles/context.ts'
@@ -356,8 +358,12 @@ export function createThreadService(
     artifacts?: ArtifactStore
     database?: DatabaseSync
     flush?: () => void
-    /** Commit several host events together; falls back to one append per event. */
-    appendAtomic?: (events: readonly ProofEvent[]) => void
+    /**
+     * Commit several host events together; falls back to one append per
+     * event. `options` carries host-private facts that ride the write, such
+     * as a child session's provider identity.
+     */
+    appendAtomic?: (events: readonly ProofEvent[], options?: WriteOptions) => void
     /**
      * Write one turn's end now, throwing when it fails instead of keeping it
      * for a retry. Falls back to `appendEvent`.
@@ -429,16 +435,6 @@ export function createThreadService(
 ) {
   const sessions = new Map<string, ThreadRecord>()
   const threads = new Map<string, ThreadRecord>()
-  /**
-   * The provider a session is being created on, from before its row is
-   * written until its record exists. The projection asks the host which
-   * provider to file the row under while `session.created` is still being
-   * appended, and the record that answers from then on is built afterwards;
-   * without this the host can only guess the workspace default, and a
-   * session on any other provider is listed and opened as that default until
-   * the runtime stamp lands.
-   */
-  const announcedProviders = new Map<string, ProviderId>()
   /** Host session per `providerId:providerSessionId` registered as a child this process. */
   const childSessionIds = new Map<string, string>()
   /**
@@ -458,13 +454,27 @@ export function createThreadService(
     cwd: record.cwd,
     ...(sessionId ? { sessionId } : {}),
   })
-  // Persist the opaque identity before allowing prompts to use the provider session.
+  /**
+   * Persist the opaque identity before allowing prompts to use the provider
+   * session. Host-private and not activity (docs/sync-foundations.md §4.4):
+   * it writes the identity alone, never `updated_at`, so no client-visible
+   * field changes and no event is owed. The row's provider was written by
+   * `session.created`; a row that is gone or names another provider is
+   * refused rather than silently left unstamped.
+   */
   const persistRuntimeSession = (record: ThreadRecord, providerSessionId: string): string => {
-    options.database
-      ?.prepare(
-        'UPDATE sessions SET provider_id = ?, provider_session_id = ?, updated_at = ? WHERE session_id = ?',
+    const database = options.database
+    if (!database) return providerSessionId
+    const stamped = database
+      .prepare(
+        'UPDATE sessions SET provider_session_id = ? WHERE session_id = ? AND provider_id = ?',
       )
-      .run(record.providerId, providerSessionId, Date.now(), record.session.sessionId)
+      .run(providerSessionId, record.session.sessionId, record.providerId)
+    if (stamped.changes !== 1) {
+      throw new Error(
+        `Session ${record.session.sessionId} has no row on provider ${record.providerId} to stamp`,
+      )
+    }
     return providerSessionId
   }
 
@@ -632,25 +642,44 @@ export function createThreadService(
   }
 
   /**
-   * Announce a session and its thread. `providerId` is what `providerForSession`
-   * answers while the row is projected; the caller clears it once the record
-   * holds it, so a session never has two sources of truth. Returns the time
-   * the session was announced at.
+   * Announce a session and its thread, in one write. `session.created`
+   * carries the whole row in the canonical form a listing reads back, so a
+   * client that only hears the event holds what a fresh load would
+   * (docs/sync-foundations.md §4.7.2). Returns the time the session was
+   * announced at.
    */
   const persistCreatedThread = (
     session: Session,
     thread: Thread,
-    providerId: ProviderId,
-    alongside: readonly ProofEvent[] = [],
+    created: {
+      providerId: ProviderId
+      titleSource?: SessionTitleSource
+      alongside?: readonly ProofEvent[]
+      /** The provider's own id for the session, when it is known before the row exists (a child). */
+      identity?: string
+    },
   ): string => {
     const timestamp = new Date().toISOString()
-    const created = ProofEventSchemas['session.created'].parse({
+    const announced = ProofEventSchemas['session.created'].parse({
       type: 'event',
       name: 'session.created',
       eventId: randomUUID(),
       timestamp,
       scope: { type: 'environment', environmentId },
-      payload: { session },
+      payload: {
+        session: {
+          sessionId: session.sessionId,
+          workspaceId: session.workspaceId,
+          title: session.title,
+          ...(created.titleSource ? { titleSource: created.titleSource } : {}),
+          ...(session.parentSessionId ? { parentSessionId: session.parentSessionId } : {}),
+          status: 'idle',
+          providerId: created.providerId,
+          updatedAt: timestamp,
+          settledAt: null,
+          doneAt: null,
+        },
+      },
     })
     const threadCreated = ProofEventSchemas['thread.created'].parse({
       type: 'event',
@@ -660,21 +689,20 @@ export function createThreadService(
       scope: { type: 'session', environmentId, sessionId: session.sessionId },
       payload: { thread },
     })
-    announcedProviders.set(session.sessionId, providerId)
-    try {
-      if (options.appendAtomic) {
-        options.appendAtomic([created, threadCreated, ...alongside])
-        return timestamp
-      }
-      appendEvent(created)
-      appendEvent(threadCreated)
-      alongside.forEach(appendEvent)
+    const alongside = created.alongside ?? []
+    if (options.appendAtomic) {
+      options.appendAtomic(
+        [announced, threadCreated, ...alongside],
+        created.identity ? { identities: { [session.sessionId]: created.identity } } : undefined,
+      )
       return timestamp
-    } catch (error) {
-      // No record follows a failed announcement, so nothing else clears it.
-      announcedProviders.delete(session.sessionId)
-      throw error
     }
+    // Without an atomic writer there is no database (unit tests only), so
+    // there is no row for an identity to ride on.
+    appendEvent(announced)
+    appendEvent(threadCreated)
+    alongside.forEach(appendEvent)
+    return timestamp
   }
 
   /**
@@ -796,6 +824,31 @@ export function createThreadService(
   /** How to put back the draft each just-created session was sent from, until it starts. */
   const sentDrafts = new Map<string, () => void>()
 
+  /**
+   * Delete a session in one write that says everything going with it: each
+   * session under it, deepest first, and each one's draft (db/deletions.ts).
+   * Without a database (unit tests only) there is nothing under it to read.
+   */
+  const deleteSessions = (sessionId: string) => {
+    if (!options.database) {
+      appendEvent(
+        ProofEventSchemas['session.deleted'].parse({
+          type: 'event',
+          name: 'session.deleted',
+          eventId: randomUUID(),
+          timestamp: new Date().toISOString(),
+          scope: { type: 'environment', environmentId },
+          payload: { sessionId },
+        }),
+      )
+      return
+    }
+    options.flush?.()
+    const events = sessionDeletionEvents(options.database, environmentId, [sessionId], Date.now())
+    if (options.appendAtomic) options.appendAtomic(events)
+    else events.forEach(appendEvent)
+  }
+
   const rollbackSession = (record: ThreadRecord) => {
     if (sessions.get(record.session.sessionId) !== record) return
     sessions.delete(record.session.sessionId)
@@ -809,16 +862,12 @@ export function createThreadService(
         options.onPersistenceError?.(error, 'session.deleted')
       }
     }
-    appendRuntimeEvent(
-      ProofEventSchemas['session.deleted'].parse({
-        type: 'event',
-        name: 'session.deleted',
-        eventId: randomUUID(),
-        timestamp: new Date().toISOString(),
-        scope: { type: 'environment', environmentId },
-        payload: { sessionId: record.session.sessionId },
-      }),
-    )
+    try {
+      deleteSessions(record.session.sessionId)
+    } catch (error) {
+      if (!options.onPersistenceError) throw error
+      options.onPersistenceError(error, 'session.deleted')
+    }
     // The send never happened as far as anyone can see, so neither did the
     // draft's deletion: the retry starts from what the user wrote.
     const restoreDraft = sentDrafts.get(record.session.sessionId)
@@ -1057,11 +1106,12 @@ export function createThreadService(
     })
     const rests = !record.activeTurn && (record.status === 'idle' || record.status === 'running')
     const status = rests ? (tasks.length ? 'running' : 'idle') : undefined
+    const timestamp = new Date().toISOString()
     const updated = ProofEventSchemas['session.updated'].parse({
       type: 'event',
       name: 'session.updated',
       eventId: randomUUID(),
-      timestamp: new Date().toISOString(),
+      timestamp,
       scope: { type: 'environment', environmentId },
       payload: {
         sessionId: record.session.sessionId,
@@ -1071,7 +1121,11 @@ export function createThreadService(
         // (docs/sync-foundations.md §4.7.8). The in-memory seam has no rows,
         // so there the roster event also carries the status that follows.
         ...(status && !options.database
-          ? { status, ...(status === 'running' ? { inBackground: true } : {}) }
+          ? {
+              status,
+              ...(status === 'running' ? { inBackground: true } : {}),
+              ...(status !== record.status ? { updatedAt: timestamp } : {}),
+            }
           : {}),
       },
     })
@@ -1090,7 +1144,7 @@ export function createThreadService(
     if (status) record.announced = { waitingOn: null, inBackground: status === 'running' }
     if (status && status !== record.status) {
       record.status = status
-      record.updatedAt = Date.now()
+      record.updatedAt = Date.parse(timestamp)
     }
   }
 
@@ -1212,9 +1266,9 @@ export function createThreadService(
       options.onPersistenceError?.(error, 'session.updated')
       return
     }
+    // A title is not activity: the session keeps its place (§4.7.1).
     record.session.title = nextTitle
     record.titleSource = source
-    record.updatedAt = Date.now()
   }
 
   /**
@@ -1295,7 +1349,6 @@ export function createThreadService(
       if (item.session.sessionId !== sessionId) continue
       item.session.title = title
       item.titleSource = 'generated'
-      item.updatedAt = Date.now()
     }
     return true
   }
@@ -1401,16 +1454,20 @@ export function createThreadService(
     if (status === 'running' || status === 'waiting') record.doneAt = undefined
     const activity = activityOf(record, status)
     record.announced = activity
+    // A status moves the session's place in the list, and says so.
+    record.updatedAt = Date.now()
+    const timestamp = new Date(record.updatedAt).toISOString()
     appendRuntimeEvent(
       ProofEventSchemas['session.updated'].parse({
         type: 'event',
         name: 'session.updated',
         eventId: randomUUID(),
-        timestamp: new Date().toISOString(),
+        timestamp,
         scope: { type: 'environment', environmentId },
         payload: {
           sessionId: record.session.sessionId,
           status,
+          updatedAt: timestamp,
           ...summaryActivity(activity),
           ...(unsettle ? { settledAt: null } : {}),
           doneAt: record.doneAt === undefined ? null : new Date(record.doneAt).toISOString(),
@@ -1454,7 +1511,13 @@ export function createThreadService(
     }
     const thread: Thread = { threadId: randomUUID(), sessionId: session.sessionId }
     try {
-      persistCreatedThread(session, thread, parent.providerId)
+      // The identity is stored by the same write that creates the row, so a
+      // child is never durable without what it resumes and deduplicates by.
+      persistCreatedThread(session, thread, {
+        providerId: parent.providerId,
+        ...(title ? { titleSource: 'provider' as const } : {}),
+        identity: providerSessionId,
+      })
     } catch (error) {
       // The parent turn carries on; the child is offered again on the next update.
       options.onPersistenceError?.(error, 'session.created')
@@ -1476,19 +1539,6 @@ export function createThreadService(
     }
     sessions.set(session.sessionId, record)
     threads.set(thread.threadId, record)
-    announcedProviders.delete(session.sessionId)
-    // The stamp is a direct row update that follows the committed insert in
-    // the same synchronous step. A child without its provider identity can
-    // neither resume nor deduplicate, so a failed stamp takes the announced
-    // session back rather than leaving that row behind.
-    try {
-      options.flush?.()
-      persistRuntimeSession(record, providerSessionId)
-    } catch (error) {
-      options.onPersistenceError?.(error, 'session.created')
-      rollbackSession(record)
-      return
-    }
     childSessionIds.set(key, session.sessionId)
   }
 
@@ -1772,15 +1822,6 @@ export function createThreadService(
       return threads.get(threadId)?.session.sessionId
     },
 
-    /**
-     * The provider a loaded session runs on, or the one a session still being
-     * announced was created on. Unknown for a session only the database
-     * remembers.
-     */
-    providerForSession(sessionId: string): ProviderId | undefined {
-      return sessions.get(sessionId)?.providerId ?? announcedProviders.get(sessionId)
-    },
-
     resolveRuntimeSession(sessionId: string) {
       const record = sessions.get(sessionId)
       if (!record) return undefined
@@ -1950,12 +1991,11 @@ export function createThreadService(
         // bring it back.
         let announcedAt: string
         try {
-          announcedAt = persistCreatedThread(
-            session,
-            thread,
+          announcedAt = persistCreatedThread(session, thread, {
             providerId,
-            draft ? [draft.event] : [],
-          )
+            ...(input.title !== undefined ? { titleSource: 'fallback' as const } : {}),
+            ...(draft ? { alongside: [draft.event] } : {}),
+          })
         } catch (error) {
           options.onPersistenceError?.(error, 'session.created')
           return errorResult(
@@ -1998,7 +2038,6 @@ export function createThreadService(
         }
         sessions.set(session.sessionId, record)
         threads.set(thread.threadId, record)
-        announcedProviders.delete(session.sessionId)
         if (draft) sentDrafts.set(session.sessionId, draft.restore)
         void record.runtimeSession.then(
           () => {
@@ -2182,7 +2221,7 @@ export function createThreadService(
           (options.database ? getSessionSummary(options.database, sessionId) : undefined)
         if (!session) return errorResult(command.requestId, 'not_found', 'Session not found.')
         const timestamp = new Date().toISOString()
-        const event =
+        const rename =
           parsed.data.name === 'session.rename'
             ? ProofEventSchemas['session.updated'].parse({
                 type: 'event',
@@ -2192,22 +2231,16 @@ export function createThreadService(
                 scope: { type: 'environment', environmentId },
                 payload: { sessionId, title: parsed.data.payload.title, titleSource: 'user' },
               })
-            : ProofEventSchemas['session.deleted'].parse({
-                type: 'event',
-                name: 'session.deleted',
-                eventId: randomUUID(),
-                timestamp,
-                scope: { type: 'environment', environmentId },
-                payload: { sessionId },
-              })
+            : undefined
         if (parsed.data.name === 'session.delete' && session.parentSessionId) forgetChild(sessionId)
         // Deleted, or renamed: a title still being written is not wanted.
         if (parsed.data.name === 'session.delete') forgetTitleWork(sessionId)
         else titleWork.get(sessionId)?.controller?.abort()
         try {
-          appendEvent(event)
+          if (rename) appendEvent(rename)
+          else deleteSessions(sessionId)
         } catch (error) {
-          options.onPersistenceError?.(error, event.name)
+          options.onPersistenceError?.(error, rename ? rename.name : 'session.deleted')
           return errorResult(
             command.requestId,
             'unavailable',
@@ -2219,7 +2252,6 @@ export function createThreadService(
             if (item.session.sessionId !== sessionId) continue
             item.titleSource = 'user'
             item.session.title = parsed.data.payload.title
-            item.updatedAt = Date.parse(timestamp)
           }
           return ProofResponseSchemas['session.rename'].parse({
             type: 'response',

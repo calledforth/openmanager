@@ -73,6 +73,7 @@ import { openEnvironmentDatabase } from './db/database.ts'
 import { raiseReplayFloors } from './db/replay-floor.ts'
 import { reconcileAfterRestart } from './db/boot-reconcile.ts'
 import { createEventRetention } from './db/event-retention.ts'
+import { isDerivedRecord } from './db/event-repository.ts'
 import { createReplayReader } from './db/replay.ts'
 import { getSessionSummary } from './db/session-store.ts'
 import { createLogger, resolveLogSink } from './logger.ts'
@@ -161,7 +162,6 @@ export async function startServer(config: ServerConfig) {
   const budgetKey = createBudgetKey(config.tunnel?.hostname)
   const identity = await loadEnvironmentIdentity(config.dataDir)
   const audit = createAuditLog(log, { dataDir: config.dataDir })
-  const composerStore = openComposerStore(config.dataDir)
   const environmentSettings = openEnvironmentSettings(config.dataDir)
   const filesystem = createFilesystemService({ settings: environmentSettings })
   let announceClients: () => void = () => undefined
@@ -178,22 +178,95 @@ export async function startServer(config: ServerConfig) {
       details: { previousClientId: previousId },
     })
   }
-  let emitWorkspaceEvent: (event: ProofEvent) => void = () => undefined
   let closeWorkspaceSessions: (workspaceId: string) => void = () => undefined
-  let availableProviders: () => readonly string[] = () => []
   let runnableProviders: () => readonly string[] = () => []
+  let publishDurableEvent: (record: DurableEvent) => void = () => undefined
+  let publishThreadEvent: (event: EventEnvelope) => void = () => undefined
+  // Follows every committed workspace record: bound once the registry and
+  // the runtime exist, which both commit through the event service.
+  let followWorkspaceRecord: (record: DurableEvent) => void = () => undefined
+  const eventDatabase = openEnvironmentDatabase(config.dataDir)
+  const sessionRowExists = eventDatabase.prepare('SELECT 1 FROM sessions WHERE session_id = ?')
+  // Before anything is appended: events stored in an older format are no
+  // longer replayed (docs/sync-foundations.md §4.7.7).
+  const floorsRaised = raiseReplayFloors(eventDatabase)
+  if (floorsRaised > 0)
+    log('info', 'replay floors raised for a new event format', { streams: floorsRaised })
+  // One epoch per process for streams that start here; replay reads it for
+  // scopes that have no stream row yet.
+  const eventEpoch = randomUUID()
+  // The event is already stored: a client that is not connected gets it on
+  // replay. A connected client does not notice the gap until its next
+  // snapshot, so a throw here is a programming error to fix, logged instead
+  // of taking the server down with it.
+  const publish = (record: DurableEvent) => {
+    try {
+      publishDurableEvent(record)
+    } catch (error) {
+      log('error', 'event was not sent', { event: record.event.name, reason: String(error) })
+    }
+  }
+  // Records go out in commit order (I4). Thread dispatch persists
+  // synchronously and answers before its events, so most records wait a
+  // microtask; a workspace record goes at once, so a registration reaches the
+  // socket before its answer, and it takes every record committed before it
+  // along first. Otherwise a workspace record committed with session
+  // records (a removal's cascade) would overtake them. A derived recency
+  // record keeps its source's timing: it must not pull a turn's records
+  // ahead of the answer that started it.
+  const waiting: DurableEvent[] = []
+  let drainQueued = false
+  const drain = () => {
+    drainQueued = false
+    for (let record = waiting.shift(); record; record = waiting.shift()) publish(record)
+  }
+  const eventService = createPersistentEventService(
+    eventDatabase,
+    (record) => {
+      if (record.event.name.startsWith('workspace.')) followWorkspaceRecord(record)
+      waiting.push(record)
+      if (record.event.name.startsWith('workspace.') && !isDerivedRecord(record.event)) drain()
+      else if (!drainQueued) {
+        drainQueued = true
+        queueMicrotask(drain)
+      }
+    },
+    {
+      epoch: eventEpoch,
+      onError: (error) => log('error', 'event persistence failed', { reason: String(error) }),
+      ...config.commitHooks,
+    },
+  )
+  // Profiles and workspace preferences: rows the projection writes, read
+  // through the event connection (docs/sync-foundations.md §4.7.11).
+  const composerStore = openComposerStore({
+    database: eventDatabase,
+    environmentId: identity.environmentId,
+    appendAtomic: (events) => eventService.appendAtomic(events),
+  })
   let workspaces
   try {
-    workspaces = openWorkspaceRegistry(config.dataDir, workspaceRoots, audit, {
-      events: {
+    workspaces = openWorkspaceRegistry(
+      {
+        database: eventDatabase,
         environmentId: identity.environmentId,
-        emit: (event) => emitWorkspaceEvent(event),
+        appendAtomic: (events) => eventService.appendAtomic(events),
+        flush: eventService.flush,
       },
-      onUnregister: (workspaceId) => closeWorkspaceSessions(workspaceId),
-      availableProviders: () => availableProviders(),
-    })
+      workspaceRoots,
+      audit,
+      {
+        onUnregister: (workspaceId) => closeWorkspaceSessions(workspaceId),
+        onObservationError: (workspaceId, error) =>
+          log('error', 'workspace observation was not saved', {
+            workspaceId,
+            reason: String(error),
+          }),
+      },
+    )
   } catch (error) {
-    composerStore.close()
+    eventService.close()
+    eventDatabase.close()
     environmentSettings.close()
     clients.close()
     audit.close()
@@ -244,70 +317,13 @@ export async function startServer(config: ServerConfig) {
     (providerId, result) => observeProviderCatalog(providerId, result),
     resolveWorkspace,
   )
-  // Cheap capability input for workspace listings: a provider counts as
-  // available when a session could start with it now (D9, no probing).
-  availableProviders = () =>
-    providerService
-      .snapshot()
-      .filter(({ health }) => health.summary === 'ready' || health.summary === 'warning')
-      .map(({ id }) => id)
-  // Broader than the listing: an unprobed provider is still runnable, so an
+  // Broader than provider health's `available`: an unprobed provider is still runnable, so an
   // explicit create only fails for a provider the server would reject anyway.
   runnableProviders = () =>
     providerService
       .snapshot()
       .filter(({ id }) => providerService.rejection(id) === undefined)
       .map(({ id }) => id)
-  let publishDurableEvent: (record: DurableEvent) => void = () => undefined
-  let publishThreadEvent: (event: EventEnvelope) => void = () => undefined
-  // Bound once the thread service exists, which the event service predates.
-  let sessionProvider: (sessionId: string) => string | undefined = () => undefined
-  const eventDatabase = openEnvironmentDatabase(config.dataDir)
-  // Before anything is appended: events stored in an older format are no
-  // longer replayed (docs/sync-foundations.md §4.7.7).
-  const floorsRaised = raiseReplayFloors(eventDatabase)
-  if (floorsRaised > 0)
-    log('info', 'replay floors raised for a new event format', { streams: floorsRaised })
-  // One epoch per process for streams that start here; replay reads it for
-  // scopes that have no stream row yet.
-  const eventEpoch = randomUUID()
-  const eventService = createPersistentEventService(
-    eventDatabase,
-    (record) => {
-      // The event is already stored: a client that is not connected gets it
-      // on replay. A connected client does not notice the gap until its next
-      // snapshot, so a throw here is a programming error to fix, logged
-      // instead of taking the server down with it.
-      const publish = () => {
-        try {
-          publishDurableEvent(record)
-        } catch (error) {
-          log('error', 'event was not sent', {
-            event: record.event.name,
-            reason: String(error),
-          })
-        }
-      }
-      // Thread dispatch persists synchronously; its response must precede events on the socket.
-      if (record.event.name.startsWith('workspace.')) publish()
-      else queueMicrotask(publish)
-    },
-    {
-      epoch: eventEpoch,
-      // The row names the provider the session was created on. The thread
-      // service knows it while the create is still announcing the session; the
-      // workspace default only stands in when no service is creating one.
-      sessionProviderId: (session) => {
-        const created = sessionProvider(session.sessionId)
-        if (created) return created
-        const target = resolveWorkspace(session.workspaceId)
-        if (!target) throw new Error('Cannot persist session without a workspace provider')
-        return target.providerId
-      },
-      onError: (error) => log('error', 'event persistence failed', { reason: String(error) }),
-      ...config.commitHooks,
-    },
-  )
   const replayReader = createReplayReader(eventDatabase, {
     epoch: eventEpoch,
     environment: () => ({ environmentId: identity.environmentId, name: identity.label }),
@@ -323,8 +339,8 @@ export async function startServer(config: ServerConfig) {
   const syncProbeDirectory = () => {
     if (config.probeProviders) runtime.setDefaultProbeCwd(workspaces.mostRecent()?.root)
   }
-  emitWorkspaceEvent = (event) => {
-    eventService.append(event)
+  followWorkspaceRecord = (record) => {
+    workspaces.apply(record.event)
     syncProbeDirectory()
   }
   let recordSessionMode: (sessionId: string, modeId: string) => void = () => undefined
@@ -373,7 +389,7 @@ export async function startServer(config: ServerConfig) {
       database: eventDatabase,
       artifacts,
       flush: eventService.flush,
-      appendAtomic: (events) => eventService.appendAtomic(events),
+      appendAtomic: (events, options) => eventService.appendAtomic(events, options),
       finalizeNow: (event) => eventService.finalizeNow(event),
       onPersistenceError: (error, eventName) =>
         log('error', 'event persistence failed', { eventName, reason: String(error) }),
@@ -388,7 +404,6 @@ export async function startServer(config: ServerConfig) {
         log('warn', 'session title was not generated', { sessionId, reason: String(error) }),
     },
   )
-  sessionProvider = (sessionId) => threadService.providerForSession(sessionId)
   closeWorkspaceSessions = (workspaceId) => {
     // Flush before the registry cascades deletion of the projected thread rows.
     eventService.flush()
@@ -413,6 +428,7 @@ export async function startServer(config: ServerConfig) {
         } as ProofEvent),
       sessionForThread: (threadId) => threadService.sessionForThread(threadId),
       readSessionComposer: (sessionId) => getSessionSummary(eventDatabase, sessionId)?.composer,
+      hasSession: (sessionId) => sessionRowExists.get(sessionId) !== undefined,
     },
   )
   desiredConfigFor = (args) => composerService.desiredFor(args)

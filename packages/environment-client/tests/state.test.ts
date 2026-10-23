@@ -26,6 +26,8 @@ import type { EnvironmentState } from '../src/types'
 import {
   ENV,
   SESSION,
+  SESSION_CREATED,
+  SESSION_SUMMARY,
   THREAD,
   WORKSPACE,
   completed,
@@ -50,7 +52,11 @@ const seeded = (): EnvironmentState => {
   )
   state = applyEvent(
     state,
-    event({ name: 'session.created', scope: environmentScope, payload: { session: SESSION } }),
+    event({
+      name: 'session.created',
+      scope: environmentScope,
+      payload: { session: SESSION_CREATED },
+    }),
   )
   state = applyEvent(
     state,
@@ -77,7 +83,7 @@ describe('applyEvent', () => {
       event({
         name: 'session.created',
         scope: environmentScope,
-        payload: { session: SESSION },
+        payload: { session: SESSION_CREATED },
       }),
     )
     for (const status of ['running', 'waiting', 'error', 'idle'] as const) {
@@ -115,7 +121,11 @@ describe('applyEvent', () => {
     const doneAt = '2026-09-26T10:00:00.000Z'
     let state = applyEvent(
       createInitialState(),
-      event({ name: 'session.created', scope: environmentScope, payload: { session: SESSION } }),
+      event({
+        name: 'session.created',
+        scope: environmentScope,
+        payload: { session: SESSION_CREATED },
+      }),
     )
     state = applyEvent(
       state,
@@ -185,7 +195,7 @@ describe('applyEvent', () => {
   })
 
   it('keeps the sessions a listing restates as they were', () => {
-    const summary = { ...SESSION, status: 'idle' as const, updatedAt: '2026-09-27T09:00:00.000Z' }
+    const summary = { ...SESSION_SUMMARY, updatedAt: '2026-09-27T09:00:00.000Z' }
     const listed = applySessionList(createInitialState(), [summary])
     expect(applySessionList(listed, [{ ...summary }])).toBe(listed)
     const renamed = applySessionList(listed, [{ ...summary, title: 'Renamed' }])
@@ -204,8 +214,11 @@ describe('applyEvent', () => {
       {
         ...SESSION,
         status: 'idle',
+        providerId: 'opencode',
         threadIds: [THREAD.threadId],
         updatedAt: '2026-09-10T00:00:00.000Z',
+        settledAt: null,
+        doneAt: null,
       },
     ])
   })
@@ -215,7 +228,7 @@ describe('applyEvent', () => {
       ...event({
         name: 'session.created' as const,
         scope: environmentScope,
-        payload: { session: { ...SESSION, sessionId } },
+        payload: { session: { ...SESSION_CREATED, sessionId, updatedAt: timestamp } },
       }),
       timestamp,
     })
@@ -230,15 +243,35 @@ describe('applyEvent', () => {
       'session-old',
     ])
 
-    // Activity moves a session back to the top.
+    // A title, whenever it arrives, moves nothing (§4.7.1).
     state = applyEvent(state, {
       ...event({
         name: 'session.updated' as const,
-        scope: sessionScope,
-        payload: { sessionId: 'session-old', status: 'running' },
+        scope: environmentScope,
+        payload: { sessionId: 'session-old', title: 'Renamed', titleSource: 'user' },
       }),
       timestamp: '2026-09-13T00:00:00.000Z',
     })
+    expect(selectSessionList(state).map((session) => session.sessionId)).toEqual([
+      'session-new',
+      SESSION.sessionId,
+      'session-old',
+    ])
+
+    // Activity moves a session back to the top, at the time the environment states.
+    state = applyEvent(state, {
+      ...event({
+        name: 'session.updated' as const,
+        scope: environmentScope,
+        payload: {
+          sessionId: 'session-old',
+          status: 'running',
+          updatedAt: '2026-09-13T00:00:00.000Z',
+        },
+      }),
+      timestamp: '2026-09-14T00:00:00.000Z',
+    })
+    expect(state.sessions['session-old']?.updatedAt).toBe('2026-09-13T00:00:00.000Z')
     expect(selectSessionList(state).map((session) => session.sessionId)).toEqual([
       'session-old',
       'session-new',
@@ -251,19 +284,20 @@ describe('applyEvent', () => {
     const thread = { threadId: 'thread-new', sessionId: session.sessionId }
     const announcedAt = '2026-09-12T00:00:00.000Z'
     // The answer reaches the client before `session.created` does.
-    const created = applySessionCreated(seeded(), { session, thread, announcedAt })
+    const created = applySessionCreated(seeded(), { session, thread, announcedAt }, 'opencode')
     expect(selectSessionList(created).map((row) => row.sessionId)).toEqual([
       'session-new',
       SESSION.sessionId,
     ])
-    expect(created.workspaces[WORKSPACE.workspaceId]?.lastActivityAt).toBe(announcedAt)
+    // The workspace's recency is the environment's to announce.
+    expect(created.workspaces).toEqual(seeded().workspaces)
 
     // The event then restates it: nothing the sidebar reads changes again.
     const announced = applyEvent(created, {
       ...event({
         name: 'session.created' as const,
         scope: environmentScope,
-        payload: { session },
+        payload: { session: { ...SESSION_CREATED, ...session, updatedAt: announcedAt } },
       }),
       timestamp: announcedAt,
     })
@@ -704,7 +738,7 @@ describe('applyEvent', () => {
     expect(selectActiveThread(next)?.turns ?? []).toEqual([])
   })
 
-  it('removes a workspace and its sessions when the environment announces the removal', () => {
+  it('removes only the workspace: its sessions go on their own announcements', () => {
     const state = seeded()
     const next = applyEvent(
       state,
@@ -715,8 +749,10 @@ describe('applyEvent', () => {
       }),
     )
     expect(next.workspaceOrder).toEqual([])
-    expect(next.sessionOrder).toEqual([])
-    expect(next.activeSessionId).toBeNull()
+    // The environment announces each session before the workspace; the
+    // client mirrors no cascade of its own.
+    expect(next.sessionOrder).toEqual([SESSION.sessionId])
+    expect(next.activeSessionId).toBe(SESSION.sessionId)
     expect(
       applyEvent(
         next,
@@ -823,7 +859,7 @@ describe('applyEvent', () => {
     expect(state.sessions[SESSION.sessionId]).not.toHaveProperty('parentSessionId')
   })
 
-  it('cascades a parent deletion to its descendants and leaves other sessions alone', () => {
+  it('drops exactly the session each deletion names, children announced before their parent', () => {
     const nested = (sessionId: string, parentSessionId: string) => ({
       session: { sessionId, workspaceId: WORKSPACE.workspaceId, title: sessionId, parentSessionId },
       thread: { threadId: `${sessionId}-thread`, sessionId },
@@ -867,14 +903,18 @@ describe('applyEvent', () => {
       sessionOpenFailure: { sessionId: 'session-child', message: 'boom', code: 'internal' },
     }
 
-    const deleted = applyEvent(
-      state,
-      event({
-        name: 'session.deleted',
-        scope: environmentScope,
-        payload: { sessionId: SESSION.sessionId },
-      }),
-    )
+    const remove = (current: typeof state, sessionId: string) =>
+      applyEvent(
+        current,
+        event({ name: 'session.deleted', scope: environmentScope, payload: { sessionId } }),
+      )
+    // The root's own announcement takes the root alone.
+    expect(Object.keys(remove(state, SESSION.sessionId).sessions).sort()).toEqual([
+      'session-child',
+      'session-grandchild',
+      'session-other',
+    ])
+    const deleted = ['session-grandchild', 'session-child', SESSION.sessionId].reduce(remove, state)
     expect(Object.keys(deleted.sessions)).toEqual(['session-other'])
     expect(deleted.sessionOrder).toEqual(['session-other'])
     expect(Object.keys(deleted.threads)).toEqual(['thread-other'])
@@ -883,7 +923,7 @@ describe('applyEvent', () => {
     expect(deleted.sessionOpenFailure).toBeNull()
   })
 
-  it('removes a loaded child when its never-loaded parent is deleted', () => {
+  it('removes a loaded child on its own announcement, whether or not its parent was loaded', () => {
     const child = {
       sessionId: 'session-child',
       workspaceId: WORKSPACE.workspaceId,
@@ -905,13 +945,13 @@ describe('applyEvent', () => {
     )
     expect(state.sessionOrder).toContain(child.sessionId)
 
-    const deleted = applyEvent(
+    const deleted = [child.sessionId, 'parent-1'].reduce(
+      (current, sessionId) =>
+        applyEvent(
+          current,
+          event({ name: 'session.deleted', scope: environmentScope, payload: { sessionId } }),
+        ),
       state,
-      event({
-        name: 'session.deleted',
-        scope: environmentScope,
-        payload: { sessionId: 'parent-1' },
-      }),
     )
     expect(deleted.sessions[child.sessionId]).toBeUndefined()
     expect(deleted.threads['session-child-thread']).toBeUndefined()
@@ -1222,7 +1262,7 @@ describe('snapshots', () => {
     expect(selectSessionList(state)).toHaveLength(1)
   })
 
-  it('moves workspace activity forward on session starts and turns without a relisting', () => {
+  it("takes a workspace's recency only from the environment's workspace.updated", () => {
     let state = createInitialState()
     state = applyEvent(
       state,
@@ -1236,23 +1276,32 @@ describe('snapshots', () => {
 
     state = applyEvent(
       state,
-      event({ name: 'session.created', scope: environmentScope, payload: { session: SESSION } }),
+      event({
+        name: 'session.created',
+        scope: environmentScope,
+        payload: { session: SESSION_CREATED },
+      }),
     )
-    expect(state.workspaces[WORKSPACE.workspaceId]?.lastActivityAt).toBe('2026-09-10T00:00:00.000Z')
-    expect(selectRecentWorkspaces(state).map((w) => w.workspaceId)).toEqual([WORKSPACE.workspaceId])
-
+    // Neither a new session nor a turn moves it here: the client mirrors no rule.
+    expect(state.workspaces[WORKSPACE.workspaceId]?.lastActivityAt).toBe(WORKSPACE.lastActivityAt)
     state = applyEvent(
       state,
       event({ name: 'thread.created', scope: sessionScope, payload: { thread: THREAD } }),
     )
-    const later = { ...turnStarted(), timestamp: '2026-09-11T00:00:00.000Z' }
-    state = applyEvent(state, later)
-    expect(state.workspaces[WORKSPACE.workspaceId]?.lastActivityAt).toBe('2026-09-11T00:00:00.000Z')
+    state = applyEvent(state, { ...turnStarted(), timestamp: '2026-09-11T00:00:00.000Z' })
+    expect(state.workspaces[WORKSPACE.workspaceId]?.lastActivityAt).toBe(WORKSPACE.lastActivityAt)
 
-    // A stale event (older timestamp) never moves activity backwards.
-    const stale = { ...completed(), timestamp: '2026-09-09T00:00:00.000Z' }
-    state = applyEvent(state, stale)
-    expect(state.workspaces[WORKSPACE.workspaceId]?.lastActivityAt).toBe('2026-09-11T00:00:00.000Z')
+    const announced = (lastActivityAt: string | null) =>
+      event({
+        name: 'workspace.updated',
+        scope: environmentScope,
+        payload: { workspace: { ...WORKSPACE, lastActivityAt } },
+      })
+    state = applyEvent(state, announced('2026-09-11T00:00:00.000Z'))
+    expect(selectRecentWorkspaces(state).map((w) => w.workspaceId)).toEqual([WORKSPACE.workspaceId])
+    // It can go back, as when the newest session is deleted.
+    state = applyEvent(state, announced(null))
+    expect(selectRecentWorkspaces(state)).toEqual([])
   })
 
   it('orders recent workspaces by last activity and skips unused or missing ones', () => {
@@ -1350,7 +1399,7 @@ describe('what a status leaves unsaid', () => {
     expect(state.sessions[SESSION.sessionId]).not.toHaveProperty('inBackground')
   })
 
-  it('takes both from a listing, and keeps them through a bare session', () => {
+  it('takes both from a listing', () => {
     const listed = applySessionList(seeded(), [
       {
         ...SESSION,
@@ -1361,11 +1410,6 @@ describe('what a status leaves unsaid', () => {
       },
     ])
     expect(listed.sessions[SESSION.sessionId]?.waitingOn).toBe('question')
-    const replayed = applyEvent(
-      listed,
-      event({ name: 'session.created', scope: environmentScope, payload: { session: SESSION } }),
-    )
-    expect(replayed.sessions[SESSION.sessionId]?.waitingOn).toBe('question')
   })
 })
 
@@ -1400,15 +1444,9 @@ describe('background work', () => {
     expect(emptied.sessions[SESSION.sessionId]).not.toHaveProperty('backgroundTasks')
   })
 
-  it('takes a full listing as the whole truth, and a bare session as saying nothing', () => {
+  it('takes a full listing as the whole truth', () => {
     const working = applyEvent(seeded(), roster(TASK))
-
-    // A `session.created` replay carries no summary fields.
-    const replayed = applyEvent(
-      working,
-      event({ name: 'session.created', scope: environmentScope, payload: { session: SESSION } }),
-    )
-    expect(replayed.sessions[SESSION.sessionId]?.backgroundTasks).toEqual([TASK])
+    expect(working.sessions[SESSION.sessionId]?.backgroundTasks).toEqual([TASK])
 
     // A listing after the environment restarted: the tasks died with it.
     const relisted = applySessionList(working, [

@@ -53,7 +53,6 @@ import {
   applyTurnSending,
   applyTurnStarted,
   applyWorkspaceList,
-  applyWorkspaceRemoved,
   createInitialState,
   createThreadState,
   deriveSessionStatus,
@@ -386,7 +385,10 @@ export function createMockEnvironmentClient(
                 ? null
                 : undefined
         const doneChanged = doneAt !== undefined && doneAt !== (session.doneAt ?? null)
-        if (status !== session.status || unsettle || doneChanged || activityChanged)
+        // Each of these events sets the status, so each moves the session's
+        // place in the list; the environment announces every move (§4.7.1).
+        const moved = parsed.timestamp !== session.updatedAt
+        if (status !== session.status || unsettle || doneChanged || activityChanged || moved) {
           emit({
             ...base(),
             name: 'session.updated',
@@ -394,14 +396,39 @@ export function createMockEnvironmentClient(
             payload: {
               sessionId: session.sessionId,
               status,
+              updatedAt: parsed.timestamp,
               ...(waitingOn ? { waitingOn } : {}),
               ...(inBackground ? { inBackground } : {}),
               ...(unsettle ? { settledAt: null } : {}),
               ...(doneChanged ? { doneAt } : {}),
             },
           })
+          announceRecency(session.workspaceId)
+        }
       }
     }
+  }
+
+  /**
+   * As the environment does: a workspace's recency is its newest session's
+   * time or its own last use, whichever is later, and announced when it moves.
+   */
+  const announceRecency = (workspaceId: string) => {
+    const state = store.getState()
+    const workspace = state.workspaces[workspaceId]
+    if (!workspace) return
+    const times = Object.values(state.sessions)
+      .filter((session) => session.workspaceId === workspaceId)
+      .map((session) => Date.parse(session.updatedAt))
+    if (workspace.lastUsedAt) times.push(Date.parse(workspace.lastUsedAt))
+    const lastActivityAt = times.length ? new Date(Math.max(...times)).toISOString() : null
+    if (lastActivityAt === workspace.lastActivityAt) return
+    emit({
+      ...base(),
+      name: 'workspace.updated',
+      scope: envScope(),
+      payload: { workspace: { ...workspace, lastActivityAt } },
+    })
   }
 
   const envScope = () =>
@@ -713,7 +740,7 @@ export function createMockEnvironmentClient(
     const session = store.getState().sessions[sessionId]
     if (!session) throw new EnvironmentClientError('not_found', 'Session not found.')
     return {
-      target: { workspaceId: session.workspaceId, providerId: session.providerId ?? 'opencode' },
+      target: { workspaceId: session.workspaceId, providerId: session.providerId },
       known: session.providerId !== undefined,
     }
   }
@@ -838,6 +865,39 @@ export function createMockEnvironmentClient(
     return tombstone
   }
 
+  /**
+   * Delete sessions as the environment does: every session under them too,
+   * deepest first, each after a deletion of its draft.
+   */
+  const deleteSessionTree = (sessionIds: readonly string[]) => {
+    const sessions = Object.values(store.getState().sessions)
+    const depth = new Map<string, number>()
+    const visit = (sessionId: string, at: number) => {
+      if ((depth.get(sessionId) ?? -1) >= at) return
+      depth.set(sessionId, at)
+      for (const session of sessions) {
+        if (session.parentSessionId === sessionId) visit(session.sessionId, at + 1)
+      }
+    }
+    for (const sessionId of sessionIds) visit(sessionId, 0)
+    const ordered = [...depth]
+      .sort(([left, a], [right, b]) => b - a || left.localeCompare(right))
+      .map(([sessionId]) => sessionId)
+    cancelScriptsForThreads(
+      ordered.flatMap((sessionId) => store.getState().sessions[sessionId]?.threadIds ?? []),
+    )
+    const workspaces = new Set<string>()
+    for (const sessionId of ordered) {
+      const workspaceId = store.getState().sessions[sessionId]?.workspaceId
+      if (workspaceId) workspaces.add(workspaceId)
+      if (draftRows.get(sessionId)?.draft) deleteDraftRow(sessionId)
+      // The draft's row, tombstone included, goes with the session.
+      draftRows.delete(sessionId)
+      emit({ ...base(), name: 'session.deleted', scope: envScope(), payload: { sessionId } })
+    }
+    return workspaces
+  }
+
   const commands: EnvironmentCommands = {
     getEnvironment: () =>
       run('getEnvironment', null, () => {
@@ -856,7 +916,7 @@ export function createMockEnvironmentClient(
           path: input.path,
           lastUsedAt: null,
           lastActivityAt: null,
-          capabilities: { git: false, providers: [] },
+          capabilities: { git: false },
           exists: true,
         }
         emit({
@@ -879,10 +939,28 @@ export function createMockEnvironmentClient(
         if (!store.getState().workspaces[workspaceId]) {
           throw new EnvironmentClientError('not_found', 'Workspace not found.')
         }
-        cancelScriptsForThreads(
-          selectSessionList(store.getState(), workspaceId).flatMap((session) => session.threadIds),
+        // As the environment does: its sessions, its drafts detached, then itself.
+        deleteSessionTree(
+          Object.values(store.getState().sessions)
+            .filter((session) => session.workspaceId === workspaceId)
+            .map((session) => session.sessionId),
         )
-        store.update((state) => applyWorkspaceRemoved(state, workspaceId))
+        for (const [draftId, row] of draftRows) {
+          const target = row.draft?.target
+          if (!row.draft || target?.type !== 'new_session' || target.workspaceId !== workspaceId) {
+            continue
+          }
+          const draft: Draft = {
+            ...row.draft,
+            target: { ...target, workspaceId: null },
+            revision: row.revision + 1,
+            updatedAt: now(),
+            updatedByClientId: null,
+          }
+          draftRows.set(draftId, { ...row, draft, revision: draft.revision })
+          emit({ ...base(), name: 'draft.saved', scope: envScope(), payload: { draft } })
+        }
+        emit({ ...base(), name: 'workspace.removed', scope: envScope(), payload: { workspaceId } })
       }),
     listSessions: (input = {}) =>
       run('listSessions', input, () => {
@@ -906,7 +984,11 @@ export function createMockEnvironmentClient(
         if (!workspace || !workspace.exists) {
           throw new EnvironmentClientError('not_found', 'Workspace not found.')
         }
-        if (!workspace.capabilities.providers.includes(input.providerId)) {
+        // Like the environment: a provider it does not run is refused. A mock
+        // seeded with no catalog runs the providers this product ships.
+        const runnable =
+          catalog.length > 0 ? catalog.map((entry) => entry.id) : MOCK_RUNNABLE_PROVIDERS
+        if (!runnable.includes(input.providerId)) {
           throw new EnvironmentClientError(
             'validation',
             'The workspace does not offer the requested provider.',
@@ -943,7 +1025,25 @@ export function createMockEnvironmentClient(
           title: input.title ?? null,
         }
         const thread: Thread = { threadId: nextId(), sessionId: session.sessionId }
-        emit({ ...base(), name: 'session.created', scope: envScope(), payload: { session } })
+        const announcedAt = now()
+        // Like the environment: the whole row (§4.7.2).
+        emit({
+          ...base(),
+          name: 'session.created',
+          scope: envScope(),
+          payload: {
+            session: {
+              ...session,
+              ...(input.title !== undefined ? { titleSource: 'fallback' as const } : {}),
+              status: 'idle',
+              providerId: input.providerId,
+              updatedAt: announcedAt,
+              settledAt: null,
+              doneAt: null,
+            },
+          },
+        })
+        announceRecency(session.workspaceId)
         // Like the environment: the sent draft goes in the same write.
         if (input.draftId !== undefined) deleteDraftRow(input.draftId)
         emit({
@@ -956,23 +1056,9 @@ export function createMockEnvironmentClient(
           },
           payload: { thread },
         })
-        store.update((state) => {
-          const created = applySessionCreated(state, { session, thread })
-          const current = created.sessions[session.sessionId]
-          if (!current) return created
-          return {
-            ...created,
-            sessions: {
-              ...created.sessions,
-              [session.sessionId]: {
-                ...current,
-                status: 'idle',
-                providerId: input.providerId,
-                updatedAt: current.updatedAt ?? now(),
-              },
-            },
-          }
-        })
+        store.update((state) =>
+          applySessionCreated(state, { session, thread, announcedAt }, input.providerId),
+        )
         const firstTurn =
           input.firstMessage === undefined
             ? undefined
@@ -1028,8 +1114,8 @@ export function createMockEnvironmentClient(
               workspaceId: session.workspaceId,
               title: session.title,
               status: session.status,
-              providerId: session.providerId ?? 'opencode',
-              updatedAt: session.updatedAt ?? now(),
+              providerId: session.providerId,
+              updatedAt: session.updatedAt,
             },
             threads: session.threadIds
               .map((threadId) => state.threads[threadId]?.thread)
@@ -1137,10 +1223,11 @@ export function createMockEnvironmentClient(
             session.status === 'running' &&
             deriveSessionStatus(session.threadIds.map((id) => store.getState().threads[id]!)) ===
               'idle'
-              ? { status: 'idle' as const }
+              ? { status: 'idle' as const, updatedAt: now() }
               : {}),
           },
         })
+        announceRecency(session.workspaceId)
       }),
     acknowledgeSession: (sessionId) =>
       run('acknowledgeSession', { sessionId }, () => {
@@ -1158,8 +1245,8 @@ export function createMockEnvironmentClient(
       run('deleteSession', sessionId, () => {
         const session = store.getState().sessions[sessionId]
         if (!session) throw new EnvironmentClientError('not_found', 'Session not found.')
-        cancelScriptsForThreads(session.threadIds)
-        emit({ ...base(), name: 'session.deleted', scope: envScope(), payload: { sessionId } })
+        // Deleting the newest session lowers its workspace's recency.
+        for (const workspaceId of deleteSessionTree([sessionId])) announceRecency(workspaceId)
       }),
     sendTurn: (input) => {
       const commandId = input.commandId ?? nextId()
@@ -1656,8 +1743,8 @@ export function createMockEnvironmentClient(
               workspaceId: summary.workspaceId,
               title: summary.title,
               status: summary.status,
-              providerId: summary.providerId ?? 'opencode',
-              updatedAt: summary.updatedAt ?? now(),
+              providerId: summary.providerId,
+              updatedAt: summary.updatedAt,
             },
             threads: threadStates.map((item) => item.thread),
           })
@@ -1711,8 +1798,18 @@ function seedState(
     const threads = entry.threads ?? [
       { threadId: `${entry.session.sessionId}-thread`, sessionId: entry.session.sessionId },
     ]
+    // A seed is what the environment already holds: listed as a fresh load
+    // would list it, with no recency of its own.
+    state = applySessionOpen(state, {
+      session: {
+        ...entry.session,
+        status: entry.status ?? 'idle',
+        providerId: entry.providerId ?? 'opencode',
+        updatedAt: entry.updatedAt ?? new Date(1_700_000_000_000 + index * 1_000).toISOString(),
+      },
+      threads,
+    })
     for (const thread of threads) {
-      state = applySessionCreated(state, { session: entry.session, thread })
       state = {
         ...state,
         threads: {
@@ -1723,24 +1820,6 @@ function seedState(
             messages: (entry.messages ?? []).filter(
               (message) => message.threadId === thread.threadId,
             ),
-          },
-        },
-      }
-    }
-    const current = state.sessions[entry.session.sessionId]
-    if (current) {
-      state = {
-        ...state,
-        sessions: {
-          ...state.sessions,
-          [entry.session.sessionId]: {
-            ...current,
-            status: entry.status ?? current.status,
-            providerId: entry.providerId ?? current.providerId ?? 'opencode',
-            updatedAt:
-              entry.updatedAt ??
-              current.updatedAt ??
-              new Date(1_700_000_000_000 + index * 1_000).toISOString(),
           },
         },
       }
@@ -1761,6 +1840,9 @@ function seedState(
   if (seed?.activeSessionId) state = applyActiveSession(state, seed.activeSessionId)
   return state
 }
+
+/** The providers an environment of this product can run, for a mock seeded with no catalog. */
+const MOCK_RUNNABLE_PROVIDERS: readonly string[] = ['opencode', 'cursor', 'claude']
 
 function splitChunks(text: string, size = 12): string[] {
   const chunks: string[] = []

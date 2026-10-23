@@ -41,7 +41,7 @@ const workspace = {
   lastActivityAt: null,
   exists: true,
   availability: 'available' as const,
-  capabilities: { git: false, providers: [] },
+  capabilities: { git: false },
 }
 
 async function createDatabase(): Promise<DatabaseSync> {

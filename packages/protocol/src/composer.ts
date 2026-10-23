@@ -91,6 +91,15 @@ export const ProviderCatalogEntrySchema = ProviderBootstrapSchema.extend({
   profile: ProviderComposerProfileSchema.optional(),
 })
 
+/**
+ * How many times a workspace's preference for a provider has changed: the
+ * server counts it in the projection that writes it (docs/sync-foundations.md
+ * §3.2). A set command's answer names the revision its change produced, and
+ * every `composer.preferences.updated` the one it carries, so an answer and an
+ * event are ordered by the server's number, never by when they arrived.
+ */
+export const PreferenceRevisionSchema = z.number().int().nonnegative()
+
 export const ComposerPreferenceTargetSchema = z.strictObject({
   workspaceId: EntityIdSchema,
   providerId: EntityIdSchema,
@@ -130,19 +139,34 @@ export const ComposerResponseSchemas = {
     z.strictObject({ providers: z.array(ProviderCatalogEntrySchema).max(64) }),
   ),
   [COMPOSER_PREFERENCES_GET_CAPABILITY]: response(
-    z.strictObject({ preference: WorkspaceComposerPreferenceSchema }),
+    z.strictObject({
+      preference: WorkspaceComposerPreferenceSchema,
+      revision: PreferenceRevisionSchema,
+    }),
   ),
   [COMPOSER_PREFERENCES_SET_CAPABILITY]: response(
-    z.strictObject({ preference: WorkspaceComposerPreferenceSchema }),
+    z.strictObject({
+      preference: WorkspaceComposerPreferenceSchema,
+      revision: PreferenceRevisionSchema,
+    }),
   ),
   [COMPOSER_MODEL_SET_CAPABILITY]: response(
-    z.strictObject({ preference: WorkspaceComposerPreferenceSchema }),
+    z.strictObject({
+      preference: WorkspaceComposerPreferenceSchema,
+      revision: PreferenceRevisionSchema,
+    }),
   ),
   [COMPOSER_MODE_SET_CAPABILITY]: response(
-    z.strictObject({ preference: WorkspaceComposerPreferenceSchema }),
+    z.strictObject({
+      preference: WorkspaceComposerPreferenceSchema,
+      revision: PreferenceRevisionSchema,
+    }),
   ),
   [COMPOSER_CONFIG_OPTION_SET_CAPABILITY]: response(
-    z.strictObject({ preference: WorkspaceComposerPreferenceSchema }),
+    z.strictObject({
+      preference: WorkspaceComposerPreferenceSchema,
+      revision: PreferenceRevisionSchema,
+    }),
   ),
 } as const
 

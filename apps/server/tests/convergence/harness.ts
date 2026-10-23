@@ -459,6 +459,13 @@ export class Rig {
   }
 
   /** A kill inside a chosen event-log commit (child-protocol.ts `KillAt`), then a respawn. */
+  /** A new, empty folder beside the rig's workspace, for a second registration. */
+  async folder(name: string): Promise<string> {
+    const path = join(this.dataDir, name)
+    await mkdir(path)
+    return realpath(path)
+  }
+
   async killAtCommit(at: KillAt, trigger: () => Promise<unknown>): Promise<void> {
     await this.server.killAtCommit(at, trigger)
     this.proxy.setTarget(this.server.port)

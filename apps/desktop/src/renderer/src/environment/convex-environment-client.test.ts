@@ -197,7 +197,7 @@ describe('createConvexEnvironmentClient', () => {
       path: 'C:/repo',
       lastUsedAt: null,
       lastActivityAt: null,
-      capabilities: { git: false, providers: [] },
+      capabilities: { git: false },
       exists: true,
     })
     expect(selectSessionList(state, 'C:/repo')).toMatchObject([
@@ -209,6 +209,33 @@ describe('createConvexEnvironmentClient', () => {
         workspacePaths: ['C:/repo'],
       },
     )
+  })
+
+  it('keeps workspace recency and title times itself, since Convex announces neither', () => {
+    const { client, bridge } = setup()
+    client.connect()
+    expect(client.getState().workspaces['C:/repo']?.lastActivityAt).toBeNull()
+    bridge.emit(
+      agentEvent({
+        category: 'lifecycle',
+        event: 'prompt_started',
+        messageId: 'asst-1',
+        data: { prompt: 'q', userMessageId: 'usr-1' },
+      }),
+    )
+    expect(client.getState().workspaces['C:/repo']?.lastActivityAt).toBe('2026-09-11T00:00:00.000Z')
+    bridge.emit(
+      agentEvent({
+        category: 'lifecycle',
+        event: 'session_info_update',
+        timestamp: '2026-09-12T00:00:00.000Z',
+        data: { title: 'Named' },
+      }),
+    )
+    expect(client.getState().sessions['session-1']).toMatchObject({
+      title: 'Named',
+      updatedAt: '2026-09-12T00:00:00.000Z',
+    })
   })
 
   it('seeds session status from the catalog until a local turn knows better', () => {
@@ -278,9 +305,23 @@ describe('createConvexEnvironmentClient', () => {
     const { client, convex, bridge } = setup()
     client.connect()
     bridge.emit(
-      agentEvent({ category: 'lifecycle', event: 'session_created', sessionId: 'fresh', data: {} }),
+      agentEvent({
+        category: 'lifecycle',
+        event: 'session_created',
+        sessionId: 'fresh',
+        providerId: 'cursor',
+        data: {},
+      }),
     )
-    expect(client.getState().sessions.fresh).toMatchObject({ workspaceId: 'C:/repo', title: null })
+    // The translator announces the whole row, provider and time included
+    // (protocol v17, §4.7.2), so the store needs no listing to name them.
+    expect(client.getState().sessions.fresh).toMatchObject({
+      workspaceId: 'C:/repo',
+      title: null,
+      status: 'idle',
+      providerId: 'cursor',
+      updatedAt: '2026-09-11T00:00:00.000Z',
+    })
     convex.push('sessions:listForSidebar')
     expect(client.getState().sessions.fresh).toBeDefined()
   })
@@ -938,7 +979,7 @@ describe('createConvexEnvironmentClient', () => {
       path: 'C:/other',
       lastUsedAt: null,
       lastActivityAt: null,
-      capabilities: { git: false, providers: [] },
+      capabilities: { git: false },
       exists: true,
     })
     expect(client.getState().workspaceOrder).toEqual(['C:/repo', 'C:/other'])

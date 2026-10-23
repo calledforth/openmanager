@@ -35,10 +35,12 @@ import type {
   ProofEvent,
   ProofResponse,
   Session,
+  SessionSummary,
   Thread,
   Turn,
   Workspace,
 } from '@openmanager/protocol'
+import { SESSION_LIST_EPOCH } from '@openmanager/protocol'
 import { createAgentEventTranslator } from './agent-event-translator'
 import { namesUnknownTurn } from '@agentpack/view/protocol'
 
@@ -196,6 +198,90 @@ type Waiter<T> = { resolve: (value: T) => void; reject: (error: Error) => void }
 
 const isProvider = (value: unknown): value is ProviderId => typeof value === 'string'
 
+/**
+ * Drop a session and every child under it. The shared reducers drop only
+ * what each event names, because the environment announces every session a
+ * deletion takes; Convex does not, so the desktop keeps the cascade itself
+ * (docs/sync-foundations.md §3.5).
+ */
+function removeSessionTree(state: EnvironmentState, sessionId: string): EnvironmentState {
+  const removed: string[] = []
+  const pending = [sessionId]
+  while (pending.length) {
+    const id = pending.pop()!
+    if (removed.includes(id)) continue
+    removed.push(id)
+    for (const session of Object.values(state.sessions)) {
+      if (session.parentSessionId === id) pending.push(session.sessionId)
+    }
+  }
+  return removed.reduceRight(applySessionRemoved, state)
+}
+
+/** Move a session's workspace `lastActivityAt` forward to `at`, never back. */
+function touchWorkspaceActivity(
+  state: EnvironmentState,
+  sessionId: string,
+  at: string,
+): EnvironmentState {
+  const workspaceId = state.sessions[sessionId]?.workspaceId
+  const workspace = workspaceId ? state.workspaces[workspaceId] : undefined
+  if (!workspace) return state
+  const current = workspace.lastActivityAt ? Date.parse(workspace.lastActivityAt) : -Infinity
+  if (!(Date.parse(at) > current)) return state
+  return {
+    ...state,
+    workspaces: {
+      ...state.workspaces,
+      [workspace.workspaceId]: { ...workspace, lastActivityAt: at },
+    },
+  }
+}
+
+/**
+ * The times the shared reducers took from events before the environment
+ * announced them (docs/sync-foundations.md §4.7.1). Convex announces neither
+ * a session's time nor a workspace's recency, so the desktop keeps the old
+ * rules here (§3.5): a new session or a turn moves its workspace's recency
+ * forward, and a title or a status moves the session's time.
+ */
+function legacyActivity(state: EnvironmentState, event: ProofEvent): EnvironmentState {
+  switch (event.name) {
+    case 'session.created':
+      return touchWorkspaceActivity(state, event.payload.session.sessionId, event.timestamp)
+    case 'turn.started':
+    case 'turn.completed':
+    case 'turn.interrupted':
+    case 'turn.failed':
+      return touchWorkspaceActivity(state, event.scope.sessionId, event.timestamp)
+    case 'session.updated': {
+      const session = state.sessions[event.payload.sessionId]
+      const { title, status, updatedAt } = event.payload
+      if (!session || updatedAt !== undefined || (title === undefined && status === undefined)) {
+        return state
+      }
+      return {
+        ...state,
+        sessions: {
+          ...state.sessions,
+          [session.sessionId]: { ...session, updatedAt: event.timestamp },
+        },
+      }
+    }
+    default:
+      return state
+  }
+}
+
+/** Drop a workspace with its sessions, the desktop's own cascade as above. */
+function removeWorkspaceTree(state: EnvironmentState, workspaceId: string): EnvironmentState {
+  let next = state
+  for (const session of Object.values(state.sessions)) {
+    if (session.workspaceId === workspaceId) next = removeSessionTree(next, session.sessionId)
+  }
+  return applyWorkspaceRemoved(next, workspaceId)
+}
+
 export function createConvexEnvironmentClient(
   options: ConvexEnvironmentClientOptions,
 ): EnvironmentClient {
@@ -297,8 +383,8 @@ export function createConvexEnvironmentClient(
         // so this adapter, which stands in for the environment, announces
         // the turn first, the way the environment would.
         const unannounced = backgroundTurnStart(next, proof)
-        if (unannounced) next = applyEvent(next, unannounced)
-        next = applyEvent(next, proof)
+        if (unannounced) next = legacyActivity(applyEvent(next, unannounced), unannounced)
+        next = legacyActivity(applyEvent(next, proof), proof)
         if (proof.scope.type === 'thread') {
           next = refreshLegacySessionStatus(next, proof.scope.sessionId)
         }
@@ -339,7 +425,7 @@ export function createConvexEnvironmentClient(
     path: row.path,
     lastUsedAt: null,
     lastActivityAt: null,
-    capabilities: { git: false, providers: [] },
+    capabilities: { git: false },
     exists: true,
   })
   const toSession = (
@@ -350,6 +436,35 @@ export function createConvexEnvironmentClient(
     workspaceId,
     title: row.title ?? null,
   })
+  /**
+   * A Convex row as the shared store's session summary. Since protocol v17 a
+   * summary always names its provider and time; Convex keeps neither time nor,
+   * for older rows, the provider, so this adapter, which stands in for the
+   * environment, states what this host already shows: the row's provider (the
+   * desktop sidebar's own fallback otherwise), and every other field as the
+   * store already holds it, as a bare session used to leave it.
+   */
+  const toCatalogSummary = (
+    state: EnvironmentState,
+    row: { externalId: string; title?: string; providerId?: string },
+    workspaceId: string,
+  ): SessionSummary => {
+    const held = state.sessions[row.externalId]
+    return {
+      ...toSession(row, workspaceId),
+      ...(held?.parentSessionId ? { parentSessionId: held.parentSessionId } : {}),
+      ...(held?.titleSource ? { titleSource: held.titleSource } : {}),
+      status: held?.status ?? 'idle',
+      providerId: isProvider(row.providerId) ? row.providerId : (held?.providerId ?? 'opencode'),
+      updatedAt: held?.updatedAt ?? SESSION_LIST_EPOCH,
+      ...(held?.settledAt !== undefined ? { settledAt: held.settledAt } : {}),
+      ...(held?.doneAt !== undefined ? { doneAt: held.doneAt } : {}),
+      ...(held?.backgroundTasks ? { backgroundTasks: held.backgroundTasks } : {}),
+      ...(held?.waitingOn ? { waitingOn: held.waitingOn } : {}),
+      ...(held?.inBackground ? { inBackground: held.inBackground } : {}),
+      ...(held?.composer ? { composer: held.composer } : {}),
+    }
+  }
   const threadOf = (sessionId: string): Thread => ({ threadId: sessionId, sessionId })
 
   /** Ensures a thread exists for a session, the way `thread.created` would on the wire. */
@@ -370,7 +485,7 @@ export function createConvexEnvironmentClient(
     update((state) => {
       let next = applyWorkspaceList(state, workspaces)
       for (const id of state.workspaceOrder) {
-        if (!paths.has(id)) next = applyWorkspaceRemoved(next, id)
+        if (!paths.has(id)) next = removeWorkspaceTree(next, id)
       }
       return next
     })
@@ -405,14 +520,14 @@ export function createConvexEnvironmentClient(
     update((state) => {
       let next = applySessionList(
         state,
-        visible.map((row) => toSession(row, row.workspacePath)),
+        visible.map((row) => toCatalogSummary(state, row, row.workspacePath)),
       )
       for (const row of visible) {
         next = knownThread(next, row.externalId)
         next = seedCatalogStatus(next, row.externalId, row.status)
       }
       for (const sessionId of convexSessions) {
-        if (!ids.has(sessionId)) next = applySessionRemoved(next, sessionId)
+        if (!ids.has(sessionId)) next = removeSessionTree(next, sessionId)
       }
       return next
     })
@@ -842,7 +957,7 @@ export function createConvexEnvironmentClient(
             path: input.path,
             lastUsedAt: null,
             lastActivityAt: null,
-            capabilities: { git: false, providers: [] },
+            capabilities: { git: false },
             exists: true,
           }
       update((state) => applyWorkspaceList(state, [workspace]))
@@ -858,7 +973,7 @@ export function createConvexEnvironmentClient(
         path: workspaceId,
       })
       if (row) await convex.mutation(api.workspaces.remove, { id: row._id })
-      update((state) => applyWorkspaceRemoved(state, workspaceId))
+      update((state) => removeWorkspaceTree(state, workspaceId))
     },
     async listSessions(input = {}) {
       gate()
@@ -876,7 +991,7 @@ export function createConvexEnvironmentClient(
       update((state) => {
         let next = applySessionList(
           state,
-          rows.map((row) => toSession(row, workspaceId)),
+          rows.map((row) => toCatalogSummary(state, row, workspaceId)),
         )
         for (const row of rows) next = knownThread(next, row.externalId)
         return next
@@ -928,9 +1043,14 @@ export function createConvexEnvironmentClient(
           const thread = threadOf(sessionId)
           // The IPC announcement may have created the thread already (as
           // `idle`); a brand-new session has no history to fetch, so it is ready.
+          const announcedAt = new Date().toISOString()
           update((state) =>
             applyThreadHydration(
-              applySessionCreated(state, { session, thread }),
+              touchWorkspaceActivity(
+                applySessionCreated(state, { session, thread, announcedAt }, providerId),
+                sessionId,
+                announcedAt,
+              ),
               thread.threadId,
               'ready',
             ),
@@ -1021,7 +1141,7 @@ export function createConvexEnvironmentClient(
         sessionId,
       )
       convexSessions.delete(sessionId)
-      update((state) => applySessionRemoved(state, sessionId))
+      update((state) => removeSessionTree(state, sessionId))
     },
     async sendTurn(input) {
       gate()

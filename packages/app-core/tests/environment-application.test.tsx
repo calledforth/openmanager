@@ -31,7 +31,7 @@ const WORKSPACE = {
   path: 'C:/repo',
   lastUsedAt: null,
   lastActivityAt: null,
-  capabilities: { git: false, providers: ['opencode'] },
+  capabilities: { git: false },
   exists: true,
 }
 const SESSION = { sessionId: 'session-1', workspaceId: WORKSPACE.workspaceId, title: 'First' }
@@ -141,7 +141,16 @@ describe('the shared application over the environment client', () => {
       eventId: 'created',
       timestamp: new Date().toISOString(),
       scope: { type: 'environment', environmentId: client.getState().environment!.environmentId },
-      payload: { session: SESSION },
+      payload: {
+        session: {
+          ...SESSION,
+          status: 'idle',
+          providerId: 'opencode',
+          updatedAt: new Date().toISOString(),
+          settledAt: null,
+          doneAt: null,
+        },
+      },
     })
     await render(<App client={client} />)
     // Live work gets a glyph and says what it is doing; a session at rest
@@ -190,7 +199,16 @@ describe('the shared application over the environment client', () => {
       eventId: 'created',
       timestamp: new Date().toISOString(),
       scope: { type: 'environment', environmentId },
-      payload: { session: SESSION },
+      payload: {
+        session: {
+          ...SESSION,
+          status: 'idle',
+          providerId: 'opencode',
+          updatedAt: new Date().toISOString(),
+          settledAt: null,
+          doneAt: null,
+        },
+      },
     })
     await render(<App client={client} />)
     await act(() =>
@@ -1280,6 +1298,7 @@ describe('the shared application over the environment client', () => {
       },
       health: {
         summary: 'ready' as const,
+        available: true,
         refreshing: false,
         install: 'installed' as const,
         auth: 'authenticated' as const,

@@ -69,8 +69,9 @@ export interface SessionSummary extends Session {
   /** Absent until the environment has named the session; see docs/session-titles.md. */
   titleSource?: SessionTitleSource
   status: SessionStatus
-  providerId?: string
-  updatedAt?: string
+  /** Every source names it: `session.created`, listings, snapshots and `session.open`. */
+  providerId: string
+  updatedAt: string
   /** When the user settled the session; null or absent while it is active. */
   settledAt?: string | null
   /**

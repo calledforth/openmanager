@@ -12,7 +12,7 @@ export const WORKSPACE = {
   path: 'C:/repo',
   lastUsedAt: null,
   lastActivityAt: null,
-  capabilities: { git: false, providers: ['opencode'] },
+  capabilities: { git: false },
   exists: true,
 }
 export const SESSION = { sessionId: 'session-1', workspaceId: WORKSPACE.workspaceId, title: null }
@@ -22,6 +22,8 @@ export const SESSION_SUMMARY = {
   providerId: 'opencode',
   updatedAt: '2026-09-10T00:00:00.000Z',
 }
+/** What `session.created` carries: the whole row, in the canonical form (§4.7.2). */
+export const SESSION_CREATED = { ...SESSION_SUMMARY, settledAt: null, doneAt: null }
 export const THREAD = { threadId: 'thread-1', sessionId: SESSION.sessionId }
 
 export const environmentScope = { type: 'environment', environmentId: ENV } as const
@@ -120,6 +122,7 @@ export const BARE_PROVIDER: ProviderCatalogEntry = {
   },
   health: {
     summary: 'ready',
+    available: true,
     refreshing: false,
     install: 'installed',
     auth: 'authenticated',

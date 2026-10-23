@@ -24,6 +24,12 @@ export interface KillAt {
   phase: 'before' | 'after'
   name: string
   skip?: number
+  /**
+   * Count only a record a producer wrote, not one the repository's status
+   * pass derived (`isDerivedRecord`): a turn or a new session also commits
+   * a derived `workspace.updated` for the recency it moved (§4.7.1).
+   */
+  producer?: boolean
 }
 
 /** One step of a scripted prompt, run by the fake provider without a round trip. */

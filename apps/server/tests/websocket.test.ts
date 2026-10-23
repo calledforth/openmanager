@@ -130,7 +130,7 @@ function record(scope: SubscriptionScope) {
                 path: 'workspace-1',
                 lastUsedAt: null,
                 lastActivityAt: null,
-                capabilities: { git: false, providers: [] },
+                capabilities: { git: false },
                 exists: true,
                 availability: 'available',
               },
@@ -427,7 +427,7 @@ describe('workspace boundary', () => {
         path: host.root,
         lastUsedAt: null,
         lastActivityAt: null,
-        capabilities: { git: false, providers: [] },
+        capabilities: { git: false },
         exists: true,
         availability: 'available',
       },
@@ -437,7 +437,7 @@ describe('workspace boundary', () => {
         path: host.otherRoot,
         lastUsedAt: null,
         lastActivityAt: null,
-        capabilities: { git: false, providers: [] },
+        capabilities: { git: false },
         exists: true,
         availability: 'available',
       },
@@ -464,7 +464,7 @@ describe('workspace boundary', () => {
       path: host.server.workspaces.get(added.payload.workspace.workspaceId)!.root,
       lastUsedAt: null,
       lastActivityAt: null,
-      capabilities: { git: false, providers: [] },
+      capabilities: { git: false },
       exists: true,
       availability: 'available',
     })
@@ -1267,6 +1267,7 @@ it('broadcasts session.updated and session.deleted to a second environment subsc
   })
   const { session } = ProofResponseSchemas['session.create'].parse(await first.next()).payload
   await second.next()
+  await second.next() // the workspace recency the new session moved
   await second.next() // workspace.updated after the provider session starts
   first.command('session.rename', { sessionId: session.sessionId, title: 'Shared title' })
   expect(await first.next()).toMatchObject({

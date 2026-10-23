@@ -23,8 +23,8 @@ import {
 } from '@agentpack/runtime/testing'
 import { startServer } from '../../src/server.ts'
 import { DATABASE_FILENAME } from '../../src/db/database.ts'
-import { scopeKey } from '../../src/db/event-repository.ts'
-import type { SubscriptionScope } from '@openmanager/protocol/node'
+import { isDerivedRecord, scopeKey } from '../../src/db/event-repository.ts'
+import type { ProofEvent, SubscriptionScope } from '@openmanager/protocol/node'
 import {
   listSessionHistory,
   listSessionSummaries,
@@ -486,10 +486,12 @@ const claudeSdk = new FakeClaudeSdk()
 let armedKill: KillAt | undefined = config.killAt ? { ...config.killAt } : undefined
 const killAtCommit =
   (phase: KillAt['phase']) =>
-  (records: readonly { event: { name: string } }[]): void => {
+  (records: readonly { event: ProofEvent }[]): void => {
     const armed = armedKill
     if (!armed || armed.phase !== phase) return
-    if (!records.some((record) => record.event.name === armed.name)) return
+    const matches = (event: ProofEvent) =>
+      event.name === armed.name && !(armed.producer && isDerivedRecord(event))
+    if (!records.some((record) => matches(record.event))) return
     if ((armed.skip ?? 0) > 0) {
       armed.skip = (armed.skip ?? 0) - 1
       return

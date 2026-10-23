@@ -192,8 +192,11 @@ function healthEvent(providerId: ProviderId, health: ProviderHealth) {
 /** Strip executable paths, account labels, thread IDs and diagnostic messages from public health. */
 function publicHealth(report: RuntimeHealthReport): ProviderHealth {
   const health = report.health
+  const summary = summarizeHealth(health)
   return {
-    summary: summarizeHealth(health),
+    summary,
+    // The one rule for "a session could start here now", stated by the server.
+    available: summary === 'ready' || summary === 'warning',
     refreshing: report.refreshing,
     install: health.install.state,
     auth: health.auth.state,

@@ -163,24 +163,6 @@ describe('mock composer commands', () => {
     ])
   })
 
-  it('answers but stores nothing for a session whose provider the client never learned', async () => {
-    const client = createMockEnvironmentClient({ seed })
-    client.emit(
-      event({
-        name: 'session.created',
-        scope: { type: 'environment', environmentId: 'mock-environment' },
-        payload: {
-          session: { sessionId: 'announced', workspaceId: WORKSPACE.workspaceId, title: null },
-        },
-      }),
-    )
-    expect(client.getState().sessions.announced?.providerId).toBeUndefined()
-    expect(
-      await client.commands.setSessionModel({ sessionId: 'announced', modelId: 'opus' }),
-    ).toEqual({ modelId: 'opus' })
-    expect(client.getState().composerPreferences).toEqual({})
-  })
-
   it('rejects unknown providers, unknown sessions and wire-invalid input', async () => {
     const client = createMockEnvironmentClient({ seed })
     await expect(

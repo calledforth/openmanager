@@ -150,11 +150,13 @@ describe('turn closure', () => {
       },
       { turnId: 'turn-1', reason: 'user' },
     ])
-    // Cursors run on, one per event, and the status of the session is said once.
+    // Cursors run on, one per event; the status of the session is said
+    // once, and so is the workspace recency the turn's end moved.
     expect(thread.map((record) => record.cursor.sequence)).toEqual([7, 8, 9, 10, 11])
     const status = records.filter((record) => record.cursor.scope.type === 'environment')
     expect(status.map((record) => record.event.payload)).toEqual([
       expect.objectContaining({ sessionId: 'session-1', status: 'idle' }),
+      { workspace: expect.objectContaining({ workspaceId: 'workspace-1' }) },
     ])
 
     const page = listSessionHistory(database, { sessionId: 'session-1', threadId: 'thread-1' })!
@@ -198,9 +200,10 @@ describe('turn closure', () => {
     const first = repository.finalizeTurn(scope, [terminal])
     const again = repository.finalizeTurn(scope, [terminal])
     expect(again).toEqual(first)
-    // The turn, its five closes plus the terminal, and two status records.
+    // The turn, its five closes plus the terminal, and two status and two
+    // recency records (the turn's start and its end).
     expect(database.prepare('SELECT count(*) AS n FROM event_log').get()).toEqual({
-      n: openTurn().length + 5 + 2,
+      n: openTurn().length + 5 + 2 + 2,
     })
   })
 
@@ -274,7 +277,7 @@ describe('turn closure', () => {
     const repository = createEventRepository(database)
     repository.appendEvents(scope, openTurn().slice(0, 2))
     // The projector alone, as a writer that skipped the closure would call it.
-    const project = createEventProjector(database, { sessionProviderId: () => 'cursor' })
+    const project = createEventProjector(database)
     expect(() => project(event('turn.completed', 'bare', { turnId: 'turn-1' }, T(2)))).toThrow(
       /cannot end with open children: tool tool-1/,
     )

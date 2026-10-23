@@ -56,8 +56,8 @@ describe('checked-in schema fixtures', () => {
     const database = openEnvironmentDatabase(await copyFixture(1))
     databases.push(database)
 
-    expect(readSchemaVersion(database)).toBe(21)
-    expect(database.prepare('PRAGMA user_version').get()).toEqual({ user_version: 21 })
+    expect(readSchemaVersion(database)).toBe(22)
+    expect(database.prepare('PRAGMA user_version').get()).toEqual({ user_version: 22 })
     expect(
       database.prepare('SELECT provider_id, default_model_id FROM provider_profiles').all(),
     ).toEqual([{ provider_id: 'cursor', default_model_id: 'composer-2.5' }])
@@ -70,7 +70,7 @@ describe('checked-in schema fixtures', () => {
     const database = openEnvironmentDatabase(await copyFixture(2))
     databases.push(database)
 
-    expect(readSchemaVersion(database)).toBe(21)
+    expect(readSchemaVersion(database)).toBe(22)
     expect(sessionList(database)).toMatchObject([
       { session_id: 'session-recent', title: 'Recent session', status: 'idle' },
       { session_id: 'session-old', title: 'Older session', status: 'idle' },
@@ -181,7 +181,7 @@ describe('crash recovery', () => {
     )
     expect(report).toMatchObject({ turnsRecovered: 1, questionsCancelled: 1, failures: [] })
 
-    expect(readSchemaVersion(recovered)).toBe(21)
+    expect(readSchemaVersion(recovered)).toBe(22)
     expect(sessionList(recovered)).toMatchObject([
       { session_id: 'session-crashed', title: 'Interrupted work', status: 'error' },
       { session_id: 'session-recent', status: 'idle' },

@@ -10,10 +10,11 @@ import {
   type SubscriptionScope,
   type SessionStatus,
 } from '@openmanager/protocol/node'
-import { createEventProjector, type EventProjectionOptions } from './event-projection.ts'
+import { createEventProjector } from './event-projection.ts'
 import { EVENT_TOMBSTONE_SQL } from './queries.ts'
 import { readSessionActivity, type SessionActivity } from './session-activity.ts'
 import { createTurnClosure } from './turn-closure.ts'
+import { readWorkspace } from './workspace-rows.ts'
 
 type ThreadScope = Extract<SubscriptionScope, { type: 'thread' }>
 export type TerminalEvent = Extract<
@@ -23,7 +24,7 @@ export type TerminalEvent = Extract<
 /** Events that receive durable cursors. `turn.notice` is transient and is never persisted. */
 export type DurableProofEvent = Exclude<ProofEvent, { name: 'turn.notice' }>
 
-export interface EventRepositoryOptions extends EventProjectionOptions {
+export interface EventRepositoryOptions {
   epoch?: string
   now?: () => number
   /**
@@ -42,10 +43,24 @@ export interface EventGroup {
   events: readonly DurableProofEvent[]
 }
 
+/**
+ * Host-private facts that ride one write, never an event: they are no
+ * client's business (docs/sync-foundations.md I1).
+ */
+export interface WriteOptions {
+  /**
+   * The provider's own session id of a session this write creates, by host
+   * session id. The `session.created` projection stores it with the row, so
+   * a child session is never durable without the identity it resumes by
+   * (§4.7.4 (e)). Every key must name a session the same write creates.
+   */
+  identities?: Readonly<Record<string, string>>
+}
+
 export interface EventRepository {
   appendEvents(scope: SubscriptionScope, events: readonly DurableProofEvent[]): DurableEvent[]
   /** Commit several scopes' events together, in order: all or none become durable. */
-  appendGroups(groups: readonly EventGroup[]): DurableEvent[]
+  appendGroups(groups: readonly EventGroup[], options?: WriteOptions): DurableEvent[]
   finalizeTurn(scope: ThreadScope, events: readonly DurableProofEvent[]): DurableEvent[]
 }
 
@@ -81,11 +96,12 @@ export function createEventRepository(
 ): EventRepository {
   const newEpoch = options.epoch ?? randomUUID()
   const now = options.now ?? Date.now
-  const project = createEventProjector(database, options)
+  const project = createEventProjector(database)
   const closure = createTurnClosure(database)
   const statements = {
     sessionStatus: database.prepare(
-      'SELECT session_id, status, settled_at, done_at, background_tasks_json FROM sessions WHERE session_id = ?',
+      `SELECT session_id, workspace_id, status, updated_at, settled_at, done_at, background_tasks_json
+       FROM sessions WHERE session_id = ?`,
     ),
     ensureStream: database.prepare(
       `INSERT INTO event_streams (
@@ -96,6 +112,9 @@ export function createEventRepository(
     ),
     selectStream: database.prepare(
       'SELECT epoch, head_sequence FROM event_streams WHERE scope_key = ?',
+    ),
+    selectSessionWorkspace: database.prepare(
+      'SELECT workspace_id FROM sessions WHERE session_id = ?',
     ),
     selectByEventId: database.prepare(
       'SELECT scope_key, sequence, event_json FROM event_log WHERE event_id = ?',
@@ -141,7 +160,39 @@ export function createEventRepository(
    */
   type Transaction = {
     tracked: Map<string, Tracked>
+    workspaces: Map<string, TrackedWorkspace>
     retriedStatus: { environmentId: string; event: DurableProofEvent }[]
+  }
+  /**
+   * A workspace whose sessions or row one transaction touches, for the
+   * recency pass (§4.4, §4.7.1). `announced` starts as its `lastActivityAt`
+   * before the first such event and takes in what the transaction's own
+   * `workspace.updated` events state.
+   */
+  type TrackedWorkspace = {
+    environmentId: string
+    announced: string | null
+    removed: boolean
+    lastEventId: string
+    lastTimestamp: string
+  }
+
+  /** The workspace an event can move the recency of, read before it is projected. */
+  const recencyWorkspaceOf = (event: DurableProofEvent, session?: string): string | undefined => {
+    switch (event.name) {
+      case 'workspace.updated':
+        return event.payload.workspace.workspaceId
+      case 'workspace.removed':
+        return event.payload.workspaceId
+      case 'session.created':
+        return event.payload.session.workspaceId
+      case 'session.deleted':
+        session = event.payload.sessionId
+    }
+    if (!session) return undefined
+    const row = statements.selectSessionWorkspace.get(session) as
+      { workspace_id: string } | undefined
+    return row?.workspace_id
   }
 
   const writeScope = (
@@ -149,6 +200,7 @@ export function createEventRepository(
     events: readonly DurableProofEvent[],
     writtenAt: number,
     transaction?: Transaction,
+    writeOptions?: WriteOptions,
   ): DurableEvent[] => {
     const key = scopeKey(scope)
     statements.ensureStream.run(
@@ -164,14 +216,16 @@ export function createEventRepository(
     if (!stream) throw new Error(`Event stream ${key} vanished inside its transaction`)
     const records: DurableEvent[] = []
     const replayStatus = (event: DurableProofEvent) => {
-      if (!statusSessionOf(event) || !transaction) return
-      const statusRecord = statements.selectByEventId.get(`${event.eventId}:status`) as
-        ExistingEventRow | undefined
-      if (statusRecord) {
-        transaction.retriedStatus.push({
-          environmentId: scope.environmentId,
-          event: JSON.parse(statusRecord.event_json) as DurableProofEvent,
-        })
+      if (!transaction) return
+      for (const suffix of DERIVED_SUFFIXES) {
+        const derived = statements.selectByEventId.get(`${event.eventId}${suffix}`) as
+          ExistingEventRow | undefined
+        if (derived) {
+          transaction.retriedStatus.push({
+            environmentId: scope.environmentId,
+            event: JSON.parse(derived.event_json) as DurableProofEvent,
+          })
+        }
       }
     }
     let head = stream.head_sequence
@@ -264,7 +318,28 @@ export function createEventRepository(
           transaction!.tracked.set(sessionId, entry)
         }
       }
-      project(event)
+      const workspaceId = transaction ? recencyWorkspaceOf(event, sessionId) : undefined
+      let place = workspaceId ? transaction!.workspaces.get(workspaceId) : undefined
+      if (workspaceId && !place) {
+        place = {
+          environmentId: scope.environmentId,
+          announced: readWorkspace(database, workspaceId)?.lastActivityAt ?? null,
+          removed: false,
+          lastEventId: event.eventId,
+          lastTimestamp: event.timestamp,
+        }
+        transaction!.workspaces.set(workspaceId, place)
+      }
+      project(event, writeOptions)
+      if (place) {
+        place.lastEventId = event.eventId
+        place.lastTimestamp = event.timestamp
+        if (event.name === 'workspace.updated') {
+          place.announced = event.payload.workspace.lastActivityAt
+          place.removed = false
+        }
+        if (event.name === 'workspace.removed') place.removed = true
+      }
       if (entry) {
         entry.lastEventId = event.eventId
         entry.lastTimestamp = event.timestamp
@@ -310,7 +385,16 @@ export function createEventRepository(
       const activityChanged =
         before.activity.waitingOn !== after.activity.waitingOn ||
         before.activity.inBackground !== after.activity.inBackground
-      if (before.status === after.status && !unsettled && !doneChanged && !activityChanged) {
+      // And so does the session's place in the list (§4.7.1): every move of
+      // `updated_at` is announced, a second request while waiting included.
+      const moved = before.updated_at !== after.updated_at
+      if (
+        before.status === after.status &&
+        !unsettled &&
+        !doneChanged &&
+        !activityChanged &&
+        !moved
+      ) {
         continue
       }
       add(
@@ -324,6 +408,7 @@ export function createEventRepository(
           payload: {
             sessionId,
             status: after.status,
+            updatedAt: new Date(after.updated_at).toISOString(),
             // Only when they apply: a status without them clears them.
             ...after.activity,
             ...(unsettled ? { settledAt: null } : {}),
@@ -334,6 +419,25 @@ export function createEventRepository(
         }),
       )
     }
+    // A workspace's recency follows its sessions and its own last use, read
+    // from the rows with the registry's own reader. Announced when it moved,
+    // backwards too: deleting the newest session lowers it.
+    for (const [workspaceId, place] of transaction.workspaces) {
+      if (place.removed) continue
+      const workspace = readWorkspace(database, workspaceId)
+      if (!workspace || workspace.lastActivityAt === place.announced) continue
+      add(
+        place.environmentId,
+        ProofEventSchemas['workspace.updated'].parse({
+          type: 'event',
+          name: 'workspace.updated',
+          eventId: `${place.lastEventId}:recency`,
+          timestamp: place.lastTimestamp,
+          scope: { type: 'environment', environmentId: place.environmentId },
+          payload: { workspace },
+        }),
+      )
+    }
     // The derived records are written with no transaction state: they state
     // the pass itself.
     return [...byEnvironment].flatMap(([environmentId, events]) =>
@@ -341,7 +445,7 @@ export function createEventRepository(
     )
   }
 
-  const write = (groups: readonly EventGroup[]): DurableEvent[] => {
+  const write = (groups: readonly EventGroup[], writeOptions?: WriteOptions): DurableEvent[] => {
     const pending = groups.filter((group) => group.events.length > 0)
     if (pending.length === 0) return []
     for (const { scope, events } of pending) {
@@ -351,12 +455,32 @@ export function createEventRepository(
         }
       }
     }
+    if (writeOptions?.identities) {
+      const created = new Set(
+        pending.flatMap(({ events }) =>
+          events.flatMap((event) =>
+            event.name === 'session.created' ? [event.payload.session.sessionId] : [],
+          ),
+        ),
+      )
+      for (const sessionId of Object.keys(writeOptions.identities)) {
+        if (!created.has(sessionId)) {
+          throw new Error(
+            `An identity was given for session ${sessionId}, which this write does not create`,
+          )
+        }
+      }
+    }
     database.exec('BEGIN IMMEDIATE')
     try {
       const writtenAt = now()
-      const transaction: Transaction = { tracked: new Map(), retriedStatus: [] }
+      const transaction: Transaction = {
+        tracked: new Map(),
+        workspaces: new Map(),
+        retriedStatus: [],
+      }
       const records = pending.flatMap(({ scope, events }) =>
-        writeScope(scope, events, writtenAt, transaction),
+        writeScope(scope, events, writtenAt, transaction, writeOptions),
       )
       records.push(...deriveStatus(transaction, writtenAt))
       options.beforeCommit?.(records)
@@ -375,7 +499,7 @@ export function createEventRepository(
 
   return {
     appendEvents: (scope, events) => write([{ scope, events }]),
-    appendGroups: write,
+    appendGroups: (groups, options) => write(groups, options),
     finalizeTurn(scope, events) {
       const terminal = events.at(-1)
       if (!terminal || !isTerminal(terminal)) {
@@ -417,9 +541,19 @@ export function isTerminal(event: ProofEvent): event is TerminalEvent {
   )
 }
 
+/** The ids of a source event's derived records: its session's status, its workspace's recency. */
+const DERIVED_SUFFIXES = [':status', ':recency'] as const
+
+/** Whether the repository's own pass wrote this record, rather than a producer. */
+export function isDerivedRecord(event: { eventId: string }): boolean {
+  return DERIVED_SUFFIXES.some((suffix) => event.eventId.endsWith(suffix))
+}
+
 type SessionStatusRow = {
   session_id: string
+  workspace_id: string
   status: SessionStatus
+  updated_at: number
   settled_at: number | null
   done_at: number | null
   background_tasks_json: string | null
@@ -451,9 +585,10 @@ function stated(
   before: StatusState,
   event: Extract<ProofEvent, { name: 'session.updated' }>,
 ): StatusState {
-  const { status, settledAt, doneAt, waitingOn, inBackground } = event.payload
+  const { status, updatedAt, settledAt, doneAt, waitingOn, inBackground } = event.payload
   return {
     ...before,
+    ...(updatedAt === undefined ? {} : { updated_at: Date.parse(updatedAt) }),
     ...(status === undefined
       ? {}
       : {

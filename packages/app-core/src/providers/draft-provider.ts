@@ -28,6 +28,11 @@ export function draftProviderFor(
   return candidates.find((id) => !providerBlocksComposer(statuses[id])) ?? candidates[0]!
 }
 
+/** The providers whose health says a session could start on them now. */
+export function availableProviderIds(catalog: readonly ProviderCatalogEntry[]): string[] {
+  return catalog.filter((entry) => entry.health.available).map((entry) => entry.id)
+}
+
 /**
  * The provider this workspace last ran: that of its most recently active
  * top-level session. The environment keeps preferences per provider and none
@@ -83,7 +88,9 @@ export function resolveDraftProvider(
   return draftProviderFor(
     picked ?? lastProviderIn(state, workspaceId) ?? defaultProviderId,
     catalog,
-    workspaceId ? state.workspaces[workspaceId]?.capabilities.providers : undefined,
+    // The providers a session could start on now: provider health says so,
+    // as the environment computes it (`available`); not the workspace.
+    workspaceId ? availableProviderIds(catalog) : undefined,
     statuses,
   )
 }

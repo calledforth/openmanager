@@ -16,24 +16,14 @@ import { describe, expect } from 'vitest'
 import {
   environmentSnapshotNeverRemoves,
   reasoningBudgetMarker,
-  runtimeStamp,
-  sessionCreatedPartial,
   snapshotMergeDropsOlderActivity,
-  stampMovesRecency,
 } from './causes.ts'
-import {
-  FlipError,
-  demonstrateDiff,
-  expectConverges,
-  expectConvergesExcept,
-  recordEvidence,
-  verdictOf,
-} from './evidence.ts'
+import { FlipError, demonstrateDiff, expectConverges, recordEvidence } from './evidence.ts'
 import { Driver, sleep, until, type Rig, type TestClient } from './harness.ts'
 import type { FrameFields, FrameRecord } from './link-proxy.ts'
 import { serverSessionsView, serverThreadView, type ThreadView } from './normalize.ts'
-import { recencyMirror, s8Causes, witnessOf, x2Causes } from './fixtures.ts'
-import { createdAt, mirroredRecency } from './mirror.ts'
+import { witnessOf } from './fixtures.ts'
+import { createdAt } from './mirror.ts'
 import { afterPhase, futureTest, scenario } from './scenario.ts'
 import {
   createSession,
@@ -328,10 +318,9 @@ describe('§8.4 scenarios on main', () => {
         turnState(a, target, turnId) === 'waiting',
       'A to hold the open tool, thought and question',
     )
-    // A valid baseline: before the crash A agrees with the server, except for
-    // the workspace recency the question moved (X1, an interaction event is
-    // not one the client mirrors it on), named with its fingerprint.
-    await expectConvergesExcept('S1 baseline', rig, a, [recencyMirror(rig, a)])
+    // A valid baseline: before the crash A agrees with the server, the
+    // workspace recency the question moved included (announced since F3).
+    await expectConverges('S1 baseline', rig, a)
     const held = await serverThread(rig, target)
     const openTurn = (held.turns as Array<{ turnId: string; state: string }>).find(
       (turn) => turn.turnId === turnId,
@@ -630,8 +619,16 @@ describe('§8.4 scenarios on main', () => {
     },
   )
 
+  /**
+   * Guard since F3 (§4.4): the runtime stamp writes the provider identity
+   * alone, a host-private column, so a session's time is the `session.created`
+   * time every client heard. On main the stamp moved `updated_at` with no
+   * event, and a watching client sorted the sidebar by a time the server no
+   * longer had (RUNTIME_STAMP). The rename of the older session lands inside
+   * the 500 ms before the new session's stamp, as on main.
+   */
   scenario(
-    'S8 a session created while another client watches (§4.4)',
+    'S8 a session created while another client watches (§4.4, guard)',
     { newSessionDelayMs: 500 },
     async (rig) => {
       // A direct, so the proxy carries only B: what B was sent is B's alone.
@@ -645,22 +642,7 @@ describe('§8.4 scenarios on main', () => {
         () => b.client.getState().sessions[older.sessionId],
         'B to list the older session',
       )
-      // A valid baseline before the new session's stamp is induced: B agrees
-      // with the server except for the older session's own X2 diff (its
-      // provider, its stamp), instantiated from what B was sent.
-      const baseline = async () =>
-        x2Causes({
-          sessionId: older.sessionId,
-          workspaceId: rig.workspaceId,
-          providerId: 'opencode',
-          createdAt: createdAt(rig.framesOf(b), older.sessionId),
-          heldRecency: mirroredRecency(rig.framesOf(b), rig.workspaceId),
-          witness: await witnessOf(rig, b),
-        })
-      await expectConvergesExcept('S8 baseline', rig, b, [
-        async () => (await baseline()).primary,
-        ...[0, 1].map((index) => async () => (await baseline()).residuals[index]!),
-      ])
+      await expectConverges('S8 baseline', rig, b)
       const created = await createSession(rig, a, { title: 'New', open: false, quiet: false })
       // Inside the 500 ms before the new session's stamp: the older one moves above it.
       await a.client.commands.renameSession(older.sessionId, 'Older, renamed')
@@ -668,36 +650,32 @@ describe('§8.4 scenarios on main', () => {
         () => b.client.getState().sessions[created.sessionId],
         'B to list the new session',
       )
+      // The stamp has landed: the session has its provider identity.
+      await until(
+        async () => !(await rig.server.readUnidentified()).includes(created.sessionId),
+        'the new session to be stamped',
+      )
       await rig.waitQuiet()
-      const causes = async () =>
-        s8Causes({
-          olderId: older.sessionId,
-          newId: created.sessionId,
-          workspaceId: rig.workspaceId,
-          providerId: 'opencode',
-          createdAt: createdAt(rig.framesOf(b), created.sessionId),
-          heldRecency: mirroredRecency(rig.framesOf(b), rig.workspaceId),
-          witness: await witnessOf(rig, b),
-        })
-      await demonstrateDiff(
-        'S8',
-        rig,
-        b,
-        async () => (await causes()).primary,
-        [0, 1].map((index) => async () => (await causes()).residuals[index]!),
+      await expectConverges('S8', rig, b)
+      // Equal is not enough: the server's time for the new session is still the one announced.
+      const server = serverSessionsView(await rig.server.readSessions()) as Array<{
+        sessionId: string
+        updatedAt: string
+      }>
+      expect(server.find((row) => row.sessionId === created.sessionId)?.updatedAt).toBe(
+        createdAt(rig.framesOf(b), created.sessionId),
       )
     },
   )
 
   /**
-   * Not deterministic on main, so neither a demonstration nor a guard: the
-   * stamp follows the child's insert in the same synchronous step
-   * (thread-service.ts:1338-1352), so whether its `updatedAt` moves depends on
-   * the clock crossing a millisecond in between. The run records which
-   * happened, and fails on anything the instantiated causes do not explain.
+   * Guard since F3 (§4.7.4 (e)): a child's provider identity is stored by the
+   * write that creates its row, so there is no second write for a time to
+   * move in. On main the stamp followed the insert as its own write and
+   * moved `updatedAt` whenever the clock crossed a millisecond in between.
    */
   scenario(
-    'S8 (child) a child session registered through subtask_update (observed)',
+    'S8 (child) a child session registered through subtask_update (guard)',
     {},
     async (rig) => {
       const a = await rig.connect('A', { link: 'direct' })
@@ -717,38 +695,19 @@ describe('§8.4 scenarios on main', () => {
           ),
         'B to list the child session',
       )
+      expect(
+        await rig.server.readUnidentified(),
+        'the child is durable with its identity',
+      ).not.toContain(child.sessionId)
       await finish(rig, a, parent, turnId)
-      const result = await rig.checkConvergence(b)
-      // The child's stamp: its provider identity written with no event, right
-      // after the insert; provenance names the write.
-      const witness = await witnessOf(rig, b)
-      const verdict = verdictOf(result, undefined, [
-        runtimeStamp({
-          sessionId: child.sessionId,
-          heldUpdatedAt: createdAt(rig.framesOf(b), child.sessionId),
-          witness,
-        }),
-        stampMovesRecency({
-          workspaceId: rig.workspaceId,
-          held: mirroredRecency(rig.framesOf(b), rig.workspaceId),
-          witness,
-        }),
-        sessionCreatedPartial({
-          sessionIds: [parent.sessionId, child.sessionId],
-          providerId: 'opencode',
-        }),
-        await recencyMirror(rig, b)(),
-      ])
-      expect(verdict.residual, 'only the instantiated causes may show').toEqual([])
-      recordEvidence({
-        scenario: 'S8 (child)',
-        bucket: 'regression-guard',
-        cause: 'observation: did the child stamp cross a millisecond?',
-        observed: {
-          childStampDiverged: verdict.residualCauses.includes('RUNTIME_STAMP'),
-          entries: result.entries,
-        },
-      })
+      // The recency the turn moved is announced too (X1, §4.7.1).
+      await expectConverges('S8 (child)', rig, b)
+      // One write to the child's row: its insert, identity included.
+      const { provenance } = await witnessOf(rig, b)
+      const writes = provenance.audit.filter(
+        (row) => row.kind === 'session' && row.sessionId === child.sessionId,
+      )
+      expect(writes).toMatchObject([{ op: 'insert', newProvider: 'fake-child-1' }])
     },
   )
 
@@ -757,7 +716,8 @@ describe('§8.4 scenarios on main', () => {
    * catalog page, and enough to move a whole page between any two reads), B
    * holding the whole catalog and an environment cursor, then B cut while
    * the parent is deleted and 501 renames push the environment stream past
-   * the replay cap.
+   * the replay cap. Since F3 a rename moves no session (§4.7.1), so the
+   * renames still make the gap but no longer move the catalog; turns do.
    */
   async function s9Setup(rig: Rig, childProviderSessionId: string) {
     const driver = new Driver(rig)
@@ -778,14 +738,14 @@ describe('§8.4 scenarios on main', () => {
         ),
       'the child session',
     )
-    const others: string[] = []
+    const targets: Target[] = []
     for (let index = 0; index < 110; index++) {
       const client = await driver.client()
-      others.push(
-        (await createSession(rig, client, { title: `S${index}`, open: false, quiet: false }))
-          .sessionId,
+      targets.push(
+        await createSession(rig, client, { title: `S${index}`, open: false, quiet: false }),
       )
     }
+    const others = targets.map((target) => target.sessionId)
     await rig.waitQuiet()
     const total = others.length + 2
     const b = await rig.connect('B')
@@ -802,9 +762,8 @@ describe('§8.4 scenarios on main', () => {
       () => b.client.getState().sessions[others[0]!]?.title === 'Seen by B',
       'B to apply a live environment event',
     )
-    // A valid baseline: B agrees with the server before the cut, except for
-    // the recency the rename above moved (X1), from what B was sent.
-    await expectConvergesExcept('S9 baseline', rig, b, [recencyMirror(rig, b)])
+    // A valid baseline: B agrees with the server before the cut.
+    await expectConverges('S9 baseline', rig, b)
     // The rows B will keep, as the server's own summaries give them.
     const summaries = serverSessionsView(await rig.server.readSessions()) as Array<{
       sessionId: string
@@ -822,20 +781,25 @@ describe('§8.4 scenarios on main', () => {
     for (let index = 0; index < 501; index++) {
       await (await driver.client()).client.commands.renameSession(others[0]!, `Gap ${index}`)
     }
-    return { driver, b, parent, child: child.sessionId, others, total, rows }
+    return { driver, b, parent, child: child.sessionId, others, targets, total, rows }
   }
 
   scenario(
     'S9 a deleted parent and child, a gap past the replay cap, a moving catalog',
     { timeoutMs: 180_000 },
     async (rig) => {
-      const { driver, b, parent, child, others, total, rows } = await s9Setup(rig, 'fake-child-s9')
-      let renames = 0
+      const { driver, b, parent, child, targets, total, rows } = await s9Setup(rig, 'fake-child-s9')
+      // Each turn ends by itself, so a session is free again long before its next one.
+      await rig.provider({ op: 'setAutoScript', steps: [{ op: 'complete' }] })
+      let turns = 0
       const movePage = async () => {
-        // A whole page of sessions moves above wherever B's read began.
+        // A whole page of sessions moves above wherever B's read began: a
+        // turn is activity, and its start moves the session (§4.7.1).
         for (let index = 0; index < 101; index++) {
-          const sessionId = others[renames++ % others.length]!
-          await (await driver.client()).client.commands.renameSession(sessionId, `Moved ${renames}`)
+          const target = targets[turns++ % targets.length]!
+          await (
+            await driver.client()
+          ).client.commands.sendTurn({ ...target, text: `Move ${turns}` })
         }
       }
       let listReads = 0
@@ -865,11 +829,9 @@ describe('§8.4 scenarios on main', () => {
         info(environmentReplay).reason,
         'B caught up with a gap_expired environment snapshot',
       ).toBe('gap_expired')
-      await demonstrateDiff('S9', rig, b, environmentSnapshotNeverRemoves({ rows }), [
-        // The renames that move the catalog also move the workspace's recency
-        // with no event (X1): named, from what B was sent and a server read.
-        recencyMirror(rig, b),
-      ])
+      // The turns that move the catalog announce their recency (§4.7.1), so
+      // the deleted sessions are all that is left: no X1 allowance.
+      await demonstrateDiff('S9', rig, b, environmentSnapshotNeverRemoves({ rows }))
       recordEvidence({
         scenario: 'S9',
         bucket: 'known-divergence',
@@ -877,7 +839,8 @@ describe('§8.4 scenarios on main', () => {
         observed: {
           sessions: total,
           catalogReads: listReads,
-          renames: 501 + renames,
+          renames: 501,
+          movingTurns: turns,
           parent: parent.sessionId,
           child,
         },
@@ -896,6 +859,78 @@ describe('§8.4 scenarios on main', () => {
       driver.dispose()
     },
   )
+
+  /**
+   * Guard since F3 (§4.4, §3.6 row 12): a deletion inside the replay window.
+   * B holds an environment cursor and is cut while a parent with a child is
+   * deleted; its replay brings one `session.deleted` per session, the child's
+   * first, and B drops each on its own event: the client mirrors no cascade.
+   */
+  scenario('S9r a cascade inside the replay window (guard)', {}, async (rig) => {
+    const a = await rig.connect('A', { link: 'direct' })
+    const parent = await createSession(rig, a, { title: 'Parent', quiet: true })
+    const turnId = await startTurn(a, parent)
+    await rig.provider({
+      op: 'emitSubtask',
+      sessionId: parent.sessionId,
+      toolCallId: 'task-1',
+      childProviderSessionId: 'fake-child-s9r',
+    })
+    await finish(rig, a, parent, turnId)
+    const child = await until(
+      () =>
+        Object.values(a.client.getState().sessions).find(
+          (session) => session.parentSessionId === parent.sessionId,
+        ),
+      'the child session',
+    )
+    const other = await createSession(rig, a, { title: 'Other', open: false, quiet: true })
+    const b = await rig.connect('B')
+    await until(
+      () => b.client.getState().sessions[child.sessionId],
+      'B to list the parent and its child',
+    )
+    // B holds an environment cursor once a live environment event reached it.
+    await a.client.commands.renameSession(other.sessionId, 'Seen by B')
+    await until(
+      () => b.client.getState().sessions[other.sessionId]?.title === 'Seen by B',
+      'B to apply a live environment event',
+    )
+    await expectConverges('S9r baseline', rig, b)
+    rig.proxy.down()
+    rig.proxy.cut()
+    await until(() => b.client.getState().connection.phase !== 'connected', 'B to notice the cut')
+    await a.client.commands.deleteSession(parent.sessionId)
+    // Recording is always on; what follows is judged from here.
+    const mark = rig.proxy.frames.length
+    rig.proxy.up()
+    await until(
+      () => !b.client.getState().sessions[parent.sessionId],
+      'B to drop the deleted parent',
+      20_000,
+    )
+    await rig.waitQuiet()
+    const frames = downFrames(rig.proxy.frames.slice(mark))
+    const environmentReplay = frames.find(
+      (frame) => info(frame).type === 'response' && info(frame).scopeType === 'environment',
+    )
+    expect(info(environmentReplay).mode, 'B caught up by replay, not a snapshot').toBe('replay')
+    const deleted = frames.flatMap((frame) => {
+      const json = frame.json as { payload?: { events?: unknown[] } } | undefined
+      const records = (json?.payload?.events ?? []) as Array<{
+        event?: { name?: string; payload?: { sessionId?: string } }
+      }>
+      return records
+        .filter((record) => record.event?.name === 'session.deleted')
+        .map((record) => record.event!.payload!.sessionId)
+    })
+    expect(deleted, 'one session.deleted per session, the child first').toEqual([
+      child.sessionId,
+      parent.sessionId,
+    ])
+    await expectConverges('S9r', rig, b)
+    expect(b.client.getState().sessions[child.sessionId]).toBeUndefined()
+  })
 
   scenario(
     'S10 a long thread, all pages walked, then a reload (W2)',
@@ -1207,46 +1242,47 @@ describe('§8.4 scenarios on main', () => {
     },
   )
 
-  for (const [id, pair] of [
-    ['W1', 'workspace register (workspaces.ts:178-179 upsert, then :397-398 emit)'],
-    ['W2', 'workspace rename (workspaces.ts:166, then the event)'],
-    ['W3', 'workspace availability (workspaces.ts:309 refresh write, then emit)'],
-    ['W4', 'workspace recency (markUsed, workspaces.ts:523, then emit)'],
-    ['W5', 'workspace removal (workspaces.ts:145, :404-413 DELETE, then workspace.removed)'],
-    [
-      'W6',
-      'composer preferences and profiles (composer-store.ts:47-75, then composer-service.ts:111, :137)',
-    ],
-    ['W7', 'the runtime stamp (thread-service.ts:419-426, after session.created)'],
-  ] as const) {
-    futureTest(
-      `${id} crash window: ${pair}`,
-      'F3 (a beforeCommit seam reachable from startServer)',
-      'kill the server child between the row write and its event; after the restart the row and the ' +
-        'event must be both present or both absent, and a client replaying from its bookmark converges',
-    )
-  }
+  // W1-W7, the crash windows: crash-windows.test.ts.
 })
 
 describe('divergences on main that §8.4 does not list', () => {
-  scenario(
-    'X1 a rename moves the workspace’s recency with no event (§3.6 row 14)',
-    {},
-    async (rig) => {
-      const a = await rig.connect('A')
-      const target = await createSession(rig, a, { quiet: true })
-      const turnId = await startTurn(a, target)
-      await finish(rig, a, target, turnId)
-      // A valid baseline: A agrees with the server before the rename.
-      await expectConverges('X1 baseline', rig, a)
-      await a.client.commands.renameSession(target.sessionId, 'Renamed later')
-      // Held: what A was sent (mirror.ts); newest: a server read after the check.
-      await demonstrateDiff('X1', rig, a, recencyMirror(rig, a))
-    },
-  )
+  /**
+   * Guard since F3 (§4.7.1): a title is not activity. A rename moves neither
+   * the session's time nor its workspace's recency, on the server or on any
+   * client. On main the rename stamped `updated_at`, which moved the
+   * workspace's recency with no event (WORKSPACE_RECENCY_MIRROR).
+   */
+  scenario('X1 a rename moves nothing in the sidebar (§4.7.1, guard)', {}, async (rig) => {
+    const a = await rig.connect('A')
+    const target = await createSession(rig, a, { quiet: true })
+    const turnId = await startTurn(a, target)
+    await finish(rig, a, target, turnId)
+    await rig.waitQuiet()
+    // A valid baseline: A agrees with the server before the rename.
+    const before = await expectConverges('X1 baseline', rig, a)
+    await a.client.commands.renameSession(target.sessionId, 'Renamed later')
+    const after = await expectConverges('X1', rig, a)
+    // Equal is not enough: the rename moved nothing, on the server either.
+    const time = (view: typeof before.fresh) =>
+      (view.sessions as Array<{ sessionId: string; updatedAt: string }>).find(
+        (row) => row.sessionId === target.sessionId,
+      )?.updatedAt
+    expect(time(after.fresh)).toBe(time(before.fresh))
+    expect(after.fresh.workspaces[rig.workspaceId]).toMatchObject({
+      lastActivityAt: (before.fresh.workspaces[rig.workspaceId] as { lastActivityAt: unknown })
+        .lastActivityAt,
+    })
+  })
 
+  /**
+   * Guard since F3 (§4.7.2): `session.created` carries the whole row, so a
+   * client that only heard the event holds what a fresh load would: the
+   * provider (no OpenCode fallback in the sidebar), the status and the time.
+   * On main it carried a bare Session (SESSION_CREATED_PARTIAL). Created on
+   * Cursor, so a guessed default would show.
+   */
   scenario(
-    'X2 a second client hears of a session only through session.created (§6.3)',
+    'X2 a second client hears of a session only through session.created (§4.7.2, guard)',
     {},
     async (rig) => {
       // A direct, so the proxy carries only B.
@@ -1254,27 +1290,33 @@ describe('divergences on main that §8.4 does not list', () => {
       const b = await rig.connect('B')
       // A valid baseline before anything is created.
       await expectConverges('X2 baseline', rig, b)
-      const target = await createSession(rig, a, { open: false, quiet: false })
+      const target = await createSession(rig, a, {
+        providerId: 'cursor',
+        open: false,
+        quiet: false,
+      })
       await until(() => b.client.getState().sessions[target.sessionId], 'B to list the new session')
       await rig.waitQuiet()
-      // Nothing follows the creation, so the runtime stamp (S8's cause) shows
-      // too: named for this session, by provenance.
-      const causes = async () =>
-        x2Causes({
-          sessionId: target.sessionId,
-          workspaceId: rig.workspaceId,
-          providerId: 'opencode',
-          createdAt: createdAt(rig.framesOf(b), target.sessionId),
-          heldRecency: mirroredRecency(rig.framesOf(b), rig.workspaceId),
-          witness: await witnessOf(rig, b),
-        })
-      await demonstrateDiff(
-        'X2',
-        rig,
-        b,
-        async () => (await causes()).primary,
-        [0, 1].map((index) => async () => (await causes()).residuals[index]!),
-      )
+      await expectConverges('X2', rig, b)
+      // Equal is not enough: B holds what it was told, from the event alone.
+      expect(b.client.getState().sessions[target.sessionId]).toMatchObject({
+        providerId: 'cursor',
+        status: 'idle',
+        updatedAt: createdAt(rig.framesOf(b), target.sessionId),
+      })
+      const listed = rig
+        .framesOf(b)
+        .filter(
+          (frame) =>
+            frame.direction === 'up' &&
+            (frame.json as { name?: string } | undefined)?.name === 'session.list',
+        ).length
+      recordEvidence({
+        scenario: 'X2',
+        bucket: 'regression-guard',
+        cause: 'session.created carries a SessionSummary',
+        observed: { sessionListReads: listed },
+      })
     },
   )
 
@@ -1328,8 +1370,10 @@ describe('divergences on main that §8.4 does not list', () => {
    * (:1243) and the older call returns as soon as its answer lands (:1281),
    * before the chat is hydrated or subscribed. A turn sent then is published
    * before the client holds the thread's subscription, so `turn.started`
-   * is never owed to it live; the newer open's snapshot carries the turn,
-   * and no recency (X1). No durable event is lost. The gate fixes the order
+   * is never owed to it live; the newer open's snapshot carries the turn.
+   * No durable event is lost, and since F3 the state converges (the
+   * snapshot's recency is announced, §4.7.1): what is left is the early
+   * resolve itself, checked below. The gate fixes the order
    * the race needs: the user's open goes out before the resync's reads are
    * answered, is answered after the resync's open began, and the turn goes
    * out before the resync's open is answered. F3 owns the fix (it rebuilds
@@ -1427,7 +1471,7 @@ describe('divergences on main that §8.4 does not list', () => {
         return frame.direction === 'down' && event?.name === 'turn.started'
       })
       expect(liveStarts, 'no live turn.started reached B').toEqual([])
-      await demonstrateDiff('S19', rig, b, recencyMirror(rig, b))
+      await expectConverges('S19 (state)', rig, b)
       recordEvidence({
         scenario: 'S19',
         bucket: 'known-divergence',
@@ -1435,7 +1479,7 @@ describe('divergences on main that §8.4 does not list', () => {
           'openSession returns when a newer open of the same session overtakes it ' +
           '(websocket.ts:1243, :1281), before the chat is subscribed; the resync opens the active ' +
           'session after its reads (:1073-1083). A turn sent then reaches the chat only through ' +
-          "the newer open's thread snapshot, which carries no recency (X1). F3 owns the fix.",
+          "the newer open's thread snapshot. PR C of F3 owns the fix.",
         observed: {
           hydrationWhenOpenResolved: hydration,
           sessionOpens: opens,
@@ -1539,10 +1583,9 @@ describe('divergences on main that §8.4 does not list', () => {
     const settle = async (step: string, expected: string | undefined) => {
       await until(() => waitingOn() === expected || undefined, `B to show waitingOn ${expected}`)
       // Interaction events move sessions.updated_at, and with it the
-      // workspace's recency, with no workspace event (X1): named, from what
-      // each client was sent and a server read.
-      await expectConvergesExcept(`G1 ${step} (sidebar)`, rig, b, [recencyMirror(rig, b)])
-      await expectConvergesExcept(`G1 ${step} (chat)`, rig, a, [recencyMirror(rig, a)])
+      // workspace's recency, both announced since F3 (§4.7.1).
+      await expectConverges(`G1 ${step} (sidebar)`, rig, b)
+      await expectConverges(`G1 ${step} (chat)`, rig, a)
       steps.push({ step, waitingOn: waitingOn() })
     }
     await rig.provider({ op: 'askPermission', sessionId: target.sessionId, toolCallId: 'edit-g1' })
@@ -1603,8 +1646,8 @@ describe('divergences on main that §8.4 does not list', () => {
           () => (row()?.status === status && row()?.inBackground === inBackground) || undefined,
           `B to show ${status}${inBackground ? ', in the background' : ''}`,
         )
-        await expectConvergesExcept(`G3 ${step} (sidebar)`, rig, b, [recencyMirror(rig, b)])
-        await expectConvergesExcept(`G3 ${step} (chat)`, rig, a, [recencyMirror(rig, a)])
+        await expectConverges(`G3 ${step} (sidebar)`, rig, b)
+        await expectConverges(`G3 ${step} (chat)`, rig, a)
         steps.push({ step, status: row()?.status, inBackground: row()?.inBackground })
       }
       const shell = { task_id: 'bg-1', task_type: 'local_bash', description: 'Run the build' }

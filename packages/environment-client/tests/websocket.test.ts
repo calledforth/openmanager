@@ -299,8 +299,10 @@ describe('websocket environment client', () => {
     socket.respond('workspace.list', { workspaces: [] })
     await refresh
     expect(client.getState().workspaces).toEqual({})
-    expect(client.getState().sessions).toEqual({})
-    expect(client.getState().threads).toEqual({})
+    // The workspace listing answers for workspaces only: each session is
+    // dropped by its own announcement or by the session catalog's answer.
+    expect(Object.keys(client.getState().sessions)).toEqual([SESSION.sessionId])
+    expect(client.getState().threads[THREAD.threadId]).toBe(state.threads[THREAD.threadId])
     client.dispose()
   })
 
@@ -2713,7 +2715,7 @@ describe('composer commands', () => {
     const { client, socket } = await composing()
     const read = client.commands.getComposerPreference({ ...TARGET, stray: true } as never)
     expect(socket.last('composer.preferences.get').payload).toEqual(TARGET)
-    socket.respond('composer.preferences.get', { preference: { modelId: 'sonnet' } })
+    socket.respond('composer.preferences.get', { preference: { modelId: 'sonnet' }, revision: 1 })
     expect(await read).toEqual({ modelId: 'sonnet' })
     expect(preferenceOf(client)).toEqual({ modelId: 'sonnet' })
 
@@ -2727,6 +2729,7 @@ describe('composer commands', () => {
     })
     socket.respond('composer.preferences.set', {
       preference: { modelId: 'sonnet', modeId: 'plan' },
+      revision: 1,
     })
     expect(await written).toEqual({ modelId: 'sonnet', modeId: 'plan' })
     expect(preferenceOf(client)).toEqual({ modelId: 'sonnet', modeId: 'plan' })
@@ -2739,12 +2742,15 @@ describe('composer commands', () => {
 
     const model = client.commands.setSessionModel({ sessionId, modelId: 'opus' })
     expect(socket.last('composer.model.set').payload).toEqual({ sessionId, modelId: 'opus' })
-    socket.respond('composer.model.set', { preference: { modelId: 'opus' } })
+    socket.respond('composer.model.set', { preference: { modelId: 'opus' }, revision: 1 })
     await model
 
     const mode = client.commands.setSessionMode({ sessionId, modeId: 'plan' })
     expect(socket.last('composer.mode.set').payload).toEqual({ sessionId, modeId: 'plan' })
-    socket.respond('composer.mode.set', { preference: { modelId: 'opus', modeId: 'plan' } })
+    socket.respond('composer.mode.set', {
+      preference: { modelId: 'opus', modeId: 'plan' },
+      revision: 1,
+    })
     await mode
 
     const option = client.commands.setSessionConfigOption({
@@ -2758,7 +2764,7 @@ describe('composer commands', () => {
       value: true,
     })
     const preference = { modelId: 'opus', modeId: 'plan', configValues: { fast: true } }
-    socket.respond('composer.config_option.set', { preference })
+    socket.respond('composer.config_option.set', { preference, revision: 1 })
     expect(await option).toEqual(preference)
     expect(preferenceOf(client)).toEqual(preference)
     client.disconnect()
@@ -2767,7 +2773,7 @@ describe('composer commands', () => {
   it('returns a setter answer without storing it when the session provider is unknown', async () => {
     const { client, socket } = await connected([...FULL_CAPABILITIES, ...COMPOSER_CAPABILITIES])
     const pending = client.commands.setSessionModel({ sessionId: 'unlisted', modelId: 'opus' })
-    socket.respond('composer.model.set', { preference: { modelId: 'opus' } })
+    socket.respond('composer.model.set', { preference: { modelId: 'opus' }, revision: 1 })
     expect(await pending).toEqual({ modelId: 'opus' })
     expect(client.getState().composerPreferences).toEqual({})
     client.disconnect()
@@ -2779,12 +2785,12 @@ describe('composer commands', () => {
     const first = client.commands.setSessionModel({ sessionId, modelId: 'sonnet' })
     const firstId = socket.last('composer.model.set').requestId
     const second = client.commands.setSessionModel({ sessionId, modelId: 'opus' })
-    socket.respond('composer.model.set', { preference: { modelId: 'opus' } })
+    socket.respond('composer.model.set', { preference: { modelId: 'opus' }, revision: 1 })
     await second
     socket.receive({
       type: 'response',
       requestId: firstId,
-      payload: { preference: { modelId: 'sonnet' } },
+      payload: { preference: { modelId: 'sonnet' }, revision: 1 },
     })
     expect(await first).toEqual({ modelId: 'sonnet' })
     expect(preferenceOf(client)).toEqual({ modelId: 'opus' })
@@ -2797,10 +2803,10 @@ describe('composer commands', () => {
     const write = client.commands.setSessionModel({ sessionId, modelId: 'opus' })
     const read = client.commands.getComposerPreference(TARGET)
     // The synchronous read overtakes the setter and still sees the old value.
-    socket.respond('composer.preferences.get', { preference: { modelId: 'sonnet' } })
+    socket.respond('composer.preferences.get', { preference: { modelId: 'sonnet' }, revision: 1 })
     expect(await read).toEqual({ modelId: 'sonnet' })
     expect(preferenceOf(client)).toBeNull()
-    socket.respond('composer.model.set', { preference: { modelId: 'opus' } })
+    socket.respond('composer.model.set', { preference: { modelId: 'opus' }, revision: 1 })
     await write
     expect(preferenceOf(client)).toEqual({ modelId: 'opus' })
     client.disconnect()
@@ -2814,9 +2820,13 @@ describe('composer commands', () => {
       ...TARGET,
       preference: { modelId: 'opus' },
     })
-    socket.respond('composer.preferences.set', { preference: { modelId: 'opus' } })
+    socket.respond('composer.preferences.set', { preference: { modelId: 'opus' }, revision: 1 })
     await write
-    socket.receive({ type: 'response', requestId: readId, payload: { preference: {} } })
+    socket.receive({
+      type: 'response',
+      requestId: readId,
+      payload: { preference: {}, revision: 0 },
+    })
     expect(await read).toEqual({})
     expect(preferenceOf(client)).toEqual({ modelId: 'opus' })
 
@@ -2829,7 +2839,7 @@ describe('composer commands', () => {
     })
     await expect(failed).rejects.toMatchObject({ code: 'internal' })
     const later = client.commands.getComposerPreference(TARGET)
-    socket.respond('composer.preferences.get', { preference: { modelId: 'sonnet' } })
+    socket.respond('composer.preferences.get', { preference: { modelId: 'sonnet' }, revision: 1 })
     await later
     expect(preferenceOf(client)).toEqual({ modelId: 'sonnet' })
     client.disconnect()
@@ -2843,7 +2853,7 @@ describe('composer commands', () => {
     })
     socket.respond('session.list', { sessions: [SESSION_SUMMARY], nextCursor: null })
     await flush()
-    socket.respond('composer.model.set', { preference: { modelId: 'opus' } })
+    socket.respond('composer.model.set', { preference: { modelId: 'opus' }, revision: 1 })
     await pending
     expect(preferenceOf(client)).toEqual({ modelId: 'opus' })
     client.disconnect()
@@ -2859,11 +2869,11 @@ describe('composer commands', () => {
       event({
         name: 'composer.preferences.updated',
         scope: { type: 'environment', environmentId: ENV },
-        payload: { ...TARGET, preference: { modelId: 'opus' } },
+        payload: { ...TARGET, preference: { modelId: 'opus' }, revision: 2 },
       }),
     )
     expect(preferenceOf(client)).toEqual({ modelId: 'opus' })
-    socket.respond('composer.preferences.get', { preference: { modelId: 'sonnet' } })
+    socket.respond('composer.preferences.get', { preference: { modelId: 'sonnet' }, revision: 1 })
     expect(await read).toEqual({ modelId: 'sonnet' })
     expect(preferenceOf(client)).toEqual({ modelId: 'opus' })
     client.disconnect()
@@ -2897,6 +2907,14 @@ describe('composer commands', () => {
       ...TARGET,
       preference: { modeId: 'plan' },
     })
+    // As the environment announces a removal: its session first, then itself.
+    socket.receive(
+      event({
+        name: 'session.deleted',
+        scope: { type: 'environment', environmentId: ENV },
+        payload: { sessionId: SESSION.sessionId },
+      }),
+    )
     socket.receive(
       event({
         name: 'workspace.removed',
@@ -2904,8 +2922,8 @@ describe('composer commands', () => {
         payload: { workspaceId: WORKSPACE.workspaceId },
       }),
     )
-    socket.respond('composer.model.set', { preference: { modelId: 'opus' } })
-    socket.respond('composer.preferences.set', { preference: { modeId: 'plan' } })
+    socket.respond('composer.model.set', { preference: { modelId: 'opus' }, revision: 1 })
+    socket.respond('composer.preferences.set', { preference: { modeId: 'plan' }, revision: 1 })
     expect(await setter).toEqual({ modelId: 'opus' })
     expect(await write).toEqual({ modeId: 'plan' })
     expect(client.getState().composerPreferences).toEqual({})
@@ -2924,7 +2942,7 @@ describe('composer commands', () => {
     await expect(rejected).rejects.toMatchObject({ code: 'not_found' })
 
     const invalid = client.commands.getComposerPreference(TARGET)
-    socket.respond('composer.preferences.get', { preference: { modelId: 7 } })
+    socket.respond('composer.preferences.get', { preference: { modelId: 7 }, revision: 1 })
     await expect(invalid).rejects.toMatchObject({ code: 'validation' })
     expect(client.getState().composerPreferences).toEqual({})
     client.disconnect()

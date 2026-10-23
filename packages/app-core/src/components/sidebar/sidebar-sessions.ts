@@ -16,7 +16,8 @@ export interface SidebarSession {
   externalId: string
   title?: string
   status: string
-  providerId?: ProviderId
+  /** Every host names it; the sidebar never guesses a provider (§4.7.2). */
+  providerId: ProviderId
   parentExternalId?: string
   /** Its project folder is unreachable, so the row cannot run until it is back. */
   workspaceUnavailable?: boolean

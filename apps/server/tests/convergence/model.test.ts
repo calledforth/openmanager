@@ -533,7 +533,7 @@ class ModelRun {
  */
 describe('scripted model runs', () => {
   it(
-    'slowProvider 600 → createSession → check: the stamp that lands while the check settles',
+    'slowProvider 600 → createSession → check: the stamp that lands while the check settles (guard since F3)',
     {
       timeout: 120_000,
     },
@@ -544,7 +544,9 @@ describe('scripted model runs', () => {
         await run.start()
         await run.script(['slowProvider 600', 'createSession', 'check'])
         expect(run.checks).toBe(1)
-        expect([...run.known]).toContain('RUNTIME_STAMP')
+        // On main the stamp moved the session's time with no event
+        // (RUNTIME_STAMP); since F3 it writes the identity alone.
+        expect([...run.known]).toEqual([])
         recordEvidence({
           scenario: 'model script slowProvider 600 → createSession → check',
           bucket: 'regression-guard',

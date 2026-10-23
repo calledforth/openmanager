@@ -23,7 +23,7 @@ const workspace = {
   path: '/home/user/project',
   lastUsedAt: '2026-09-06T04:00:00Z',
   lastActivityAt: '2026-09-06T04:00:00Z',
-  capabilities: { git: false, providers: [] },
+  capabilities: { git: false },
   exists: true,
 }
 const session = { sessionId: 'session-1', workspaceId: 'workspace-1', title: 'Example' }
@@ -200,7 +200,7 @@ export const proofResponses = {
           path: 'workspace-1',
           lastUsedAt: null,
           lastActivityAt: null,
-          capabilities: { git: false, providers: [] },
+          capabilities: { git: false },
           exists: true,
         },
       ],
@@ -218,7 +218,11 @@ export const proofResponses = {
     requestId: 'r-3',
     payload: { sessions: [sessionSummary], nextCursor: null },
   },
-  'session.create': { type: 'response', requestId: 'r-4', payload: { session, thread } },
+  'session.create': {
+    type: 'response',
+    requestId: 'r-4',
+    payload: { session, thread, announcedAt: '2026-09-06T05:00:00Z' },
+  },
   'session.open': {
     type: 'response',
     requestId: 'r-5',
@@ -257,7 +261,7 @@ export const proofEvents = [
         path: 'workspace-1',
         lastUsedAt: null,
         lastActivityAt: null,
-        capabilities: { git: false, providers: [] },
+        capabilities: { git: false },
         exists: true,
       },
     },
@@ -268,7 +272,12 @@ export const proofEvents = [
     scope: environmentScope,
     payload: { workspaceId: 'workspace-1' },
   },
-  { ...base, name: 'session.created', scope: environmentScope, payload: { session } },
+  {
+    ...base,
+    name: 'session.created',
+    scope: environmentScope,
+    payload: { session: { ...sessionSummary, settledAt: null, doneAt: null } },
+  },
   {
     ...base,
     name: 'session.updated',
@@ -321,6 +330,7 @@ export const proofEvents = [
       workspaceId: 'workspace-1',
       providerId: 'claude-code',
       preference: { modelId: 'claude-opus', configValues: { effort: 'high' } },
+      revision: 3,
     },
   },
   {

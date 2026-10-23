@@ -115,11 +115,17 @@ export function projectAgentEvent(
       }
       return failed(context.failureReason ?? 'provider_process_exited')
     case 'session_created':
+      // The whole row, in the canonical form a listing reads back (§4.7.2).
       return emit('session.created', environmentScope, {
         session: {
           sessionId: context.sessionId,
           workspaceId: context.workspaceId,
           title: context.sessionTitle ?? null,
+          status: 'idle',
+          providerId: source.providerId,
+          updatedAt: new Date(Date.parse(source.timestamp)).toISOString(),
+          settledAt: null,
+          doneAt: null,
         },
       })
     case 'session_loaded':
