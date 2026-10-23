@@ -113,12 +113,10 @@ export interface ActiveThreadStateValue {
   /** This client owns the thread: it created it, or adopted it from a draft. */
   activeThreadDriven: boolean
   isMessagesLoading: boolean
+  /** The thread could not be loaded; `retry` opens it again. Threads load whole. */
   history?: {
-    hasMore: boolean
     failed?: boolean
     retry?: () => Promise<void>
-    isLoading: boolean
-    loadMore: () => Promise<void>
   }
   messages: UIMessage[]
   /** Per-message streaming snapshots for turns this client drives; subscribe

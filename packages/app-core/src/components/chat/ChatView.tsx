@@ -129,36 +129,18 @@ export function ChatView() {
     return <NewSessionLanding />
   }
 
-  const header =
-    history?.failed || history?.hasMore ? (
-      <>
-        {history.failed && (
-          <div role="alert" className="py-3 text-center text-sm">
-            History could not be synchronized.{' '}
-            <button
-              type="button"
-              className="underline focus-visible:outline-2 focus-visible:outline-ring"
-              onClick={() => void history.retry?.()}
-            >
-              Retry history
-            </button>
-          </div>
-        )}
-        {history.hasMore && (
-          <div className="flex justify-center py-2">
-            <button
-              type="button"
-              disabled={history.isLoading || isMessagesLoading || history.failed}
-              className="rounded-md px-3 py-2 text-sm text-muted-foreground hover:text-foreground focus-visible:outline-2 focus-visible:outline-ring disabled:opacity-50"
-              // Older rows arrive above the reader; the list keeps them in place.
-              onClick={() => void history.loadMore()}
-            >
-              {history.isLoading ? 'Loading older messages…' : 'Load older messages'}
-            </button>
-          </div>
-        )}
-      </>
-    ) : null
+  const header = history?.failed ? (
+    <div role="alert" className="py-3 text-center text-sm">
+      History could not be synchronized.{' '}
+      <button
+        type="button"
+        className="underline focus-visible:outline-2 focus-visible:outline-ring"
+        onClick={() => void history.retry?.()}
+      >
+        Retry history
+      </button>
+    </div>
+  ) : null
 
   return (
     <ChatViewPanel>

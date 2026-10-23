@@ -210,7 +210,6 @@ export function EnvironmentComposerStateProvider({ children }: { children: React
   const { agentUiStatusByProvider, providerDisplayName } = useContext(PlatformCapabilitiesContext)!
   const catalog = useEnvironmentState(selectProviderCatalog, shallowEqualArray)
   const connection = useConnectionState()
-  const connectionPhase = connection.phase
   // Each composer command is negotiated on its own, so a catalog can be
   // listed by an environment that cannot act on a pick. Advertised
   // capabilities arrive with the handshake; this re-reads them on connect.
@@ -304,27 +303,8 @@ export function EnvironmentComposerStateProvider({ children }: { children: React
       ? selectComposerPreference(state, preferenceWorkspaceId, preferenceProviderId)
       : null,
   )
-  const providerListed = catalog.some((entry) => entry.id === preferenceProviderId)
-  useEffect(() => {
-    // Not loaded is distinct from empty, and a reconnect without a cursor
-    // returns a held preference to not loaded, so this reads it again then.
-    if (!preferenceWorkspaceId || preference || !providerListed) return
-    if (connectionPhase !== 'connected' || !client.supports('getComposerPreference')) return
-    void commands
-      .getComposerPreference({
-        workspaceId: preferenceWorkspaceId,
-        providerId: preferenceProviderId,
-      })
-      .catch(noop)
-  }, [
-    client,
-    commands,
-    connectionPhase,
-    preference,
-    preferenceProviderId,
-    preferenceWorkspaceId,
-    providerListed,
-  ])
+  // Every preference arrives with the environment's snapshot; there is no
+  // read of one (docs/sync-foundations.md §6.2).
 
   const sessionComposer = activeSession?.composer
   const acpSessionState = useMemo<AcpSessionRuntimeState | null>(() => {

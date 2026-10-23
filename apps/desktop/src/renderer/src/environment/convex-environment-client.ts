@@ -8,8 +8,6 @@ import {
   applyEnvironment,
   applyEvent,
   applySessionCreated,
-  applySessionHistory,
-  applySessionList,
   applySessionOpen,
   applySessionRemoved,
   applySessionTitle,
@@ -40,7 +38,12 @@ import type {
   Turn,
   Workspace,
 } from '@openmanager/protocol'
-import { SESSION_LIST_EPOCH } from '@openmanager/protocol'
+import {
+  applyLegacyHistory,
+  applyLegacySessionList,
+  LEGACY_LIST_EPOCH,
+  type LegacyHistory,
+} from './legacy-history'
 import { createAgentEventTranslator } from './agent-event-translator'
 import { namesUnknownTurn } from '@agentpack/view/protocol'
 
@@ -105,7 +108,6 @@ const UNSUPPORTED: ReadonlySet<EnvironmentCommandName> = new Set([
   'stopBackgroundTasks',
   'getProviderCatalog',
   'probeProvider',
-  'getComposerPreference',
   'setComposerPreference',
   'setSessionModel',
   'setSessionMode',
@@ -192,7 +194,7 @@ type PendingPlanRow = {
 type JobStatusRow = { status: string; lastError?: string } | null
 
 type SessionOpenPayload = ProofResponse<'session.open'>['payload']
-type SessionHistoryPayload = ProofResponse<'session.history'>['payload']
+type SessionHistoryPayload = LegacyHistory
 
 type Waiter<T> = { resolve: (value: T) => void; reject: (error: Error) => void }
 
@@ -456,7 +458,7 @@ export function createConvexEnvironmentClient(
       ...(held?.titleSource ? { titleSource: held.titleSource } : {}),
       status: held?.status ?? 'idle',
       providerId: isProvider(row.providerId) ? row.providerId : (held?.providerId ?? 'opencode'),
-      updatedAt: held?.updatedAt ?? SESSION_LIST_EPOCH,
+      updatedAt: held?.updatedAt ?? LEGACY_LIST_EPOCH,
       ...(held?.settledAt !== undefined ? { settledAt: held.settledAt } : {}),
       ...(held?.doneAt !== undefined ? { doneAt: held.doneAt } : {}),
       ...(held?.backgroundTasks ? { backgroundTasks: held.backgroundTasks } : {}),
@@ -518,7 +520,7 @@ export function createConvexEnvironmentClient(
     }
     const ids = new Set(visible.map((row) => row.externalId))
     update((state) => {
-      let next = applySessionList(
+      let next = applyLegacySessionList(
         state,
         visible.map((row) => toCatalogSummary(state, row, row.workspacePath)),
       )
@@ -850,7 +852,6 @@ export function createConvexEnvironmentClient(
         messages,
         turns,
         interactions: interactions.map((interaction) => ({ threadId: sessionId, interaction })),
-        nextCursor: null,
       },
     }
   }
@@ -975,29 +976,6 @@ export function createConvexEnvironmentClient(
       if (row) await convex.mutation(api.workspaces.remove, { id: row._id })
       update((state) => removeWorkspaceTree(state, workspaceId))
     },
-    async listSessions(input = {}) {
-      gate()
-      const query = typeof input === 'string' ? { workspaceId: input } : input
-      const workspaceId = query.workspaceId
-      if (!workspaceId) {
-        return { sessions: selectSessionList(store.getState()), nextCursor: null }
-      }
-      const rows = await convex.query<SessionRow[]>(api.sessions.listByWorkspace, {
-        workspacePath: workspaceId,
-      })
-      for (const row of rows) {
-        if (isProvider(row.providerId)) providerBySession.set(row.externalId, row.providerId)
-      }
-      update((state) => {
-        let next = applySessionList(
-          state,
-          rows.map((row) => toCatalogSummary(state, row, workspaceId)),
-        )
-        for (const row of rows) next = knownThread(next, row.externalId)
-        return next
-      })
-      return { sessions: selectSessionList(store.getState(), workspaceId), nextCursor: null }
-    },
     createSession(input) {
       gate()
       if (input.environmentId !== environmentId) {
@@ -1075,7 +1053,7 @@ export function createConvexEnvironmentClient(
       }
       update((state) => {
         const live = state.threads[sessionId]
-        let next = applySessionHistory(
+        let next = applyLegacyHistory(
           applySessionOpen(state, loaded.open),
           threadOf(sessionId),
           loaded.history,
@@ -1099,18 +1077,6 @@ export function createConvexEnvironmentClient(
           }))
         translator.adoptTurn(sessionId, open.turnId, pending)
       }
-    },
-    async loadSessionHistory(input) {
-      gate()
-      const session = requireSession(input.sessionId)
-      const loaded = await loadSession(input.sessionId, session.workspaceId)
-      update((state) =>
-        refreshLegacySessionStatus(
-          applySessionHistory(state, threadOf(input.sessionId), loaded.history),
-          input.sessionId,
-        ),
-      )
-      return loaded.history
     },
     async renameSession(sessionId, title) {
       gate()
@@ -1227,7 +1193,6 @@ export function createConvexEnvironmentClient(
     stopBackgroundTasks: () => unsupported('stopBackgroundTasks'),
     getProviderCatalog: () => unsupported('getProviderCatalog'),
     probeProvider: () => unsupported('probeProvider'),
-    getComposerPreference: () => unsupported('getComposerPreference'),
     setComposerPreference: () => unsupported('setComposerPreference'),
     setSessionModel: () => unsupported('setSessionModel'),
     setSessionMode: () => unsupported('setSessionMode'),

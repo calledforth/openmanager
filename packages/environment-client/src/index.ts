@@ -74,6 +74,7 @@ export {
   applySessionRemoved,
   applySessionTitle,
   applySnapshot,
+  withSessionUpserted,
   applyThreadHydration,
   applyTurnSendFailed,
   applyTurnSending,
