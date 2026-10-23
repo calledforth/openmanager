@@ -24,7 +24,7 @@ import type { FrameFields, FrameRecord } from './link-proxy.ts'
 import { serverSessionsView, serverThreadView, type ThreadView } from './normalize.ts'
 import { witnessOf } from './fixtures.ts'
 import { createdAt } from './mirror.ts'
-import { afterPhase, futureTest, scenario } from './scenario.ts'
+import { afterPhase, scenario } from './scenario.ts'
 import {
   createSession,
   scriptedTurn,
@@ -489,9 +489,7 @@ describe('§8.4 scenarios on main', () => {
     // before any timer runs, so the order does not depend on how fast the
     // host schedules two separate requests against the 100 ms window. The
     // artifact store refuses the image and the server says so with a
-    // transient `turn.notice` (thread-service.ts:865-880). No recoverable
-    // `rpc_error` exists on the ACP path (AcpSessionRuntimeImpl.ts:415), so
-    // this is the doc's fallback.
+    // transient `turn.notice`.
     await rig.provider({
       op: 'emitTextThenUnstorableImage',
       sessionId: target.sessionId,
@@ -501,34 +499,31 @@ describe('§8.4 scenarios on main', () => {
     await finish(rig, a, target, turnId)
     await rig.waitQuiet()
     const frames = downFrames(rig.proxy.frames.slice(mark))
-    const notice = frames.findIndex((frame) => field(frame.json, 'name') === 'turn.notice')
+    const notice = frames.findIndex(
+      (frame) =>
+        field(frame.json, 'name') === 'subscription.transient' &&
+        field(frame.json, 'payload', 'event', 'name') === 'turn.notice',
+    )
     const firstText = frames.findIndex(
       (frame) =>
         field(frame.json, 'name') === 'subscription.event' &&
         field(frame.json, 'payload', 'record', 'event', 'name') === 'message.delta' &&
         field(frame.json, 'payload', 'record', 'event', 'payload', 'role') === 'assistant',
     )
-    expect(notice, 'the server published a turn.notice').toBeGreaterThanOrEqual(0)
+    expect(notice, 'the server published the notice to the thread').toBeGreaterThanOrEqual(0)
     expect(firstText, 'the first text reached the client').toBeGreaterThanOrEqual(0)
-    if (notice > firstText)
-      throw new FlipError('S5', 'The notice now follows the text it came after.')
-    recordEvidence({
-      scenario: 'S5',
-      bucket: 'known-divergence',
-      cause:
-        'Transient events go out at once (thread-service.ts:885 → server.ts:757 → websocket.ts:609-613) ' +
-        'while durable ones wait up to 100 ms in the batcher (event-batcher.ts:11). W3.',
-      observed: frames
-        .slice(Math.min(notice, firstText), Math.max(notice, firstText) + 1)
-        .map((frame) => ({
-          atMs: frame.at,
-          frame: field(frame.json, 'name'),
-          event: field(frame.json, 'payload', 'record', 'event', 'name'),
-          text: field(frame.json, 'payload', 'record', 'event', 'payload', 'content', 'text'),
-          notice: field(frame.json, 'payload', 'message'),
-        })),
-    })
-    // The comparison leaves notices out, so the state itself still converges.
+    // F4: publishing the notice flushes the batcher, so the text it came
+    // after is committed and queued first, and the notice is placed after it.
+    expect(notice, 'the notice follows the text it came after').toBeGreaterThan(firstText)
+    expect(
+      field(frames[notice]?.json, 'payload', 'after', 'sequence'),
+      'placed after the text record',
+    ).toBe(field(frames[firstText]?.json, 'payload', 'record', 'cursor', 'sequence'))
+    expect(
+      thread(a, target)?.notices.map((item) => item.message),
+      'A applied the notice',
+    ).toEqual(['A generated image could not be stored.'])
+    // The comparison leaves notices out; the state itself converges.
     await expectConverges('S5 (state, notices excluded)', rig, a)
   })
 
@@ -1031,14 +1026,63 @@ describe('§8.4 scenarios on main', () => {
     })
   })
 
-  futureTest(
-    'S13 a lost durable record, then a notice for the same scope',
-    'F4 (a delivery-queue seam that drops one record for one connection)',
-    'with A subscribed to a thread, the seam drops one durable record for A only; the server then ' +
-      'publishes a turn.notice for that scope whose `after` is ahead of A’s cursor; A must recover, ' +
-      'replay the missing record, apply the notice and converge (§5.5). There is nothing on main to ' +
-      'drop a record for one connection, so there is no body yet.',
-  )
+  scenario('S13 a lost durable record, then a notice for the same scope', {}, async (rig) => {
+    const a = await rig.connect('A')
+    const target = await createSession(rig, a, QUIET)
+    const turnId = await startTurn(a, target)
+    await rig.waitQuiet()
+    const mark = rig.proxy.frames.length
+    // The seam (§5.5): the text record leaves the queue and reaches no
+    // socket. A is the only connection on this thread, so only A loses it.
+    await rig.server.call({ op: 'dropNextRecord', threadId: target.threadId })
+    // The text, then the notice for the refused image: the notice is placed
+    // after the text, which A never received.
+    await rig.provider({
+      op: 'emitTextThenUnstorableImage',
+      sessionId: target.sessionId,
+      text: 'lost words',
+    })
+    await untilThread(
+      a,
+      target,
+      (state) => state.notices.length > 0,
+      'A to catch up and apply the notice',
+      20_000,
+    )
+    const dropped = await rig.server.call<Array<{ threadId: string; sequence: number }>>({
+      op: 'readDropped',
+    })
+    expect(dropped, 'the seam dropped exactly the text record').toEqual([
+      expect.objectContaining({ threadId: target.threadId, event: 'message.delta' }),
+    ])
+    const frames = rig.proxy.frames.slice(mark)
+    expect(
+      downFrames(frames).some(
+        (frame) =>
+          field(frame.json, 'name') === 'subscription.event' &&
+          field(frame.json, 'payload', 'record', 'cursor', 'sequence') === dropped[0]!.sequence,
+      ),
+      'the lost record never arrived live',
+    ).toBe(false)
+    // The notice was ahead of A's cursor, so A caught up from it.
+    const replay = threadReplays(frames, target.threadId)[0]
+    expect(replay, 'A recovered from its cursor').toBeDefined()
+    expect(field(replay?.json, 'payload', 'cursor', 'sequence')).toBe(dropped[0]!.sequence - 1)
+    expect(thread(a, target)?.notices.map((item) => item.message)).toEqual([
+      'A generated image could not be stored.',
+    ])
+    expect(
+      thread(a, target)
+        ?.messages.filter((message) => message.role === 'assistant')
+        .map((message) =>
+          message.content.map((block) => (block.type === 'text' ? block.text : '')).join(''),
+        ),
+      'the replay brought the lost text',
+    ).toEqual(['lost words'])
+    await finish(rig, a, target, turnId)
+    await rig.waitQuiet()
+    await expectConverges('S13', rig, a)
+  })
 
   scenario(
     'S14 a 30 KB answer over a 300 B/s link, on main (heartbeat floor)',

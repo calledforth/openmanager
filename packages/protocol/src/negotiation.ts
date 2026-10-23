@@ -63,7 +63,13 @@ import {
 // `failure` and `interruptedBy`, and `turn.started` always says when. A v16
 // client cannot fold any of it. The three F3 pull requests share this one
 // version and ship together.
-export const PROTOCOL_VERSION = 17 as const
+// Version 18 sends everything through one ordered queue (docs/sync-foundations.md
+// §5, F4). A thread's transient `turn.notice` is no longer broadcast bare to
+// every socket: it goes only to the subscriptions of its scope, as
+// `subscription.transient`, placed after the durable record it followed
+// (`after`). A frame the server cannot send closes that socket instead of
+// being skipped. A v17 client would never see a notice.
+export const PROTOCOL_VERSION = 18 as const
 
 export const ProtocolVersionSchema = z.number().int().positive().max(Number.MAX_SAFE_INTEGER)
 export const CapabilitySchema = MessageNameSchema

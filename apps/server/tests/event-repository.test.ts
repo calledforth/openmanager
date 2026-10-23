@@ -1155,12 +1155,84 @@ describe('event repository transactions', () => {
   })
 })
 
+describe('transients among the durable events', () => {
+  const notice = (eventId = 'notice-1') =>
+    ProofEventSchemas['turn.notice'].parse({
+      type: 'event',
+      name: 'turn.notice',
+      eventId,
+      timestamp: '2026-09-10T10:00:01.500Z',
+      scope,
+      payload: { turnId: 'turn-1', message: 'Retrying' },
+    })
+
+  it('commits the text still in the batcher, then places the notice after it', async () => {
+    const { database } = await createDatabase()
+    const sent: string[] = []
+    const events = createPersistentEventService(
+      database,
+      (record) => {
+        if (record.cursor.scope.type === 'thread')
+          sent.push(`${record.event.name}@${record.cursor.sequence}`)
+      },
+      {
+        epoch: 'process-epoch',
+        deliverTransient: (event, after) => sent.push(`${event.name} after ${after.sequence}`),
+      },
+    )
+    events.append(started())
+    events.append(delta('Hello', 'first'))
+    // The delta waits in the batcher for its 100 ms window.
+    expect(sent).toEqual(['turn.started@1'])
+    events.publishTransient(notice())
+    expect(sent).toEqual(['turn.started@1', 'message.delta@2', 'turn.notice after 2'])
+    events.close()
+  })
+
+  it('places a notice in a scope with no stream at sequence 0 of this process', async () => {
+    const { database } = await createDatabase()
+    const after = vi.fn()
+    const events = createPersistentEventService(database, vi.fn(), {
+      epoch: 'process-epoch',
+      deliverTransient: after,
+    })
+    events.publishTransient(notice())
+    expect(after).toHaveBeenCalledExactlyOnceWith(notice(), {
+      scope,
+      epoch: 'process-epoch',
+      sequence: 0,
+    })
+    events.close()
+  })
+
+  it('still places the notice when the text before it cannot be written yet', async () => {
+    const { database } = await createDatabase()
+    const onError = vi.fn()
+    const after = vi.fn()
+    const events = createPersistentEventService(database, vi.fn(), {
+      epoch: 'process-epoch',
+      onError,
+      deliverTransient: after,
+    })
+    events.append(started())
+    events.append(delta('Hello', 'first'))
+    database.exec('PRAGMA query_only = ON')
+    events.publishTransient(notice())
+    database.exec('PRAGMA query_only = OFF')
+    expect(onError).toHaveBeenCalledTimes(1)
+    // After what did commit: the start, not the text still held for retry.
+    expect(after.mock.calls[0]![1]).toMatchObject({ epoch: 'process-epoch', sequence: 1 })
+    events.close()
+  })
+})
+
 describe('streaming event batching', () => {
   it('routes the terminal batch through finalizeTurn', () => {
     const repository: EventRepository = {
       appendEvents: vi.fn(() => []),
       appendGroups: vi.fn(() => []),
       finalizeTurn: vi.fn(() => []),
+      head: vi.fn(),
     }
     const batcher = createRepositoryEventBatcher(repository)
 

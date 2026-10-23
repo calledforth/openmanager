@@ -35,7 +35,6 @@ import {
   PAIRING_REDEEM_CAPABILITY,
   PAIRING_REVOKE_CAPABILITY,
   type DurableEvent,
-  type EventEnvelope,
   type ProofEvent,
   type WorkspaceComposerPreference,
 } from '@openmanager/protocol/node'
@@ -68,12 +67,12 @@ import {
   LOCAL_OWNER_CLAIM_HEADER,
   LOCAL_OWNER_PATH,
 } from './local-owner.ts'
+import { createDeliveryQueue } from './event-delivery.ts'
 import { createPersistentEventService } from './event-service.ts'
 import { openEnvironmentDatabase } from './db/database.ts'
 import { raiseReplayFloors } from './db/replay-floor.ts'
 import { reconcileAfterRestart } from './db/boot-reconcile.ts'
 import { createEventRetention } from './db/event-retention.ts'
-import { isDerivedRecord } from './db/event-repository.ts'
 import { createReplayReader } from './db/replay.ts'
 import { getSessionSummary } from './db/session-store.ts'
 import { createLogger, resolveLogSink } from './logger.ts'
@@ -180,8 +179,6 @@ export async function startServer(config: ServerConfig) {
   }
   let closeWorkspaceSessions: (workspaceId: string) => void = () => undefined
   let runnableProviders: () => readonly string[] = () => []
-  let publishDurableEvent: (record: DurableEvent) => void = () => undefined
-  let publishThreadEvent: (event: EventEnvelope) => void = () => undefined
   // Follows every committed workspace record: bound once the registry and
   // the runtime exist, which both commit through the event service.
   let followWorkspaceRecord: (record: DurableEvent) => void = () => undefined
@@ -195,44 +192,30 @@ export async function startServer(config: ServerConfig) {
   // One epoch per process for streams that start here; replay reads it for
   // scopes that have no stream row yet.
   const eventEpoch = randomUUID()
-  // The event is already stored: a client that is not connected gets it on
-  // replay. A connected client does not notice the gap until its next
-  // snapshot, so a throw here is a programming error to fix, logged instead
-  // of taking the server down with it.
-  const publish = (record: DurableEvent) => {
-    try {
-      publishDurableEvent(record)
-    } catch (error) {
-      log('error', 'event was not sent', { event: record.event.name, reason: String(error) })
-    }
-  }
-  // Records go out in commit order (I4). Thread dispatch persists
-  // synchronously and answers before its events, so most records wait a
-  // microtask; a workspace record goes at once, so a registration reaches the
-  // socket before its answer, and it takes every record committed before it
-  // along first. Otherwise a workspace record committed with session
-  // records (a removal's cascade) would overtake them. A derived recency
-  // record keeps its source's timing: it must not pull a turn's records
-  // ahead of the answer that started it.
-  const waiting: DurableEvent[] = []
-  let drainQueued = false
-  const drain = () => {
-    drainQueued = false
-    for (let record = waiting.shift(); record; record = waiting.shift()) publish(record)
-  }
+  // Everything sent outside a command's answer leaves through this one
+  // queue, in the order it happened: records in commit order (I4),
+  // transients after the record they followed, provider health and the
+  // device list among them (docs/sync-foundations.md §5.2). The socket
+  // server sends each item and closes any connection it cannot send to, so
+  // nothing is skipped; an answer drains the queue first.
+  const deliveries = createDeliveryQueue({
+    onError: (error, item) =>
+      log('error', 'the delivery queue could not send an item', {
+        kind: item.kind,
+        reason: String(error),
+      }),
+  })
   const eventService = createPersistentEventService(
     eventDatabase,
     (record) => {
+      // The registry's cache follows committed rows at once, not when the
+      // queue drains: a command reads its own result right after its write.
       if (record.event.name.startsWith('workspace.')) followWorkspaceRecord(record)
-      waiting.push(record)
-      if (record.event.name.startsWith('workspace.') && !isDerivedRecord(record.event)) drain()
-      else if (!drainQueued) {
-        drainQueued = true
-        queueMicrotask(drain)
-      }
+      deliveries.enqueue({ kind: 'record', record })
     },
     {
       epoch: eventEpoch,
+      deliverTransient: (event, after) => deliveries.enqueue({ kind: 'transient', event, after }),
       onError: (error) => log('error', 'event persistence failed', { reason: String(error) }),
       // A producer emitted what its projection refuses: a bug. The write is
       // dropped so it cannot block every write behind it (write-errors.ts).
@@ -391,7 +374,7 @@ export async function startServer(config: ServerConfig) {
     runtime,
     providerService,
     (event) => eventService.append(event),
-    (event) => publishThreadEvent(event),
+    (event) => eventService.publishTransient(event),
     resolveWorkspace,
     {
       database: eventDatabase,
@@ -776,15 +759,24 @@ export async function startServer(config: ServerConfig) {
       clientService.dispatch(command, context) ??
       composerService.dispatch(command, context),
     onConnectionsChanged: () => clientService.announce(),
+    drainDeliveries: () => deliveries.drain(),
+    log,
   })
-  clientSockets = sockets
+  clientSockets = {
+    connectedClientIds: () => sockets.connectedClientIds(),
+    hasFollowers: (topic) => sockets.hasFollowers(topic),
+    publishToFollowers: (topic, build) => deliveries.enqueue({ kind: 'followers', topic, build }),
+    disconnectClient: (clientId) => sockets.disconnectClient(clientId),
+  }
   closeClientSockets = (clientId) => {
     sockets.retireClient(clientId, GRANT_CHANGED_CLOSE_CODE, GRANT_CHANGED_CLOSE_REASON)
     // A ticket or transfer was authorized under the old grant; the device asks
     // again under the new one.
     uploads.revokeClient(clientId)
   }
-  const stopHealthEvents = providerService.onHealthChanged((event) => sockets.publishEvent(event))
+  const stopHealthEvents = providerService.onHealthChanged((event) =>
+    deliveries.enqueue({ kind: 'broadcast', event }),
+  )
   try {
     await new Promise<void>((resolve, reject) => {
       server.once('error', reject)
@@ -815,9 +807,9 @@ export async function startServer(config: ServerConfig) {
   const address = server.address() as AddressInfo
   websocketUrl = `ws://127.0.0.1:${address.port}/ws`
   // Nothing goes out before the server listens and can describe itself. No
-  // client can be connected yet, and durable events stay replayable.
-  publishDurableEvent = (record) => sockets.publish(record)
-  publishThreadEvent = (event) => sockets.publishEvent(event)
+  // client can be connected yet, and durable events stay replayable. Looked
+  // up per item, so a test can watch what is sent.
+  deliveries.attach((item) => sockets.deliver(item))
   syncProbeDirectory()
   providerService.start()
   // Started only once the listener is up: the connector's one origin is this

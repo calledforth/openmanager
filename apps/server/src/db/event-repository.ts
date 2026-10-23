@@ -6,6 +6,7 @@ import {
   DurableEventSchema,
   ProofEventSchemas,
   sameScope,
+  type Cursor,
   type DurableEvent,
   type ProofEvent,
   type SubscriptionScope,
@@ -63,6 +64,11 @@ export interface EventRepository {
   /** Commit several scopes' events together, in order: all or none become durable. */
   appendGroups(groups: readonly EventGroup[], options?: WriteOptions): DurableEvent[]
   finalizeTurn(scope: ThreadScope, events: readonly DurableProofEvent[]): DurableEvent[]
+  /**
+   * The last committed record of a scope, or sequence 0 of this process's
+   * epoch for a scope with no stream yet, as the replay reader answers it.
+   */
+  head(scope: SubscriptionScope): Cursor
 }
 
 interface StreamRow {
@@ -503,6 +509,12 @@ export function createEventRepository(
   }
 
   return {
+    head(scope) {
+      const row = statements.selectStream.get(scopeKey(scope)) as StreamRow | undefined
+      return row
+        ? { scope, epoch: row.epoch, sequence: row.head_sequence }
+        : { scope, epoch: newEpoch, sequence: 0 }
+    },
     appendEvents: (scope, events) => write([{ scope, events }]),
     appendGroups: (groups, options) => write(groups, options),
     finalizeTurn(scope, events) {

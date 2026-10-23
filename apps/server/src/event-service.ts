@@ -3,9 +3,11 @@ import type { DatabaseSync } from 'node:sqlite'
 import {
   DurableEventSchema,
   sameScope,
+  type Cursor,
   type DurableEvent,
   type ProofEvent,
   type SubscriptionScope,
+  type TransientEvent,
 } from '@openmanager/protocol/node'
 import {
   createEventRepository,
@@ -57,11 +59,20 @@ function scopeKey(scope: SubscriptionScope): string {
   }
 }
 
+export interface TransientDeliveryOptions {
+  /**
+   * Where a transient goes once it is placed: `after` is its scope's head,
+   * the durable record it follows. In production both this and `publish`
+   * feed the one delivery queue (event-delivery.ts), in that order.
+   */
+  deliverTransient?: (event: TransientEvent, after: Cursor) => void
+}
+
 /** Production boundary: coalesce first, allocate persisted cursors, commit, then publish. */
 export function createPersistentEventService(
   database: DatabaseSync,
   publish: AppendProtocolEvent,
-  options: EventRepositoryOptions & StreamingEventBatcherOptions = {},
+  options: EventRepositoryOptions & StreamingEventBatcherOptions & TransientDeliveryOptions = {},
 ) {
   const repository = createEventRepository(database, options)
   const batcher = createRepositoryEventBatcher(
@@ -107,6 +118,24 @@ export function createPersistentEventService(
       }
       batcher.flush()
       repository.finalizeTurn(terminal.scope, [terminal]).forEach(publish)
+    },
+    /**
+     * Publish an event that is never stored, in its place among the durable
+     * ones (docs/sync-foundations.md §5.2): first every event appended before
+     * it is committed, and so enqueued, then it is placed after its scope's
+     * head. A client applies it only once its own cursor is there.
+     *
+     * A write that fails here stays in the batcher for its retry; the
+     * transient is placed after what did commit, which is the most a client
+     * can have.
+     */
+    publishTransient(event: TransientEvent) {
+      try {
+        batcher.flush()
+      } catch (error) {
+        options.onError?.(error)
+      }
+      options.deliverTransient?.(event, repository.head(event.scope))
     },
     flush: batcher.flush,
     close: batcher.close,

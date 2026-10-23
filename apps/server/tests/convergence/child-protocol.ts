@@ -102,6 +102,15 @@ export type ServerOp =
   | { op: 'readStreamed' }
   /** Arm a kill at a commit (see `KillAt`); `null` disarms. */
   | { op: 'armKill'; at: KillAt | null }
+  /**
+   * F4's delivery seam (docs/sync-foundations.md §5.5, S13): the next
+   * durable `message.delta` of this thread leaves the delivery queue and
+   * reaches no socket. A scenario holds one connection on the thread, so it
+   * is lost for exactly that connection. Nothing else is touched.
+   */
+  | { op: 'dropNextRecord'; threadId: string }
+  /** The records the seam dropped so far: thread, sequence, event. */
+  | { op: 'readDropped' }
 
 export type ChildRequest = (ProviderOp | ServerOp) & { id: number }
 
