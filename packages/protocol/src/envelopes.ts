@@ -1,6 +1,6 @@
 import { z } from 'zod'
 import { ProtocolErrorSchema } from './errors.js'
-import { HeartbeatPingSchema, HeartbeatPongSchema } from './heartbeat.js'
+import { AckSchema, BeatSchema, KeepaliveSchema } from './heartbeat.js'
 import { MessageNameSchema, RequestIdSchema } from './primitives.js'
 
 // Domain payloads are validated by their message family after envelope parsing.
@@ -17,11 +17,13 @@ export const ResponseEnvelopeSchema = z.object({
   payload: z.json(),
 })
 
-export const EventEnvelopeSchema = z.object({
-  type: z.literal('event'),
-  name: MessageNameSchema,
-  payload: z.json(),
-}).passthrough()
+export const EventEnvelopeSchema = z
+  .object({
+    type: z.literal('event'),
+    name: MessageNameSchema,
+    payload: z.json(),
+  })
+  .passthrough()
 
 export const ErrorEnvelopeSchema = z.object({
   type: z.literal('error'),
@@ -35,21 +37,26 @@ export const EnvelopeSchema = z.discriminatedUnion('type', [
   ResponseEnvelopeSchema,
   EventEnvelopeSchema,
   ErrorEnvelopeSchema,
-  HeartbeatPingSchema,
-  HeartbeatPongSchema,
+  BeatSchema,
+  AckSchema,
+  KeepaliveSchema,
 ])
 
-/** Use at server ingress. Pong is connection control and has no command result. */
+/**
+ * Use at server ingress. Beats and acks are connection control (liveness and
+ * flow control) and have no command result.
+ */
 export const ClientMessageSchema = z.discriminatedUnion('type', [
   CommandEnvelopeSchema,
-  HeartbeatPongSchema,
+  BeatSchema,
+  AckSchema,
 ])
 /** Use at the client ingress. Events do not settle pending commands. */
 export const ServerMessageSchema = z.discriminatedUnion('type', [
   ResponseEnvelopeSchema,
   EventEnvelopeSchema,
   ErrorEnvelopeSchema,
-  HeartbeatPingSchema,
+  KeepaliveSchema,
 ])
 
 export type CommandEnvelope = z.infer<typeof CommandEnvelopeSchema>

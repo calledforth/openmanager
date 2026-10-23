@@ -257,6 +257,30 @@ const SnapshotPayloadSchema = z.object({
 export const ReplayResponseSchema = ResponseEnvelopeSchema.extend({
   payload: z.discriminatedUnion('mode', [ReplayPayloadSchema, SnapshotPayloadSchema]),
 })
+
+/**
+ * The server stopped queueing a subscription's live frames because the link
+ * could not keep up (docs/sync-foundations.md §7.2). `cursor` is the last
+ * record of the scope the server actually wrote to this socket (null when it
+ * wrote none). The client holds the scope's frames, as during its own
+ * catch-up, until `subscription.catchup` arrives.
+ */
+export const SubscriptionLaggingSchema = EventEnvelopeSchema.extend({
+  name: z.literal('subscription.lagging'),
+  payload: z.object({ subscriptionId: EntityIdSchema, cursor: CursorSchema.nullable() }),
+})
+export type SubscriptionLagging = z.infer<typeof SubscriptionLaggingSchema>
+
+/**
+ * A lagging subscription's catch-up, from the lagging cursor: the same
+ * payload as a replay answer, chosen by the same rule. Live delivery of the
+ * scope resumed when the server built it, so live frames follow it.
+ */
+export const SubscriptionCatchupSchema = EventEnvelopeSchema.extend({
+  name: z.literal('subscription.catchup'),
+  payload: z.discriminatedUnion('mode', [ReplayPayloadSchema, SnapshotPayloadSchema]),
+})
+export type SubscriptionCatchup = z.infer<typeof SubscriptionCatchupSchema>
 export type ReplayResponse = z.infer<typeof ReplayResponseSchema>
 
 /** Live delivery for a recovered subscription; sequences belong to scopes, not sockets. */
