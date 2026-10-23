@@ -906,10 +906,13 @@ describe('§8.4 scenarios on main', () => {
     },
   )
 
-  scenario('S12 a short cut while streaming, under the replay cap (guard)', {}, async (rig) => {
+  scenario('S12 a short cut while streaming, replayed (guard)', {}, async (rig) => {
     const a = await rig.connect('A')
     const target = await createSession(rig, a, QUIET)
     const turnId = await startTurn(a, target)
+    // Text before the cut, so the whole thread is larger than the short gap
+    // and the catch-up is the replay this guard checks (§6.1).
+    await emitLargeText(rig, target, 64 * KiB, 'text')
     for (let index = 0; index < 5; index++) {
       await rig.provider({ op: 'emitText', sessionId: target.sessionId, text: `Part ${index}. ` })
     }
@@ -1297,7 +1300,7 @@ describe('divergences on main that §8.4 does not list', () => {
       rig.proxy.gate((text) => {
         const message = JSON.parse(text) as { type?: string; name?: string }
         if (message.type !== 'command') return undefined
-        if (message.name === 'session.list' && !holds.has('reads')) return hold('reads')
+        if (message.name === 'provider.catalog.get' && !holds.has('reads')) return hold('reads')
         if (message.name === 'session.open') {
           opens += 1
           if (opens === 1) {
@@ -1547,10 +1550,10 @@ describe('divergences on main that §8.4 does not list', () => {
   )
 
   /**
-   * Persisted drafts and composer preferences (normalize compares both, and
-   * the composer read the app makes): B follows them live, across a short gap
-   * that replays, and across one past the replay cap, after which the client
-   * forgets its preferences (websocket.ts:875-881) and lists drafts again.
+   * Persisted drafts and composer preferences (normalize compares both): B
+   * follows them live, across a short gap that replays, and across a long one
+   * whose catch-up is the whole environment, preferences included, after
+   * which drafts are listed again.
    */
   scenario(
     'G2 drafts and composer preferences across both kinds of gap (guard)',
@@ -1559,6 +1562,11 @@ describe('divergences on main that §8.4 does not list', () => {
       const a = await rig.connect('A', { link: 'direct' })
       const b = await rig.connect('B')
       const target = await createSession(rig, a, { title: 'With a draft', quiet: true })
+      // Enough sessions that the whole environment is larger than the short
+      // gap below, so that gap is replayed (§6.1).
+      for (let index = 0; index < 12; index++) {
+        await createSession(rig, a, { title: `Filler ${index}`, open: false, quiet: true })
+      }
       await b.client.commands.openSession(target.sessionId)
       // A turn, so the session's last change is one every client mirrors.
       const turnId = await startTurn(a, target)
@@ -1609,7 +1617,8 @@ describe('divergences on main that §8.4 does not list', () => {
       )
       expect(info(replayed).mode, 'the first gap was caught up by replay').toBe('replay')
 
-      // A gap past the replay cap: a snapshot, then preferences forgotten and drafts listed again.
+      // A long gap: the whole environment is smaller than its replay. It
+      // carries the preferences; drafts are listed again.
       rig.proxy.down()
       rig.proxy.cut()
       await until(() => b.client.getState().connection.phase !== 'connected', 'B to notice the cut')
@@ -1631,7 +1640,7 @@ describe('divergences on main that §8.4 does not list', () => {
         (frame) => info(frame).mode === 'snapshot' && info(frame).scopeType === 'environment',
       )
       expect(info(environment).reason, 'the second gap was caught up by snapshot').toBe(
-        'gap_expired',
+        'snapshot_smaller',
       )
       expect(held()).toEqual({ draft: 'third words', newDraft: undefined, mode: 'plan' })
       driver.dispose()
