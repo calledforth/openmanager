@@ -219,7 +219,7 @@ describe('the tab bar', () => {
       },
       navigation: { emit: () => ({ defaultPrevented: false }), navigate: () => undefined },
       insets: { top: 0, bottom: 0, left: 0, right: 0 },
-    }) as never
+    }) as unknown as Parameters<typeof PillNav>[0]
 
   it('blurs the screen in front, and follows the tab the moment it changes', async () => {
     const targets = createTabTargets()
