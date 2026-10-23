@@ -792,6 +792,11 @@ describe('§8.4 scenarios on main', () => {
       'the child session',
     )
     const other = await createSession(rig, a, { title: 'Other', open: false, quiet: true })
+    // Enough other sessions that the whole environment is larger than the
+    // two deletions, so the catch-up is a replay of them (§6.1).
+    for (let index = 0; index < 12; index++) {
+      await createSession(rig, a, { title: `Filler ${index}`, open: false, quiet: true })
+    }
     const b = await rig.connect('B')
     await until(
       () => b.client.getState().sessions[child.sessionId],
