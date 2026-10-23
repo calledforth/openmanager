@@ -4,29 +4,6 @@
  * introduces a table scan or a temporary sort fails that test.
  */
 
-/**
- * Newest sessions across the whole environment, keyset-paginated by
- * `(updated_at, session_id)`. The row-value comparison lets SQLite bind both
- * cursor columns to one descending index range. The first page passes a cursor
- * above every real row, such as `(MAX_SAFE_INTEGER, '')`.
- */
-export const SESSION_LIST_FOR_ENVIRONMENT_SQL = `
-  SELECT session_id, workspace_id, parent_session_id, provider_id, title, title_source, title_generated, status,
-         composer_json, background_tasks_json, settled_at, done_at, created_at, updated_at
-  FROM sessions
-  WHERE (updated_at, session_id) < (?, ?)
-  ORDER BY updated_at DESC, session_id DESC
-  LIMIT ?`
-
-/** Newest sessions for one workspace, keyset-paginated by `(updated_at, session_id)`. */
-export const SESSION_LIST_FOR_WORKSPACE_SQL = `
-  SELECT session_id, workspace_id, parent_session_id, provider_id, title, title_source, title_generated, status,
-         composer_json, background_tasks_json, settled_at, done_at, created_at, updated_at
-  FROM sessions
-  WHERE workspace_id = ? AND (updated_at, session_id) < (?, ?)
-  ORDER BY updated_at DESC, session_id DESC
-  LIMIT ?`
-
 /** The requests a waiting session is waiting on: the pending interactions of its open turns. */
 export const PENDING_INTERACTIONS_FOR_SESSION_SQL = `
   SELECT interactions.kind, interactions.created_at
@@ -56,15 +33,6 @@ export const THREADS_FOR_SESSION_SQL = `
   WHERE session_id = ?
   ORDER BY created_at, thread_id`
 
-/** One page of a thread's history, walking backwards from a message ordinal. */
-export const MESSAGE_HISTORY_PAGE_SQL = `
-  SELECT message_id, workspace_id, thread_id, turn_id, external_id, role, ordinal,
-         metadata_json, is_final, created_at, updated_at
-  FROM messages
-  WHERE thread_id = ? AND ordinal < ?
-  ORDER BY ordinal DESC
-  LIMIT ?`
-
 /** Complete ordered content blocks for one message on a history page. */
 export const MESSAGE_PARTS_SQL = `
   SELECT part_id, ordinal, part_type, content_json
@@ -79,26 +47,6 @@ export const TURNS_FOR_THREAD_SQL = `
   FROM turns
   WHERE thread_id = ?
   ORDER BY started_at, turn_id`
-
-/**
- * The reasoning blocks and tool calls between two message ordinals of a
- * thread, both exclusive, in the order they happened. `ordinal` shares the
- * thread-wide counter with `messages.ordinal`, so a history page's window
- * partitions activity across pages exactly and callers interleave it with
- * the page's messages by sorting on it.
- */
-export const TURN_ACTIVITY_PAGE_SQL = `
-  SELECT activity_id, turn_id, kind, ordinal, state_json
-  FROM turn_activity
-  WHERE thread_id = ? AND ordinal > ? AND ordinal < ?
-  ORDER BY ordinal`
-
-/** Pending interactions of one turn; settled rows stay out of history. Sorted by callers. */
-export const INTERACTIONS_FOR_TURN_SQL = `
-  SELECT interaction_id, turn_id, kind, state, request_json, response_json, expires_at,
-         created_at, resolved_at, resolved_by_client_id
-  FROM interactions
-  WHERE turn_id = ? AND state = 'pending'`
 
 /** Retry dedupe: the turn a command id already started in a thread, if any. */
 export const TURN_FOR_COMMAND_ID_SQL = `

@@ -11,9 +11,9 @@ import { readSchemaVersion } from '../src/db/migrate.js'
 import { reconcileAfterRestart } from '../src/db/boot-reconcile.js'
 import { createEventRepository } from '../src/db/event-repository.js'
 import {
-  MESSAGE_HISTORY_PAGE_SQL,
+  ALL_SESSIONS_SQL,
   MESSAGE_PARTS_SQL,
-  SESSION_LIST_FOR_ENVIRONMENT_SQL,
+  MESSAGES_FOR_THREAD_SQL,
   THREADS_FOR_SESSION_SQL,
   TURNS_FOR_THREAD_SQL,
 } from '../src/db/queries.js'
@@ -34,9 +34,7 @@ async function copyFixture(version: 1 | 2): Promise<string> {
 }
 
 function sessionList(database: DatabaseSync) {
-  return database
-    .prepare(SESSION_LIST_FOR_ENVIRONMENT_SQL)
-    .all(Number.MAX_SAFE_INTEGER, '\uffff', 20)
+  return database.prepare(ALL_SESSIONS_SQL).all()
 }
 
 afterEach(async () => {
@@ -81,12 +79,10 @@ describe('checked-in schema fixtures', () => {
     expect(database.prepare(TURNS_FOR_THREAD_SQL).all('thread-recent')).toMatchObject([
       { turn_id: 'turn-complete', state: 'completed' },
     ])
-    const messages = database
-      .prepare(MESSAGE_HISTORY_PAGE_SQL)
-      .all('thread-recent', Number.MAX_SAFE_INTEGER, 20)
+    const messages = database.prepare(MESSAGES_FOR_THREAD_SQL).all('thread-recent')
     expect(messages).toMatchObject([
-      { message_id: 'message-assistant', role: 'assistant', ordinal: 1, is_final: 1 },
-      { message_id: 'message-user', role: 'user', ordinal: 0, is_final: 1 },
+      { message_id: 'message-user', role: 'user', ordinal: 0 },
+      { message_id: 'message-assistant', role: 'assistant', ordinal: 1 },
     ])
     expect(database.prepare(MESSAGE_PARTS_SQL).all('message-assistant')).toEqual([
       {
@@ -191,15 +187,19 @@ describe('crash recovery', () => {
       { turn_id: 'turn-crashed', state: 'interrupted', failure_reason: null },
     ])
     expect(
-      recovered.prepare(MESSAGE_HISTORY_PAGE_SQL).all('thread-crashed', Number.MAX_SAFE_INTEGER, 20),
+      recovered
+        .prepare(
+          'SELECT message_id, is_final FROM messages WHERE thread_id = ? ORDER BY ordinal DESC',
+        )
+        .all('thread-crashed'),
     ).toMatchObject([
       { message_id: 'message-crash-assistant', is_final: 1 },
       { message_id: 'message-crash-user', is_final: 1 },
     ])
     expect(
-      recovered.prepare('SELECT state, resolved_at FROM interactions WHERE interaction_id = ?').get(
-        'interaction-crashed',
-      ),
+      recovered
+        .prepare('SELECT state, resolved_at FROM interactions WHERE interaction_id = ?')
+        .get('interaction-crashed'),
     ).toMatchObject({ state: 'cancelled', resolved_at: expect.any(Number) })
     expect(recovered.prepare('PRAGMA integrity_check').get()).toEqual({ integrity_check: 'ok' })
     expect(recovered.prepare('PRAGMA foreign_key_check').all()).toEqual([])
