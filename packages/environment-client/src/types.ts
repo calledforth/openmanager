@@ -204,6 +204,8 @@ export interface ConnectionState {
 }
 
 /** Normalized, immutable. Every update produces a new root object. */
+export type { PendingOverlay } from './overlay'
+
 export interface EnvironmentState {
   environment: Environment | null
   workspaces: Record<string, Workspace>
@@ -224,6 +226,12 @@ export interface EnvironmentState {
    * a missing entry means "not loaded", never "no preference".
    */
   composerPreferences: Record<string, Record<string, WorkspaceComposerPreference>>
+  /**
+   * The server's revision of each held preference, by workspace ID and then
+   * provider ID. A preference is replaced only by a newer revision, whether
+   * an event or a read answer brings it.
+   */
+  composerRevisions: Record<string, Record<string, number>>
   /**
    * Composer drafts as the environment last reported them, by draft id.
    * Displayed through `draftEdits` first: an edit not saved yet is newer.
@@ -258,6 +266,8 @@ export interface EnvironmentState {
     availability?: 'missing' | 'inaccessible'
   } | null
   connection: ConnectionState
+  /** The user's own unconfirmed actions, composed over server state for display (overlay.ts). */
+  pending: import('./overlay').PendingOverlay
 }
 
 /** A local change to a draft, waiting to be saved. */

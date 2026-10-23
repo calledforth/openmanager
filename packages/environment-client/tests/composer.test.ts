@@ -50,18 +50,27 @@ describe('composer state', () => {
     let state = applyWorkspaceList(createInitialState(), [WORKSPACE])
     expect(selectComposerPreference(state, TARGET.workspaceId, TARGET.providerId)).toBeNull()
 
-    state = applyComposerPreference(state, TARGET, { modelId: 'opus' })
-    state = applyComposerPreference(state, { ...TARGET, providerId: 'cursor' }, {})
+    state = applyComposerPreference(state, TARGET, { modelId: 'opus' }, 1)
+    state = applyComposerPreference(state, { ...TARGET, providerId: 'cursor' }, {}, 1)
     expect(selectComposerPreference(state, TARGET.workspaceId, TARGET.providerId)).toEqual({
       modelId: 'opus',
     })
     // Loaded and empty is different from never loaded.
     expect(selectComposerPreference(state, TARGET.workspaceId, 'cursor')).toEqual({})
     expect(selectComposerPreference(state, 'elsewhere', TARGET.providerId)).toBeNull()
-    expect(applyComposerPreference(state, TARGET, { modelId: 'opus' })).toBe(state)
+    // Ordered by the server's revision: an older or equal one changes nothing.
+    expect(applyComposerPreference(state, TARGET, { modelId: 'sonnet' }, 1)).toBe(state)
+    expect(
+      selectComposerPreference(
+        applyComposerPreference(state, TARGET, { modelId: 'sonnet' }, 2),
+        TARGET.workspaceId,
+        TARGET.providerId,
+      ),
+    ).toEqual({ modelId: 'sonnet' })
 
     state = applyWorkspaceRemoved(state, WORKSPACE.workspaceId)
     expect(state.composerPreferences).toEqual({})
+    expect(state.composerRevisions).toEqual({})
   })
 })
 

@@ -1321,66 +1321,62 @@ describe('divergences on main that §8.4 does not list', () => {
   )
 
   /**
-   * After a restart, the open chat refuses a send. A reconnecting client
-   * does not send `session.open` again for a session whose scopes it still
-   * subscribes to (websocket.ts:1073-1083); the restarted server serves
-   * `turn.send` only for threads in memory, which only `session.open`
-   * restores (thread-service.ts:1420-1422, :2231-2314). F3 owns the fix.
-   * Nothing here compares state before the send: a fresh load opens the
-   * session itself, which would restore the thread and hide the bug.
-   */
-  scenario('S17 a send in the open chat after a server restart (F3)', {}, async (rig) => {
-    const a = await rig.connect('A')
-    const target = await createSession(rig, a, QUIET)
-    const turnId = await startTurn(a, target)
-    await finish(rig, a, target, turnId)
-    const before = a.connects
-    await rig.restart()
-    await until(() => a.connects > before, 'A to reconnect after the restart', 20_000)
-    await until(() => !a.busy(), 'A to finish its reconnect')
-    const refused = await a.client.commands
-      .sendTurn({ ...target, text: 'And now?' })
-      .then(() => undefined)
-      .catch((error: unknown) => error as { code?: string; message?: string })
-    if (!refused) throw new FlipError('S17', 'The send was accepted after the restart.')
-    expect(refused, 'refused as a missing thread').toMatchObject({
-      code: 'not_found',
-      message: 'Thread not found.',
-    })
-    // What the user must do today, and what the seeded runs do (model.test.ts):
-    // reopen the chat, which restores the thread, then send.
-    await a.client.commands.openSession(target.sessionId)
-    const retried = await startTurn(a, target, 'And now, reopened?')
-    await finish(rig, a, target, retried)
-    recordEvidence({
-      scenario: 'S17',
-      bucket: 'known-divergence',
-      cause:
-        'turn.send serves only threads in memory (thread-service.ts:1420-1422); a reconnecting ' +
-        'client does not reopen its session (websocket.ts:1073-1083), so after a restart the open ' +
-        'chat refuses a send until it is reopened.',
-      observed: { refused, afterReopen: 'accepted' },
-    })
-  })
-
-  /**
-   * S19 (S6(b)'s stray entry): a client's own resync opens its active session
-   * once its catalog reads are answered (websocket.ts:1073-1083). An open the
-   * user started meanwhile is overtaken: `openSession` bumps a generation
-   * (:1243) and the older call returns as soon as its answer lands (:1281),
-   * before the chat is hydrated or subscribed. A turn sent then is published
-   * before the client holds the thread's subscription, so `turn.started`
-   * is never owed to it live; the newer open's snapshot carries the turn.
-   * No durable event is lost, and since F3 the state converges (the
-   * snapshot's recency is announced, §4.7.1): what is left is the early
-   * resolve itself, checked below. The gate fixes the order
-   * the race needs: the user's open goes out before the resync's reads are
-   * answered, is answered after the resync's open began, and the turn goes
-   * out before the resync's open is answered. F3 owns the fix (it rebuilds
-   * this reopen path for S17, and derives recency on the server).
+   * Guard since F3 (§4.7.3): after a restart the open chat accepts a send.
+   * The restarted server holds no records, and the reconnecting client still
+   * subscribes to the chat's scopes, so on main nothing reopened it and the
+   * send was refused as a missing thread. Now the server loads the chat for
+   * any command that needs it. The client also reopens its active chat when
+   * the server instance changed, as a backup, once its catalog reads are
+   * answered; the send goes out before that, and the server's request log
+   * shows it was served before any reopen, so it proves the server's path.
    */
   scenario(
-    'S19 an open overtaken by the client’s own resync open resolves before the chat is subscribed (F3)',
+    'S17 a send in the open chat after a server restart (§4.7.3, guard)',
+    {},
+    async (rig) => {
+      const a = await rig.connect('A')
+      const target = await createSession(rig, a, QUIET)
+      const turnId = await startTurn(a, target)
+      await finish(rig, a, target, turnId)
+      const before = a.connects
+      const mark = rig.proxy.frames.length
+      await rig.restart()
+      await until(() => a.connects > before, 'A to reconnect after the restart', 20_000, 1)
+      const after = await startTurn(a, target, 'And now?')
+      await finish(rig, a, target, after)
+      await until(() => !a.busy(), 'A to finish its reconnect')
+      await expectConverges('S17', rig, a)
+      // Served by the server's own load: on the new process, the send came
+      // before any session.open (the proxy records A's frames in order).
+      const requests = rig.proxy.frames
+        .slice(mark)
+        .filter((frame) => frame.direction === 'up')
+        .map((frame) => (frame.json as { name?: string } | undefined)?.name)
+        .filter((name) => name === 'turn.send' || name === 'session.open')
+      expect(requests[0], 'the send reached the restarted server first').toBe('turn.send')
+      recordEvidence({
+        scenario: 'S17',
+        bucket: 'regression-guard',
+        cause: 'the server loads an unloaded chat for any command that needs it',
+        observed: { requests },
+      })
+    },
+  )
+
+  /**
+   * Guard since F3 (§4.7.5): an open overtaken by a newer open of the same
+   * session resolves only once that one has loaded and subscribed the chat.
+   * After a reload, the client's own resync reopens its active session once
+   * its catalog reads are answered, overtaking the open the user started
+   * meanwhile. On main the user's open returned as soon as its own answer
+   * landed, before the chat was hydrated or subscribed, so a turn sent then
+   * was not owed to the client live (15 times in 15). The gate fixes the
+   * order: the user's open goes out before the resync's reads are answered,
+   * and is answered after the resync's open began; the resync's open is held
+   * until the user's open has had its answer and has been seen not to return.
+   */
+  scenario(
+    'S19 an open overtaken by the client’s own resync open waits for the chat (§4.7.5, guard)',
     {},
     async (rig) => {
       const a = await rig.connect('A')
@@ -1409,158 +1405,125 @@ describe('divergences on main that §8.4 does not list', () => {
             return hold('resync')
           }
         }
-        if (message.name === 'turn.send') release('resync')
         return undefined
       })
       // A reload: the new client holds the session as its active one, so its
       // resync opens it; the user opens it too, as soon as it is connected.
       const b = await rig.reload(a, 'proxy', 'connected')
-      await b.client.commands.openSession(target.sessionId)
-      const hydration = b.client.getState().threads[target.threadId]?.hydration
-      if (opens < 2 || hydration === 'ready') {
-        throw new FlipError('S19', `The user's open resolved with the chat ${hydration}.`)
-      }
-      const turnId = await startTurn(b, target)
-      await untilThread(
-        b,
-        target,
-        (state) => state.turns.some((turn) => turn.turnId === turnId),
-        'B to hold the turn',
-      )
-      rig.proxy.gate(undefined)
-      await rig.settle()
-      // What the server owed B: nothing live for the turn's start, then a
-      // snapshot that already held it.
-      const { provenance, wire } = await witnessOf(rig, b)
-      const threadKey = JSON.stringify([
-        'thread',
-        rig.environmentId,
-        target.sessionId,
-        target.threadId,
-      ])
-      const started = provenance.audit.find(
-        (row) => row.kind === 'event' && row.name === 'turn.started' && row.scopeKey === threadKey,
-      ) as { sequence: number; seq: number } | undefined
-      const sockets = new Set(
-        provenance.deliveries
-          .filter((line) => line.port !== undefined && wire.ports.has(line.port))
-          .map((line) => line.s),
-      )
-      const published = provenance.deliveries.find(
-        (line) => line.k === 'publish' && line.key === threadKey && line.seq === started?.sequence,
-      ) as { owed: string[]; sent: string[] } | undefined
-      const grant = provenance.deliveries.find(
-        (line) => line.k === 'grant' && line.key === threadKey && sockets.has(line.s),
-      ) as { mode: string; base: number | null; a: number } | undefined
-      expect(started, 'turn.started was appended').toBeDefined()
-      expect(
-        published?.owed.filter((socket) => sockets.has(socket)),
-        'owed to B live',
-      ).toEqual([])
-      expect(grant, 'B subscribed to the chat afterwards, by snapshot').toMatchObject({
-        mode: 'snapshot',
+      const mark = rig.proxy.frames.length
+      let resolvedWith: string | undefined
+      const opening = b.client.commands.openSession(target.sessionId).then(() => {
+        resolvedWith = b.client.getState().threads[target.threadId]?.hydration ?? 'none'
       })
-      expect(grant!.base!, 'the snapshot already held the turn').toBeGreaterThanOrEqual(
-        started!.sequence,
+      await until(() => opens >= 2, 'the resync to open the chat behind the user')
+      // The user's open has had its own answer, and still waits.
+      const userOpen = rig.proxy.frames
+        .slice(mark)
+        .find(
+          (frame) =>
+            frame.direction === 'up' &&
+            (frame.json as { name?: string } | undefined)?.name === 'session.open',
+        )
+      const userRequestId = (userOpen?.json as { requestId?: string } | undefined)?.requestId
+      await until(
+        () =>
+          rig.proxy.frames.some(
+            (frame) =>
+              frame.direction === 'down' &&
+              (frame.json as { requestId?: string } | undefined)?.requestId === userRequestId,
+          ),
+        "the user's open to be answered",
       )
-      expect(grant!.a, 'granted after the turn was committed').toBeGreaterThan(started!.seq)
+      await sleep(200)
+      expect(resolvedWith, 'the overtaken open waits for the newest one').toBeUndefined()
+      release('resync')
+      rig.proxy.gate(undefined)
+      await opening
+      expect(resolvedWith, 'resolved with the chat loaded').toBe('ready')
+      // A turn sent now is owed to the client live.
+      const turnId = await startTurn(b, target)
+      await finish(rig, b, target, turnId)
+      await rig.settle()
+      await expectConverges('S19', rig, b)
       const liveStarts = rig.framesOf(b).filter((frame) => {
         const event = (
           frame.json as { payload?: { record?: { event?: { name?: string } } } } | undefined
         )?.payload?.record?.event
         return frame.direction === 'down' && event?.name === 'turn.started'
       })
-      expect(liveStarts, 'no live turn.started reached B').toEqual([])
-      await expectConverges('S19 (state)', rig, b)
+      expect(liveStarts.length, 'turn.started reached B live').toBeGreaterThan(0)
       recordEvidence({
         scenario: 'S19',
-        bucket: 'known-divergence',
-        cause:
-          'openSession returns when a newer open of the same session overtakes it ' +
-          '(websocket.ts:1243, :1281), before the chat is subscribed; the resync opens the active ' +
-          'session after its reads (:1073-1083). A turn sent then reaches the chat only through ' +
-          "the newer open's thread snapshot. PR C of F3 owns the fix.",
-        observed: {
-          hydrationWhenOpenResolved: hydration,
-          sessionOpens: opens,
-          turnStarted: { sequence: started!.sequence, owedToB: false },
-          grant: { mode: grant!.mode, base: grant!.base },
-        },
+        bucket: 'regression-guard',
+        cause: 'an overtaken open follows the newest open of its session',
+        observed: { sessionOpens: opens, resolvedWith },
       })
     },
   )
 
   /**
-   * S18: a session announced and durable before its provider identity exists
-   * cannot survive a hard crash in between. `session.create` persists and
-   * announces the session (thread-service.ts:1844-1862) and only stamps the
-   * provider session once `session/new` resolves (:1867-1880, :435-443);
-   * restoring it after a restart needs that identity (:2297-2303). A crash
-   * inside that window leaves a session every client lists and none can
-   * open, through any number of restarts. Not a sync property but a
-   * durability one, outside F2's tests-only scope: F3 owns the fix
-   * (initialization that a restart can resume, or an explicit failure that
-   * removes or marks the session). A graceful restart does not show it: the
-   * shutdown waits for pending starts.
+   * Guard since F3 (§4.7.4): a hard crash while the provider creates a session
+   * leaves a listed session with no provider identity. Its provider never
+   * received anything (no prompt is sent before the identity is durable), so
+   * the next open creates the provider session, stamps it before any
+   * prompt, and the chat works. On main every open was refused ("The
+   * provider session identity is unavailable."), through any number of
+   * restarts. A graceful restart never showed it: shutdown waits for starts.
    */
+  async function s18Crash(rig: Rig, firstMessage?: string) {
+    const a = await rig.connect('A')
+    // Announced and durable at once; its provider answers 3 s later.
+    const created = await a.client.commands.createSession({
+      environmentId: rig.environmentId,
+      workspaceId: rig.workspaceId,
+      providerId: 'opencode',
+      title: 'Interrupted start',
+      ...(firstMessage ? { firstMessage } : {}),
+    })
+    const target = { sessionId: created.session.sessionId, threadId: created.thread.threadId }
+    expect(await rig.server.readUnidentified(), 'durable without a provider identity').toContain(
+      target.sessionId,
+    )
+    const before = a.connects
+    await rig.crash()
+    await until(() => a.connects > before, 'A to reconnect after the crash', 20_000)
+    await until(() => !a.busy(), 'A to finish its reconnect')
+    await rig.provider({ op: 'setNewSessionDelay', ms: 0 })
+    return { a, target }
+  }
+
   scenario(
-    'S18 a hard crash while the provider creates the session; it never opens again (F3)',
+    'S18 a hard crash while the provider creates the session; the next open starts it (§4.7.4, guard)',
     { newSessionDelayMs: 3_000 },
     async (rig) => {
-      const a = await rig.connect('A')
-      // Announced and durable at once; its provider answers 3 s later.
-      const target = await createSession(rig, a, { open: false, quiet: false })
-      expect(await rig.server.readUnidentified(), 'durable without a provider identity').toContain(
+      const { a, target } = await s18Crash(rig)
+      await a.client.commands.openSession(target.sessionId)
+      const turnId = await startTurn(a, target, 'Now it starts')
+      await finish(rig, a, target, turnId)
+      expect(await rig.server.readUnidentified(), 'stamped by the open').not.toContain(
         target.sessionId,
       )
-      const before = a.connects
-      await rig.crash()
-      await until(() => a.connects > before, 'A to reconnect after the crash', 20_000)
-      await until(() => !a.busy(), 'A to finish its reconnect')
-      const attempts: Array<{ when: string; who: string; outcome: unknown }> = []
-      const open = async (who: string, client: TestClient, when: string) => {
-        const outcome = await client.client.commands
-          .openSession(target.sessionId)
-          .then(() => 'opened')
-          .catch((error: unknown) => {
-            const { code, message } = error as { code?: string; message?: string }
-            return { code, message }
-          })
-        attempts.push({ when, who, outcome })
-        return outcome
-      }
-      const refusal = {
-        code: 'unavailable',
-        message: 'The provider session identity is unavailable.',
-      }
-      if ((await open('A', a, 'after the crash')) === 'opened') {
-        throw new FlipError('S18', 'The interrupted session opened after the crash.')
-      }
-      // A fresh client is refused the same way, and the session is still listed.
-      const fresh = await rig.connect('F', { link: 'direct' })
-      await open('fresh client', fresh, 'after the crash')
-      fresh.dispose()
-      const listed = (await rig.server.readSessions()) as Array<{ sessionId: string }>
-      expect(listed.map((session) => session.sessionId)).toContain(target.sessionId)
-      // A graceful restart does not repair it: the identity never comes.
-      const again = a.connects
-      await rig.restart()
-      await until(() => a.connects > again, 'A to reconnect after the restart', 20_000)
-      await until(() => !a.busy(), 'A to finish its reconnect')
-      await open('A', a, 'after a later graceful restart')
-      expect(await rig.server.readUnidentified()).toContain(target.sessionId)
-      for (const attempt of attempts) {
-        expect(attempt.outcome, `${attempt.who} ${attempt.when}`).toEqual(refusal)
-      }
-      recordEvidence({
-        scenario: 'S18',
-        bucket: 'known-divergence',
-        cause:
-          'session.create persists and announces the session before the provider identity exists ' +
-          '(thread-service.ts:1844-1862, :1867-1880); restoration requires it (:2297-2303), so a ' +
-          'hard crash in between leaves a listed session no client can ever open. F3 owns the fix.',
-        observed: { attempts, stillListed: true },
-      })
+      await expectConverges('S18', rig, a)
+    },
+  )
+
+  scenario(
+    'S18 (first message) the crash takes the first turn; the user sends it again (§4.7.4, guard)',
+    { newSessionDelayMs: 3_000 },
+    async (rig) => {
+      const { a, target } = await s18Crash(rig, 'The first message')
+      await a.client.commands.openSession(target.sessionId)
+      // Recovery ended the first turn at boot; nothing was replayed to the provider.
+      await untilThread(
+        a,
+        target,
+        (state) => state.turns.length === 1 && state.turns[0]!.state === 'interrupted',
+        'A to hold the first turn as interrupted',
+      )
+      const again = await startTurn(a, target, 'The first message')
+      await finish(rig, a, target, again)
+      expect(await rig.server.readUnidentified()).not.toContain(target.sessionId)
+      await expectConverges('S18 (first message)', rig, a)
     },
   )
 

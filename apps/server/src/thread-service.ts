@@ -34,6 +34,7 @@ import {
 import {
   projectAgentEvent,
   providers,
+  SessionUnknownError,
   type AgentRuntime,
   type HostDeps,
   type ProtocolEventContext,
@@ -277,6 +278,10 @@ type ThreadRecord = {
   claimedArtifacts?: string[]
 }
 
+/** Why a session the rows hold could not be loaded: the answer an open gives. */
+export type LoadRefusal = { code: ErrorCode; message: string; details?: unknown }
+type Loaded = { refused: LoadRefusal } | { session: SessionSummary; threads: Thread[] }
+
 const errorResult = (requestId: string, code: ErrorCode, message: string, details?: unknown) => ({
   type: 'error' as const,
   requestId,
@@ -453,7 +458,41 @@ export function createThreadService(
     workspaceId: record.session.workspaceId,
     cwd: record.cwd,
     ...(sessionId ? { sessionId } : {}),
+    // A sub-agent's transcript lives in the agent: a fresh session in its
+    // place would lose it, so the runtime may only load it, on every start and
+    // every respawn (docs/sync-foundations.md §4.7.4 (e)).
+    ...(record.session.parentSessionId ? { load: 'require' as const } : {}),
   })
+
+  /**
+   * Sessions this process learned it can never open: a sub-agent's chat the
+   * agent no longer knows. The loader answers them `session_unrecoverable`.
+   */
+  const unrecoverable = new Set<string>()
+  const UNRECOVERABLE: LoadRefusal = {
+    code: 'session_unrecoverable',
+    message:
+      "This chat's history lives in the agent and can't be reopened. Delete it to remove it.",
+  }
+
+  /**
+   * Make the identity a runtime reports durable, when it differs from the
+   * stored one: a session created because there was none (a crash between
+   * creation and its stamp), or because the agent had forgotten the stored
+   * one. Before any prompt may use it: every prompt awaits `runtimeSession`,
+   * and a respawn inside a prompt reports through `session_created`, which
+   * stamps before the prompt is sent (§4.7.4).
+   */
+  const stampIdentity = (record: ThreadRecord, providerSessionId: string): string => {
+    // A sub-agent's session is only ever loaded, never created (see `route`).
+    if (!options.database || record.session.parentSessionId) return providerSessionId
+    const row = options.database
+      .prepare('SELECT provider_session_id FROM sessions WHERE session_id = ?')
+      .get(record.session.sessionId) as { provider_session_id: string | null } | undefined
+    // Deleted while its provider session resolved: nothing left to stamp.
+    if (!row || row.provider_session_id === providerSessionId) return providerSessionId
+    return persistRuntimeSession(record, providerSessionId)
+  }
   /**
    * Persist the opaque identity before allowing prompts to use the provider
    * session. Host-private and not activity (docs/sync-foundations.md §4.4):
@@ -599,6 +638,15 @@ export function createThreadService(
         scope: threadScope(record),
         payload: { turnId },
       }),
+    )
+  }
+
+  /** Whether the rows still hold a record's thread: a deletion takes them with it. */
+  const threadHeld = (record: ThreadRecord) => {
+    if (!options.database) return false
+    options.flush?.()
+    return listThreadsForSession(options.database, record.session.sessionId).some(
+      (thread) => thread.threadId === record.thread.threadId,
     )
   }
 
@@ -779,7 +827,7 @@ export function createThreadService(
   const restoreSession = (
     session: SessionSummary,
     providerId: ProviderId,
-    providerSessionId: string,
+    providerSessionId: string | undefined,
     cwd: string,
     restoredThreads: Thread[],
   ) => {
@@ -799,7 +847,7 @@ export function createThreadService(
           if (threads.get(thread.threadId) !== record) throw new Error('Session was closed.')
           return runtime
             .ensureSession(route(record, providerSessionId))
-            .then((result) => result.sessionId)
+            .then((result) => stampIdentity(record, result.sessionId))
         }),
         turns: [],
         messages: [],
@@ -809,7 +857,10 @@ export function createThreadService(
         status: session.status,
         updatedAt: Date.parse(session.updatedAt),
       }
-      void record.runtimeSession.catch(() => {
+      void record.runtimeSession.catch((error: unknown) => {
+        // A sub-agent's chat the agent no longer knows can never be opened:
+        // nothing was created in its place and its identity is kept.
+        if (error instanceof SessionUnknownError) unrecoverable.add(session.sessionId)
         // One thread failing to load leaves the session half attached, so the
         // whole restore is abandoned and a later open retries it from SQLite.
         const current = sessions.get(session.sessionId)
@@ -820,6 +871,69 @@ export function createThreadService(
     }
     if (records[0]) sessions.set(session.sessionId, records[0])
   }
+
+  /**
+   * Load a session the rows hold and memory does not (docs/sync-foundations.md
+   * §4.7.3), with the checks an open makes, in its order: the summary, the
+   * provider's capability and health, the workspace (with the caller's
+   * context), the threads. Then the records, whose `runtimeSession` asks the
+   * provider for the session; every prompt awaits it. Synchronous: the
+   * records exist before the caller goes on, so a second command finds them.
+   * Nothing to do for a session in memory, or in memory-only mode.
+   */
+  const loadSession = (sessionId: string, context?: CommandContext): Loaded | undefined => {
+    const database = options.database
+    if (!database || sessions.has(sessionId)) return undefined
+    options.flush?.()
+    const session = getSessionSummary(database, sessionId)
+    if (!session) return { refused: { code: 'not_found', message: 'Session not found.' } }
+    if (unrecoverable.has(sessionId)) return { refused: UNRECOVERABLE }
+    const providerId = session.providerId as ProviderId
+    // No identity means the provider never received anything: a crash came
+    // between the session's creation and its stamp. A root session is
+    // created now and stamped before any prompt (§4.7.4); a sub-agent's
+    // cannot be, because its transcript would be lost.
+    const providerSessionId = getProviderSessionId(database, sessionId) ?? undefined
+    if (!providerSessionId && session.parentSessionId) return { refused: UNRECOVERABLE }
+    if (
+      !providers[providerId] ||
+      (providerSessionId && !providers[providerId].capabilities.canLoadSession)
+    ) {
+      return {
+        refused: { code: 'capability_missing', message: 'Provider cannot resume sessions.' },
+      }
+    }
+    const rejection = providerGate.rejection(providerId)
+    if (rejection) return { refused: rejection }
+    let target: WorkspaceRuntimeRoute | undefined
+    try {
+      target = resolveWorkspace(session.workspaceId, context)
+    } catch {
+      /* unavailable */
+    }
+    if (!target) return { refused: workspaceRefusal(session.workspaceId) }
+    const restoredThreads = listThreadsForSession(database, sessionId)
+    if (!restoredThreads.length) {
+      return { refused: { code: 'not_found', message: 'Thread not found.' } }
+    }
+    restoreSession(session, providerId, providerSessionId, target.cwd, restoredThreads)
+    return { session, threads: restoredThreads }
+  }
+
+  /** What `rejectWorkspace` answers, for the loader. */
+  const workspaceRefusal = (workspaceId: string): LoadRefusal => {
+    const availability = options.workspaceAvailability?.(workspaceId) ?? 'unknown'
+    return availability === 'missing' || availability === 'inaccessible'
+      ? {
+          code: 'workspace_unavailable',
+          message: SESSION_WORKSPACE_UNAVAILABLE,
+          details: WorkspaceUnavailableDetailsSchema.parse({ workspaceId, availability }),
+        }
+      : { code: 'not_found', message: 'Workspace not found.' }
+  }
+
+  const refused = (requestId: string, refusal: LoadRefusal) =>
+    errorResult(requestId, refusal.code, refusal.message, refusal.details)
 
   /** How to put back the draft each just-created session was sent from, until it starts. */
   const sentDrafts = new Map<string, () => void>()
@@ -1241,13 +1355,36 @@ export function createThreadService(
    * fallback, and the fallback only ever fills a placeholder — so the first
    * meaningful turn names the session and later turns leave it alone.
    */
+  /**
+   * The title and its source as the rows hold them, everything queued
+   * written first. The projection judges a title against these (I2), so the
+   * producer decides against them too, not against memory: memory can lag a
+   * write that failed and landed on a later retry. Memory takes them on the
+   * way. Undefined when the rows cannot be read now; a title can wait.
+   */
+  const committedTitle = (record: ThreadRecord) => {
+    if (!options.database) return { title: record.session.title, source: record.titleSource }
+    try {
+      options.flush?.()
+    } catch {
+      return undefined
+    }
+    const summary = getSessionSummary(options.database, record.session.sessionId)
+    if (!summary) return undefined
+    record.session.title = summary.title
+    record.titleSource = summary.titleSource
+    return { title: summary.title, source: summary.titleSource }
+  }
+
   const applyTitle = (record: ThreadRecord, title: string, source: SessionTitleSource): void => {
     const nextTitle = title.trim()
     if (!nextTitle) return
+    const stored = committedTitle(record)
+    if (!stored) return
     // A user title that happens to look generated is still the user's.
-    if (record.titleSource === 'user' && source !== 'user') return
-    if (!shouldReplaceSessionTitle(record.session.title, record.titleSource, source)) return
-    if (record.session.title === nextTitle && record.titleSource === source) return
+    if (stored.source === 'user' && source !== 'user') return
+    if (!shouldReplaceSessionTitle(stored.title, stored.source, source)) return
+    if (stored.title === nextTitle && stored.source === source) return
     // Announced before it is believed. A name is bookkeeping, so a failed write
     // must not fail the turn that triggered it, and leaving the record on its
     // old title keeps it a placeholder that the next turn names again.
@@ -1584,8 +1721,11 @@ export function createThreadService(
     // A client's own id makes the send retryable; a client that sends none
     // gets a minted one so every turn is still recorded with exactly one.
     const commandId = input.commandId ?? randomUUID()
-    const threadRecord = threads.get(input.threadId)
-    const record = threadRecord?.session.sessionId === input.sessionId ? threadRecord : undefined
+    const recordOf = () => {
+      const threadRecord = threads.get(input.threadId)
+      return threadRecord?.session.sessionId === input.sessionId ? threadRecord : undefined
+    }
+    let record = recordOf()
     // Access is settled before anything is answered, a replay included: a
     // caller who cannot reach the workspace must not learn what was sent
     // to it. A thread no longer in memory names its workspace from the log.
@@ -1606,6 +1746,13 @@ export function createThreadService(
         ? record.commandTurns.get(input.commandId)
         : findPersistedTurn(input.sessionId, input.threadId, input.commandId)
     if (replayed) return turnSendResult(command.requestId, replayed)
+    if (!record) {
+      // A chat the rows hold and this process has not loaded (after a
+      // restart): load it as an open would, then serve the send (§4.7.3).
+      const loaded = loadSession(input.sessionId, context)
+      if (loaded && 'refused' in loaded) return refused(command.requestId, loaded.refused)
+      record = recordOf()
+    }
     if (!record) {
       return errorResult(command.requestId, 'not_found', 'Thread not found.')
     }
@@ -1703,12 +1850,19 @@ export function createThreadService(
         // Deleting the session or closing the workspace drops the record while
         // the provider session is still resolving. Starting provider work for a
         // record nothing points at any more would outlive the session itself.
-        if (
-          threads.get(record.thread.threadId) !== record ||
-          record.activeTurn !== active ||
-          active.interruptRequested
-        )
+        if (threads.get(record.thread.threadId) !== record) {
+          // Dropped for another reason, its rows still there (another thread
+          // of the session failed to load): its turn ends through the
+          // terminal path, or the rows would hold it open until the next boot
+          // (§4.7.3 point 4). A deletion took the rows too and needs no end.
+          if (record.activeTurn === active && threadHeld(record)) {
+            emitFailed(record, turn.turnId)
+            turn.state = 'failed'
+            record.activeTurn = undefined
+          }
           return
+        }
+        if (record.activeTurn !== active || active.interruptRequested) return
         active.promptStarted = true
         return runtime.prompt({
           ...route(record, sessionId),
@@ -1822,7 +1976,14 @@ export function createThreadService(
       return threads.get(threadId)?.session.sessionId
     },
 
-    resolveRuntimeSession(sessionId: string) {
+    /**
+     * The provider session a composer setter acts on, loading a session the
+     * rows hold as an open would, with the caller's context (§4.7.3). A
+     * refusal is the answer the open would give.
+     */
+    resolveRuntimeSession(sessionId: string, context?: CommandContext) {
+      const loaded = loadSession(sessionId, context)
+      if (loaded && 'refused' in loaded) return loaded.refused
       const record = sessions.get(sessionId)
       if (!record) return undefined
       return record.runtimeSession.then((providerSessionId) => ({
@@ -2414,49 +2575,13 @@ export function createThreadService(
         if (!parsed.success) {
           return errorResult(command.requestId, 'validation', 'Invalid session open request.')
         }
-        if (options.database && !sessions.has(parsed.data.payload.sessionId)) {
-          options.flush?.()
-          const session = getSessionSummary(options.database, parsed.data.payload.sessionId)
-          if (!session) return errorResult(command.requestId, 'not_found', 'Session not found.')
-          const providerId = session.providerId as ProviderId
-          if (!providers[providerId]?.capabilities.canLoadSession) {
-            return errorResult(
-              command.requestId,
-              'capability_missing',
-              'Provider cannot resume sessions.',
-            )
-          }
-          const rejection = rejectProvider(command.requestId, providerId)
-          if (rejection) return rejection
-          const providerSessionId = getProviderSessionId(options.database, session.sessionId)
-          if (!providerSessionId) {
-            return errorResult(
-              command.requestId,
-              'unavailable',
-              'The provider session identity is unavailable.',
-            )
-          }
-          let target: WorkspaceRuntimeRoute | undefined
-          try {
-            target = resolveWorkspace(session.workspaceId, context)
-          } catch {
-            /* unavailable */
-          }
-          if (!target) {
-            return rejectWorkspace(
-              command.requestId,
-              session.workspaceId,
-              SESSION_WORKSPACE_UNAVAILABLE,
-            )
-          }
-          const restoredThreads = listThreadsForSession(options.database, session.sessionId)
-          if (!restoredThreads.length)
-            return errorResult(command.requestId, 'not_found', 'Thread not found.')
-          restoreSession(session, providerId, providerSessionId, target.cwd, restoredThreads)
+        const loaded = loadSession(parsed.data.payload.sessionId, context)
+        if (loaded && 'refused' in loaded) return refused(command.requestId, loaded.refused)
+        if (loaded) {
           return ProofResponseSchemas['session.open'].parse({
             type: 'response',
             requestId: command.requestId,
-            payload: { session, threads: restoredThreads },
+            payload: { session: loaded.session, threads: loaded.threads },
           })
         }
         const record = sessions.get(parsed.data.payload.sessionId)
@@ -2593,7 +2718,18 @@ export function createThreadService(
           })
         }
         if (!record || record.session.sessionId !== parsed.data.payload.sessionId) {
-          return errorResult(command.requestId, 'not_found', 'Thread not found.')
+          // A thread the rows hold is not unknown because this process has
+          // not loaded it: nothing runs on it, so its turn is not in
+          // progress (§4.7.3).
+          const held =
+            !record &&
+            options.database !== undefined &&
+            listThreadsForSession(options.database, sessionId).some(
+              (thread) => thread.threadId === threadId,
+            )
+          return held
+            ? errorResult(command.requestId, 'conflict', 'Turn is not in progress.')
+            : errorResult(command.requestId, 'not_found', 'Thread not found.')
         }
         const providerRejection = rejectProvider(command.requestId, record.providerId)
         if (providerRejection) return providerRejection
@@ -2821,6 +2957,17 @@ export function createThreadService(
     onRuntimeEvent(event: RuntimeEvent) {
       const record = threads.get(event.threadId)
       if (!record) return
+
+      // A runtime that created a session where it meant to load one (no
+      // identity, or one the agent had forgotten), including a respawn inside
+      // a prompt: stamped now, synchronously, before that prompt is sent.
+      if (event.event === 'session_created' && event.sessionId && !record.session.parentSessionId) {
+        try {
+          stampIdentity(record, event.sessionId)
+        } catch (error) {
+          options.onPersistenceError?.(error, 'session.created')
+        }
+      }
 
       if (event.event === 'background_tasks_update') {
         applyBackgroundTasks(record, event.data.tasks)

@@ -30,6 +30,7 @@ import type {
   SessionSummary,
   ThreadState,
 } from './types'
+import { emptyOverlay } from './overlay'
 import {
   applyDraftDeleted,
   applyDraftSaved,
@@ -57,6 +58,7 @@ export function createInitialState(): EnvironmentState {
     providers: {},
     providerOrder: [],
     composerPreferences: {},
+    composerRevisions: {},
     drafts: {},
     draftTombstones: {},
     draftEdits: {},
@@ -64,6 +66,7 @@ export function createInitialState(): EnvironmentState {
     activeSessionId: null,
     activeThreadId: null,
     connection: INITIAL_CONNECTION,
+    pending: emptyOverlay(),
   }
 }
 
@@ -330,24 +333,6 @@ function dropInteraction(current: ThreadState, interactionId: string): ThreadSta
 }
 
 /**
- * The optimistic answer (`applyInteractionResolved`, until the overlays of
- * F3's later step replace it): hides the request and, when it was the last
- * one blocking its turn, returns that turn to `running`.
- */
-function resolveInteraction(current: ThreadState, interactionId: string): ThreadState {
-  const pending = current.interactions.find(
-    (item) => item.interaction.interactionId === interactionId,
-  )
-  if (!pending) return current
-  const dropped = dropInteraction(current, interactionId)
-  const stillWaiting = dropped.interactions.some((item) => item.turnId === pending.turnId)
-  const turn = current.turns.find((item) => item.turnId === pending.turnId)
-  return turn?.state === 'waiting' && !stillWaiting
-    ? setTurnState(dropped, pending.turnId, 'running')
-    : dropped
-}
-
-/**
  * Drop one session, its threads and its draft. The environment announces
  * every session a deletion takes, each child before its parent, so the
  * client mirrors no cascade (docs/sync-foundations.md §3.6 row 12).
@@ -459,7 +444,12 @@ export function applyEvent(state: EnvironmentState, event: ProofEvent): Environm
     case 'composer.preferences.updated':
       // A workspace this client no longer lists must not get a preference back.
       return state.workspaces[event.payload.workspaceId]
-        ? applyComposerPreference(state, event.payload, event.payload.preference)
+        ? applyComposerPreference(
+            state,
+            event.payload,
+            event.payload.preference,
+            event.payload.revision,
+          )
         : state
     case 'provider.catalog.updated': {
       // Only a loaded catalog is patched; an unloaded one reads the profile
@@ -490,9 +480,7 @@ export function applyEvent(state: EnvironmentState, event: ProofEvent): Environm
 
   switch (event.name) {
     case 'turn.started':
-      return patchThread(state, thread, (current) =>
-        confirmTurnStart(current, event.payload, event.timestamp),
-      )
+      return patchThread(state, thread, (current) => applyStart(current, event.payload))
     case 'turn.completed':
     case 'turn.interrupted':
     case 'turn.failed':
@@ -572,7 +560,7 @@ export function applySnapshot(state: EnvironmentState, snapshot: ScopeSnapshot):
     // answered yet is still the client's to show, unless the snapshot is
     // itself the answer. Which messages were this client's echoes is the
     // client's own knowledge and survives the replacement.
-    ...reconcileOutbox(existing, threadSnapshot.messages),
+    ...reconcileOutbox(existing, threadSnapshot.turns, threadSnapshot.messages),
     turns: threadSnapshot.turns,
     messages,
     // Older pages the client keeps in front of the snapshot place their
@@ -710,7 +698,7 @@ export function applySessionHistory(
       reasoning,
       tools,
       order,
-      ...reconcileOutbox(current, payload.messages),
+      ...reconcileOutbox(current, payload.turns, payload.messages),
       interactions:
         !older && (interactions.length > 0 || current.hydration !== 'ready')
           ? interactions
@@ -729,77 +717,59 @@ export function applySessionHistory(
   }
 }
 
-/** The plain text of a message, for matching an echo against what arrived. */
-const messageText = (message: Message): string =>
-  message.content.map((block) => (block.type === 'text' ? block.text : '')).join('')
-
 /**
- * Drop failed echoes the environment turns out to have accepted. A send whose
- * connection dropped is reported as failed even though its turn may well have
- * started; when an authoritative snapshot or history page then brings back a
- * user message this client never had, that message is the echo. Each arriving
- * message clears at most one echo, so a prompt deliberately sent twice keeps
- * the copy that really did fail. A cleared echo is recorded as confirmed by
- * that message, the way a `turn.started` records it.
+ * Settle the echoes whose turns the environment has, by command id
+ * (`Turn.commandId`; docs/sync-foundations.md §3.6 rows 21 and 22). A send
+ * whose connection dropped is reported as failed although its turn may well
+ * have started; a snapshot or history page that brings that turn back ends
+ * the echo, pending or failed, and records which message took its place, the
+ * way a `turn.started` does.
  */
 function reconcileOutbox(
   current: ThreadState,
-  incoming: readonly Message[],
+  turns: readonly Turn[],
+  messages: readonly Message[],
 ): Pick<ThreadState, 'outbox' | 'confirmedEchoes'> {
   const unchanged = {
     outbox: current.outbox,
     ...(current.confirmedEchoes ? { confirmedEchoes: current.confirmedEchoes } : {}),
   }
-  if (!current.outbox.some((entry) => entry.status === 'failed')) return unchanged
-  const known = new Set(current.messages.map((message) => message.messageId))
-  const arrived = incoming.filter(
-    (message) => message.role === 'user' && !known.has(message.messageId),
-  )
-  if (arrived.length === 0) return unchanged
-  const texts = arrived.map(messageText)
+  if (current.outbox.length === 0) return unchanged
+  const started = new Map<string, Turn>()
+  for (const turn of turns) if (turn.commandId) started.set(turn.commandId, turn)
   const confirmedEchoes = { ...current.confirmedEchoes }
   const outbox = current.outbox.filter((entry) => {
-    if (entry.status !== 'failed') return true
-    const index = texts.indexOf(entry.text)
-    if (index === -1) return true
-    confirmedEchoes[arrived[index]!.messageId] = entry.commandId
-    texts.splice(index, 1)
-    arrived.splice(index, 1)
+    const turn = started.get(entry.commandId)
+    if (!turn) return true
+    const prompt = messages.find(
+      (message) => message.turnId === turn.turnId && message.role === 'user',
+    )
+    if (prompt) confirmedEchoes[prompt.messageId] = entry.commandId
     return false
   })
   return outbox.length === current.outbox.length ? unchanged : { outbox, confirmedEchoes }
 }
 
 /**
- * The confirmed start of a turn: the real turn and user message replace the
- * echo its command id created, and the message is recorded as that echo's.
- * Keyed by ID throughout, so the `turn.send`
- * response and the `turn.started` event may arrive in either order and only
- * the first of them changes anything.
+ * A turn's start, as `turn.started` states it: the turn, its prompt, and the
+ * echo its command id settles, with the message recorded as that echo's (see
+ * `confirmedEchoes`). A start the thread already holds (a replayed tail) is
+ * no change: the turn may have moved on since.
  */
-function confirmTurnStart(
-  current: ThreadState,
-  payload: TurnStarted,
-  startedAt?: string,
-): ThreadState {
-  const { commandId } = payload
+function applyStart(current: ThreadState, payload: TurnStarted): ThreadState {
+  const commandId = payload.commandId ?? payload.turn.commandId
   const outbox = commandId
     ? current.outbox.filter((entry) => entry.commandId !== commandId)
     : current.outbox
-  // A delayed send response must not rewind a turn that already progressed.
-  // The `turn.started` event's time is when the work began; a `turn.send`
-  // response carries none, so whichever arrives second may only fill that in.
-  const existing = current.turns.find((turn) => turn.turnId === payload.turn.turnId)
-  const turn = existing
-    ? existing.startedAt || !startedAt
-      ? existing
-      : { ...existing, startedAt }
-    : { ...payload.turn, ...(startedAt && !payload.turn.startedAt ? { startedAt } : {}) }
-  const turns = upsertById(current.turns, (item) => item.turnId, turn)
+  const known = current.turns.some((turn) => turn.turnId === payload.turn.turnId)
+  const turns = known ? current.turns : [...current.turns, payload.turn]
   // A turn the provider began by itself has no prompt: a background task
   // finished and the agent is acting on the result.
   const { userMessage } = payload
-  if (!userMessage) return turns === current.turns ? current : { ...current, turns }
+  const settled = outbox.length !== current.outbox.length
+  if (!userMessage) {
+    return known && !settled ? current : { ...current, turns, ...(settled ? { outbox } : {}) }
+  }
   return {
     ...current,
     turns,
@@ -809,24 +779,51 @@ function confirmTurnStart(
       id: userMessage.messageId,
       turnId: payload.turn.turnId,
     }),
-    // The message is what the echo now shows as; see `confirmedEchoes`.
-    ...(commandId && outbox.length !== current.outbox.length
+    ...(settled
       ? {
           outbox,
-          confirmedEchoes: { ...current.confirmedEchoes, [userMessage.messageId]: commandId },
+          confirmedEchoes: { ...current.confirmedEchoes, [userMessage.messageId]: commandId! },
         }
       : {}),
   }
 }
 
-/** Same shape as `turn.started`; used to fold a `turn.send` response in before the event arrives. */
-export function applyTurnStarted(
-  state: EnvironmentState,
+/**
+ * A created session's chat as its `session.create` answer described it:
+ * shown by the overlay until the chat itself holds the first turn
+ * (overlay.ts). Built over what the client holds of the thread, if anything.
+ */
+export function provisionalThread(
   thread: Thread,
-  payload: TurnStart,
-): EnvironmentState {
-  return patchThread(state, thread, (current) => confirmTurnStart(current, payload))
+  firstTurn: TurnStart,
+  held?: ThreadState,
+): ThreadState {
+  const base = held ?? createThreadState(thread, 'ready')
+  const turns = upsertById(base.turns, (item) => item.turnId, firstTurn.turn)
+  const { userMessage } = firstTurn
+  return {
+    ...base,
+    hydration: 'ready',
+    turns,
+    ...(userMessage
+      ? {
+          messages: upsertById(base.messages, (message) => message.messageId, userMessage),
+          order: placeActivity(base.order, {
+            kind: 'message',
+            id: userMessage.messageId,
+            turnId: firstTurn.turn.turnId,
+          }),
+        }
+      : {}),
+  }
 }
+
+/** A session as `upsertSession` files it, for the overlay's created sessions. */
+export const withSessionUpserted = (
+  state: EnvironmentState,
+  session: ProtocolSessionSummary,
+  threadIds?: readonly string[],
+) => upsertSession(state, session, threadIds)
 
 /**
  * Echo a send locally before the environment has answered. A repeat of a
@@ -844,10 +841,14 @@ export function applyTurnSending(
     ...(send.artifactIds?.length ? { artifactIds: send.artifactIds } : {}),
     status: 'pending',
   }
-  return patchThread(state, thread, (current) => ({
-    ...current,
-    outbox: upsertById(current.outbox, (item) => item.commandId, entry),
-  }))
+  return patchThread(state, thread, (current) =>
+    // A retry of a send whose turn this client already holds: the answer
+    // comes from the environment's log and no event follows, so there is
+    // nothing to echo.
+    current.turns.some((turn) => turn.commandId === send.commandId)
+      ? current
+      : { ...current, outbox: upsertById(current.outbox, (item) => item.commandId, entry) },
+  )
 }
 
 /** Mark an echoed send failed, keeping it on screen with the reason. */
@@ -869,19 +870,6 @@ export function applyTurnSendFailed(
       }),
     }
   })
-}
-
-/**
- * Optimistic removal after `interaction.respond`. Mirrors the
- * `interaction.resolved` event path so the turn returns to `running` here; the
- * later event is then a no-op instead of the only place that flips the turn.
- */
-export function applyInteractionResolved(
-  state: EnvironmentState,
-  thread: Thread,
-  interactionId: string,
-): EnvironmentState {
-  return patchThread(state, thread, (current) => resolveInteraction(current, interactionId))
 }
 
 /**
@@ -964,11 +952,14 @@ export function applyWorkspaceRemoved(
   delete workspaces[workspaceId]
   const composerPreferences = { ...state.composerPreferences }
   delete composerPreferences[workspaceId]
+  const composerRevisions = { ...state.composerRevisions }
+  delete composerRevisions[workspaceId]
   return {
     ...state,
     workspaces,
     workspaceOrder: state.workspaceOrder.filter((id) => id !== workspaceId),
     composerPreferences,
+    composerRevisions,
   }
 }
 
@@ -1042,29 +1033,45 @@ export function applyProviderProbe(
 }
 
 /** Replaces the remembered choice for one workspace and provider. */
+/**
+ * A preference as the server stated it at `revision`, from an event or a read
+ * answer. Ordered by the server's number, never by arrival: an older or equal
+ * revision changes nothing (docs/sync-foundations.md §3.2, §4.7.10).
+ */
 export function applyComposerPreference(
   state: EnvironmentState,
   target: { workspaceId: string; providerId: string },
   preference: WorkspaceComposerPreference,
+  revision: number,
 ): EnvironmentState {
+  const held = state.composerRevisions[target.workspaceId]?.[target.providerId]
+  if (held !== undefined && held >= revision) return state
   const workspace = state.composerPreferences[target.workspaceId]
-  if (workspace?.[target.providerId] && sameJson(workspace[target.providerId], preference)) {
-    return state
-  }
+  const same = workspace?.[target.providerId] && sameJson(workspace[target.providerId], preference)
   return {
     ...state,
-    composerPreferences: {
-      ...state.composerPreferences,
-      [target.workspaceId]: { ...workspace, [target.providerId]: preference },
+    composerPreferences: same
+      ? state.composerPreferences
+      : {
+          ...state.composerPreferences,
+          [target.workspaceId]: { ...workspace, [target.providerId]: preference },
+        },
+    composerRevisions: {
+      ...state.composerRevisions,
+      [target.workspaceId]: {
+        ...state.composerRevisions[target.workspaceId],
+        [target.providerId]: revision,
+      },
     },
   }
 }
 
 /** Forget every held preference, so each reads as "not loaded" until asked for again. */
 export function applyComposerPreferencesReset(state: EnvironmentState): EnvironmentState {
-  return Object.keys(state.composerPreferences).length === 0
+  return Object.keys(state.composerPreferences).length === 0 &&
+    Object.keys(state.composerRevisions).length === 0
     ? state
-    : { ...state, composerPreferences: {} }
+    : { ...state, composerPreferences: {}, composerRevisions: {} }
 }
 
 export function applySessionRemoved(state: EnvironmentState, sessionId: string): EnvironmentState {
@@ -1085,26 +1092,6 @@ export function applySessionTitle(
   }
 }
 
-export function applySessionSettled(
-  state: EnvironmentState,
-  sessionId: string,
-  settledAt: string | null,
-): EnvironmentState {
-  const session = state.sessions[sessionId]
-  if (!session || (session.settledAt ?? null) === settledAt) return state
-  return { ...state, sessions: { ...state.sessions, [sessionId]: { ...session, settledAt } } }
-}
-
-/** The user has looked at a finished session; it stops showing as done. */
-export function applySessionAcknowledged(
-  state: EnvironmentState,
-  sessionId: string,
-): EnvironmentState {
-  const session = state.sessions[sessionId]
-  if (!session || !session.doneAt) return state
-  return { ...state, sessions: { ...state.sessions, [sessionId]: { ...session, doneAt: null } } }
-}
-
 export function applyThreadHydration(
   state: EnvironmentState,
   threadId: string,
@@ -1115,11 +1102,26 @@ export function applyThreadHydration(
   return { ...state, threads: { ...state.threads, [threadId]: { ...thread, hydration } } }
 }
 
+/**
+ * A session this client may select: listed by the server, or just created
+ * and shown by the overlay until it is (pending.creates). Selection is the
+ * client's own state, so it may follow either.
+ */
+function selectableSession(
+  state: EnvironmentState,
+  sessionId: string,
+): { threadIds: readonly string[] } | undefined {
+  const created = state.pending?.creates[sessionId]
+  return (
+    state.sessions[sessionId] ?? (created ? { threadIds: [created.thread.threadId] } : undefined)
+  )
+}
+
 export function applyActiveSession(
   state: EnvironmentState,
   sessionId: string | null,
 ): EnvironmentState {
-  const session = sessionId ? state.sessions[sessionId] : undefined
+  const session = sessionId ? selectableSession(state, sessionId) : undefined
   const nextSessionId = session ? sessionId : null
   const nextThreadId = session?.threadIds[0] ?? null
   if (
@@ -1146,7 +1148,7 @@ export function applyActiveSession(
  * stays up while that same session is retried.
  */
 export function applySessionOpening(state: EnvironmentState, sessionId: string): EnvironmentState {
-  const session = state.sessions[sessionId]
+  const session = selectableSession(state, sessionId)
   let next = state
   for (const threadId of session?.threadIds ?? []) {
     next = applyThreadHydration(next, threadId, 'loading')

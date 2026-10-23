@@ -234,6 +234,14 @@ export async function startServer(config: ServerConfig) {
     {
       epoch: eventEpoch,
       onError: (error) => log('error', 'event persistence failed', { reason: String(error) }),
+      // A producer emitted what its projection refuses: a bug. The write is
+      // dropped so it cannot block every write behind it (write-errors.ts).
+      onRefused: (error, event) =>
+        log('error', 'a refused write was dropped', {
+          event: event.name,
+          eventId: event.eventId,
+          reason: String(error),
+        }),
       ...config.commitHooks,
     },
   )
@@ -413,7 +421,7 @@ export async function startServer(config: ServerConfig) {
     runtime,
     providerService,
     composerStore,
-    (sessionId) => threadService.resolveRuntimeSession(sessionId),
+    (sessionId, context) => threadService.resolveRuntimeSession(sessionId, context),
     {
       // Composer changes ride the environment stream, so every client sees
       // them live and a reconnect replays whatever it missed.
@@ -509,8 +517,12 @@ export async function startServer(config: ServerConfig) {
   }
   // Set after listen so port 0 advertises the actual port selected by the OS.
   let websocketUrl: string
+  // This process, as opposed to the environment: a client that reconnects to
+  // a new one reopens its active chat (docs/sync-foundations.md §4.7.3).
+  const instanceId = randomUUID()
   const bootstrap = () =>
     BootstrapResponseSchema.parse({
+      instanceId,
       environmentId: identity.environmentId,
       label: identity.label,
       protocolVersion: PROTOCOL_VERSION,
@@ -762,7 +774,7 @@ export async function startServer(config: ServerConfig) {
       drafts.dispatch(command, context) ??
       pairing.dispatch(command, context) ??
       clientService.dispatch(command, context) ??
-      composerService.dispatch(command),
+      composerService.dispatch(command, context),
     onConnectionsChanged: () => clientService.announce(),
   })
   clientSockets = sockets

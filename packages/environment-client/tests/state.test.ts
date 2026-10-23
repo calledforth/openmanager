@@ -3,17 +3,13 @@ import { ProofEventSchema, type ScopeSnapshot } from '@openmanager/protocol'
 import {
   applyEnvironment,
   applyEvent,
-  applyInteractionResolved,
-  applySessionAcknowledged,
   applySessionCreated,
   applySessionHistory,
   applySessionList,
   applySessionOpen,
-  applySessionSettled,
   applySnapshot,
   applyTurnSendFailed,
   applyTurnSending,
-  applyTurnStarted,
   createInitialState,
   selectActiveThread,
   selectActiveTurn,
@@ -113,7 +109,7 @@ describe('applyEvent', () => {
       nextCursor: null,
     })
     expect(state.sessions[SESSION.sessionId]?.status).toBe('waiting')
-    state = applyTurnStarted(state, THREAD, turnStarted().payload)
+    state = applyEvent(state, turnStarted())
     expect(state.sessions[SESSION.sessionId]?.status).toBe('waiting')
   })
 
@@ -149,14 +145,7 @@ describe('applyEvent', () => {
     )
     expect(state.sessions[SESSION.sessionId]?.doneAt).toBe(doneAt)
 
-    const acknowledged = applySessionAcknowledged(state, SESSION.sessionId)
-    expect(acknowledged.sessions[SESSION.sessionId]).toMatchObject({
-      doneAt: null,
-      updatedAt: state.sessions[SESSION.sessionId]?.updatedAt,
-    })
-    expect(applySessionAcknowledged(acknowledged, SESSION.sessionId)).toBe(acknowledged)
-
-    // The broadcast from another client lands the same way.
+    // An acknowledgement, from this client or another, lands as an event.
     const fromElsewhere = applyEvent(
       state,
       event({
@@ -174,13 +163,13 @@ describe('applyEvent', () => {
 
   it('keeps the state when an update restates what the session already holds', () => {
     const settledAt = '2026-09-27T10:00:00.000Z'
-    const settled = applySessionSettled(seeded(), SESSION.sessionId, settledAt)
-    // The echo of a settle whose answer the client already applied.
     const echo = event({
       name: 'session.updated',
       scope: environmentScope,
       payload: { sessionId: SESSION.sessionId, settledAt },
     })
+    const settled = applyEvent(seeded(), echo)
+    // The same settle again (a replayed tail) is no change.
     expect(applyEvent(settled, echo)).toBe(settled)
 
     // A status repeated at the same moment (a replayed tail) is no change either.
@@ -557,8 +546,8 @@ describe('applyEvent', () => {
     }
     let state = applyEvent(seeded(), start)
     expect(selectActiveTurn(state)?.startedAt).toBe('2026-09-24T10:00:00.000Z')
-    // The send response arriving second may not rewind the start.
-    state = applyTurnStarted(state, THREAD, start.payload)
+    // A repeated start (a replayed tail) changes nothing.
+    state = applyEvent(state, { ...start, timestamp: '2026-09-24T10:00:30.000Z' })
     expect(selectActiveThread(state)!.turns[0]?.startedAt).toBe('2026-09-24T10:00:00.000Z')
     state = applyEvent(state, { ...completed(), timestamp: '2026-09-24T10:00:45.000Z' })
     expect(selectActiveThread(state)!.turns[0]).toMatchObject({
@@ -616,40 +605,6 @@ describe('applyEvent', () => {
     expect(selectPendingInteractions(state)).toHaveLength(0)
     expect(selectActiveTurn(state)?.state).toBe('running')
     expect(selectSessionList(state)[0]?.status).toBe('idle')
-  })
-
-  it('optimistic resolve returns the turn to running and makes the later event a no-op', () => {
-    let state = applyEvent(seeded(), turnStarted())
-    state = applyEvent(
-      state,
-      event({
-        name: 'interaction.requested',
-        scope: threadScope,
-        payload: { turnId: 'turn-1', interaction: permission, turnState: 'waiting' },
-      }),
-    )
-    state = applyInteractionResolved(state, THREAD, permission.interactionId)
-    expect(selectPendingInteractions(state)).toHaveLength(0)
-    expect(selectActiveTurn(state)?.state).toBe('running')
-    expect(selectSessionList(state)[0]?.status).toBe('idle')
-
-    const replayed = applyEvent(
-      state,
-      event({
-        name: 'interaction.resolved',
-        scope: threadScope,
-        payload: {
-          turnId: 'turn-1',
-          response: {
-            kind: 'permission',
-            interactionId: permission.interactionId,
-            outcome: { outcome: 'selected', optionId: 'allow' },
-          },
-          turnState: 'running',
-        },
-      }),
-    )
-    expect(replayed).toBe(state)
   })
 
   it('records a failure on its turn, as a snapshot carries it, without guessing the session status', () => {
@@ -978,16 +933,20 @@ describe('optimistic sends', () => {
   const sending = (commandId: string, text = 'hello') =>
     applyTurnSending(seeded(), THREAD, { commandId, text })
 
-  it('echoes a pending message and confirms it from the response', () => {
+  it('echoes a pending message and confirms it from its turn.started', () => {
     const state = sending('cmd-1')
     expect(state.threads[THREAD.threadId]?.outbox).toEqual([
       { commandId: 'cmd-1', text: 'hello', status: 'pending' },
     ])
-    const confirmed = applyTurnStarted(state, THREAD, {
-      ...turnStarted('turn-1', 'hello', 'cmd-1').payload,
-    })
+    const confirmed = applyEvent(state, turnStarted('turn-1', 'hello', 'cmd-1'))
     expect(confirmed.threads[THREAD.threadId]?.outbox).toEqual([])
     expect(confirmed.threads[THREAD.threadId]?.messages).toHaveLength(1)
+  })
+
+  it('echoes nothing for a retry of a send whose turn is already held', () => {
+    const started = applyEvent(sending('cmd-1'), turnStarted('turn-1', 'hello', 'cmd-1'))
+    const retried = applyTurnSending(started, THREAD, { commandId: 'cmd-1', text: 'hello' })
+    expect(retried).toBe(started)
   })
 
   it('confirms the echo from the event and applies a repeat of it once', () => {
@@ -999,19 +958,15 @@ describe('optimistic sends', () => {
     expect(again.threads[THREAD.threadId]?.turns).toHaveLength(1)
   })
 
-  it('records which message confirmed the echo, whichever confirmation came first', () => {
+  it('records which message confirmed the echo, once', () => {
     const started = turnStarted('turn-1', 'hello', 'cmd-1')
     const messageId = started.payload.userMessage!.messageId
-    const fromResponse = applyTurnStarted(sending('cmd-1'), THREAD, started.payload)
-    expect(fromResponse.threads[THREAD.threadId]?.confirmedEchoes).toEqual({
-      [messageId]: 'cmd-1',
-    })
-    // The event that follows finds no echo left and changes nothing.
-    expect(applyEvent(fromResponse, started).threads[THREAD.threadId]?.confirmedEchoes).toBe(
-      fromResponse.threads[THREAD.threadId]?.confirmedEchoes,
-    )
     const fromEvent = applyEvent(sending('cmd-1'), started)
     expect(fromEvent.threads[THREAD.threadId]?.confirmedEchoes).toEqual({ [messageId]: 'cmd-1' })
+    // A repeat finds no echo left and changes nothing.
+    expect(applyEvent(fromEvent, started).threads[THREAD.threadId]?.confirmedEchoes).toBe(
+      fromEvent.threads[THREAD.threadId]?.confirmedEchoes,
+    )
   })
 
   it('records no echo for a turn this client did not send', () => {
@@ -1054,13 +1009,45 @@ describe('optimistic sends', () => {
     expect(applyTurnSendFailed(confirmed, THREAD, 'cmd-1', 'too late')).toBe(confirmed)
   })
 
-  it('clears a failed echo the environment turns out to have accepted', () => {
+  it('clears a failed echo the environment turns out to have accepted, by its command id', () => {
     const state = applyTurnSendFailed(sending('cmd-1'), THREAD, 'cmd-1', 'Connection lost')
+    const snapshot = (commandId?: string) => ({
+      cursor: { scope: threadScope, epoch: 'epoch', sequence: 2 },
+      state: {
+        thread: THREAD,
+        turns: [
+          {
+            turnId: 'turn-1',
+            threadId: THREAD.threadId,
+            state: 'completed' as const,
+            ...(commandId ? { commandId } : {}),
+          },
+        ],
+        messages: [
+          {
+            messageId: 'user-1',
+            threadId: THREAD.threadId,
+            turnId: 'turn-1',
+            role: 'user' as const,
+            content: [{ type: 'text' as const, text: 'hello' }],
+          },
+        ],
+        reasoning: [],
+        tools: [],
+        interactions: [],
+      },
+    })
+    // The same text from another send is not this one: no text matching.
+    expect(
+      applySnapshot(state, snapshot('cmd-other')).threads[THREAD.threadId]?.outbox,
+    ).toHaveLength(1)
     const reconnected = applySnapshot(state, {
       cursor: { scope: threadScope, epoch: 'epoch', sequence: 2 },
       state: {
         thread: THREAD,
-        turns: [{ turnId: 'turn-1', threadId: THREAD.threadId, state: 'completed' }],
+        turns: [
+          { turnId: 'turn-1', threadId: THREAD.threadId, state: 'completed', commandId: 'cmd-1' },
+        ],
         messages: [
           {
             messageId: 'user-1',

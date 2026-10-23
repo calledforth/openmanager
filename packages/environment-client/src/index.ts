@@ -56,7 +56,12 @@ export type {
   UploadedArtifact,
   WorkspaceComposerPreference,
 } from './types'
-export { EnvironmentClientError, isEnvironmentClientError } from './errors'
+export {
+  EnvironmentClientError,
+  isEnvironmentClientError,
+  isSuperseded,
+  type ClientErrorCode,
+} from './errors'
 export {
   applyActiveSession,
   applyActiveThread,
@@ -64,7 +69,6 @@ export {
   applyConnection,
   applyEnvironment,
   applyEvent,
-  applyInteractionResolved,
   applyProviderBootstrap,
   applyProviderCatalog,
   applyProviderHealth,
@@ -74,14 +78,11 @@ export {
   applySessionList,
   applySessionOpen,
   applySessionRemoved,
-  applySessionSettled,
-  applySessionAcknowledged,
   applySessionTitle,
   applySnapshot,
   applyThreadHydration,
   applyTurnSendFailed,
   applyTurnSending,
-  applyTurnStarted,
   applyWorkspaceList,
   applyWorkspaceRemoved,
   createInitialState,

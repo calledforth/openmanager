@@ -170,8 +170,14 @@ const ProtocolHandshakeVersionProbeSchema = CommandEnvelopeSchema.extend({
   payload: z.object({ protocolVersion: ProtocolVersionSchema }).catchall(z.json()),
 })
 
+/**
+ * The handshake answer: the bootstrap, plus the server process's own id,
+ * random per boot. Stream epochs survive a restart, so this is how a client
+ * reconnecting tells that the server restarted, and reopens its active chat
+ * (docs/sync-foundations.md §4.7.3).
+ */
 export const ProtocolHandshakeResponseSchema = ResponseEnvelopeSchema.extend({
-  payload: BootstrapResponseSchema,
+  payload: z.intersection(BootstrapResponseSchema, z.object({ instanceId: EntityIdSchema })),
 })
 
 const IncompatibleProtocolErrorSchema = ProtocolErrorSchema.extend({

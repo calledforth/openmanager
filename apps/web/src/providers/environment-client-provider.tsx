@@ -111,7 +111,7 @@ export function WebEnvironmentClientProvider({
       let saveTimer: ReturnType<typeof setTimeout> | undefined
       const save = () => {
         saveTimer = undefined
-        void writeEnvironmentCache(environmentId, store.getState())
+        void writeEnvironmentCache(environmentId, store.getServerState())
       }
       const unsubscribeCache = store.subscribe(() => {
         if (saveTimer === undefined) saveTimer = setTimeout(save, 250)

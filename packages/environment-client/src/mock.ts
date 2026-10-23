@@ -51,14 +51,13 @@ import {
   applySessionOpening,
   applyTurnSendFailed,
   applyTurnSending,
-  applyTurnStarted,
   applyWorkspaceList,
   createInitialState,
   createThreadState,
   deriveSessionStatus,
   selectSessionList,
 } from './state'
-import { createSettleTracker } from './settle'
+import { dropOverlayEntry, settleAnswered, updateOverlay } from './overlay'
 import { applyDraftList } from './draft-state'
 import { createDraftSync } from './draft-sync'
 import { createEnvironmentStore } from './store'
@@ -100,6 +99,8 @@ export interface MockSeed {
    */
   composerPreferences?: Record<string, Record<string, WorkspaceComposerPreference>>
   sessions?: MockSeedSession[]
+  /** Sessions the environment can never open again (a sub-agent's chat the agent forgot). */
+  unrecoverableSessions?: readonly string[]
   activeSessionId?: string | null
   /** Stored bytes by artifact ID; what `fetchArtifact` and a send's `artifactIds` resolve. */
   artifacts?: Record<string, Blob>
@@ -231,9 +232,17 @@ export function createMockEnvironmentClient(
     name: 'Mock environment',
   }
   const store = createEnvironmentStore(seedState(environment, options.seed, capabilities, uploads))
-  const settles = createSettleTracker(store, now)
+  let settleTickets = 0
   const calls: MockCommandCall[] = []
   let openGeneration = 0
+  /** What last overtook an open, as the wire client tracks it (§4.7.5). */
+  let overtaker: { sessionId: string; done: Promise<void> } | null = null
+  const overtaken = (sessionId: string): Promise<void> =>
+    overtaker?.sessionId === sessionId
+      ? overtaker.done
+      : Promise.reject(
+          new EnvironmentClientError('superseded', 'Another session was opened meanwhile.'),
+        )
   const timers = new Set<ReturnType<typeof setTimeout>>()
   const drains = new Set<() => void>()
   const pendingCommands = new Set<(error: EnvironmentClientError) => void>()
@@ -332,8 +341,7 @@ export function createMockEnvironmentClient(
     ) {
       closeOpenChildren(parsed)
     }
-    const folded = settles.mask(parsed)
-    store.update((state) => applyEvent(state, folded))
+    store.update((state) => applyEvent(state, parsed))
     // The mock plays the server as well as the client. Emit the authoritative
     // summary update explicitly; production reducers never derive it from history.
     if (
@@ -718,6 +726,7 @@ export function createMockEnvironmentClient(
    * value. `known` is false when the client side could not have named the
    * pair, so the answer is returned but, as on the wire, not stored.
    */
+  const preferenceRevisions = new Map<string, number>()
   const writePreference = (
     target: ComposerPreferenceTarget,
     patch: WorkspaceComposerPreference,
@@ -726,9 +735,13 @@ export function createMockEnvironmentClient(
     const defined = Object.fromEntries(
       Object.entries(patch).filter(([, value]) => value !== undefined),
     )
-    const next = { ...preferences.get(preferenceKey(target)), ...defined }
-    preferences.set(preferenceKey(target), next)
-    if (known) store.update((state) => applyComposerPreference(state, target, next))
+    const key = preferenceKey(target)
+    const next = { ...preferences.get(key), ...defined }
+    preferences.set(key, next)
+    // Each change counts, as the environment's projection does (§3.2).
+    const revision = (preferenceRevisions.get(key) ?? 0) + 1
+    preferenceRevisions.set(key, revision)
+    if (known) store.update((state) => applyComposerPreference(state, target, next, revision))
     return next
   }
 
@@ -760,11 +773,8 @@ export function createMockEnvironmentClient(
 
   const startTurn = (input: SendTurnInput & { commandId: string }) => {
     const replayed = startedCommands.get(commandKey(input, input.commandId))
-    if (replayed) {
-      // The retry still confirms its echo, exactly as the first send did.
-      store.update((state) => applyTurnStarted(state, input, replayed))
-      return replayed
-    }
+    // A retry is answered from what the first send started, and changes nothing.
+    if (replayed) return replayed
     const thread = requireThread(input)
     if (thread.turns.some((turn) => turn.state === 'running' || turn.state === 'waiting')) {
       throw new EnvironmentClientError('conflict', 'A turn is already in progress.')
@@ -800,10 +810,7 @@ export function createMockEnvironmentClient(
     }
     const started: TurnStart = { turn, userMessage, commandId: input.commandId }
     startedCommands.set(commandKey(input, input.commandId), started)
-    // Fold the user echo in before the event, the way the WebSocket client
-    // applies `turn.send` before `turn.started` arrives. The event is then
-    // a no-op instead of a second bubble.
-    store.update((state) => applyTurnStarted(state, input, started))
+    // The event settles the echo by its command id, as the environment's does.
     emit({ ...base(), name: 'turn.started', scope: threadScope(input), payload: started })
     const context: MockTurnContext = { ...input, turnId: turn.turnId }
     const chunks = respond ? respond(context) : null
@@ -1087,9 +1094,10 @@ export function createMockEnvironmentClient(
       const generation = ++openGeneration
       // On screen, loading, from the request on, as the wire client shows it.
       store.update((state) => applySessionOpening(state, sessionId))
-      return run('openSession', sessionId, () => {
-        // Like the wire client, an open overtaken by a later selection lands nowhere.
-        if (generation !== openGeneration) return
+      const done: Promise<void> = run('openSession', sessionId, (): void | Promise<void> => {
+        // Like the wire client: an open overtaken by a newer open of the same
+        // session follows it; by anything else, it is superseded.
+        if (generation !== openGeneration) return overtaken(sessionId)
         const session = store.getState().sessions[sessionId]
         if (!session) throw new EnvironmentClientError('not_found', 'Session not found.')
         const workspace = store.getState().workspaces[session.workspaceId]
@@ -1106,6 +1114,15 @@ export function createMockEnvironmentClient(
             workspaceId: session.workspaceId,
             availability,
           })
+        }
+        if (options.seed?.unrecoverableSessions?.includes(sessionId)) {
+          const message =
+            "This chat's history lives in the agent and can't be reopened. Delete it to remove it."
+          store.update((state) => ({
+            ...applyActiveSession(state, sessionId),
+            sessionOpenFailure: { sessionId, message, code: 'session_unrecoverable' },
+          }))
+          throw new EnvironmentClientError('session_unrecoverable', message)
         }
         store.update((state) => {
           let next = applySessionOpen(state, {
@@ -1136,7 +1153,9 @@ export function createMockEnvironmentClient(
           }
           return applyActiveSession(next, sessionId)
         })
-      })
+      }).then(() => undefined)
+      overtaker = { sessionId, done }
+      return done
     },
     loadSessionHistory: (input) =>
       run('loadSessionHistory', input, () => {
@@ -1183,9 +1202,17 @@ export function createMockEnvironmentClient(
           },
         })
       }),
-    settleSession: (sessionId, settled) =>
-      settles.settle(sessionId, settled, () =>
-        run('settleSession', { sessionId, settled }, () => {
+    settleSession: async (sessionId, settled) => {
+      // As the client does: the click shows at once (pending.settles).
+      const ticket = ++settleTickets
+      store.update((state) =>
+        updateOverlay(state, 'settles', (entries) => ({
+          ...entries,
+          [sessionId]: { ticket, settled, inFlight: true, at: now() },
+        })),
+      )
+      try {
+        await run('settleSession', { sessionId, settled }, () => {
           const session = store.getState().sessions[sessionId]
           if (!session) throw new EnvironmentClientError('not_found', 'Session not found.')
           // Mirrors the environment: a live session would stay settled after it finishes.
@@ -1199,9 +1226,13 @@ export function createMockEnvironmentClient(
             scope: envScope(),
             payload: { sessionId, settledAt },
           })
-          return settledAt
-        }),
-      ),
+        })
+      } catch (error) {
+        store.update((state) => dropOverlayEntry(state, 'settles', sessionId, ticket))
+        throw error
+      }
+      store.update((state) => settleAnswered(state, sessionId, ticket))
+    },
     stopBackgroundTasks: (input) =>
       run('stopBackgroundTasks', input, () => {
         const session = store.getState().sessions[input.sessionId]
@@ -1655,6 +1686,7 @@ export function createMockEnvironmentClient(
     },
     setActiveSession: (sessionId) => {
       openGeneration += 1
+      overtaker = null
       store.update((state) => applyActiveSession(state, sessionId))
     },
     setActiveThread: (threadId) => store.update((state) => applyActiveThread(state, threadId)),

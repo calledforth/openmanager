@@ -5,8 +5,9 @@ import { DatabaseSync } from 'node:sqlite'
 import { runMigrations } from '../src/db/migrate.js'
 import { MIGRATIONS } from '../src/db/migrations.js'
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import type { AgentRuntime } from '@agentpack/runtime/node'
+import { SessionUnknownError, type AgentRuntime } from '@agentpack/runtime/node'
 import {
+  ERROR_RETRY_POLICY,
   ProofEventSchemas,
   ProofResponseSchemas,
   type EventEnvelope,
@@ -1506,10 +1507,17 @@ describe('durable session lifecycle', () => {
       "INSERT INTO workspaces (workspace_id, name, path, created_at, updated_at) VALUES ('/workspace/project', 'Project', '/workspace/project', 1, 1)",
     )
     const published: EventEnvelope[] = []
+    // A transient failure a test can switch on: commits that hold a matching
+    // event fail as a full disk would, so the batcher keeps and retries them.
+    let failing: ((records: readonly DurableEvent[]) => boolean) | undefined
     const events = createPersistentEventService(
       database,
       (record) => published.push(record.event),
-      {},
+      {
+        beforeCommit: (records) => {
+          if (failing?.(records)) throw new Error('disk full')
+        },
+      },
     )
     const runtime = {
       ensureSession: vi
@@ -1563,6 +1571,9 @@ describe('durable session lifecycle', () => {
       service,
       created,
       dispatch,
+      failCommits: (when?: (records: readonly DurableEvent[]) => boolean) => {
+        failing = when
+      },
       close: () => {
         events.close()
         database.close()
@@ -1863,9 +1874,56 @@ describe('durable session lifecycle', () => {
         payload: { session: { sessionId: child.session_id, parentSessionId: sessionId } },
       })
       await restarted.resolveRuntimeSession(child.session_id)
+      // Loaded, never created: the runtime may not replace a sub-agent's session.
       expect(h.runtime.ensureSession).toHaveBeenCalledExactlyOnceWith(
-        expect.objectContaining({ sessionId: 'provider-child' }),
+        expect.objectContaining({ sessionId: 'provider-child', load: 'require' }),
       )
+    } finally {
+      h.close()
+    }
+  })
+
+  it('creates nothing for a sub-agent the agent forgot, keeps its identity, and refuses it for good', async () => {
+    const h = setup()
+    h.runtime.prompt.mockImplementation(() => new Promise(() => undefined))
+    try {
+      const { sessionId } = h.created.session
+      await h.service.resolveRuntimeSession(sessionId)
+      await delegate(h, h.service, 'assistant-1', {
+        title: 'Explore the repo',
+        childSessionId: 'provider-child',
+      })
+      const child = childRow(h)!
+      const restarted = h.fresh()
+      h.runtime.ensureSession.mockRejectedValueOnce(
+        new SessionUnknownError('opencode', 'provider-child'),
+      )
+      // The open is answered before the provider load; the load then fails.
+      expect(h.dispatch(restarted, 'session.open', { sessionId: child.session_id })).toMatchObject({
+        type: 'response',
+      })
+      await vi.waitFor(() =>
+        expect(
+          h.dispatch(restarted, 'session.open', { sessionId: child.session_id }),
+        ).toMatchObject({
+          error: {
+            code: 'session_unrecoverable',
+            message:
+              "This chat's history lives in the agent and can't be reopened. Delete it to remove it.",
+          },
+        }),
+      )
+      expect(childRow(h)?.provider_session_id).toBe('provider-child')
+      expect(ERROR_RETRY_POLICY.session_unrecoverable).toBe('never')
+      // A legacy sub-agent row with no identity is refused before anything starts.
+      h.database
+        .prepare('UPDATE sessions SET provider_session_id = NULL WHERE session_id = ?')
+        .run(child.session_id)
+      h.runtime.ensureSession.mockClear()
+      expect(h.dispatch(h.fresh(), 'session.open', { sessionId: child.session_id })).toMatchObject({
+        error: { code: 'session_unrecoverable' },
+      })
+      expect(h.runtime.ensureSession).not.toHaveBeenCalled()
     } finally {
       h.close()
     }
@@ -2151,8 +2209,9 @@ describe('durable session lifecycle', () => {
         event: 'prompt_started',
         data: { prompt: 'Go', userMessageId: sent.userMessage.messageId },
       })
-      h.database.exec(`CREATE TEMP TRIGGER refuse_request BEFORE INSERT ON interactions
-        BEGIN SELECT RAISE(ABORT, 'boom'); END`)
+      h.failCommits((records) =>
+        records.some((record) => record.event.name === 'interaction.requested'),
+      )
       h.service.onRuntimeEvent({
         ...base,
         id: 'asked',
@@ -2166,7 +2225,7 @@ describe('durable session lifecycle', () => {
           options: [{ optionId: 'allow', name: 'Allow', kind: 'allow_once' }],
         },
       })
-      h.database.exec('DROP TRIGGER refuse_request')
+      h.failCommits(undefined)
       expect(failures).toEqual(['interaction.requested'])
       expect(h.database.prepare('SELECT count(*) AS n FROM interactions').get()).toEqual({ n: 0 })
       // The answer comes; the batcher first writes the request it kept, then
@@ -2244,11 +2303,12 @@ describe('durable session lifecycle', () => {
         })
       // Both requests arrive while no request can be written: the second
       // waits behind the first instead of being dropped from the write queue.
-      h.database.exec(`CREATE TEMP TRIGGER refuse_request BEFORE INSERT ON interactions
-        BEGIN SELECT RAISE(ABORT, 'boom'); END`)
+      h.failCommits((records) =>
+        records.some((record) => record.event.name === 'interaction.requested'),
+      )
       ask(2, 'permission-a', 'tool-1')
       ask(3, 'permission-b', 'tool-2')
-      h.database.exec('DROP TRIGGER refuse_request')
+      h.failCommits(undefined)
       expect(failures).toEqual(['interaction.requested', 'interaction.requested'])
       // Storage is back. The first answer leaves the turn waiting on the
       // second request, as memory says, and the rows hold that request too.
@@ -2647,6 +2707,55 @@ describe('durable session lifecycle', () => {
     }
   })
 
+  it('judges an agent title against the committed title, not memory, after a rename that landed late', async () => {
+    const failures: string[] = []
+    const h = setup((_error, eventName) => failures.push(eventName))
+    try {
+      const { sessionId } = h.created.session
+      await h.service.resolveRuntimeSession(sessionId)
+      // The rename's write fails as a full disk would: the client hears
+      // "unavailable" and memory keeps the old title, but the batcher keeps
+      // the write and it lands on the next flush.
+      h.failCommits((records) => records.some((record) => record.event.name === 'session.updated'))
+      expect(h.dispatch(h.service, 'session.rename', { sessionId, title: 'Mine' })).toMatchObject({
+        error: { code: 'unavailable' },
+      })
+      h.failCommits(undefined)
+      const announced = h.published.length
+      h.service.onRuntimeEvent({
+        providerId: 'opencode',
+        threadId: h.created.thread.threadId,
+        workspaceId: '/workspace/project',
+        sessionId: 'provider-persisted',
+        id: 'info',
+        seq: 1,
+        timestamp: new Date().toISOString(),
+        category: 'session',
+        event: 'session_info_update',
+        data: { title: 'Agent name' },
+      })
+      h.events.flush()
+      // The rename landed; the agent's title was never emitted, so nothing
+      // was refused and nothing is stuck.
+      expect(h.database.prepare('SELECT title, title_source FROM sessions').get()).toEqual({
+        title: 'Mine',
+        title_source: 'user',
+      })
+      expect(
+        h.published
+          .slice(announced)
+          .filter((event) => event.name === 'session.updated')
+          .flatMap((event) => {
+            const title = (event.payload as { title?: string } | null)?.title
+            return title === undefined ? [] : [title]
+          }),
+      ).toEqual(['Mine'])
+      expect(failures).toEqual(['session.updated'])
+    } finally {
+      h.close()
+    }
+  })
+
   it('keeps a user title when a provider renames the session afterwards', async () => {
     const h = setup()
     try {
@@ -2699,6 +2808,114 @@ describe('durable session lifecycle', () => {
     }
   })
 
+  it('serves a send for a chat the rows hold after a restart, loading it as an open would', async () => {
+    const h = setup()
+    try {
+      const { sessionId } = h.created.session
+      await h.service.resolveRuntimeSession(sessionId)
+      const restarted = h.fresh()
+      h.runtime.ensureSession.mockClear()
+      // No session.open: the reconnecting client still holds the chat's scopes.
+      expect(
+        h.dispatch(restarted, 'turn.send', { ...h.created.thread, text: 'After the restart' }),
+      ).toMatchObject({ type: 'response' })
+      await vi.waitFor(() =>
+        expect(h.runtime.prompt).toHaveBeenCalledWith(
+          expect.objectContaining({ sessionId: 'provider-persisted' }),
+        ),
+      )
+      expect(h.runtime.ensureSession).toHaveBeenCalledWith(
+        expect.objectContaining({ sessionId: 'provider-persisted' }),
+      )
+      await vi.waitFor(() =>
+        expect(
+          h.database.prepare("SELECT COUNT(*) AS count FROM turns WHERE state = 'running'").get(),
+        ).toMatchObject({ count: 0 }),
+      )
+    } finally {
+      h.close()
+    }
+  })
+
+  it('loads an unloaded chat for a composer setter, and answers as an open would otherwise', async () => {
+    const h = setup()
+    try {
+      const { sessionId } = h.created.session
+      await h.service.resolveRuntimeSession(sessionId)
+      const restarted = h.fresh()
+      const target = await restarted.resolveRuntimeSession(sessionId)
+      expect(target).toMatchObject({ sessionId: 'provider-persisted' })
+      expect(restarted.sessionForThread(h.created.thread.threadId)).toBe(sessionId)
+      // A session the rows do not hold gets the open's own answer.
+      expect(h.fresh().resolveRuntimeSession('missing')).toMatchObject({ code: 'not_found' })
+    } finally {
+      h.close()
+    }
+  })
+
+  it('answers an interrupt on a thread the rows hold, but no process runs, as not in progress', async () => {
+    const h = setup()
+    try {
+      const { sessionId } = h.created.session
+      await h.service.resolveRuntimeSession(sessionId)
+      const restarted = h.fresh()
+      expect(
+        h.dispatch(restarted, 'turn.interrupt', { ...h.created.thread, turnId: 'turn-gone' }),
+      ).toMatchObject({ error: { code: 'conflict', message: 'Turn is not in progress.' } })
+      expect(
+        h.dispatch(restarted, 'turn.interrupt', {
+          sessionId,
+          threadId: 'never-held',
+          turnId: 'turn-gone',
+        }),
+      ).toMatchObject({ error: { code: 'not_found' } })
+    } finally {
+      h.close()
+    }
+  })
+
+  it('ends a turn whose records were dropped before its provider session resolved', async () => {
+    const h = setup()
+    try {
+      const { sessionId } = h.created.session
+      const firstThreadId = h.created.thread.threadId
+      await h.service.resolveRuntimeSession(sessionId)
+      h.database
+        .prepare(
+          `INSERT INTO threads (thread_id, session_id, workspace_id, created_at, updated_at)
+           VALUES (?, ?, '/workspace/project', 1, 1)`,
+        )
+        .run('thread-second', sessionId)
+      const restarted = h.fresh()
+      // The first thread's provider session is slow; the second fails to load,
+      // which drops every record of the session while their rows stay.
+      let resolveFirst!: (value: { sessionId: string; state: 'loaded' }) => void
+      h.runtime.ensureSession.mockImplementation((args: { threadId: string }) =>
+        args.threadId === firstThreadId
+          ? new Promise((resolve) => {
+              resolveFirst = resolve
+            })
+          : Promise.reject(new Error('provider gone')),
+      )
+      expect(h.dispatch(restarted, 'session.open', { sessionId })).toMatchObject({
+        type: 'response',
+      })
+      expect(
+        h.dispatch(restarted, 'turn.send', { sessionId, threadId: firstThreadId, text: 'Go' }),
+      ).toMatchObject({ type: 'response' })
+      await vi.waitFor(() => expect(restarted.sessionForThread(firstThreadId)).toBeUndefined())
+      resolveFirst({ sessionId: 'provider-persisted', state: 'loaded' })
+      // The turn ends through the terminal path instead of staying open in the
+      // rows until the next boot (§4.7.3 point 4).
+      await vi.waitFor(() =>
+        expect(h.database.prepare('SELECT state FROM turns').all()).toEqual([{ state: 'failed' }]),
+      )
+      expect(h.runtime.prompt).not.toHaveBeenCalled()
+    } finally {
+      h.close()
+    }
+  })
+
   it('restores and abandons every thread of a multi-thread session together', async () => {
     const h = setup()
     try {
@@ -2737,10 +2954,17 @@ describe('durable session lifecycle', () => {
       })
       await vi.waitFor(() => {
         for (const threadId of [firstThreadId, 'thread-second'])
-          expect(
-            h.dispatch(failed, 'turn.send', { sessionId, threadId, text: 'Hello' }),
-          ).toMatchObject({ error: { code: 'not_found' } })
+          expect(failed.sessionForThread(threadId)).toBeUndefined()
       })
+      // And the next command loads it again, as an open would (§4.7.3).
+      expect(
+        h.dispatch(failed, 'turn.send', { sessionId, threadId: firstThreadId, text: 'Again' }),
+      ).toMatchObject({ type: 'response' })
+      await vi.waitFor(() =>
+        expect(
+          h.database.prepare("SELECT COUNT(*) AS count FROM turns WHERE state = 'running'").get(),
+        ).toMatchObject({ count: 0 }),
+      )
     } finally {
       h.close()
     }
@@ -2815,15 +3039,97 @@ describe('durable session lifecycle', () => {
     }
   })
 
-  it('rejects resume without a load capability or stored provider identity', async () => {
+  it('creates a session left with no identity, and stamps it before any prompt', async () => {
     const h = setup()
     try {
       const { sessionId } = h.created.session
       await h.service.resolveRuntimeSession(sessionId)
+      // A crash between the session's creation and its stamp (S18).
       h.database.prepare('UPDATE sessions SET provider_session_id = NULL').run()
-      expect(h.dispatch(h.fresh(), 'session.open', { sessionId })).toMatchObject({
-        error: { code: 'unavailable' },
+      const identityAtPrompt: unknown[] = []
+      h.runtime.prompt.mockImplementation(async () => {
+        identityAtPrompt.push(h.database.prepare('SELECT provider_session_id FROM sessions').get())
       })
+      h.runtime.ensureSession.mockClear()
+      h.runtime.ensureSession.mockResolvedValueOnce({ sessionId: 'provider-new', state: 'created' })
+      const restarted = h.fresh()
+      expect(h.dispatch(restarted, 'session.open', { sessionId })).toMatchObject({
+        type: 'response',
+      })
+      expect(
+        h.dispatch(restarted, 'turn.send', { ...h.created.thread, text: 'Start over' }),
+      ).toMatchObject({ type: 'response' })
+      await vi.waitFor(() => expect(identityAtPrompt).toHaveLength(1))
+      expect(h.runtime.ensureSession).toHaveBeenCalledWith(
+        expect.not.objectContaining({ sessionId: expect.anything() }),
+      )
+      expect(identityAtPrompt).toEqual([{ provider_session_id: 'provider-new' }])
+    } finally {
+      h.close()
+    }
+  })
+
+  it('stamps a fresh session the runtime created for an identity the agent forgot', async () => {
+    const h = setup()
+    try {
+      const { sessionId } = h.created.session
+      await h.service.resolveRuntimeSession(sessionId)
+      h.runtime.ensureSession.mockResolvedValueOnce({
+        sessionId: 'provider-fresh',
+        state: 'created',
+      })
+      const restarted = h.fresh()
+      await restarted.resolveRuntimeSession(sessionId)
+      expect(h.database.prepare('SELECT provider_session_id FROM sessions').get()).toEqual({
+        provider_session_id: 'provider-fresh',
+      })
+      // A respawn inside a prompt reports its new session, and is stamped at once.
+      restarted.onRuntimeEvent({
+        providerId: 'opencode',
+        threadId: h.created.thread.threadId,
+        workspaceId: '/workspace/project',
+        sessionId: 'provider-respawned',
+        id: 'created',
+        seq: 1,
+        timestamp: new Date().toISOString(),
+        category: 'lifecycle',
+        event: 'session_created',
+        data: {},
+      } as never)
+      expect(h.database.prepare('SELECT provider_session_id FROM sessions').get()).toEqual({
+        provider_session_id: 'provider-respawned',
+      })
+    } finally {
+      h.close()
+    }
+  })
+
+  it('keeps a session eligible after one failed start, and the next command loads it', async () => {
+    const h = setup()
+    try {
+      const { sessionId } = h.created.session
+      await h.service.resolveRuntimeSession(sessionId)
+      const restarted = h.fresh()
+      h.runtime.ensureSession.mockRejectedValueOnce(new Error('provider is starting'))
+      await expect(restarted.resolveRuntimeSession(sessionId)).rejects.toThrow(
+        'provider is starting',
+      )
+      await vi.waitFor(() =>
+        expect(restarted.sessionForThread(h.created.thread.threadId)).toBeUndefined(),
+      )
+      await expect(restarted.resolveRuntimeSession(sessionId)).resolves.toMatchObject({
+        sessionId: 'provider-persisted',
+      })
+    } finally {
+      h.close()
+    }
+  })
+
+  it('rejects resume on a provider that cannot load sessions', async () => {
+    const h = setup()
+    try {
+      const { sessionId } = h.created.session
+      await h.service.resolveRuntimeSession(sessionId)
       h.database.prepare("UPDATE sessions SET provider_id = 'unsupported'").run()
       expect(h.dispatch(h.fresh(), 'session.open', { sessionId })).toMatchObject({
         error: { code: 'capability_missing' },

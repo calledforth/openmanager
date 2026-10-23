@@ -31,10 +31,19 @@ import type {
   ProviderCatalog as RuntimeProviderCatalog,
   RuntimeRoute,
 } from '@agentpack/runtime/node'
+import type { CommandContext } from './command-context.ts'
 import type { ComposerStore, RevisedPreference } from './composer-store.ts'
 
 type RuntimeTarget = RuntimeRoute & { sessionId: string }
-type ResolveSession = (sessionId: string) => Promise<RuntimeTarget> | undefined
+/**
+ * The live runtime a session setter acts on, after loading the session if
+ * this process has not (thread-service.ts `resolveRuntimeSession`). A refusal
+ * is the answer an open of it would give; nothing means it does not exist.
+ */
+type ResolveSession = (
+  sessionId: string,
+  context?: CommandContext,
+) => Promise<RuntimeTarget> | { code: ErrorCode; message: string; details?: unknown } | undefined
 type ProviderSource = {
   snapshot(): ProviderBootstrap[]
   rejection(providerId: string): { code: ErrorCode; message: string } | undefined
@@ -90,10 +99,10 @@ const scheduleUnref = (run: () => void, delayMs: number) => {
 
 const PREFERENCE_NOT_SAVED = 'The preference could not be saved. Try again.'
 
-const errorResult = (requestId: string, code: ErrorCode, message: string) => ({
+const errorResult = (requestId: string, code: ErrorCode, message: string, details?: unknown) => ({
   type: 'error' as const,
   requestId,
-  error: { code, message },
+  error: { code, message, ...(details === undefined ? {} : { details }) },
 })
 
 /** Provider catalog, durable composer preferences, and live runtime controls. */
@@ -299,9 +308,12 @@ export function createComposerService(
       payload: { preference, revision },
     })
 
-  const target = async (requestId: string, sessionId: string) => {
-    const pending = resolveSession(sessionId)
+  const target = async (requestId: string, sessionId: string, context?: CommandContext) => {
+    const pending = resolveSession(sessionId, context)
     if (!pending) return errorResult(requestId, 'not_found', 'Session not found.')
+    if (!(pending instanceof Promise)) {
+      return errorResult(requestId, pending.code, pending.message, pending.details)
+    }
     const resolved = await pending
     const rejection = providers.rejection(resolved.providerId)
     return rejection ? errorResult(requestId, rejection.code, rejection.message) : resolved
@@ -528,7 +540,10 @@ export function createComposerService(
       }
     },
 
-    dispatch(command: CommandEnvelope): unknown | Promise<unknown> | undefined {
+    dispatch(
+      command: CommandEnvelope,
+      context?: CommandContext,
+    ): unknown | Promise<unknown> | undefined {
       if (command.name === PROVIDER_CATALOG_CAPABILITY) {
         const parsed = ComposerCommandSchemas[PROVIDER_CATALOG_CAPABILITY].safeParse(command)
         if (!parsed.success) {
@@ -582,7 +597,7 @@ export function createComposerService(
           return errorResult(command.requestId, 'validation', 'Invalid model update.')
         }
         return (async () => {
-          const resolved = await target(command.requestId, parsed.data.payload.sessionId)
+          const resolved = await target(command.requestId, parsed.data.payload.sessionId, context)
           if ('type' in resolved) return resolved
           await runtime.setModel({ ...resolved, modelId: parsed.data.payload.modelId })
           const selection = updateSelection(parsed.data.payload.sessionId, {
@@ -610,7 +625,7 @@ export function createComposerService(
           return errorResult(command.requestId, 'validation', 'Invalid mode update.')
         }
         return (async () => {
-          const resolved = await target(command.requestId, parsed.data.payload.sessionId)
+          const resolved = await target(command.requestId, parsed.data.payload.sessionId, context)
           if ('type' in resolved) return resolved
           await runtime.setMode({ ...resolved, modeId: parsed.data.payload.modeId })
           updateSelection(parsed.data.payload.sessionId, { modeId: parsed.data.payload.modeId })
@@ -633,7 +648,7 @@ export function createComposerService(
           return errorResult(command.requestId, 'validation', 'Invalid config option update.')
         }
         return (async () => {
-          const resolved = await target(command.requestId, parsed.data.payload.sessionId)
+          const resolved = await target(command.requestId, parsed.data.payload.sessionId, context)
           if ('type' in resolved) return resolved
           const workspaceId = resolved.workspaceId ?? resolved.cwd
           await runtime.setConfigOption({
