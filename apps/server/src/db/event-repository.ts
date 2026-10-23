@@ -545,7 +545,7 @@ export function isTerminal(event: ProofEvent): event is TerminalEvent {
 const DERIVED_SUFFIXES = [':status', ':recency'] as const
 
 /** Whether the repository's own pass wrote this record, rather than a producer. */
-export function isDerivedRecord(event: ProofEvent): boolean {
+export function isDerivedRecord(event: { eventId: string }): boolean {
   return DERIVED_SUFFIXES.some((suffix) => event.eventId.endsWith(suffix))
 }
 
