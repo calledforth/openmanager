@@ -26,6 +26,7 @@ import type { InteractionResponse, Workspace } from '@openmanager/protocol'
 import {
   UPLOAD_TICKET_COMMAND,
   hasDraftContent,
+  isSuperseded,
   selectActiveSession,
   selectActiveThread,
   selectDraftContent,
@@ -742,6 +743,8 @@ function EnvironmentSessionStateProvider({
       : null
 
   const fail = useCallback((err: unknown) => {
+    // An open something newer replaced is nothing to report (§4.7.5).
+    if (isSuperseded(err)) return
     setError(err instanceof Error ? err.message : String(err))
   }, [])
 
@@ -752,7 +755,13 @@ function EnvironmentSessionStateProvider({
         await navigateSession(sessionId, options)
         return
       }
-      await commands.openSession(sessionId)
+      try {
+        await commands.openSession(sessionId)
+      } catch (error) {
+        // Overtaken by another session or a new selection: nothing to do.
+        if (!isSuperseded(error)) throw error
+        return
+      }
       if (selectionRef.current !== sessionId) client.setActiveSession(selectionRef.current)
     },
     [client, commands, navigateSession],
@@ -1723,11 +1732,10 @@ function EnvironmentActiveThreadProvider({ children }: { children: ReactNode }) 
         failed: hydration === 'failed',
         retry: async () => {
           if (session.activeSessionId)
-            await commands
-              .openSession(session.activeSessionId)
-              .catch((err) =>
-                setError(err instanceof Error ? err.message : 'Could not load history.'),
-              )
+            await commands.openSession(session.activeSessionId).catch((err) => {
+              if (isSuperseded(err)) return
+              setError(err instanceof Error ? err.message : 'Could not load history.')
+            })
         },
         hasMore: !!thread?.historyCursor,
         isLoading: loadingHistory === thread?.thread.threadId,

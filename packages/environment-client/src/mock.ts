@@ -235,6 +235,14 @@ export function createMockEnvironmentClient(
   let settleTickets = 0
   const calls: MockCommandCall[] = []
   let openGeneration = 0
+  /** What last overtook an open, as the wire client tracks it (§4.7.5). */
+  let overtaker: { sessionId: string; done: Promise<void> } | null = null
+  const overtaken = (sessionId: string): Promise<void> =>
+    overtaker?.sessionId === sessionId
+      ? overtaker.done
+      : Promise.reject(
+          new EnvironmentClientError('superseded', 'Another session was opened meanwhile.'),
+        )
   const timers = new Set<ReturnType<typeof setTimeout>>()
   const drains = new Set<() => void>()
   const pendingCommands = new Set<(error: EnvironmentClientError) => void>()
@@ -1086,9 +1094,10 @@ export function createMockEnvironmentClient(
       const generation = ++openGeneration
       // On screen, loading, from the request on, as the wire client shows it.
       store.update((state) => applySessionOpening(state, sessionId))
-      return run('openSession', sessionId, () => {
-        // Like the wire client, an open overtaken by a later selection lands nowhere.
-        if (generation !== openGeneration) return
+      const done: Promise<void> = run('openSession', sessionId, (): void | Promise<void> => {
+        // Like the wire client: an open overtaken by a newer open of the same
+        // session follows it; by anything else, it is superseded.
+        if (generation !== openGeneration) return overtaken(sessionId)
         const session = store.getState().sessions[sessionId]
         if (!session) throw new EnvironmentClientError('not_found', 'Session not found.')
         const workspace = store.getState().workspaces[session.workspaceId]
@@ -1144,7 +1153,9 @@ export function createMockEnvironmentClient(
           }
           return applyActiveSession(next, sessionId)
         })
-      })
+      }).then(() => undefined)
+      overtaker = { sessionId, done }
+      return done
     },
     loadSessionHistory: (input) =>
       run('loadSessionHistory', input, () => {
@@ -1675,6 +1686,7 @@ export function createMockEnvironmentClient(
     },
     setActiveSession: (sessionId) => {
       openGeneration += 1
+      overtaker = null
       store.update((state) => applyActiveSession(state, sessionId))
     },
     setActiveThread: (threadId) => store.update((state) => applyActiveThread(state, threadId)),

@@ -421,16 +421,17 @@ export function createWebSocketEnvironmentClient(
     ready = false
     stopHeartbeat()
     connectionGeneration += 1
-    openGeneration += 1
+    const closedError = new EnvironmentClientError('unavailable', reason || 'Connection closed.', {
+      code,
+    })
+    overtakeOpens({ kind: 'closed', error: closedError })
     for (const subscription of subscriptions.values()) {
       subscription.subscriptionId = null
       subscription.inflight = false
       subscription.buffered = undefined
       subscription.recovery = undefined
     }
-    rejectAllPending(
-      new EnvironmentClientError('unavailable', reason || 'Connection closed.', { code }),
-    )
+    rejectAllPending(closedError)
     if (!closedSocket) return
     if (disposed || manualClose) {
       // A deliberate close is not a failed retry, so it must not read as offline.
@@ -1255,7 +1256,141 @@ export function createWebSocketEnvironmentClient(
     }
   }
 
+  /**
+   * Opens overtake one another (docs/sync-foundations.md §4.7.5). Each bump of
+   * the generation records what bumped it, so an open that finds itself
+   * overtaken knows its outcome: the newest open of the same session (whose
+   * own outcome it follows, through any chain), `superseded` for another
+   * session or a new selection, or the transport's error for a close.
+   */
+  type Overtaker =
+    | { kind: 'open'; sessionId: string; done: Promise<void> }
+    | { kind: 'select' }
+    | { kind: 'closed'; error: EnvironmentClientError }
   let openGeneration = 0
+  let overtaker: Overtaker = { kind: 'select' }
+  function overtakeOpens(by: Overtaker) {
+    openGeneration += 1
+    overtaker = by
+  }
+  const overtaken = (sessionId: string): Promise<void> => {
+    const by = overtaker
+    if (by.kind === 'open' && by.sessionId === sessionId) return by.done
+    if (by.kind === 'closed') return Promise.reject(by.error)
+    return Promise.reject(
+      new EnvironmentClientError('superseded', 'Another session was opened meanwhile.'),
+    )
+  }
+
+  /**
+   * One open of a session. It resolves only once its chat is loaded and
+   * subscribed: every thread ready, the session's scopes held. A thread that
+   * fails to load rejects it with that failure. Overtaken at any step, it
+   * takes the outcome `overtaken` gives (§4.7.5).
+   */
+  async function openSessionAt(sessionId: string, generation: number): Promise<void> {
+    const previous = store.getState().activeSessionId
+    store.update((state) => applySessionOpening(state, sessionId))
+    // Selected already, so the session left behind is released now, as
+    // `setActiveSession` does. Waiting for the reply would leak it: a later
+    // open, overtaking this one, would see this session as the previous.
+    const left =
+      previous && previous !== sessionId && store.getState().activeSessionId === sessionId
+        ? previous
+        : null
+    if (left) for (const scope of sessionScopes(left)) unsubscribe(scope)
+    let payload: WireResponsePayload<'session.open'>
+    try {
+      payload = await request('session.open', { sessionId })
+    } catch (error) {
+      if (generation !== openGeneration) return overtaken(sessionId)
+      if (isEnvironmentClientError(error) && error.code === 'not_found') {
+        store.update((state) => applySessionRemoved(state, sessionId))
+        throw error
+      }
+      store.update((state) => {
+        let next = state
+        for (const threadId of state.sessions[sessionId]?.threadIds ?? []) {
+          next = applyThreadHydration(next, threadId, 'failed')
+        }
+        return {
+          ...applyActiveSession(next, sessionId),
+          sessionOpenFailure: {
+            sessionId,
+            message: error instanceof Error ? error.message : 'Could not open this session.',
+            // A transport or programming failure is nobody's known code.
+            code:
+              isEnvironmentClientError(error) && error.code !== 'superseded'
+                ? error.code
+                : 'internal',
+            ...unavailableCause(error),
+          },
+        }
+      })
+      throw error
+    }
+    if (generation !== openGeneration) return overtaken(sessionId)
+    store.update((state) => {
+      const next = applyActiveSession(applySessionOpen(state, payload), sessionId)
+      return state.activeSessionId === sessionId &&
+        payload.threads.some((thread) => thread.threadId === state.activeThreadId)
+        ? applyActiveThread(next, state.activeThreadId)
+        : next
+    })
+    // A session not yet listed is selected only by the reply.
+    if (!left && previous && previous !== sessionId) {
+      for (const scope of sessionScopes(previous)) unsubscribe(scope)
+    }
+    // A thread that fails to load fails the open; the store still marks it.
+    let hydrationFailure: unknown
+    if (capabilities.has(REPLAY_NAME) && environmentId) {
+      subscribe({ type: 'session', environmentId, sessionId })
+      await Promise.all(
+        payload.threads.map((thread) =>
+          hydrateThread({ type: 'thread', environmentId: environmentId!, ...thread })
+            .then(() => {
+              if (generation === openGeneration)
+                store.update((state) => applyThreadHydration(state, thread.threadId, 'ready'))
+            })
+            .catch((error: unknown) => {
+              hydrationFailure ??= error
+              if (generation === openGeneration)
+                store.update((state) => applyThreadHydration(state, thread.threadId, 'failed'))
+            }),
+        ),
+      )
+      // Checked again after hydration: an open overtaken meanwhile never
+      // reports success for the old selection.
+      if (generation !== openGeneration) return overtaken(sessionId)
+      if (hydrationFailure) throw hydrationFailure
+      return
+    }
+    if (supports('loadSessionHistory')) {
+      await Promise.all(
+        payload.threads.map((thread) =>
+          commands
+            .loadSessionHistory({ sessionId, threadId: thread.threadId })
+            .catch((error: unknown) => {
+              hydrationFailure ??= error
+              if (generation !== openGeneration) return
+              store.update((state) => applyThreadHydration(state, thread.threadId, 'failed'))
+            }),
+        ),
+      )
+    } else {
+      store.update((state) => {
+        let next = state
+        for (const thread of payload.threads) {
+          next = applyThreadHydration(next, thread.threadId, 'ready')
+        }
+        return next
+      })
+    }
+    if (generation !== openGeneration) return overtaken(sessionId)
+    if (hydrationFailure) throw hydrationFailure
+    for (const scope of sessionScopes(sessionId)) subscribe(scope)
+  }
+
   const commands: EnvironmentCommands = {
     async getEnvironment() {
       const payload = await request('environment.get', null)
@@ -1337,94 +1472,11 @@ export function createWebSocketEnvironmentClient(
       )
       return payload
     },
-    async openSession(sessionId) {
-      const generation = ++openGeneration
-      const previous = store.getState().activeSessionId
-      store.update((state) => applySessionOpening(state, sessionId))
-      // Selected already, so the session left behind is released now, as
-      // `setActiveSession` does. Waiting for the reply would leak it: a later
-      // open, overtaking this one, would see this session as the previous.
-      const left =
-        previous && previous !== sessionId && store.getState().activeSessionId === sessionId
-          ? previous
-          : null
-      if (left) for (const scope of sessionScopes(left)) unsubscribe(scope)
-      let payload: WireResponsePayload<'session.open'>
-      try {
-        payload = await request('session.open', { sessionId })
-      } catch (error) {
-        if (generation !== openGeneration) throw error
-        if (isEnvironmentClientError(error) && error.code === 'not_found') {
-          store.update((state) => applySessionRemoved(state, sessionId))
-          throw error
-        }
-        store.update((state) => {
-          let next = state
-          for (const threadId of state.sessions[sessionId]?.threadIds ?? []) {
-            next = applyThreadHydration(next, threadId, 'failed')
-          }
-          return {
-            ...applyActiveSession(next, sessionId),
-            sessionOpenFailure: {
-              sessionId,
-              message: error instanceof Error ? error.message : 'Could not open this session.',
-              // A transport or programming failure is nobody's known code.
-              code: isEnvironmentClientError(error) ? error.code : 'internal',
-              ...unavailableCause(error),
-            },
-          }
-        })
-        throw error
-      }
-      if (generation !== openGeneration) return
-      store.update((state) => {
-        const next = applyActiveSession(applySessionOpen(state, payload), sessionId)
-        return state.activeSessionId === sessionId &&
-          payload.threads.some((thread) => thread.threadId === state.activeThreadId)
-          ? applyActiveThread(next, state.activeThreadId)
-          : next
-      })
-      // A session not yet listed is selected only by the reply.
-      if (!left && previous && previous !== sessionId) {
-        for (const scope of sessionScopes(previous)) unsubscribe(scope)
-      }
-      if (capabilities.has(REPLAY_NAME) && environmentId) {
-        subscribe({ type: 'session', environmentId, sessionId })
-        await Promise.all(
-          payload.threads.map((thread) =>
-            hydrateThread({ type: 'thread', environmentId: environmentId!, ...thread })
-              .then(() => {
-                if (generation === openGeneration)
-                  store.update((state) => applyThreadHydration(state, thread.threadId, 'ready'))
-              })
-              .catch(() => {
-                if (generation === openGeneration)
-                  store.update((state) => applyThreadHydration(state, thread.threadId, 'failed'))
-              }),
-          ),
-        )
-        return
-      }
-      if (supports('loadSessionHistory')) {
-        await Promise.all(
-          payload.threads.map((thread) =>
-            commands.loadSessionHistory({ sessionId, threadId: thread.threadId }).catch(() => {
-              if (generation !== openGeneration) return
-              store.update((state) => applyThreadHydration(state, thread.threadId, 'failed'))
-            }),
-          ),
-        )
-      } else {
-        store.update((state) => {
-          let next = state
-          for (const thread of payload.threads) {
-            next = applyThreadHydration(next, thread.threadId, 'ready')
-          }
-          return next
-        })
-      }
-      if (generation !== openGeneration) return
-      for (const scope of sessionScopes(sessionId)) subscribe(scope)
+    openSession(sessionId) {
+      openGeneration += 1
+      const done = openSessionAt(sessionId, openGeneration)
+      overtaker = { kind: 'open', sessionId, done }
+      return done
     },
     async loadSessionHistory(input) {
       const generation = connectionGeneration
@@ -1730,7 +1782,7 @@ export function createWebSocketEnvironmentClient(
       return parsed.data
     },
     setActiveSession: (sessionId) => {
-      openGeneration += 1
+      overtakeOpens({ kind: 'select' })
       const previous = store.getState().activeSessionId
       // Subscriptions outlive the store's active session, so a session left
       // behind here would be re-subscribed by the next reconnect resync and
@@ -1775,7 +1827,10 @@ export function createWebSocketEnvironmentClient(
       // Waiting edits stay in the store for the client that takes it over.
       drafts.dispose()
       connectionGeneration += 1
-      openGeneration += 1
+      overtakeOpens({
+        kind: 'closed',
+        error: new EnvironmentClientError('unavailable', 'Client is disposed.'),
+      })
       clearReconnect()
       stopHeartbeat()
       const current = socket

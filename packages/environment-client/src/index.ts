@@ -56,7 +56,12 @@ export type {
   UploadedArtifact,
   WorkspaceComposerPreference,
 } from './types'
-export { EnvironmentClientError, isEnvironmentClientError } from './errors'
+export {
+  EnvironmentClientError,
+  isEnvironmentClientError,
+  isSuperseded,
+  type ClientErrorCode,
+} from './errors'
 export {
   applyActiveSession,
   applyActiveThread,

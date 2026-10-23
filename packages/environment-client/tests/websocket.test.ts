@@ -866,10 +866,89 @@ describe('websocket environment client', () => {
     client.disconnect()
   })
 
+  it('resolves an overtaken open of the same session only once the chat is ready', async () => {
+    const { client, socket } = await connected()
+    const first = client.commands.openSession(SESSION.sessionId)
+    const firstId = socket.last('session.open').requestId
+    const second = client.commands.openSession(SESSION.sessionId)
+    let firstSettled = false
+    void first.finally(() => {
+      firstSettled = true
+    })
+    // The first's own answer lands: it does not resolve on it any more (§4.7.5).
+    socket.receive({
+      type: 'response',
+      requestId: firstId,
+      payload: { session: SESSION_SUMMARY, threads: [THREAD] },
+    })
+    await flush()
+    await flush()
+    expect(firstSettled).toBe(false)
+    await answerOpen(socket)
+    await second
+    await first
+    expect(selectActiveThread(client.getState())?.hydration).toBe('ready')
+  })
+
+  it('follows the newest open of a session through A, B, A; B is superseded', async () => {
+    const { client, socket } = await connected()
+    const firstA = client.commands.openSession(SESSION.sessionId)
+    const firstId = socket.last('session.open').requestId
+    const b = client.commands.openSession('session-2')
+    const bId = socket.last('session.open').requestId
+    const supersededB = expect(b).rejects.toMatchObject({ code: 'superseded' })
+    const thirdA = client.commands.openSession(SESSION.sessionId)
+    // The environment answers every open, oldest first.
+    for (const [requestId, sessionId] of [
+      [firstId, SESSION.sessionId],
+      [bId, 'session-2'],
+    ] as const) {
+      socket.receive({
+        type: 'response',
+        requestId,
+        payload: {
+          session: { ...SESSION_SUMMARY, sessionId },
+          threads: [{ ...THREAD, sessionId, threadId: `${sessionId}-thread` }],
+        },
+      })
+    }
+    await flush()
+    await answerOpen(socket)
+    await thirdA
+    await firstA
+    await supersededB
+    expect(client.getState().activeSessionId).toBe(SESSION.sessionId)
+  })
+
+  it('rejects an open with the failure of a thread that could not load', async () => {
+    const { client, socket } = await connected()
+    const opened = client.commands.openSession(SESSION.sessionId)
+    socket.respond('session.open', { session: SESSION_SUMMARY, threads: [THREAD] })
+    await flush()
+    socket.receive({
+      type: 'error',
+      requestId: socket.last('session.history').requestId,
+      error: { code: 'internal', message: 'History is unreadable.' },
+    })
+    await expect(opened).rejects.toMatchObject({ message: 'History is unreadable.' })
+    expect(selectActiveThread(client.getState())?.hydration).toBe('failed')
+  })
+
+  it('rejects an open with the transport error when the connection drops during it', async () => {
+    const { client, socket } = await connected()
+    const opened = client.commands.openSession(SESSION.sessionId)
+    socket.respond('session.open', { session: SESSION_SUMMARY, threads: [THREAD] })
+    await flush()
+    // The history read is out; the socket drops before it is answered.
+    socket.drop(1006, 'gone')
+    await expect(opened).rejects.toMatchObject({ code: 'unavailable' })
+  })
+
   it('does not show a stale open failure after navigating away', async () => {
     const { client, socket } = await connected()
     const opened = client.commands.openSession(SESSION.sessionId)
-    const rejected = expect(opened).rejects.toThrow('Folder unavailable')
+    // Overtaken by the new selection: nothing for the caller to report.
+    const rejected = expect(opened).rejects.toMatchObject({ code: 'superseded' })
     client.setActiveSession(null)
     socket.receive({
       type: 'error',
