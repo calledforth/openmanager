@@ -2144,6 +2144,86 @@ describe('durable session lifecycle', () => {
     }
   })
 
+  it('keeps a second request that arrives while the write of the first is still failing', async () => {
+    const failures: string[] = []
+    const h = setup((_error, eventName) => failures.push(eventName))
+    try {
+      const { sessionId } = h.created.session
+      await h.service.resolveRuntimeSession(sessionId)
+      h.runtime.prompt.mockReturnValueOnce(new Promise(() => undefined))
+      const sent = ProofResponseSchemas['turn.send'].parse(
+        h.dispatch(h.service, 'turn.send', { ...h.created.thread, text: 'Go' }),
+      ).payload
+      const base = {
+        providerId: 'opencode' as const,
+        threadId: h.created.thread.threadId,
+        workspaceId: '/workspace/project',
+        sessionId: 'provider-persisted',
+        messageId: 'assistant-1',
+        timestamp: new Date().toISOString(),
+      }
+      h.service.onRuntimeEvent({
+        ...base,
+        id: 'started',
+        seq: 1,
+        category: 'lifecycle',
+        event: 'prompt_started',
+        data: { prompt: 'Go', userMessageId: sent.userMessage.messageId },
+      })
+      const ask = (seq: number, requestId: string, toolCallId: string) =>
+        h.service.onRuntimeEvent({
+          ...base,
+          id: `asked-${requestId}`,
+          seq,
+          category: 'permission',
+          event: 'permission_request',
+          data: {
+            requestId,
+            sessionId: 'provider-persisted',
+            toolCall: { toolCallId, title: 'Run tests' },
+            options: [{ optionId: 'allow', name: 'Allow', kind: 'allow_once' }],
+          },
+        })
+      const answer = (seq: number, requestId: string) =>
+        h.service.onRuntimeEvent({
+          ...base,
+          id: `settled-${requestId}`,
+          seq,
+          category: 'permission',
+          event: 'permission_resolved',
+          data: { requestId, outcome: { outcome: 'selected', optionId: 'allow' } },
+        })
+      // Both requests arrive while no request can be written: the second
+      // waits behind the first instead of being dropped from the write queue.
+      h.database.exec(`CREATE TEMP TRIGGER refuse_request BEFORE INSERT ON interactions
+        BEGIN SELECT RAISE(ABORT, 'boom'); END`)
+      ask(2, 'permission-a', 'tool-1')
+      ask(3, 'permission-b', 'tool-2')
+      h.database.exec('DROP TRIGGER refuse_request')
+      expect(failures).toEqual(['interaction.requested', 'interaction.requested'])
+      // Storage is back. The first answer leaves the turn waiting on the
+      // second request, as memory says, and the rows hold that request too.
+      answer(4, 'permission-a')
+      h.events.flush()
+      expect(failures).toHaveLength(2)
+      expect(
+        h.database.prepare('SELECT state FROM interactions ORDER BY created_at, rowid').all(),
+      ).toEqual([{ state: 'resolved' }, { state: 'pending' }])
+      expect(h.database.prepare('SELECT state FROM turns').get()).toEqual({ state: 'waiting' })
+      // And nothing behind it is blocked.
+      answer(5, 'permission-b')
+      h.events.flush()
+      expect(failures).toHaveLength(2)
+      expect(h.database.prepare('SELECT state FROM interactions').all()).toEqual([
+        { state: 'resolved' },
+        { state: 'resolved' },
+      ])
+      expect(h.database.prepare('SELECT state FROM turns').get()).toEqual({ state: 'running' })
+    } finally {
+      h.close()
+    }
+  })
+
   it('answers an interaction only the log remembers as already resolved after a restart', async () => {
     const h = setup()
     try {

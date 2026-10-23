@@ -1156,6 +1156,38 @@ describe('streaming event batching', () => {
     expect(flush.mock.calls[1]).toEqual([scope, [completed()]])
   })
 
+  it('keeps every event appended while an earlier batch cannot be written, in order', () => {
+    let failing = true
+    const written: string[][] = []
+    const batcher = createStreamingEventBatcher((_batchScope, events) => {
+      if (failing) throw new Error('disk full')
+      written.push(events.map((event) => event.eventId))
+    })
+    expect(() => batcher.append(started('first'))).toThrow('disk full')
+    // The retry of the first still fails: these wait behind it, none is dropped.
+    expect(() => batcher.append(delta('Hello', 'text'))).toThrow('disk full')
+    expect(() => batcher.append(completed('done'))).toThrow('disk full')
+    failing = false
+    batcher.flush()
+    expect(written).toEqual([['first'], ['text', 'done']])
+  })
+
+  it('keeps a barrier event whose buffered text could not be written first', () => {
+    let failing = false
+    const written: string[][] = []
+    const batcher = createStreamingEventBatcher((_batchScope, events) => {
+      if (failing) throw new Error('disk full')
+      written.push(events.map((event) => event.eventId))
+    })
+    batcher.append(delta('Hello', 'text'))
+    failing = true
+    // A non-stream event writes the buffered text first; that write fails.
+    expect(() => batcher.append(started('barrier'))).toThrow('disk full')
+    failing = false
+    batcher.close()
+    expect(written).toEqual([['text'], ['barrier']])
+  })
+
   it('flushes as soon as the byte threshold is reached', () => {
     const batches: ProofEvent[][] = []
     const batcher = createStreamingEventBatcher(

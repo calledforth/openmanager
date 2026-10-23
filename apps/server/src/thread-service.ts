@@ -976,11 +976,13 @@ export function createThreadService(
       closeOpenReasoning(record, active, projected.timestamp)
     }
     // What memory records here may run ahead of a write that failed, and
-    // that is safe: the batcher keeps a failed batch and writes it before
-    // anything appended after it (event-batcher.ts), so the request this
+    // that is safe: the batcher never drops an appended event. It keeps a
+    // failed batch, and every event appended behind it, and writes them in
+    // order before anything later (event-batcher.ts), so the request this
     // records reaches the rows before its answer can, or the answer is not
-    // written either. Dropping it here would lose a request the next flush
-    // commits.
+    // written either. That holds for a second request that arrives while
+    // the first one's write is still failing. Dropping it here would lose a
+    // request the next flush commits.
     if (projected.name === 'turn.notice') publishTransient(projected)
     else appendRuntimeEvent(projected)
     if (active && projected.name === 'message.reasoning') {
