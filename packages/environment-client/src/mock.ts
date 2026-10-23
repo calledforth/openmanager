@@ -58,7 +58,7 @@ import {
   deriveSessionStatus,
   selectSessionList,
 } from './state'
-import { createSettleTracker } from './settle'
+import { dropOverlayEntry, settleAnswered, updateOverlay } from './overlay'
 import { applyDraftList } from './draft-state'
 import { createDraftSync } from './draft-sync'
 import { createEnvironmentStore } from './store'
@@ -231,7 +231,7 @@ export function createMockEnvironmentClient(
     name: 'Mock environment',
   }
   const store = createEnvironmentStore(seedState(environment, options.seed, capabilities, uploads))
-  const settles = createSettleTracker(store, now)
+  let settleTickets = 0
   const calls: MockCommandCall[] = []
   let openGeneration = 0
   const timers = new Set<ReturnType<typeof setTimeout>>()
@@ -332,8 +332,7 @@ export function createMockEnvironmentClient(
     ) {
       closeOpenChildren(parsed)
     }
-    const folded = settles.mask(parsed)
-    store.update((state) => applyEvent(state, folded))
+    store.update((state) => applyEvent(state, parsed))
     // The mock plays the server as well as the client. Emit the authoritative
     // summary update explicitly; production reducers never derive it from history.
     if (
@@ -718,6 +717,7 @@ export function createMockEnvironmentClient(
    * value. `known` is false when the client side could not have named the
    * pair, so the answer is returned but, as on the wire, not stored.
    */
+  const preferenceRevisions = new Map<string, number>()
   const writePreference = (
     target: ComposerPreferenceTarget,
     patch: WorkspaceComposerPreference,
@@ -726,9 +726,13 @@ export function createMockEnvironmentClient(
     const defined = Object.fromEntries(
       Object.entries(patch).filter(([, value]) => value !== undefined),
     )
-    const next = { ...preferences.get(preferenceKey(target)), ...defined }
-    preferences.set(preferenceKey(target), next)
-    if (known) store.update((state) => applyComposerPreference(state, target, next))
+    const key = preferenceKey(target)
+    const next = { ...preferences.get(key), ...defined }
+    preferences.set(key, next)
+    // Each change counts, as the environment's projection does (§3.2).
+    const revision = (preferenceRevisions.get(key) ?? 0) + 1
+    preferenceRevisions.set(key, revision)
+    if (known) store.update((state) => applyComposerPreference(state, target, next, revision))
     return next
   }
 
@@ -1183,9 +1187,17 @@ export function createMockEnvironmentClient(
           },
         })
       }),
-    settleSession: (sessionId, settled) =>
-      settles.settle(sessionId, settled, () =>
-        run('settleSession', { sessionId, settled }, () => {
+    settleSession: async (sessionId, settled) => {
+      // As the client does: the click shows at once (pending.settles).
+      const ticket = ++settleTickets
+      store.update((state) =>
+        updateOverlay(state, 'settles', (entries) => ({
+          ...entries,
+          [sessionId]: { ticket, settled, inFlight: true, at: now() },
+        })),
+      )
+      try {
+        await run('settleSession', { sessionId, settled }, () => {
           const session = store.getState().sessions[sessionId]
           if (!session) throw new EnvironmentClientError('not_found', 'Session not found.')
           // Mirrors the environment: a live session would stay settled after it finishes.
@@ -1199,9 +1211,13 @@ export function createMockEnvironmentClient(
             scope: envScope(),
             payload: { sessionId, settledAt },
           })
-          return settledAt
-        }),
-      ),
+        })
+      } catch (error) {
+        store.update((state) => dropOverlayEntry(state, 'settles', sessionId, ticket))
+        throw error
+      }
+      store.update((state) => settleAnswered(state, sessionId, ticket))
+    },
     stopBackgroundTasks: (input) =>
       run('stopBackgroundTasks', input, () => {
         const session = store.getState().sessions[input.sessionId]

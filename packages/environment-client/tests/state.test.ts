@@ -3,13 +3,10 @@ import { ProofEventSchema, type ScopeSnapshot } from '@openmanager/protocol'
 import {
   applyEnvironment,
   applyEvent,
-  applyInteractionResolved,
-  applySessionAcknowledged,
   applySessionCreated,
   applySessionHistory,
   applySessionList,
   applySessionOpen,
-  applySessionSettled,
   applySnapshot,
   applyTurnSendFailed,
   applyTurnSending,
@@ -149,14 +146,7 @@ describe('applyEvent', () => {
     )
     expect(state.sessions[SESSION.sessionId]?.doneAt).toBe(doneAt)
 
-    const acknowledged = applySessionAcknowledged(state, SESSION.sessionId)
-    expect(acknowledged.sessions[SESSION.sessionId]).toMatchObject({
-      doneAt: null,
-      updatedAt: state.sessions[SESSION.sessionId]?.updatedAt,
-    })
-    expect(applySessionAcknowledged(acknowledged, SESSION.sessionId)).toBe(acknowledged)
-
-    // The broadcast from another client lands the same way.
+    // An acknowledgement, from this client or another, lands as an event.
     const fromElsewhere = applyEvent(
       state,
       event({
@@ -174,13 +164,13 @@ describe('applyEvent', () => {
 
   it('keeps the state when an update restates what the session already holds', () => {
     const settledAt = '2026-09-27T10:00:00.000Z'
-    const settled = applySessionSettled(seeded(), SESSION.sessionId, settledAt)
-    // The echo of a settle whose answer the client already applied.
     const echo = event({
       name: 'session.updated',
       scope: environmentScope,
       payload: { sessionId: SESSION.sessionId, settledAt },
     })
+    const settled = applyEvent(seeded(), echo)
+    // The same settle again (a replayed tail) is no change.
     expect(applyEvent(settled, echo)).toBe(settled)
 
     // A status repeated at the same moment (a replayed tail) is no change either.
@@ -616,40 +606,6 @@ describe('applyEvent', () => {
     expect(selectPendingInteractions(state)).toHaveLength(0)
     expect(selectActiveTurn(state)?.state).toBe('running')
     expect(selectSessionList(state)[0]?.status).toBe('idle')
-  })
-
-  it('optimistic resolve returns the turn to running and makes the later event a no-op', () => {
-    let state = applyEvent(seeded(), turnStarted())
-    state = applyEvent(
-      state,
-      event({
-        name: 'interaction.requested',
-        scope: threadScope,
-        payload: { turnId: 'turn-1', interaction: permission, turnState: 'waiting' },
-      }),
-    )
-    state = applyInteractionResolved(state, THREAD, permission.interactionId)
-    expect(selectPendingInteractions(state)).toHaveLength(0)
-    expect(selectActiveTurn(state)?.state).toBe('running')
-    expect(selectSessionList(state)[0]?.status).toBe('idle')
-
-    const replayed = applyEvent(
-      state,
-      event({
-        name: 'interaction.resolved',
-        scope: threadScope,
-        payload: {
-          turnId: 'turn-1',
-          response: {
-            kind: 'permission',
-            interactionId: permission.interactionId,
-            outcome: { outcome: 'selected', optionId: 'allow' },
-          },
-          turnState: 'running',
-        },
-      }),
-    )
-    expect(replayed).toBe(state)
   })
 
   it('records a failure on its turn, as a snapshot carries it, without guessing the session status', () => {

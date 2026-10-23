@@ -48,29 +48,30 @@ import {
   applyConnection,
   applyEnvironment,
   applyEvent,
-  applyInteractionResolved,
   applyProviderBootstrap,
   applyProviderCatalog,
   applyProviderHealth,
   applyProviderProbe,
-  applySessionCreated,
   applySessionHistory,
   applySessionList,
   applySessionOpen,
   applySessionOpening,
   applySessionRemoved,
-  applySessionAcknowledged,
-  applySessionTitle,
   applySnapshot,
   applyThreadHydration,
   applyTurnSendFailed,
   applyTurnSending,
-  applyTurnStarted,
   applyWorkspaceList,
   applyWorkspaceRemoved,
   selectSessionList,
 } from './state'
-import { createSettleTracker } from './settle'
+import {
+  dropOverlayEntry,
+  dropPreferenceRequest,
+  preferenceKey as overlayPreferenceKey,
+  settleAnswered,
+  updateOverlay,
+} from './overlay'
 import { createEnvironmentStore, type EnvironmentStore } from './store'
 import type {
   ComposerPreferenceTarget,
@@ -322,7 +323,6 @@ export function createWebSocketEnvironmentClient(
       retriesExhausted: false,
     }),
   )
-  const settles = createSettleTracker(store)
 
   let socket: WebSocketLike | null = null
   let ready = false
@@ -624,18 +624,7 @@ export function createWebSocketEnvironmentClient(
     void recover(subscription).catch(() => undefined)
   }
 
-  /**
-   * A preference event is the environment's own ordering of writes, so it
-   * takes a ticket like a landed write: the answer to a request issued before
-   * it describes an older value and must not replace it.
-   */
-  const foldEvent = (event: ProofEvent) => {
-    if (event.name === 'composer.preferences.updated') {
-      appliedPreferenceWrites.set(preferenceKey(event.payload), ++preferenceTickets)
-    }
-    const folded = settles.mask(event)
-    store.update((state) => applyEvent(state, folded))
-  }
+  const foldEvent = (event: ProofEvent) => store.update((state) => applyEvent(state, event))
 
   const handleEvent = (raw: unknown) => {
     const live = SubscriptionEventSchema.safeParse(raw)
@@ -1126,53 +1115,93 @@ export function createWebSocketEnvironmentClient(
   }
 
   /**
-   * Composer answers carry the whole preference, and the session setters run
-   * asynchronously on the environment, so answers for one workspace and
-   * provider can arrive out of order. Every request takes a ticket when it is
-   * issued. A write is kept unless a later-issued write already landed. A read
-   * never outranks a write: it is dropped while a write for the same pair is
-   * unanswered (that answer is the newer truth) or once a later-issued write
-   * has landed.
-   *
-   * The pair is resolved when the answer arrives, not when the request leaves:
-   * a session may learn its provider in between, and a session or workspace
-   * removed in between must not get its preference back.
+   * Every command that shows its own effect before the environment confirms
+   * it takes a ticket, so only the newest request for a thing may clear its
+   * overlay entry (overlay.ts).
    */
-  let preferenceTickets = 0
-  const appliedPreferenceWrites = new Map<string, number>()
-  const pendingPreferenceWrites = new Set<() => ComposerPreferenceTarget | null>()
-  const preferenceKey = (target: ComposerPreferenceTarget) =>
-    JSON.stringify([target.workspaceId, target.providerId])
+  let overlayTickets = 0
+  const nextTicket = () => ++overlayTickets
 
-  const composerRequest = async <N extends Extract<WireCommandName, `composer.${string}`>>(
-    name: N,
-    payload: unknown,
-    kind: 'read' | 'write',
+  type PreferenceAnswer = { preference: WorkspaceComposerPreference; revision: number }
+
+  /**
+   * A read: the server's preference at its revision, applied only when newer
+   * than the one held, so an answer and an event are ordered by the server's
+   * number, never by arrival. The pair is resolved when the answer arrives: a
+   * workspace removed meanwhile must not get its preference back.
+   */
+  const composerRead = async (
+    payload: ComposerPreferenceTarget,
     resolveTarget: () => ComposerPreferenceTarget | null,
   ): Promise<WorkspaceComposerPreference> => {
-    const ticket = ++preferenceTickets
-    if (kind === 'write') pendingPreferenceWrites.add(resolveTarget)
-    let preference: WorkspaceComposerPreference
+    const answer = await request('composer.preferences.get', payload)
+    const target = resolveTarget()
+    if (target) {
+      store.update((state) =>
+        applyComposerPreference(state, target, answer.preference, answer.revision),
+      )
+    }
+    return answer.preference
+  }
+
+  /**
+   * A write: the requested pick shows at once as an overlay entry. Its
+   * acknowledgement names the revision the change produced and the preference
+   * it left; the entry shows that until server state holds the revision, and
+   * a failure drops it so the screen falls back to the server's own.
+   */
+  const composerWrite = async <N extends Extract<WireCommandName, `composer.${string}.set`>>(
+    name: N,
+    payload: unknown,
+    requested: ComposerPreferenceTarget | null,
+    patch: WorkspaceComposerPreference,
+    resolveTarget: () => ComposerPreferenceTarget | null,
+  ): Promise<WorkspaceComposerPreference> => {
+    const ticket = nextTicket()
+    const requestedKey = requested ? overlayPreferenceKey(requested) : undefined
+    if (requested && requestedKey) {
+      store.update((state) =>
+        updateOverlay(state, 'preferences', (entries) => ({
+          ...entries,
+          [requestedKey]: [
+            ...(entries[requestedKey] ?? []),
+            {
+              ticket,
+              ...requested,
+              patch,
+              ...(state.workspaces[requested.workspaceId] ? { listed: true as const } : {}),
+            },
+          ],
+        })),
+      )
+    }
+    let answer: PreferenceAnswer
     try {
-      preference = ((await request(name, payload)) as { preference: WorkspaceComposerPreference })
-        .preference
-    } finally {
-      pendingPreferenceWrites.delete(resolveTarget)
+      answer = (await request(name, payload)) as PreferenceAnswer
+    } catch (error) {
+      if (requestedKey) store.update((state) => dropPreferenceRequest(state, requestedKey, ticket))
+      throw error
     }
     const target = resolveTarget()
-    if (!target) return preference
-    const key = preferenceKey(target)
-    if ((appliedPreferenceWrites.get(key) ?? 0) > ticket) return preference
-    if (kind === 'read') {
-      for (const pendingTarget of pendingPreferenceWrites) {
-        const other = pendingTarget()
-        if (other && preferenceKey(other) === key) return preference
+    store.update((state) => {
+      const next = requestedKey ? dropPreferenceRequest(state, requestedKey, ticket) : state
+      if (!target) return next
+      const held = next.composerRevisions[target.workspaceId]?.[target.providerId]
+      if (held !== undefined && held >= answer.revision) return next
+      const key = overlayPreferenceKey(target)
+      const acknowledged = {
+        ticket,
+        ...target,
+        patch: {},
+        ...(next.workspaces[target.workspaceId] ? { listed: true as const } : {}),
+        acknowledged: { revision: answer.revision, preference: answer.preference },
       }
-    } else {
-      appliedPreferenceWrites.set(key, ticket)
-    }
-    store.update((state) => applyComposerPreference(state, target, preference))
-    return preference
+      return updateOverlay(next, 'preferences', (entries) => ({
+        ...entries,
+        [key]: [...(entries[key] ?? []), acknowledged],
+      }))
+    })
+    return answer.preference
   }
 
   /** An explicit pair, unless its workspace was listed when asked and is gone now. */
@@ -1195,6 +1224,24 @@ export function createWebSocketEnvironmentClient(
       : null
   }
 
+  /** Hide a session or workspace while it is removed; a failure shows it again. */
+  const removing = async (
+    id: string,
+    kind: 'session' | 'workspace',
+    send: () => Promise<unknown>,
+  ) => {
+    const ticket = nextTicket()
+    store.update((state) =>
+      updateOverlay(state, 'removals', (entries) => ({ ...entries, [id]: { ticket, kind } })),
+    )
+    try {
+      await send()
+    } catch (error) {
+      store.update((state) => dropOverlayEntry(state, 'removals', id, ticket))
+      throw error
+    }
+  }
+
   let openGeneration = 0
   const commands: EnvironmentCommands = {
     async getEnvironment() {
@@ -1215,16 +1262,17 @@ export function createWebSocketEnvironmentClient(
       return payload.workspaces
     },
     async addWorkspace(input) {
+      // An acknowledgement: the registration's own `workspace.updated` reaches
+      // the socket before this answer (docs/sync-foundations.md §4.7.10).
       const payload = await request('workspace.add', input)
-      store.update((state) => applyWorkspaceList(state, [payload.workspace]))
       return payload.workspace
     },
     async removeWorkspace(workspaceId) {
-      await request('workspace.remove', { workspaceId })
-      for (const session of selectSessionList(store.getState(), workspaceId)) {
+      const sessions = selectSessionList(store.getState(), workspaceId)
+      await removing(workspaceId, 'workspace', () => request('workspace.remove', { workspaceId }))
+      for (const session of sessions) {
         for (const scope of sessionScopes(session.sessionId)) unsubscribe(scope)
       }
-      store.update((state) => applyWorkspaceRemoved(state, workspaceId))
     },
     async resolveWorkspaceIcon(workspaceId) {
       const payload = await request('workspace.icon', { workspaceId })
@@ -1252,27 +1300,28 @@ export function createWebSocketEnvironmentClient(
         )
       }
       const payload = await request('session.create', input)
-      store.update((state) => {
-        const created = applySessionCreated(state, payload, input.providerId)
-        // Listed as it will be: working on the first message the environment
-        // has already started, so its card shows that from the first frame.
-        // Only from idle: a status an event already brought (the turn failed,
-        // or asks something) is newer than this.
-        const listed = created.sessions[payload.session.sessionId]!
-        const withProvider =
-          payload.firstTurn && listed.status === 'idle'
-            ? {
-                ...created,
-                sessions: {
-                  ...created.sessions,
-                  [payload.session.sessionId]: { ...listed, status: 'running' as const },
-                },
-              }
-            : created
-        return payload.firstTurn
-          ? applyTurnStarted(withProvider, payload.thread, payload.firstTurn)
-          : withProvider
-      })
+      // The answer reaches the client before `session.created` does. The
+      // session and its first message show from it as an overlay entry, which
+      // goes once server state lists the session and its chat holds the turn
+      // (pending.creates, overlay.ts). Listed as it will be: at its
+      // announcement time, working on the first message if there is one.
+      store.update((state) =>
+        updateOverlay(state, 'creates', (entries) => ({
+          ...entries,
+          [payload.session.sessionId]: {
+            session: {
+              ...payload.session,
+              providerId: input.providerId,
+              status: payload.firstTurn ? 'running' : 'idle',
+              updatedAt: payload.announcedAt,
+              settledAt: null,
+              doneAt: null,
+            },
+            thread: payload.thread,
+            ...(payload.firstTurn ? { firstTurn: payload.firstTurn } : {}),
+          },
+        })),
+      )
       return payload
     },
     async openSession(sessionId) {
@@ -1380,32 +1429,62 @@ export function createWebSocketEnvironmentClient(
       return payload
     },
     async renameSession(sessionId, title) {
-      const payload = await request('session.rename', { sessionId, title })
-      store.update((state) => applySessionTitle(state, sessionId, payload.session.title))
+      // The requested title shows until server state has it, or a newer one.
+      const ticket = nextTicket()
+      const from = store.getServerState().sessions[sessionId]?.title ?? null
+      store.update((state) =>
+        updateOverlay(state, 'renames', (entries) => ({
+          ...entries,
+          [sessionId]: { ticket, title, from },
+        })),
+      )
+      try {
+        await request('session.rename', { sessionId, title })
+      } catch (error) {
+        store.update((state) => dropOverlayEntry(state, 'renames', sessionId, ticket))
+        throw error
+      }
     },
     async regenerateSessionTitle(sessionId) {
-      const payload = await request('session.title.regenerate', { sessionId })
-      store.update((state) =>
-        applySessionTitle(state, sessionId, payload.session.title, 'generated'),
-      )
+      // The title and its source arrive on `session.updated`.
+      await request('session.title.regenerate', { sessionId })
     },
-    settleSession(sessionId, settled) {
-      return settles.settle(sessionId, settled, async () => {
-        const payload = await request('session.settle', { sessionId, settled })
-        return payload.settledAt
-      })
+    async settleSession(sessionId, settled) {
+      // The session moves at once, so the list animates on one render; the
+      // latest click owns what it shows until server state agrees.
+      const ticket = nextTicket()
+      store.update((state) =>
+        updateOverlay(state, 'settles', (entries) => ({
+          ...entries,
+          [sessionId]: { ticket, settled, inFlight: true, at: new Date().toISOString() },
+        })),
+      )
+      try {
+        await request('session.settle', { sessionId, settled })
+      } catch (error) {
+        store.update((state) => dropOverlayEntry(state, 'settles', sessionId, ticket))
+        throw error
+      }
+      store.update((state) => settleAnswered(state, sessionId, ticket))
     },
     async acknowledgeSession(sessionId) {
-      await request('session.acknowledge', { sessionId })
-      store.update((state) => applySessionAcknowledged(state, sessionId))
+      const ticket = nextTicket()
+      store.update((state) =>
+        updateOverlay(state, 'acks', (entries) => ({ ...entries, [sessionId]: { ticket } })),
+      )
+      try {
+        await request('session.acknowledge', { sessionId })
+      } catch (error) {
+        store.update((state) => dropOverlayEntry(state, 'acks', sessionId, ticket))
+        throw error
+      }
     },
     async stopBackgroundTasks(input) {
       await request('session.background.stop', input)
     },
     async deleteSession(sessionId) {
-      await request('session.delete', { sessionId })
+      await removing(sessionId, 'session', () => request('session.delete', { sessionId }))
       for (const scope of sessionScopes(sessionId)) unsubscribe(scope)
-      store.update((state) => applySessionRemoved(state, sessionId))
     },
     async sendTurn(input) {
       const commandId = input.commandId ?? randomId()
@@ -1417,11 +1496,9 @@ export function createWebSocketEnvironmentClient(
         applyTurnSending(state, thread, { commandId, text: input.text, artifactIds }),
       )
       try {
-        const payload = await request('turn.send', { ...input, artifactIds, commandId })
-        // An environment that predates the echoed id still confirms this row:
-        // we know which send the response answers.
-        store.update((state) => applyTurnStarted(state, thread, { ...payload, commandId }))
-        return payload
+        // The turn comes with its `turn.started`, which settles this echo by
+        // its command id; the answer only says the send was taken (§3.5).
+        return await request('turn.send', { ...input, artifactIds, commandId })
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error)
         store.update((state) => applyTurnSendFailed(state, thread, commandId, message))
@@ -1438,12 +1515,15 @@ export function createWebSocketEnvironmentClient(
           'This environment cannot build plans.',
         )
       }
-      const thread: Thread = { threadId: input.threadId, sessionId: input.sessionId }
       const { interactionId } = input.response
-      const settle = () => {
-        answerIds.delete(interactionId)
-        store.update((state) => applyInteractionResolved(state, thread, interactionId))
-      }
+      // The prompt is hidden until server state no longer lists it.
+      store.update((state) =>
+        updateOverlay(state, 'answers', (entries) => ({
+          ...entries,
+          [interactionId]: { threadId: input.threadId },
+        })),
+      )
+      const settle = () => answerIds.delete(interactionId)
       // An answer whose acknowledgement was lost may already have won. Sending
       // it again under the same id is a retry; a fresh id would be a rival.
       const answer = JSON.stringify({ response: input.response, build: input.build })
@@ -1454,9 +1534,11 @@ export function createWebSocketEnvironmentClient(
       try {
         await request('interaction.respond', { ...input, commandId })
       } catch (error) {
-        // Someone else answered first. The prompt is just as gone here, even
-        // if the event saying so was missed; the caller still hears it lost.
+        // Someone else answered first: the prompt stays hidden until the event
+        // says so, and the caller still hears it lost. Any other failure puts
+        // the prompt back.
         if (error instanceof EnvironmentClientError && error.code === 'conflict') settle()
+        else store.update((state) => dropOverlayEntry(state, 'answers', interactionId))
         throw error
       }
       settle()
@@ -1472,42 +1554,44 @@ export function createWebSocketEnvironmentClient(
       return payload.provider
     },
     getComposerPreference: (input) =>
-      composerRequest(
-        'composer.preferences.get',
+      composerRead(
         { workspaceId: input.workspaceId, providerId: input.providerId },
-        'read',
         workspacePreferenceTarget(input),
       ),
     setComposerPreference: (input) =>
-      composerRequest(
+      composerWrite(
         'composer.preferences.set',
         {
           workspaceId: input.workspaceId,
           providerId: input.providerId,
           preference: input.preference,
         },
-        'write',
+        { workspaceId: input.workspaceId, providerId: input.providerId },
+        input.preference,
         workspacePreferenceTarget(input),
       ),
     setSessionModel: (input) =>
-      composerRequest(
+      composerWrite(
         'composer.model.set',
         { sessionId: input.sessionId, modelId: input.modelId },
-        'write',
+        sessionPreferenceTarget(input.sessionId)(),
+        { modelId: input.modelId },
         sessionPreferenceTarget(input.sessionId),
       ),
     setSessionMode: (input) =>
-      composerRequest(
+      composerWrite(
         'composer.mode.set',
         { sessionId: input.sessionId, modeId: input.modeId },
-        'write',
+        sessionPreferenceTarget(input.sessionId)(),
+        { modeId: input.modeId },
         sessionPreferenceTarget(input.sessionId),
       ),
     setSessionConfigOption: (input) =>
-      composerRequest(
+      composerWrite(
         'composer.config_option.set',
         { sessionId: input.sessionId, configId: input.configId, value: input.value },
-        'write',
+        sessionPreferenceTarget(input.sessionId)(),
+        {},
         sessionPreferenceTarget(input.sessionId),
       ),
     browseFolders: (path, prefix) =>

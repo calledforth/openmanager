@@ -30,6 +30,7 @@ import type {
   SessionSummary,
   ThreadState,
 } from './types'
+import { emptyOverlay } from './overlay'
 import {
   applyDraftDeleted,
   applyDraftSaved,
@@ -57,6 +58,7 @@ export function createInitialState(): EnvironmentState {
     providers: {},
     providerOrder: [],
     composerPreferences: {},
+    composerRevisions: {},
     drafts: {},
     draftTombstones: {},
     draftEdits: {},
@@ -64,6 +66,7 @@ export function createInitialState(): EnvironmentState {
     activeSessionId: null,
     activeThreadId: null,
     connection: INITIAL_CONNECTION,
+    pending: emptyOverlay(),
   }
 }
 
@@ -330,24 +333,6 @@ function dropInteraction(current: ThreadState, interactionId: string): ThreadSta
 }
 
 /**
- * The optimistic answer (`applyInteractionResolved`, until the overlays of
- * F3's later step replace it): hides the request and, when it was the last
- * one blocking its turn, returns that turn to `running`.
- */
-function resolveInteraction(current: ThreadState, interactionId: string): ThreadState {
-  const pending = current.interactions.find(
-    (item) => item.interaction.interactionId === interactionId,
-  )
-  if (!pending) return current
-  const dropped = dropInteraction(current, interactionId)
-  const stillWaiting = dropped.interactions.some((item) => item.turnId === pending.turnId)
-  const turn = current.turns.find((item) => item.turnId === pending.turnId)
-  return turn?.state === 'waiting' && !stillWaiting
-    ? setTurnState(dropped, pending.turnId, 'running')
-    : dropped
-}
-
-/**
  * Drop one session, its threads and its draft. The environment announces
  * every session a deletion takes, each child before its parent, so the
  * client mirrors no cascade (docs/sync-foundations.md §3.6 row 12).
@@ -459,7 +444,12 @@ export function applyEvent(state: EnvironmentState, event: ProofEvent): Environm
     case 'composer.preferences.updated':
       // A workspace this client no longer lists must not get a preference back.
       return state.workspaces[event.payload.workspaceId]
-        ? applyComposerPreference(state, event.payload, event.payload.preference)
+        ? applyComposerPreference(
+            state,
+            event.payload,
+            event.payload.preference,
+            event.payload.revision,
+          )
         : state
     case 'provider.catalog.updated': {
       // Only a loaded catalog is patched; an unloaded one reads the profile
@@ -829,6 +819,43 @@ export function applyTurnStarted(
 }
 
 /**
+ * A created session's chat as its `session.create` answer described it:
+ * shown by the overlay until the chat itself holds the first turn
+ * (overlay.ts). Built over what the client holds of the thread, if anything.
+ */
+export function provisionalThread(
+  thread: Thread,
+  firstTurn: TurnStart,
+  held?: ThreadState,
+): ThreadState {
+  const base = held ?? createThreadState(thread, 'ready')
+  const turns = upsertById(base.turns, (item) => item.turnId, firstTurn.turn)
+  const { userMessage } = firstTurn
+  return {
+    ...base,
+    hydration: 'ready',
+    turns,
+    ...(userMessage
+      ? {
+          messages: upsertById(base.messages, (message) => message.messageId, userMessage),
+          order: placeActivity(base.order, {
+            kind: 'message',
+            id: userMessage.messageId,
+            turnId: firstTurn.turn.turnId,
+          }),
+        }
+      : {}),
+  }
+}
+
+/** A session as `upsertSession` files it, for the overlay's created sessions. */
+export const withSessionUpserted = (
+  state: EnvironmentState,
+  session: ProtocolSessionSummary,
+  threadIds?: readonly string[],
+) => upsertSession(state, session, threadIds)
+
+/**
  * Echo a send locally before the environment has answered. A repeat of a
  * command id — a retry — reuses its row and clears the previous failure
  * instead of adding a second one.
@@ -869,19 +896,6 @@ export function applyTurnSendFailed(
       }),
     }
   })
-}
-
-/**
- * Optimistic removal after `interaction.respond`. Mirrors the
- * `interaction.resolved` event path so the turn returns to `running` here; the
- * later event is then a no-op instead of the only place that flips the turn.
- */
-export function applyInteractionResolved(
-  state: EnvironmentState,
-  thread: Thread,
-  interactionId: string,
-): EnvironmentState {
-  return patchThread(state, thread, (current) => resolveInteraction(current, interactionId))
 }
 
 /**
@@ -964,11 +978,14 @@ export function applyWorkspaceRemoved(
   delete workspaces[workspaceId]
   const composerPreferences = { ...state.composerPreferences }
   delete composerPreferences[workspaceId]
+  const composerRevisions = { ...state.composerRevisions }
+  delete composerRevisions[workspaceId]
   return {
     ...state,
     workspaces,
     workspaceOrder: state.workspaceOrder.filter((id) => id !== workspaceId),
     composerPreferences,
+    composerRevisions,
   }
 }
 
@@ -1042,29 +1059,45 @@ export function applyProviderProbe(
 }
 
 /** Replaces the remembered choice for one workspace and provider. */
+/**
+ * A preference as the server stated it at `revision`, from an event or a read
+ * answer. Ordered by the server's number, never by arrival: an older or equal
+ * revision changes nothing (docs/sync-foundations.md §3.2, §4.7.10).
+ */
 export function applyComposerPreference(
   state: EnvironmentState,
   target: { workspaceId: string; providerId: string },
   preference: WorkspaceComposerPreference,
+  revision: number,
 ): EnvironmentState {
+  const held = state.composerRevisions[target.workspaceId]?.[target.providerId]
+  if (held !== undefined && held >= revision) return state
   const workspace = state.composerPreferences[target.workspaceId]
-  if (workspace?.[target.providerId] && sameJson(workspace[target.providerId], preference)) {
-    return state
-  }
+  const same = workspace?.[target.providerId] && sameJson(workspace[target.providerId], preference)
   return {
     ...state,
-    composerPreferences: {
-      ...state.composerPreferences,
-      [target.workspaceId]: { ...workspace, [target.providerId]: preference },
+    composerPreferences: same
+      ? state.composerPreferences
+      : {
+          ...state.composerPreferences,
+          [target.workspaceId]: { ...workspace, [target.providerId]: preference },
+        },
+    composerRevisions: {
+      ...state.composerRevisions,
+      [target.workspaceId]: {
+        ...state.composerRevisions[target.workspaceId],
+        [target.providerId]: revision,
+      },
     },
   }
 }
 
 /** Forget every held preference, so each reads as "not loaded" until asked for again. */
 export function applyComposerPreferencesReset(state: EnvironmentState): EnvironmentState {
-  return Object.keys(state.composerPreferences).length === 0
+  return Object.keys(state.composerPreferences).length === 0 &&
+    Object.keys(state.composerRevisions).length === 0
     ? state
-    : { ...state, composerPreferences: {} }
+    : { ...state, composerPreferences: {}, composerRevisions: {} }
 }
 
 export function applySessionRemoved(state: EnvironmentState, sessionId: string): EnvironmentState {
@@ -1085,26 +1118,6 @@ export function applySessionTitle(
   }
 }
 
-export function applySessionSettled(
-  state: EnvironmentState,
-  sessionId: string,
-  settledAt: string | null,
-): EnvironmentState {
-  const session = state.sessions[sessionId]
-  if (!session || (session.settledAt ?? null) === settledAt) return state
-  return { ...state, sessions: { ...state.sessions, [sessionId]: { ...session, settledAt } } }
-}
-
-/** The user has looked at a finished session; it stops showing as done. */
-export function applySessionAcknowledged(
-  state: EnvironmentState,
-  sessionId: string,
-): EnvironmentState {
-  const session = state.sessions[sessionId]
-  if (!session || !session.doneAt) return state
-  return { ...state, sessions: { ...state.sessions, [sessionId]: { ...session, doneAt: null } } }
-}
-
 export function applyThreadHydration(
   state: EnvironmentState,
   threadId: string,
@@ -1115,11 +1128,26 @@ export function applyThreadHydration(
   return { ...state, threads: { ...state.threads, [threadId]: { ...thread, hydration } } }
 }
 
+/**
+ * A session this client may select: listed by the server, or just created
+ * and shown by the overlay until it is (pending.creates). Selection is the
+ * client's own state, so it may follow either.
+ */
+function selectableSession(
+  state: EnvironmentState,
+  sessionId: string,
+): { threadIds: readonly string[] } | undefined {
+  const created = state.pending?.creates[sessionId]
+  return (
+    state.sessions[sessionId] ?? (created ? { threadIds: [created.thread.threadId] } : undefined)
+  )
+}
+
 export function applyActiveSession(
   state: EnvironmentState,
   sessionId: string | null,
 ): EnvironmentState {
-  const session = sessionId ? state.sessions[sessionId] : undefined
+  const session = sessionId ? selectableSession(state, sessionId) : undefined
   const nextSessionId = session ? sessionId : null
   const nextThreadId = session?.threadIds[0] ?? null
   if (
@@ -1146,7 +1174,7 @@ export function applyActiveSession(
  * stays up while that same session is retried.
  */
 export function applySessionOpening(state: EnvironmentState, sessionId: string): EnvironmentState {
-  const session = state.sessions[sessionId]
+  const session = selectableSession(state, sessionId)
   let next = state
   for (const threadId of session?.threadIds ?? []) {
     next = applyThreadHydration(next, threadId, 'loading')

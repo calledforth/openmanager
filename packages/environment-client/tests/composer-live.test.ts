@@ -124,7 +124,7 @@ describe('live preferences and catalog', () => {
   })
 
   it('reads every held preference as unloaded once a gap made them untrustworthy', () => {
-    const state = applyComposerPreference(listed(), target, { modelId: 'opus' })
+    const state = applyComposerPreference(listed(), target, { modelId: 'opus' }, 1)
     const reset = applyComposerPreferencesReset(state)
     expect(selectComposerPreference(reset, target.workspaceId, target.providerId)).toBeNull()
     expect(applyComposerPreferencesReset(reset)).toBe(reset)
