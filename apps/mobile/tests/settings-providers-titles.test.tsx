@@ -46,6 +46,7 @@ const CAPABILITIES = {
 }
 const health = (patch: Partial<ProviderHealth>): ProviderHealth => ({
   summary: 'ready',
+  available: true,
   refreshing: false,
   install: 'installed',
   auth: 'authenticated',
@@ -60,7 +61,7 @@ const WORKSPACE = {
   path: 'C:/repo',
   lastUsedAt: null,
   lastActivityAt: null,
-  capabilities: { git: false, providers: ['claude', 'cursor'] },
+  capabilities: { git: false },
   exists: true,
 }
 const SEED: MockSeed = {

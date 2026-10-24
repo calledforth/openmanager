@@ -97,6 +97,8 @@ export class FakeSocket implements WebSocketLike {
       protocolVersion: PROTOCOL_VERSION,
       environmentId,
       capabilities,
+      // The server's per-boot id, which every handshake answer carries (protocol 17).
+      instanceId: 'instance-1',
     })
   }
   private dispatch(type: string, event: unknown) {
