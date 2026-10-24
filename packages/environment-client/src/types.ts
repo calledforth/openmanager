@@ -41,14 +41,12 @@ import type {
   ReasoningEntry,
   ToolState,
   PendingInteraction,
-  TurnFailure,
 } from '@agentpack/view/protocol'
 export type {
   ActivityRef,
   ReasoningEntry,
   ToolState,
   PendingInteraction,
-  TurnFailure,
 } from '@agentpack/view/protocol'
 
 export type {
@@ -71,8 +69,9 @@ export interface SessionSummary extends Session {
   /** Absent until the environment has named the session; see docs/session-titles.md. */
   titleSource?: SessionTitleSource
   status: SessionStatus
-  providerId?: string
-  updatedAt?: string
+  /** Every source names it: `session.created`, listings, snapshots and `session.open`. */
+  providerId: string
+  updatedAt: string
   /** When the user settled the session; null or absent while it is active. */
   settledAt?: string | null
   /**
@@ -159,7 +158,6 @@ export interface ThreadState {
   /** Messages, reasoning and tools in arrival order; see `ProtocolThreadView.order`. */
   order: ActivityRef[]
   interactions: PendingInteraction[]
-  failures: TurnFailure[]
   notices: TurnNotice[]
   /** Sends still waiting on the environment, oldest first, newest last. */
   outbox: OutboxEntry[]
@@ -223,6 +221,8 @@ export interface ConnectionState {
 }
 
 /** Normalized, immutable. Every update produces a new root object. */
+export type { PendingOverlay } from './overlay'
+
 export interface EnvironmentState {
   environment: Environment | null
   workspaces: Record<string, Workspace>
@@ -243,6 +243,12 @@ export interface EnvironmentState {
    * a missing entry means "not loaded", never "no preference".
    */
   composerPreferences: Record<string, Record<string, WorkspaceComposerPreference>>
+  /**
+   * The server's revision of each held preference, by workspace ID and then
+   * provider ID. A preference is replaced only by a newer revision, whether
+   * an event or a read answer brings it.
+   */
+  composerRevisions: Record<string, Record<string, number>>
   /**
    * Composer drafts as the environment last reported them, by draft id.
    * Displayed through `draftEdits` first: an edit not saved yet is newer.
@@ -277,6 +283,8 @@ export interface EnvironmentState {
     availability?: 'missing' | 'inaccessible'
   } | null
   connection: ConnectionState
+  /** The user's own unconfirmed actions, composed over server state for display (overlay.ts). */
+  pending: import('./overlay').PendingOverlay
 }
 
 /** A local change to a draft, waiting to be saved. */

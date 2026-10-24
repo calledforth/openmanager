@@ -23,7 +23,7 @@ const workspace = {
   path: '/home/user/project',
   lastUsedAt: '2026-09-06T04:00:00Z',
   lastActivityAt: '2026-09-06T04:00:00Z',
-  capabilities: { git: false, providers: [] },
+  capabilities: { git: false },
   exists: true,
 }
 const session = { sessionId: 'session-1', workspaceId: 'workspace-1', title: 'Example' }
@@ -34,7 +34,12 @@ const sessionSummary = {
   updatedAt: '2026-09-06T05:00:00Z',
 }
 const thread = { threadId: 'thread-1', sessionId: 'session-1' }
-const turn = { turnId: 'turn-1', threadId: 'thread-1', state: 'running' } as const
+const turn = {
+  turnId: 'turn-1',
+  threadId: 'thread-1',
+  state: 'running',
+  startedAt: '2026-01-01T00:00:00.000Z',
+} as const
 const userMessage = {
   messageId: 'message-1',
   threadId: 'thread-1',
@@ -195,7 +200,7 @@ export const proofResponses = {
           path: 'workspace-1',
           lastUsedAt: null,
           lastActivityAt: null,
-          capabilities: { git: false, providers: [] },
+          capabilities: { git: false },
           exists: true,
         },
       ],
@@ -213,7 +218,11 @@ export const proofResponses = {
     requestId: 'r-3',
     payload: { sessions: [sessionSummary], nextCursor: null },
   },
-  'session.create': { type: 'response', requestId: 'r-4', payload: { session, thread } },
+  'session.create': {
+    type: 'response',
+    requestId: 'r-4',
+    payload: { session, thread, announcedAt: '2026-09-06T05:00:00Z' },
+  },
   'session.open': {
     type: 'response',
     requestId: 'r-5',
@@ -252,7 +261,7 @@ export const proofEvents = [
         path: 'workspace-1',
         lastUsedAt: null,
         lastActivityAt: null,
-        capabilities: { git: false, providers: [] },
+        capabilities: { git: false },
         exists: true,
       },
     },
@@ -263,7 +272,12 @@ export const proofEvents = [
     scope: environmentScope,
     payload: { workspaceId: 'workspace-1' },
   },
-  { ...base, name: 'session.created', scope: environmentScope, payload: { session } },
+  {
+    ...base,
+    name: 'session.created',
+    scope: environmentScope,
+    payload: { session: { ...sessionSummary, settledAt: null, doneAt: null } },
+  },
   {
     ...base,
     name: 'session.updated',
@@ -316,6 +330,7 @@ export const proofEvents = [
       workspaceId: 'workspace-1',
       providerId: 'claude-code',
       preference: { modelId: 'claude-opus', configValues: { effort: 'high' } },
+      revision: 3,
     },
   },
   {
@@ -374,7 +389,12 @@ export const proofEvents = [
     payload: { turn, userMessage: { ...userMessage, content: [...userMessage.content] } },
   },
   { ...base, name: 'turn.completed', scope: threadScope, payload: { turnId: 'turn-1' } },
-  { ...base, name: 'turn.interrupted', scope: threadScope, payload: { turnId: 'turn-1' } },
+  {
+    ...base,
+    name: 'turn.interrupted',
+    scope: threadScope,
+    payload: { turnId: 'turn-1', reason: 'user' },
+  },
   {
     ...base,
     name: 'turn.failed',
@@ -421,6 +441,7 @@ export const proofEvents = [
         interactionId: 'interaction-1',
         questions: [{ questionId: 'q-1', prompt: 'Continue?', options: [], allowFreeText: true }],
       },
+      turnState: 'waiting',
     },
   },
   {
@@ -434,6 +455,7 @@ export const proofEvents = [
         interactionId: 'interaction-1',
         outcome: { outcome: 'answered', answers: [{ questionId: 'q-1', text: 'Yes' }] },
       },
+      turnState: 'running',
     },
   },
   {
@@ -447,6 +469,21 @@ export const proofEvents = [
         interactionId: 'interaction-1',
         outcome: { outcome: 'cancelled', reason: 'timeout' },
       },
+      turnState: 'running',
+    },
+  },
+  {
+    ...base,
+    name: 'interaction.cancelled',
+    scope: threadScope,
+    payload: {
+      turnId: 'turn-1',
+      response: {
+        kind: 'question',
+        interactionId: 'interaction-1',
+        outcome: { outcome: 'cancelled', reason: 'turn_ended' },
+      },
+      turnState: 'running',
     },
   },
 ] satisfies ProofEvent[]

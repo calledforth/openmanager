@@ -13,7 +13,7 @@ const WORKSPACE = {
   lastUsedAt: null,
   lastActivityAt: null,
   exists: true,
-  capabilities: { git: false, providers: [] },
+  capabilities: { git: false },
 }
 const SESSION = {
   sessionId: 'session-1',
@@ -194,6 +194,21 @@ describe('session workspace', () => {
     await waitFor(() => expect(screen.queryByText('Sidebar move')).not.toBeInTheDocument())
   })
 
+  it('offers only deletion for a chat the environment can never reopen', async () => {
+    const user = userEvent.setup()
+    const { client } = renderConnected('/sessions/session-1', {
+      ...SEED,
+      unrecoverableSessions: [SESSION.sessionId],
+    })
+    const panel = await screen.findByRole('region', { name: 'Session recovery' })
+    expect(within(panel).getByText('This chat can’t be reopened')).toBeInTheDocument()
+    // Trying again would fail the same way.
+    expect(within(panel).queryByRole('button', { name: 'Try again' })).not.toBeInTheDocument()
+    await user.click(within(panel).getByRole('button', { name: 'Delete session' }))
+    await user.click(within(panel).getByRole('button', { name: 'Delete permanently' }))
+    await waitFor(() => expect(client.getState().sessions[SESSION.sessionId]).toBeUndefined())
+  })
+
   it('keeps an unrecoverable session and reports why when deleting it fails', async () => {
     const user = userEvent.setup()
     const { client } = renderConnected('/sessions/session-1', {
@@ -328,7 +343,7 @@ describe('session workspace', () => {
     localStorage.setItem('openmanager.sent-drafts', JSON.stringify({ 'sent-draft': 'deleted' }))
     const { router } = renderConnected('/drafts/sent-draft', {
       ...SEED,
-      workspaces: [{ ...WORKSPACE, capabilities: { git: false, providers: ['opencode'] } }],
+      workspaces: [{ ...WORKSPACE, capabilities: { git: false } }],
     })
     const visited: string[] = []
     const stop = router.history.subscribe(() => visited.push(router.history.location.pathname))
@@ -354,7 +369,16 @@ describe('session workspace', () => {
           eventId: 'listed-late',
           timestamp,
           scope: { type: 'environment', environmentId: 'env-local' },
-          payload: { session: SESSION },
+          payload: {
+            session: {
+              ...SESSION,
+              status: 'idle',
+              providerId: 'opencode',
+              updatedAt: timestamp,
+              settledAt: null,
+              doneAt: null,
+            },
+          },
         })
         client.emit({
           type: 'event',
@@ -490,7 +514,7 @@ describe('session workspace', () => {
     const user = userEvent.setup()
     const { client, router } = renderConnected('/', {
       environment: SEED.environment,
-      workspaces: [{ ...WORKSPACE, capabilities: { git: false, providers: ['opencode'] } }],
+      workspaces: [{ ...WORKSPACE, capabilities: { git: false } }],
     })
     await waitFor(() => expect(screen.getByText('Start with a message below')).toBeInTheDocument())
     const textbox = await screen.findByRole('textbox')
@@ -542,7 +566,7 @@ describe('session workspace', () => {
     const user = userEvent.setup()
     const { router } = renderConnected('/', {
       environment: SEED.environment,
-      workspaces: [{ ...WORKSPACE, capabilities: { git: false, providers: ['opencode'] } }],
+      workspaces: [{ ...WORKSPACE, capabilities: { git: false } }],
     })
     const textbox = await screen.findByRole('textbox')
     await waitFor(() => expect(textbox).toBeEnabled())
@@ -570,7 +594,7 @@ describe('session workspace', () => {
   it('opens a blank page in place of a draft address nobody knows', async () => {
     const { router } = renderConnected('/drafts/nobody-knows', {
       environment: SEED.environment,
-      workspaces: [{ ...WORKSPACE, capabilities: { git: false, providers: ['opencode'] } }],
+      workspaces: [{ ...WORKSPACE, capabilities: { git: false } }],
     })
     await waitFor(() => expect(router.state.location.pathname).toBe('/'))
     const textbox = await screen.findByRole('textbox')

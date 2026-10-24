@@ -3,9 +3,11 @@ import { mkdir, mkdtemp, rm, symlink, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import type { ProofEvent } from '@openmanager/protocol/node'
+import type { DatabaseSync } from 'node:sqlite'
+import type { ProofEvent, Workspace } from '@openmanager/protocol/node'
 import { createAuditLog, type AuditEvent } from '../src/audit.js'
 import { openEnvironmentDatabase } from '../src/db/database.js'
+import { createPersistentEventService } from '../src/event-service.js'
 import { canonicalizeRoot } from '../src/workspace-paths.js'
 import {
   openWorkspaceRegistry,
@@ -21,9 +23,11 @@ vi.mock('node:fs', async (importOriginal) => {
 
 const directories: string[] = []
 const registries: WorkspaceRegistry[] = []
+const databases: DatabaseSync[] = []
 afterEach(async () => {
   vi.mocked(fs.accessSync).mockReset()
   for (const registry of registries.splice(0)) registry.close()
+  for (const database of databases.splice(0)) database.close()
   await Promise.all(directories.splice(0).map((path) => rm(path, { recursive: true, force: true })))
 })
 
@@ -38,19 +42,42 @@ async function fixture() {
   const log = vi.fn()
   const audit = createAuditLog(log, () => new Date('2026-09-13T12:00:00Z'))
   audit.subscribe((event) => audits.push(event))
+  /** Every event that committed, as a client would hear it. */
   const events: ProofEvent[] = []
   let now = Date.parse('2026-09-13T12:00:00Z')
+  // As the host wires it: the event database's connection and the event
+  // service's atomic append. Each open is a process start on the same data.
   const open = (configured: string[], options: WorkspaceRegistryOptions = {}) => {
-    const registry = openWorkspaceRegistry(dataDir, configured, audit, {
-      clock: () => now,
-      events: { environmentId: 'env-1', emit: (event) => events.push(event) },
-      ...options,
-    })
+    const database = openEnvironmentDatabase(dataDir)
+    databases.push(database)
+    const service = createPersistentEventService(database, (record) => events.push(record.event))
+    const registry = openWorkspaceRegistry(
+      {
+        database,
+        environmentId: 'env-1',
+        appendAtomic: (batch) => service.appendAtomic(batch),
+        flush: service.flush,
+      },
+      configured,
+      audit,
+      { clock: () => now, ...options },
+    )
     registries.push(registry)
     return registry
   }
   return { base, dataDir, roots, audits, events, log, open, tick: (ms: number) => (now += ms) }
 }
+
+/** The `workspace.list` command: a read that also looks at every folder. */
+const listNow = (registry: WorkspaceRegistry) =>
+  (
+    registry.dispatch({
+      type: 'command',
+      requestId: 'list',
+      name: 'workspace.list',
+      payload: null,
+    }) as { payload: { workspaces: Workspace[] } }
+  ).payload.workspaces
 
 const listed = (name: string, path: string, extra: Record<string, unknown> = {}) => ({
   workspaceId: expect.any(String),
@@ -60,7 +87,7 @@ const listed = (name: string, path: string, extra: Record<string, unknown> = {})
   lastActivityAt: null,
   exists: true,
   availability: 'available',
-  capabilities: { git: false, providers: [] },
+  capabilities: { git: false },
   ...extra,
 })
 
@@ -124,7 +151,9 @@ describe('workspace registry', () => {
       expect(registry.get(alpha!.workspaceId)).toMatchObject({ availability: 'available' })
       expect(status()).toEqual({ availability: 'available' })
       await rm(roots.a, { recursive: true })
-      expect(registry.list()[0]).toMatchObject({ availability: 'missing' })
+      // A listing reads rows only; the listing command looks at the folder.
+      expect(registry.list()[0]).toMatchObject({ availability: 'available' })
+      expect(listNow(registry)[0]).toMatchObject({ availability: 'missing' })
       expect(status()).toEqual({ availability: 'missing' })
       registry.close()
       const restarted = open([roots.a])
@@ -155,7 +184,7 @@ describe('workspace registry', () => {
     registry.close()
     await rm(roots.a, { recursive: true })
     const restarted = open([link])
-    expect(restarted.list()).toEqual([
+    expect(listNow(restarted)).toEqual([
       expect.objectContaining({ workspaceId: alpha!.workspaceId, availability: 'missing' }),
     ])
   })
@@ -200,6 +229,7 @@ describe('workspace registry', () => {
       process.platform === 'win32' ? 'junction' : 'dir',
     )
     const registry = open([roots.a])
+    events.length = 0
     const context = { clientId: 'client-1', command: 'workspace.add' }
     const added = registry.register({ path: ` ${join(base, 'beta-link')} ` }, context)
     expect(added).toEqual({ ok: true, workspace: listed('beta', canonicalizeRoot(roots.b)) })
@@ -212,13 +242,19 @@ describe('workspace registry', () => {
         payload: { workspace: added.workspace },
       }),
     ])
-    // The same folder spelled differently is the same registration.
+    // The same folder spelled differently is the same registration, and
+    // nothing about it changed, so nothing is announced.
     expect(registry.register({ path: roots.b }, context)).toEqual(added)
     expect(registry.list()).toHaveLength(2)
-    // A name is optional and can be set on re-registration.
+    expect(events).toHaveLength(1)
+    // A name is optional and can be set on re-registration: one rename.
     expect(registry.register({ path: roots.b, name: 'Beta' }, context)).toEqual({
       ok: true,
       workspace: { ...added.workspace, name: 'Beta' },
+    })
+    expect(events.at(-1)).toMatchObject({
+      name: 'workspace.updated',
+      payload: { workspace: { ...added.workspace, name: 'Beta' } },
     })
     expect(audits).toEqual([])
   })
@@ -282,7 +318,7 @@ describe('workspace registry', () => {
     const registry = open([roots.a, roots.b])
     const [alpha, beta] = registry.list()
     await rm(roots.b, { recursive: true })
-    expect(registry.list()).toEqual([alpha, { ...beta, exists: false, availability: 'missing' }])
+    expect(listNow(registry)).toEqual([alpha, { ...beta, exists: false, availability: 'missing' }])
     const context = { clientId: 'client-1', command: 'session.create' }
     expect(registry.resolve(beta!.workspaceId, context)).toBeUndefined()
     // The reason is readable without a second audit entry, and an ID nobody
@@ -299,7 +335,7 @@ describe('workspace registry', () => {
     ])
     // Back on disk, it is usable again without re-registering.
     await mkdir(roots.b)
-    expect(registry.list()).toEqual([alpha, beta])
+    expect(listNow(registry)).toEqual([alpha, beta])
     expect(registry.resolve(beta!.workspaceId, context)?.root).toBe(beta!.path)
   })
 
@@ -399,26 +435,57 @@ describe('workspace registry', () => {
     expect(registry.list().map((workspace) => workspace.name)).toEqual(['alpha', 'beta'])
   })
 
-  it('summarizes capabilities cheaply: a .git stat and the providers available now', async () => {
+  it('summarizes capabilities cheaply: a .git stat, stored with the workspace', async () => {
     const { roots, open } = await fixture()
     await mkdir(join(roots.a, '.git'))
-    let available: string[] = []
-    const registry = open([roots.a, roots.b], { availableProviders: () => available })
+    const registry = open([roots.a, roots.b])
     expect(registry.list().map((workspace) => workspace.capabilities)).toEqual([
-      { git: true, providers: [] },
-      { git: false, providers: [] },
+      { git: true },
+      { git: false },
     ])
-    // Provider availability is read on each listing, not captured at open.
-    available = ['cursor', 'codex']
-    expect(registry.list()[1]!.capabilities).toEqual({ git: false, providers: ['cursor', 'codex'] })
     // A missing folder cannot claim git even if the registry remembers it.
     await rm(roots.a, { recursive: true, force: true })
-    expect(registry.list()[0]).toMatchObject({ exists: false, capabilities: { git: false } })
+    expect(listNow(registry)[0]).toMatchObject({ exists: false, capabilities: { git: false } })
+  })
+
+  it('lists rows only: the folder is looked at on commands that use it, and each change is announced', async () => {
+    const { roots, open, events, dataDir } = await fixture()
+    const registry = open([roots.a])
+    const [alpha] = registry.list()
+    events.length = 0
+    await rm(roots.a, { recursive: true })
+    // The snapshot's read: what was last announced, and nothing written.
+    expect(registry.list()).toEqual([alpha])
+    expect(events).toEqual([])
+    // A command that uses the workspace sees the folder is gone, announces it once.
+    expect(registry.resolve(alpha!.workspaceId)).toBeUndefined()
+    expect(registry.resolve(alpha!.workspaceId)).toBeUndefined()
+    expect(events).toEqual([
+      expect.objectContaining({
+        name: 'workspace.updated',
+        payload: { workspace: { ...alpha, exists: false, availability: 'missing' } },
+      }),
+    ])
+    // The row and the event say the same thing, from the event's own write.
+    const database = openEnvironmentDatabase(dataDir)
+    try {
+      expect(
+        database
+          .prepare('SELECT availability, git_json FROM workspaces WHERE workspace_id = ?')
+          .get(alpha!.workspaceId),
+      ).toEqual({ availability: 'missing', git_json: null })
+      expect(
+        database.prepare('SELECT event_name FROM event_log ORDER BY sequence DESC LIMIT 1').get(),
+      ).toEqual({ event_name: 'workspace.updated' })
+    } finally {
+      database.close()
+    }
   })
 
   it('rejects relative paths and traversal without persisting or emitting', async () => {
     const { roots, open, events, audits } = await fixture()
     const registry = open([roots.a])
+    events.length = 0
     for (const path of ['../other', `${roots.a}/src/../src`, `${roots.a}\\src\\..\\src`]) {
       expect(registry.register({ path })).toMatchObject({ ok: false, code: 'validation' })
     }
@@ -496,7 +563,7 @@ describe('workspace registry', () => {
     await symlink(roots.b, join(roots.a, 'src'), process.platform === 'win32' ? 'junction' : 'dir')
     const verify = (registry: WorkspaceRegistry) => {
       expect(
-        registry.list().find((workspace) => workspace.workspaceId === added.workspace.workspaceId)
+        listNow(registry).find((workspace) => workspace.workspaceId === added.workspace.workspaceId)
           ?.exists,
       ).toBe(false)
       expect(registry.resolve(added.workspace.workspaceId)).toBeUndefined()
@@ -518,7 +585,7 @@ describe('workspace registry', () => {
       ok: false,
       code: 'not_found',
     })
-    expect(registry.list()).toEqual([{ ...alpha, exists: false, availability: 'inaccessible' }])
+    expect(listNow(registry)).toEqual([{ ...alpha, exists: false, availability: 'inaccessible' }])
     expect(registry.resolve(alpha.workspaceId)).toBeUndefined()
   })
 

@@ -244,8 +244,12 @@ export function removeSessionDrafts(state: EnvironmentState, sessionIds: Iterabl
   return next
 }
 
-/** A removed project's new-session drafts are kept, without the project. */
-export function detachWorkspaceDrafts(
+/**
+ * This client's own unsaved edits for a removed project are kept, without the
+ * project, as the environment keeps them when they are saved. The saved drafts
+ * are not touched: the environment detaches each one with a `draft.saved`.
+ */
+export function detachWorkspaceEdits(
   state: EnvironmentState,
   workspaceId: string,
 ): EnvironmentState {
@@ -253,13 +257,6 @@ export function detachWorkspaceDrafts(
     target.type === 'new_session' && target.workspaceId === workspaceId
       ? { ...target, workspaceId: null }
       : target
-  let drafts = state.drafts
-  for (const draft of Object.values(state.drafts)) {
-    const target = detach(draft.target)
-    if (target === draft.target) continue
-    if (drafts === state.drafts) drafts = { ...state.drafts }
-    drafts[draft.draftId] = { ...draft, target }
-  }
   let draftEdits = state.draftEdits
   for (const [draftId, edit] of Object.entries(state.draftEdits)) {
     const target = detach(edit.target)
@@ -267,7 +264,5 @@ export function detachWorkspaceDrafts(
     if (draftEdits === state.draftEdits) draftEdits = { ...state.draftEdits }
     draftEdits[draftId] = { ...edit, target }
   }
-  return drafts === state.drafts && draftEdits === state.draftEdits
-    ? state
-    : { ...state, drafts, draftEdits }
+  return draftEdits === state.draftEdits ? state : { ...state, draftEdits }
 }

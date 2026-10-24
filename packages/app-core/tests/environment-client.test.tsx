@@ -34,7 +34,7 @@ const WORKSPACE = {
   path: 'C:/repo',
   lastUsedAt: null,
   lastActivityAt: null,
-  capabilities: { git: false, providers: ['opencode'] },
+  capabilities: { git: false },
   exists: true,
 }
 const SESSION = { sessionId: 'session-1', workspaceId: WORKSPACE.workspaceId, title: 'First' }
@@ -85,6 +85,7 @@ function Sidebar() {
           externalId: session.sessionId,
           title: session.title ?? undefined,
           status: session.status,
+          providerId: session.providerId as 'opencode',
         })),
       }))}
       activeWorkspacePath={active?.workspaceId ?? null}

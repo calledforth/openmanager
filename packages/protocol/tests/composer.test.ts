@@ -81,6 +81,7 @@ describe('composer command wire contract', () => {
               },
               health: {
                 summary: 'ready',
+                available: true,
                 refreshing: false,
                 install: 'installed',
                 auth: 'authenticated',

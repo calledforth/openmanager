@@ -74,7 +74,6 @@ const SETTLED_OPEN_KEY = 'openmanager.sidebar.settled-open'
 /** The share of the sidebar's scroll area kept below the active list for an
  *  open Settled while the cards fit above it: its default spot. */
 const SETTLED_SHARE = 0.3
-const DEFAULT_PROVIDER_ID: ProviderId = 'opencode'
 // Positioned so the card's status washes and dither paint beneath its text.
 // Done and failed cards take their hover and selection fills from the status
 // palette, so on light themes the tint deepens instead of greying over.
@@ -1340,7 +1339,7 @@ function SessionCardBody({
   providerLabel,
 }: RowHandlers & { entry: SidebarBoardEntry; untitled?: string }) {
   const { session, workspace } = entry.root
-  const providerId = session.providerId ?? DEFAULT_PROVIDER_ID
+  const providerId = session.providerId
   const isActive = session.externalId === selected
   const unavailable = workspace.missing
     ? describeUnavailableWorkspace(workspace.availability)
@@ -1807,7 +1806,7 @@ function ChildRow({
   onSelectSession,
 }: Pick<RowHandlers, 'selected' | 'now' | 'onSelectSession'> & { row: SidebarBoardRow }) {
   const { session, workspace, depth } = row
-  const providerId = session.providerId ?? DEFAULT_PROVIDER_ID
+  const providerId = session.providerId
   const isActive = session.externalId === selected
   const tone = sessionBusyTone(session.status, session)
   return (
@@ -1850,7 +1849,7 @@ function SettledRow({
   rowMotion,
 }: RowHandlers & { row: SidebarBoardRow }) {
   const { session, workspace, depth } = row
-  const providerId = session.providerId ?? DEFAULT_PROVIDER_ID
+  const providerId = session.providerId
   const tone = sessionBusyTone(session.status, session)
   const isActive = session.externalId === selected
   // Settled work can still hold a reply the user started: the active cards' mark.

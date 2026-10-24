@@ -74,8 +74,8 @@ export const MESSAGE_PARTS_SQL = `
 
 /** Turns of a thread in start order, joined to messages by callers hydrating a page. */
 export const TURNS_FOR_THREAD_SQL = `
-  SELECT turn_id, thread_id, workspace_id, state, failure_reason, origin, started_at,
-         finished_at, updated_at
+  SELECT turn_id, thread_id, workspace_id, state, command_id, failure_reason, failure_message,
+         interrupted_by, origin, started_at, finished_at, updated_at
   FROM turns
   WHERE thread_id = ?
   ORDER BY started_at, turn_id`
@@ -102,7 +102,8 @@ export const INTERACTIONS_FOR_TURN_SQL = `
 
 /** Retry dedupe: the turn a command id already started in a thread, if any. */
 export const TURN_FOR_COMMAND_ID_SQL = `
-  SELECT turn_id, thread_id, state
+  SELECT turn_id, thread_id, state, command_id, failure_reason, failure_message, interrupted_by,
+         origin, started_at, finished_at
   FROM turns
   WHERE thread_id = ? AND command_id = ?`
 
@@ -164,7 +165,7 @@ export const EVENT_TOMBSTONE_SQL = `
 
 /** Replay decision input: head and retention boundary for a scope, read atomically. */
 export const STREAM_BOUNDS_SQL = `
-  SELECT epoch, head_sequence, oldest_sequence
+  SELECT epoch, head_sequence, oldest_sequence, replay_floor
   FROM event_streams
   WHERE scope_key = ?`
 

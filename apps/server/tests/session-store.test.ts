@@ -4,6 +4,8 @@ import { join } from 'node:path'
 import type { DatabaseSync } from 'node:sqlite'
 import { afterEach, describe, expect, it } from 'vitest'
 import { openEnvironmentDatabase } from '../src/db/database.js'
+import { reconcileAfterRestart } from '../src/db/boot-reconcile.js'
+import { createEventRepository } from '../src/db/event-repository.js'
 import {
   findSessionIdByProviderSession,
   getSessionSummary,
@@ -308,6 +310,7 @@ describe('durable plan history', () => {
     databases.splice(databases.indexOf(database), 1)
     const reopened = openEnvironmentDatabase(directories.at(-1)!)
     databases.push(reopened)
+    reconcileAfterRestart(reopened, createEventRepository(reopened), 'environment-1')
     const recovered = listSessionHistory(reopened, query)!
     expect(recovered.interactions).toEqual([])
     expect(recovered.plans.map((entry) => entry.state)).toEqual([

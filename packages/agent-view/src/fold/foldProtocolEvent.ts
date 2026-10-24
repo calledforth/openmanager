@@ -5,7 +5,6 @@ import type {
   ProofEvent,
   Thread,
   Turn,
-  TurnFailureReason,
 } from '@openmanager/protocol'
 
 export interface ReasoningEntry {
@@ -23,12 +22,6 @@ export interface PendingInteraction {
   threadId: string
   turnId: string
   interaction: Interaction
-}
-
-export interface TurnFailure {
-  turnId: string
-  reason: TurnFailureReason
-  message: string
 }
 
 /**
@@ -56,7 +49,6 @@ export interface ProtocolThreadView {
    */
   order: ActivityRef[]
   interactions: PendingInteraction[]
-  failures: TurnFailure[]
 }
 
 /** Append `ref` unless the same entry is already placed. */
@@ -70,27 +62,17 @@ export function isTurnSettled(turn: Turn): boolean {
   return turn.state === 'completed' || turn.state === 'interrupted' || turn.state === 'failed'
 }
 
-/**
- * Settle every open reasoning block in `turnId`. ACP providers stream thinking
- * as bare deltas and never say when a block ends, so a block is closed by the
- * next non-thought event in its turn: an assistant message chunk, a tool
- * update, or the end of the turn. Providers that do frame their blocks (Claude
- * Code) send an explicit `stop` first, which this leaves untouched.
- */
-function closeReasoning(reasoning: ReasoningEntry[], turnId: string): ReasoningEntry[] {
-  if (!reasoning.some((entry) => entry.turnId === turnId && entry.phase !== 'stop'))
-    return reasoning
-  return reasoning.map((entry) =>
-    entry.turnId === turnId && entry.phase !== 'stop' ? { ...entry, phase: 'stop' } : entry,
-  )
-}
-
 function upsert<T>(items: T[], id: (item: T) => string, next: T): T[] {
   const index = items.findIndex((item) => id(item) === id(next))
   if (index === -1) return [...items, next]
   const copy = items.slice()
   copy[index] = next
   return copy
+}
+
+function tokensOf(held: number | undefined, next: number | undefined): { tokens?: number } {
+  if (next === undefined) return held === undefined ? {} : { tokens: held }
+  return { tokens: Math.max(held ?? 0, next) }
 }
 
 function mergeContent(existing: ContentBlock[], delta: ContentBlock): ContentBlock[] {
@@ -100,7 +82,30 @@ function mergeContent(existing: ContentBlock[], delta: ContentBlock): ContentBlo
     : [...existing, delta]
 }
 
-/** Fold durable protocol parts and terminal outcomes without an IPC overlay. */
+/**
+ * Whether a turn-scoped event of this thread names a turn the view does not
+ * hold. Every subscription starts with a replay or a snapshot, so that is a
+ * protocol error: the caller recovers the scope instead of inventing the
+ * turn (docs/sync-foundations.md §3.5). `turn.started` introduces its turn,
+ * and a transient notice is never worth a recovery.
+ */
+export function namesUnknownTurn(current: ProtocolThreadView, event: ProofEvent): boolean {
+  if (event.scope.type !== 'thread' || event.scope.threadId !== current.thread.threadId)
+    return false
+  if (event.name === 'turn.started' || event.name === 'turn.notice') return false
+  if (!('turnId' in event.payload)) return false
+  const { turnId } = event.payload
+  return !current.turns.some((turn) => turn.turnId === turnId)
+}
+
+/**
+ * Fold one durable thread event: each event changes only what it names (I2).
+ * The server is the only author: it closes a turn's tools, thoughts and
+ * requests with their own events before the turn's end, and sends a finished
+ * turn nothing but those closes, so this applies what it receives and decides
+ * nothing of its own. An event for a turn the view does not hold changes
+ * nothing (see `namesUnknownTurn`).
+ */
 export function foldProtocolEvent<T extends ProtocolThreadView>(current: T, event: ProofEvent): T {
   if (
     event.scope.type !== 'thread' ||
@@ -111,8 +116,7 @@ export function foldProtocolEvent<T extends ProtocolThreadView>(current: T, even
   if (!('turnId' in event.payload)) return current
   const turnId = event.payload.turnId
   const turn = current.turns.find((item) => item.turnId === turnId)
-  // Terminal outcomes are immutable, including when late callbacks arrive.
-  if (turn && isTurnSettled(turn)) return current
+  if (!turn) return current
 
   switch (event.name) {
     case 'turn.completed':
@@ -128,22 +132,14 @@ export function foldProtocolEvent<T extends ProtocolThreadView>(current: T, even
         ...current,
         turns: upsert(current.turns, (item) => item.turnId, {
           ...turn,
-          turnId,
-          threadId: current.thread.threadId,
           state,
           // The terminal event's time is when the work stopped.
           finishedAt: event.timestamp,
+          ...(event.name === 'turn.failed'
+            ? { failure: { reason: event.payload.reason, message: event.payload.message } }
+            : {}),
+          ...(event.name === 'turn.interrupted' ? { interruptedBy: event.payload.reason } : {}),
         }),
-        reasoning: closeReasoning(current.reasoning, turnId),
-        interactions: current.interactions.filter((item) => item.turnId !== turnId),
-        failures:
-          event.name === 'turn.failed'
-            ? upsert(current.failures, (item) => item.turnId, {
-                turnId,
-                reason: event.payload.reason,
-                message: event.payload.message,
-              })
-            : current.failures,
       }
     }
     case 'message.delta': {
@@ -165,11 +161,6 @@ export function foldProtocolEvent<T extends ProtocolThreadView>(current: T, even
         order: existing
           ? current.order
           : placeActivity(current.order, { kind: 'message', id: message.messageId, turnId }),
-        // Text following a thought is what ends the thought for ACP providers.
-        reasoning:
-          message.role === 'assistant'
-            ? closeReasoning(current.reasoning, turnId)
-            : current.reasoning,
       }
     }
     case 'message.reasoning': {
@@ -186,7 +177,8 @@ export function foldProtocolEvent<T extends ProtocolThreadView>(current: T, even
             event.payload.content === undefined
               ? (existing?.content ?? [])
               : mergeContent(existing?.content ?? [], event.payload.content),
-          tokens: event.payload.tokens ?? existing?.tokens,
+          // As the projector keeps it: the token estimate only ever grows.
+          ...tokensOf(existing?.tokens, event.payload.tokens),
         }),
         order: existing
           ? current.order
@@ -208,7 +200,6 @@ export function foldProtocolEvent<T extends ProtocolThreadView>(current: T, even
         order: existing
           ? current.order
           : placeActivity(current.order, { kind: 'tool', id: event.payload.toolCallId, turnId }),
-        reasoning: closeReasoning(current.reasoning, turnId),
       }
     }
     default:

@@ -26,6 +26,7 @@ import type { InteractionResponse, Workspace } from '@openmanager/protocol'
 import {
   UPLOAD_TICKET_COMMAND,
   hasDraftContent,
+  isSuperseded,
   selectActiveSession,
   selectActiveThread,
   selectDraftContent,
@@ -123,6 +124,7 @@ import { PlanStateProvider, type PlanRow } from './plan-provider'
 import { ViewActionsContext, WorkspaceIconContext, type ViewActions } from './view-actions'
 import { createEnvironmentThreadStores } from '../lib/environment-thread'
 import { providerHealthReportFromWire } from '../lib/provider-health-view'
+import { availableProviderIds } from './draft-provider'
 
 const DEFAULT_PROVIDER_ID: ProviderId = 'opencode'
 const COLLAPSED_WORKSPACES_KEY = 'openmanager.sidebar.collapsed-workspaces'
@@ -773,6 +775,8 @@ function EnvironmentSessionStateProvider({
       : null
 
   const fail = useCallback((err: unknown) => {
+    // An open something newer replaced is nothing to report (§4.7.5).
+    if (isSuperseded(err)) return
     setError(err instanceof Error ? err.message : String(err))
   }, [])
 
@@ -783,7 +787,13 @@ function EnvironmentSessionStateProvider({
         await navigateSession(sessionId, options)
         return
       }
-      await commands.openSession(sessionId)
+      try {
+        await commands.openSession(sessionId)
+      } catch (error) {
+        // Overtaken by another session or a new selection: nothing to do.
+        if (!isSuperseded(error)) throw error
+        return
+      }
       if (selectionRef.current !== sessionId) client.setActiveSession(selectionRef.current)
     },
     [client, commands, navigateSession],
@@ -1223,14 +1233,15 @@ function readCollapsed(storage: EnvironmentApplicationOptions['collapsedWorkspac
   }
 }
 
-function toWorkspaceEntry(workspace: Workspace): WorkspaceEntry {
+function toWorkspaceEntry(workspace: Workspace, available: string[]): WorkspaceEntry {
   return {
     path: workspace.workspaceId,
     name: workspace.name,
     missing: !workspace.exists,
     availability: workspace.availability,
     lastActivityAt: workspace.lastActivityAt,
-    capabilities: workspace.capabilities,
+    // Which providers could start here is provider health, the same for every project.
+    capabilities: { git: workspace.capabilities.git, providers: available },
     ...(workspace.git ? { git: workspace.git } : {}),
   }
 }
@@ -1274,8 +1285,18 @@ function EnvironmentSidebarDataProvider({
       ? { environmentId: environmentState.environmentId, label }
       : undefined
   }, [environmentState])
-  const workspaceEntries = useMemo(() => workspaces.map(toWorkspaceEntry), [workspaces])
-  const recentEntries = useMemo(() => recentWorkspaces.map(toWorkspaceEntry), [recentWorkspaces])
+  const available = useEnvironmentState(
+    (state) => availableProviderIds(selectProviderCatalog(state)),
+    shallowEqualArray,
+  )
+  const workspaceEntries = useMemo(
+    () => workspaces.map((workspace) => toWorkspaceEntry(workspace, available)),
+    [workspaces, available],
+  )
+  const recentEntries = useMemo(
+    () => recentWorkspaces.map((workspace) => toWorkspaceEntry(workspace, available)),
+    [recentWorkspaces, available],
+  )
   // Which sessions hold an unsent draft: a coarse fact, so typing in a
   // composer changes it only when the text empties or starts.
   const syncsDrafts = client.drafts !== undefined
@@ -1314,7 +1335,7 @@ function EnvironmentSidebarDataProvider({
         // server idle means ready; legacy desktop idle clears an unread
         // completion marker, so keep the presentation alias at this boundary.
         status: summary.status === 'idle' ? (summary.doneAt ? 'done' : 'ready') : summary.status,
-        providerId: (summary.providerId as ProviderId | undefined) ?? session.defaultProviderId,
+        providerId: summary.providerId as ProviderId,
         ...(summary.parentSessionId ? { parentExternalId: summary.parentSessionId } : {}),
         // ChatView still branches on `isDriven` for the Convex IPC overlay.
         // This path has one protocol-event stream and no `stream_chunks`
@@ -1341,7 +1362,7 @@ function EnvironmentSidebarDataProvider({
     }
     shownSessions.current = reuseUnchanged(shownSessions.current, grouped)
     return shownSessions.current
-  }, [session.defaultProviderId, sessions, unsent, workspaceEntries])
+  }, [sessions, unsent, workspaceEntries])
 
   // Offered only once the environment says it can keep the change.
   const canSettle = connection.phase === 'connected' && client.supports('settleSession')
@@ -1748,11 +1769,10 @@ function EnvironmentActiveThreadProvider({ children }: { children: ReactNode }) 
         failed: hydration === 'failed',
         retry: async () => {
           if (session.activeSessionId)
-            await commands
-              .openSession(session.activeSessionId)
-              .catch((err) =>
-                setError(err instanceof Error ? err.message : 'Could not load history.'),
-              )
+            await commands.openSession(session.activeSessionId).catch((err) => {
+              if (isSuperseded(err)) return
+              setError(err instanceof Error ? err.message : 'Could not load history.')
+            })
         },
         hasMore: !!thread?.historyCursor,
         isLoading: loadingHistory === thread?.thread.threadId,

@@ -112,7 +112,7 @@ describe('draft state', () => {
     expect(state.draftTombstones).toEqual({ kept: 2 })
   })
 
-  it("drops a session's draft with the session and keeps a removed project's drafts", () => {
+  it("follows a project's removal as announced: the session and its draft, then each detached draft", () => {
     let state = applySessionList(applyWorkspaceList(createInitialState(), [WORKSPACE]), [
       SESSION_SUMMARY,
     ])
@@ -122,15 +122,45 @@ describe('draft state', () => {
       draft(sessionId, 1, { text: 'in the session' }, { type: 'session', sessionId }),
     )
     state = applyDraftSaved(state, draft('d', 1, { text: 'new chat' }))
+    // This client's own unsaved edit for the project.
+    state = {
+      ...state,
+      draftEdits: { e: { target: NEW, content: { text: 'typing' }, baseRevision: 0, editedAt: 1 } },
+    }
+    const removed = event<Extract<ProofEvent, { name: 'workspace.removed' }>>({
+      name: 'workspace.removed',
+      scope: environmentScope,
+      payload: { workspaceId: WORKSPACE.workspaceId },
+    })
+
+    // The removal alone changes no stored draft and no session: the
+    // environment announces those itself.
+    const alone = applyEvent(state, removed)
+    expect(alone.drafts[sessionId]).toBeDefined()
+    expect(alone.drafts.d?.target).toEqual(NEW)
+    expect(alone.sessions[sessionId]).toBeDefined()
+    // The client's own edit loses the project, as the environment would on its save.
+    expect(alone.draftEdits.e?.target).toEqual({ ...NEW, workspaceId: null })
 
     state = applyEvent(
       state,
-      event<Extract<ProofEvent, { name: 'workspace.removed' }>>({
-        name: 'workspace.removed',
+      event<Extract<ProofEvent, { name: 'session.deleted' }>>({
+        name: 'session.deleted',
         scope: environmentScope,
-        payload: { workspaceId: WORKSPACE.workspaceId },
+        payload: { sessionId },
       }),
     )
+    state = applyEvent(
+      state,
+      event<Extract<ProofEvent, { name: 'draft.saved' }>>({
+        name: 'draft.saved',
+        scope: environmentScope,
+        payload: {
+          draft: { ...draft('d', 2, { text: 'new chat' }), target: { ...NEW, workspaceId: null } },
+        },
+      }),
+    )
+    state = applyEvent(state, removed)
     expect(state.drafts[sessionId]).toBeUndefined()
     expect(state.drafts.d?.target).toEqual({ ...NEW, workspaceId: null })
   })
@@ -672,7 +702,7 @@ describe('mock environment drafts', () => {
     const created = await client.commands.createSession({
       environmentId: client.getState().environment!.environmentId,
       workspaceId: WORKSPACE.workspaceId,
-      providerId: WORKSPACE.capabilities.providers[0]!,
+      providerId: 'opencode',
       sessionId: 'session-launch',
       draftId: 'd',
     })

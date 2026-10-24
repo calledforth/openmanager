@@ -27,6 +27,11 @@ export const ProviderCapabilitiesSchema = z.strictObject({
 
 export const ProviderHealthSchema = z.strictObject({
   summary: z.enum(['unknown', 'ready', 'warning', 'error', 'stopped']),
+  /**
+   * A session could start on this provider now: the server's rule
+   * (`ready` or `warning`), so every client offers the same providers.
+   */
+  available: z.boolean(),
   refreshing: z.boolean(),
   install: z.enum(['unknown', 'installed', 'missing', 'unusable']),
   auth: z.enum(['unknown', 'authenticated', 'unauthenticated', 'error']),

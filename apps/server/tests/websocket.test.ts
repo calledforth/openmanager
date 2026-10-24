@@ -14,6 +14,7 @@ import {
   ProofResponseSchemas,
   ReplayResponseSchema,
   ServerMessageSchema,
+  type DurableEvent,
   type ServerMessage,
   type SubscriptionScope,
 } from '@openmanager/protocol/node'
@@ -112,7 +113,8 @@ async function subscribe(client: Client, scope: SubscriptionScope) {
   return ProofResponseSchemas['subscription.subscribe'].parse(await client.next()).payload
     .subscriptionId
 }
-function record(scope: SubscriptionScope) {
+/** A record as the delivery queue holds it; `deliver` validates it. */
+function record(scope: SubscriptionScope): DurableEvent {
   return {
     cursor: { scope, epoch: 'epoch-1', sequence: 1 },
     event: {
@@ -130,7 +132,7 @@ function record(scope: SubscriptionScope) {
                 path: 'workspace-1',
                 lastUsedAt: null,
                 lastActivityAt: null,
-                capabilities: { git: false, providers: [] },
+                capabilities: { git: false },
                 exists: true,
                 availability: 'available',
               },
@@ -143,7 +145,7 @@ function record(scope: SubscriptionScope) {
             }
           : { name: 'turn.completed', payload: { turnId: 'turn-1' } }),
     },
-  }
+  } as DurableEvent
 }
 async function rejection(url: string, options: ClientOptions = {}) {
   const ws = new WebSocket(url, options)
@@ -427,7 +429,7 @@ describe('workspace boundary', () => {
         path: host.root,
         lastUsedAt: null,
         lastActivityAt: null,
-        capabilities: { git: false, providers: [] },
+        capabilities: { git: false },
         exists: true,
         availability: 'available',
       },
@@ -437,7 +439,7 @@ describe('workspace boundary', () => {
         path: host.otherRoot,
         lastUsedAt: null,
         lastActivityAt: null,
-        capabilities: { git: false, providers: [] },
+        capabilities: { git: false },
         exists: true,
         availability: 'available',
       },
@@ -464,7 +466,7 @@ describe('workspace boundary', () => {
       path: host.server.workspaces.get(added.payload.workspace.workspaceId)!.root,
       lastUsedAt: null,
       lastActivityAt: null,
-      capabilities: { git: false, providers: [] },
+      capabilities: { git: false },
       exists: true,
       availability: 'available',
     })
@@ -763,7 +765,7 @@ describe('handshake and scoped subscriptions', () => {
       [sessionScope, bId],
       [threadScope, threadId],
     ] as const) {
-      host.server.sockets.publish(record(scope))
+      host.server.sockets.deliver({ kind: 'record', record: record(scope) })
       expect(await b.next()).toMatchObject({
         type: 'event',
         name: 'subscription.event',
@@ -775,17 +777,128 @@ describe('handshake and scoped subscriptions', () => {
     expect(await a.next()).toMatchObject({ type: 'error', error: { code: 'validation' } })
     b.command('subscription.unsubscribe', { subscriptionId: aId })
     expect(await b.next()).toMatchObject({ type: 'error', error: { code: 'not_found' } })
-    host.server.sockets.publish(record(envScope))
+    host.server.sockets.deliver({ kind: 'record', record: record(envScope) })
     expect(await a.next()).toMatchObject({ type: 'event', payload: { subscriptionId: aId } })
     a.command('subscription.unsubscribe', { subscriptionId: aId })
     expect(await a.next()).toMatchObject({ type: 'response', payload: null })
-    host.server.sockets.publish(record(envScope))
+    host.server.sockets.deliver({ kind: 'record', record: record(envScope) })
     a.command('unknown.command', null)
     expect(await a.next()).toMatchObject({ type: 'error' })
     expect(host.server.sockets.subscriptionCount).toBe(2)
+    // Another environment's record is a server bug: nobody here can be
+    // subscribed to its scope, so it closes nothing and reaches nobody.
     expect(() =>
-      host.server.sockets.publish(record({ type: 'environment', environmentId: 'foreign' })),
-    ).toThrow('another environment')
+      host.server.sockets.deliver({
+        kind: 'record',
+        record: record({ type: 'environment', environmentId: 'foreign' }),
+      }),
+    ).not.toThrow()
+    b.command('unknown.command', null)
+    expect(await b.next()).toMatchObject({ type: 'error', error: { code: 'validation' } })
+    expect(host.server.sockets.connectionCount).toBe(2)
+  })
+
+  it('sends a transient once per connection, only to subscriptions of its scope', async () => {
+    const host = await setup()
+    const a = await connect(host)
+    const b = await connect(host)
+    await handshake(a)
+    await handshake(b)
+    const environmentId = host.server.identity.environmentId
+    const threadScope = {
+      type: 'thread' as const,
+      environmentId,
+      sessionId: 'session-1',
+      threadId: 'thread-1',
+    }
+    await subscribe(a, threadScope)
+    // A second subscription of the same scope, as a recovery can leave.
+    const newest = await subscribe(a, threadScope)
+    await subscribe(b, { type: 'session', environmentId, sessionId: 'session-1' })
+    const after = { scope: threadScope, epoch: 'epoch-1', sequence: 7 }
+    const event = {
+      type: 'event' as const,
+      name: 'turn.notice' as const,
+      eventId: 'notice-1',
+      timestamp: new Date().toISOString(),
+      scope: threadScope,
+      payload: { turnId: 'turn-1', message: 'Retrying' },
+    }
+    host.server.sockets.deliver({ kind: 'transient', event, after })
+    expect(await a.next()).toEqual({
+      type: 'event',
+      name: 'subscription.transient',
+      payload: { subscriptionId: newest, after, event },
+    })
+    for (const client of [a, b]) {
+      client.command('unknown.command', null)
+      expect(await client.next()).toMatchObject({ type: 'error', error: { code: 'validation' } })
+    }
+  })
+
+  it('closes a connection it cannot send a frame to, and sends the others theirs', async () => {
+    const host = await setup()
+    const a = await connect(host)
+    const b = await connect(host)
+    await handshake(a)
+    await handshake(b)
+    for (const client of [a, b]) {
+      client.command('client.list', null)
+      expect(await client.next()).toMatchObject({ type: 'response' })
+    }
+    const aClosed = once(a.ws, 'close')
+    let built = 0
+    host.server.sockets.deliver({
+      kind: 'followers',
+      topic: 'client.list.changed',
+      build: () => {
+        built += 1
+        if (built === 1) throw new Error('cannot build this frame')
+        return { type: 'event', name: 'client.list.changed', payload: { probe: true } }
+      },
+    })
+    expect(built).toBe(2)
+    const [code, reason] = (await aClosed) as [number, Buffer]
+    expect([code, reason.toString()]).toEqual([1011, 'delivery_failed'])
+    expect(await b.next()).toMatchObject({ name: 'client.list.changed', payload: { probe: true } })
+  })
+
+  it('closes every connection of a scope whose record cannot be sent at all', async () => {
+    const host = await setup()
+    const a = await connect(host)
+    const b = await connect(host)
+    await handshake(a)
+    await handshake(b)
+    const environmentId = host.server.identity.environmentId
+    const threadScope = {
+      type: 'thread' as const,
+      environmentId,
+      sessionId: 'session-1',
+      threadId: 'thread-1',
+    }
+    await subscribe(a, threadScope)
+    await subscribe(b, { type: 'thread', environmentId, sessionId: 'session-1', threadId: 'other' })
+    const aClosed = once(a.ws, 'close')
+    // A notice never receives a cursor: the record is invalid for everyone.
+    host.server.sockets.deliver({
+      kind: 'record',
+      record: {
+        cursor: { scope: threadScope, epoch: 'epoch-1', sequence: 1 },
+        event: {
+          type: 'event',
+          name: 'turn.notice',
+          eventId: 'notice-1',
+          timestamp: new Date().toISOString(),
+          scope: threadScope,
+          payload: { turnId: 'turn-1', message: 'not durable' },
+        },
+      } as never,
+    })
+    const [code] = (await aClosed) as [number]
+    expect(code).toBe(1011)
+    b.command('unknown.command', null)
+    expect(await b.next()).toMatchObject({ type: 'error', error: { code: 'validation' } })
+    expect(host.server.sockets.connectionCount).toBe(1)
   })
 
   it('rejects foreign and malformed scopes without adding subscriptions', async () => {
@@ -930,9 +1043,12 @@ describe('handshake and scoped subscriptions', () => {
       threadId: created.payload.thread.threadId,
       text: 'Hello runtime',
     })
+    // The turn is written while the command runs, and an answer never
+    // overtakes a record committed before it: the start comes first.
+    const startedRecord = await client.next()
     const sent = ProofResponseSchemas['turn.send'].parse(await client.next())
     expect(sent.requestId).toBe(sendId)
-    expect(await client.next()).toMatchObject({
+    expect(startedRecord).toMatchObject({
       type: 'event',
       name: 'subscription.event',
       payload: {
@@ -1225,7 +1341,9 @@ it('broadcasts session.created to two environment subscribers without reloading'
     workspaceId: host.workspaceId,
     providerId: 'opencode',
   })
-  const firstMessages = [await first.next(), await first.next()]
+  // Everything the create committed comes before its answer.
+  const firstMessages = [await first.next()]
+  while (firstMessages.at(-1)?.type !== 'response') firstMessages.push(await first.next())
   const response = ProofResponseSchemas['session.create'].parse(
     firstMessages.find((message) => message.type === 'response' && message.requestId === requestId),
   )
@@ -1267,6 +1385,7 @@ it('broadcasts session.updated and session.deleted to a second environment subsc
   })
   const { session } = ProofResponseSchemas['session.create'].parse(await first.next()).payload
   await second.next()
+  await second.next() // the workspace recency the new session moved
   await second.next() // workspace.updated after the provider session starts
   first.command('session.rename', { sessionId: session.sessionId, title: 'Shared title' })
   expect(await first.next()).toMatchObject({
@@ -1341,8 +1460,10 @@ describe('subscription replay', () => {
     const cursor = (sequence: number) => ({ scope, epoch, sequence })
 
     first.command('turn.send', { sessionId, threadId, text: 'Hello' })
+    // The start is committed while the command runs, so it precedes the answer.
+    const startedRecord = await first.next()
     const sent = ProofResponseSchemas['turn.send'].parse(await first.next())
-    expect(await first.next()).toMatchObject({
+    expect(startedRecord).toMatchObject({
       type: 'event',
       name: 'subscription.event',
       payload: {

@@ -11,6 +11,12 @@ export const ErrorCodeSchema = z.enum([
   'protocol_incompatible',
   'unavailable',
   'internal',
+  /**
+   * A session that can never be opened again: a sub-agent's chat whose
+   * transcript the agent no longer has. Delete it (docs/sync-foundations.md
+   * §4.7.4).
+   */
+  'session_unrecoverable',
 ])
 
 export type ErrorCode = z.infer<typeof ErrorCodeSchema>
@@ -34,6 +40,7 @@ export const ERROR_RETRY_POLICY = {
   protocol_incompatible: 'after_upgrade',
   unavailable: 'after_backoff',
   internal: 'reconcile',
+  session_unrecoverable: 'never',
 } as const satisfies Record<ErrorCode, ErrorRetryPolicy>
 
 export const ProtocolErrorSchema = z.object({

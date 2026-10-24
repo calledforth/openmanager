@@ -1,21 +1,38 @@
 import { randomUUID } from 'node:crypto'
 import type { DatabaseSync } from 'node:sqlite'
-import type { ProofEvent } from '@openmanager/protocol/node'
-import type { DurableProofEvent } from './event-repository.ts'
+import { ProjectionRefusal } from './write-errors.ts'
+import { isDeepStrictEqual } from 'node:util'
+import {
+  ProviderComposerProfileSchema,
+  SessionSummarySchema,
+  WorkspaceComposerPreferenceSchema,
+  WorkspaceSchema,
+  type ProofEvent,
+} from '@openmanager/protocol/node'
+import {
+  preferenceFromRow,
+  prepareComposerProjection,
+  profileFromRow,
+  readPreferenceRow,
+  readProfileRow,
+} from './composer-rows.ts'
+import type { DurableProofEvent, WriteOptions } from './event-repository.ts'
 import { prepareDraftProjection } from './draft-projection.ts'
+import { OPEN_TURN_FOR_SESSION_SQL } from './queries.ts'
+import { getSessionSummary } from './session-store.ts'
+import { gitJsonOf, readWorkspace } from './workspace-rows.ts'
+import { createTurnClosure, reasoningIsOpen, toolIsOpen } from './turn-closure.ts'
 
-type SessionSummary = Extract<ProofEvent, { name: 'session.created' }>['payload']['session']
 type TurnStarted = Extract<ProofEvent, { name: 'turn.started' }>
 type MessageDelta = Extract<ProofEvent, { name: 'message.delta' }>
 type MessageContent = MessageDelta['payload']['content']
 type MessageReasoning = Extract<ProofEvent, { name: 'message.reasoning' }>
 type ToolUpdated = Extract<ProofEvent, { name: 'tool.updated' }>
 type ActivityRow = { turn_id: string; thread_id: string; kind: string; state_json: string }
+type TurnRow = { workspace_id: string; state: string }
 
-export interface EventProjectionOptions {
-  /** Host-owned provider identity, absent from the public session summary. */
-  sessionProviderId?: (session: SessionSummary) => string
-}
+/** A turn that has ended takes no new output. */
+const finished = (turn: TurnRow) => turn.state !== 'running' && turn.state !== 'waiting'
 
 /**
  * Apply a durable event to the relational rows it describes.
@@ -24,25 +41,41 @@ export interface EventProjectionOptions {
  */
 export function createEventProjector(
   database: DatabaseSync,
-  options: EventProjectionOptions,
-): (event: DurableProofEvent) => void {
+): (event: DurableProofEvent, write?: WriteOptions) => void {
   const drafts = prepareDraftProjection(database)
+  const composer = prepareComposerProjection(database)
+  const closure = createTurnClosure(database)
   const s = {
     insertSession: database.prepare(
       `INSERT INTO sessions (
-         session_id, workspace_id, parent_session_id, provider_id, title, status,
-         created_at, updated_at
-       ) VALUES (?, ?, ?, ?, ?, 'idle', ?, ?)`,
+         session_id, workspace_id, parent_session_id, provider_id, provider_session_id, title,
+         title_source, title_generated, status, created_at, updated_at
+       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'idle', ?, ?)`,
     ),
-    updateWorkspaceName: database.prepare(
-      'UPDATE workspaces SET name = ?, updated_at = ? WHERE workspace_id = ?',
+    // The registry's one writer (docs/sync-foundations.md §4.7.11): a
+    // registration inserts, every later change rewrites what the event states.
+    upsertWorkspace: database.prepare(
+      `INSERT INTO workspaces (
+         workspace_id, name, path, availability, git_json, last_used_at, created_at, updated_at
+       ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?7)
+       ON CONFLICT(workspace_id) DO UPDATE SET
+         name = excluded.name,
+         path = excluded.path,
+         availability = excluded.availability,
+         git_json = excluded.git_json,
+         last_used_at = excluded.last_used_at,
+         updated_at = excluded.updated_at`,
     ),
+    deleteWorkspace: database.prepare('DELETE FROM workspaces WHERE workspace_id = ?'),
     // Automatic titles never replace one the user set; a rename, or a title
     // the user asked to have generated, may. A title the title model wrote is
     // kept as 'provider' plus `title_generated` (see migration 15), and
     // neither the agent's name for its session nor a first-prompt fallback
     // replaces it. `IS` keeps a source-less update from reading as NULL.
-    // ?1 title, ?2 stored source, ?3 source as sent, ?4 time, ?5 session.
+    // The producer applies the same rule before it emits (thread-service.ts
+    // `applyTitle`), so a title this refuses is a bug, not a race (I2).
+    // A title is not activity: `updated_at` stays put (§4.7.1).
+    // ?1 title, ?2 stored source, ?3 source as sent, ?4 session.
     updateSessionTitle: database.prepare(
       `UPDATE sessions
           SET title = ?1,
@@ -51,15 +84,15 @@ export function createEventProjector(
                 WHEN ?3 IS NULL THEN title_generated
                 WHEN ?3 = 'generated' THEN 1
                 ELSE 0
-              END,
-              updated_at = ?4
-        WHERE session_id = ?5
+              END
+        WHERE session_id = ?4
           AND (?3 IN ('user', 'generated') OR title_source IS NULL OR title_source <> 'user')
           AND NOT ((?3 IS 'provider' OR ?3 IS 'fallback') AND title_generated = 1)`,
     ),
     updateSessionStatus: database.prepare(
       'UPDATE sessions SET status = ?, updated_at = ? WHERE session_id = ?',
     ),
+    updateSessionTime: database.prepare('UPDATE sessions SET updated_at = ? WHERE session_id = ?'),
     // Neither is settling: the session keeps its place when it comes back.
     updateSessionSettled: database.prepare(
       'UPDATE sessions SET settled_at = ? WHERE session_id = ?',
@@ -80,11 +113,23 @@ export function createEventProjector(
     hasBackgroundTasks: database.prepare(
       'SELECT 1 FROM sessions WHERE session_id = ? AND background_tasks_json IS NOT NULL',
     ),
+    selectSessionStatus: database.prepare('SELECT status FROM sessions WHERE session_id = ?'),
+    openTurnForSession: database.prepare(OPEN_TURN_FOR_SESSION_SQL),
     // Not a sidebar-ordering change, so `updated_at` stays put.
     updateSessionComposer: database.prepare(
       'UPDATE sessions SET composer_json = ? WHERE session_id = ?',
     ),
     deleteSession: database.prepare('DELETE FROM sessions WHERE session_id = ?'),
+    // What a deletion must already have said, so no foreign key removes a
+    // client-visible row silently (db/deletions.ts).
+    childOfSession: database.prepare('SELECT 1 FROM sessions WHERE parent_session_id = ? LIMIT 1'),
+    liveSessionDraft: database.prepare(
+      'SELECT 1 FROM drafts WHERE session_id = ? AND deleted_at IS NULL LIMIT 1',
+    ),
+    sessionInWorkspace: database.prepare('SELECT 1 FROM sessions WHERE workspace_id = ? LIMIT 1'),
+    liveWorkspaceDraft: database.prepare(
+      'SELECT 1 FROM drafts WHERE workspace_id = ? AND deleted_at IS NULL LIMIT 1',
+    ),
     selectSessionWorkspace: database.prepare(
       'SELECT workspace_id FROM sessions WHERE session_id = ?',
     ),
@@ -100,7 +145,7 @@ export function createEventProjector(
        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
     ),
     selectTurnWorkspace: database.prepare(
-      'SELECT workspace_id FROM turns WHERE turn_id = ? AND thread_id = ?',
+      'SELECT workspace_id, state FROM turns WHERE turn_id = ? AND thread_id = ?',
     ),
     /** Only an unfinished turn may change state; late events for finished turns roll back. */
     updateOpenTurnState: database.prepare(
@@ -109,7 +154,8 @@ export function createEventProjector(
     ),
     finishOpenTurn: database.prepare(
       `UPDATE turns
-       SET state = ?, failure_reason = ?, finished_at = ?, updated_at = ?
+       SET state = ?, failure_reason = ?, failure_message = ?, interrupted_by = ?,
+           finished_at = ?, updated_at = ?
        WHERE turn_id = ? AND thread_id = ? AND state IN ('running', 'waiting')`,
     ),
     insertInteraction: database.prepare(
@@ -126,10 +172,7 @@ export function createEventProjector(
     pendingInteractions: database.prepare(
       "SELECT 1 FROM interactions WHERE turn_id = ? AND state = 'pending' LIMIT 1",
     ),
-    cancelPendingInteractions: database.prepare(
-      `UPDATE interactions SET state = 'cancelled', resolved_at = ?, updated_at = ?
-       WHERE turn_id = ? AND state = 'pending'`,
-    ),
+
     selectMessage: database.prepare(
       'SELECT turn_id, thread_id, role, is_final FROM messages WHERE message_id = ?',
     ),
@@ -229,7 +272,8 @@ export function createEventProjector(
   function projectTurnStarted(event: TurnStarted, at: number): void {
     const thread = s.selectThreadWorkspace.get(event.scope.threadId) as
       { workspace_id: string } | undefined
-    if (!thread) throw new Error(`Cannot project turn for missing thread ${event.scope.threadId}`)
+    if (!thread)
+      throw new ProjectionRefusal(`Cannot project turn for missing thread ${event.scope.threadId}`)
     s.insertTurn.run(
       event.payload.turn.turnId,
       event.scope.threadId,
@@ -253,9 +297,10 @@ export function createEventProjector(
 
   function projectMessageDelta(event: MessageDelta, at: number): void {
     const { messageId, turnId, role, content } = event.payload
-    const turn = s.selectTurnWorkspace.get(turnId, event.scope.threadId) as
-      { workspace_id: string } | undefined
-    if (!turn) throw new Error(`Cannot project message for missing turn ${turnId}`)
+    const turn = s.selectTurnWorkspace.get(turnId, event.scope.threadId) as TurnRow | undefined
+    if (!turn) throw new ProjectionRefusal(`Cannot project message for missing turn ${turnId}`)
+    if (finished(turn))
+      throw new ProjectionRefusal(`Cannot add a message to finished turn ${turnId}`)
     const existing = s.selectMessage.get(messageId) as
       { turn_id: string; thread_id: string; role: string; is_final: number } | undefined
     if (
@@ -265,7 +310,7 @@ export function createEventProjector(
         existing.role !== role ||
         existing.is_final !== 0)
     ) {
-      throw new Error(`Cannot append to mismatched or finalized message ${messageId}`)
+      throw new ProjectionRefusal(`Cannot append to mismatched or finalized message ${messageId}`)
     }
     if (!existing) {
       insertMessage(
@@ -292,17 +337,22 @@ export function createEventProjector(
     next: (existing: unknown | undefined) => unknown,
   ): void {
     const { turnId } = event.payload
-    const turn = s.selectTurnWorkspace.get(turnId, event.scope.threadId) as
-      { workspace_id: string } | undefined
-    if (!turn) throw new Error(`Cannot project ${kind} for missing turn ${turnId}`)
+    const turn = s.selectTurnWorkspace.get(turnId, event.scope.threadId) as TurnRow | undefined
+    if (!turn) throw new ProjectionRefusal(`Cannot project ${kind} for missing turn ${turnId}`)
     const existing = s.selectActivity.get(activityId) as ActivityRow | undefined
+    // A finished turn takes exactly one kind of child event: the close of a
+    // child it left open (the legacy repair, docs/sync-foundations.md §4.2).
+    // Anything else, a second close included, rolls the write back (I2).
+    if (finished(turn) && !closesOpenChild(event, existing)) {
+      throw new ProjectionRefusal(`Cannot change ${kind} ${activityId} of finished turn ${turnId}`)
+    }
     if (existing) {
       if (
         existing.turn_id !== turnId ||
         existing.thread_id !== event.scope.threadId ||
         existing.kind !== kind
       ) {
-        throw new Error(`Cannot update mismatched ${kind} ${activityId}`)
+        throw new ProjectionRefusal(`Cannot update mismatched ${kind} ${activityId}`)
       }
       s.updateActivity.run(JSON.stringify(next(JSON.parse(existing.state_json))), at, activityId)
       return
@@ -323,13 +373,39 @@ export function createEventProjector(
     )
   }
 
+  /** Whether an event only closes an open child: tool to `cancelled`, thought to `stop`. */
+  function closesOpenChild(
+    event: MessageReasoning | ToolUpdated,
+    existing: ActivityRow | undefined,
+  ): boolean {
+    if (!existing) return false
+    const state = JSON.parse(existing.state_json) as { status?: string; phase?: string }
+    if (event.name === 'tool.updated') {
+      const { status, title, kind } = event.payload
+      return (
+        existing.kind === 'tool' &&
+        toolIsOpen(state) &&
+        status === 'cancelled' &&
+        title === undefined &&
+        kind === undefined
+      )
+    }
+    const { phase, content, tokens } = event.payload
+    return (
+      existing.kind === 'reasoning' &&
+      reasoningIsOpen(state) &&
+      phase === 'stop' &&
+      content === undefined &&
+      tokens === undefined
+    )
+  }
+
   /** Mirrors the client fold: adjacent text merges, tokens only ever grow. */
   function projectReasoning(event: MessageReasoning, at: number): void {
     const { messageId, turnId, phase, content, tokens } = event.payload
     upsertActivity(event, messageId, 'reasoning', at, (existing) => {
       const previous = existing as
-        | { content: MessageContent[]; tokens?: number; phase: string }
-        | undefined
+        { content: MessageContent[]; tokens?: number; phase: string } | undefined
       const blocks = previous?.content ?? []
       const last = blocks.at(-1)
       const merged =
@@ -363,88 +439,184 @@ export function createEventProjector(
     }))
   }
 
-  return function projectEvent(event: DurableProofEvent): void {
+  return function projectEvent(event: DurableProofEvent, write?: WriteOptions): void {
     const at = Date.parse(event.timestamp)
     switch (event.name) {
       case 'session.created': {
         const session = event.payload.session
-        const providerId = options.sessionProviderId?.(session)
-        if (!providerId?.trim()) {
-          throw new Error('session.created requires a host sessionProviderId resolver')
-        }
+        // The row is the payload: the producer built every field the
+        // projection writes (docs/sync-foundations.md §4.7.2). A title the
+        // title model wrote is kept as 'provider' plus `title_generated`.
+        const source = session.titleSource
         // The composite foreign key rejects a parent from another workspace,
         // so a child can never be filed under a session it cannot belong to.
         s.insertSession.run(
           session.sessionId,
           session.workspaceId,
           session.parentSessionId ?? null,
-          providerId,
+          session.providerId,
+          // Host-private: the identity rides the write, never the event.
+          write?.identities?.[session.sessionId] ?? null,
           session.title,
+          source === undefined ? null : source === 'generated' ? 'provider' : source,
+          source === 'generated' ? 1 : 0,
           at,
           at,
         )
+        // Built from the row the projection wrote, checked rather than
+        // assumed: what a listing reads back equals what the event said.
+        const written = getSessionSummary(database, session.sessionId)
+        if (!isDeepStrictEqual(written, SessionSummarySchema.parse(session))) {
+          throw new ProjectionRefusal(
+            `session.created for ${session.sessionId} says ${JSON.stringify(session)}; its row reads ${JSON.stringify(written)}`,
+          )
+        }
         return
       }
-      case 'workspace.updated':
-        s.updateWorkspaceName.run(
-          event.payload.workspace.name,
+      case 'workspace.updated': {
+        // The whole workspace, as its producer read it from the rows and the
+        // folder; the row takes every field it stores.
+        const workspace = event.payload.workspace
+        const availability = workspace.availability ?? (workspace.exists ? 'available' : 'missing')
+        s.upsertWorkspace.run(
+          workspace.workspaceId,
+          workspace.name,
+          workspace.path,
+          availability,
+          gitJsonOf(availability, {
+            checkout: workspace.capabilities.git,
+            ...(workspace.git ? { git: workspace.git } : {}),
+          }),
+          workspace.lastUsedAt === null ? null : Date.parse(workspace.lastUsedAt),
           at,
-          event.payload.workspace.workspaceId,
         )
+        // Checked, not assumed: what a listing reads back, recency included,
+        // is what the event said (I2).
+        const written = readWorkspace(database, workspace.workspaceId)
+        if (!isDeepStrictEqual(written, WorkspaceSchema.parse(workspace))) {
+          throw new ProjectionRefusal(
+            `workspace.updated for ${workspace.workspaceId} says ${JSON.stringify(workspace)}; its row reads ${JSON.stringify(written)}`,
+          )
+        }
         return
-      case 'workspace.removed':
-        // The registry deletes the row itself; sessions cascade with it.
+      }
+      case 'workspace.removed': {
+        // Its sessions were deleted and its drafts detached by events before
+        // this one; nothing is left for the foreign keys to take silently.
+        const { workspaceId } = event.payload
+        if (s.sessionInWorkspace.get(workspaceId)) {
+          throw new ProjectionRefusal(
+            `Workspace ${workspaceId} still has sessions; delete them first`,
+          )
+        }
+        if (s.liveWorkspaceDraft.get(workspaceId)) {
+          throw new ProjectionRefusal(
+            `Workspace ${workspaceId} still has drafts; detach them first`,
+          )
+        }
+        if (s.deleteWorkspace.run(workspaceId).changes !== 1) {
+          throw new ProjectionRefusal(`Cannot remove missing workspace ${workspaceId}`)
+        }
         return
-      case 'session.updated':
+      }
+      case 'session.updated': {
+        // The activity time it states, when it states one: the status pass
+        // restates the row's own, so projecting it again changes nothing.
+        const movedAt =
+          event.payload.updatedAt === undefined ? undefined : Date.parse(event.payload.updatedAt)
         if (event.payload.status !== undefined) {
           if (
-            s.updateSessionStatus.run(event.payload.status, at, event.payload.sessionId).changes !==
-            1
+            s.updateSessionStatus.run(event.payload.status, movedAt ?? at, event.payload.sessionId)
+              .changes !== 1
           ) {
-            throw new Error(`Cannot update status for missing session ${event.payload.sessionId}`)
+            throw new ProjectionRefusal(
+              `Cannot update status for missing session ${event.payload.sessionId}`,
+            )
+          }
+        } else if (movedAt !== undefined) {
+          if (s.updateSessionTime.run(movedAt, event.payload.sessionId).changes !== 1) {
+            throw new ProjectionRefusal(
+              `Cannot move the time of missing session ${event.payload.sessionId}`,
+            )
           }
         }
         if (event.payload.title !== undefined) {
           const titleSource = event.payload.titleSource ?? null
-          s.updateSessionTitle.run(
+          const titled = s.updateSessionTitle.run(
             event.payload.title,
             titleSource === 'generated' ? 'provider' : titleSource,
             titleSource,
-            at,
             event.payload.sessionId,
           )
+          if (titled.changes !== 1) {
+            throw new ProjectionRefusal(
+              `Session ${event.payload.sessionId} is missing or keeps its title over a ${titleSource ?? 'source-less'} one`,
+            )
+          }
         }
         if (event.payload.settledAt !== undefined) {
           const settledAt =
             event.payload.settledAt === null ? null : Date.parse(event.payload.settledAt)
           if (s.updateSessionSettled.run(settledAt, event.payload.sessionId).changes !== 1) {
-            throw new Error(`Cannot settle missing session ${event.payload.sessionId}`)
+            throw new ProjectionRefusal(`Cannot settle missing session ${event.payload.sessionId}`)
           }
         }
         if (event.payload.doneAt !== undefined) {
           const doneAt = event.payload.doneAt === null ? null : Date.parse(event.payload.doneAt)
           if (s.updateSessionDone.run(doneAt, event.payload.sessionId).changes !== 1) {
-            throw new Error(`Cannot acknowledge missing session ${event.payload.sessionId}`)
+            throw new ProjectionRefusal(
+              `Cannot acknowledge missing session ${event.payload.sessionId}`,
+            )
           }
         }
         if (event.payload.backgroundTasks !== undefined) {
-          // A roster reported while its session is being deleted has no row
-          // left to describe; that is not worth rolling the batch back for.
-          s.updateSessionBackground.run(
+          // Only a live session's runtime reports a roster, and a deletion
+          // drops the record first, so a missing row is a bug (I2).
+          const rostered = s.updateSessionBackground.run(
             event.payload.backgroundTasks.length > 0
               ? JSON.stringify(event.payload.backgroundTasks)
               : null,
             event.payload.sessionId,
           )
+          if (rostered.changes !== 1) {
+            throw new ProjectionRefusal(
+              `Cannot record background work for missing session ${event.payload.sessionId}`,
+            )
+          }
+          // Between turns the roster is all that says whether the session is
+          // working, so the rows say it: a resting session runs while it has
+          // background work and is idle once it has none. A failed session
+          // stays failed, and a turn in flight owns the status. The status
+          // pass announces the change (event-repository.ts).
+          if (event.payload.status === undefined) {
+            const row = s.selectSessionStatus.get(event.payload.sessionId) as
+              { status: string } | undefined
+            if (
+              row &&
+              (row.status === 'idle' || row.status === 'running') &&
+              !s.openTurnForSession.get(event.payload.sessionId)
+            ) {
+              const rests = event.payload.backgroundTasks.length > 0 ? 'running' : 'idle'
+              if (rests !== row.status)
+                s.updateSessionStatus.run(rests, at, event.payload.sessionId)
+            }
+          }
         }
         return
+      }
       case 'session.composer.updated':
-        // A selection reported while its session is being deleted has no row
-        // left to describe; that is not worth rolling the batch back for.
-        s.updateSessionComposer.run(
-          JSON.stringify(event.payload.composer),
-          event.payload.sessionId,
-        )
+        // The composer service publishes a selection only for a session that
+        // still has its row (composer-service.ts), so a missing one is a bug (I2).
+        if (
+          s.updateSessionComposer.run(
+            JSON.stringify(event.payload.composer),
+            event.payload.sessionId,
+          ).changes !== 1
+        ) {
+          throw new ProjectionRefusal(
+            `Cannot record a selection for missing session ${event.payload.sessionId}`,
+          )
+        }
         return
       case 'draft.saved':
         drafts.saved(event.payload.draft)
@@ -452,18 +624,56 @@ export function createEventProjector(
       case 'draft.deleted':
         drafts.deleted(event.payload, at)
         return
-      case 'composer.preferences.updated':
-      case 'provider.catalog.updated':
-        // The composer store already holds both; the log only carries them to clients.
+      case 'composer.preferences.updated': {
+        // The composer store's one writer (docs/sync-foundations.md §4.7.11).
+        const { workspaceId, providerId, preference, revision } = event.payload
+        composer.preference({ workspaceId, providerId }, preference, revision, at)
+        const row = readPreferenceRow(database, workspaceId, providerId)
+        const announced = WorkspaceComposerPreferenceSchema.parse(preference)
+        if (!row || !isDeepStrictEqual(preferenceFromRow(row), announced)) {
+          throw new ProjectionRefusal(
+            `Preference ${workspaceId}/${providerId} does not read back as announced`,
+          )
+        }
         return
-      case 'session.deleted':
-        s.deleteSession.run(event.payload.sessionId)
+      }
+      case 'provider.catalog.updated': {
+        const profile = event.payload.profile
+        composer.profile(profile)
+        const row = readProfileRow(database, profile.providerId)
+        if (
+          !row ||
+          !isDeepStrictEqual(profileFromRow(row), ProviderComposerProfileSchema.parse(profile))
+        ) {
+          throw new ProjectionRefusal(
+            `Profile ${profile.providerId} does not read back as announced`,
+          )
+        }
         return
+      }
+      case 'session.deleted': {
+        // Children first and its draft first, each with its own event.
+        const { sessionId } = event.payload
+        if (s.childOfSession.get(sessionId)) {
+          throw new ProjectionRefusal(
+            `Session ${sessionId} still has child sessions; delete them first`,
+          )
+        }
+        if (s.liveSessionDraft.get(sessionId)) {
+          throw new ProjectionRefusal(`Session ${sessionId} still has a draft; delete it first`)
+        }
+        if (s.deleteSession.run(sessionId).changes !== 1) {
+          throw new ProjectionRefusal(`Cannot delete missing session ${sessionId}`)
+        }
+        return
+      }
       case 'thread.created': {
         const session = s.selectSessionWorkspace.get(event.scope.sessionId) as
           { workspace_id: string } | undefined
         if (!session) {
-          throw new Error(`Cannot project thread for missing session ${event.scope.sessionId}`)
+          throw new ProjectionRefusal(
+            `Cannot project thread for missing session ${event.scope.sessionId}`,
+          )
         }
         s.insertThread.run(
           event.payload.thread.threadId,
@@ -493,18 +703,28 @@ export function createEventProjector(
           at,
           at,
         )
+        if (event.payload.turnState !== 'waiting') {
+          throw new ProjectionRefusal(
+            `A request leaves turn ${turnId} waiting, not ${event.payload.turnState}`,
+          )
+        }
         if (s.updateOpenTurnState.run('waiting', at, turnId, event.scope.threadId).changes !== 1) {
-          throw new Error(`Cannot mark missing or finished turn ${turnId} as waiting`)
+          throw new ProjectionRefusal(`Cannot mark missing or finished turn ${turnId} as waiting`)
         }
         s.updateSessionStatus.run('waiting', at, event.scope.sessionId)
         s.unsettleSession.run(event.scope.sessionId)
         return
       }
       case 'interaction.resolved':
-      case 'interaction.expired': {
+      case 'interaction.expired':
+      case 'interaction.cancelled': {
         const { response, turnId } = event.payload
         const resolved = s.resolvePendingInteraction.run(
-          event.name === 'interaction.expired' ? 'expired' : 'resolved',
+          event.name === 'interaction.expired'
+            ? 'expired'
+            : event.name === 'interaction.cancelled'
+              ? 'cancelled'
+              : 'resolved',
           JSON.stringify(response),
           at,
           at,
@@ -514,13 +734,19 @@ export function createEventProjector(
           response.kind,
         )
         if (resolved.changes !== 1) {
-          throw new Error(
+          throw new ProjectionRefusal(
             `Cannot resolve missing, mismatched, or settled interaction ${response.interactionId}`,
           )
         }
         const status = s.pendingInteractions.get(turnId) ? 'waiting' : 'running'
+        // The producer states the turn's state; the rows must agree (I2).
+        if (event.payload.turnState !== status) {
+          throw new ProjectionRefusal(
+            `${event.name} says turn ${turnId} is ${event.payload.turnState}; its requests say ${status}`,
+          )
+        }
         if (s.updateOpenTurnState.run(status, at, turnId, event.scope.threadId).changes !== 1) {
-          throw new Error(`Cannot resume missing or finished turn ${turnId}`)
+          throw new ProjectionRefusal(`Cannot resume missing or finished turn ${turnId}`)
         }
         s.updateSessionStatus.run(status, at, event.scope.sessionId)
         return
@@ -529,6 +755,14 @@ export function createEventProjector(
       case 'turn.interrupted':
       case 'turn.failed': {
         const turnId = event.payload.turnId
+        // Each open child got its own close event before this one (I3,
+        // turn-closure.ts); a terminal that would leave one open rolls back.
+        const open = closure.openChildren(turnId, event.scope.threadId)
+        if (open.length > 0) {
+          throw new ProjectionRefusal(
+            `Turn ${turnId} cannot end with open children: ${open.join(', ')}`,
+          )
+        }
         const state =
           event.name === 'turn.completed'
             ? 'completed'
@@ -538,26 +772,34 @@ export function createEventProjector(
         const finished = s.finishOpenTurn.run(
           state,
           event.name === 'turn.failed' ? event.payload.reason : null,
+          event.name === 'turn.failed' ? event.payload.message : null,
+          event.name === 'turn.interrupted' ? event.payload.reason : null,
           at,
           at,
           turnId,
           event.scope.threadId,
         )
         if (finished.changes !== 1) {
-          throw new Error(`Cannot finalize missing or finished turn ${turnId}`)
+          throw new ProjectionRefusal(`Cannot finalize missing or finished turn ${turnId}`)
         }
         s.finalizeTurnMessages.run(at, turnId)
-        s.cancelPendingInteractions.run(at, at, turnId)
         // The turn is over but the session is not resting while work it
         // started is still running in the background.
         const working = !!s.hasBackgroundTasks.get(event.scope.sessionId)
+        // A restart cut the turn off: nobody asked it to stop, so the session
+        // shows the failure, as a failed turn does.
+        const failedHere =
+          event.name === 'turn.failed' ||
+          (event.name === 'turn.interrupted' && event.payload.reason === 'server_restarted')
         const session = s.updateSessionStatus.run(
-          event.name === 'turn.failed' ? 'error' : working ? 'running' : 'idle',
+          failedHere ? 'error' : working ? 'running' : 'idle',
           at,
           event.scope.sessionId,
         )
         if (session.changes !== 1) {
-          throw new Error(`Cannot finalize turn for missing session ${event.scope.sessionId}`)
+          throw new ProjectionRefusal(
+            `Cannot finalize turn for missing session ${event.scope.sessionId}`,
+          )
         }
         // Only a completed turn is news, and only once nothing is left running:
         // the turn that reports the background result is the one that is done.

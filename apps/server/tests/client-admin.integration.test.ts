@@ -582,10 +582,13 @@ describe('clients the list must not lose', () => {
     phoneSocket.ws.on('message', (data) => seen.push(String(data)))
     const closed = once(phoneSocket.ws, 'close')
     host.server.sockets.retireClient(phone.client.clientId, 4403, 'grant_changed')
-    host.server.sockets.publishEvent({
-      type: 'event',
-      name: 'provider_health_changed',
-      payload: { providerId: 'opencode' },
+    host.server.sockets.deliver({
+      kind: 'broadcast',
+      event: {
+        type: 'event',
+        name: 'provider_health_changed',
+        payload: { providerId: 'opencode' },
+      },
     })
     expect((await closed)[0]).toBe(4403)
     expect(seen.filter((message) => message.includes('provider_health_changed'))).toEqual([])

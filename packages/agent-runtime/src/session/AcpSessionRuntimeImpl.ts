@@ -31,7 +31,7 @@ import {
   type PlanSnapshot,
   type QuestionAdapter,
 } from '../backends/acp/extensions.js'
-import { AuthRequiredError } from '../core/errors.js'
+import { AuthRequiredError, SessionUnknownError } from '../core/errors.js'
 import type {
   InteractionBroker,
   InteractionKind,
@@ -541,6 +541,11 @@ export class AcpSessionRuntimeImpl implements ManagedSessionRuntime {
         // which is recoverable — the next use respawns and tries the load
         // again — where a lost transcript is not.
         if (!isSessionNotFound(error)) throw error
+        // A session that must be loaded is not replaced: its transcript lives
+        // in the agent, and a new session would lose it without a word.
+        if (this.spec.load === 'require') {
+          throw new SessionUnknownError(this.providerId, this.spec.sessionId)
+        }
         this.sessionIdValue = undefined
         this.resumeCursorValue = undefined
         this.host.log({

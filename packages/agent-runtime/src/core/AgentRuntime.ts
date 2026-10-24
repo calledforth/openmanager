@@ -88,6 +88,8 @@ export type ProviderCatalog = {
 
 export type RuntimeSessionArgs = RuntimeRoute & {
   sessionId?: string
+  /** Load only, never create (`SessionRuntimeSpec.load`); every respawn uses it too. */
+  load?: 'require'
   resumeCursor?: string
   /** Durable user intent (the workspace's remembered model/mode/config values
    * plus any per-job override). Reconciled against the runtime's applied-state
@@ -840,6 +842,7 @@ export class AgentRuntime {
         workspaceId: args.workspaceId,
         cwd: args.cwd,
         sessionId: args.sessionId,
+        ...(args.load ? { load: args.load } : {}),
         resumeCursor: args.resumeCursor,
         ...(desired ? { desiredConfig: desired } : {}),
       })
