@@ -232,7 +232,8 @@ function projectTurn(
   const reasoning = byTurn(thread.reasoning, turn.turnId)
   const tools = byTurn(thread.tools, turn.turnId)
   const order = byTurn(thread.order, turn.turnId)
-  const failure = thread.failures.find((item) => item.turnId === turn.turnId)
+  // The turn says why it failed, live and after a reload alike.
+  const failure = turn.failure
   const userRowKeys = new Map<string, string | undefined>()
   for (const message of messages) {
     if (message.role === 'user') {

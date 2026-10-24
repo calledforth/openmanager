@@ -27,10 +27,7 @@ type RuntimeEvent = Parameters<ReturnType<typeof createThreadService>['onRuntime
 function harness(database?: DatabaseSync) {
   const events: EventEnvelope[] = []
   const persistent =
-    database &&
-    createPersistentEventService(database, (record) => events.push(record.event), {
-      sessionProviderId: () => 'opencode',
-    })
+    database && createPersistentEventService(database, (record) => events.push(record.event), {})
   const settled = new Set<string>()
   /** Modes the host reported starting a turn in, as the composer would hear them. */
   const sessionModes: Array<{ sessionId: string; modeId: string }> = []

@@ -72,11 +72,13 @@ describe('headless listener', () => {
     const directory = await dataDir()
     const config = { port: 0, dataDir: directory, logLevel: 'info' as const }
     const first = await startServer(config)
+    let firstInstance: unknown
     const expected = {
       environmentId: first.identity.environmentId,
       label: first.identity.label,
       protocolVersion: PROTOCOL_VERSION,
       capabilities: SERVER_CAPABILITIES,
+      instanceId: expect.any(String),
     }
     try {
       const response = await fetch(`${first.url}/bootstrap`)
@@ -84,6 +86,7 @@ describe('headless listener', () => {
       expect(response.status).toBe(200)
       expect(response.headers.get('content-type')).toBe('application/json; charset=utf-8')
       const firstBootstrap = BootstrapResponseSchema.parse(await response.json())
+      firstInstance = firstBootstrap.instanceId
       expect(firstBootstrap).toMatchObject({
         ...expected,
         websocketUrl: `ws://127.0.0.1:${first.port}/ws`,
@@ -123,11 +126,16 @@ describe('headless listener', () => {
     }
     const restarted = await startServer(config)
     servers.push(restarted)
-    expect(await (await fetch(`${restarted.url}/bootstrap`)).json()).toEqual({
+    const again = BootstrapResponseSchema.parse(
+      await (await fetch(`${restarted.url}/bootstrap`)).json(),
+    )
+    expect(again).toEqual({
       ...expected,
       providers: expect.any(Array),
       websocketUrl: `ws://127.0.0.1:${restarted.port}/ws`,
     })
+    // The same environment, a new process (docs/sync-foundations.md §4.7.3).
+    expect(again.instanceId).not.toBe(firstInstance)
   })
 
   it('starts cleanly when the last process died with background work running', async () => {
@@ -217,6 +225,7 @@ describe('headless listener', () => {
       label: server.identity.label,
       protocolVersion: PROTOCOL_VERSION,
       capabilities: SERVER_CAPABILITIES,
+      instanceId: expect.any(String),
       providers: expect.any(Array),
       websocketUrl: `ws://127.0.0.1:${server.port}/ws`,
     })

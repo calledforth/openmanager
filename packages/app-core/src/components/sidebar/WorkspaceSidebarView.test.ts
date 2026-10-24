@@ -7,7 +7,7 @@ const session = (
   externalId: string,
   updatedAt: string,
   extra: Partial<SidebarSession> = {},
-): SidebarSession => ({ externalId, status: 'ready', updatedAt, ...extra })
+): SidebarSession => ({ externalId, status: 'ready', providerId: 'opencode', updatedAt, ...extra })
 
 const workspace = (path: string, sessions: SidebarSession[]): SidebarWorkspace => ({
   path,

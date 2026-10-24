@@ -12,6 +12,7 @@ import {
   SessionSummarySchema,
   ToolCallStateSchema,
   TurnSchema,
+  TURN_FAILURE_MESSAGES,
   resolvePageLimit,
   type ActivityRef,
   type HistoryCursor,
@@ -25,6 +26,7 @@ import {
   type SessionSummary,
   type Thread,
   type Turn,
+  type TurnFailureReason,
   type TurnStart,
 } from '@openmanager/protocol/node'
 import {
@@ -103,9 +105,42 @@ type TurnRow = {
   thread_id: string
   state: string
   origin?: string | null
+  command_id: string | null
+  failure_reason: string | null
+  failure_message: string | null
+  interrupted_by: string | null
   started_at: number
   finished_at: number | null
 }
+
+/** A turn as every read states it: history pages, snapshots and a retried send's answer. */
+function turnFromRow(row: TurnRow): Turn {
+  return TurnSchema.parse({
+    turnId: row.turn_id,
+    threadId: row.thread_id,
+    state: row.state,
+    startedAt: new Date(row.started_at).toISOString(),
+    ...(row.finished_at === null ? {} : { finishedAt: new Date(row.finished_at).toISOString() }),
+    ...(row.origin ? { origin: row.origin } : {}),
+    ...(row.command_id ? { commandId: row.command_id } : {}),
+    // A failure recorded before its message was kept says only its reason.
+    ...(row.state === 'failed' && row.failure_reason
+      ? {
+          failure: {
+            reason: row.failure_reason,
+            message:
+              row.failure_message ??
+              TURN_FAILURE_MESSAGES[row.failure_reason as TurnFailureReason] ??
+              '',
+          },
+        }
+      : {}),
+    ...(row.state === 'interrupted' && row.interrupted_by
+      ? { interruptedBy: row.interrupted_by }
+      : {}),
+  })
+}
+
 type TurnActivityRow = {
   activity_id: string
   turn_id: string
@@ -274,17 +309,7 @@ export function listSessionHistory(
   const pageRows = rows.slice(0, limit)
   const messages = pageRows.map((row) => messageFromRow(database, row)).reverse()
   const turns = (database.prepare(TURNS_FOR_THREAD_SQL).all(query.threadId) as TurnRow[]).map(
-    (row) =>
-      TurnSchema.parse({
-        turnId: row.turn_id,
-        threadId: row.thread_id,
-        state: row.state,
-        startedAt: new Date(row.started_at).toISOString(),
-        ...(row.finished_at === null
-          ? {}
-          : { finishedAt: new Date(row.finished_at).toISOString() }),
-        ...(row.origin ? { origin: row.origin } : {}),
-      }),
+    turnFromRow,
   )
   // The reasoning and tool calls that belong to this page: everything after
   // the newest message the next older page will carry, up to this page's own
@@ -432,6 +457,33 @@ export function hasInteraction(
     .get(query.interactionId, query.threadId, query.sessionId)
 }
 
+/** The requests of a turn its rows say were cancelled (by its end, or a restart). */
+export function cancelledInteractionIds(database: DatabaseSync, turnId: string): Set<string> {
+  const rows = database
+    .prepare("SELECT interaction_id FROM interactions WHERE turn_id = ? AND state = 'cancelled'")
+    .all(turnId) as { interaction_id: string }[]
+  return new Set(rows.map((row) => row.interaction_id))
+}
+
+/**
+ * The turn a thread of this session still holds open in its rows, if any.
+ * After a boot whose recovery of that turn failed (db/boot-reconcile.ts),
+ * the rows hold an open turn no process is running.
+ */
+export function findOpenTurnId(
+  database: DatabaseSync,
+  query: { sessionId: string; threadId: string },
+): string | undefined {
+  const row = database
+    .prepare(
+      `SELECT turns.turn_id FROM turns JOIN threads ON threads.thread_id = turns.thread_id
+       WHERE turns.thread_id = ? AND threads.session_id = ? AND turns.state IN ('running', 'waiting')
+       LIMIT 1`,
+    )
+    .get(query.threadId, query.sessionId) as { turn_id: string } | undefined
+  return row?.turn_id
+}
+
 /**
  * The turn a command id already started in this thread, with the prompt it
  * recorded. A retry of that id answers with this turn rather than starting a
@@ -451,7 +503,7 @@ export function findTurnByCommandId(
     MessageRow | undefined
   if (!message) return undefined
   return {
-    turn: TurnSchema.parse({ turnId: turn.turn_id, threadId: turn.thread_id, state: turn.state }),
+    turn: turnFromRow(turn),
     userMessage: messageFromRow(database, message),
     commandId: query.commandId,
   }

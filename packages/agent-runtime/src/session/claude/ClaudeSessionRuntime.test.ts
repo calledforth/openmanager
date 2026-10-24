@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from 'vitest'
+import { SessionUnknownError } from '../../core/errors.js'
 import type { BackendEvent } from '../../backends/Backend.js'
 import { InteractionBroker } from '../../core/InteractionBroker.js'
 import { PermissionBroker } from '../../core/PermissionBroker.js'
@@ -109,6 +110,12 @@ describe('ClaudeSessionRuntime startup', () => {
     expect(sdk.last.options.resume).toBeUndefined()
     expect(names(events)).toContain('session_created')
     expect(names(events)).not.toContain('session_loaded')
+  })
+
+  it('creates nothing in place of a transcript that must be loaded', async () => {
+    const { runtime, events } = build({ sessionId: 'forgotten-session', load: 'require' })
+    await expect(runtime.start()).rejects.toBeInstanceOf(SessionUnknownError)
+    expect(names(events)).not.toContain('session_created')
   })
 
   it('emits nothing about a session that failed to initialize', async () => {

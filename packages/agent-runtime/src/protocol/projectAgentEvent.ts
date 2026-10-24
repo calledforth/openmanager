@@ -1,5 +1,6 @@
 import type { AgentEvent } from '@agentpack/contract'
 import {
+  TURN_FAILURE_MESSAGES,
   ProofEventSchema,
   type ProofEvent,
   type SubscriptionScope,
@@ -23,6 +24,12 @@ export interface ProtocolEventContext {
   completionState?: 'completed' | 'interrupted' | 'failed'
   /** Host classification of a terminal failure; provider diagnostics never cross this boundary. */
   failureReason?: TurnFailureReason
+  /**
+   * The turn's state once a resolved request is settled: `waiting` while
+   * another request of the turn is still open. The host knows its open
+   * requests; a request always leaves its turn `waiting`.
+   */
+  turnState?: 'running' | 'waiting'
 }
 
 /** Map provider events into the provider-neutral proof protocol. */
@@ -56,6 +63,7 @@ export function projectAgentEvent(
   const requested = (kind: 'permission' | 'question' | 'plan', fields: object) =>
     emit('interaction.requested', threadScope, {
       turnId: required('turnId'),
+      turnState: 'waiting',
       interaction: {
         ...fields,
         kind,
@@ -81,8 +89,13 @@ export function projectAgentEvent(
         turnId: required('turnId'),
         response: { kind, interactionId: required('interactionId'), outcome },
         resolvedByClientId: context.resolvedByClientId ?? null,
+        turnState: requiredTurnState(),
       },
     )
+  const requiredTurnState = () => {
+    if (!context.turnState) throw new Error('Protocol projection requires host turnState')
+    return context.turnState
+  }
   const failed = (reason: TurnFailureReason = context.failureReason ?? 'provider_error') =>
     emit('turn.failed', threadScope, {
       turnId: required('turnId'),
@@ -98,15 +111,21 @@ export function projectAgentEvent(
     case 'process_exited':
       if (!context.turnId) return null
       if (context.completionState === 'interrupted') {
-        return emit('turn.interrupted', threadScope, { turnId: required('turnId') })
+        return emit('turn.interrupted', threadScope, { turnId: required('turnId'), reason: 'user' })
       }
       return failed(context.failureReason ?? 'provider_process_exited')
     case 'session_created':
+      // The whole row, in the canonical form a listing reads back (§4.7.2).
       return emit('session.created', environmentScope, {
         session: {
           sessionId: context.sessionId,
           workspaceId: context.workspaceId,
           title: context.sessionTitle ?? null,
+          status: 'idle',
+          providerId: source.providerId,
+          updatedAt: new Date(Date.parse(source.timestamp)).toISOString(),
+          settledAt: null,
+          doneAt: null,
         },
       })
     case 'session_loaded':
@@ -122,7 +141,7 @@ export function projectAgentEvent(
     case 'prompt_started': {
       const turnId = required('turnId')
       return emit('turn.started', threadScope, {
-        turn: { turnId, threadId: context.threadId, state: 'running' },
+        turn: { turnId, threadId: context.threadId, state: 'running', startedAt: source.timestamp },
         userMessage: {
           messageId: required('messageId'),
           threadId: context.threadId,
@@ -139,6 +158,7 @@ export function projectAgentEvent(
           turnId: required('turnId'),
           threadId: context.threadId,
           state: 'running',
+          startedAt: source.timestamp,
           origin: 'background',
         },
       })
@@ -153,6 +173,8 @@ export function projectAgentEvent(
         threadScope,
         {
           turnId: required('turnId'),
+          // An interrupt a provider reports is the user's: a restart never reaches here.
+          ...(state === 'interrupted' ? { reason: 'user' } : {}),
           ...(state === 'failed'
             ? {
                 reason: context.failureReason ?? 'provider_error',
@@ -248,16 +270,5 @@ export function projectAgentEvent(
 }
 
 function failureMessage(reason: TurnFailureReason): string {
-  switch (reason) {
-    case 'provider_process_exited':
-      return 'The provider process exited before the turn completed.'
-    case 'provider_process_crashed':
-      return 'The provider process crashed before the turn completed.'
-    case 'authentication_required':
-      return 'The provider requires authentication.'
-    case 'capability_missing':
-      return 'The provider does not support this operation.'
-    case 'provider_error':
-      return 'The provider failed to complete the turn.'
-  }
+  return TURN_FAILURE_MESSAGES[reason]
 }

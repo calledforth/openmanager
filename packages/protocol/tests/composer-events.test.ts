@@ -97,9 +97,20 @@ describe('live composer state wire contract', () => {
     ).toBe(false)
     expect(
       ProofEventSchemas[name].parse(
-        event(name, { workspaceId: 'workspace-1', providerId: 'cursor', preference: {} }),
+        event(name, {
+          workspaceId: 'workspace-1',
+          providerId: 'cursor',
+          preference: {},
+          revision: 1,
+        }),
       ).payload.preference,
     ).toEqual({})
+    // The server's count of the preference's changes travels with it.
+    expect(
+      ProofEventSchemas[name].safeParse(
+        event(name, { workspaceId: 'workspace-1', providerId: 'cursor', preference: {} }),
+      ).success,
+    ).toBe(false)
   })
 
   it('carries what a provider and each of its models accept in a prompt', () => {

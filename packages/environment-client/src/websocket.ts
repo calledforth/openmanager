@@ -9,10 +9,10 @@ import {
   SESSION_CREATE_EXPLICIT_CAPABILITY,
   SERVER_SHUTDOWN_CLOSE_CODE,
   SERVER_SHUTDOWN_CLOSE_REASON,
-  ProofEventSchema,
   ProviderHealthChangedEventSchema,
   ServerMessageSchema,
   SubscriptionEventSchema,
+  SubscriptionTransientSchema,
   advanceClientHeartbeat,
   artifactPath,
   createClientHeartbeatState,
@@ -32,13 +32,16 @@ import {
   type ReplayCommand,
   type SubscriptionScope,
   type Thread,
+  type TransientEvent,
   UploadResultSchema,
   WorkspaceUnavailableDetailsSchema,
 } from '@openmanager/protocol'
 import { z } from 'zod'
+import { namesUnknownTurn } from '@agentpack/view/protocol'
 import { EnvironmentClientError, isEnvironmentClientError } from './errors'
 import { applyDraftList, applyDraftsUnlisted } from './draft-state'
 import { createDraftSync } from './draft-sync'
+import { placeRecord, placeTransient } from './placement'
 import {
   applyActiveSession,
   applyActiveThread,
@@ -47,29 +50,30 @@ import {
   applyConnection,
   applyEnvironment,
   applyEvent,
-  applyInteractionResolved,
   applyProviderBootstrap,
   applyProviderCatalog,
   applyProviderHealth,
   applyProviderProbe,
-  applySessionCreated,
   applySessionHistory,
   applySessionList,
   applySessionOpen,
   applySessionOpening,
   applySessionRemoved,
-  applySessionAcknowledged,
-  applySessionTitle,
   applySnapshot,
   applyThreadHydration,
   applyTurnSendFailed,
   applyTurnSending,
-  applyTurnStarted,
   applyWorkspaceList,
   applyWorkspaceRemoved,
   selectSessionList,
 } from './state'
-import { createSettleTracker } from './settle'
+import {
+  dropOverlayEntry,
+  dropPreferenceRequest,
+  preferenceKey as overlayPreferenceKey,
+  settleAnswered,
+  updateOverlay,
+} from './overlay'
 import { createEnvironmentStore, type EnvironmentStore } from './store'
 import type {
   ComposerPreferenceTarget,
@@ -191,6 +195,14 @@ type Pending = {
   reject: (error: EnvironmentClientError) => void
 }
 
+/** One frame of a scope, as the server sent it. */
+type Frame =
+  | { kind: 'record'; record: DurableEvent }
+  | { kind: 'transient'; after: Cursor; event: TransientEvent }
+
+/** A frame waiting for a catch-up; `trigger` marks the one that started it. */
+type Held = { frame: Frame; trigger?: true }
+
 type Subscription = {
   scope: SubscriptionScope
   subscriptionId: string | null
@@ -199,7 +211,19 @@ type Subscription = {
   /** Last applied durable event of the scope; what a reconnect resumes from. */
   cursor: Cursor | null
   recovery?: Promise<void>
-  buffered?: DurableEvent[]
+  /**
+   * Set from the moment a catch-up (`subscription.replay`) is sent until its
+   * answer is applied: every frame of the scope waits here, in arrival
+   * order, and is placed against the answer's cursor afterwards
+   * (docs/sync-foundations.md §5.2).
+   */
+  held?: Held[]
+  /**
+   * A record named a turn the thread does not hold: a protocol error the
+   * client answers with a fresh snapshot of the scope, never by inventing the
+   * turn (docs/sync-foundations.md §3.5).
+   */
+  needsSnapshot?: boolean
 }
 
 const scopeKey = (scope: SubscriptionScope) =>
@@ -315,7 +339,6 @@ export function createWebSocketEnvironmentClient(
       retriesExhausted: false,
     }),
   )
-  const settles = createSettleTracker(store)
 
   let socket: WebSocketLike | null = null
   let ready = false
@@ -334,7 +357,6 @@ export function createWebSocketEnvironmentClient(
   const clientListListeners = new Set<(list: AuthorizedClientList) => void>()
   const queued: Array<() => void> = []
   const subscriptions = new Map<string, Subscription>()
-  const transientIds = new Set<string>()
 
   const patchConnection = (patch: Parameters<typeof applyConnection>[1]) =>
     store.update((state) => applyConnection(state, patch))
@@ -414,16 +436,17 @@ export function createWebSocketEnvironmentClient(
     ready = false
     stopHeartbeat()
     connectionGeneration += 1
-    openGeneration += 1
+    const closedError = new EnvironmentClientError('unavailable', reason || 'Connection closed.', {
+      code,
+    })
+    overtakeOpens({ kind: 'closed', error: closedError })
     for (const subscription of subscriptions.values()) {
       subscription.subscriptionId = null
       subscription.inflight = false
-      subscription.buffered = undefined
+      subscription.held = undefined
       subscription.recovery = undefined
     }
-    rejectAllPending(
-      new EnvironmentClientError('unavailable', reason || 'Connection closed.', { code }),
-    )
+    rejectAllPending(closedError)
     if (!closedSocket) return
     if (disposed || manualClose) {
       // A deliberate close is not a failed retry, so it must not read as offline.
@@ -475,6 +498,10 @@ export function createWebSocketEnvironmentClient(
     current?.close(1000, 'client_rejected')
   }
 
+  /** The server process this transport last reached, and whether the latest handshake met a new one. */
+  let serverInstance: string | undefined
+  let serverRestarted = false
+
   const handleHandshake = (command: ProtocolHandshakeCommand, raw: unknown) => {
     let result: ReturnType<typeof parseProtocolHandshakeResult>
     try {
@@ -506,6 +533,12 @@ export function createWebSocketEnvironmentClient(
     }
     environmentId = bootstrap.environmentId
     capabilities = new Set(bootstrap.capabilities)
+    // A different server process than the last one this transport reached:
+    // the resync reopens the active chat even though its scopes are still
+    // held, so the provider is loaded before the user types. A backup only:
+    // the server loads a chat for any command itself (§4.7.3).
+    serverRestarted = serverInstance !== undefined && serverInstance !== bootstrap.instanceId
+    serverInstance = bootstrap.instanceId
     // The handshake already names the environment, so views can label it
     // without an `environment.get` round trip (or a server that lacks one).
     const label = typeof bootstrap.label === 'string' ? bootstrap.label.trim() : ''
@@ -566,52 +599,130 @@ export function createWebSocketEnvironmentClient(
   }
 
   /**
-   * Fold one durable record in, at most once. Cursors belong to scopes, not
-   * sockets or subscription IDs, so the scope is the stable key even while an
-   * acknowledgement is in flight, and a record at or below the last applied
-   * sequence of the same epoch is a repeat: a replayed tail overlapping what
-   * arrived live, or a live event the environment sent twice.
+   * Fold one durable record the placement table said to apply, and advance
+   * the scope's cursor to it. Cursors belong to scopes, not sockets or
+   * subscription IDs, so the scope is the stable key even while an
+   * acknowledgement is in flight.
    */
-  const applyRecord = (record: DurableEvent) => {
-    const subscription = subscriptions.get(scopeKey(record.cursor.scope))
-    if (subscription) {
-      const cursor = subscription.cursor
-      if (
-        cursor &&
-        cursor.epoch === record.cursor.epoch &&
-        record.cursor.sequence <= cursor.sequence
-      ) {
-        return
-      }
-      subscription.cursor = record.cursor
+  const applyRecord = (subscription: Subscription, record: DurableEvent) => {
+    const scope = record.cursor.scope
+    const thread = scope.type === 'thread' ? store.getState().threads[scope.threadId] : undefined
+    if (thread && namesUnknownTurn(thread, record.event)) {
+      subscription.needsSnapshot = true
+      return
     }
+    subscription.cursor = record.cursor
     foldEvent(record.event)
   }
 
   /**
-   * A preference event is the environment's own ordering of writes, so it
-   * takes a ticket like a landed write: the answer to a request issued before
-   * it describes an older value and must not replace it.
+   * Place one frame against the scope's cursor (placement.ts) and act on
+   * it. `live` frames arrived outside any catch-up; `held` ones waited for
+   * one; `retry` is the frame that started the catch-up just answered. That
+   * one gets no second recovery: if the answer still cannot place it, the
+   * server said something it cannot back, and it is dropped.
    */
-  const foldEvent = (event: ProofEvent) => {
-    if (event.name === 'composer.preferences.updated') {
-      appliedPreferenceWrites.set(preferenceKey(event.payload), ++preferenceTickets)
+  const route = (subscription: Subscription, frame: Frame, mode: 'live' | 'held' | 'retry') => {
+    const placement =
+      frame.kind === 'record'
+        ? placeRecord(subscription.cursor, frame.record.cursor)
+        : placeTransient(subscription.cursor, frame.after, mode !== 'live')
+    if (placement === 'apply') {
+      if (frame.kind === 'record') applyRecord(subscription, frame.record)
+      else foldEvent(frame.event)
+    } else if (placement === 'recover') {
+      if (mode === 'retry') {
+        console.warn('environment-client: a frame still does not follow the caught-up cursor', {
+          scope: subscription.scope,
+          kind: frame.kind,
+        })
+      } else recoverFrom(subscription, frame)
     }
-    const folded = settles.mask(event)
-    store.update((state) => applyEvent(state, folded))
   }
+
+  /**
+   * Something this client should have received is missing, or its epoch is
+   * stale: catch up from the cursor, holding `frame` until the answer. The
+   * live subscription is released first; the server answers commands in
+   * order, so the replay's read covers everything it would have carried.
+   */
+  const recoverFrom = (subscription: Subscription, frame: Frame) => {
+    if (subscription.held) {
+      subscription.held.push({ frame })
+      return
+    }
+    if (subscription.subscriptionId) sendUnsubscribe(subscription.subscriptionId)
+    subscription.subscriptionId = null
+    subscription.inflight = false
+    void recover(subscription, { frame, trigger: true }).catch(() => undefined)
+  }
+
+  /** A frame of a scope: held during a catch-up, placed at once otherwise. */
+  const receive = (subscription: Subscription, frame: Frame) => {
+    if (subscription.held) {
+      subscription.held.push({ frame })
+      return
+    }
+    route(subscription, frame, 'live')
+    resnapshot(subscription)
+  }
+
+  /**
+   * Place what waited for a catch-up, in arrival order. A frame that starts
+   * the next catch-up takes the rest along behind it.
+   */
+  const release = (subscription: Subscription, held: readonly Held[]) => {
+    for (const [index, entry] of held.entries()) {
+      if (subscription.held) {
+        subscription.held.push(...held.slice(index))
+        return
+      }
+      route(subscription, entry.frame, entry.trigger ? 'retry' : 'held')
+    }
+  }
+
+  /** Scopes already reported for a record naming a turn they do not hold. */
+  const reportedUnknownTurns = new Set<string>()
+
+  /** Replace a scope that received a record it cannot place (see `needsSnapshot`). */
+  const resnapshot = (subscription: Subscription) => {
+    if (!subscription.needsSnapshot || subscription.recovery) return
+    subscription.needsSnapshot = false
+    // A server bug, not a network one: said once per scope, so it is seen
+    // without flooding. Each such record costs one snapshot, no more.
+    const key = scopeKey(subscription.scope)
+    if (!reportedUnknownTurns.has(key)) {
+      reportedUnknownTurns.add(key)
+      console.warn(
+        'environment-client: a record named a turn this thread does not hold; replacing the thread from a snapshot',
+        { scope: subscription.scope },
+      )
+    }
+    if (subscription.subscriptionId) sendUnsubscribe(subscription.subscriptionId)
+    subscription.subscriptionId = null
+    subscription.inflight = false
+    subscription.cursor = null
+    void recover(subscription).catch(() => undefined)
+  }
+
+  const foldEvent = (event: ProofEvent) => store.update((state) => applyEvent(state, event))
 
   const handleEvent = (raw: unknown) => {
     const live = SubscriptionEventSchema.safeParse(raw)
     if (live.success) {
       const record = live.data.payload.record
       const subscription = subscriptions.get(scopeKey(record.cursor.scope))
-      if (!subscription) return
-      if (subscription.buffered) {
-        subscription.buffered.push(record)
-        return
-      }
-      applyRecord(record)
+      if (subscription) receive(subscription, { kind: 'record', record })
+      return
+    }
+    // A transient goes only to the subscriptions of its scope, placed after
+    // the record it followed; a scope this client does not hold has no use
+    // for it.
+    const transient = SubscriptionTransientSchema.safeParse(raw)
+    if (transient.success) {
+      const { after, event } = transient.data.payload
+      const subscription = subscriptions.get(scopeKey(after.scope))
+      if (subscription) receive(subscription, { kind: 'transient', after, event })
       return
     }
     // The device list goes to admin holders as a whole current reading.
@@ -626,13 +737,6 @@ export function createWebSocketEnvironmentClient(
     if (health.success) {
       const { providerId, health: next } = health.data.payload
       store.update((state) => applyProviderHealth(state, providerId, next))
-      return
-    }
-    const transient = ProofEventSchema.safeParse(raw)
-    if (transient.success && !transientIds.has(transient.data.eventId)) {
-      transientIds.add(transient.data.eventId)
-      if (transientIds.size > 4096) transientIds.delete(transientIds.values().next().value!)
-      foldEvent(transient.data)
     }
   }
 
@@ -801,8 +905,12 @@ export function createWebSocketEnvironmentClient(
     }
   }
 
-  /** Snapshot and live registration share one server boundary; reconnect uses its cursor. */
-  const recover = (subscription: Subscription): Promise<void> => {
+  /**
+   * Snapshot and live registration share one server boundary; reconnect uses
+   * its cursor. Frames of the scope are held from the request until the
+   * answer is applied, `first` (the frame that asked for it) ahead of them.
+   */
+  const recover = (subscription: Subscription, first?: Held): Promise<void> => {
     if (subscription.recovery) return subscription.recovery
     if (subscription.subscriptionId || subscription.inflight) return Promise.resolve()
     if (
@@ -820,11 +928,11 @@ export function createWebSocketEnvironmentClient(
       name: REPLAY_NAME,
       payload: { scope: subscription.scope, cursor: subscription.cursor },
     }
-    subscription.buffered = []
+    subscription.held = first ? [first] : []
     const recovery = new Promise<void>((resolve, reject) => {
       const fail = (error: EnvironmentClientError) => {
         subscription.inflight = false
-        subscription.buffered = undefined
+        subscription.held = undefined
         if (subscriptions.get(key) === subscription && generation === connectionGeneration) {
           if (subscription.scope.type === 'thread') {
             const threadId = subscription.scope.threadId
@@ -864,7 +972,12 @@ export function createWebSocketEnvironmentClient(
           }
           subscription.subscriptionId = payload.subscriptionId
           if (payload.mode === 'replay') {
-            for (const record of payload.events) applyRecord(record)
+            // The exact tail after the cursor; one already held is a repeat.
+            for (const record of payload.events) {
+              if (placeRecord(subscription.cursor, record.cursor) !== 'drop') {
+                applyRecord(subscription, record)
+              }
+            }
             subscription.cursor = payload.to
             if (subscription.scope.type === 'thread') {
               const threadId = subscription.scope.threadId
@@ -881,9 +994,12 @@ export function createWebSocketEnvironmentClient(
             // Drafts are not in the snapshot either; they are listed again.
             if (subscription.scope.type === 'environment') store.update(applyDraftsUnlisted)
           }
-          const buffered = subscription.buffered ?? []
-          subscription.buffered = undefined
-          for (const record of buffered) applyRecord(record)
+          // The catch-up is over: what waited is placed against its cursor,
+          // and may start the next one.
+          const held = subscription.held ?? []
+          subscription.held = undefined
+          subscription.recovery = undefined
+          release(subscription, held)
           resolve()
         },
         reject: fail,
@@ -896,6 +1012,7 @@ export function createWebSocketEnvironmentClient(
     })
     const tracked = recovery.finally(() => {
       if (subscription.recovery === tracked) subscription.recovery = undefined
+      resnapshot(subscription)
     })
     subscription.recovery = tracked
     return tracked
@@ -1013,6 +1130,8 @@ export function createWebSocketEnvironmentClient(
   const resync = async () => {
     if (!environmentId) return
     const generation = connectionGeneration
+    const restarted = serverRestarted
+    serverRestarted = false
     const environment = { type: 'environment', environmentId } as const
     if (!subscriptions.has(scopeKey(environment))) subscribe(environment)
     // Every scope the previous socket held is recovered now rather than after
@@ -1075,9 +1194,10 @@ export function createWebSocketEnvironmentClient(
     if (
       activeSessionId &&
       supports('openSession') &&
-      (!subscriptions.has(
-        scopeKey({ type: 'session', environmentId, sessionId: activeSessionId }),
-      ) ||
+      (restarted ||
+        !subscriptions.has(
+          scopeKey({ type: 'session', environmentId, sessionId: activeSessionId }),
+        ) ||
         !capabilities.has(REPLAY_NAME) ||
         store.getState().sessions[activeSessionId]?.threadIds.length === 0)
     ) {
@@ -1088,53 +1208,93 @@ export function createWebSocketEnvironmentClient(
   }
 
   /**
-   * Composer answers carry the whole preference, and the session setters run
-   * asynchronously on the environment, so answers for one workspace and
-   * provider can arrive out of order. Every request takes a ticket when it is
-   * issued. A write is kept unless a later-issued write already landed. A read
-   * never outranks a write: it is dropped while a write for the same pair is
-   * unanswered (that answer is the newer truth) or once a later-issued write
-   * has landed.
-   *
-   * The pair is resolved when the answer arrives, not when the request leaves:
-   * a session may learn its provider in between, and a session or workspace
-   * removed in between must not get its preference back.
+   * Every command that shows its own effect before the environment confirms
+   * it takes a ticket, so only the newest request for a thing may clear its
+   * overlay entry (overlay.ts).
    */
-  let preferenceTickets = 0
-  const appliedPreferenceWrites = new Map<string, number>()
-  const pendingPreferenceWrites = new Set<() => ComposerPreferenceTarget | null>()
-  const preferenceKey = (target: ComposerPreferenceTarget) =>
-    JSON.stringify([target.workspaceId, target.providerId])
+  let overlayTickets = 0
+  const nextTicket = () => ++overlayTickets
 
-  const composerRequest = async <N extends Extract<WireCommandName, `composer.${string}`>>(
-    name: N,
-    payload: unknown,
-    kind: 'read' | 'write',
+  type PreferenceAnswer = { preference: WorkspaceComposerPreference; revision: number }
+
+  /**
+   * A read: the server's preference at its revision, applied only when newer
+   * than the one held, so an answer and an event are ordered by the server's
+   * number, never by arrival. The pair is resolved when the answer arrives: a
+   * workspace removed meanwhile must not get its preference back.
+   */
+  const composerRead = async (
+    payload: ComposerPreferenceTarget,
     resolveTarget: () => ComposerPreferenceTarget | null,
   ): Promise<WorkspaceComposerPreference> => {
-    const ticket = ++preferenceTickets
-    if (kind === 'write') pendingPreferenceWrites.add(resolveTarget)
-    let preference: WorkspaceComposerPreference
+    const answer = await request('composer.preferences.get', payload)
+    const target = resolveTarget()
+    if (target) {
+      store.update((state) =>
+        applyComposerPreference(state, target, answer.preference, answer.revision),
+      )
+    }
+    return answer.preference
+  }
+
+  /**
+   * A write: the requested pick shows at once as an overlay entry. Its
+   * acknowledgement names the revision the change produced and the preference
+   * it left; the entry shows that until server state holds the revision, and
+   * a failure drops it so the screen falls back to the server's own.
+   */
+  const composerWrite = async <N extends Extract<WireCommandName, `composer.${string}.set`>>(
+    name: N,
+    payload: unknown,
+    requested: ComposerPreferenceTarget | null,
+    patch: WorkspaceComposerPreference,
+    resolveTarget: () => ComposerPreferenceTarget | null,
+  ): Promise<WorkspaceComposerPreference> => {
+    const ticket = nextTicket()
+    const requestedKey = requested ? overlayPreferenceKey(requested) : undefined
+    if (requested && requestedKey) {
+      store.update((state) =>
+        updateOverlay(state, 'preferences', (entries) => ({
+          ...entries,
+          [requestedKey]: [
+            ...(entries[requestedKey] ?? []),
+            {
+              ticket,
+              ...requested,
+              patch,
+              ...(state.workspaces[requested.workspaceId] ? { listed: true as const } : {}),
+            },
+          ],
+        })),
+      )
+    }
+    let answer: PreferenceAnswer
     try {
-      preference = ((await request(name, payload)) as { preference: WorkspaceComposerPreference })
-        .preference
-    } finally {
-      pendingPreferenceWrites.delete(resolveTarget)
+      answer = (await request(name, payload)) as PreferenceAnswer
+    } catch (error) {
+      if (requestedKey) store.update((state) => dropPreferenceRequest(state, requestedKey, ticket))
+      throw error
     }
     const target = resolveTarget()
-    if (!target) return preference
-    const key = preferenceKey(target)
-    if ((appliedPreferenceWrites.get(key) ?? 0) > ticket) return preference
-    if (kind === 'read') {
-      for (const pendingTarget of pendingPreferenceWrites) {
-        const other = pendingTarget()
-        if (other && preferenceKey(other) === key) return preference
+    store.update((state) => {
+      const next = requestedKey ? dropPreferenceRequest(state, requestedKey, ticket) : state
+      if (!target) return next
+      const held = next.composerRevisions[target.workspaceId]?.[target.providerId]
+      if (held !== undefined && held >= answer.revision) return next
+      const key = overlayPreferenceKey(target)
+      const acknowledged = {
+        ticket,
+        ...target,
+        patch: {},
+        ...(next.workspaces[target.workspaceId] ? { listed: true as const } : {}),
+        acknowledged: { revision: answer.revision, preference: answer.preference },
       }
-    } else {
-      appliedPreferenceWrites.set(key, ticket)
-    }
-    store.update((state) => applyComposerPreference(state, target, preference))
-    return preference
+      return updateOverlay(next, 'preferences', (entries) => ({
+        ...entries,
+        [key]: [...(entries[key] ?? []), acknowledged],
+      }))
+    })
+    return answer.preference
   }
 
   /** An explicit pair, unless its workspace was listed when asked and is gone now. */
@@ -1157,7 +1317,159 @@ export function createWebSocketEnvironmentClient(
       : null
   }
 
+  /** Hide a session or workspace while it is removed; a failure shows it again. */
+  const removing = async (
+    id: string,
+    kind: 'session' | 'workspace',
+    send: () => Promise<unknown>,
+  ) => {
+    const ticket = nextTicket()
+    store.update((state) =>
+      updateOverlay(state, 'removals', (entries) => ({ ...entries, [id]: { ticket, kind } })),
+    )
+    try {
+      await send()
+    } catch (error) {
+      store.update((state) => dropOverlayEntry(state, 'removals', id, ticket))
+      throw error
+    }
+  }
+
+  /**
+   * Opens overtake one another (docs/sync-foundations.md §4.7.5). Each bump of
+   * the generation records what bumped it, so an open that finds itself
+   * overtaken knows its outcome: the newest open of the same session (whose
+   * own outcome it follows, through any chain), `superseded` for another
+   * session or a new selection, or the transport's error for a close.
+   */
+  type Overtaker =
+    | { kind: 'open'; sessionId: string; done: Promise<void> }
+    | { kind: 'select' }
+    | { kind: 'closed'; error: EnvironmentClientError }
   let openGeneration = 0
+  let overtaker: Overtaker = { kind: 'select' }
+  function overtakeOpens(by: Overtaker) {
+    openGeneration += 1
+    overtaker = by
+  }
+  const overtaken = (sessionId: string): Promise<void> => {
+    const by = overtaker
+    if (by.kind === 'open' && by.sessionId === sessionId) return by.done
+    if (by.kind === 'closed') return Promise.reject(by.error)
+    return Promise.reject(
+      new EnvironmentClientError('superseded', 'Another session was opened meanwhile.'),
+    )
+  }
+
+  /**
+   * One open of a session. It resolves only once its chat is loaded and
+   * subscribed: every thread ready, the session's scopes held. A thread that
+   * fails to load rejects it with that failure. Overtaken at any step, it
+   * takes the outcome `overtaken` gives (§4.7.5).
+   */
+  async function openSessionAt(sessionId: string, generation: number): Promise<void> {
+    const previous = store.getState().activeSessionId
+    store.update((state) => applySessionOpening(state, sessionId))
+    // Selected already, so the session left behind is released now, as
+    // `setActiveSession` does. Waiting for the reply would leak it: a later
+    // open, overtaking this one, would see this session as the previous.
+    const left =
+      previous && previous !== sessionId && store.getState().activeSessionId === sessionId
+        ? previous
+        : null
+    if (left) for (const scope of sessionScopes(left)) unsubscribe(scope)
+    let payload: WireResponsePayload<'session.open'>
+    try {
+      payload = await request('session.open', { sessionId })
+    } catch (error) {
+      if (generation !== openGeneration) return overtaken(sessionId)
+      if (isEnvironmentClientError(error) && error.code === 'not_found') {
+        store.update((state) => applySessionRemoved(state, sessionId))
+        throw error
+      }
+      store.update((state) => {
+        let next = state
+        for (const threadId of state.sessions[sessionId]?.threadIds ?? []) {
+          next = applyThreadHydration(next, threadId, 'failed')
+        }
+        return {
+          ...applyActiveSession(next, sessionId),
+          sessionOpenFailure: {
+            sessionId,
+            message: error instanceof Error ? error.message : 'Could not open this session.',
+            // A transport or programming failure is nobody's known code.
+            code:
+              isEnvironmentClientError(error) && error.code !== 'superseded'
+                ? error.code
+                : 'internal',
+            ...unavailableCause(error),
+          },
+        }
+      })
+      throw error
+    }
+    if (generation !== openGeneration) return overtaken(sessionId)
+    store.update((state) => {
+      const next = applyActiveSession(applySessionOpen(state, payload), sessionId)
+      return state.activeSessionId === sessionId &&
+        payload.threads.some((thread) => thread.threadId === state.activeThreadId)
+        ? applyActiveThread(next, state.activeThreadId)
+        : next
+    })
+    // A session not yet listed is selected only by the reply.
+    if (!left && previous && previous !== sessionId) {
+      for (const scope of sessionScopes(previous)) unsubscribe(scope)
+    }
+    // A thread that fails to load fails the open; the store still marks it.
+    let hydrationFailure: unknown
+    if (capabilities.has(REPLAY_NAME) && environmentId) {
+      subscribe({ type: 'session', environmentId, sessionId })
+      await Promise.all(
+        payload.threads.map((thread) =>
+          hydrateThread({ type: 'thread', environmentId: environmentId!, ...thread })
+            .then(() => {
+              if (generation === openGeneration)
+                store.update((state) => applyThreadHydration(state, thread.threadId, 'ready'))
+            })
+            .catch((error: unknown) => {
+              hydrationFailure ??= error
+              if (generation === openGeneration)
+                store.update((state) => applyThreadHydration(state, thread.threadId, 'failed'))
+            }),
+        ),
+      )
+      // Checked again after hydration: an open overtaken meanwhile never
+      // reports success for the old selection.
+      if (generation !== openGeneration) return overtaken(sessionId)
+      if (hydrationFailure) throw hydrationFailure
+      return
+    }
+    if (supports('loadSessionHistory')) {
+      await Promise.all(
+        payload.threads.map((thread) =>
+          commands
+            .loadSessionHistory({ sessionId, threadId: thread.threadId })
+            .catch((error: unknown) => {
+              hydrationFailure ??= error
+              if (generation !== openGeneration) return
+              store.update((state) => applyThreadHydration(state, thread.threadId, 'failed'))
+            }),
+        ),
+      )
+    } else {
+      store.update((state) => {
+        let next = state
+        for (const thread of payload.threads) {
+          next = applyThreadHydration(next, thread.threadId, 'ready')
+        }
+        return next
+      })
+    }
+    if (generation !== openGeneration) return overtaken(sessionId)
+    if (hydrationFailure) throw hydrationFailure
+    for (const scope of sessionScopes(sessionId)) subscribe(scope)
+  }
+
   const commands: EnvironmentCommands = {
     async getEnvironment() {
       const payload = await request('environment.get', null)
@@ -1177,16 +1489,17 @@ export function createWebSocketEnvironmentClient(
       return payload.workspaces
     },
     async addWorkspace(input) {
+      // An acknowledgement: the registration's own `workspace.updated` reaches
+      // the socket before this answer (docs/sync-foundations.md §4.7.10).
       const payload = await request('workspace.add', input)
-      store.update((state) => applyWorkspaceList(state, [payload.workspace]))
       return payload.workspace
     },
     async removeWorkspace(workspaceId) {
-      await request('workspace.remove', { workspaceId })
-      for (const session of selectSessionList(store.getState(), workspaceId)) {
+      const sessions = selectSessionList(store.getState(), workspaceId)
+      await removing(workspaceId, 'workspace', () => request('workspace.remove', { workspaceId }))
+      for (const session of sessions) {
         for (const scope of sessionScopes(session.sessionId)) unsubscribe(scope)
       }
-      store.update((state) => applyWorkspaceRemoved(state, workspaceId))
     },
     async resolveWorkspaceIcon(workspaceId) {
       const payload = await request('workspace.icon', { workspaceId })
@@ -1214,120 +1527,37 @@ export function createWebSocketEnvironmentClient(
         )
       }
       const payload = await request('session.create', input)
-      store.update((state) => {
-        const created = applySessionCreated(state, payload)
-        // Listed as it will be: on its provider, and working on the first
-        // message the environment has already started, so its card shows that
-        // from the first frame. Only from idle: a status an event already
-        // brought (the turn failed, or asks something) is newer than this.
-        const listed = created.sessions[payload.session.sessionId]!
-        const withProvider = {
-          ...created,
-          sessions: {
-            ...created.sessions,
-            [payload.session.sessionId]: {
-              ...listed,
+      // `session.created` is committed while the command runs, so it reaches
+      // the client before this answer (the server never lets an answer
+      // overtake a record). The session and its first message show from the
+      // answer as an overlay entry, laid only where server state lacks them,
+      // which goes once server state lists the session and its chat holds the
+      // turn (pending.creates, overlay.ts). Listed as it will be: at its
+      // announcement time, working on the first message if there is one.
+      store.update((state) =>
+        updateOverlay(state, 'creates', (entries) => ({
+          ...entries,
+          [payload.session.sessionId]: {
+            session: {
+              ...payload.session,
               providerId: input.providerId,
-              ...(payload.firstTurn && listed.status === 'idle'
-                ? { status: 'running' as const }
-                : {}),
+              status: payload.firstTurn ? 'running' : 'idle',
+              updatedAt: payload.announcedAt,
+              settledAt: null,
+              doneAt: null,
             },
+            thread: payload.thread,
+            ...(payload.firstTurn ? { firstTurn: payload.firstTurn } : {}),
           },
-        }
-        return payload.firstTurn
-          ? applyTurnStarted(withProvider, payload.thread, payload.firstTurn)
-          : withProvider
-      })
+        })),
+      )
       return payload
     },
-    async openSession(sessionId) {
-      const generation = ++openGeneration
-      const previous = store.getState().activeSessionId
-      store.update((state) => applySessionOpening(state, sessionId))
-      // Selected already, so the session left behind is released now, as
-      // `setActiveSession` does. Waiting for the reply would leak it: a later
-      // open, overtaking this one, would see this session as the previous.
-      const left =
-        previous && previous !== sessionId && store.getState().activeSessionId === sessionId
-          ? previous
-          : null
-      if (left) for (const scope of sessionScopes(left)) unsubscribe(scope)
-      let payload: WireResponsePayload<'session.open'>
-      try {
-        payload = await request('session.open', { sessionId })
-      } catch (error) {
-        if (generation !== openGeneration) throw error
-        if (isEnvironmentClientError(error) && error.code === 'not_found') {
-          store.update((state) => applySessionRemoved(state, sessionId))
-          throw error
-        }
-        store.update((state) => {
-          let next = state
-          for (const threadId of state.sessions[sessionId]?.threadIds ?? []) {
-            next = applyThreadHydration(next, threadId, 'failed')
-          }
-          return {
-            ...applyActiveSession(next, sessionId),
-            sessionOpenFailure: {
-              sessionId,
-              message: error instanceof Error ? error.message : 'Could not open this session.',
-              // A transport or programming failure is nobody's known code.
-              code: isEnvironmentClientError(error) ? error.code : 'internal',
-              ...unavailableCause(error),
-            },
-          }
-        })
-        throw error
-      }
-      if (generation !== openGeneration) return
-      store.update((state) => {
-        const next = applyActiveSession(applySessionOpen(state, payload), sessionId)
-        return state.activeSessionId === sessionId &&
-          payload.threads.some((thread) => thread.threadId === state.activeThreadId)
-          ? applyActiveThread(next, state.activeThreadId)
-          : next
-      })
-      // A session not yet listed is selected only by the reply.
-      if (!left && previous && previous !== sessionId) {
-        for (const scope of sessionScopes(previous)) unsubscribe(scope)
-      }
-      if (capabilities.has(REPLAY_NAME) && environmentId) {
-        subscribe({ type: 'session', environmentId, sessionId })
-        await Promise.all(
-          payload.threads.map((thread) =>
-            hydrateThread({ type: 'thread', environmentId: environmentId!, ...thread })
-              .then(() => {
-                if (generation === openGeneration)
-                  store.update((state) => applyThreadHydration(state, thread.threadId, 'ready'))
-              })
-              .catch(() => {
-                if (generation === openGeneration)
-                  store.update((state) => applyThreadHydration(state, thread.threadId, 'failed'))
-              }),
-          ),
-        )
-        return
-      }
-      if (supports('loadSessionHistory')) {
-        await Promise.all(
-          payload.threads.map((thread) =>
-            commands.loadSessionHistory({ sessionId, threadId: thread.threadId }).catch(() => {
-              if (generation !== openGeneration) return
-              store.update((state) => applyThreadHydration(state, thread.threadId, 'failed'))
-            }),
-          ),
-        )
-      } else {
-        store.update((state) => {
-          let next = state
-          for (const thread of payload.threads) {
-            next = applyThreadHydration(next, thread.threadId, 'ready')
-          }
-          return next
-        })
-      }
-      if (generation !== openGeneration) return
-      for (const scope of sessionScopes(sessionId)) subscribe(scope)
+    openSession(sessionId) {
+      openGeneration += 1
+      const done = openSessionAt(sessionId, openGeneration)
+      overtaker = { kind: 'open', sessionId, done }
+      return done
     },
     async loadSessionHistory(input) {
       const generation = connectionGeneration
@@ -1345,32 +1575,62 @@ export function createWebSocketEnvironmentClient(
       return payload
     },
     async renameSession(sessionId, title) {
-      const payload = await request('session.rename', { sessionId, title })
-      store.update((state) => applySessionTitle(state, sessionId, payload.session.title))
+      // The requested title shows until server state has it, or a newer one.
+      const ticket = nextTicket()
+      const from = store.getServerState().sessions[sessionId]?.title ?? null
+      store.update((state) =>
+        updateOverlay(state, 'renames', (entries) => ({
+          ...entries,
+          [sessionId]: { ticket, title, from },
+        })),
+      )
+      try {
+        await request('session.rename', { sessionId, title })
+      } catch (error) {
+        store.update((state) => dropOverlayEntry(state, 'renames', sessionId, ticket))
+        throw error
+      }
     },
     async regenerateSessionTitle(sessionId) {
-      const payload = await request('session.title.regenerate', { sessionId })
-      store.update((state) =>
-        applySessionTitle(state, sessionId, payload.session.title, 'generated'),
-      )
+      // The title and its source arrive on `session.updated`.
+      await request('session.title.regenerate', { sessionId })
     },
-    settleSession(sessionId, settled) {
-      return settles.settle(sessionId, settled, async () => {
-        const payload = await request('session.settle', { sessionId, settled })
-        return payload.settledAt
-      })
+    async settleSession(sessionId, settled) {
+      // The session moves at once, so the list animates on one render; the
+      // latest click owns what it shows until server state agrees.
+      const ticket = nextTicket()
+      store.update((state) =>
+        updateOverlay(state, 'settles', (entries) => ({
+          ...entries,
+          [sessionId]: { ticket, settled, inFlight: true, at: new Date().toISOString() },
+        })),
+      )
+      try {
+        await request('session.settle', { sessionId, settled })
+      } catch (error) {
+        store.update((state) => dropOverlayEntry(state, 'settles', sessionId, ticket))
+        throw error
+      }
+      store.update((state) => settleAnswered(state, sessionId, ticket))
     },
     async acknowledgeSession(sessionId) {
-      await request('session.acknowledge', { sessionId })
-      store.update((state) => applySessionAcknowledged(state, sessionId))
+      const ticket = nextTicket()
+      store.update((state) =>
+        updateOverlay(state, 'acks', (entries) => ({ ...entries, [sessionId]: { ticket } })),
+      )
+      try {
+        await request('session.acknowledge', { sessionId })
+      } catch (error) {
+        store.update((state) => dropOverlayEntry(state, 'acks', sessionId, ticket))
+        throw error
+      }
     },
     async stopBackgroundTasks(input) {
       await request('session.background.stop', input)
     },
     async deleteSession(sessionId) {
-      await request('session.delete', { sessionId })
+      await removing(sessionId, 'session', () => request('session.delete', { sessionId }))
       for (const scope of sessionScopes(sessionId)) unsubscribe(scope)
-      store.update((state) => applySessionRemoved(state, sessionId))
     },
     async sendTurn(input) {
       const commandId = input.commandId ?? randomId()
@@ -1382,11 +1642,9 @@ export function createWebSocketEnvironmentClient(
         applyTurnSending(state, thread, { commandId, text: input.text, artifactIds }),
       )
       try {
-        const payload = await request('turn.send', { ...input, artifactIds, commandId })
-        // An environment that predates the echoed id still confirms this row:
-        // we know which send the response answers.
-        store.update((state) => applyTurnStarted(state, thread, { ...payload, commandId }))
-        return payload
+        // The turn comes with its `turn.started`, which settles this echo by
+        // its command id; the answer only says the send was taken (§3.5).
+        return await request('turn.send', { ...input, artifactIds, commandId })
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error)
         store.update((state) => applyTurnSendFailed(state, thread, commandId, message))
@@ -1403,12 +1661,15 @@ export function createWebSocketEnvironmentClient(
           'This environment cannot build plans.',
         )
       }
-      const thread: Thread = { threadId: input.threadId, sessionId: input.sessionId }
       const { interactionId } = input.response
-      const settle = () => {
-        answerIds.delete(interactionId)
-        store.update((state) => applyInteractionResolved(state, thread, interactionId))
-      }
+      // The prompt is hidden until server state no longer lists it.
+      store.update((state) =>
+        updateOverlay(state, 'answers', (entries) => ({
+          ...entries,
+          [interactionId]: { threadId: input.threadId },
+        })),
+      )
+      const settle = () => answerIds.delete(interactionId)
       // An answer whose acknowledgement was lost may already have won. Sending
       // it again under the same id is a retry; a fresh id would be a rival.
       const answer = JSON.stringify({ response: input.response, build: input.build })
@@ -1419,9 +1680,11 @@ export function createWebSocketEnvironmentClient(
       try {
         await request('interaction.respond', { ...input, commandId })
       } catch (error) {
-        // Someone else answered first. The prompt is just as gone here, even
-        // if the event saying so was missed; the caller still hears it lost.
+        // Someone else answered first: the prompt stays hidden until the event
+        // says so, and the caller still hears it lost. Any other failure puts
+        // the prompt back.
         if (error instanceof EnvironmentClientError && error.code === 'conflict') settle()
+        else store.update((state) => dropOverlayEntry(state, 'answers', interactionId))
         throw error
       }
       settle()
@@ -1437,42 +1700,44 @@ export function createWebSocketEnvironmentClient(
       return payload.provider
     },
     getComposerPreference: (input) =>
-      composerRequest(
-        'composer.preferences.get',
+      composerRead(
         { workspaceId: input.workspaceId, providerId: input.providerId },
-        'read',
         workspacePreferenceTarget(input),
       ),
     setComposerPreference: (input) =>
-      composerRequest(
+      composerWrite(
         'composer.preferences.set',
         {
           workspaceId: input.workspaceId,
           providerId: input.providerId,
           preference: input.preference,
         },
-        'write',
+        { workspaceId: input.workspaceId, providerId: input.providerId },
+        input.preference,
         workspacePreferenceTarget(input),
       ),
     setSessionModel: (input) =>
-      composerRequest(
+      composerWrite(
         'composer.model.set',
         { sessionId: input.sessionId, modelId: input.modelId },
-        'write',
+        sessionPreferenceTarget(input.sessionId)(),
+        { modelId: input.modelId },
         sessionPreferenceTarget(input.sessionId),
       ),
     setSessionMode: (input) =>
-      composerRequest(
+      composerWrite(
         'composer.mode.set',
         { sessionId: input.sessionId, modeId: input.modeId },
-        'write',
+        sessionPreferenceTarget(input.sessionId)(),
+        { modeId: input.modeId },
         sessionPreferenceTarget(input.sessionId),
       ),
     setSessionConfigOption: (input) =>
-      composerRequest(
+      composerWrite(
         'composer.config_option.set',
         { sessionId: input.sessionId, configId: input.configId, value: input.value },
-        'write',
+        sessionPreferenceTarget(input.sessionId)(),
+        {},
         sessionPreferenceTarget(input.sessionId),
       ),
     browseFolders: (path, prefix) =>
@@ -1598,7 +1863,7 @@ export function createWebSocketEnvironmentClient(
       return parsed.data
     },
     setActiveSession: (sessionId) => {
-      openGeneration += 1
+      overtakeOpens({ kind: 'select' })
       const previous = store.getState().activeSessionId
       // Subscriptions outlive the store's active session, so a session left
       // behind here would be re-subscribed by the next reconnect resync and
@@ -1643,7 +1908,10 @@ export function createWebSocketEnvironmentClient(
       // Waiting edits stay in the store for the client that takes it over.
       drafts.dispose()
       connectionGeneration += 1
-      openGeneration += 1
+      overtakeOpens({
+        kind: 'closed',
+        error: new EnvironmentClientError('unavailable', 'Client is disposed.'),
+      })
       clearReconnect()
       stopHeartbeat()
       const current = socket

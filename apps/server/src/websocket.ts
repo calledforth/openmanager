@@ -7,6 +7,7 @@ import {
   advanceServerHeartbeat,
   ClientMessageSchema,
   createServerHeartbeatState,
+  CursorSchema,
   DurableEventSchema,
   HEARTBEAT_CAPABILITY,
   negotiateProtocolHandshake,
@@ -24,12 +25,12 @@ import {
   sameScope,
   SERVER_SHUTDOWN_CLOSE_CODE,
   SERVER_SHUTDOWN_CLOSE_REASON,
-  SubscriptionEventSchema,
+  SubscriptionScopeSchema,
+  TransientEventSchema,
   type BootstrapResponse,
   type CommandEnvelope,
   type Cursor,
   type ErrorCode,
-  type EventEnvelope,
   type ServerHeartbeatState,
   type SubscriptionScope,
 } from '@openmanager/protocol/node'
@@ -37,6 +38,8 @@ import { auditValue, type AuditLog } from './audit.ts'
 import type { AuthenticatedClient } from './authorized-clients.ts'
 import type { CommandContext } from './command-context.ts'
 import type { ReplayResult } from './db/replay.ts'
+import type { Delivery } from './event-delivery.ts'
+import type { Logger } from './logger.ts'
 import { remoteAddressKey, type BudgetKey } from './budget-key.ts'
 import type { RateLimiter, RateLimitPolicy } from './rate-limit.ts'
 import type { RequestGuard } from './request-guard.ts'
@@ -80,6 +83,13 @@ const rateLimited = (requestId: string, policy: RateLimitPolicy, retryAfterMs: n
  */
 const UNBUDGETED_READS: ReadonlySet<string> = new Set([CLIENT_LIST_CAPABILITY])
 
+/**
+ * A frame the server could not send: the connection closes so the client
+ * reconnects and recovers from its bookmark (docs/sync-foundations.md §5.2).
+ */
+export const DELIVERY_FAILED_CLOSE_CODE = 1011
+export const DELIVERY_FAILED_CLOSE_REASON = 'delivery_failed'
+
 export const REVOKED_CLOSE_CODE = CLIENT_REVOKED_CLOSE_CODE
 export const REVOKED_CLOSE_REASON = CLIENT_REVOKED_CLOSE_REASON
 
@@ -110,6 +120,15 @@ export function attachWebSocket(
     ) => unknown | Promise<unknown> | undefined
     /** Called after a socket completes its handshake or closes, so the device list can say who is connected. */
     onConnectionsChanged?: () => void
+    /**
+     * Send what the delivery queue holds (event-delivery.ts). Every answer
+     * calls it first, so no answer overtakes an event committed before it:
+     * a registration's `workspace.updated` reaches the socket before the
+     * answer to `workspace.add`, and a replay's answer follows the records
+     * its read already covers.
+     */
+    drainDeliveries?: () => void
+    log?: Logger
   },
 ) {
   const wss = new WebSocketServer({
@@ -127,6 +146,12 @@ export function attachWebSocket(
     /** The client's grant changed: answer nothing more, close after the replies already sent. */
     retired: boolean
     send: (message: unknown) => void
+    /**
+     * Send one queued frame. A frame that cannot be built or sent closes
+     * this connection: the client reconnects and replays from its bookmark,
+     * so nothing is skipped silently.
+     */
+    deliver: (frame: () => unknown) => void
     close: (code: number, reason: string) => void
   }
   const connections = new Map<WebSocket, Connection>()
@@ -272,6 +297,18 @@ export function attachWebSocket(
         }
       }
       timer = setTimeout(() => close(1008, 'handshake_timeout'), SOCKET_LIMITS.handshakeTimeoutMs)
+      const deliver = (frame: () => unknown) => {
+        if (!active) return
+        try {
+          send(frame())
+        } catch (error) {
+          options.log?.('error', 'a frame could not be sent; closing its connection', {
+            clientId: client.clientId,
+            reason: String(error),
+          })
+          close(DELIVERY_FAILED_CLOSE_CODE, DELIVERY_FAILED_CLOSE_REASON)
+        }
+      }
       const connection: Connection = {
         client,
         subscriptions,
@@ -279,6 +316,7 @@ export function attachWebSocket(
         ready: false,
         retired: retiring.has(client.clientId),
         send,
+        deliver,
         close,
       }
       connections.set(ws, connection)
@@ -341,9 +379,14 @@ export function attachWebSocket(
           }
           return
         }
+        // An answer goes out after everything already queued (`drainDeliveries`).
+        const answer = (result: unknown) => {
+          options.drainDeliveries?.()
+          send(result)
+        }
         const previous = results.get(message.requestId)
         if (previous) {
-          if (isDeepStrictEqual(previous.command, message)) void previous.result.then(send)
+          if (isDeepStrictEqual(previous.command, message)) void previous.result.then(answer)
           else {
             send(errorResult(null, 'conflict', 'Request identity was reused for another command.'))
             close(1008, 'request_conflict')
@@ -372,9 +415,9 @@ export function attachWebSocket(
           )
           results.set(message.requestId, { command: message, result: settled })
           if (asynchronous) {
-            void settled.then(send).then(runAfterReply)
+            void settled.then(answer).then(runAfterReply)
           } else {
-            send(result)
+            answer(result)
             runAfterReply()
           }
         }
@@ -507,9 +550,11 @@ export function attachWebSocket(
             reply(errorResult(message.requestId, 'not_found', 'The scope no longer exists.'))
             return
           }
-          // Registered after the read and answered before this handler
-          // yields: every event committed from here on reaches the client
-          // live, after the answer, and nothing is delivered twice or lost.
+          // Registered after the read, in the same tick. Every record
+          // committed from here on reaches the client live; one the read
+          // already covers but the queue still held goes out before the
+          // answer, and the client drops it by its cursor. A transient the
+          // queue held is placed by its `after`. Nothing is lost.
           const subscriptionId = randomUUID()
           subscriptions.set(subscriptionId, scope)
           reply(
@@ -575,6 +620,53 @@ export function attachWebSocket(
       })
     })
   })
+  /**
+   * Send a scoped item to the one subscription of its scope each connection
+   * holds (the newest, if a recovery left two). `prepare` validates the item
+   * once for every connection.
+   */
+  const deliverScoped = (
+    rawScope: unknown,
+    prepare: () => { scope: SubscriptionScope; frame: (subscriptionId: string) => unknown },
+  ) => {
+    let prepared: ReturnType<typeof prepare>
+    try {
+      prepared = prepare()
+      if (prepared.scope.environmentId !== options.environmentId) {
+        throw new Error('Cannot publish an event from another environment.')
+      }
+    } catch (error) {
+      const scope = SubscriptionScopeSchema.safeParse(rawScope)
+      let closed = 0
+      for (const connection of [...connections.values()]) {
+        const subscribed = [...connection.subscriptions.values()].some((held) =>
+          scope.success ? sameScope(held, scope.data) : true,
+        )
+        if (!subscribed) continue
+        connection.close(DELIVERY_FAILED_CLOSE_CODE, DELIVERY_FAILED_CLOSE_REASON)
+        closed += 1
+      }
+      options.log?.('error', 'an event could not be sent; closed the connections of its scope', {
+        scope: scope.success ? JSON.stringify(scope.data) : 'unreadable',
+        connectionsClosed: closed,
+        reason: String(error),
+      })
+      return
+    }
+    for (const connection of connections.values()) {
+      // A retired socket was authorized under a grant that no longer holds.
+      if (connection.retired) continue
+      let subscriptionId: string | undefined
+      for (const [id, scope] of connection.subscriptions) {
+        if (sameScope(scope, prepared.scope)) subscriptionId = id
+      }
+      if (subscriptionId !== undefined) {
+        const id = subscriptionId
+        connection.deliver(() => prepared.frame(id))
+      }
+    }
+  }
+
   return {
     get connectionCount() {
       return connections.size
@@ -585,41 +677,62 @@ export function attachWebSocket(
         0,
       )
     },
-    publish(recordInput: unknown) {
-      const record = DurableEventSchema.parse(recordInput)
-      if (record.cursor.scope.environmentId !== options.environmentId) {
-        throw new Error('Cannot publish an event from another environment.')
-      }
-      for (const connection of connections.values()) {
-        // A retired socket was authorized under a grant that no longer holds.
-        if (connection.retired) continue
-        for (const [subscriptionId, scope] of connection.subscriptions) {
-          if (sameScope(scope, record.cursor.scope)) {
-            connection.send(
-              SubscriptionEventSchema.parse({
+    /**
+     * Send one item of the delivery queue (event-delivery.ts) to every
+     * connection it is for. A thread's record or transient goes only to the
+     * subscriptions of its scope, once per connection even when several of
+     * its subscriptions match. A reading goes to every ready connection, or
+     * to those following its topic.
+     *
+     * Never throws: a frame one connection cannot take closes that
+     * connection; an item that cannot be sent at all is a server bug, and
+     * closes every connection subscribed to its scope, so each of them
+     * recovers from its bookmark instead of missing it unknowingly.
+     */
+    deliver(item: Delivery) {
+      switch (item.kind) {
+        case 'record':
+          deliverScoped(item.record?.cursor?.scope, () => {
+            const record = DurableEventSchema.parse(item.record)
+            return {
+              scope: record.cursor.scope,
+              frame: (subscriptionId: string) => ({
                 type: 'event',
                 name: 'subscription.event',
                 payload: { subscriptionId, record },
               }),
-            )
+            }
+          })
+          return
+        case 'transient':
+          deliverScoped(item.after?.scope, () => {
+            const after = CursorSchema.parse(item.after)
+            const event = TransientEventSchema.parse(item.event)
+            if (!sameScope(after.scope, event.scope)) {
+              throw new Error('A transient must be placed in its own scope.')
+            }
+            return {
+              scope: after.scope,
+              frame: (subscriptionId: string) => ({
+                type: 'event',
+                name: 'subscription.transient',
+                payload: { subscriptionId, after, event },
+              }),
+            }
+          })
+          return
+        case 'broadcast':
+          for (const connection of connections.values()) {
+            if (connection.ready && !connection.retired) connection.deliver(() => item.event)
           }
-        }
-      }
-    },
-    publishEvent(event: EventEnvelope) {
-      for (const connection of connections.values()) {
-        if (connection.ready && !connection.retired) connection.send(event)
-      }
-    },
-    /**
-     * Send an event to the connections following `topic`, built per
-     * connection so it can say which client that connection is.
-     */
-    publishToFollowers(topic: string, build: (client: AuthenticatedClient) => EventEnvelope) {
-      for (const connection of connections.values()) {
-        if (connection.ready && !connection.retired && connection.follows.has(topic)) {
-          connection.send(build(connection.client))
-        }
+          return
+        case 'followers':
+          for (const connection of connections.values()) {
+            if (connection.ready && !connection.retired && connection.follows.has(item.topic)) {
+              connection.deliver(() => item.build(connection.client))
+            }
+          }
+          return
       }
     },
     /** Whether any open connection follows `topic`. */

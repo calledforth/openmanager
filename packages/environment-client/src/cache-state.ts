@@ -1,4 +1,5 @@
 import { createInitialState } from './state'
+import { emptyOverlay } from './overlay'
 import type { EnvironmentState } from './types'
 
 /**
@@ -11,6 +12,8 @@ export function cacheState(state: EnvironmentState): EnvironmentState {
     ...state,
     connection: createInitialState().connection,
     sessionOpenFailure: null,
+    // The user's unconfirmed actions belong to the old transport's commands.
+    pending: emptyOverlay(),
     // A send cut off by the reload has an outcome this page never learns, and
     // its edit holds the cleared composer, not what was sent. Dropped, so the
     // environment's copy stands: gone with the session if the send happened,

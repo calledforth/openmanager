@@ -3,6 +3,7 @@ import { fileURLToPath } from 'node:url'
 import type {
   ChildConfig,
   ChildMessage,
+  KillAt,
   ProviderOp,
   ServerOp,
   ServerThreadRead,
@@ -64,7 +65,7 @@ export class ServerProcess {
     return this.stderr.slice(-8_000)
   }
 
-  private async spawn(): Promise<void> {
+  private async spawn(override: Partial<ChildConfig> = {}): Promise<void> {
     this.generation += 1
     const generation = this.generation
     const child = fork(CHILD_ENTRY, [], {
@@ -73,7 +74,7 @@ export class ServerProcess {
       env: {
         ...process.env,
         NODE_OPTIONS: '',
-        CONVERGENCE_CHILD_CONFIG: JSON.stringify(this.config),
+        CONVERGENCE_CHILD_CONFIG: JSON.stringify({ ...this.config, ...override }),
       },
       stdio: ['ignore', 'pipe', 'pipe', 'ipc'],
       serialization: 'advanced',
@@ -194,6 +195,45 @@ export class ServerProcess {
   /** A hard kill (no shutdown path at all), then a new process on the same data. */
   async crash(): Promise<void> {
     await this.kill()
+    await this.spawn()
+  }
+
+  /**
+   * The crash-window seam (child-protocol.ts `KillAt`): arm a kill at a
+   * commit, run `trigger`, wait for the child to die there, then start a new
+   * process on the same data. `trigger`'s own failure (its command died with
+   * the server) is expected and ignored.
+   */
+  async killAtCommit(at: KillAt, trigger: () => Promise<unknown>): Promise<void> {
+    const child = this.child
+    if (!child || !this.running) throw new Error('The server child is not running.')
+    const exit = this.exited(child)
+    await this.call({ op: 'armKill', at })
+    await trigger().catch(() => undefined)
+    await exit
+    if (child.signalCode === null && child.exitCode === 0) {
+      throw new Error('The server child exited cleanly instead of dying at the armed commit.')
+    }
+    await this.spawn()
+  }
+
+  /**
+   * Restart with a kill armed from the first instruction, so it can land
+   * inside boot; the process that dies there is replaced by a normal one.
+   */
+  async restartKilledAtBoot(at: KillAt, options: { crash?: boolean } = {}): Promise<void> {
+    // A crash leaves open turns for the next boot to recover; a graceful stop
+    // ends them on its way out.
+    if (options.crash) await this.kill()
+    else await this.stop()
+    await this.spawn({ killAt: at }).then(
+      () => {
+        throw new Error('The server child booted although a kill was armed inside boot.')
+      },
+      () => undefined,
+    )
+    const child = this.child
+    if (child) await this.exited(child)
     await this.spawn()
   }
 

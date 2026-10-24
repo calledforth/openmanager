@@ -427,8 +427,14 @@ describe('projectThread', () => {
 
   it('surfaces a failed turn on its assistant row', () => {
     const state = thread({
-      turns: [{ turnId: 't1', threadId: THREAD.threadId, state: 'failed' }],
-      failures: [{ turnId: 't1', reason: 'provider_error', message: 'boom' }],
+      turns: [
+        {
+          turnId: 't1',
+          threadId: THREAD.threadId,
+          state: 'failed',
+          failure: { reason: 'provider_error', message: 'boom' },
+        },
+      ],
     })
     const row = projectThread(state).byId.get('turn:t1:assistant')!
     expect(row.message.isFinal).toBe(true)
@@ -462,7 +468,7 @@ describe('createEnvironmentThreadStores', () => {
               lastUsedAt: null,
               lastActivityAt: null,
               exists: true,
-              capabilities: { git: false, providers: [] },
+              capabilities: { git: false },
             },
           ],
           sessions: [

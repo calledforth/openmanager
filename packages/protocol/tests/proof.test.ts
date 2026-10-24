@@ -161,7 +161,7 @@ describe('proof slice wire families', () => {
     expect(WorkspaceSchema.parse(legacy)).toEqual({
       ...legacy,
       lastActivityAt: null,
-      capabilities: { git: false, providers: [] },
+      capabilities: { git: false },
     })
   })
 })

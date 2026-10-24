@@ -1,4 +1,5 @@
 import type { SessionConfigOption } from '@agentpack/contract'
+import { SessionUnknownError } from '../core/errors.js'
 import { describe, expect, it, vi } from 'vitest'
 import type { BackendEvent } from '../backends/Backend.js'
 import { InteractionBroker } from '../core/InteractionBroker.js'
@@ -514,6 +515,22 @@ describe('AcpSessionRuntime lifecycle', () => {
       state: 'created',
     })
     expect(newSession).toHaveBeenCalledTimes(1)
+  })
+
+  it('creates nothing in place of a session that must be loaded', async () => {
+    const newSession = vi.fn(async () => ({ sessionId: 'session-2' }))
+    const harness = build(
+      {
+        loadSession: async () => {
+          throw new Error('Session not found')
+        },
+        newSession,
+      },
+      opencode,
+      { sessionId: 'session-1', load: 'require' },
+    )
+    await expect(harness.runtime.start()).rejects.toBeInstanceOf(SessionUnknownError)
+    expect(newSession).not.toHaveBeenCalled()
   })
 
   it('fails a timed-out load without creating a second session', async () => {

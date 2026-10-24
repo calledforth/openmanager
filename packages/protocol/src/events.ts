@@ -8,11 +8,13 @@ import {
   SessionScopeSchema,
   ThreadScopeSchema,
   WorkspaceSchema,
-  SessionSchema,
+  SessionSummarySchema,
   SessionStatusSchema,
   InteractionKindSchema,
   ThreadSchema,
   TurnStartedSchema,
+  TurnFailureReasonSchema,
+  TurnInterruptionSchema,
   BackgroundTaskListSchema,
   ContentBlockSchema,
   ToolCallStateSchema,
@@ -21,6 +23,7 @@ import {
 } from './domains.js'
 import {
   ComposerPreferenceTargetSchema,
+  PreferenceRevisionSchema,
   ProviderComposerProfileSchema,
   SessionComposerStateSchema,
   WorkspaceComposerPreferenceSchema,
@@ -40,14 +43,17 @@ const event = <N extends string, S extends z.ZodType, P extends z.ZodType>(
     payload,
   })
 
-export const TurnFailureReasonSchema = z.enum([
-  'provider_process_exited',
-  'provider_process_crashed',
-  'provider_error',
-  'authentication_required',
-  'capability_missing',
-])
-export type TurnFailureReason = z.infer<typeof TurnFailureReasonSchema>
+/**
+ * The shape of stored events. Bump it whenever any event schema below
+ * changes; `tests/event-format.test.ts` pins a digest per version, and a
+ * server whose log was written under an older version raises every stream's
+ * replay floor at boot, so no stored event is replayed in a form this
+ * version cannot state (docs/sync-foundations.md §4.7.7).
+ */
+export const EVENT_FORMAT_VERSION = 2 as const
+
+/** A turn's state once an interaction event is applied: still asking, or running again. */
+export const InteractionTurnStateSchema = z.enum(['running', 'waiting'])
 
 export const ProofEventSchemas = {
   'workspace.updated': event(
@@ -60,10 +66,16 @@ export const ProofEventSchemas = {
     EnvironmentScopeSchema,
     z.object({ workspaceId: EntityIdSchema }),
   ),
+  /**
+   * The whole sidebar row, as the projection writes it: provider, status and
+   * time included, in the canonical form a listing reads back (null settle
+   * and done times, no activity), so a client that only hears this event
+   * holds what a fresh load would (docs/sync-foundations.md §4.7.2).
+   */
   'session.created': event(
     'session.created',
     EnvironmentScopeSchema,
-    z.object({ session: SessionSchema }),
+    z.object({ session: SessionSummarySchema }),
   ),
   'session.updated': event(
     'session.updated',
@@ -73,6 +85,11 @@ export const ProofEventSchemas = {
       title: z.string().nullable().optional(),
       titleSource: SessionTitleSourceSchema.optional(),
       status: SessionStatusSchema.optional(),
+      /**
+       * Present when the session's activity time moved: its place in the
+       * list. A title never moves it. The client reads it only from here.
+       */
+      updatedAt: TimestampSchema.optional(),
       /** Present only when the session was settled (a time) or brought back (null). */
       settledAt: TimestampSchema.nullable().optional(),
       /** Present only when a turn completed (a time) or the user acknowledged it (null). */
@@ -102,11 +119,17 @@ export const ProofEventSchemas = {
     EnvironmentScopeSchema,
     z.object({ sessionId: EntityIdSchema, composer: SessionComposerStateSchema }),
   ),
-  /** The remembered selection a new draft in this workspace opens with. */
+  /**
+   * The remembered selection a new draft in this workspace opens with, and
+   * the revision this change gave it.
+   */
   'composer.preferences.updated': event(
     'composer.preferences.updated',
     EnvironmentScopeSchema,
-    ComposerPreferenceTargetSchema.extend({ preference: WorkspaceComposerPreferenceSchema }),
+    ComposerPreferenceTargetSchema.extend({
+      preference: WorkspaceComposerPreferenceSchema,
+      revision: PreferenceRevisionSchema,
+    }),
   ),
   /**
    * A composer draft as last saved, by any paired client. The whole draft, so
@@ -129,7 +152,14 @@ export const ProofEventSchemas = {
     z.object({ profile: ProviderComposerProfileSchema }),
   ),
   'thread.created': event('thread.created', SessionScopeSchema, z.object({ thread: ThreadSchema })),
-  'turn.started': event('turn.started', ThreadScopeSchema, TurnStartedSchema),
+  'turn.started': event(
+    'turn.started',
+    ThreadScopeSchema,
+    TurnStartedSchema.refine((started) => started.turn.startedAt !== undefined, {
+      message: 'The server always says when a turn started.',
+      path: ['turn', 'startedAt'],
+    }),
+  ),
   'turn.completed': event(
     'turn.completed',
     ThreadScopeSchema,
@@ -138,7 +168,7 @@ export const ProofEventSchemas = {
   'turn.interrupted': event(
     'turn.interrupted',
     ThreadScopeSchema,
-    z.object({ turnId: EntityIdSchema }),
+    z.object({ turnId: EntityIdSchema, reason: TurnInterruptionSchema }),
   ),
   'turn.failed': event(
     'turn.failed',
@@ -179,7 +209,11 @@ export const ProofEventSchemas = {
   'interaction.requested': event(
     'interaction.requested',
     ThreadScopeSchema,
-    z.object({ turnId: EntityIdSchema, interaction: InteractionSchema }),
+    z.object({
+      turnId: EntityIdSchema,
+      interaction: InteractionSchema,
+      turnState: InteractionTurnStateSchema,
+    }),
   ),
   'interaction.resolved': event(
     'interaction.resolved',
@@ -188,6 +222,7 @@ export const ProofEventSchemas = {
       turnId: EntityIdSchema,
       response: InteractionResponseSchema,
       resolvedByClientId: EntityIdSchema.nullable().optional(),
+      turnState: InteractionTurnStateSchema,
     }),
   ),
   'interaction.expired': event(
@@ -200,6 +235,27 @@ export const ProofEventSchemas = {
           response.outcome.outcome === 'cancelled' && response.outcome.reason === 'timeout',
         'An expired interaction must carry a timeout outcome',
       ),
+      turnState: InteractionTurnStateSchema,
+    }),
+  ),
+  /**
+   * The server closed a request nobody answered: its turn ended
+   * (`turn_ended`) or the server restarted (`server_restarted`). Written
+   * before the turn's terminal event, in the same transaction.
+   */
+  'interaction.cancelled': event(
+    'interaction.cancelled',
+    ThreadScopeSchema,
+    z.object({
+      turnId: EntityIdSchema,
+      response: InteractionResponseSchema.refine(
+        (response) =>
+          response.outcome.outcome === 'cancelled' &&
+          (response.outcome.reason === 'turn_ended' ||
+            response.outcome.reason === 'server_restarted'),
+        'A cancelled interaction must say why the server cancelled it',
+      ),
+      turnState: InteractionTurnStateSchema,
     }),
   ),
 } as const
@@ -227,5 +283,6 @@ export const ProofEventSchema = z.discriminatedUnion('name', [
   ProofEventSchemas['interaction.requested'],
   ProofEventSchemas['interaction.resolved'],
   ProofEventSchemas['interaction.expired'],
+  ProofEventSchemas['interaction.cancelled'],
 ])
 export type ProofEvent = z.infer<typeof ProofEventSchema>

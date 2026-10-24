@@ -34,7 +34,6 @@ class ThreadBuilder {
       tools: [],
       order: [],
       interactions: [],
-      failures: [],
       notices: [],
       outbox: [],
       hydration: 'ready',
@@ -243,11 +242,11 @@ export function failedThread(now: number): ThreadState {
     .message(turn, 'f-user', 'user', 'Run the convergence harness against the fixture replay.')
     .tool(turn, 'f-t1', 'Bash', 'execute', 'completed')
     .tool(turn, 'f-t2', 'Bash', 'execute', 'failed')
-  b.state.failures.push({
-    turnId: turn,
+  // The turn carries its failure, as the environment's snapshot does.
+  b.state.turns[b.state.turns.length - 1]!.failure = {
     reason: 'provider_process_exited',
     message: 'The provider process exited (code 1).',
-  })
+  }
   b.state.notices.push({ turnId: turn, message: 'Retried once after the provider was overloaded.' })
   return b.state
 }

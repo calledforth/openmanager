@@ -197,7 +197,7 @@ describe('createConvexEnvironmentClient', () => {
       path: 'C:/repo',
       lastUsedAt: null,
       lastActivityAt: null,
-      capabilities: { git: false, providers: [] },
+      capabilities: { git: false },
       exists: true,
     })
     expect(selectSessionList(state, 'C:/repo')).toMatchObject([
@@ -209,6 +209,33 @@ describe('createConvexEnvironmentClient', () => {
         workspacePaths: ['C:/repo'],
       },
     )
+  })
+
+  it('keeps workspace recency and title times itself, since Convex announces neither', () => {
+    const { client, bridge } = setup()
+    client.connect()
+    expect(client.getState().workspaces['C:/repo']?.lastActivityAt).toBeNull()
+    bridge.emit(
+      agentEvent({
+        category: 'lifecycle',
+        event: 'prompt_started',
+        messageId: 'asst-1',
+        data: { prompt: 'q', userMessageId: 'usr-1' },
+      }),
+    )
+    expect(client.getState().workspaces['C:/repo']?.lastActivityAt).toBe('2026-09-11T00:00:00.000Z')
+    bridge.emit(
+      agentEvent({
+        category: 'lifecycle',
+        event: 'session_info_update',
+        timestamp: '2026-09-12T00:00:00.000Z',
+        data: { title: 'Named' },
+      }),
+    )
+    expect(client.getState().sessions['session-1']).toMatchObject({
+      title: 'Named',
+      updatedAt: '2026-09-12T00:00:00.000Z',
+    })
   })
 
   it('seeds session status from the catalog until a local turn knows better', () => {
@@ -278,9 +305,23 @@ describe('createConvexEnvironmentClient', () => {
     const { client, convex, bridge } = setup()
     client.connect()
     bridge.emit(
-      agentEvent({ category: 'lifecycle', event: 'session_created', sessionId: 'fresh', data: {} }),
+      agentEvent({
+        category: 'lifecycle',
+        event: 'session_created',
+        sessionId: 'fresh',
+        providerId: 'cursor',
+        data: {},
+      }),
     )
-    expect(client.getState().sessions.fresh).toMatchObject({ workspaceId: 'C:/repo', title: null })
+    // The translator announces the whole row, provider and time included
+    // (protocol v17, §4.7.2), so the store needs no listing to name them.
+    expect(client.getState().sessions.fresh).toMatchObject({
+      workspaceId: 'C:/repo',
+      title: null,
+      status: 'idle',
+      providerId: 'cursor',
+      updatedAt: '2026-09-11T00:00:00.000Z',
+    })
     convex.push('sessions:listForSidebar')
     expect(client.getState().sessions.fresh).toBeDefined()
   })
@@ -376,6 +417,85 @@ describe('createConvexEnvironmentClient', () => {
     expect(state.sessions['session-1']?.status).toBe('waiting')
   })
 
+  it('keeps a hydrated turn waiting while another hydrated request is still open', async () => {
+    const { client, convex, bridge } = setup()
+    convex
+      .on('sessions:getByExternalId', () => ({
+        ...SESSION_ROW,
+        workspaceId: 'ws1',
+        status: 'running',
+      }))
+      .on('messages:listMetadata', () => [
+        { externalId: 'usr-2', role: 'user', sequenceNum: 0, isFinal: true },
+      ])
+      .on('messages:getContent', ({ externalId }) => ({ externalId, role: 'user', content: 'go' }))
+      .on('permissions:getPendingForSession', () => ({
+        requestId: 'perm-1',
+        toolName: 'bash',
+        description: 'run',
+        options: [{ optionId: 'allow', name: 'Allow', kind: 'allow_once' }],
+      }))
+      .on('questions:getPendingForSession', () => null)
+      .on('plans:getPendingForSession', () => ({
+        requestId: 'plan-1',
+        markdown: '# Plan',
+        todos: [{ id: 't', content: 'x', status: 'pending' }],
+      }))
+    client.connect()
+    await client.commands.openSession('session-1')
+    expect(selectActiveThread(client.getState())!.turns.at(-1)?.state).toBe('waiting')
+
+    // The permission is answered; the plan hydrated beside it is still open.
+    bridge.emit(
+      agentEvent({
+        category: 'permission',
+        event: 'permission_resolved',
+        messageId: 'usr-2',
+        data: { requestId: 'perm-1', outcome: { outcome: 'selected', optionId: 'allow' } },
+      }),
+    )
+    const thread = selectActiveThread(client.getState())!
+    expect(thread.interactions.map((item) => item.interaction.interactionId)).toEqual(['plan-1'])
+    expect(thread.turns.at(-1)).toMatchObject({ turnId: 'usr-2', state: 'waiting' })
+    expect(client.getState().sessions['session-1']?.status).toBe('waiting')
+  })
+
+  it('shows a request from a turn the provider began by itself, and its answer', () => {
+    const { client, bridge } = setup()
+    client.connect()
+    // No prompt_started: this host records no such turn, but the provider
+    // waits for an answer (main/background-turns.ts).
+    bridge.emit(
+      agentEvent({
+        category: 'permission',
+        event: 'permission_request',
+        messageId: 'bg-1',
+        data: {
+          requestId: 'perm-bg',
+          sessionId: 'session-1',
+          toolCall: { toolCallId: 'tool-bg', title: 'Run tests' },
+          options: [{ optionId: 'allow', name: 'Allow', kind: 'allow_once' }],
+        },
+      }),
+    )
+    let thread = client.getState().threads['session-1']!
+    expect(thread.turns).toEqual([
+      expect.objectContaining({ turnId: 'bg-1', state: 'waiting', origin: 'background' }),
+    ])
+    expect(thread.interactions.map((item) => item.interaction.interactionId)).toEqual(['perm-bg'])
+    bridge.emit(
+      agentEvent({
+        category: 'permission',
+        event: 'permission_resolved',
+        messageId: 'bg-1',
+        data: { requestId: 'perm-bg', outcome: { outcome: 'selected', optionId: 'allow' } },
+      }),
+    )
+    thread = client.getState().threads['session-1']!
+    expect(thread.interactions).toEqual([])
+    expect(thread.turns[0]?.state).toBe('running')
+  })
+
   it('classifies persisted turns by their finish reason', async () => {
     const { client, convex } = setup()
     convex
@@ -464,7 +584,12 @@ describe('createConvexEnvironmentClient', () => {
       }),
     )
     const result = await sending
-    expect(result.turn).toEqual({ turnId: 'asst-1', threadId: 'session-1', state: 'running' })
+    expect(result.turn).toEqual({
+      turnId: 'asst-1',
+      threadId: 'session-1',
+      state: 'running',
+      startedAt: '2026-09-11T00:00:00.000Z',
+    })
     expect(result.userMessage.messageId).toBe('agent_usr_uuid-1')
     expect(convex.watcherCount('jobs:getStatus')).toBe(0)
 
@@ -854,7 +979,7 @@ describe('createConvexEnvironmentClient', () => {
       path: 'C:/other',
       lastUsedAt: null,
       lastActivityAt: null,
-      capabilities: { git: false, providers: [] },
+      capabilities: { git: false },
       exists: true,
     })
     expect(client.getState().workspaceOrder).toEqual(['C:/repo', 'C:/other'])

@@ -50,18 +50,27 @@ describe('composer state', () => {
     let state = applyWorkspaceList(createInitialState(), [WORKSPACE])
     expect(selectComposerPreference(state, TARGET.workspaceId, TARGET.providerId)).toBeNull()
 
-    state = applyComposerPreference(state, TARGET, { modelId: 'opus' })
-    state = applyComposerPreference(state, { ...TARGET, providerId: 'cursor' }, {})
+    state = applyComposerPreference(state, TARGET, { modelId: 'opus' }, 1)
+    state = applyComposerPreference(state, { ...TARGET, providerId: 'cursor' }, {}, 1)
     expect(selectComposerPreference(state, TARGET.workspaceId, TARGET.providerId)).toEqual({
       modelId: 'opus',
     })
     // Loaded and empty is different from never loaded.
     expect(selectComposerPreference(state, TARGET.workspaceId, 'cursor')).toEqual({})
     expect(selectComposerPreference(state, 'elsewhere', TARGET.providerId)).toBeNull()
-    expect(applyComposerPreference(state, TARGET, { modelId: 'opus' })).toBe(state)
+    // Ordered by the server's revision: an older or equal one changes nothing.
+    expect(applyComposerPreference(state, TARGET, { modelId: 'sonnet' }, 1)).toBe(state)
+    expect(
+      selectComposerPreference(
+        applyComposerPreference(state, TARGET, { modelId: 'sonnet' }, 2),
+        TARGET.workspaceId,
+        TARGET.providerId,
+      ),
+    ).toEqual({ modelId: 'sonnet' })
 
     state = applyWorkspaceRemoved(state, WORKSPACE.workspaceId)
     expect(state.composerPreferences).toEqual({})
+    expect(state.composerRevisions).toEqual({})
   })
 })
 
@@ -161,24 +170,6 @@ describe('mock composer commands', () => {
       'setSessionConfigOption',
       'setSessionConfigOption',
     ])
-  })
-
-  it('answers but stores nothing for a session whose provider the client never learned', async () => {
-    const client = createMockEnvironmentClient({ seed })
-    client.emit(
-      event({
-        name: 'session.created',
-        scope: { type: 'environment', environmentId: 'mock-environment' },
-        payload: {
-          session: { sessionId: 'announced', workspaceId: WORKSPACE.workspaceId, title: null },
-        },
-      }),
-    )
-    expect(client.getState().sessions.announced?.providerId).toBeUndefined()
-    expect(
-      await client.commands.setSessionModel({ sessionId: 'announced', modelId: 'opus' }),
-    ).toEqual({ modelId: 'opus' })
-    expect(client.getState().composerPreferences).toEqual({})
   })
 
   it('rejects unknown providers, unknown sessions and wire-invalid input', async () => {

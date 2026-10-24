@@ -145,6 +145,7 @@ async function connect(
       protocolVersion: PROTOCOL_VERSION,
       environmentId: STUDIO,
       capabilities: ['connection.heartbeat'],
+      instanceId: 'instance-1',
     })
   await tick()
   return { client, socket, timers, credential }

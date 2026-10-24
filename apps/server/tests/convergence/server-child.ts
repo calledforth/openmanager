@@ -22,9 +22,10 @@ import {
   type FakeAcpConnection,
 } from '@agentpack/runtime/testing'
 import { startServer } from '../../src/server.ts'
+import type { Delivery } from '../../src/event-delivery.ts'
 import { DATABASE_FILENAME } from '../../src/db/database.ts'
-import { scopeKey } from '../../src/db/event-repository.ts'
-import type { SubscriptionScope } from '@openmanager/protocol/node'
+import { isDerivedRecord, scopeKey } from '../../src/db/event-repository.ts'
+import type { ProofEvent, SubscriptionScope } from '@openmanager/protocol/node'
 import {
   listSessionHistory,
   listSessionSummaries,
@@ -37,6 +38,7 @@ import {
   type ChildEvent,
   type ChildMessage,
   type ChildRequest,
+  type KillAt,
   type ScriptStep,
   type ServerThreadRead,
   type SocketSample,
@@ -481,7 +483,25 @@ if (existsSync(join(config.dataDir, DATABASE_FILENAME))) {
 }
 
 const claudeSdk = new FakeClaudeSdk()
+// The crash-window seam: a kill inside a chosen event-log commit.
+let armedKill: KillAt | undefined = config.killAt ? { ...config.killAt } : undefined
+const killAtCommit =
+  (phase: KillAt['phase']) =>
+  (records: readonly { event: ProofEvent }[]): void => {
+    const armed = armedKill
+    if (!armed || armed.phase !== phase) return
+    const matches = (event: ProofEvent) =>
+      event.name === armed.name && !(armed.producer && isDerivedRecord(event))
+    if (!records.some((record) => matches(record.event))) return
+    if ((armed.skip ?? 0) > 0) {
+      armed.skip = (armed.skip ?? 0) - 1
+      return
+    }
+    process.kill(process.pid, 'SIGKILL')
+  }
+
 const server = await startServer({
+  commitHooks: { beforeCommit: killAtCommit('before'), afterCommit: killAtCommit('after') },
   port: 0,
   dataDir: config.dataDir,
   logLevel: 'error',
@@ -505,13 +525,31 @@ Object.assign(server.rateLimiter, {
   consume: () => ({ allowed: true, remaining: Number.MAX_SAFE_INTEGER }),
   blocked: () => ({ allowed: true, remaining: Number.MAX_SAFE_INTEGER }),
 })
-// Everything the server sends is activity.
-const sockets$ = server.sockets as unknown as Record<string, (...args: unknown[]) => unknown>
-for (const name of ['publish', 'publishEvent', 'publishToFollowers']) {
-  const original = sockets$[name]!.bind(server.sockets)
-  sockets$[name] = (...args: unknown[]) => {
+// Everything the server sends is activity. Every item leaves the delivery
+// queue through `deliver`, which is also where the S13 seam drops a record.
+let dropArmed: string | undefined
+const dropped: Array<{ threadId: string; sequence: number; event: string }> = []
+{
+  const send = server.sockets.deliver.bind(server.sockets)
+  server.sockets.deliver = (item: Delivery) => {
     touch()
-    return original(...args)
+    const scope = item.kind === 'record' ? item.record.cursor.scope : undefined
+    if (
+      dropArmed !== undefined &&
+      item.kind === 'record' &&
+      scope?.type === 'thread' &&
+      scope.threadId === dropArmed &&
+      item.record.event.name === 'message.delta'
+    ) {
+      dropArmed = undefined
+      dropped.push({
+        threadId: scope.threadId,
+        sequence: item.record.cursor.sequence,
+        event: item.record.event.name,
+      })
+      return
+    }
+    send(item)
   }
 }
 
@@ -663,13 +701,12 @@ function readAudit(): AuditRow[] {
 }
 
 // Every durable record the server publishes: who held its scope, who got it.
+// A record the S13 seam drops shows as withheld: owed, open, not sent.
 {
-  const previous = sockets$.publish!
-  sockets$.publish = (...args: unknown[]) => {
-    const record = args[0] as {
-      cursor: { scope: unknown; sequence: number }
-      event: { name: string }
-    }
+  const previous = server.sockets.deliver.bind(server.sockets)
+  server.sockets.deliver = (item: Delivery) => {
+    if (item.kind !== 'record') return previous(item)
+    const record = item.record
     const key = keyOf(record.cursor.scope)
     const owed: WebSocket[] = []
     const pending: string[] = []
@@ -687,7 +724,7 @@ function readAudit(): AuditRow[] {
     const sent = new Set<WebSocket>()
     publishing = sent
     try {
-      return previous(...args)
+      return previous(item)
     } finally {
       publishing = undefined
       deliver(undefined, {
@@ -756,6 +793,9 @@ function readThread(sessionId: string, threadId: string): ServerThreadRead {
     })),
   }
 }
+
+/** What the current `streamText` has handed the server so far (S15's achieved rate). */
+let streamed = { bytes: 0, startedAt: 0 }
 
 async function handle(request: ChildRequest): Promise<unknown> {
   switch (request.op) {
@@ -867,9 +907,11 @@ async function handle(request: ChildRequest): Promise<unknown> {
       const end = performance.now() + request.durationMs
       let next = performance.now()
       let bytes = 0
+      streamed = { bytes: 0, startedAt: performance.now() }
       while (performance.now() < end && activePrompts.get(active.providerSessionId) === active) {
         await update(active, { sessionUpdate: 'agent_message_chunk', content: text(chunk) })
         bytes += chunk.length
+        streamed.bytes = bytes
         next += tickMs
         await sleep(Math.max(0, next - performance.now()))
       }
@@ -962,6 +1004,19 @@ async function handle(request: ChildRequest): Promise<unknown> {
           readyState: ws.readyState,
           bufferedAmount: ws.bufferedAmount,
         }))
+    case 'readStreamed':
+      return {
+        bytes: streamed.bytes,
+        elapsedMs: streamed.startedAt ? Math.round(performance.now() - streamed.startedAt) : 0,
+      }
+    case 'armKill':
+      armedKill = request.at ? { ...request.at } : undefined
+      return null
+    case 'dropNextRecord':
+      dropArmed = request.threadId
+      return null
+    case 'readDropped':
+      return dropped
     case 'shutdown':
       await server.close()
       readDatabase?.close()
