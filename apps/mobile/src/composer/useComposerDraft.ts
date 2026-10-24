@@ -41,12 +41,32 @@ const reasonOf = (error: unknown, fallback: string) =>
  * `size` and sends the Blob itself as the body.
  */
 export async function photoFile(photo: CapturedPhoto, read: typeof fetch = fetch): Promise<File> {
-  const blob = await (await read(photo.uri)).blob()
+  let blob: Blob
+  try {
+    blob = await (await read(photo.uri)).blob()
+  } catch (error) {
+    // Expo's fetch builds the Blob from an ArrayBuffer, which React Native's
+    // Blob refuses; its XMLHttpRequest hands back a native Blob of the file.
+    if (typeof XMLHttpRequest === 'undefined') throw error
+    blob = await nativeBlob(photo.uri)
+  }
   Object.defineProperty(blob, 'name', { value: photo.name, configurable: true })
   if (blob.type !== photo.mimeType) {
     Object.defineProperty(blob, 'type', { value: photo.mimeType, configurable: true })
   }
   return blob as File
+}
+
+/** A local file's bytes as React Native's own Blob, read by its XMLHttpRequest. */
+function nativeBlob(uri: string): Promise<Blob> {
+  return new Promise((resolve, reject) => {
+    const request = new XMLHttpRequest()
+    request.onload = () => resolve(request.response as Blob)
+    request.onerror = () => reject(new Error('The photo could not be read.'))
+    request.responseType = 'blob'
+    request.open('GET', uri)
+    request.send()
+  })
 }
 
 export interface DraftPorts {

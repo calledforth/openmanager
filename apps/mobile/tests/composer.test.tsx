@@ -1318,12 +1318,16 @@ describe('a photo from the photo library', () => {
     const onClose = vi.fn()
     const show = (open: boolean) =>
       act(() =>
-        root.render(
-          open ? <LibraryPick pick={pick} onPhoto={onPhoto} onClose={onClose} /> : <></>,
-        ),
+        root.render(open ? <LibraryPick pick={pick} onPhoto={onPhoto} onClose={onClose} /> : <></>),
       )
     await show(true)
-    return { pick, onPhoto, onClose, show, answer: (photo: Photo | null) => act(async () => answer(photo)) }
+    return {
+      pick,
+      onPhoto,
+      onClose,
+      show,
+      answer: (photo: Photo | null) => act(async () => answer(photo)),
+    }
   }
 
   it('opens the picker once and attaches what it hands back, as the camera does', async () => {
@@ -1362,5 +1366,41 @@ describe('a photo from the photo library', () => {
     const bare = photoFromAsset({ uri: 'content://media/1' } as never)!
     expect(bare.mimeType).toBe('image/jpeg')
     expect(bare.name).toMatch(/^Photo .*\.jpg$/)
+  })
+})
+
+describe('a photo read on the phone', () => {
+  it('falls back to the native XMLHttpRequest blob when fetch cannot build one', async () => {
+    const { photoFile } = await import('../src/composer/useComposerDraft')
+    const native = new Blob([new Uint8Array([1, 2])], { type: 'image/png' })
+    const opened: string[] = []
+    class FakeRequest {
+      responseType = ''
+      response: Blob | null = null
+      onload: (() => void) | null = null
+      onerror: (() => void) | null = null
+      open(_method: string, url: string) {
+        opened.push(url)
+      }
+      send() {
+        this.response = native
+        this.onload?.()
+      }
+    }
+    vi.stubGlobal('XMLHttpRequest', FakeRequest)
+    // Expo's fetch: the response is there, but its Blob cannot be made.
+    const read = (async () => ({
+      blob: async () => {
+        throw new Error("Creating blobs from 'ArrayBuffer' and 'ArrayBufferView' are not supported")
+      },
+    })) as unknown as typeof fetch
+    const file = await photoFile(
+      { uri: 'file:///picked.png', name: 'picked.png', mimeType: 'image/png' },
+      read,
+    )
+    expect(opened).toEqual(['file:///picked.png'])
+    expect(file).toBe(native)
+    expect(file.name).toBe('picked.png')
+    vi.unstubAllGlobals()
   })
 })
