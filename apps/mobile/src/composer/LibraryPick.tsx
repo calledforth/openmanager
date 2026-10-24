@@ -4,13 +4,23 @@ import { useEffect } from 'react'
 import { useCapture } from './capture'
 import type { CapturedPhoto } from './model'
 
-/** What the picker handed back, as the composer attaches a photo; null for nothing picked. */
+/**
+ * What the picker handed back, as the composer attaches a photo; null for
+ * nothing picked. The picker re-encodes at the quality asked for, writing
+ * anything but a PNG as JPEG bytes while it keeps the original's type and
+ * name (a WebP comes back as JPEG under `image/webp`), so the type and name
+ * are those of the bytes.
+ */
 export function photoFromAsset(asset: ImagePickerAsset | undefined): CapturedPhoto | null {
   if (!asset?.uri) return null
+  const png = asset.mimeType === 'image/png'
+  const stem = asset.fileName
+    ? asset.fileName.replace(/\.[^.]*$/, '')
+    : `Photo ${new Date().toISOString()}`
   return {
     uri: asset.uri,
-    name: asset.fileName || `Photo ${new Date().toISOString()}.jpg`,
-    mimeType: asset.mimeType || 'image/jpeg',
+    name: `${stem}.${png ? 'png' : 'jpg'}`,
+    mimeType: png ? 'image/png' : 'image/jpeg',
   }
 }
 

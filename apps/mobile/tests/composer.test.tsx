@@ -1293,18 +1293,22 @@ describe('the prompt body room', () => {
     )
     // A heading and two options taller than the cap still show whole.
     expect(promptBodyMax({ room, chrome: 160, footer: 44, floor: 520 })).toBe(520)
+    // One taller than the page itself scrolls inside what the page leaves.
+    expect(promptBodyMax({ room, chrome: 160, footer: 44, floor: 900 })).toBe(800 - 160 - 44)
   })
 
   it('does not collapse under a keyboard height that went stale', async () => {
     const { promptBodyMax, promptRoom } = await import('../src/composer/prompt-room')
     const window = 844
-    // The keyboard went down but its last height was never cleared.
-    const stale = promptRoom({ layer: 800, window, keyboard: 760 })
+    // The keyboard went down but its last height was never cleared: the
+    // measured layer (the page's avoider made the room) is what counts.
+    expect(promptRoom({ layer: 800, window, keyboard: 760 })).toBe(800)
+    // Before the layer has measured itself, a stale keyboard cannot take more than two thirds.
+    const stale = promptRoom({ layer: 0, window, keyboard: 760 })
     expect(stale).toBe(Math.round(window / 3))
-    const body = promptBodyMax({ room: stale, chrome: 160, footer: 44, floor: 150 })
-    expect(body).toBeGreaterThanOrEqual(150)
+    expect(promptBodyMax({ room: stale, chrome: 160, footer: 44, floor: 150 })).toBe(96)
     // Up for real, the keyboard does shorten the page.
-    expect(promptRoom({ layer: 800, window, keyboard: 300 })).toBe(544)
+    expect(promptRoom({ layer: 0, window, keyboard: 300 })).toBe(544)
   })
 })
 
@@ -1363,6 +1367,14 @@ describe('a photo from the photo library', () => {
     expect(
       photoFromAsset({ uri: 'file:///p.png', fileName: 'p.png', mimeType: 'image/png' } as never),
     ).toEqual({ uri: 'file:///p.png', name: 'p.png', mimeType: 'image/png' })
+    // Re-encoded at quality 0.8, a WebP comes back as JPEG bytes: it is typed and named so.
+    expect(
+      photoFromAsset({
+        uri: 'file:///cache/w.webp',
+        fileName: 'w.webp',
+        mimeType: 'image/webp',
+      } as never),
+    ).toEqual({ uri: 'file:///cache/w.webp', name: 'w.jpg', mimeType: 'image/jpeg' })
     const bare = photoFromAsset({ uri: 'content://media/1' } as never)!
     expect(bare.mimeType).toBe('image/jpeg')
     expect(bare.name).toMatch(/^Photo .*\.jpg$/)
