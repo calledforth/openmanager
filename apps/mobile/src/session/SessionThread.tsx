@@ -31,12 +31,14 @@ import type { HomeSession } from '../home/rows'
 import { usePhoneTheme } from '../theme/ThemeProvider'
 import { FadeOut as BottomFade } from '../ui/chrome'
 import { coveredBySheet } from '../ui/a11y-focus'
+import { GlassContent } from '../ui/Glass'
 import { IconButton } from '../ui/IconButton'
+import { Screen } from '../ui/Screen'
 import { ChildSessionCards } from './ChildSessionCards'
 import { countRender } from './render-probe'
 import { createScrollFollower, flingsUp, INITIAL_ROWS, MAINTAIN_POSITION } from './scroll-anchor'
 import { DockSlotContext, ReadOnlyBar, SessionDock, type DockSlot } from './SessionDock'
-import { SessionHeader } from './SessionHeader'
+import { HEADER_ROW, SessionHeader, SessionHeaderBar } from './SessionHeader'
 import { SessionMenu } from './SessionMenu'
 import type { StatusLineView } from './status-line'
 import type { ReadOnlySessionPhase } from './useReadOnlySession'
@@ -165,6 +167,10 @@ const NO_CHILDREN: readonly HomeSession[] = []
  * status line and the slot the composer will take (the read-only bar until
  * then). The reader's place is theirs: the list follows the end only while
  * they are at it, and a glass button brings them back when they scroll up.
+ *
+ * One `Screen`: the header's words and the transcript are its content, what
+ * its glass blurs; the header's buttons, the jump-to-latest button, the dock,
+ * the composer's layers and the ⋯ menu float beside it, over it.
  */
 export const SessionThread = memo(function SessionThread({
   title,
@@ -254,90 +260,96 @@ export const SessionThread = memo(function SessionThread({
       style={{ flex: 1 }}
       behavior={Platform.OS === 'ios' ? 'padding' : undefined}
     >
-      {/* Hidden from a screen reader while a composer layer covers it, as under a sheet. */}
-      <View style={{ flex: 1 }} {...coveredBySheet(covered)}>
-        <SessionHeader title={title} project={project} topInset={insets.top} chrome={chrome} />
+      <Screen>
+        {/* Hidden from a screen reader while a composer layer covers it, as under a sheet. */}
+        <View style={{ flex: 1 }} {...coveredBySheet(covered)}>
+          <SessionHeaderBar topInset={insets.top} onMenu={chrome.openMenu} />
+          <GlassContent>
+            <SessionHeader title={title} project={project} topInset={insets.top} chrome={chrome} />
 
-        <View className="flex-1">
-          {messages.length === 0 ? (
-            <View
-              className="flex-1 items-center justify-center gap-3 px-10"
-              style={{ paddingBottom: dockHeight }}
-            >
-              {phase === 'opening' ? (
-                <ShimmerText variant="text-14-regular">Opening…</ShimmerText>
-              ) : (
-                <AppText
-                  variant="text-14-regular"
-                  style={{ color: theme.muted, textAlign: 'center' }}
+            <View className="flex-1">
+              {messages.length === 0 ? (
+                <View
+                  className="flex-1 items-center justify-center gap-3 px-10"
+                  style={{ paddingBottom: dockHeight }}
                 >
-                  {problem ?? 'No messages yet.'}
-                </AppText>
+                  {phase === 'opening' ? (
+                    <ShimmerText variant="text-14-regular">Opening…</ShimmerText>
+                  ) : (
+                    <AppText
+                      variant="text-14-regular"
+                      style={{ color: theme.muted, textAlign: 'center' }}
+                    >
+                      {problem ?? 'No messages yet.'}
+                    </AppText>
+                  )}
+                  {phase === 'failed' && onRetry ? (
+                    <IconButton label="Try again" surface="fill" onPress={onRetry}>
+                      <ArrowClockwiseIcon size={18} color={theme.fg} />
+                    </IconButton>
+                  ) : null}
+                </View>
+              ) : (
+                <FlatList
+                  ref={listRef}
+                  data={messages}
+                  keyExtractor={keyOf}
+                  renderItem={renderRow}
+                  ListFooterComponent={footer}
+                  maintainVisibleContentPosition={MAINTAIN_POSITION}
+                  initialScrollIndex={initialIndex}
+                  onScrollToIndexFailed={onIndexFailed}
+                  onScroll={onScroll}
+                  onScrollBeginDrag={onDragStart}
+                  onScrollEndDrag={onDragEnd}
+                  onMomentumScrollEnd={onMomentumEnd}
+                  onContentSizeChange={onContentSize}
+                  onLayout={onListLayout}
+                  scrollEventThrottle={32}
+                  contentContainerStyle={contentStyle}
+                  initialNumToRender={INITIAL_ROWS}
+                  maxToRenderPerBatch={6}
+                  updateCellsBatchingPeriod={40}
+                  windowSize={9}
+                  keyboardShouldPersistTaps="handled"
+                  showsVerticalScrollIndicator={false}
+                />
               )}
-              {phase === 'failed' && onRetry ? (
-                <IconButton label="Try again" onPress={onRetry}>
-                  <ArrowClockwiseIcon size={18} color={theme.fg} />
-                </IconButton>
+
+              {/* The transcript's top edge eases under the header rather than cutting off. */}
+              <LinearGradient
+                pointerEvents="none"
+                colors={[theme.bg, withAlpha(theme.bg, 0)]}
+                style={{ position: 'absolute', left: 0, right: 0, top: 0, height: 22 }}
+              />
+              <BottomFade height={dockHeight + 48} />
+
+              {messages.length > 0 && problem ? (
+                <View
+                  pointerEvents="box-none"
+                  style={{ position: 'absolute', left: 16, right: 16, bottom: dockHeight + 10 }}
+                >
+                  {/* What is on screen may be stale: said over the transcript, not hidden behind it. */}
+                  <View
+                    className="flex-row items-center gap-2.5 rounded-2xl px-4 py-2.5"
+                    style={{ backgroundColor: theme.statusWash.error }}
+                  >
+                    <WarningCircleIcon size={16} color={theme.status.error} />
+                    <AppText variant="text-13-regular" style={{ color: theme.fg, flex: 1 }}>
+                      {problem}
+                    </AppText>
+                    {phase === 'failed' && onRetry ? (
+                      <IconButton label="Try again" size={32} surface="fill" onPress={onRetry}>
+                        <ArrowClockwiseIcon size={16} color={theme.fg} />
+                      </IconButton>
+                    ) : null}
+                  </View>
+                </View>
               ) : null}
             </View>
-          ) : (
-            <FlatList
-              ref={listRef}
-              data={messages}
-              keyExtractor={keyOf}
-              renderItem={renderRow}
-              ListFooterComponent={footer}
-              maintainVisibleContentPosition={MAINTAIN_POSITION}
-              initialScrollIndex={initialIndex}
-              onScrollToIndexFailed={onIndexFailed}
-              onScroll={onScroll}
-              onScrollBeginDrag={onDragStart}
-              onScrollEndDrag={onDragEnd}
-              onMomentumScrollEnd={onMomentumEnd}
-              onContentSizeChange={onContentSize}
-              onLayout={onListLayout}
-              scrollEventThrottle={32}
-              contentContainerStyle={contentStyle}
-              initialNumToRender={INITIAL_ROWS}
-              maxToRenderPerBatch={6}
-              updateCellsBatchingPeriod={40}
-              windowSize={9}
-              keyboardShouldPersistTaps="handled"
-              showsVerticalScrollIndicator={false}
-            />
-          )}
+          </GlassContent>
 
-          {/* The transcript's top edge eases under the header rather than cutting off. */}
-          <LinearGradient
-            pointerEvents="none"
-            colors={[theme.bg, withAlpha(theme.bg, 0)]}
-            style={{ position: 'absolute', left: 0, right: 0, top: 0, height: 22 }}
-          />
-          <BottomFade height={dockHeight + 48} />
-
-          {messages.length > 0 && problem ? (
-            <View
-              pointerEvents="box-none"
-              style={{ position: 'absolute', left: 16, right: 16, bottom: dockHeight + 10 }}
-            >
-              {/* What is on screen may be stale: said over the transcript, not hidden behind it. */}
-              <View
-                className="flex-row items-center gap-2.5 rounded-2xl px-4 py-2.5"
-                style={{ backgroundColor: theme.statusWash.error }}
-              >
-                <WarningCircleIcon size={16} color={theme.status.error} />
-                <AppText variant="text-13-regular" style={{ color: theme.fg, flex: 1 }}>
-                  {problem}
-                </AppText>
-                {phase === 'failed' && onRetry ? (
-                  <IconButton label="Try again" size={32} onPress={onRetry}>
-                    <ArrowClockwiseIcon size={16} color={theme.fg} />
-                  </IconButton>
-                ) : null}
-              </View>
-            </View>
-          ) : null}
-
+          {/* The glass over the transcript's end: beside the content, so it blurs it. */}
           {messages.length > 0 && !problem ? (
             <ScrollToLatest away={away} bottom={dockHeight + 12} onPress={toLatest} />
           ) : null}
@@ -348,22 +360,22 @@ export const SessionThread = memo(function SessionThread({
             </SessionDock>
           )}
         </View>
-      </View>
 
-      {/* Over the whole page, header included: its sheets and pulled-up state cover it all. */}
-      {composer ? (
-        <DockSlotContext.Provider value={dockSlot}>{composer}</DockSlotContext.Provider>
-      ) : null}
+        {/* Over the whole page, header included: its sheets and pulled-up state cover it all. */}
+        {composer ? (
+          <DockSlotContext.Provider value={dockSlot}>{composer}</DockSlotContext.Provider>
+        ) : null}
 
-      {chrome.menuOpen ? (
-        <SessionMenu
-          items={chrome.menu}
-          note={actions?.unavailable ?? null}
-          top={insets.top + 6 + 48}
-          onChoose={chrome.choose}
-          onClose={chrome.closeMenu}
-        />
-      ) : null}
+        {chrome.menuOpen ? (
+          <SessionMenu
+            items={chrome.menu}
+            note={actions?.unavailable ?? null}
+            top={insets.top + 6 + HEADER_ROW}
+            onChoose={chrome.choose}
+            onClose={chrome.closeMenu}
+          />
+        ) : null}
+      </Screen>
     </KeyboardAvoidingView>
   )
 })

@@ -22,7 +22,9 @@ import { useTitleEnvironment } from '../../settings/title-environment'
 import { usePhoneTheme } from '../../theme/ThemeProvider'
 import { BigTitle, FadeOut, SectionLabel } from '../../ui/chrome'
 import { DraftRow } from '../../ui/DraftRow'
+import { GlassContent } from '../../ui/Glass'
 import { IconButton } from '../../ui/IconButton'
+import { Screen, ScreenBar } from '../../ui/Screen'
 import { SegmentedTabs } from '../../ui/SegmentedTabs'
 import { SessionRow } from '../../ui/SessionRow'
 
@@ -93,7 +95,8 @@ const keyOf = (row: ListRow) =>
 /**
  * The sessions home: big title with the environment under it, All · Active
  * · Drafts, rows grouped by what they are doing (Active) or by day (All).
- * The floating pill nav is the tabs group's tab bar, drawn over this.
+ * The floating pill nav is the tabs group's tab bar, drawn over this; the
+ * compose button floats over the title row.
  */
 export default function SessionsHome() {
   const router = useRouter()
@@ -137,81 +140,84 @@ export default function SessionsHome() {
   const empty = EMPTY[tab]
 
   return (
-    <View className="flex-1" style={{ paddingTop: insets.top + 6 }}>
-      <BigTitle
-        title="Sessions"
-        environment={titleEnvironment}
-        trailing={
+    <Screen tab="index">
+      <ScreenBar
+        top={insets.top + 6}
+        height={44}
+        right={
           <IconButton label="New session" onPress={() => router.push('/draft/new')}>
             <NotePencilIcon size={18} color={theme.fg} />
           </IconButton>
         }
       />
-      <SegmentedTabs
-        tabs={[
-          { key: 'all', label: 'All' },
-          { key: 'active', label: 'Active', count: counts.active },
-          { key: 'drafts', label: 'Drafts', count: counts.drafts },
-        ]}
-        value={tab}
-        onChange={setTab}
-      />
-      <View className="flex-1">
-        <SectionList
-          className="flex-1"
-          sections={sections}
-          keyExtractor={keyOf}
-          renderItem={renderItem}
-          renderSectionHeader={({ section }) => <SectionLabel>{section.label}</SectionLabel>}
-          stickySectionHeadersEnabled={false}
-          contentContainerStyle={{ paddingHorizontal: 8, paddingBottom: insets.bottom + 140 }}
-          showsVerticalScrollIndicator={false}
-          ListEmptyComponent={
-            needsPairing ? (
-              <PairFirst
-                again={environment?.label ?? null}
-                onPair={() =>
-                  router.push(
-                    environment
-                      ? { pathname: '/pair', params: { again: environment.environmentId } }
-                      : '/pair',
-                  )
-                }
-              />
-            ) : showConnection ? (
-              <View className="px-2 pt-6">
-                <ConnectionPanel view={view} />
-              </View>
-            ) : (
-              <View className="items-center px-10 pt-24">
-                <View
-                  style={{
-                    width: 56,
-                    height: 56,
-                    borderRadius: 18,
-                    backgroundColor: theme.hover,
-                    alignItems: 'center',
-                    justifyContent: 'center',
-                    marginBottom: 12,
-                  }}
-                >
-                  <PlusIcon size={26} color={theme.muted} />
-                </View>
-                <AppText variant="text-16-medium" style={{ color: theme.fg }}>
-                  {empty.title}
-                </AppText>
-                <AppText
-                  variant="text-13-regular"
-                  style={{ color: theme.muted, textAlign: 'center', marginTop: 4 }}
-                >
-                  {empty.body}
-                </AppText>
-              </View>
-            )
-          }
+      <GlassContent style={{ paddingTop: insets.top + 6 }}>
+        <BigTitle title="Sessions" environment={titleEnvironment} />
+        <SegmentedTabs
+          tabs={[
+            { key: 'all', label: 'All' },
+            { key: 'active', label: 'Active', count: counts.active },
+            { key: 'drafts', label: 'Drafts', count: counts.drafts },
+          ]}
+          value={tab}
+          onChange={setTab}
         />
-        <FadeOut />
-      </View>
-    </View>
+        <View className="flex-1">
+          <SectionList
+            className="flex-1"
+            sections={sections}
+            keyExtractor={keyOf}
+            renderItem={renderItem}
+            renderSectionHeader={({ section }) => <SectionLabel>{section.label}</SectionLabel>}
+            stickySectionHeadersEnabled={false}
+            contentContainerStyle={{ paddingHorizontal: 8, paddingBottom: insets.bottom + 140 }}
+            showsVerticalScrollIndicator={false}
+            ListEmptyComponent={
+              needsPairing ? (
+                <PairFirst
+                  again={environment?.label ?? null}
+                  onPair={() =>
+                    router.push(
+                      environment
+                        ? { pathname: '/pair', params: { again: environment.environmentId } }
+                        : '/pair',
+                    )
+                  }
+                />
+              ) : showConnection ? (
+                <View className="px-2 pt-6">
+                  <ConnectionPanel view={view} />
+                </View>
+              ) : (
+                <View className="items-center px-10 pt-24">
+                  <View
+                    style={{
+                      width: 56,
+                      height: 56,
+                      borderRadius: 18,
+                      backgroundColor: theme.hover,
+                      alignItems: 'center',
+                      justifyContent: 'center',
+                      marginBottom: 12,
+                    }}
+                  >
+                    <PlusIcon size={26} color={theme.muted} />
+                  </View>
+                  <AppText variant="text-16-medium" style={{ color: theme.fg }}>
+                    {empty.title}
+                  </AppText>
+                  <AppText
+                    variant="text-13-regular"
+                    style={{ color: theme.muted, textAlign: 'center', marginTop: 4 }}
+                  >
+                    {empty.body}
+                  </AppText>
+                </View>
+              )
+            }
+          />
+          <FadeOut />
+        </View>
+      </GlassContent>
+    </Screen>
   )
 }

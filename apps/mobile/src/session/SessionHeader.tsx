@@ -9,6 +9,7 @@ import { useGoBack } from '../ui/goBack'
 import { IconButton } from '../ui/IconButton'
 import { Press } from '../ui/Press'
 import { ProjectChip } from '../ui/ProjectChip'
+import { ScreenBar } from '../ui/Screen'
 import { TITLE_MAX, type SessionChrome } from './useSessionChrome'
 
 /** The title's own type: the mockup's 22 px semibold. */
@@ -50,10 +51,45 @@ function TitleField({ title, onCommit }: { title: string; onCommit: (title: stri
   )
 }
 
+/** The header's button row: as tall as the buttons, over which `SessionHeaderBar` floats. */
+export const HEADER_ROW = 48
+
 /**
- * Back and ⋯ in glass, then the project and the title: the top kept as clear
- * as it can be. A tap on the title renames the session when the environment
- * can; the line under it says what a command is doing, or why it failed.
+ * Back and ⋯ in glass, over the header's first row: beside the page's
+ * content rather than in it, so they blur it (see `ScreenBar`).
+ */
+export const SessionHeaderBar = memo(function SessionHeaderBar({
+  topInset,
+  onMenu,
+}: {
+  topInset: number
+  onMenu: () => void
+}) {
+  const goBack = useGoBack()
+  const theme = usePhoneTheme()
+  return (
+    <ScreenBar
+      top={topInset + 6}
+      height={HEADER_ROW}
+      left={
+        <IconButton label="Back" onPress={goBack}>
+          <CaretLeftIcon size={18} color={theme.fg} weight="bold" />
+        </IconButton>
+      }
+      right={
+        <IconButton label="Session actions" onPress={onMenu}>
+          <DotsThreeIcon size={20} color={theme.fg} weight="bold" />
+        </IconButton>
+      }
+    />
+  )
+})
+
+/**
+ * The project and the title under the header's buttons (`SessionHeaderBar`):
+ * the top kept as clear as it can be. A tap on the title renames the session
+ * when the environment can; the line under it says what a command is doing,
+ * or why it failed.
  */
 export const SessionHeader = memo(function SessionHeader({
   title,
@@ -66,7 +102,6 @@ export const SessionHeader = memo(function SessionHeader({
   topInset: number
   chrome: SessionChrome
 }) {
-  const goBack = useGoBack()
   const theme = usePhoneTheme()
   const { editing, canRename, note } = chrome
   const heading = (
@@ -76,14 +111,7 @@ export const SessionHeader = memo(function SessionHeader({
   )
   return (
     <View style={{ paddingTop: topInset + 6 }}>
-      <View className="flex-row items-center justify-between px-5" style={{ height: 48 }}>
-        <IconButton label="Back" onPress={goBack}>
-          <CaretLeftIcon size={18} color={theme.fg} weight="bold" />
-        </IconButton>
-        <IconButton label="Session actions" onPress={chrome.openMenu}>
-          <DotsThreeIcon size={20} color={theme.fg} weight="bold" />
-        </IconButton>
-      </View>
+      <View style={{ height: HEADER_ROW }} />
       <View className="px-5" style={{ paddingTop: 2, paddingBottom: 10 }}>
         {project ? <ProjectChip name={project} /> : null}
         {editing ? (
