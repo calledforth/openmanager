@@ -23,6 +23,8 @@ const connection = { status: 'connected' } as unknown as PhoneConnectionState
 vi.mock('../src/environment/PhoneEnvironmentProvider', () => ({
   usePhoneConnection: () => connection,
 }))
+// The photo library is the system's picker; the tests hand LibraryPick their own.
+vi.mock('expo-image-picker', () => ({ launchImageLibraryAsync: vi.fn() }))
 
 const { useLiveComposerModel } = await import('../src/composer/useLiveComposerModel')
 const { ThreadBridge } = await import('../src/composer/thread-port')
@@ -954,7 +956,7 @@ describe('the fold', () => {
     const fold = createFoldDriver({
       now: () => now,
       animate: (from, to) => calls.push(`animate ${from}->${to}`),
-      snap: () => calls.push('snap'),
+      set: (to) => calls.push(`set ${to}`),
       hold: (delta) => calls.push(`hold ${delta}`),
       release: () => calls.push('release'),
     })
@@ -965,15 +967,15 @@ describe('the fold', () => {
     const { fold, calls, tick } = await driver()
     fold.onKey('rest:')
     fold.onContentHeight(84)
-    // Text wrapping at rest: no animation.
+    // Text wrapping at rest: no animation, the box simply takes the new height.
     fold.onContentHeight(105)
-    expect(calls).toEqual([])
+    expect(calls).toEqual(['set 84', 'set 105'])
     // A turn starts: the row folds into the chip.
     tick(5000)
     fold.onKey('running:')
     tick(16)
     fold.onContentHeight(52)
-    expect(calls).toEqual(['hold -53', 'animate 105->52'])
+    expect(calls.slice(2)).toEqual(['hold -53', 'animate 105->52'])
     fold.onFinished()
     expect(calls.at(-1)).toBe('release')
   })
@@ -985,18 +987,20 @@ describe('the fold', () => {
     tick(1000)
     fold.onKey('prompt:q-1')
     fold.onContentHeight(180)
-    expect(calls).toEqual(['hold 128', 'animate 52->180'])
-    // The question's next slide, or an error, while it eases: no second animation.
+    expect(calls).toEqual(['set 52', 'hold 128', 'animate 52->180'])
+    // The question's next slide, or an error, while it eases: no second
+    // animation, and the box lands at the content's height (never left at
+    // whatever value the ease had reached).
     tick(60)
     fold.onContentHeight(220)
-    expect(calls).toEqual(['hold 128', 'animate 52->180', 'snap', 'release'])
+    expect(calls).toEqual(['set 52', 'hold 128', 'animate 52->180', 'set 220', 'release'])
     fold.onFinished()
-    expect(calls).toHaveLength(4)
+    expect(calls).toHaveLength(5)
     // A fold whose content took too long to measure is not animated late.
     fold.onKey('rest:')
     tick(500)
     fold.onContentHeight(84)
-    expect(calls).toHaveLength(4)
+    expect(calls.slice(5)).toEqual(['set 84'])
   })
 })
 
@@ -1089,7 +1093,7 @@ describe('the fold, measured as the box it sizes', () => {
     const fold = createFoldDriver({
       now: () => now,
       animate: (from, to) => calls.push(`animate ${from}->${to}`),
-      snap: () => calls.push('snap'),
+      set: (to) => calls.push(`set ${to}`),
       hold: (delta) => calls.push(`hold ${delta}`),
       release: () => calls.push('release'),
     })
@@ -1101,11 +1105,15 @@ describe('the fold, measured as the box it sizes', () => {
     fold.onContentHeight(boxHeightOf(38))
     const padding = DOCK_PADDING.top + DOCK_PADDING.bottom
     expect(padding).toBe(14)
-    expect(calls).toEqual([`hold -32`, `animate ${70 + padding}->${38 + padding}`])
+    expect(calls).toEqual([
+      `set ${70 + padding}`,
+      `hold -32`,
+      `animate ${70 + padding}->${38 + padding}`,
+    ])
     // A notice inside the window lands at the box's new height, padding and all.
     now += 50
     fold.onContentHeight(boxHeightOf(56))
-    expect(calls.slice(2)).toEqual(['snap', 'release'])
+    expect(calls.slice(3)).toEqual([`set ${56 + padding}`, 'release'])
   })
 })
 
@@ -1174,5 +1182,237 @@ describe('a photo whose draft is discarded elsewhere while it is read', () => {
     expect(client.getState().drafts?.[SESSION.sessionId]).toBeUndefined()
     expect(current().images).toEqual([])
     expect(current().notice).toMatch(/sent or deleted meanwhile/)
+  })
+})
+
+describe('a question answered on another device mid-flow', () => {
+  it('leaves the composer without a throw, the prompt gone and the dock back at rest', async () => {
+    const errors: unknown[] = []
+    const onError = (event: ErrorEvent) => errors.push(event.error)
+    window.addEventListener('error', onError)
+    const client = await open({ seed: seed('running'), respond: () => null })
+    await act(() =>
+      client.requestInteraction(TARGET, {
+        kind: 'question',
+        interactionId: 'q-two',
+        questions: [
+          {
+            questionId: 'first',
+            prompt: 'Which page?',
+            options: [
+              { optionId: 'checkout', label: 'Checkout' },
+              { optionId: 'docs', label: 'Docs' },
+            ],
+          },
+          {
+            questionId: 'second',
+            prompt: 'Which tiers?',
+            allowMultiple: true,
+            options: [
+              { optionId: 'starter', label: 'Starter' },
+              { optionId: 'team', label: 'Team' },
+            ],
+          },
+        ],
+      }),
+    )
+    await flush()
+    const prompt = current().prompt
+    if (prompt?.kind !== 'question') throw new Error('no question')
+    await act(async () => prompt.flow.pick(prompt.flow.question!, 'checkout'))
+    expect(composerFold(current())).toBe('prompt')
+
+    // Answered on the laptop: the environment says so, and the turn goes on to its end.
+    await act(() =>
+      client.emit({
+        ...base(),
+        name: 'interaction.resolved',
+        scope: threadScope(client),
+        payload: {
+          turnId: 'turn-1',
+          response: {
+            kind: 'question',
+            interactionId: 'q-two',
+            outcome: {
+              outcome: 'answered',
+              answers: [
+                { questionId: 'first', selectedOptionIds: ['docs'] },
+                { questionId: 'second', selectedOptionIds: ['team'] },
+              ],
+            },
+          },
+          resolvedByClientId: 'web',
+          turnState: 'running',
+        },
+      } as never),
+    )
+    await flush()
+    expect(current().prompt).toBeNull()
+    await act(() => client.completeTurn(TARGET))
+    await flush()
+    expect(current().isStreaming).toBe(false)
+    expect(composerFold(current())).toBe('rest')
+    // Nothing the phone sent: it answered nothing itself.
+    expect(callsOf(client, 'respondToInteraction')).toEqual([])
+    window.removeEventListener('error', onError)
+    expect(errors).toEqual([])
+  })
+})
+
+describe('the dock box never keeps a height it was left at', () => {
+  it('lands every non-fold change, and ignores measurements that are not heights', async () => {
+    const { createFoldDriver } = await import('../src/composer/fold-transition')
+    const calls: string[] = []
+    const fold = createFoldDriver({
+      now: () => 0,
+      animate: (from, to) => calls.push(`animate ${from}->${to}`),
+      set: (to) => calls.push(`set ${to}`),
+      hold: (delta) => calls.push(`hold ${delta}`),
+      release: () => calls.push('release'),
+    })
+    fold.onKey('prompt:q')
+    fold.onContentHeight(0)
+    fold.onContentHeight(Number.NaN)
+    expect(calls).toEqual([])
+    fold.onContentHeight(300)
+    // The footer measured itself and the prompt grew: the box grows with it.
+    fold.onContentHeight(344)
+    expect(calls).toEqual(['set 300', 'set 344'])
+  })
+})
+
+describe('the prompt body room', () => {
+  it('takes at most about half the page, and never less than its heading and two choices', async () => {
+    const { promptBodyMax, promptRoom, PROMPT_SHARE } = await import('../src/composer/prompt-room')
+    const window = 844
+    const room = promptRoom({ layer: 800, window, keyboard: 0 })
+    expect(room).toBe(800)
+    // The cap: the thread stays in view above a long question.
+    expect(promptBodyMax({ room, chrome: 160, footer: 44, floor: 120 })).toBe(
+      Math.round(800 * PROMPT_SHARE),
+    )
+    // A heading and two options taller than the cap still show whole.
+    expect(promptBodyMax({ room, chrome: 160, footer: 44, floor: 520 })).toBe(520)
+    // One taller than the page itself scrolls inside what the page leaves.
+    expect(promptBodyMax({ room, chrome: 160, footer: 44, floor: 900 })).toBe(800 - 160 - 44)
+  })
+
+  it('does not collapse under a keyboard height that went stale', async () => {
+    const { promptBodyMax, promptRoom } = await import('../src/composer/prompt-room')
+    const window = 844
+    // The keyboard went down but its last height was never cleared: the
+    // measured layer (the page's avoider made the room) is what counts.
+    expect(promptRoom({ layer: 800, window, keyboard: 760 })).toBe(800)
+    // Before the layer has measured itself, a stale keyboard cannot take more than two thirds.
+    const stale = promptRoom({ layer: 0, window, keyboard: 760 })
+    expect(stale).toBe(Math.round(window / 3))
+    expect(promptBodyMax({ room: stale, chrome: 160, footer: 44, floor: 150 })).toBe(96)
+    // Up for real, the keyboard does shorten the page.
+    expect(promptRoom({ layer: 0, window, keyboard: 300 })).toBe(544)
+  })
+})
+
+describe('a photo from the photo library', () => {
+  type Photo = { uri: string; name: string; mimeType: string }
+  const mount = async () => {
+    const { LibraryPick } = await import('../src/composer/LibraryPick')
+    let answer!: (photo: Photo | null) => void
+    const pick = vi.fn(() => new Promise<Photo | null>((resolve) => (answer = resolve)))
+    const onPhoto = vi.fn()
+    const onClose = vi.fn()
+    const show = (open: boolean) =>
+      act(() =>
+        root.render(open ? <LibraryPick pick={pick} onPhoto={onPhoto} onClose={onClose} /> : <></>),
+      )
+    await show(true)
+    return {
+      pick,
+      onPhoto,
+      onClose,
+      show,
+      answer: (photo: Photo | null) => act(async () => answer(photo)),
+    }
+  }
+
+  it('opens the picker once and attaches what it hands back, as the camera does', async () => {
+    const { pick, onPhoto, onClose, answer } = await mount()
+    expect(pick).toHaveBeenCalledTimes(1)
+    await answer({ uri: 'file:///lib.jpg', name: 'lib.jpg', mimeType: 'image/jpeg' })
+    expect(onPhoto).toHaveBeenCalledWith({
+      uri: 'file:///lib.jpg',
+      name: 'lib.jpg',
+      mimeType: 'image/jpeg',
+    })
+    expect(onClose).toHaveBeenCalledTimes(1)
+  })
+
+  it('closes with nothing attached when nothing is picked', async () => {
+    const { onPhoto, onClose, answer } = await mount()
+    await answer(null)
+    expect(onPhoto).not.toHaveBeenCalled()
+    expect(onClose).toHaveBeenCalledTimes(1)
+  })
+
+  it('lands nowhere once it has closed (the composer collapsed meanwhile)', async () => {
+    const { onPhoto, onClose, show, answer } = await mount()
+    await show(false)
+    await answer({ uri: 'file:///late.jpg', name: 'late.jpg', mimeType: 'image/jpeg' })
+    expect(onPhoto).not.toHaveBeenCalled()
+    expect(onClose).not.toHaveBeenCalled()
+  })
+
+  it('names and types a picked asset, with fallbacks', async () => {
+    const { photoFromAsset } = await import('../src/composer/LibraryPick')
+    expect(photoFromAsset(undefined)).toBeNull()
+    expect(
+      photoFromAsset({ uri: 'file:///p.png', fileName: 'p.png', mimeType: 'image/png' } as never),
+    ).toEqual({ uri: 'file:///p.png', name: 'p.png', mimeType: 'image/png' })
+    // Re-encoded at quality 0.8, a WebP comes back as JPEG bytes: it is typed and named so.
+    expect(
+      photoFromAsset({
+        uri: 'file:///cache/w.webp',
+        fileName: 'w.webp',
+        mimeType: 'image/webp',
+      } as never),
+    ).toEqual({ uri: 'file:///cache/w.webp', name: 'w.jpg', mimeType: 'image/jpeg' })
+    const bare = photoFromAsset({ uri: 'content://media/1' } as never)!
+    expect(bare.mimeType).toBe('image/jpeg')
+    expect(bare.name).toMatch(/^Photo .*\.jpg$/)
+  })
+})
+
+describe('a photo read on the phone', () => {
+  it('falls back to the native XMLHttpRequest blob when fetch cannot build one', async () => {
+    const { photoFile } = await import('../src/composer/useComposerDraft')
+    const native = new Blob([new Uint8Array([1, 2])], { type: 'image/png' })
+    const opened: string[] = []
+    class FakeRequest {
+      responseType = ''
+      response: Blob | null = null
+      onload: (() => void) | null = null
+      onerror: (() => void) | null = null
+      open(_method: string, url: string) {
+        opened.push(url)
+      }
+      send() {
+        this.response = native
+        this.onload?.()
+      }
+    }
+    vi.stubGlobal('XMLHttpRequest', FakeRequest)
+    // Expo's fetch: the response is there, but its Blob cannot be made.
+    const read = (async () => ({
+      blob: async () => {
+        throw new Error("Creating blobs from 'ArrayBuffer' and 'ArrayBufferView' are not supported")
+      },
+    })) as unknown as typeof fetch
+    const file = await photoFile(
+      { uri: 'file:///picked.png', name: 'picked.png', mimeType: 'image/png' },
+      read,
+    )
+    expect(opened).toEqual(['file:///picked.png'])
+    expect(file).toBe(native)
+    expect(file.name).toBe('picked.png')
+    vi.unstubAllGlobals()
   })
 })

@@ -1,5 +1,5 @@
 import { CheckIcon } from 'phosphor-react-native'
-import { useEffect, type ReactNode } from 'react'
+import { useEffect, useRef, useState, type ReactNode } from 'react'
 import { BackHandler, Pressable, StyleSheet, useWindowDimensions, View } from 'react-native'
 import Animated, {
   Easing,
@@ -55,6 +55,7 @@ export function ChoicePopover({
   icon,
   onPick,
   onClose,
+  closeOnPick = true,
 }: {
   anchor: PickAnchor
   label: string
@@ -63,6 +64,8 @@ export function ChoicePopover({
   icon?: (choice: ComposerChoice) => ReactNode
   onPick: (id: string) => void
   onClose: () => void
+  /** False where the pick itself opens what comes next (a pick that closed it would close that too). */
+  closeOnPick?: boolean
 }) {
   const theme = usePhoneTheme()
   const { width, height } = useWindowDimensions()
@@ -73,11 +76,25 @@ export function ChoicePopover({
     })
     return () => subscription.remove()
   }, [onClose])
+  // The pick was measured in the window; the layer this stands in may be
+  // shorter (the keyboard is up and the page made room for it), so the
+  // popover is placed from the layer's own bottom edge, once it is known.
+  const layer = useRef<View>(null)
+  const [layerBottom, setLayerBottom] = useState<number | null>(null)
   const popoverWidth = widthFor(choices)
   const left = Math.max(8, Math.min(anchor.x, width - popoverWidth - 8))
-  const bottom = Math.max(8, height - anchor.y + 8)
+  const bottom = Math.max(8, (layerBottom ?? height) - anchor.y + 8)
   return (
-    <View style={StyleSheet.absoluteFill} pointerEvents="box-none">
+    <View
+      ref={layer}
+      style={StyleSheet.absoluteFill}
+      pointerEvents="box-none"
+      onLayout={() =>
+        layer.current?.measureInWindow((_x, y, _width, layerHeight) =>
+          setLayerBottom(y + layerHeight),
+        )
+      }
+    >
       <Animated.View entering={SCRIM_IN} exiting={SCRIM_OUT} style={StyleSheet.absoluteFill}>
         <Pressable
           accessibilityLabel={`Close ${label}`}
@@ -86,72 +103,74 @@ export function ChoicePopover({
           style={[StyleSheet.absoluteFill, { backgroundColor: theme.scrim }]}
         />
       </Animated.View>
-      <Animated.View
-        accessibilityViewIsModal
-        entering={entering}
-        exiting={POPOVER_OUT}
-        style={{
-          position: 'absolute',
-          left,
-          bottom,
-          width: popoverWidth,
-          transformOrigin: 'bottom left',
-        }}
-      >
-        <Glass strength="sheet" shadow="float" radius={14} contentStyle={{ padding: 6 }}>
-          <View accessibilityRole="menu" accessibilityLabel={label}>
-            {choices.map((choice) => {
-              const on = choice.id === current
-              return (
-                <Press
-                  key={choice.id}
-                  accessibilityRole="menuitem"
-                  accessibilityLabel={choice.name}
-                  accessibilityHint={choice.description}
-                  accessibilityState={{ selected: on }}
-                  onPress={() => {
-                    tap()
-                    onPick(choice.id)
-                    onClose()
-                  }}
-                  style={({ pressed }) => ({
-                    flexDirection: 'row',
-                    alignItems: 'center',
-                    gap: 10,
-                    paddingVertical: 9,
-                    paddingHorizontal: 10,
-                    borderRadius: 10,
-                    backgroundColor: on ? theme.active : pressed ? theme.hover : 'transparent',
-                  })}
-                >
-                  {icon ? icon(choice) : null}
-                  <View style={{ flex: 1, minWidth: 0 }}>
-                    <AppText
-                      variant="text-14-regular"
-                      numberOfLines={1}
-                      style={{ color: theme.fg }}
-                    >
-                      {choice.name}
-                    </AppText>
-                    {choice.description ? (
+      {layerBottom === null ? null : (
+        <Animated.View
+          accessibilityViewIsModal
+          entering={entering}
+          exiting={POPOVER_OUT}
+          style={{
+            position: 'absolute',
+            left,
+            bottom,
+            width: popoverWidth,
+            transformOrigin: 'bottom left',
+          }}
+        >
+          <Glass strength="sheet" shadow="float" radius={14} contentStyle={{ padding: 6 }}>
+            <View accessibilityRole="menu" accessibilityLabel={label}>
+              {choices.map((choice) => {
+                const on = choice.id === current
+                return (
+                  <Press
+                    key={choice.id}
+                    accessibilityRole="menuitem"
+                    accessibilityLabel={choice.name}
+                    accessibilityHint={choice.description}
+                    accessibilityState={{ selected: on }}
+                    onPress={() => {
+                      tap()
+                      onPick(choice.id)
+                      if (closeOnPick) onClose()
+                    }}
+                    style={({ pressed }) => ({
+                      flexDirection: 'row',
+                      alignItems: 'center',
+                      gap: 10,
+                      paddingVertical: 9,
+                      paddingHorizontal: 10,
+                      borderRadius: 10,
+                      backgroundColor: on ? theme.active : pressed ? theme.hover : 'transparent',
+                    })}
+                  >
+                    {icon ? icon(choice) : null}
+                    <View style={{ flex: 1, minWidth: 0 }}>
                       <AppText
-                        variant="text-12-regular"
-                        numberOfLines={2}
-                        style={{ color: theme.faint }}
+                        variant="text-14-regular"
+                        numberOfLines={1}
+                        style={{ color: theme.fg }}
                       >
-                        {choice.description}
+                        {choice.name}
                       </AppText>
-                    ) : null}
-                  </View>
-                  <View style={{ width: 14 }}>
-                    {on ? <CheckIcon size={14} color={theme.fg} weight="bold" /> : null}
-                  </View>
-                </Press>
-              )
-            })}
-          </View>
-        </Glass>
-      </Animated.View>
+                      {choice.description ? (
+                        <AppText
+                          variant="text-12-regular"
+                          numberOfLines={2}
+                          style={{ color: theme.faint }}
+                        >
+                          {choice.description}
+                        </AppText>
+                      ) : null}
+                    </View>
+                    <View style={{ width: 14 }}>
+                      {on ? <CheckIcon size={14} color={theme.fg} weight="bold" /> : null}
+                    </View>
+                  </Press>
+                )
+              })}
+            </View>
+          </Glass>
+        </Animated.View>
+      )}
     </View>
   )
 }

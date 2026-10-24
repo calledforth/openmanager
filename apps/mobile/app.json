@@ -36,9 +36,17 @@
       [
         "expo-camera",
         {
-          "cameraPermission": "OpenManager uses the camera to scan the pairing QR code your computer shows.",
+          "cameraPermission": "OpenManager uses the camera to scan the pairing QR code your computer shows and to take photos you attach to a message.",
           "microphonePermission": false,
           "recordAudioAndroid": false
+        }
+      ],
+      [
+        "expo-image-picker",
+        {
+          "photosPermission": "OpenManager opens your photo library so you can attach photos to a message.",
+          "cameraPermission": "OpenManager uses the camera to scan the pairing QR code your computer shows and to take photos you attach to a message.",
+          "microphonePermission": false
         }
       ]
     ]

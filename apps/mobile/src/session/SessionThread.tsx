@@ -254,12 +254,14 @@ export const SessionThread = memo(function SessionThread({
   )
 
   return (
-    // Android resizes the window for the keyboard (the dock rises with it);
-    // iOS does not, so the page makes the room itself.
-    <KeyboardAvoidingView
-      style={{ flex: 1 }}
-      behavior={Platform.OS === 'ios' ? 'padding' : undefined}
-    >
+    // The page makes room for the keyboard itself, so the dock rises with it:
+    // iOS never resizes the window, and an edge-to-edge Android window (the
+    // only kind since Android 15) does not either. The avoider pads only by
+    // how far the keyboard overlaps it, so a window that did resize gets no
+    // second lift. The screen is the box inside that padding: the composer
+    // layer and the menu, absolutely placed, fill it and not the padded
+    // avoider, so they rise with the keyboard too.
+    <KeyboardAvoidingView style={{ flex: 1 }} behavior="padding">
       <Screen>
         {/* Hidden from a screen reader while a composer layer covers it, as under a sheet. */}
         <View style={{ flex: 1 }} {...coveredBySheet(covered)}>

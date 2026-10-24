@@ -16,7 +16,7 @@ import { ImageGlyph, SlashGlyph } from './icons'
 import { ImageStrip } from './ImageStrip'
 import { slashPopupOf, type ComposerModel } from './model'
 import { Pick, PrimaryButton } from './Pick'
-import { Picks } from './Picks'
+import { measure, Picks } from './Picks'
 import { SlashPopup } from './SlashPopup'
 import type { ComposerUi } from './ui-state'
 
@@ -57,6 +57,7 @@ export function ExpandedComposer({
   const theme = usePhoneTheme()
   const insets = useSafeAreaInsets()
   const input = useRef<TextInput>(null)
+  const attachRef = useRef<View>(null)
   // The command list stands on the tray; the tray's height changes with an
   // image or a notice, never per keystroke.
   const [trayHeight, setTrayHeight] = useState(0)
@@ -85,7 +86,7 @@ export function ExpandedComposer({
       {...coveredBySheet(covered)}
       style={{ position: 'absolute', inset: 0, backgroundColor: theme.bg }}
     >
-      {/* The page's own keyboard avoider makes the room on iOS; Android resizes the window. */}
+      {/* The page's own keyboard avoider makes the room: it pads for the keyboard on both platforms. */}
       <GlassLayer style={{ flex: 1 }} onTarget={onTarget}>
         <View
           pointerEvents="box-none"
@@ -184,10 +185,13 @@ export function ExpandedComposer({
               >
                 <Picks model={model} ui={ui} variant="tray" />
                 <Pick
+                  ref={attachRef}
                   accessibilityLabel="Attach a photo"
                   icon={<ImageGlyph size={14} color={theme.muted} />}
                   disabledReason={model.attach.enabled ? null : model.attach.reason}
-                  onPress={() => ui.open({ kind: 'camera' })}
+                  onPress={() =>
+                    measure(attachRef.current, (anchor) => ui.open({ kind: 'attach', anchor }))
+                  }
                 />
                 <Pick
                   accessibilityLabel="Commands"

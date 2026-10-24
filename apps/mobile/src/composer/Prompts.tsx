@@ -1,6 +1,6 @@
 import { ArrowLeftIcon, ArrowRightIcon, CheckIcon, PlayIcon } from 'phosphor-react-native'
-import { useState, type ReactNode } from 'react'
-import { ScrollView, TextInput, useWindowDimensions, View } from 'react-native'
+import { useContext, useState, type ReactNode } from 'react'
+import { ScrollView, TextInput, View, type LayoutChangeEvent } from 'react-native'
 import { useSafeAreaInsets } from 'react-native-safe-area-context'
 
 import { AppText } from '../components/ui/AppText'
@@ -8,7 +8,7 @@ import { usePhoneTheme } from '../theme/ThemeProvider'
 import { tap } from '../ui/haptics'
 import { Press } from '../ui/Press'
 import { draftFor, summarizeAnswer } from '@openmanager/app-core/logic'
-import { useKeyboardHeight } from './keyboard'
+import { promptBodyMax, PromptRoomContext } from './prompt-room'
 import type { ComposerPrompt, ChoiceTone } from './model'
 
 type PermissionPromptModel = Extract<ComposerPrompt, { kind: 'permission' }>
@@ -33,29 +33,33 @@ function PromptError({ text }: { text: string | null }) {
 const PAGE_CHROME = 54 + 30 + 8 + 14
 
 /**
- * A prompt that never runs off the screen: its body scrolls within what the
- * window leaves (after the safe areas, the page's chrome, the keyboard when
- * it is up, and the footer as measured), and the footer's actions stay
- * pinned under it, always reachable.
+ * A prompt that stays a part of the page: its body takes at most about half
+ * the page (`promptBodyMax`), so the thread stays in view above it, and
+ * scrolls past that; the heading and the first choices (`floor`) always
+ * show whole; the footer's actions stay pinned under it, always reachable.
  */
 function PromptFrame({
   body,
   footer,
   scrollKey,
+  floor = 0,
 }: {
   body: ReactNode
   footer: ReactNode
   /** A new value starts the body at its top again (a question's next slide). */
   scrollKey?: string | number
+  /** What must show before the body scrolls: its heading and first choices, as measured. */
+  floor?: number
 }) {
-  const { height } = useWindowDimensions()
+  const room = useContext(PromptRoomContext)
   const insets = useSafeAreaInsets()
-  const keyboard = useKeyboardHeight()
   const [footerHeight, setFooterHeight] = useState(0)
-  const maxHeight = Math.max(
-    96,
-    height - insets.top - Math.max(insets.bottom, 12) - 8 - keyboard - PAGE_CHROME - footerHeight,
-  )
+  const maxHeight = promptBodyMax({
+    room,
+    chrome: insets.top + Math.max(insets.bottom, 12) + 8 + PAGE_CHROME,
+    footer: footerHeight,
+    floor,
+  })
   return (
     <View style={{ gap: 10, paddingTop: 6, paddingHorizontal: 6, paddingBottom: 2 }}>
       <ScrollView
@@ -76,6 +80,10 @@ function PromptFrame({
     </View>
   )
 }
+
+/** The body's gap between the heading and the choices, and between two rows. */
+const OPTIONS_GAP = 10
+const ROW_GAP = 6
 
 /** One answer: a fill, the first allow in the action colours, the lasting one a step up. */
 function Choice({
@@ -130,10 +138,12 @@ function Choice({
  */
 export function PermissionPrompt({ prompt }: { prompt: PermissionPromptModel }) {
   const theme = usePhoneTheme()
+  const [heading, setHeading] = useState(0)
   return (
     <PromptFrame
+      floor={heading}
       body={
-        <View style={{ gap: 2 }}>
+        <View style={{ gap: 2 }} onLayout={(event) => setHeading(event.nativeEvent.layout.height)}>
           {prompt.detail ? (
             <AppText variant="text-11-medium" style={{ color: theme.status.needs }}>
               {prompt.detail}
@@ -228,12 +238,23 @@ export function QuestionPrompt({ prompt }: { prompt: QuestionPromptModel }) {
   const { question, questions, index, onReview, lastIndex } = flow
   const draft = question ? draftFor(flow.drafts, question.questionId) : null
   const freeText = !!question && question.allowFreeText !== false
+  // The heading and the first two rows, as measured: what always shows before scrolling.
+  const [sizes, setSizes] = useState({ heading: 0, first: 0, second: 0 })
+  const measure = (part: keyof typeof sizes) => (event: LayoutChangeEvent) => {
+    const height = event.nativeEvent.layout.height
+    setSizes((current) => (current[part] === height ? current : { ...current, [part]: height }))
+  }
+  const floor =
+    sizes.heading +
+    (sizes.first > 0 ? OPTIONS_GAP + sizes.first : 0) +
+    (sizes.second > 0 ? ROW_GAP + sizes.second : 0)
   return (
     <PromptFrame
       scrollKey={index}
+      floor={floor}
       body={
         <>
-          <View style={{ gap: 2 }}>
+          <View style={{ gap: 2 }} onLayout={measure('heading')}>
             <AppText variant="text-11-medium" style={{ color: theme.status.question }}>
               {onReview
                 ? 'Review answers'
@@ -255,6 +276,13 @@ export function QuestionPrompt({ prompt }: { prompt: QuestionPromptModel }) {
                 return (
                   <Press
                     key={item.questionId}
+                    onLayout={
+                      position === 0
+                        ? measure('first')
+                        : position === 1
+                          ? measure('second')
+                          : undefined
+                    }
                     accessibilityRole="button"
                     accessibilityLabel={`${item.prompt}: ${summary ?? 'not answered yet'}`}
                     onPress={() => flow.goTo(position)}
@@ -285,11 +313,18 @@ export function QuestionPrompt({ prompt }: { prompt: QuestionPromptModel }) {
             </View>
           ) : question && draft ? (
             <View style={{ gap: 6 }}>
-              {question.options.map((option) => {
+              {question.options.map((option, position) => {
                 const selected = draft.selectedOptionIds.includes(option.optionId)
                 return (
                   <Press
                     key={option.optionId}
+                    onLayout={
+                      position === 0
+                        ? measure('first')
+                        : position === 1
+                          ? measure('second')
+                          : undefined
+                    }
                     accessibilityRole={question.allowMultiple ? 'checkbox' : 'radio'}
                     accessibilityLabel={option.label || option.optionId}
                     accessibilityState={{ checked: selected }}

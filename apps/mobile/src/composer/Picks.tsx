@@ -10,7 +10,7 @@ import { ContextMeter, Pick } from './Pick'
 import type { ComposerUi, PickAnchor } from './ui-state'
 
 /** Where a pick sits in the window, for the popover that stands on it. */
-function measure(view: View | null, then: (anchor: PickAnchor) => void) {
+export function measure(view: View | null, then: (anchor: PickAnchor) => void) {
   if (!view) return
   view.measureInWindow((x, y, width, height) => then({ x, y, width, height }))
 }
