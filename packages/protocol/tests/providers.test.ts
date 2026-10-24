@@ -10,6 +10,7 @@ import {
 
 const health = {
   summary: 'unknown',
+  available: false,
   refreshing: false,
   install: 'unknown',
   auth: 'unknown',

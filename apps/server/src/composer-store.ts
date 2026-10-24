@@ -1,180 +1,144 @@
+import { randomUUID } from 'node:crypto'
+import type { DatabaseSync } from 'node:sqlite'
 import {
+  ProofEventSchemas,
   ProviderComposerProfileSchema,
   WorkspaceComposerPreferenceSchema,
+  type DurableEvent,
+  type ProofEvent,
   type ProviderComposerProfile,
   type WorkspaceComposerPreference,
 } from '@openmanager/protocol/node'
-import { openEnvironmentDatabase } from './db/database.ts'
+import {
+  readPreferenceRow,
+  readProfileRow,
+  readProfileRows,
+  preferenceFromRow,
+  profileFromRow,
+} from './db/composer-rows.ts'
 
-type ProfilePatch = Partial<
-  Omit<ProviderComposerProfile, 'providerId' | 'updatedAt'>
->
+type ProfilePatch = Partial<Omit<ProviderComposerProfile, 'providerId' | 'updatedAt'>>
 type PreferencePatch = Partial<WorkspaceComposerPreference>
 
-type ProfileRow = {
-  provider_id: string
-  agent_info_json: string | null
-  prompt_capabilities_json: string | null
-  available_models_json: string | null
-  available_modes_json: string | null
-  default_model_id: string | null
-  default_mode_id: string | null
-  updated_at: number
+/** A preference and the number of changes the server has counted for it. */
+export interface RevisedPreference {
+  preference: WorkspaceComposerPreference
+  revision: number
 }
 
-type PreferenceRow = {
-  model_id: string | null
-  mode_id: string | null
-  config_values_json: string | null
+/**
+ * Where the composer store reads and writes: the event database's connection
+ * and the event service's atomic append (docs/sync-foundations.md §4.7.11).
+ * It opens no connection of its own and writes no row itself: a profile or
+ * preference change is a `provider.catalog.updated` or
+ * `composer.preferences.updated` event whose projection writes the row.
+ */
+export interface ComposerStoreSource {
+  database: DatabaseSync
+  environmentId: string
+  appendAtomic(events: readonly ProofEvent[]): readonly DurableEvent[]
+  clock?: () => number
 }
 
-/** SQLite-owned durable composer state. All operations are small synchronous point reads/writes. */
-export function openComposerStore(dataDir: string) {
-  const database = openEnvironmentDatabase(dataDir)
+/**
+ * Durable composer state: provider profiles and per-workspace preferences.
+ * Reads are small point reads of the rows; every change is an event.
+ */
+export function openComposerStore(source: ComposerStoreSource) {
+  const { database } = source
+  const clock = source.clock ?? Date.now
 
-  const readProfile = database.prepare(`
-    SELECT provider_id, agent_info_json, prompt_capabilities_json, available_models_json,
-           available_modes_json, default_model_id, default_mode_id, updated_at
-    FROM provider_profiles
-    WHERE provider_id = ?
-  `)
-  const listProfiles = database.prepare(`
-    SELECT provider_id, agent_info_json, prompt_capabilities_json, available_models_json,
-           available_modes_json, default_model_id, default_mode_id, updated_at
-    FROM provider_profiles
-    ORDER BY provider_id
-  `)
-  const writeProfile = database.prepare(`
-    INSERT INTO provider_profiles (
-      provider_id, agent_info_json, prompt_capabilities_json, available_models_json,
-      available_modes_json, default_model_id, default_mode_id, updated_at
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-    ON CONFLICT(provider_id) DO UPDATE SET
-      agent_info_json = excluded.agent_info_json,
-      prompt_capabilities_json = excluded.prompt_capabilities_json,
-      available_models_json = excluded.available_models_json,
-      available_modes_json = excluded.available_modes_json,
-      default_model_id = excluded.default_model_id,
-      default_mode_id = excluded.default_mode_id,
-      updated_at = excluded.updated_at
-  `)
-  const readPreference = database.prepare(`
-    SELECT model_id, mode_id, config_values_json
-    FROM workspace_composer_preferences
-    WHERE workspace_id = ? AND provider_id = ?
-  `)
-  const writePreference = database.prepare(`
-    INSERT INTO workspace_composer_preferences (
-      workspace_id, provider_id, model_id, mode_id, config_values_json, updated_at
-    ) VALUES (?, ?, ?, ?, ?, ?)
-    ON CONFLICT(workspace_id, provider_id) DO UPDATE SET
-      model_id = excluded.model_id,
-      mode_id = excluded.mode_id,
-      config_values_json = excluded.config_values_json,
-      updated_at = excluded.updated_at
-  `)
+  const announce = (event: {
+    name: 'provider.catalog.updated' | 'composer.preferences.updated'
+    payload: unknown
+  }) => {
+    const schema = ProofEventSchemas[event.name] as { parse(input: unknown): ProofEvent }
+    source.appendAtomic([
+      schema.parse({
+        ...event,
+        type: 'event',
+        eventId: randomUUID(),
+        timestamp: new Date(clock()).toISOString(),
+        scope: { type: 'environment', environmentId: source.environmentId },
+      }),
+    ])
+  }
 
   const getProfile = (providerId: string): ProviderComposerProfile | undefined => {
-    const row = readProfile.get(providerId) as ProfileRow | undefined
+    const row = readProfileRow(database, providerId)
     return row ? profileFromRow(row) : undefined
   }
 
-  const getPreference = (
-    workspaceId: string,
-    providerId: string,
-  ): WorkspaceComposerPreference => {
-    const row = readPreference.get(workspaceId, providerId) as PreferenceRow | undefined
-    return row ? preferenceFromRow(row) : {}
+  const readPreference = (workspaceId: string, providerId: string): RevisedPreference => {
+    const row = readPreferenceRow(database, workspaceId, providerId)
+    return row
+      ? { preference: preferenceFromRow(row), revision: row.revision }
+      : { preference: {}, revision: 0 }
   }
 
   return {
     getProfile,
 
     listProfiles(): ProviderComposerProfile[] {
-      return (listProfiles.all() as ProfileRow[]).map(profileFromRow)
+      return readProfileRows(database).map(profileFromRow)
     },
 
+    /**
+     * Lay a patch over a provider's profile. A change is announced, and the
+     * projection writes it; an unchanged profile writes nothing.
+     */
     upsertProfile(providerId: string, patch: ProfilePatch): ProviderComposerProfile {
       const current = getProfile(providerId)
       const next = ProviderComposerProfileSchema.parse({
         providerId,
         ...(current ?? {}),
         ...defined(patch),
-        updatedAt: Date.now(),
+        updatedAt: clock(),
       })
       const comparable = { ...next, updatedAt: current?.updatedAt }
       if (current && JSON.stringify(comparable) === JSON.stringify(current)) return current
-      writeProfile.run(
-        next.providerId,
-        json(next.agentInfo),
-        json(next.promptCapabilities),
-        json(next.availableModels),
-        json(next.availableModes),
-        next.defaultModelId ?? null,
-        next.defaultModeId ?? null,
-        next.updatedAt,
-      )
+      announce({ name: 'provider.catalog.updated', payload: { profile: next } })
       return next
     },
 
-    getPreference,
+    getPreference(workspaceId: string, providerId: string): WorkspaceComposerPreference {
+      return readPreference(workspaceId, providerId).preference
+    },
 
+    readPreference,
+
+    /**
+     * Lay a patch over a workspace's preference. A change is announced with
+     * the revision it produces, and the projection writes both.
+     */
     setPreference(
       workspaceId: string,
       providerId: string,
       patch: PreferencePatch,
-    ): WorkspaceComposerPreference {
-      const current = getPreference(workspaceId, providerId)
-      const next = WorkspaceComposerPreferenceSchema.parse({ ...current, ...defined(patch) })
-      if (JSON.stringify(next) === JSON.stringify(current)) return current
-      writePreference.run(
-        workspaceId,
-        providerId,
-        next.modelId ?? null,
-        next.modeId ?? null,
-        json(next.configValues),
-        Date.now(),
-      )
-      return next
+    ): RevisedPreference {
+      const current = readPreference(workspaceId, providerId)
+      const preference = WorkspaceComposerPreferenceSchema.parse({
+        ...current.preference,
+        ...defined(patch),
+      })
+      if (JSON.stringify(preference) === JSON.stringify(current.preference)) return current
+      const revision = current.revision + 1
+      announce({
+        name: 'composer.preferences.updated',
+        payload: { workspaceId, providerId, preference, revision },
+      })
+      return { preference, revision }
     },
 
-    close() {
-      database.close()
-    },
+    /** Nothing to release: the store holds no connection of its own. */
+    close() {},
   }
 }
 
 export type ComposerStore = ReturnType<typeof openComposerStore>
 
-function profileFromRow(row: ProfileRow): ProviderComposerProfile {
-  return ProviderComposerProfileSchema.parse({
-    providerId: row.provider_id,
-    ...(row.agent_info_json ? { agentInfo: JSON.parse(row.agent_info_json) } : {}),
-    ...(row.prompt_capabilities_json
-      ? { promptCapabilities: JSON.parse(row.prompt_capabilities_json) }
-      : {}),
-    ...(row.available_models_json
-      ? { availableModels: JSON.parse(row.available_models_json) }
-      : {}),
-    ...(row.available_modes_json ? { availableModes: JSON.parse(row.available_modes_json) } : {}),
-    ...(row.default_model_id ? { defaultModelId: row.default_model_id } : {}),
-    ...(row.default_mode_id ? { defaultModeId: row.default_mode_id } : {}),
-    updatedAt: row.updated_at,
-  })
-}
-
-function preferenceFromRow(row: PreferenceRow): WorkspaceComposerPreference {
-  return WorkspaceComposerPreferenceSchema.parse({
-    ...(row.model_id ? { modelId: row.model_id } : {}),
-    ...(row.mode_id ? { modeId: row.mode_id } : {}),
-    ...(row.config_values_json ? { configValues: JSON.parse(row.config_values_json) } : {}),
-  })
-}
-
-function json(value: unknown): string | null {
-  return value === undefined ? null : JSON.stringify(value)
-}
-
 function defined<T extends object>(value: T): Partial<T> {
-  return Object.fromEntries(Object.entries(value).filter(([, entry]) => entry !== undefined)) as Partial<T>
+  return Object.fromEntries(
+    Object.entries(value).filter(([, entry]) => entry !== undefined),
+  ) as Partial<T>
 }

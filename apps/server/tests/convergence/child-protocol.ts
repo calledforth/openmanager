@@ -10,6 +10,26 @@ export interface ChildConfig {
   allowedHosts: string[]
   /** How long the fake provider's `session/new` takes, in milliseconds. */
   newSessionDelayMs: number
+  /** Armed from the start, so a kill can land inside boot (recovery, the repair). */
+  killAt?: KillAt
+}
+
+/**
+ * Kill the server child (SIGKILL, from inside) at a commit of the event log:
+ * just before COMMIT (`before`: neither the rows nor the events land) or just
+ * after it (`after`: both land, and nothing has been published). The commit
+ * is the `skip`+1-th one whose records include an event named `name`.
+ */
+export interface KillAt {
+  phase: 'before' | 'after'
+  name: string
+  skip?: number
+  /**
+   * Count only a record a producer wrote, not one the repository's status
+   * pass derived (`isDerivedRecord`): a turn or a new session also commits
+   * a derived `workspace.updated` for the recency it moved (§4.7.1).
+   */
+  producer?: boolean
 }
 
 /** One step of a scripted prompt, run by the fake provider without a round trip. */
@@ -78,6 +98,19 @@ export type ServerOp =
   | { op: 'readUnidentified' }
   /** Graceful stop through `server.close()`, then exit. */
   | { op: 'shutdown' }
+  /** How many bytes the running `streamText` has handed the server, and since when. */
+  | { op: 'readStreamed' }
+  /** Arm a kill at a commit (see `KillAt`); `null` disarms. */
+  | { op: 'armKill'; at: KillAt | null }
+  /**
+   * F4's delivery seam (docs/sync-foundations.md §5.5, S13): the next
+   * durable `message.delta` of this thread leaves the delivery queue and
+   * reaches no socket. A scenario holds one connection on the thread, so it
+   * is lost for exactly that connection. Nothing else is touched.
+   */
+  | { op: 'dropNextRecord'; threadId: string }
+  /** The records the seam dropped so far: thread, sequence, event. */
+  | { op: 'readDropped' }
 
 export type ChildRequest = (ProviderOp | ServerOp) & { id: number }
 

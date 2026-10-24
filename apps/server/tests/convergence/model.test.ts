@@ -43,32 +43,14 @@ interface TurnModel {
   permission: boolean
 }
 
+/**
+ * A session the run created. Since F3 the model keeps no workarounds: a send
+ * into a chat that was open across a restart is served (the server loads it,
+ * §4.7.3), and a session a crash left without a provider identity opens and
+ * starts on its next open (§4.7.4), so neither is avoided any more.
+ */
 interface SessionModel extends Target {
   turn: TurnModel | null
-  /**
-   * The server restarted since this client last opened the session. A
-   * WORKAROUND, not a fix: a restarted server serves `turn.send` only for
-   * threads `session.open` restored, and a reconnecting client does not open
-   * its session again (websocket.ts:1073-1083), so the send fails "Thread not
-   * found" until the user reopens it. That is a known divergence of its own,
-   * demonstrated by S17 (scenarios.test.ts), which F3 fixes; until then the
-   * model reopens first, as the user has to. Note what this hides: the runs
-   * do not exercise sending into a chat that was open across a restart.
-   */
-  stale: boolean
-  /**
-   * Verified unopenable: after a restart its row holds no provider session
-   * identity (the server went down before the delayed provider answered
-   * `session/new`), and a scratch client's `session.open` was refused with
-   * "The provider session identity is unavailable" (thread-service.ts:2297).
-   * S18 demonstrates it; F3 fixes it. A disclosed coverage restriction: the
-   * model neither sends to nor opens such a session, and skips a check while
-   * it is the active one, since a fresh load cannot open it either. Decided
-   * from the durable identity after each restart, never from what the run
-   * happened to sample: a graceful shutdown waits for pending starts, so a
-   * session may get its identity during the shutdown itself.
-   */
-  orphaned: boolean
 }
 
 interface Model {
@@ -120,10 +102,9 @@ function alphabet(model: Model): Array<[Op, number]> {
   // An unhealthy provider refuses creates, opens and sends alike.
   if (model.providerHealthy) {
     if (model.sessions.length < 5) ops.push(['createSession', model.sessions.length === 0 ? 10 : 2])
-    if (model.sessions.filter((session) => !session.orphaned).length >= 2)
-      ops.push(['openSession', 1])
+    if (model.sessions.length >= 2) ops.push(['openSession', 1])
   }
-  if (model.active && !model.active.orphaned && !turn && model.providerHealthy) {
+  if (model.active && !turn && model.providerHealthy) {
     ops.push(['sendTurn', 4])
   }
   if (turn) {
@@ -161,8 +142,6 @@ class ModelRun {
   delayMs = 0
   /** When each restart came back. */
   private readonly restarts: number[] = []
-  /** Sessions verified unopenable after a restart (see `SessionModel.orphaned`). */
-  orphans = 0
   skippedChecks = 0
   private a!: TestClient
   private readonly model: Model = { sessions: [], active: null, providerHealthy: true }
@@ -189,40 +168,12 @@ class ModelRun {
     return this.rig.provider(op)
   }
 
-  /**
-   * After a restart or crash: no turn is running anywhere, the provider is
-   * new, and a session is orphaned only if its row holds no provider identity
-   * now and a scratch client's open is refused for exactly that.
-   */
+  /** After a restart or crash: no turn is running anywhere, and the provider is new. */
   private async forgetTurns() {
     this.model.providerHealthy = true
     // A new process starts from the rig's configured delay (none).
     this.delayMs = 0
-    const unidentified = new Set(await this.rig.server.readUnidentified())
-    const candidates = this.model.sessions.filter(
-      (session) => !session.orphaned && unidentified.has(session.sessionId),
-    )
-    if (candidates.length > 0) {
-      const scratch = await this.rig.connect('scratch', { link: 'direct' })
-      try {
-        for (const session of candidates) {
-          const refused = await scratch.client.commands
-            .openSession(session.sessionId)
-            .then(() => undefined)
-            .catch((error: unknown) => (error as { message?: string }).message)
-          if (refused === 'The provider session identity is unavailable.') {
-            session.orphaned = true
-            this.orphans += 1
-          }
-        }
-      } finally {
-        scratch.dispose()
-      }
-    }
-    for (const session of this.model.sessions) {
-      session.turn = null
-      session.stale = true
-    }
+    for (const session of this.model.sessions) session.turn = null
   }
 
   /** Run `change`, then wait until A has noticed and connected again. */
@@ -245,26 +196,21 @@ class ModelRun {
           title: `Model ${model.sessions.length}`,
           quiet: false,
         })
-        const session = { ...target, turn: null, stale: false, orphaned: false }
+        const session = { ...target, turn: null }
         model.sessions.push(session)
         model.active = session
         return
       }
       case 'openSession': {
         await this.connected()
-        const others = model.sessions.filter((session) => session !== active && !session.orphaned)
+        const others = model.sessions.filter((session) => session !== active)
         const next = others[Math.floor(random() * others.length)]!
         await this.a.client.commands.openSession(next.sessionId)
-        next.stale = false
         model.active = next
         return
       }
       case 'sendTurn': {
         await this.connected()
-        if (active!.stale) {
-          await this.a.client.commands.openSession(active!.sessionId)
-          active!.stale = false
-        }
         const turnId = await startTurn(this.a, active!, `Prompt ${this.log.length}`)
         active!.turn = { turnId, openTools: [], permission: false }
         return
@@ -409,8 +355,6 @@ class ModelRun {
         // Not waiting for its resync: a reload's own open of the active
         // session races what comes next, as it does for a user (S19).
         this.a = await this.rig.reload(this.a, 'proxy', 'connected')
-        // A reload opens its active session again; the others stay as they were.
-        if (active) active.stale = false
         return
       case 'restart':
         await this.reconnectAfter(async () => {
@@ -440,8 +384,7 @@ class ModelRun {
   async check(): Promise<void> {
     // With the provider unhealthy, `session.open` is refused, so a fresh load
     // cannot open the chat at all and there is nothing to compare with.
-    if (!this.model.providerHealthy || this.model.active?.orphaned) {
-      // An orphaned session cannot be opened at all, by a fresh load either.
+    if (!this.model.providerHealthy) {
       this.skippedChecks += 1
       return
     }
@@ -533,7 +476,7 @@ class ModelRun {
  */
 describe('scripted model runs', () => {
   it(
-    'slowProvider 600 → createSession → check: the stamp that lands while the check settles',
+    'slowProvider 600 → createSession → check: the stamp that lands while the check settles (guard since F3)',
     {
       timeout: 120_000,
     },
@@ -544,7 +487,9 @@ describe('scripted model runs', () => {
         await run.start()
         await run.script(['slowProvider 600', 'createSession', 'check'])
         expect(run.checks).toBe(1)
-        expect([...run.known]).toContain('RUNTIME_STAMP')
+        // On main the stamp moved the session's time with no event
+        // (RUNTIME_STAMP); since F3 it writes the identity alone.
+        expect([...run.known]).toEqual([])
         recordEvidence({
           scenario: 'model script slowProvider 600 → createSession → check',
           bucket: 'regression-guard',
@@ -580,7 +525,6 @@ describe('seeded model-based runs', () => {
             operations: run.log,
             checks: run.checks,
             skippedChecks: run.skippedChecks,
-            orphans: run.orphans,
             knownCauses: [...run.known],
             durationMs: Math.round(performance.now() - started),
           },

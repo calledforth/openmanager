@@ -149,7 +149,7 @@ describe('web routes', () => {
               lastUsedAt: null,
               lastActivityAt: null,
               exists: true,
-              capabilities: { git: false, providers: ['opencode'] },
+              capabilities: { git: false },
             },
           ],
           sessions: ['a', 'b'].map((id) => ({
@@ -237,7 +237,7 @@ describe('web routes', () => {
             lastUsedAt: null,
             lastActivityAt: null,
             exists: true,
-            capabilities: { git: false, providers: ['opencode'] },
+            capabilities: { git: false },
           },
         ],
         sessions: ['a', 'b'].map((id) => ({

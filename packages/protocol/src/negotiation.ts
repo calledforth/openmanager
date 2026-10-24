@@ -55,7 +55,21 @@ import {
 // `GET /draft-artifacts/<draft-id>/<artifact-id>`, and claimable by whichever
 // client sends the draft. A v15 environment has no such route, refuses
 // another device's images at launch, and expires them after a day.
-export const PROTOCOL_VERSION = 16 as const
+// Version 17 makes the server the only author of what a client shows
+// (docs/sync-foundations.md, F3): a turn's end and a restart close every open
+// tool (`cancelled`), thought and request (`interaction.cancelled`) with their
+// own events; `turn.interrupted` names who interrupted it and every
+// interaction event names the turn's state; a turn carries its `commandId`,
+// `failure` and `interruptedBy`, and `turn.started` always says when. A v16
+// client cannot fold any of it. The three F3 pull requests share this one
+// version and ship together.
+// Version 18 sends everything through one ordered queue (docs/sync-foundations.md
+// §5, F4). A thread's transient `turn.notice` is no longer broadcast bare to
+// every socket: it goes only to the subscriptions of its scope, as
+// `subscription.transient`, placed after the durable record it followed
+// (`after`). A frame the server cannot send closes that socket instead of
+// being skipped. A v17 client would never see a notice.
+export const PROTOCOL_VERSION = 18 as const
 
 export const ProtocolVersionSchema = z.number().int().positive().max(Number.MAX_SAFE_INTEGER)
 export const CapabilitySchema = MessageNameSchema
@@ -162,8 +176,14 @@ const ProtocolHandshakeVersionProbeSchema = CommandEnvelopeSchema.extend({
   payload: z.object({ protocolVersion: ProtocolVersionSchema }).catchall(z.json()),
 })
 
+/**
+ * The handshake answer: the bootstrap, plus the server process's own id,
+ * random per boot. Stream epochs survive a restart, so this is how a client
+ * reconnecting tells that the server restarted, and reopens its active chat
+ * (docs/sync-foundations.md §4.7.3).
+ */
 export const ProtocolHandshakeResponseSchema = ResponseEnvelopeSchema.extend({
-  payload: BootstrapResponseSchema,
+  payload: z.intersection(BootstrapResponseSchema, z.object({ instanceId: EntityIdSchema })),
 })
 
 const IncompatibleProtocolErrorSchema = ProtocolErrorSchema.extend({

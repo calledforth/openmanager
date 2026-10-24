@@ -5,8 +5,9 @@ import { DatabaseSync } from 'node:sqlite'
 import { runMigrations } from '../src/db/migrate.js'
 import { MIGRATIONS } from '../src/db/migrations.js'
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import type { AgentRuntime } from '@agentpack/runtime/node'
+import { SessionUnknownError, type AgentRuntime } from '@agentpack/runtime/node'
 import {
+  ERROR_RETRY_POLICY,
   ProofEventSchemas,
   ProofResponseSchemas,
   type EventEnvelope,
@@ -16,6 +17,7 @@ import {
 import { createThreadService, type WorkspaceRuntimeResolver } from '../src/thread-service.js'
 import type { ArtifactStore } from '../src/artifacts.js'
 import { createPersistentEventService } from '../src/event-service.js'
+import { reconcileAfterRestart } from '../src/db/boot-reconcile.js'
 import { openEnvironmentDatabase } from '../src/db/database.js'
 
 /** The registry seam: every ID the tests use maps to one canonical root. */
@@ -509,7 +511,7 @@ describe('thread command provider routing', () => {
       expect(events).toContainEqual(
         expect.objectContaining({
           name: 'turn.interrupted',
-          payload: { turnId: sent.payload.turn.turnId },
+          payload: { turnId: sent.payload.turn.turnId, reason: 'user' },
         }),
       ),
     )
@@ -1367,12 +1369,66 @@ describe('sends deduplicated by command id', () => {
     expect(started.commandId).toEqual(expect.any(String))
   })
 
+  it('stamps the provider identity alone: no time moves, and a row on another provider is refused', async () => {
+    const { database } = await createDatabase()
+    const events = createPersistentEventService(database, vi.fn(), {})
+    let resolveStart!: (value: { sessionId: string; state: 'created' }) => void
+    const runtime = {
+      ensureSession: vi
+        .fn()
+        .mockImplementation(() => new Promise((resolve) => (resolveStart = resolve))),
+      prompt: vi.fn().mockReturnValue(new Promise(() => undefined)),
+      cancel: vi.fn(),
+    }
+    const service = createThreadService(
+      runtime as unknown as Pick<AgentRuntime, 'ensureSession' | 'prompt' | 'cancel'>,
+      { rejection: () => undefined },
+      (event) => events.append(event),
+      undefined,
+      registered,
+      { database, flush: events.flush, appendAtomic: events.appendAtomic },
+    )
+    service.setEnvironmentId(input.environmentId)
+    const create = (requestId: string) =>
+      ProofResponseSchemas['session.create'].parse(
+        service.dispatch({ type: 'command', name: 'session.create', requestId, payload: input }),
+      ).payload
+    const row = (sessionId: string) =>
+      database
+        .prepare(
+          'SELECT provider_id, provider_session_id, updated_at FROM sessions WHERE session_id = ?',
+        )
+        .get(sessionId) as
+        | { provider_id: string; provider_session_id: string | null; updated_at: number }
+        | undefined
+
+    const created = create('create-1')
+    await vi.waitFor(() => expect(runtime.ensureSession).toHaveBeenCalledTimes(1))
+    const before = row(created.session.sessionId)!
+    expect(before).toMatchObject({ provider_session_id: null })
+    resolveStart({ sessionId: 'provider-1', state: 'created' })
+    await service.resolveRuntimeSession(created.session.sessionId)
+    // Host-private: the identity lands, and nothing a client sees moves.
+    expect(row(created.session.sessionId)).toEqual({ ...before, provider_session_id: 'provider-1' })
+    expect(before.updated_at).toBe(Date.parse(created.announcedAt!))
+
+    // The row names the provider `session.created` wrote; the stamp never rewrites it.
+    const other = create('create-2')
+    await vi.waitFor(() => expect(runtime.ensureSession).toHaveBeenCalledTimes(2))
+    database
+      .prepare("UPDATE sessions SET provider_id = 'cursor' WHERE session_id = ?")
+      .run(other.session.sessionId)
+    resolveStart({ sessionId: 'provider-2', state: 'created' })
+    await expect(service.resolveRuntimeSession(other.session.sessionId)).rejects.toThrow(
+      /no row on provider opencode/,
+    )
+    expect(row(other.session.sessionId)).toBeUndefined()
+  })
+
   it('persists one turn.started per command id', async () => {
     const { database } = await createDatabase()
     const publish = vi.fn()
-    const events = createPersistentEventService(database, publish, {
-      sessionProviderId: () => 'opencode',
-    })
+    const events = createPersistentEventService(database, publish, {})
     const runtime = {
       ensureSession: vi.fn().mockResolvedValue({ sessionId: 'provider-1', state: 'created' }),
       prompt: vi.fn().mockReturnValue(new Promise(() => undefined)),
@@ -1385,7 +1441,7 @@ describe('sends deduplicated by command id', () => {
         (event) => events.append(event),
         undefined,
         resolve,
-        { database, flush: events.flush, appendAtomic: (batch) => events.appendAtomic(batch) },
+        { database, flush: events.flush, appendAtomic: (batch, options) => events.appendAtomic(batch, options) },
       )
       service.setEnvironmentId(input.environmentId)
       return service
@@ -1451,10 +1507,17 @@ describe('durable session lifecycle', () => {
       "INSERT INTO workspaces (workspace_id, name, path, created_at, updated_at) VALUES ('/workspace/project', 'Project', '/workspace/project', 1, 1)",
     )
     const published: EventEnvelope[] = []
+    // A transient failure a test can switch on: commits that hold a matching
+    // event fail as a full disk would, so the batcher keeps and retries them.
+    let failing: ((records: readonly DurableEvent[]) => boolean) | undefined
     const events = createPersistentEventService(
       database,
       (record) => published.push(record.event),
-      { sessionProviderId: () => 'opencode' },
+      {
+        beforeCommit: (records) => {
+          if (failing?.(records)) throw new Error('disk full')
+        },
+      },
     )
     const runtime = {
       ensureSession: vi
@@ -1463,7 +1526,11 @@ describe('durable session lifecycle', () => {
       prompt: vi.fn().mockResolvedValue(undefined),
       cancel: vi.fn().mockResolvedValue(undefined),
     }
+    // A new service on the same rows is a new process: it boots as the host
+    // does, closing what the last one left open (db/boot-reconcile.ts).
     const fresh = (onPersistenceError?: (error: unknown, eventName: string) => void) => {
+      events.flush()
+      reconcileAfterRestart(database, events.repository, 'environment-1')
       const service = createThreadService(
         runtime as unknown as Pick<AgentRuntime, 'ensureSession' | 'prompt' | 'cancel'>,
         { rejection: () => undefined },
@@ -1474,6 +1541,7 @@ describe('durable session lifecycle', () => {
           database,
           flush: events.flush,
           appendAtomic: events.appendAtomic,
+          finalizeNow: events.finalizeNow,
           ...(onPersistenceError ? { onPersistenceError } : {}),
         },
       )
@@ -1503,6 +1571,9 @@ describe('durable session lifecycle', () => {
       service,
       created,
       dispatch,
+      failCommits: (when?: (records: readonly DurableEvent[]) => boolean) => {
+        failing = when
+      },
       close: () => {
         events.close()
         database.close()
@@ -1511,6 +1582,48 @@ describe('durable session lifecycle', () => {
   }
 
   type Harness = ReturnType<typeof setup>
+
+  it('refuses a send beside a turn the rows hold open, and interrupts that turn by writing its end', async () => {
+    const h = setup()
+    try {
+      h.runtime.prompt.mockReturnValue(new Promise(() => undefined))
+      const target = h.created.thread
+      const sent = ProofResponseSchemas['turn.send'].parse(
+        h.dispatch(h.service, 'turn.send', { ...target, text: 'Long work' }),
+      ).payload
+      // The provider session is stamped, so a restart can open it again.
+      await h.service.resolveRuntimeSession(target.sessionId)
+      h.events.flush()
+      // The next boot cannot recover this turn (docs/sync-foundations.md §4.1 point 4).
+      h.database.exec(`CREATE TEMP TRIGGER refuse_recovery BEFORE UPDATE OF state ON turns
+        WHEN new.state = 'interrupted' BEGIN SELECT RAISE(ABORT, 'boom'); END`)
+      const restarted = h.fresh()
+      expect(h.database.prepare('SELECT state FROM turns').get()).toEqual({ state: 'running' })
+      h.dispatch(restarted, 'session.open', { sessionId: target.sessionId })
+      expect(h.dispatch(restarted, 'turn.send', { ...target, text: 'Another' })).toMatchObject({
+        type: 'error',
+        error: { code: 'conflict' },
+      })
+      // While the turn's end still cannot be written, the interrupt says so.
+      expect(
+        h.dispatch(restarted, 'turn.interrupt', { ...target, turnId: sent.turn.turnId }),
+      ).toMatchObject({ type: 'error', error: { code: 'unavailable' } })
+      expect(h.database.prepare('SELECT state FROM turns').get()).toEqual({ state: 'running' })
+      // Nothing of the failed write is kept to retry later.
+      h.events.flush()
+      expect(h.database.prepare('SELECT state FROM turns').get()).toEqual({ state: 'running' })
+      h.database.exec('DROP TRIGGER refuse_recovery')
+      expect(
+        h.dispatch(restarted, 'turn.interrupt', { ...target, turnId: sent.turn.turnId }),
+      ).toMatchObject({ type: 'response', payload: { turnId: sent.turn.turnId } })
+      expect(h.database.prepare('SELECT state, interrupted_by FROM turns').get()).toEqual({
+        state: 'interrupted',
+        interrupted_by: 'user',
+      })
+    } finally {
+      h.close()
+    }
+  })
 
   it('persists an idle process crash once, ignores expected exits, and recovers on the next prompt', async () => {
     const h = setup()
@@ -1761,9 +1874,56 @@ describe('durable session lifecycle', () => {
         payload: { session: { sessionId: child.session_id, parentSessionId: sessionId } },
       })
       await restarted.resolveRuntimeSession(child.session_id)
+      // Loaded, never created: the runtime may not replace a sub-agent's session.
       expect(h.runtime.ensureSession).toHaveBeenCalledExactlyOnceWith(
-        expect.objectContaining({ sessionId: 'provider-child' }),
+        expect.objectContaining({ sessionId: 'provider-child', load: 'require' }),
       )
+    } finally {
+      h.close()
+    }
+  })
+
+  it('creates nothing for a sub-agent the agent forgot, keeps its identity, and refuses it for good', async () => {
+    const h = setup()
+    h.runtime.prompt.mockImplementation(() => new Promise(() => undefined))
+    try {
+      const { sessionId } = h.created.session
+      await h.service.resolveRuntimeSession(sessionId)
+      await delegate(h, h.service, 'assistant-1', {
+        title: 'Explore the repo',
+        childSessionId: 'provider-child',
+      })
+      const child = childRow(h)!
+      const restarted = h.fresh()
+      h.runtime.ensureSession.mockRejectedValueOnce(
+        new SessionUnknownError('opencode', 'provider-child'),
+      )
+      // The open is answered before the provider load; the load then fails.
+      expect(h.dispatch(restarted, 'session.open', { sessionId: child.session_id })).toMatchObject({
+        type: 'response',
+      })
+      await vi.waitFor(() =>
+        expect(
+          h.dispatch(restarted, 'session.open', { sessionId: child.session_id }),
+        ).toMatchObject({
+          error: {
+            code: 'session_unrecoverable',
+            message:
+              "This chat's history lives in the agent and can't be reopened. Delete it to remove it.",
+          },
+        }),
+      )
+      expect(childRow(h)?.provider_session_id).toBe('provider-child')
+      expect(ERROR_RETRY_POLICY.session_unrecoverable).toBe('never')
+      // A legacy sub-agent row with no identity is refused before anything starts.
+      h.database
+        .prepare('UPDATE sessions SET provider_session_id = NULL WHERE session_id = ?')
+        .run(child.session_id)
+      h.runtime.ensureSession.mockClear()
+      expect(h.dispatch(h.fresh(), 'session.open', { sessionId: child.session_id })).toMatchObject({
+        error: { code: 'session_unrecoverable' },
+      })
+      expect(h.runtime.ensureSession).not.toHaveBeenCalled()
     } finally {
       h.close()
     }
@@ -1806,7 +1966,7 @@ describe('durable session lifecycle', () => {
       expect(h.dispatch(h.service, 'session.delete', { sessionId })).toMatchObject({
         type: 'response',
       })
-      // SQLite cascades the child row; only the parent is announced.
+      // Each row that goes is announced, the child before its parent.
       expect(sessionCount(h)).toBe(0)
       expect(h.database.prepare('SELECT COUNT(*) AS count FROM threads').get()).toMatchObject({
         count: 0,
@@ -1818,6 +1978,7 @@ describe('durable session lifecycle', () => {
       ).toMatchObject({ count: 0 })
       expect(listed(h, h.service)).toEqual([])
       expect(h.published.filter((event) => event.name === 'session.deleted')).toMatchObject([
+        { payload: { sessionId: child.session_id } },
         { payload: { sessionId } },
       ])
       await vi.waitFor(() =>
@@ -1851,7 +2012,7 @@ describe('durable session lifecycle', () => {
     }
   })
 
-  it('rolls the child back when stamping its provider identity fails', async () => {
+  it('files no child when its create fails, and registers it with its identity on the next report', async () => {
     const onPersistenceError = vi.fn()
     const h = setup(onPersistenceError)
     const service = h.service
@@ -1859,8 +2020,6 @@ describe('durable session lifecycle', () => {
     try {
       const { sessionId } = h.created.session
       await service.resolveRuntimeSession(sessionId)
-      // A subtask with no child session registers nothing, so the stamp below
-      // is the first one the patched statement can fail.
       await delegate(h, service, 'assistant-1', { title: 'Anonymous work' })
       expect(sessionCount(h)).toBe(1)
 
@@ -1880,36 +2039,28 @@ describe('durable session lifecycle', () => {
         })
 
       h.published.length = 0
-      const original = h.database.prepare.bind(h.database)
-      h.database.prepare = ((sql: string) => {
-        if (String(sql).includes('UPDATE sessions SET provider_id')) throw new Error('disk full')
-        return original(sql)
-      }) as typeof h.database.prepare
+      // The child's row, its thread and its identity are one write; refuse it.
+      h.database.exec(`CREATE TEMP TRIGGER refuse_child BEFORE INSERT ON sessions
+        WHEN NEW.parent_session_id IS NOT NULL BEGIN SELECT RAISE(ABORT, 'disk full'); END`)
       try {
         subtask('assistant-1-subtask-failing', 3)
       } finally {
-        h.database.prepare = original as typeof h.database.prepare
+        h.database.exec('DROP TRIGGER refuse_child')
       }
       h.events.flush()
 
       expect(onPersistenceError).toHaveBeenCalledWith(expect.any(Error), 'session.created')
-      const announced = h.published
-        .filter((item) => item.name === 'session.created' || item.name === 'session.deleted')
-        .map((item) => {
-          const payload = item.payload as {
-            session?: { sessionId: string }
-            sessionId?: string
-          }
-          return [item.name, payload.session?.sessionId ?? payload.sessionId]
-        })
-      expect(announced).toHaveLength(2)
-      expect(announced[0]?.[0]).toBe('session.created')
-      expect(announced[1]).toEqual(['session.deleted', announced[0]?.[1]])
+      // Nothing became durable, so nothing was announced and nothing is taken back.
+      expect(
+        h.published.filter(
+          (item) => item.name === 'session.created' || item.name === 'session.deleted',
+        ),
+      ).toEqual([])
       expect(listed(h, service).map((item) => item.sessionId)).toEqual([sessionId])
       expect(childRow(h)).toBeUndefined()
-      expect(sessionCount(h)).toBe(1)
 
-      // With the write working again the same child registers from scratch.
+      // With the write working again the same child registers from scratch,
+      // its identity stored by the write that created its row.
       subtask('assistant-1-subtask-retry', 4)
       h.events.flush()
       expect(sessionCount(h)).toBe(2)
@@ -1918,6 +2069,10 @@ describe('durable session lifecycle', () => {
         provider_session_id: 'provider-child',
         title: 'Explore the repo',
       })
+      expect(
+        h.published.filter((item) => item.name === 'session.created'),
+        'one create, and no later write of the identity',
+      ).toHaveLength(1)
     } finally {
       h.close()
     }
@@ -2024,6 +2179,155 @@ describe('durable session lifecycle', () => {
         })
         expect(h.runtime.ensureSession).not.toHaveBeenCalled()
       }
+    } finally {
+      h.close()
+    }
+  })
+
+  it('keeps a request whose write failed, because the retry writes it before its answer', async () => {
+    const failures: string[] = []
+    const h = setup((_error, eventName) => failures.push(eventName))
+    try {
+      await h.service.resolveRuntimeSession(h.created.session.sessionId)
+      h.runtime.prompt.mockReturnValueOnce(new Promise(() => undefined))
+      const sent = ProofResponseSchemas['turn.send'].parse(
+        h.dispatch(h.service, 'turn.send', { ...h.created.thread, text: 'Go' }),
+      ).payload
+      const base = {
+        providerId: 'opencode' as const,
+        threadId: h.created.thread.threadId,
+        workspaceId: '/workspace/project',
+        sessionId: 'provider-persisted',
+        messageId: 'assistant-1',
+        timestamp: new Date().toISOString(),
+      }
+      h.service.onRuntimeEvent({
+        ...base,
+        id: 'started',
+        seq: 1,
+        category: 'lifecycle',
+        event: 'prompt_started',
+        data: { prompt: 'Go', userMessageId: sent.userMessage.messageId },
+      })
+      h.failCommits((records) =>
+        records.some((record) => record.event.name === 'interaction.requested'),
+      )
+      h.service.onRuntimeEvent({
+        ...base,
+        id: 'asked',
+        seq: 2,
+        category: 'permission',
+        event: 'permission_request',
+        data: {
+          requestId: 'provider-permission',
+          sessionId: 'provider-persisted',
+          toolCall: { toolCallId: 'tool-1', title: 'Run tests' },
+          options: [{ optionId: 'allow', name: 'Allow', kind: 'allow_once' }],
+        },
+      })
+      h.failCommits(undefined)
+      expect(failures).toEqual(['interaction.requested'])
+      expect(h.database.prepare('SELECT count(*) AS n FROM interactions').get()).toEqual({ n: 0 })
+      // The answer comes; the batcher first writes the request it kept, then
+      // the answer, in order, so memory and the rows agree again.
+      h.service.onRuntimeEvent({
+        ...base,
+        id: 'settled',
+        seq: 3,
+        category: 'permission',
+        event: 'permission_resolved',
+        data: {
+          requestId: 'provider-permission',
+          outcome: { outcome: 'selected', optionId: 'allow' },
+        },
+      })
+      h.events.flush()
+      expect(failures).toEqual(['interaction.requested'])
+      expect(h.database.prepare('SELECT state FROM interactions').all()).toEqual([
+        { state: 'resolved' },
+      ])
+      expect(h.database.prepare('SELECT state FROM turns').get()).toEqual({ state: 'running' })
+    } finally {
+      h.close()
+    }
+  })
+
+  it('keeps a second request that arrives while the write of the first is still failing', async () => {
+    const failures: string[] = []
+    const h = setup((_error, eventName) => failures.push(eventName))
+    try {
+      const { sessionId } = h.created.session
+      await h.service.resolveRuntimeSession(sessionId)
+      h.runtime.prompt.mockReturnValueOnce(new Promise(() => undefined))
+      const sent = ProofResponseSchemas['turn.send'].parse(
+        h.dispatch(h.service, 'turn.send', { ...h.created.thread, text: 'Go' }),
+      ).payload
+      const base = {
+        providerId: 'opencode' as const,
+        threadId: h.created.thread.threadId,
+        workspaceId: '/workspace/project',
+        sessionId: 'provider-persisted',
+        messageId: 'assistant-1',
+        timestamp: new Date().toISOString(),
+      }
+      h.service.onRuntimeEvent({
+        ...base,
+        id: 'started',
+        seq: 1,
+        category: 'lifecycle',
+        event: 'prompt_started',
+        data: { prompt: 'Go', userMessageId: sent.userMessage.messageId },
+      })
+      const ask = (seq: number, requestId: string, toolCallId: string) =>
+        h.service.onRuntimeEvent({
+          ...base,
+          id: `asked-${requestId}`,
+          seq,
+          category: 'permission',
+          event: 'permission_request',
+          data: {
+            requestId,
+            sessionId: 'provider-persisted',
+            toolCall: { toolCallId, title: 'Run tests' },
+            options: [{ optionId: 'allow', name: 'Allow', kind: 'allow_once' }],
+          },
+        })
+      const answer = (seq: number, requestId: string) =>
+        h.service.onRuntimeEvent({
+          ...base,
+          id: `settled-${requestId}`,
+          seq,
+          category: 'permission',
+          event: 'permission_resolved',
+          data: { requestId, outcome: { outcome: 'selected', optionId: 'allow' } },
+        })
+      // Both requests arrive while no request can be written: the second
+      // waits behind the first instead of being dropped from the write queue.
+      h.failCommits((records) =>
+        records.some((record) => record.event.name === 'interaction.requested'),
+      )
+      ask(2, 'permission-a', 'tool-1')
+      ask(3, 'permission-b', 'tool-2')
+      h.failCommits(undefined)
+      expect(failures).toEqual(['interaction.requested', 'interaction.requested'])
+      // Storage is back. The first answer leaves the turn waiting on the
+      // second request, as memory says, and the rows hold that request too.
+      answer(4, 'permission-a')
+      h.events.flush()
+      expect(failures).toHaveLength(2)
+      expect(
+        h.database.prepare('SELECT state FROM interactions ORDER BY created_at, rowid').all(),
+      ).toEqual([{ state: 'resolved' }, { state: 'pending' }])
+      expect(h.database.prepare('SELECT state FROM turns').get()).toEqual({ state: 'waiting' })
+      // And nothing behind it is blocked.
+      answer(5, 'permission-b')
+      h.events.flush()
+      expect(failures).toHaveLength(2)
+      expect(h.database.prepare('SELECT state FROM interactions').all()).toEqual([
+        { state: 'resolved' },
+        { state: 'resolved' },
+      ])
+      expect(h.database.prepare('SELECT state FROM turns').get()).toEqual({ state: 'running' })
     } finally {
       h.close()
     }
@@ -2190,10 +2494,11 @@ describe('durable session lifecycle', () => {
             .prepare('SELECT COUNT(*) AS count FROM event_streams WHERE session_id = ?')
             .get(sessionId),
         ).toMatchObject({ count: 0 })
-        expect(h.published.at(-1)).toMatchObject({
-          name: 'session.deleted',
-          payload: { sessionId },
-        })
+        // Its only session gone, the workspace's recency falls back to none.
+        expect(h.published.slice(-2)).toMatchObject([
+          { name: 'session.deleted', payload: { sessionId } },
+          { name: 'workspace.updated', payload: { workspace: { lastActivityAt: null } } },
+        ])
         expect(h.dispatch(service, 'session.delete', { sessionId })).toMatchObject({
           error: { code: 'not_found' },
         })
@@ -2402,6 +2707,55 @@ describe('durable session lifecycle', () => {
     }
   })
 
+  it('judges an agent title against the committed title, not memory, after a rename that landed late', async () => {
+    const failures: string[] = []
+    const h = setup((_error, eventName) => failures.push(eventName))
+    try {
+      const { sessionId } = h.created.session
+      await h.service.resolveRuntimeSession(sessionId)
+      // The rename's write fails as a full disk would: the client hears
+      // "unavailable" and memory keeps the old title, but the batcher keeps
+      // the write and it lands on the next flush.
+      h.failCommits((records) => records.some((record) => record.event.name === 'session.updated'))
+      expect(h.dispatch(h.service, 'session.rename', { sessionId, title: 'Mine' })).toMatchObject({
+        error: { code: 'unavailable' },
+      })
+      h.failCommits(undefined)
+      const announced = h.published.length
+      h.service.onRuntimeEvent({
+        providerId: 'opencode',
+        threadId: h.created.thread.threadId,
+        workspaceId: '/workspace/project',
+        sessionId: 'provider-persisted',
+        id: 'info',
+        seq: 1,
+        timestamp: new Date().toISOString(),
+        category: 'session',
+        event: 'session_info_update',
+        data: { title: 'Agent name' },
+      })
+      h.events.flush()
+      // The rename landed; the agent's title was never emitted, so nothing
+      // was refused and nothing is stuck.
+      expect(h.database.prepare('SELECT title, title_source FROM sessions').get()).toEqual({
+        title: 'Mine',
+        title_source: 'user',
+      })
+      expect(
+        h.published
+          .slice(announced)
+          .filter((event) => event.name === 'session.updated')
+          .flatMap((event) => {
+            const title = (event.payload as { title?: string } | null)?.title
+            return title === undefined ? [] : [title]
+          }),
+      ).toEqual(['Mine'])
+      expect(failures).toEqual(['session.updated'])
+    } finally {
+      h.close()
+    }
+  })
+
   it('keeps a user title when a provider renames the session afterwards', async () => {
     const h = setup()
     try {
@@ -2409,32 +2763,154 @@ describe('durable session lifecycle', () => {
       // Settle the provider session write before close, or it lands on a closed database.
       await h.service.resolveRuntimeSession(sessionId)
       h.dispatch(h.service, 'session.rename', { sessionId, title: 'My title' })
-      const providerTitle = (title: string, titleSource?: 'provider') =>
-        h.events.append(
+      h.events.flush()
+      const announced = h.published.length
+      const stored = () =>
+        h.database
+          .prepare('SELECT title, title_source FROM sessions WHERE session_id = ?')
+          .get(sessionId)
+      // The agent naming its session afterwards does not outrank a rename:
+      // the producer does not emit it, since the projection would refuse it.
+      h.service.onRuntimeEvent({
+        providerId: 'opencode',
+        threadId: h.created.thread.threadId,
+        workspaceId: '/workspace/project',
+        sessionId: 'provider-persisted',
+        id: 'info',
+        seq: 1,
+        timestamp: new Date().toISOString(),
+        category: 'session',
+        event: 'session_info_update',
+        data: { title: 'Provider wins' },
+      })
+      h.events.flush()
+      expect(stored()).toMatchObject({ title: 'My title', title_source: 'user' })
+      expect(h.published.slice(announced).map((event) => event.name)).toEqual([])
+      // And an event that tried anyway would be refused outright (I2).
+      expect(() =>
+        h.events.repository.appendEvents({ type: 'environment', environmentId: 'environment-1' }, [
           ProofEventSchemas['session.updated'].parse({
             type: 'event',
             name: 'session.updated',
             eventId: crypto.randomUUID(),
             timestamp: new Date().toISOString(),
             scope: { type: 'environment', environmentId: 'environment-1' },
-            payload: { sessionId, title, ...(titleSource ? { titleSource } : {}) },
+            payload: { sessionId, title: 'Provider guess' },
           }),
-        )
-      const stored = () =>
-        h.database
-          .prepare('SELECT title, title_source FROM sessions WHERE session_id = ?')
-          .get(sessionId)
-      // Neither an unlabelled title nor a declared provider title outranks a rename.
-      providerTitle('Provider guess')
-      h.events.flush()
-      expect(stored()).toMatchObject({ title: 'My title', title_source: 'user' })
-      providerTitle('Provider wins', 'provider')
-      h.events.flush()
-      expect(stored()).toMatchObject({ title: 'My title', title_source: 'user' })
+        ]),
+      ).toThrow(/keeps its title/)
       // Another rename is the only thing that replaces one.
       h.dispatch(h.service, 'session.rename', { sessionId, title: 'My second title' })
       h.events.flush()
       expect(stored()).toMatchObject({ title: 'My second title', title_source: 'user' })
+    } finally {
+      h.close()
+    }
+  })
+
+  it('serves a send for a chat the rows hold after a restart, loading it as an open would', async () => {
+    const h = setup()
+    try {
+      const { sessionId } = h.created.session
+      await h.service.resolveRuntimeSession(sessionId)
+      const restarted = h.fresh()
+      h.runtime.ensureSession.mockClear()
+      // No session.open: the reconnecting client still holds the chat's scopes.
+      expect(
+        h.dispatch(restarted, 'turn.send', { ...h.created.thread, text: 'After the restart' }),
+      ).toMatchObject({ type: 'response' })
+      await vi.waitFor(() =>
+        expect(h.runtime.prompt).toHaveBeenCalledWith(
+          expect.objectContaining({ sessionId: 'provider-persisted' }),
+        ),
+      )
+      expect(h.runtime.ensureSession).toHaveBeenCalledWith(
+        expect.objectContaining({ sessionId: 'provider-persisted' }),
+      )
+      await vi.waitFor(() =>
+        expect(
+          h.database.prepare("SELECT COUNT(*) AS count FROM turns WHERE state = 'running'").get(),
+        ).toMatchObject({ count: 0 }),
+      )
+    } finally {
+      h.close()
+    }
+  })
+
+  it('loads an unloaded chat for a composer setter, and answers as an open would otherwise', async () => {
+    const h = setup()
+    try {
+      const { sessionId } = h.created.session
+      await h.service.resolveRuntimeSession(sessionId)
+      const restarted = h.fresh()
+      const target = await restarted.resolveRuntimeSession(sessionId)
+      expect(target).toMatchObject({ sessionId: 'provider-persisted' })
+      expect(restarted.sessionForThread(h.created.thread.threadId)).toBe(sessionId)
+      // A session the rows do not hold gets the open's own answer.
+      expect(h.fresh().resolveRuntimeSession('missing')).toMatchObject({ code: 'not_found' })
+    } finally {
+      h.close()
+    }
+  })
+
+  it('answers an interrupt on a thread the rows hold, but no process runs, as not in progress', async () => {
+    const h = setup()
+    try {
+      const { sessionId } = h.created.session
+      await h.service.resolveRuntimeSession(sessionId)
+      const restarted = h.fresh()
+      expect(
+        h.dispatch(restarted, 'turn.interrupt', { ...h.created.thread, turnId: 'turn-gone' }),
+      ).toMatchObject({ error: { code: 'conflict', message: 'Turn is not in progress.' } })
+      expect(
+        h.dispatch(restarted, 'turn.interrupt', {
+          sessionId,
+          threadId: 'never-held',
+          turnId: 'turn-gone',
+        }),
+      ).toMatchObject({ error: { code: 'not_found' } })
+    } finally {
+      h.close()
+    }
+  })
+
+  it('ends a turn whose records were dropped before its provider session resolved', async () => {
+    const h = setup()
+    try {
+      const { sessionId } = h.created.session
+      const firstThreadId = h.created.thread.threadId
+      await h.service.resolveRuntimeSession(sessionId)
+      h.database
+        .prepare(
+          `INSERT INTO threads (thread_id, session_id, workspace_id, created_at, updated_at)
+           VALUES (?, ?, '/workspace/project', 1, 1)`,
+        )
+        .run('thread-second', sessionId)
+      const restarted = h.fresh()
+      // The first thread's provider session is slow; the second fails to load,
+      // which drops every record of the session while their rows stay.
+      let resolveFirst!: (value: { sessionId: string; state: 'loaded' }) => void
+      h.runtime.ensureSession.mockImplementation((args: { threadId: string }) =>
+        args.threadId === firstThreadId
+          ? new Promise((resolve) => {
+              resolveFirst = resolve
+            })
+          : Promise.reject(new Error('provider gone')),
+      )
+      expect(h.dispatch(restarted, 'session.open', { sessionId })).toMatchObject({
+        type: 'response',
+      })
+      expect(
+        h.dispatch(restarted, 'turn.send', { sessionId, threadId: firstThreadId, text: 'Go' }),
+      ).toMatchObject({ type: 'response' })
+      await vi.waitFor(() => expect(restarted.sessionForThread(firstThreadId)).toBeUndefined())
+      resolveFirst({ sessionId: 'provider-persisted', state: 'loaded' })
+      // The turn ends through the terminal path instead of staying open in the
+      // rows until the next boot (§4.7.3 point 4).
+      await vi.waitFor(() =>
+        expect(h.database.prepare('SELECT state FROM turns').all()).toEqual([{ state: 'failed' }]),
+      )
+      expect(h.runtime.prompt).not.toHaveBeenCalled()
     } finally {
       h.close()
     }
@@ -2478,10 +2954,17 @@ describe('durable session lifecycle', () => {
       })
       await vi.waitFor(() => {
         for (const threadId of [firstThreadId, 'thread-second'])
-          expect(
-            h.dispatch(failed, 'turn.send', { sessionId, threadId, text: 'Hello' }),
-          ).toMatchObject({ error: { code: 'not_found' } })
+          expect(failed.sessionForThread(threadId)).toBeUndefined()
       })
+      // And the next command loads it again, as an open would (§4.7.3).
+      expect(
+        h.dispatch(failed, 'turn.send', { sessionId, threadId: firstThreadId, text: 'Again' }),
+      ).toMatchObject({ type: 'response' })
+      await vi.waitFor(() =>
+        expect(
+          h.database.prepare("SELECT COUNT(*) AS count FROM turns WHERE state = 'running'").get(),
+        ).toMatchObject({ count: 0 }),
+      )
     } finally {
       h.close()
     }
@@ -2556,15 +3039,97 @@ describe('durable session lifecycle', () => {
     }
   })
 
-  it('rejects resume without a load capability or stored provider identity', async () => {
+  it('creates a session left with no identity, and stamps it before any prompt', async () => {
     const h = setup()
     try {
       const { sessionId } = h.created.session
       await h.service.resolveRuntimeSession(sessionId)
+      // A crash between the session's creation and its stamp (S18).
       h.database.prepare('UPDATE sessions SET provider_session_id = NULL').run()
-      expect(h.dispatch(h.fresh(), 'session.open', { sessionId })).toMatchObject({
-        error: { code: 'unavailable' },
+      const identityAtPrompt: unknown[] = []
+      h.runtime.prompt.mockImplementation(async () => {
+        identityAtPrompt.push(h.database.prepare('SELECT provider_session_id FROM sessions').get())
       })
+      h.runtime.ensureSession.mockClear()
+      h.runtime.ensureSession.mockResolvedValueOnce({ sessionId: 'provider-new', state: 'created' })
+      const restarted = h.fresh()
+      expect(h.dispatch(restarted, 'session.open', { sessionId })).toMatchObject({
+        type: 'response',
+      })
+      expect(
+        h.dispatch(restarted, 'turn.send', { ...h.created.thread, text: 'Start over' }),
+      ).toMatchObject({ type: 'response' })
+      await vi.waitFor(() => expect(identityAtPrompt).toHaveLength(1))
+      expect(h.runtime.ensureSession).toHaveBeenCalledWith(
+        expect.not.objectContaining({ sessionId: expect.anything() }),
+      )
+      expect(identityAtPrompt).toEqual([{ provider_session_id: 'provider-new' }])
+    } finally {
+      h.close()
+    }
+  })
+
+  it('stamps a fresh session the runtime created for an identity the agent forgot', async () => {
+    const h = setup()
+    try {
+      const { sessionId } = h.created.session
+      await h.service.resolveRuntimeSession(sessionId)
+      h.runtime.ensureSession.mockResolvedValueOnce({
+        sessionId: 'provider-fresh',
+        state: 'created',
+      })
+      const restarted = h.fresh()
+      await restarted.resolveRuntimeSession(sessionId)
+      expect(h.database.prepare('SELECT provider_session_id FROM sessions').get()).toEqual({
+        provider_session_id: 'provider-fresh',
+      })
+      // A respawn inside a prompt reports its new session, and is stamped at once.
+      restarted.onRuntimeEvent({
+        providerId: 'opencode',
+        threadId: h.created.thread.threadId,
+        workspaceId: '/workspace/project',
+        sessionId: 'provider-respawned',
+        id: 'created',
+        seq: 1,
+        timestamp: new Date().toISOString(),
+        category: 'lifecycle',
+        event: 'session_created',
+        data: {},
+      } as never)
+      expect(h.database.prepare('SELECT provider_session_id FROM sessions').get()).toEqual({
+        provider_session_id: 'provider-respawned',
+      })
+    } finally {
+      h.close()
+    }
+  })
+
+  it('keeps a session eligible after one failed start, and the next command loads it', async () => {
+    const h = setup()
+    try {
+      const { sessionId } = h.created.session
+      await h.service.resolveRuntimeSession(sessionId)
+      const restarted = h.fresh()
+      h.runtime.ensureSession.mockRejectedValueOnce(new Error('provider is starting'))
+      await expect(restarted.resolveRuntimeSession(sessionId)).rejects.toThrow(
+        'provider is starting',
+      )
+      await vi.waitFor(() =>
+        expect(restarted.sessionForThread(h.created.thread.threadId)).toBeUndefined(),
+      )
+      await expect(restarted.resolveRuntimeSession(sessionId)).resolves.toMatchObject({
+        sessionId: 'provider-persisted',
+      })
+    } finally {
+      h.close()
+    }
+  })
+
+  it('rejects resume on a provider that cannot load sessions', async () => {
+    const h = setup()
+    try {
+      const { sessionId } = h.created.session
+      await h.service.resolveRuntimeSession(sessionId)
       h.database.prepare("UPDATE sessions SET provider_id = 'unsupported'").run()
       expect(h.dispatch(h.fresh(), 'session.open', { sessionId })).toMatchObject({
         error: { code: 'capability_missing' },
@@ -2670,9 +3235,7 @@ describe('turn finalization and cancellation races', () => {
   async function setup() {
     const { database } = await createDatabase()
     const published: DurableEvent[] = []
-    const events = createPersistentEventService(database, (record) => published.push(record), {
-      sessionProviderId: () => 'opencode',
-    })
+    const events = createPersistentEventService(database, (record) => published.push(record), {})
     let finish!: () => void
     let rejectCancel!: (error: Error) => void
     let finishCancel!: () => void
@@ -2945,6 +3508,15 @@ describe('transcript runs', () => {
     thought('Check again')
     thought('', 'stop')
     thought('One more')
+    // A tool closes the open thought too, and the close comes first.
+    service.onRuntimeEvent({
+      ...base(),
+      category: 'tool',
+      event: 'tool_call',
+      data: { toolCallId: 'call-2', title: 'Edit file', kind: 'edit', status: 'in_progress' },
+    })
+    const names = events.map((event) => event.name)
+    expect(names.lastIndexOf('message.reasoning')).toBeLessThan(names.lastIndexOf('tool.updated'))
 
     const reasoningIds = events
       .filter((event) => event.name === 'message.reasoning')
@@ -2954,10 +3526,19 @@ describe('transcript runs', () => {
       .filter((event) => (event.payload as { role: string }).role === 'assistant')
       .map((event) => (event.payload as { messageId: string }).messageId)
 
-    // Same run, same id; each boundary starts a new one.
-    expect(reasoningIds).toHaveLength(5)
+    const reasoningPhases = events
+      .filter((event) => event.name === 'message.reasoning')
+      .map((event) => (event.payload as { phase: string }).phase)
+
+    // Same run, same id; each boundary starts a new one. The first thought is
+    // closed by the server where the text begins (docs/sync-foundations.md
+    // §4.3.3); the framed one closed itself; the last is closed by the tool.
+    expect(reasoningIds).toHaveLength(7)
+    expect(reasoningPhases).toEqual(['delta', 'delta', 'stop', 'delta', 'stop', 'delta', 'stop'])
+    expect(reasoningIds[6]).toBe(reasoningIds[5])
     expect(reasoningIds[0]).toBe(reasoningIds[1])
-    expect(reasoningIds[2]).toBe(reasoningIds[3])
+    expect(reasoningIds[2]).toBe(reasoningIds[0])
+    expect(reasoningIds[3]).toBe(reasoningIds[4])
     expect(new Set(reasoningIds).size).toBe(3)
     expect(textIds).toHaveLength(3)
     expect(textIds[0]).toBe(textIds[1])
@@ -2973,13 +3554,9 @@ describe('transcript runs', () => {
 describe('session rows on a provider other than the workspace default', () => {
   it('lists and opens a new session on its own provider before its runtime has started', async () => {
     const { database } = await createDatabase()
-    const events = createPersistentEventService(database, () => undefined, {
-      // As the host wires it: the service names the provider a session is being
-      // created on; the workspace default only stands in when it names none.
-      sessionProviderId: (session) =>
-        service.providerForSession(session.sessionId) ??
-        registered(session.workspaceId)!.providerId,
-    })
+    // The provider rides `session.created` itself; nothing is asked of the host.
+    const published: DurableEvent[] = []
+    const events = createPersistentEventService(database, (record) => published.push(record))
     const runtime = {
       // Still spawning: the row must not wait for the runtime stamp.
       ensureSession: vi.fn().mockReturnValue(new Promise(() => undefined)),
@@ -3011,11 +3588,13 @@ describe('session rows on a provider other than the workspace default', () => {
 
     const listed = ProofResponseSchemas['session.list'].parse(dispatch('session.list', {})).payload
     expect(listed.sessions).toMatchObject([{ sessionId, providerId: 'claude' }])
+    // X2: what a client hears in `session.created` is the row a listing reads.
+    const announced = published.find((record) => record.event.name === 'session.created')!
+    expect(announced.event.payload).toEqual({ session: listed.sessions[0] })
     const opened = ProofResponseSchemas['session.open'].parse(
       dispatch('session.open', { sessionId }),
     ).payload
     expect(opened.session).toMatchObject({ sessionId, providerId: 'claude' })
-    expect(service.providerForSession(sessionId)).toBe('claude')
     await vi.waitFor(() =>
       expect(runtime.ensureSession).toHaveBeenCalledWith(
         expect.objectContaining({ providerId: 'claude' }),

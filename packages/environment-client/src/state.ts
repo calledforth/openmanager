@@ -30,10 +30,11 @@ import type {
   SessionSummary,
   ThreadState,
 } from './types'
+import { emptyOverlay } from './overlay'
 import {
   applyDraftDeleted,
   applyDraftSaved,
-  detachWorkspaceDrafts,
+  detachWorkspaceEdits,
   removeSessionDrafts,
 } from './draft-state'
 
@@ -57,6 +58,7 @@ export function createInitialState(): EnvironmentState {
     providers: {},
     providerOrder: [],
     composerPreferences: {},
+    composerRevisions: {},
     drafts: {},
     draftTombstones: {},
     draftEdits: {},
@@ -64,6 +66,7 @@ export function createInitialState(): EnvironmentState {
     activeSessionId: null,
     activeThreadId: null,
     connection: INITIAL_CONNECTION,
+    pending: emptyOverlay(),
   }
 }
 
@@ -79,7 +82,6 @@ export function createThreadState(
     tools: [],
     order: [],
     interactions: [],
-    failures: [],
     notices: [],
     outbox: [],
     hydration,
@@ -150,10 +152,8 @@ export function deriveSessionStatus(threads: readonly ThreadState[]): SessionSta
 
 function upsertSession(
   state: EnvironmentState,
-  session: Session | ProtocolSessionSummary,
+  session: ProtocolSessionSummary,
   threadIds?: readonly string[],
-  /** When the session names no `updatedAt`, the time it was announced. */
-  at?: string,
 ): EnvironmentState {
   const existing = state.sessions[session.sessionId]
   const listed = session as Partial<ProtocolSessionSummary>
@@ -166,8 +166,8 @@ function upsertSession(
     ...(titleSource ? { titleSource } : {}),
     ...(parentSessionId ? { parentSessionId } : {}),
     status: listed.status ?? existing?.status ?? 'idle',
-    providerId: listed.providerId ?? existing?.providerId,
-    updatedAt: listed.updatedAt ?? existing?.updatedAt ?? at,
+    providerId: session.providerId,
+    updatedAt: session.updatedAt,
     ...settledOf(listed.settledAt, existing?.settledAt),
     ...doneOf(listed.doneAt, existing?.doneAt),
     // A full summary is the whole truth: naming no background work means
@@ -267,26 +267,6 @@ function composerOf(
   return composer ? { composer } : {}
 }
 
-/** Move a session's workspace `lastActivityAt` forward to `at`, never back. */
-function touchWorkspaceActivity(
-  state: EnvironmentState,
-  sessionId: string,
-  at: string,
-): EnvironmentState {
-  const workspaceId = state.sessions[sessionId]?.workspaceId
-  const workspace = workspaceId ? state.workspaces[workspaceId] : undefined
-  if (!workspace) return state
-  const current = workspace.lastActivityAt ? Date.parse(workspace.lastActivityAt) : -Infinity
-  if (!(Date.parse(at) > current)) return state
-  return {
-    ...state,
-    workspaces: {
-      ...state.workspaces,
-      [workspace.workspaceId]: { ...workspace, lastActivityAt: at },
-    },
-  }
-}
-
 function upsertWorkspace(state: EnvironmentState, workspace: Workspace): EnvironmentState {
   return {
     ...state,
@@ -325,68 +305,41 @@ function patchThread(
   return { ...withThread, threads: { ...withThread.threads, [thread.threadId]: updated } }
 }
 
+/**
+ * The state of a turn the thread holds, as an interaction event states it
+ * (`turnState`). The server says it; the client never derives it from the
+ * requests it holds. A turn the thread does not hold is left alone: the
+ * transport recovers the scope (`namesUnknownTurn`).
+ */
 function setTurnState(thread: ThreadState, turnId: string, turnState: Turn['state']): ThreadState {
   const index = thread.turns.findIndex((turn) => turn.turnId === turnId)
-  if (index === -1) {
-    // A terminal event for a turn we never saw start (late join without a
-    // snapshot). Record it so status derivation and history stay honest.
-    return {
-      ...thread,
-      turns: [...thread.turns, { turnId, threadId: thread.thread.threadId, state: turnState }],
-    }
-  }
-  if (thread.turns[index]!.state === turnState) return thread
+  if (index === -1 || thread.turns[index]!.state === turnState) return thread
   const turns = thread.turns.slice()
   turns[index] = { ...turns[index]!, state: turnState }
   return { ...thread, turns }
 }
 
-/**
- * Drop a pending interaction and, when it was the last one blocking its turn,
- * return that turn to `running`. `turnId` may be null when the caller only
- * knows the interaction ID (the optimistic path); it is then looked up.
- */
-function resolveInteraction(
-  current: ThreadState,
-  interactionId: string,
-  turnId: string | null,
-): ThreadState {
-  const pending = current.interactions.find(
-    (item) => item.interaction.interactionId === interactionId,
-  )
-  if (!pending) return current
-  const resolvedTurnId = turnId ?? pending.turnId
-  const interactions = current.interactions.filter(
-    (item) => item.interaction.interactionId !== interactionId,
-  )
-  const stillWaiting = interactions.some((item) => item.turnId === resolvedTurnId)
-  const turn = current.turns.find((item) => item.turnId === resolvedTurnId)
-  const updated =
-    turn?.state === 'waiting' && !stillWaiting
-      ? setTurnState(current, resolvedTurnId, 'running')
-      : current
-  return { ...updated, interactions }
+/** Drop a pending interaction; the turn's state is the event's to say. */
+function dropInteraction(current: ThreadState, interactionId: string): ThreadState {
+  if (!current.interactions.some((item) => item.interaction.interactionId === interactionId)) {
+    return current
+  }
+  return {
+    ...current,
+    interactions: current.interactions.filter(
+      (item) => item.interaction.interactionId !== interactionId,
+    ),
+  }
 }
 
 /**
- * Drop a session and every child under it. The environment deletes children
- * with their parent and announces only the parent, so the client mirrors the
- * cascade instead of leaving orphaned subagent rows in the sidebar.
+ * Drop one session, its threads and its draft. The environment announces
+ * every session a deletion takes, each child before its parent, so the
+ * client mirrors no cascade (docs/sync-foundations.md §3.6 row 12).
  */
 function removeSession(state: EnvironmentState, sessionId: string): EnvironmentState {
-  // The parent itself may never have been loaded (a paginated list can bring
-  // a child in first), so descendants are searched for regardless.
-  const removed = new Set<string>()
-  const pending = [sessionId]
-  while (pending.length) {
-    const id = pending.pop()!
-    if (removed.has(id)) continue
-    removed.add(id)
-    for (const session of Object.values(state.sessions)) {
-      if (session.parentSessionId === id) pending.push(session.sessionId)
-    }
-  }
-  if (![...removed].some((id) => id in state.sessions)) return removeSessionDrafts(state, removed)
+  const removed = new Set([sessionId])
+  if (!(sessionId in state.sessions)) return removeSessionDrafts(state, removed)
   const sessions = { ...state.sessions }
   const threads = { ...state.threads }
   for (const id of removed) {
@@ -420,23 +373,19 @@ export function applyEvent(state: EnvironmentState, event: ProofEvent): Environm
     case 'workspace.updated':
       return upsertWorkspace(state, event.payload.workspace)
     case 'workspace.removed':
-      return detachWorkspaceDrafts(
+      // Its sessions went, and its drafts were detached, on events before it (row 13).
+      return detachWorkspaceEdits(
         applyWorkspaceRemoved(state, event.payload.workspaceId),
         event.payload.workspaceId,
       )
     case 'session.created':
-      // The announced session carries no `updatedAt`; without the event time
-      // it would sort as the epoch and a brand-new session would open at the
-      // bottom of the sidebar.
-      return touchWorkspaceActivity(
-        upsertSession(state, event.payload.session, undefined, event.timestamp),
-        event.payload.session.sessionId,
-        event.timestamp,
-      )
+      // The whole row, provider and time included (§4.7.2). Its workspace's
+      // recency comes on the environment's own `workspace.updated` (§4.7.1).
+      return upsertSession(state, event.payload.session)
     case 'session.updated': {
       const session = state.sessions[event.payload.sessionId]
       if (!session) return state
-      const { title, status, settledAt, doneAt, backgroundTasks } = event.payload
+      const { title, status, updatedAt, settledAt, doneAt, backgroundTasks } = event.payload
       const {
         backgroundTasks: heldTasks,
         waitingOn: heldWaitingOn,
@@ -467,8 +416,8 @@ export function applyEvent(state: EnvironmentState, event: ProofEvent): Environm
         ...(status !== undefined ? { status } : {}),
         ...(settledAt !== undefined ? { settledAt } : {}),
         ...(doneAt !== undefined ? { doneAt } : {}),
-        // Settling or acknowledging alone is not activity; the session keeps its place.
-        ...(title !== undefined || status !== undefined ? { updatedAt: event.timestamp } : {}),
+        // The session's place moves only when the environment says so (§4.7.1).
+        ...(updatedAt !== undefined ? { updatedAt } : {}),
       }
       // An event that restates what the client already holds (the echo of a
       // command whose answer it applied) must not hand every reader a new
@@ -495,7 +444,12 @@ export function applyEvent(state: EnvironmentState, event: ProofEvent): Environm
     case 'composer.preferences.updated':
       // A workspace this client no longer lists must not get a preference back.
       return state.workspaces[event.payload.workspaceId]
-        ? applyComposerPreference(state, event.payload, event.payload.preference)
+        ? applyComposerPreference(
+            state,
+            event.payload,
+            event.payload.preference,
+            event.payload.revision,
+          )
         : state
     case 'provider.catalog.updated': {
       // Only a loaded catalog is patched; an unloaded one reads the profile
@@ -526,22 +480,7 @@ export function applyEvent(state: EnvironmentState, event: ProofEvent): Environm
 
   switch (event.name) {
     case 'turn.started':
-    case 'turn.completed':
-    case 'turn.interrupted':
-    case 'turn.failed':
-      // A turn is session activity; keep the workspace's recency current
-      // between listings instead of waiting for the next handshake.
-      state = touchWorkspaceActivity(state, thread.sessionId, event.timestamp)
-      break
-    default:
-      break
-  }
-
-  switch (event.name) {
-    case 'turn.started':
-      return patchThread(state, thread, (current) =>
-        confirmTurnStart(current, event.payload, event.timestamp),
-      )
+      return patchThread(state, thread, (current) => applyStart(current, event.payload))
     case 'turn.completed':
     case 'turn.interrupted':
     case 'turn.failed':
@@ -556,13 +495,14 @@ export function applyEvent(state: EnvironmentState, event: ProofEvent): Environm
       }))
     case 'interaction.requested':
       return patchThread(state, thread, (current) => {
+        if (!current.turns.some((turn) => turn.turnId === event.payload.turnId)) return current
         const pending: PendingInteraction = {
           sessionId: thread.sessionId,
           threadId: thread.threadId,
           turnId: event.payload.turnId,
           interaction: event.payload.interaction,
         }
-        const updated = setTurnState(current, event.payload.turnId, 'waiting')
+        const updated = setTurnState(current, event.payload.turnId, event.payload.turnState)
         return {
           ...updated,
           interactions: upsertById(
@@ -574,8 +514,13 @@ export function applyEvent(state: EnvironmentState, event: ProofEvent): Environm
       })
     case 'interaction.resolved':
     case 'interaction.expired':
+    case 'interaction.cancelled':
       return patchThread(state, thread, (current) =>
-        resolveInteraction(current, event.payload.response.interactionId, event.payload.turnId),
+        setTurnState(
+          dropInteraction(current, event.payload.response.interactionId),
+          event.payload.turnId,
+          event.payload.turnState,
+        ),
       )
     default:
       return state
@@ -615,7 +560,7 @@ export function applySnapshot(state: EnvironmentState, snapshot: ScopeSnapshot):
     // answered yet is still the client's to show, unless the snapshot is
     // itself the answer. Which messages were this client's echoes is the
     // client's own knowledge and survives the replacement.
-    ...reconcileOutbox(existing, threadSnapshot.messages),
+    ...reconcileOutbox(existing, threadSnapshot.turns, threadSnapshot.messages),
     turns: threadSnapshot.turns,
     messages,
     // Older pages the client keeps in front of the snapshot place their
@@ -753,7 +698,7 @@ export function applySessionHistory(
       reasoning,
       tools,
       order,
-      ...reconcileOutbox(current, payload.messages),
+      ...reconcileOutbox(current, payload.turns, payload.messages),
       interactions:
         !older && (interactions.length > 0 || current.hydration !== 'ready')
           ? interactions
@@ -772,77 +717,59 @@ export function applySessionHistory(
   }
 }
 
-/** The plain text of a message, for matching an echo against what arrived. */
-const messageText = (message: Message): string =>
-  message.content.map((block) => (block.type === 'text' ? block.text : '')).join('')
-
 /**
- * Drop failed echoes the environment turns out to have accepted. A send whose
- * connection dropped is reported as failed even though its turn may well have
- * started; when an authoritative snapshot or history page then brings back a
- * user message this client never had, that message is the echo. Each arriving
- * message clears at most one echo, so a prompt deliberately sent twice keeps
- * the copy that really did fail. A cleared echo is recorded as confirmed by
- * that message, the way a `turn.started` records it.
+ * Settle the echoes whose turns the environment has, by command id
+ * (`Turn.commandId`; docs/sync-foundations.md §3.6 rows 21 and 22). A send
+ * whose connection dropped is reported as failed although its turn may well
+ * have started; a snapshot or history page that brings that turn back ends
+ * the echo, pending or failed, and records which message took its place, the
+ * way a `turn.started` does.
  */
 function reconcileOutbox(
   current: ThreadState,
-  incoming: readonly Message[],
+  turns: readonly Turn[],
+  messages: readonly Message[],
 ): Pick<ThreadState, 'outbox' | 'confirmedEchoes'> {
   const unchanged = {
     outbox: current.outbox,
     ...(current.confirmedEchoes ? { confirmedEchoes: current.confirmedEchoes } : {}),
   }
-  if (!current.outbox.some((entry) => entry.status === 'failed')) return unchanged
-  const known = new Set(current.messages.map((message) => message.messageId))
-  const arrived = incoming.filter(
-    (message) => message.role === 'user' && !known.has(message.messageId),
-  )
-  if (arrived.length === 0) return unchanged
-  const texts = arrived.map(messageText)
+  if (current.outbox.length === 0) return unchanged
+  const started = new Map<string, Turn>()
+  for (const turn of turns) if (turn.commandId) started.set(turn.commandId, turn)
   const confirmedEchoes = { ...current.confirmedEchoes }
   const outbox = current.outbox.filter((entry) => {
-    if (entry.status !== 'failed') return true
-    const index = texts.indexOf(entry.text)
-    if (index === -1) return true
-    confirmedEchoes[arrived[index]!.messageId] = entry.commandId
-    texts.splice(index, 1)
-    arrived.splice(index, 1)
+    const turn = started.get(entry.commandId)
+    if (!turn) return true
+    const prompt = messages.find(
+      (message) => message.turnId === turn.turnId && message.role === 'user',
+    )
+    if (prompt) confirmedEchoes[prompt.messageId] = entry.commandId
     return false
   })
   return outbox.length === current.outbox.length ? unchanged : { outbox, confirmedEchoes }
 }
 
 /**
- * The confirmed start of a turn: the real turn and user message replace the
- * echo its command id created, and the message is recorded as that echo's.
- * Keyed by ID throughout, so the `turn.send`
- * response and the `turn.started` event may arrive in either order and only
- * the first of them changes anything.
+ * A turn's start, as `turn.started` states it: the turn, its prompt, and the
+ * echo its command id settles, with the message recorded as that echo's (see
+ * `confirmedEchoes`). A start the thread already holds (a replayed tail) is
+ * no change: the turn may have moved on since.
  */
-function confirmTurnStart(
-  current: ThreadState,
-  payload: TurnStarted,
-  startedAt?: string,
-): ThreadState {
-  const { commandId } = payload
+function applyStart(current: ThreadState, payload: TurnStarted): ThreadState {
+  const commandId = payload.commandId ?? payload.turn.commandId
   const outbox = commandId
     ? current.outbox.filter((entry) => entry.commandId !== commandId)
     : current.outbox
-  // A delayed send response must not rewind a turn that already progressed.
-  // The `turn.started` event's time is when the work began; a `turn.send`
-  // response carries none, so whichever arrives second may only fill that in.
-  const existing = current.turns.find((turn) => turn.turnId === payload.turn.turnId)
-  const turn = existing
-    ? existing.startedAt || !startedAt
-      ? existing
-      : { ...existing, startedAt }
-    : { ...payload.turn, ...(startedAt && !payload.turn.startedAt ? { startedAt } : {}) }
-  const turns = upsertById(current.turns, (item) => item.turnId, turn)
+  const known = current.turns.some((turn) => turn.turnId === payload.turn.turnId)
+  const turns = known ? current.turns : [...current.turns, payload.turn]
   // A turn the provider began by itself has no prompt: a background task
   // finished and the agent is acting on the result.
   const { userMessage } = payload
-  if (!userMessage) return turns === current.turns ? current : { ...current, turns }
+  const settled = outbox.length !== current.outbox.length
+  if (!userMessage) {
+    return known && !settled ? current : { ...current, turns, ...(settled ? { outbox } : {}) }
+  }
   return {
     ...current,
     turns,
@@ -852,24 +779,51 @@ function confirmTurnStart(
       id: userMessage.messageId,
       turnId: payload.turn.turnId,
     }),
-    // The message is what the echo now shows as; see `confirmedEchoes`.
-    ...(commandId && outbox.length !== current.outbox.length
+    ...(settled
       ? {
           outbox,
-          confirmedEchoes: { ...current.confirmedEchoes, [userMessage.messageId]: commandId },
+          confirmedEchoes: { ...current.confirmedEchoes, [userMessage.messageId]: commandId! },
         }
       : {}),
   }
 }
 
-/** Same shape as `turn.started`; used to fold a `turn.send` response in before the event arrives. */
-export function applyTurnStarted(
-  state: EnvironmentState,
+/**
+ * A created session's chat as its `session.create` answer described it:
+ * shown by the overlay until the chat itself holds the first turn
+ * (overlay.ts). Built over what the client holds of the thread, if anything.
+ */
+export function provisionalThread(
   thread: Thread,
-  payload: TurnStart,
-): EnvironmentState {
-  return patchThread(state, thread, (current) => confirmTurnStart(current, payload))
+  firstTurn: TurnStart,
+  held?: ThreadState,
+): ThreadState {
+  const base = held ?? createThreadState(thread, 'ready')
+  const turns = upsertById(base.turns, (item) => item.turnId, firstTurn.turn)
+  const { userMessage } = firstTurn
+  return {
+    ...base,
+    hydration: 'ready',
+    turns,
+    ...(userMessage
+      ? {
+          messages: upsertById(base.messages, (message) => message.messageId, userMessage),
+          order: placeActivity(base.order, {
+            kind: 'message',
+            id: userMessage.messageId,
+            turnId: firstTurn.turn.turnId,
+          }),
+        }
+      : {}),
+  }
 }
+
+/** A session as `upsertSession` files it, for the overlay's created sessions. */
+export const withSessionUpserted = (
+  state: EnvironmentState,
+  session: ProtocolSessionSummary,
+  threadIds?: readonly string[],
+) => upsertSession(state, session, threadIds)
 
 /**
  * Echo a send locally before the environment has answered. A repeat of a
@@ -887,10 +841,14 @@ export function applyTurnSending(
     ...(send.artifactIds?.length ? { artifactIds: send.artifactIds } : {}),
     status: 'pending',
   }
-  return patchThread(state, thread, (current) => ({
-    ...current,
-    outbox: upsertById(current.outbox, (item) => item.commandId, entry),
-  }))
+  return patchThread(state, thread, (current) =>
+    // A retry of a send whose turn this client already holds: the answer
+    // comes from the environment's log and no event follows, so there is
+    // nothing to echo.
+    current.turns.some((turn) => turn.commandId === send.commandId)
+      ? current
+      : { ...current, outbox: upsertById(current.outbox, (item) => item.commandId, entry) },
+  )
 }
 
 /** Mark an echoed send failed, keeping it on screen with the reason. */
@@ -915,33 +873,44 @@ export function applyTurnSendFailed(
 }
 
 /**
- * Optimistic removal after `interaction.respond`. Mirrors the
- * `interaction.resolved` event path so the turn returns to `running` here; the
- * later event is then a no-op instead of the only place that flips the turn.
- */
-export function applyInteractionResolved(
-  state: EnvironmentState,
-  thread: Thread,
-  interactionId: string,
-): EnvironmentState {
-  return patchThread(state, thread, (current) => resolveInteraction(current, interactionId, null))
-}
-
-/**
  * A created session, from the command's answer. That answer arrives before the
  * `session.created` event, so it carries the announcement time: without it the
  * session would be listed as the oldest, at the bottom of the sidebar, and move
  * to the top once the event came. With it the event restates what is held.
+ *
+ * The answer is a bare `Session`; the caller fills the summary's required
+ * fields from what it already has, the provider it asked for and the
+ * announcement time, until the `pending.creates` overlay replaces this writer
+ * (docs/sync-foundations.md §4.7.2, decision D7).
  */
 export function applySessionCreated(
   state: EnvironmentState,
-  payload: { session: Session; thread: Thread; announcedAt?: string },
+  payload: { session: Session; thread: Thread; announcedAt: string },
+  providerId: string,
 ): EnvironmentState {
   const { announcedAt } = payload
-  const upserted = upsertSession(state, payload.session, [payload.thread.threadId], announcedAt)
-  const withSession = announcedAt
-    ? touchWorkspaceActivity(upserted, payload.session.sessionId, announcedAt)
-    : upserted
+  const existing = state.sessions[payload.session.sessionId]
+  const upserted = upsertSession(
+    state,
+    {
+      ...payload.session,
+      providerId,
+      // An event that already arrived is newer than this answer: keep what it said.
+      ...(existing
+        ? {
+            status: existing.status,
+            updatedAt: existing.updatedAt,
+            settledAt: existing.settledAt ?? null,
+            doneAt: existing.doneAt ?? null,
+            ...(existing.backgroundTasks ? { backgroundTasks: existing.backgroundTasks } : {}),
+            ...(existing.waitingOn ? { waitingOn: existing.waitingOn } : {}),
+            ...(existing.inBackground ? { inBackground: existing.inBackground } : {}),
+          }
+        : { status: 'idle' as const, updatedAt: announcedAt, settledAt: null, doneAt: null }),
+    },
+    [payload.thread.threadId],
+  )
+  const withSession = upserted
   if (withSession.threads[payload.thread.threadId]) return withSession
   return {
     ...withSession,
@@ -954,7 +923,7 @@ export function applySessionCreated(
 
 export function applySessionList(
   state: EnvironmentState,
-  sessions: readonly (Session | ProtocolSessionSummary)[],
+  sessions: readonly ProtocolSessionSummary[],
 ): EnvironmentState {
   let next = state
   for (const session of sessions) next = upsertSession(next, session)
@@ -970,6 +939,10 @@ export function applyWorkspaceList(
   return next
 }
 
+/**
+ * Drop a workspace and what is read per workspace. Its sessions and drafts
+ * are not touched here: the environment announces each change to them.
+ */
 export function applyWorkspaceRemoved(
   state: EnvironmentState,
   workspaceId: string,
@@ -979,16 +952,15 @@ export function applyWorkspaceRemoved(
   delete workspaces[workspaceId]
   const composerPreferences = { ...state.composerPreferences }
   delete composerPreferences[workspaceId]
-  let next: EnvironmentState = {
+  const composerRevisions = { ...state.composerRevisions }
+  delete composerRevisions[workspaceId]
+  return {
     ...state,
     workspaces,
     workspaceOrder: state.workspaceOrder.filter((id) => id !== workspaceId),
     composerPreferences,
+    composerRevisions,
   }
-  for (const session of Object.values(state.sessions)) {
-    if (session.workspaceId === workspaceId) next = removeSession(next, session.sessionId)
-  }
-  return next
 }
 
 const sameJson = (left: unknown, right: unknown) => JSON.stringify(left) === JSON.stringify(right)
@@ -1061,29 +1033,45 @@ export function applyProviderProbe(
 }
 
 /** Replaces the remembered choice for one workspace and provider. */
+/**
+ * A preference as the server stated it at `revision`, from an event or a read
+ * answer. Ordered by the server's number, never by arrival: an older or equal
+ * revision changes nothing (docs/sync-foundations.md §3.2, §4.7.10).
+ */
 export function applyComposerPreference(
   state: EnvironmentState,
   target: { workspaceId: string; providerId: string },
   preference: WorkspaceComposerPreference,
+  revision: number,
 ): EnvironmentState {
+  const held = state.composerRevisions[target.workspaceId]?.[target.providerId]
+  if (held !== undefined && held >= revision) return state
   const workspace = state.composerPreferences[target.workspaceId]
-  if (workspace?.[target.providerId] && sameJson(workspace[target.providerId], preference)) {
-    return state
-  }
+  const same = workspace?.[target.providerId] && sameJson(workspace[target.providerId], preference)
   return {
     ...state,
-    composerPreferences: {
-      ...state.composerPreferences,
-      [target.workspaceId]: { ...workspace, [target.providerId]: preference },
+    composerPreferences: same
+      ? state.composerPreferences
+      : {
+          ...state.composerPreferences,
+          [target.workspaceId]: { ...workspace, [target.providerId]: preference },
+        },
+    composerRevisions: {
+      ...state.composerRevisions,
+      [target.workspaceId]: {
+        ...state.composerRevisions[target.workspaceId],
+        [target.providerId]: revision,
+      },
     },
   }
 }
 
 /** Forget every held preference, so each reads as "not loaded" until asked for again. */
 export function applyComposerPreferencesReset(state: EnvironmentState): EnvironmentState {
-  return Object.keys(state.composerPreferences).length === 0
+  return Object.keys(state.composerPreferences).length === 0 &&
+    Object.keys(state.composerRevisions).length === 0
     ? state
-    : { ...state, composerPreferences: {} }
+    : { ...state, composerPreferences: {}, composerRevisions: {} }
 }
 
 export function applySessionRemoved(state: EnvironmentState, sessionId: string): EnvironmentState {
@@ -1104,26 +1092,6 @@ export function applySessionTitle(
   }
 }
 
-export function applySessionSettled(
-  state: EnvironmentState,
-  sessionId: string,
-  settledAt: string | null,
-): EnvironmentState {
-  const session = state.sessions[sessionId]
-  if (!session || (session.settledAt ?? null) === settledAt) return state
-  return { ...state, sessions: { ...state.sessions, [sessionId]: { ...session, settledAt } } }
-}
-
-/** The user has looked at a finished session; it stops showing as done. */
-export function applySessionAcknowledged(
-  state: EnvironmentState,
-  sessionId: string,
-): EnvironmentState {
-  const session = state.sessions[sessionId]
-  if (!session || !session.doneAt) return state
-  return { ...state, sessions: { ...state.sessions, [sessionId]: { ...session, doneAt: null } } }
-}
-
 export function applyThreadHydration(
   state: EnvironmentState,
   threadId: string,
@@ -1134,11 +1102,26 @@ export function applyThreadHydration(
   return { ...state, threads: { ...state.threads, [threadId]: { ...thread, hydration } } }
 }
 
+/**
+ * A session this client may select: listed by the server, or just created
+ * and shown by the overlay until it is (pending.creates). Selection is the
+ * client's own state, so it may follow either.
+ */
+function selectableSession(
+  state: EnvironmentState,
+  sessionId: string,
+): { threadIds: readonly string[] } | undefined {
+  const created = state.pending?.creates[sessionId]
+  return (
+    state.sessions[sessionId] ?? (created ? { threadIds: [created.thread.threadId] } : undefined)
+  )
+}
+
 export function applyActiveSession(
   state: EnvironmentState,
   sessionId: string | null,
 ): EnvironmentState {
-  const session = sessionId ? state.sessions[sessionId] : undefined
+  const session = sessionId ? selectableSession(state, sessionId) : undefined
   const nextSessionId = session ? sessionId : null
   const nextThreadId = session?.threadIds[0] ?? null
   if (
@@ -1165,7 +1148,7 @@ export function applyActiveSession(
  * stays up while that same session is retried.
  */
 export function applySessionOpening(state: EnvironmentState, sessionId: string): EnvironmentState {
-  const session = state.sessions[sessionId]
+  const session = selectableSession(state, sessionId)
   let next = state
   for (const threadId of session?.threadIds ?? []) {
     next = applyThreadHydration(next, threadId, 'loading')

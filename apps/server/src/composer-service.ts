@@ -31,10 +31,19 @@ import type {
   ProviderCatalog as RuntimeProviderCatalog,
   RuntimeRoute,
 } from '@agentpack/runtime/node'
-import type { ComposerStore } from './composer-store.ts'
+import type { CommandContext } from './command-context.ts'
+import type { ComposerStore, RevisedPreference } from './composer-store.ts'
 
 type RuntimeTarget = RuntimeRoute & { sessionId: string }
-type ResolveSession = (sessionId: string) => Promise<RuntimeTarget> | undefined
+/**
+ * The live runtime a session setter acts on, after loading the session if
+ * this process has not (thread-service.ts `resolveRuntimeSession`). A refusal
+ * is the answer an open of it would give; nothing means it does not exist.
+ */
+type ResolveSession = (
+  sessionId: string,
+  context?: CommandContext,
+) => Promise<RuntimeTarget> | { code: ErrorCode; message: string; details?: unknown } | undefined
 type ProviderSource = {
   snapshot(): ProviderBootstrap[]
   rejection(providerId: string): { code: ErrorCode; message: string } | undefined
@@ -48,23 +57,28 @@ type RuntimeControl = Pick<
   | 'modelImageInputSupport'
 >
 
-type ComposerEventName =
-  | 'session.composer.updated'
-  | 'composer.preferences.updated'
-  | 'provider.catalog.updated'
+type ComposerEventName = 'session.composer.updated'
 type ComposerEventPayload<N extends ComposerEventName> = Extract<ProofEvent, { name: N }>['payload']
 
 export interface ComposerServiceOptions {
   /**
-   * Broadcast a change to every client. The host wraps the payload in a
-   * durable environment event, so a reconnecting client replays it. Without a
-   * publisher the service still tracks state, for tests and offline hosts.
+   * Announce a session's selection to every client. The host wraps the
+   * payload in a durable environment event, whose projection stores it, so a
+   * reconnecting client replays it. Profiles and workspace preferences are
+   * the composer store's own events. Without a publisher the service still
+   * tracks selections in memory, for tests and offline hosts.
    */
   publish?: <N extends ComposerEventName>(name: N, payload: ComposerEventPayload<N>) => void
   /** The host session that owns a runtime thread; probes and unknown threads have none. */
   sessionForThread?: (threadId: string) => string | undefined
   /** The session's persisted selection. Without it selections live in memory. */
   readSessionComposer?: (sessionId: string) => SessionComposerState | undefined
+  /**
+   * Whether the session still has its row. A selection reported for one
+   * being deleted is not announced: its projection would have no row to
+   * write (I2). Without it every session is taken to exist.
+   */
+  hasSession?: (sessionId: string) => boolean
   /**
    * How long to wait before asking again about models the lookup could not
    * answer *right now* (its CLI failed or is held after a failure). Defaults
@@ -83,10 +97,12 @@ const scheduleUnref = (run: () => void, delayMs: number) => {
   return () => clearTimeout(timer)
 }
 
-const errorResult = (requestId: string, code: ErrorCode, message: string) => ({
+const PREFERENCE_NOT_SAVED = 'The preference could not be saved. Try again.'
+
+const errorResult = (requestId: string, code: ErrorCode, message: string, details?: unknown) => ({
   type: 'error' as const,
   requestId,
-  error: { code, message },
+  error: { code, message, ...(details === undefined ? {} : { details }) },
 })
 
 /** Provider catalog, durable composer preferences, and live runtime controls. */
@@ -100,9 +116,9 @@ export function createComposerService(
   const providerExists = (providerId: string) =>
     providers.snapshot().some((provider) => provider.id === providerId)
 
-  // Broadcasting is advisory: the write it describes has already happened, and
-  // a payload the protocol rejects (a workspace keyed by a path with spaces)
-  // must fail neither the command nor the runtime's event delivery.
+  // A selection that cannot be written must fail neither the command nor the
+  // runtime's event delivery: the provider already runs on it, so memory keeps
+  // it (below) until a later write lands.
   const publish = <N extends ComposerEventName>(
     name: N,
     payload: ComposerEventPayload<N>,
@@ -124,7 +140,8 @@ export function createComposerService(
   ) => {
     if (Object.keys(patch).length === 0) return
     const before = store.getProfile(providerId)
-    const profile = store.upsertProfile(providerId, {
+    // The store announces a change; its projection writes the row.
+    store.upsertProfile(providerId, {
       ...patch,
       // A relisting replaces the rows but must not forget what was learned
       // about them: image support, the context window and the model's own
@@ -134,7 +151,6 @@ export function createComposerService(
         ? { availableModels: withKnownModelFacts(patch.availableModels, before?.availableModels) }
         : {}),
     })
-    if (profile.updatedAt !== before?.updatedAt) publish('provider.catalog.updated', { profile })
     if (enrich && patch.availableModels) enrichModelImageInput(providerId)
   }
 
@@ -213,18 +229,12 @@ export function createComposerService(
     return pending.some((modelId) => !answers.has(modelId))
   }
 
+  /** The store announces a change with its revision; its projection writes both. */
   const writePreference = (
     workspaceId: string,
     providerId: string,
     patch: Parameters<ComposerStore['setPreference']>[2],
-  ) => {
-    const before = store.getPreference(workspaceId, providerId)
-    const preference = store.setPreference(workspaceId, providerId, patch)
-    if (!isDeepStrictEqual(before, preference)) {
-      publish('composer.preferences.updated', { workspaceId, providerId, preference })
-    }
-    return preference
-  }
+  ) => store.setPreference(workspaceId, providerId, patch)
 
   // With a persisted reader this only holds selections whose durable write
   // failed: the provider already runs on them, so reads and the next prompt
@@ -241,6 +251,10 @@ export function createComposerService(
     const current = selectionOf(sessionId)
     const merged = SessionComposerStateSchema.safeParse({ ...current, ...defined(patch) })
     if (!merged.success || isDeepStrictEqual(merged.data, current)) return current
+    if (options.hasSession && !options.hasSession(sessionId)) {
+      memorySelections.delete(sessionId)
+      return current
+    }
     const persisted = publish('session.composer.updated', { sessionId, composer: merged.data })
     if (persisted && options.readSessionComposer) memorySelections.delete(sessionId)
     else memorySelections.set(sessionId, merged.data)
@@ -286,12 +300,20 @@ export function createComposerService(
       | typeof COMPOSER_MODE_SET_CAPABILITY
       | typeof COMPOSER_CONFIG_OPTION_SET_CAPABILITY,
     requestId: string,
-    preference: ReturnType<ComposerStore['getPreference']>,
-  ) => ComposerResponseSchemas[capability].parse({ type: 'response', requestId, payload: { preference } })
+    { preference, revision }: RevisedPreference,
+  ) =>
+    ComposerResponseSchemas[capability].parse({
+      type: 'response',
+      requestId,
+      payload: { preference, revision },
+    })
 
-  const target = async (requestId: string, sessionId: string) => {
-    const pending = resolveSession(sessionId)
+  const target = async (requestId: string, sessionId: string, context?: CommandContext) => {
+    const pending = resolveSession(sessionId, context)
     if (!pending) return errorResult(requestId, 'not_found', 'Session not found.')
+    if (!(pending instanceof Promise)) {
+      return errorResult(requestId, pending.code, pending.message, pending.details)
+    }
     const resolved = await pending
     const rejection = providers.rejection(resolved.providerId)
     return rejection ? errorResult(requestId, rejection.code, rejection.message) : resolved
@@ -359,7 +381,7 @@ export function createComposerService(
       picks?: WorkspaceComposerPreference,
     ): WorkspaceComposerPreference {
       return picks
-        ? writePreference(workspaceId, providerId, picks)
+        ? writePreference(workspaceId, providerId, picks).preference
         : store.getPreference(workspaceId, providerId)
     },
 
@@ -518,7 +540,10 @@ export function createComposerService(
       }
     },
 
-    dispatch(command: CommandEnvelope): unknown | Promise<unknown> | undefined {
+    dispatch(
+      command: CommandEnvelope,
+      context?: CommandContext,
+    ): unknown | Promise<unknown> | undefined {
       if (command.name === PROVIDER_CATALOG_CAPABILITY) {
         const parsed = ComposerCommandSchemas[PROVIDER_CATALOG_CAPABILITY].safeParse(command)
         if (!parsed.success) {
@@ -543,7 +568,7 @@ export function createComposerService(
         return response(
           COMPOSER_PREFERENCES_GET_CAPABILITY,
           command.requestId,
-          store.getPreference(workspaceId, providerId),
+          store.readPreference(workspaceId, providerId),
         )
       }
 
@@ -556,11 +581,14 @@ export function createComposerService(
         if (!providerExists(providerId)) {
           return errorResult(command.requestId, 'not_found', 'Provider not found.')
         }
-        return response(
-          COMPOSER_PREFERENCES_SET_CAPABILITY,
-          command.requestId,
-          writePreference(workspaceId, providerId, preference),
-        )
+        let revised: RevisedPreference
+        try {
+          revised = writePreference(workspaceId, providerId, preference)
+        } catch {
+          // Nothing was written, so nothing is answered as saved (I10).
+          return errorResult(command.requestId, 'unavailable', PREFERENCE_NOT_SAVED)
+        }
+        return response(COMPOSER_PREFERENCES_SET_CAPABILITY, command.requestId, revised)
       }
 
       if (command.name === COMPOSER_MODEL_SET_CAPABILITY) {
@@ -569,7 +597,7 @@ export function createComposerService(
           return errorResult(command.requestId, 'validation', 'Invalid model update.')
         }
         return (async () => {
-          const resolved = await target(command.requestId, parsed.data.payload.sessionId)
+          const resolved = await target(command.requestId, parsed.data.payload.sessionId, context)
           if ('type' in resolved) return resolved
           await runtime.setModel({ ...resolved, modelId: parsed.data.payload.modelId })
           const selection = updateSelection(parsed.data.payload.sessionId, {
@@ -577,12 +605,17 @@ export function createComposerService(
           })
           // The preference is only "last used": it seeds the next draft and
           // leaves every other session's model alone.
-          const preference = writePreference(resolved.workspaceId ?? resolved.cwd, resolved.providerId, {
-            modelId: parsed.data.payload.modelId,
-          })
-          const values = selection.configValues ?? preference.configValues
+          let revised: RevisedPreference
+          try {
+            revised = writePreference(resolved.workspaceId ?? resolved.cwd, resolved.providerId, {
+              modelId: parsed.data.payload.modelId,
+            })
+          } catch {
+            return errorResult(command.requestId, 'unavailable', PREFERENCE_NOT_SAVED)
+          }
+          const values = selection.configValues ?? revised.preference.configValues
           if (values) await runtime.applyDesiredConfig(resolved, { values })
-          return response(COMPOSER_MODEL_SET_CAPABILITY, command.requestId, preference)
+          return response(COMPOSER_MODEL_SET_CAPABILITY, command.requestId, revised)
         })()
       }
 
@@ -592,14 +625,19 @@ export function createComposerService(
           return errorResult(command.requestId, 'validation', 'Invalid mode update.')
         }
         return (async () => {
-          const resolved = await target(command.requestId, parsed.data.payload.sessionId)
+          const resolved = await target(command.requestId, parsed.data.payload.sessionId, context)
           if ('type' in resolved) return resolved
           await runtime.setMode({ ...resolved, modeId: parsed.data.payload.modeId })
           updateSelection(parsed.data.payload.sessionId, { modeId: parsed.data.payload.modeId })
-          const preference = writePreference(resolved.workspaceId ?? resolved.cwd, resolved.providerId, {
-            modeId: parsed.data.payload.modeId,
-          })
-          return response(COMPOSER_MODE_SET_CAPABILITY, command.requestId, preference)
+          let revised: RevisedPreference
+          try {
+            revised = writePreference(resolved.workspaceId ?? resolved.cwd, resolved.providerId, {
+              modeId: parsed.data.payload.modeId,
+            })
+          } catch {
+            return errorResult(command.requestId, 'unavailable', PREFERENCE_NOT_SAVED)
+          }
+          return response(COMPOSER_MODE_SET_CAPABILITY, command.requestId, revised)
         })()
       }
 
@@ -610,7 +648,7 @@ export function createComposerService(
           return errorResult(command.requestId, 'validation', 'Invalid config option update.')
         }
         return (async () => {
-          const resolved = await target(command.requestId, parsed.data.payload.sessionId)
+          const resolved = await target(command.requestId, parsed.data.payload.sessionId, context)
           if ('type' in resolved) return resolved
           const workspaceId = resolved.workspaceId ?? resolved.cwd
           await runtime.setConfigOption({
@@ -625,13 +663,18 @@ export function createComposerService(
             },
           })
           const current = store.getPreference(workspaceId, resolved.providerId)
-          const preference = writePreference(workspaceId, resolved.providerId, {
-            configValues: {
-              ...(current.configValues ?? {}),
-              [parsed.data.payload.configId]: parsed.data.payload.value,
-            },
-          })
-          return response(COMPOSER_CONFIG_OPTION_SET_CAPABILITY, command.requestId, preference)
+          let revised: RevisedPreference
+          try {
+            revised = writePreference(workspaceId, resolved.providerId, {
+              configValues: {
+                ...(current.configValues ?? {}),
+                [parsed.data.payload.configId]: parsed.data.payload.value,
+              },
+            })
+          } catch {
+            return errorResult(command.requestId, 'unavailable', PREFERENCE_NOT_SAVED)
+          }
+          return response(COMPOSER_CONFIG_OPTION_SET_CAPABILITY, command.requestId, revised)
         })()
       }
 

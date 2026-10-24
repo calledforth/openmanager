@@ -26,7 +26,7 @@ import type {
   BackendRoute,
   SessionResult,
 } from '../../backends/Backend.js'
-import { CapabilityMissingError } from '../../core/errors.js'
+import { CapabilityMissingError, SessionUnknownError } from '../../core/errors.js'
 import type {
   InteractionBroker,
   InteractionKind,
@@ -646,7 +646,12 @@ export class ClaudeSessionRuntime implements ManagedSessionRuntime {
    * that is how a conversation gets thrown away. */
   private async resolvableSessionId(): Promise<string | undefined> {
     const requested = this.spec.sessionId
-    if (!requested || !this.config.capabilities.canLoadSession) return undefined
+    // A session that must be loaded is never replaced by a fresh one.
+    const required = () => {
+      if (this.spec.load === 'require') throw new SessionUnknownError(this.providerId, requested)
+      return undefined
+    }
+    if (!requested || !this.config.capabilities.canLoadSession) return required()
     const sdk = this.sdk
     if (!sdk) return undefined
     const info = await withTimeout(
@@ -661,7 +666,7 @@ export class ClaudeSessionRuntime implements ManagedSessionRuntime {
       message: 'Stored Claude Code session is unknown to the CLI; creating a new session',
       data: { sessionId: requested, cwd: this.cwd },
     })
-    return undefined
+    return required()
   }
 
   /** Drain the query for the runtime's whole life.
