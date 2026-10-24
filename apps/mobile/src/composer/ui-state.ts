@@ -7,6 +7,10 @@ export type ComposerOverlay =
   | { kind: 'settings' }
   | { kind: 'plan' }
   | { kind: 'camera' }
+  /** The system's photo picker, open over the app: what it hands back is attached. */
+  | { kind: 'library' }
+  /** Where a photo comes from (the camera or the photo library), standing on the attach button. */
+  | { kind: 'attach'; anchor: PickAnchor }
   /** A popover, standing on the pick that opened it (its place in the window). */
   | { kind: 'mode' | 'effort'; anchor: PickAnchor }
 

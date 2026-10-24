@@ -55,6 +55,7 @@ export function ChoicePopover({
   icon,
   onPick,
   onClose,
+  closeOnPick = true,
 }: {
   anchor: PickAnchor
   label: string
@@ -63,6 +64,8 @@ export function ChoicePopover({
   icon?: (choice: ComposerChoice) => ReactNode
   onPick: (id: string) => void
   onClose: () => void
+  /** False where the pick itself opens what comes next (a pick that closed it would close that too). */
+  closeOnPick?: boolean
 }) {
   const theme = usePhoneTheme()
   const { width, height } = useWindowDimensions()
@@ -112,7 +115,7 @@ export function ChoicePopover({
                   onPress={() => {
                     tap()
                     onPick(choice.id)
-                    onClose()
+                    if (closeOnPick) onClose()
                   }}
                   style={({ pressed }) => ({
                     flexDirection: 'row',

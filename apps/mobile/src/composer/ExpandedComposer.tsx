@@ -15,7 +15,7 @@ import { ImageGlyph, SlashGlyph } from './icons'
 import { ImageStrip } from './ImageStrip'
 import { slashPopupOf, type ComposerModel } from './model'
 import { Pick, PrimaryButton } from './Pick'
-import { Picks } from './Picks'
+import { measure, Picks } from './Picks'
 import { SlashPopup } from './SlashPopup'
 import type { ComposerUi } from './ui-state'
 
@@ -49,6 +49,7 @@ export function ExpandedComposer({
   const theme = usePhoneTheme()
   const insets = useSafeAreaInsets()
   const input = useRef<TextInput>(null)
+  const attachRef = useRef<View>(null)
   const { matches: slashMatches } = useMemo(
     () => slashPopupOf(model.text, model.slashCommands, false),
     [model.slashCommands, model.text],
@@ -164,10 +165,13 @@ export function ExpandedComposer({
           >
             <Picks model={model} ui={ui} variant="tray" />
             <Pick
+              ref={attachRef}
               accessibilityLabel="Attach a photo"
               icon={<ImageGlyph size={14} color={theme.muted} />}
               disabledReason={model.attach.enabled ? null : model.attach.reason}
-              onPress={() => ui.open({ kind: 'camera' })}
+              onPress={() =>
+                measure(attachRef.current, (anchor) => ui.open({ kind: 'attach', anchor }))
+              }
             />
             <Pick
               accessibilityLabel="Commands"

@@ -23,8 +23,13 @@ export const FOLD_SETTLE_MS = 120
 export interface FoldPorts {
   /** Ease the box from `from` to `to` (points), then call `onFinished`. */
   animate(from: number, to: number): void
-  /** Drop the ease: the box takes its content's height now. */
-  snap(): void
+  /**
+   * The box takes this height now, with no ease (an ease under way stops).
+   * The box always carries its height explicitly once it has measured
+   * itself: an animated height that was merely dropped would stay at
+   * whatever value it last had, and clip whatever grew after it.
+   */
+  set(height: number): void
   /**
    * The dock is about to be `delta` taller (or shorter): say so once, now,
    * and keep the per-frame heights of the ease from being reported.
@@ -49,10 +54,11 @@ export function createFoldDriver(ports: FoldPorts): FoldDriver {
   let foldedAt = -Infinity
   let height = 0
   let easing = false
-  const stop = () => {
+  /** No ease: the box is the content's height, now. */
+  const land = (at: number) => {
+    ports.set(at)
     if (!easing) return
     easing = false
-    ports.snap()
     ports.release()
   }
   return {
@@ -61,17 +67,23 @@ export function createFoldDriver(ports: FoldPorts): FoldDriver {
       key = next
     },
     onContentHeight(next) {
+      if (!(next > 0) || !Number.isFinite(next)) return
       const previous = height
       height = next
-      if (previous <= 0 || Math.abs(next - previous) < 1) return
+      if (previous <= 0) {
+        // First measured: the box carries its height from here on.
+        ports.set(next)
+        return
+      }
+      if (Math.abs(next - previous) < 1) return
       const folding = ports.now() - foldedAt <= FOLD_SETTLE_MS
       foldedAt = -Infinity
       if (!folding) {
         // Not a fold, or a second change while one eases: no animation.
-        stop()
+        land(next)
         return
       }
-      if (easing) stop()
+      if (easing) land(previous)
       easing = true
       ports.hold(next - previous)
       ports.animate(previous, next)

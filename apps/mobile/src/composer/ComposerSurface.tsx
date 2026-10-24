@@ -1,5 +1,7 @@
-import { useEffect } from 'react'
-import { BackHandler, StyleSheet, View } from 'react-native'
+import { CameraIcon, ImagesIcon } from 'phosphor-react-native'
+import { useEffect, useState } from 'react'
+import { BackHandler, StyleSheet, useWindowDimensions, View } from 'react-native'
+import type { ComposerChoice } from '@openmanager/app-core/logic'
 
 import { SessionDock, useDockSlot } from '../session/SessionDock'
 import { usePhoneTheme } from '../theme/ThemeProvider'
@@ -8,13 +10,22 @@ import { CameraCapture } from './CameraCapture'
 import { ChoicePopover } from './ChoicePopover'
 import { ComposerDock } from './ComposerDock'
 import { ExpandedComposer } from './ExpandedComposer'
+import { LibraryPick } from './LibraryPick'
 import { ModeIcon } from './icons'
+import { useKeyboardHeight } from './keyboard'
 import type { ComposerModel } from './model'
+import { promptRoom, PromptRoomContext } from './prompt-room'
 import { ModelSheet } from './ModelSheet'
 import { PlanSheet } from './PlanSheet'
 import { ProjectSheet, type ProjectSource } from './ProjectSheet'
 import { SettingsSheet } from './SettingsSheet'
 import { coveredLayers, useComposerUiState, type ComposerUi } from './ui-state'
+
+/** Where an attached photo comes from. */
+const ATTACH_CHOICES: readonly ComposerChoice[] = [
+  { id: 'camera', name: 'Camera' },
+  { id: 'library', name: 'Photo library' },
+]
 
 /**
  * The composer over the session page: the dock (status line and the docked
@@ -67,54 +78,88 @@ export function ComposerSurface({
   }, [covered, onCovered])
   useEffect(() => () => onCovered(false), [onCovered])
 
+  // The page's height for the composer's prompts, keyboard accounted for.
+  const window = useWindowDimensions()
+  const keyboard = useKeyboardHeight()
+  const [layer, setLayer] = useState(0)
+  const room = promptRoom({ layer, window: window.height, keyboard })
+
   return (
-    <View style={StyleSheet.absoluteFill} pointerEvents="box-none">
-      <View style={StyleSheet.absoluteFill} pointerEvents="box-none" {...coveredBySheet(covered)}>
-        <SessionDock status={slot.status} bottomInset={slot.bottomInset} onHeight={slot.onHeight}>
-          <ComposerDock model={model} ui={ui} />
-        </SessionDock>
+    <PromptRoomContext.Provider value={room}>
+      <View
+        style={StyleSheet.absoluteFill}
+        pointerEvents="box-none"
+        onLayout={(event) => setLayer(event.nativeEvent.layout.height)}
+      >
+        <View style={StyleSheet.absoluteFill} pointerEvents="box-none" {...coveredBySheet(covered)}>
+          <SessionDock status={slot.status} bottomInset={slot.bottomInset} onHeight={slot.onHeight}>
+            <ComposerDock model={model} ui={ui} />
+          </SessionDock>
+        </View>
+
+        {expanded ? (
+          <ExpandedComposer
+            model={model}
+            ui={ui}
+            contextName={contextName}
+            // Whatever opens from it stands over it, and a screen reader reads only that.
+            covered={editorCovered}
+          />
+        ) : null}
+
+        {overlay?.kind === 'model' ? <ModelSheet model={model} onClose={ui.close} /> : null}
+        {overlay?.kind === 'settings' ? <SettingsSheet model={model} onClose={ui.close} /> : null}
+        {overlay?.kind === 'plan' && plan ? <PlanSheet plan={plan} onClose={ui.close} /> : null}
+        {overlay?.kind === 'project' && projects ? (
+          <ProjectSheet source={projects} onClose={ui.close} />
+        ) : null}
+        {overlay?.kind === 'mode' && model.picks.mode ? (
+          <ChoicePopover
+            anchor={overlay.anchor}
+            label="Mode"
+            choices={model.modeChoices}
+            current={model.picks.mode.id}
+            icon={(choice) => <ModeIcon modeId={choice.id} size={16} color={theme.muted} />}
+            onPick={model.pickMode}
+            onClose={ui.close}
+          />
+        ) : null}
+        {overlay?.kind === 'effort' && model.picks.effort ? (
+          <ChoicePopover
+            anchor={overlay.anchor}
+            label="Effort"
+            choices={model.effortChoices}
+            current={model.picks.effort.id}
+            onPick={model.pickEffort}
+            onClose={ui.close}
+          />
+        ) : null}
+        {overlay?.kind === 'attach' ? (
+          <ChoicePopover
+            anchor={overlay.anchor}
+            label="Attach a photo"
+            choices={ATTACH_CHOICES}
+            current=""
+            icon={(choice) =>
+              choice.id === 'camera' ? (
+                <CameraIcon size={16} color={theme.muted} />
+              ) : (
+                <ImagesIcon size={16} color={theme.muted} />
+              )
+            }
+            // The pick opens what it names in the popover's place.
+            closeOnPick={false}
+            onPick={(id) => ui.open({ kind: id === 'camera' ? 'camera' : 'library' })}
+            onClose={ui.close}
+          />
+        ) : null}
+        {overlay?.kind === 'camera' ? (
+          <CameraCapture onPhoto={model.attachPhoto} onClose={ui.close} />
+        ) : null}
+        {overlay?.kind === 'library' ? (
+          <LibraryPick onPhoto={model.attachPhoto} onClose={ui.close} />
+        ) : null}
       </View>
-
-      {expanded ? (
-        <ExpandedComposer
-          model={model}
-          ui={ui}
-          contextName={contextName}
-          // Whatever opens from it stands over it, and a screen reader reads only that.
-          covered={editorCovered}
-        />
-      ) : null}
-
-      {overlay?.kind === 'model' ? <ModelSheet model={model} onClose={ui.close} /> : null}
-      {overlay?.kind === 'settings' ? <SettingsSheet model={model} onClose={ui.close} /> : null}
-      {overlay?.kind === 'plan' && plan ? <PlanSheet plan={plan} onClose={ui.close} /> : null}
-      {overlay?.kind === 'project' && projects ? (
-        <ProjectSheet source={projects} onClose={ui.close} />
-      ) : null}
-      {overlay?.kind === 'mode' && model.picks.mode ? (
-        <ChoicePopover
-          anchor={overlay.anchor}
-          label="Mode"
-          choices={model.modeChoices}
-          current={model.picks.mode.id}
-          icon={(choice) => <ModeIcon modeId={choice.id} size={16} color={theme.muted} />}
-          onPick={model.pickMode}
-          onClose={ui.close}
-        />
-      ) : null}
-      {overlay?.kind === 'effort' && model.picks.effort ? (
-        <ChoicePopover
-          anchor={overlay.anchor}
-          label="Effort"
-          choices={model.effortChoices}
-          current={model.picks.effort.id}
-          onPick={model.pickEffort}
-          onClose={ui.close}
-        />
-      ) : null}
-      {overlay?.kind === 'camera' ? (
-        <CameraCapture onPhoto={model.attachPhoto} onClose={ui.close} />
-      ) : null}
-    </View>
+    </PromptRoomContext.Provider>
   )
 }

@@ -29,7 +29,7 @@ import { AttachGlyph } from './icons'
 import { ImageStrip } from './ImageStrip'
 import { composerFold, type ComposerModel } from './model'
 import { PrimaryButton } from './Pick'
-import { Picks } from './Picks'
+import { measure, Picks } from './Picks'
 import { PermissionPrompt, PlanPrompt, QuestionPrompt } from './Prompts'
 import type { ComposerUi } from './ui-state'
 
@@ -64,12 +64,14 @@ export function ComposerNotice({ model }: { model: ComposerModel }) {
   )
 }
 
-/** The round attach button in the field: the camera, or why images cannot go. */
+/** The round attach button in the field: the camera or the photo library, or why images cannot go. */
 export function AttachButton({ model, ui }: { model: ComposerModel; ui: ComposerUi }) {
   const theme = usePhoneTheme()
   const { enabled, reason } = model.attach
+  const button = useRef<View>(null)
   return (
     <Press
+      ref={button}
       accessibilityRole="button"
       accessibilityLabel="Attach a photo"
       accessibilityHint={reason ?? undefined}
@@ -78,7 +80,7 @@ export function AttachButton({ model, ui }: { model: ComposerModel; ui: Composer
       hitSlop={4}
       onPress={() => {
         tap()
-        ui.open({ kind: 'camera' })
+        measure(button.current, (anchor) => ui.open({ kind: 'attach', anchor }))
       }}
       style={({ pressed }) => ({
         width: 36,
@@ -254,16 +256,14 @@ function useFoldHeight(key: string) {
       now: () => Date.now(),
       hold: (delta) => holdRef.current?.hold(delta),
       release: () => holdRef.current?.release(),
-      snap: () => {
+      set: (to) => {
         cancelAnimation(height)
-        height.value = -1
+        height.value = to
       },
       animate: (from, to) => {
         height.value = from
         height.value = withTiming(to, FOLD_TIMING, (finished) => {
-          if (!finished) return
-          height.value = -1
-          runOnJS(finish)()
+          if (finished) runOnJS(finish)()
         })
       },
     }
@@ -276,7 +276,9 @@ function useFoldHeight(key: string) {
   useLayoutEffect(() => {
     driver.onKey(key)
   }, [driver, key])
-  const heightStyle = useAnimatedStyle(() => (height.value < 0 ? {} : { height: height.value }))
+  // Until the box has measured itself it sizes to its content; from then on
+  // its height is always the one set here, never a value left behind.
+  const heightStyle = useAnimatedStyle(() => (height.value > 0 ? { height: height.value } : {}))
   const onContentLayout = useCallback(
     // The box's height, padding included: the same box the ease sizes.
     (event: LayoutChangeEvent) =>
