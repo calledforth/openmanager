@@ -289,9 +289,15 @@ describe('sessions list and read-only thread, live', () => {
     cleanups.push(() => root.unmount())
 
     await render(null)
+    // The catalog's older pages follow the first in the background, so on an
+    // environment with a long history wait for the whole list, as the owner holds it.
     await until(
       'sidebar sessions and drafts',
-      () => (home?.sessions.length ?? 0) >= createdIds.length && (home?.drafts.length ?? 0) > 0,
+      () =>
+        (home?.sessions.length ?? 0) >=
+          Math.max(createdIds.length, Object.keys(owner.getState().sessions).length) &&
+        (home?.drafts.length ?? 0) > 0,
+      60_000,
     )
     await settle()
     const server = owner.getState()
