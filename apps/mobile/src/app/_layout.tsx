@@ -14,7 +14,6 @@ import '../../global.css'
 import { PhoneEnvironmentProvider } from '../environment/PhoneEnvironmentProvider'
 import { pairingSession } from '../pairing/session'
 import { ThemeProvider, usePhoneTheme, useTheme } from '../theme/ThemeProvider'
-import { GlassBackdrop } from '../ui/Glass'
 
 // A cold deep link (a session, search) still has the tabs under it, so its
 // back control returns to them.
@@ -28,8 +27,10 @@ function RootNavigator() {
   const { resolved } = useTheme()
   const theme = usePhoneTheme()
 
+  // No blur target wraps the navigator: each screen is its own glass layer
+  // (see `Screen`), so a blur never draws a view it sits in.
   return (
-    <GlassBackdrop>
+    <>
       <StatusBar style={resolved === 'dark' ? 'light' : 'dark'} />
       <Stack
         screenOptions={{
@@ -61,7 +62,7 @@ function RootNavigator() {
         <Stack.Screen name="theme-preview" options={{ presentation: 'modal' }} />
       </Stack>
       <PairingResume />
-    </GlassBackdrop>
+    </>
   )
 }
 

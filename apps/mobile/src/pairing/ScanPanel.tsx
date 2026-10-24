@@ -5,7 +5,7 @@ import { Linking, Platform, StyleSheet, View } from 'react-native'
 
 import { AppText } from '../components/ui/AppText'
 import { usePhoneTheme } from '../theme/ThemeProvider'
-import { Glass } from '../ui/Glass'
+import { Glass, GlassContent, GlassLayer } from '../ui/Glass'
 import { IconButton } from '../ui/IconButton'
 import { tap } from '../ui/haptics'
 import { Press } from '../ui/Press'
@@ -98,19 +98,25 @@ function NativeScan({
     )
   }
 
+  // Its own glass layer inside the page's content: the feed and the reticle
+  // are what the torch and the hint blur, and the page's glass never sees them.
   return (
-    <Frame>
-      <CameraView
-        style={StyleSheet.absoluteFill}
-        facing="back"
-        active={active}
-        enableTorch={torch && active}
-        barcodeScannerSettings={{ barcodeTypes: ['qr'] }}
-        onBarcodeScanned={
-          active ? (result: BarcodeScanningResult) => onScan(result.data) : undefined
-        }
-      />
-      <Reticle found={found} />
+    <Frame layer>
+      <GlassContent background={theme.surface2} style={StyleSheet.absoluteFill}>
+        <CameraView
+          style={StyleSheet.absoluteFill}
+          facing="back"
+          active={active}
+          enableTorch={torch && active}
+          barcodeScannerSettings={{ barcodeTypes: ['qr'] }}
+          onBarcodeScanned={
+            active ? (result: BarcodeScanningResult) => onScan(result.data) : undefined
+          }
+        />
+        <View style={[StyleSheet.absoluteFill, { justifyContent: 'center' }]} pointerEvents="none">
+          <Reticle found={found} />
+        </View>
+      </GlassContent>
       <View style={{ position: 'absolute', top: 12, right: 12 }}>
         <IconButton
           label={torch ? 'Turn the torch off' : 'Turn the torch on'}
@@ -134,20 +140,20 @@ function NativeScan({
   )
 }
 
-function Frame({ children }: { children?: React.ReactNode }) {
+/** The panel's rounded frame; `layer` when glass floats over what it holds. */
+function Frame({ layer = false, children }: { layer?: boolean; children?: React.ReactNode }) {
   const theme = usePhoneTheme()
-  return (
-    <View
-      style={{
-        height: SCAN_PANEL_HEIGHT,
-        borderRadius: 28,
-        overflow: 'hidden',
-        backgroundColor: theme.surface2,
-        justifyContent: 'center',
-      }}
-    >
-      {children}
-    </View>
+  const style = {
+    height: SCAN_PANEL_HEIGHT,
+    borderRadius: 28,
+    overflow: 'hidden',
+    backgroundColor: theme.surface2,
+    justifyContent: 'center',
+  } as const
+  return layer ? (
+    <GlassLayer style={style}>{children}</GlassLayer>
+  ) : (
+    <View style={style}>{children}</View>
   )
 }
 

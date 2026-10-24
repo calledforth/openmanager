@@ -6,6 +6,7 @@ import type { ComposerChoice } from '@openmanager/app-core/logic'
 import { SessionDock, useDockSlot } from '../session/SessionDock'
 import { usePhoneTheme } from '../theme/ThemeProvider'
 import { coveredBySheet } from '../ui/a11y-focus'
+import { GlassTargetProvider, useGlassTarget, type GlassTarget } from '../ui/Glass'
 import { CameraCapture } from './CameraCapture'
 import { ChoicePopover } from './ChoicePopover'
 import { ComposerDock } from './ComposerDock'
@@ -32,6 +33,10 @@ const ATTACH_CHOICES: readonly ComposerChoice[] = [
  * composer, in the page's dock slot), the pulled-up composer, and whichever
  * sheet or popover is open. One layer over the whole page, passing touches
  * through wherever nothing of it is drawn.
+ *
+ * Its glass blurs the page beneath (the page's target, from the session's
+ * `Screen`); a sheet or popover opened from the pulled-up composer blurs
+ * the composer instead, which covers the page.
  */
 export function ComposerSurface({
   model,
@@ -49,6 +54,9 @@ export function ComposerSurface({
   const slot = useDockSlot()
   const state = useComposerUiState(ui)
   const { overlay, expanded } = state
+  const pageTarget = useGlassTarget()
+  const [editorTarget, setEditorTarget] = useState<GlassTarget | null>(null)
+  const layerTarget = expanded && editorTarget ? editorTarget : pageTarget
 
   // Back closes the pulled-up composer (sheets and popovers take it first).
   useEffect(() => {
@@ -104,61 +112,64 @@ export function ComposerSurface({
             contextName={contextName}
             // Whatever opens from it stands over it, and a screen reader reads only that.
             covered={editorCovered}
+            onTarget={setEditorTarget}
           />
         ) : null}
 
-        {overlay?.kind === 'model' ? <ModelSheet model={model} onClose={ui.close} /> : null}
-        {overlay?.kind === 'settings' ? <SettingsSheet model={model} onClose={ui.close} /> : null}
-        {overlay?.kind === 'plan' && plan ? <PlanSheet plan={plan} onClose={ui.close} /> : null}
-        {overlay?.kind === 'project' && projects ? (
-          <ProjectSheet source={projects} onClose={ui.close} />
-        ) : null}
-        {overlay?.kind === 'mode' && model.picks.mode ? (
-          <ChoicePopover
-            anchor={overlay.anchor}
-            label="Mode"
-            choices={model.modeChoices}
-            current={model.picks.mode.id}
-            icon={(choice) => <ModeIcon modeId={choice.id} size={16} color={theme.muted} />}
-            onPick={model.pickMode}
-            onClose={ui.close}
-          />
-        ) : null}
-        {overlay?.kind === 'effort' && model.picks.effort ? (
-          <ChoicePopover
-            anchor={overlay.anchor}
-            label="Effort"
-            choices={model.effortChoices}
-            current={model.picks.effort.id}
-            onPick={model.pickEffort}
-            onClose={ui.close}
-          />
-        ) : null}
-        {overlay?.kind === 'attach' ? (
-          <ChoicePopover
-            anchor={overlay.anchor}
-            label="Attach a photo"
-            choices={ATTACH_CHOICES}
-            current=""
-            icon={(choice) =>
-              choice.id === 'camera' ? (
-                <CameraIcon size={16} color={theme.muted} />
-              ) : (
-                <ImagesIcon size={16} color={theme.muted} />
-              )
-            }
-            // The pick opens what it names in the popover's place.
-            closeOnPick={false}
-            onPick={(id) => ui.open({ kind: id === 'camera' ? 'camera' : 'library' })}
-            onClose={ui.close}
-          />
-        ) : null}
-        {overlay?.kind === 'camera' ? (
-          <CameraCapture onPhoto={model.attachPhoto} onClose={ui.close} />
-        ) : null}
-        {overlay?.kind === 'library' ? (
-          <LibraryPick onPhoto={model.attachPhoto} onClose={ui.close} />
-        ) : null}
+        <GlassTargetProvider target={layerTarget}>
+          {overlay?.kind === 'model' ? <ModelSheet model={model} onClose={ui.close} /> : null}
+          {overlay?.kind === 'settings' ? <SettingsSheet model={model} onClose={ui.close} /> : null}
+          {overlay?.kind === 'plan' && plan ? <PlanSheet plan={plan} onClose={ui.close} /> : null}
+          {overlay?.kind === 'project' && projects ? (
+            <ProjectSheet source={projects} onClose={ui.close} />
+          ) : null}
+          {overlay?.kind === 'mode' && model.picks.mode ? (
+            <ChoicePopover
+              anchor={overlay.anchor}
+              label="Mode"
+              choices={model.modeChoices}
+              current={model.picks.mode.id}
+              icon={(choice) => <ModeIcon modeId={choice.id} size={16} color={theme.muted} />}
+              onPick={model.pickMode}
+              onClose={ui.close}
+            />
+          ) : null}
+          {overlay?.kind === 'effort' && model.picks.effort ? (
+            <ChoicePopover
+              anchor={overlay.anchor}
+              label="Effort"
+              choices={model.effortChoices}
+              current={model.picks.effort.id}
+              onPick={model.pickEffort}
+              onClose={ui.close}
+            />
+          ) : null}
+          {overlay?.kind === 'attach' ? (
+            <ChoicePopover
+              anchor={overlay.anchor}
+              label="Attach a photo"
+              choices={ATTACH_CHOICES}
+              current=""
+              icon={(choice) =>
+                choice.id === 'camera' ? (
+                  <CameraIcon size={16} color={theme.muted} />
+                ) : (
+                  <ImagesIcon size={16} color={theme.muted} />
+                )
+              }
+              // The pick opens what it names in the popover's place.
+              closeOnPick={false}
+              onPick={(id) => ui.open({ kind: id === 'camera' ? 'camera' : 'library' })}
+              onClose={ui.close}
+            />
+          ) : null}
+          {overlay?.kind === 'camera' ? (
+            <CameraCapture onPhoto={model.attachPhoto} onClose={ui.close} />
+          ) : null}
+          {overlay?.kind === 'library' ? (
+            <LibraryPick onPhoto={model.attachPhoto} onClose={ui.close} />
+          ) : null}
+        </GlassTargetProvider>
       </View>
     </PromptRoomContext.Provider>
   )

@@ -1,6 +1,6 @@
 import { XIcon } from 'phosphor-react-native'
-import { useMemo, useRef } from 'react'
-import { ScrollView, TextInput, View } from 'react-native'
+import { useMemo, useRef, useState } from 'react'
+import { ScrollView, TextInput, View, type LayoutChangeEvent } from 'react-native'
 import Animated, { Easing, SlideInDown, SlideOutDown } from 'react-native-reanimated'
 import { useSafeAreaInsets } from 'react-native-safe-area-context'
 import { applySlashCommand } from '@openmanager/app-core/logic'
@@ -8,6 +8,7 @@ import { applySlashCommand } from '@openmanager/app-core/logic'
 import { AppText } from '../components/ui/AppText'
 import { usePhoneTheme } from '../theme/ThemeProvider'
 import { coveredBySheet } from '../ui/a11y-focus'
+import { GlassContent, GlassLayer, type GlassTarget } from '../ui/Glass'
 import { IconButton } from '../ui/IconButton'
 import { ProjectSquare } from '../ui/ProjectChip'
 import { ComposerNotice } from './ComposerDock'
@@ -32,12 +33,17 @@ export const EXPAND_OUT = SlideOutDown.duration(180).easing(Easing.in(Easing.cub
  * close and the project on top, the text, then the picks as a tray above the
  * keyboard with the image and command picks and send. Every pick opens the
  * same sheet or popover as in the dock.
+ *
+ * Opaque, so it is a glass layer of its own: its words, field and tray are
+ * the content; close and the command list float over it, beside it, and the
+ * sheets and popovers opened from it blur it (`onTarget` hands it to them).
  */
 export function ExpandedComposer({
   model,
   ui,
   contextName,
   covered = false,
+  onTarget,
 }: {
   model: ComposerModel
   ui: ComposerUi
@@ -45,11 +51,20 @@ export function ExpandedComposer({
   contextName: string | null
   /** A sheet, popover or the camera is open over it: hidden from a screen reader until it closes. */
   covered?: boolean
+  /** Hears the editor's blur target, for what opens over it. */
+  onTarget?: (target: GlassTarget | null) => void
 }) {
   const theme = usePhoneTheme()
   const insets = useSafeAreaInsets()
   const input = useRef<TextInput>(null)
   const attachRef = useRef<View>(null)
+  // The command list stands on the tray; the tray's height changes with an
+  // image or a notice, never per keystroke.
+  const [trayHeight, setTrayHeight] = useState(0)
+  const onTrayLayout = (event: LayoutChangeEvent) => {
+    const height = Math.round(event.nativeEvent.layout.height)
+    setTrayHeight((previous) => (previous === height ? previous : height))
+  }
   const { matches: slashMatches } = useMemo(
     () => slashPopupOf(model.text, model.slashCommands, false),
     [model.slashCommands, model.text],
@@ -71,129 +86,152 @@ export function ExpandedComposer({
       {...coveredBySheet(covered)}
       style={{ position: 'absolute', inset: 0, backgroundColor: theme.bg }}
     >
-      {/* The page's own keyboard avoider makes the room on iOS; Android resizes the window. */}
-      <View style={{ flex: 1 }}>
+      {/* The page's own keyboard avoider makes the room: it pads for the keyboard on both platforms. */}
+      <GlassLayer style={{ flex: 1 }} onTarget={onTarget}>
         <View
+          pointerEvents="box-none"
           style={{
-            flexDirection: 'row',
-            alignItems: 'center',
-            justifyContent: 'space-between',
-            paddingTop: insets.top + 6,
-            paddingHorizontal: 20,
-            paddingBottom: 6,
+            position: 'absolute',
+            zIndex: 1,
+            top: insets.top + 6,
+            left: 20,
           }}
         >
           <IconButton label="Back to the session" onPress={ui.collapse}>
             <XIcon size={18} color={theme.fg} />
           </IconButton>
-          {contextName ? (
+        </View>
+        <GlassContent>
+          <View
+            style={{
+              flexDirection: 'row',
+              alignItems: 'center',
+              justifyContent: 'space-between',
+              paddingTop: insets.top + 6,
+              paddingHorizontal: 20,
+              paddingBottom: 6,
+            }}
+          >
+            {/* Room for close, which floats over this row. */}
+            <View style={{ width: 36, height: 36 }} />
+            {contextName ? (
+              <View
+                style={{
+                  flexDirection: 'row',
+                  alignItems: 'center',
+                  gap: 6,
+                  paddingVertical: 6,
+                  paddingHorizontal: 12,
+                  borderRadius: 999,
+                  backgroundColor: theme.hover,
+                }}
+              >
+                <ProjectSquare name={contextName} size={10} />
+                <AppText variant="text-13-regular" numberOfLines={1} style={{ color: theme.muted }}>
+                  {contextName}
+                </AppText>
+              </View>
+            ) : null}
+            <View style={{ width: 36 }} />
+          </View>
+
+          <ScrollView
+            style={{ flex: 1 }}
+            contentContainerStyle={{ flexGrow: 1 }}
+            keyboardShouldPersistTaps="handled"
+          >
+            <TextInput
+              ref={input}
+              accessibilityLabel="Message"
+              autoFocus
+              multiline
+              value={model.text}
+              onChangeText={model.setText}
+              placeholder={model.placeholder}
+              placeholderTextColor={theme.faint}
+              textAlignVertical="top"
+              style={{
+                flexGrow: 1,
+                minHeight: 120,
+                paddingHorizontal: 22,
+                paddingVertical: 10,
+                color: theme.fg,
+                fontFamily: 'Geist-Regular',
+                fontSize: 17,
+                lineHeight: 25.5,
+              }}
+            />
+          </ScrollView>
+
+          <View onLayout={onTrayLayout}>
+            <ImageStrip images={model.images} onRemove={model.removeImage} />
+            <ComposerNotice model={model} />
             <View
               style={{
                 flexDirection: 'row',
                 alignItems: 'center',
                 gap: 6,
-                paddingVertical: 6,
+                paddingTop: 8,
                 paddingHorizontal: 12,
-                borderRadius: 999,
-                backgroundColor: theme.hover,
+                paddingBottom: 10 + insets.bottom,
               }}
             >
-              <ProjectSquare name={contextName} size={10} />
-              <AppText variant="text-13-regular" numberOfLines={1} style={{ color: theme.muted }}>
-                {contextName}
-              </AppText>
+              <ScrollView
+                horizontal
+                showsHorizontalScrollIndicator={false}
+                keyboardShouldPersistTaps="always"
+                style={{ flex: 1 }}
+                contentContainerStyle={{ alignItems: 'center', gap: 6 }}
+              >
+                <Picks model={model} ui={ui} variant="tray" />
+                <Pick
+                  ref={attachRef}
+                  accessibilityLabel="Attach a photo"
+                  icon={<ImageGlyph size={14} color={theme.muted} />}
+                  disabledReason={model.attach.enabled ? null : model.attach.reason}
+                  onPress={() =>
+                    measure(attachRef.current, (anchor) => ui.open({ kind: 'attach', anchor }))
+                  }
+                />
+                <Pick
+                  accessibilityLabel="Commands"
+                  icon={<SlashGlyph size={14} color={theme.muted} />}
+                  disabledReason={commandsReason}
+                  onPress={() => {
+                    if (!model.text.startsWith('/')) model.setText('/')
+                    input.current?.focus()
+                  }}
+                />
+              </ScrollView>
+              <PrimaryButton
+                action={model.primary}
+                size={38}
+                onSend={() => {
+                  model.send()
+                  ui.collapse()
+                }}
+                onStop={model.interrupt}
+              />
             </View>
-          ) : null}
-          <View style={{ width: 36 }} />
-        </View>
+          </View>
+        </GlassContent>
 
-        <ScrollView
-          style={{ flex: 1 }}
-          contentContainerStyle={{ flexGrow: 1 }}
-          keyboardShouldPersistTaps="handled"
-        >
-          <TextInput
-            ref={input}
-            accessibilityLabel="Message"
-            autoFocus
-            multiline
-            value={model.text}
-            onChangeText={model.setText}
-            placeholder={model.placeholder}
-            placeholderTextColor={theme.faint}
-            textAlignVertical="top"
-            style={{
-              flexGrow: 1,
-              minHeight: 120,
-              paddingHorizontal: 22,
-              paddingVertical: 10,
-              color: theme.fg,
-              fontFamily: 'Geist-Regular',
-              fontSize: 17,
-              lineHeight: 25.5,
-            }}
-          />
-        </ScrollView>
-
+        {/* The session's commands, in glass over the field, standing on the tray. */}
         {slashOpen ? (
-          <SlashPopup
-            commands={slashMatches}
-            onPick={(command) => {
-              model.setText(applySlashCommand(command))
-              input.current?.focus()
-            }}
-          />
-        ) : null}
-        <ImageStrip images={model.images} onRemove={model.removeImage} />
-        <ComposerNotice model={model} />
-        <View
-          style={{
-            flexDirection: 'row',
-            alignItems: 'center',
-            gap: 6,
-            paddingTop: 8,
-            paddingHorizontal: 12,
-            paddingBottom: 10 + insets.bottom,
-          }}
-        >
-          <ScrollView
-            horizontal
-            showsHorizontalScrollIndicator={false}
-            keyboardShouldPersistTaps="always"
-            style={{ flex: 1 }}
-            contentContainerStyle={{ alignItems: 'center', gap: 6 }}
+          <View
+            pointerEvents="box-none"
+            style={{ position: 'absolute', left: 0, right: 0, bottom: trayHeight }}
           >
-            <Picks model={model} ui={ui} variant="tray" />
-            <Pick
-              ref={attachRef}
-              accessibilityLabel="Attach a photo"
-              icon={<ImageGlyph size={14} color={theme.muted} />}
-              disabledReason={model.attach.enabled ? null : model.attach.reason}
-              onPress={() =>
-                measure(attachRef.current, (anchor) => ui.open({ kind: 'attach', anchor }))
-              }
-            />
-            <Pick
-              accessibilityLabel="Commands"
-              icon={<SlashGlyph size={14} color={theme.muted} />}
-              disabledReason={commandsReason}
-              onPress={() => {
-                if (!model.text.startsWith('/')) model.setText('/')
+            <SlashPopup
+              commands={slashMatches}
+              onPick={(command) => {
+                model.setText(applySlashCommand(command))
                 input.current?.focus()
               }}
             />
-          </ScrollView>
-          <PrimaryButton
-            action={model.primary}
-            size={38}
-            onSend={() => {
-              model.send()
-              ui.collapse()
-            }}
-            onStop={model.interrupt}
-          />
-        </View>
-      </View>
+          </View>
+        ) : null}
+      </GlassLayer>
     </Animated.View>
   )
 }

@@ -23,10 +23,12 @@ import { pairingSession } from '../pairing/session'
 import { usePairing } from '../pairing/usePairing'
 import { usePhoneTheme } from '../theme/ThemeProvider'
 import { coveredBySheet } from '../ui/a11y-focus'
+import { GlassContent } from '../ui/Glass'
 import { useGoBack } from '../ui/goBack'
 import { success, tap, warning } from '../ui/haptics'
 import { IconButton } from '../ui/IconButton'
 import { Press } from '../ui/Press'
+import { Screen, ScreenBar } from '../ui/Screen'
 
 /**
  * Pairing: two doors and nothing else. Scan the QR code web's Pair-device
@@ -127,169 +129,183 @@ export default function PairScreen() {
   }
 
   return (
-    <View className="flex-1" style={{ paddingTop: insets.top + 6, backgroundColor: theme.bg }}>
+    <Screen>
       {/* While the sheet is up, only the sheet can be read. */}
       <View style={{ flex: 1 }} {...coveredBySheet(!idle)}>
-        <View className="flex-row items-center justify-between px-5" style={{ height: 44 }}>
-          <Text
-            accessibilityRole="header"
-            numberOfLines={1}
-            style={{
-              flexShrink: 1,
-              fontFamily: 'Geist-SemiBold',
-              fontSize: 22,
-              letterSpacing: -0.4,
-              color: theme.fg,
-            }}
-          >
-            {againLabel !== null ? `Pair again with ${againLabel}` : 'Pair with a computer'}
-          </Text>
-          <IconButton label="Close" onPress={goBack}>
-            <XIcon size={18} color={theme.fg} />
-          </IconButton>
-        </View>
+        <ScreenBar
+          top={insets.top + 6}
+          height={44}
+          right={
+            <IconButton label="Close" onPress={goBack}>
+              <XIcon size={18} color={theme.fg} />
+            </IconButton>
+          }
+        />
+        <GlassContent style={{ paddingTop: insets.top + 6 }}>
+          <View className="flex-row items-center justify-between px-5" style={{ height: 44 }}>
+            <Text
+              accessibilityRole="header"
+              numberOfLines={1}
+              style={{
+                flexShrink: 1,
+                fontFamily: 'Geist-SemiBold',
+                fontSize: 22,
+                letterSpacing: -0.4,
+                color: theme.fg,
+              }}
+            >
+              {againLabel !== null ? `Pair again with ${againLabel}` : 'Pair with a computer'}
+            </Text>
+            {/* Room for the close button, which floats over this row. */}
+            <View style={{ width: 36 }} />
+          </View>
 
-        <KeyboardAvoidingView
-          className="flex-1"
-          behavior={Platform.OS === 'ios' ? 'padding' : undefined}
-        >
-          <ScrollView
+          <KeyboardAvoidingView
             className="flex-1"
-            keyboardShouldPersistTaps="handled"
-            contentContainerStyle={{
-              paddingHorizontal: 16,
-              paddingTop: 10,
-              paddingBottom: insets.bottom + 32,
-              gap: 18,
-            }}
+            behavior={Platform.OS === 'ios' ? 'padding' : undefined}
           >
-            <ScanPanel active={ready} found={pairing.source === 'scan' && !idle} onScan={onScan} />
+            <ScrollView
+              className="flex-1"
+              keyboardShouldPersistTaps="handled"
+              contentContainerStyle={{
+                paddingHorizontal: 16,
+                paddingTop: 10,
+                paddingBottom: insets.bottom + 32,
+                gap: 18,
+              }}
+            >
+              <ScanPanel
+                active={ready}
+                found={pairing.source === 'scan' && !idle}
+                onScan={onScan}
+              />
 
-            <View style={{ gap: 8 }}>
-              <FieldLabel>Or paste the link</FieldLabel>
-              <View className="flex-row items-center" style={{ gap: 8 }}>
-                <View
-                  className="flex-1 flex-row items-center"
+              <View style={{ gap: 8 }}>
+                <FieldLabel>Or paste the link</FieldLabel>
+                <View className="flex-row items-center" style={{ gap: 8 }}>
+                  <View
+                    className="flex-1 flex-row items-center"
+                    style={{
+                      gap: 10,
+                      paddingLeft: 14,
+                      paddingRight: 6,
+                      height: 52,
+                      borderRadius: 16,
+                      backgroundColor: theme.hover,
+                    }}
+                  >
+                    <LinkIcon size={18} color={theme.muted} />
+                    {heldHost ? (
+                      <AppText
+                        accessibilityLabel={`Pairing link for ${heldHost}`}
+                        variant="text-14-regular"
+                        numberOfLines={1}
+                        style={{ flex: 1, color: theme.fg }}
+                      >
+                        Pairing link for {heldHost}
+                      </AppText>
+                    ) : (
+                      <TextInput
+                        accessibilityLabel="Pairing link"
+                        ref={field}
+                        defaultValue=""
+                        secureTextEntry
+                        onChangeText={takeText}
+                        editable={idle}
+                        placeholder="Paste a pairing link"
+                        placeholderTextColor={theme.faint}
+                        autoCapitalize="none"
+                        autoCorrect={false}
+                        spellCheck={false}
+                        keyboardType={Platform.OS === 'ios' ? 'url' : 'default'}
+                        returnKeyType="go"
+                        onSubmitEditing={() => typed && submitLink(text.current, 'paste')}
+                        style={{
+                          flex: 1,
+                          fontFamily: 'Geist-Regular',
+                          fontSize: 15,
+                          color: theme.fg,
+                          paddingVertical: 0,
+                        }}
+                      />
+                    )}
+                    {typed ? (
+                      <FieldIcon label="Clear the link" onPress={clearLink}>
+                        <XIcon size={16} color={theme.muted} />
+                      </FieldIcon>
+                    ) : (
+                      <FieldIcon
+                        label="Paste from clipboard"
+                        onPress={() => void pasteFromClipboard()}
+                      >
+                        <ClipboardTextIcon size={20} color={theme.muted} />
+                      </FieldIcon>
+                    )}
+                  </View>
+                  <Press
+                    accessibilityRole="button"
+                    accessibilityLabel="Pair with this link"
+                    accessibilityState={{ disabled: !typed || !ready }}
+                    disabled={!typed || !ready}
+                    onPress={() => {
+                      tap()
+                      submitLink(text.current, 'paste')
+                    }}
+                    style={({ pressed }) => ({
+                      width: 52,
+                      height: 52,
+                      borderRadius: 26,
+                      alignItems: 'center',
+                      justifyContent: 'center',
+                      backgroundColor: pressed ? theme.actionHover : theme.actionBg,
+                      opacity: !typed || !ready ? 0.35 : 1,
+                    })}
+                  >
+                    <ArrowRightIcon size={20} color={theme.actionFg} weight="bold" />
+                  </Press>
+                </View>
+                {heldHost ? (
+                  <Hint>Ready to pair. Nothing is sent until you go.</Hint>
+                ) : (
+                  <Hint>
+                    On your computer: Settings, then Devices, then Pair a device. It shows the QR
+                    code and the link.
+                  </Hint>
+                )}
+              </View>
+
+              <View style={{ gap: 8 }}>
+                <FieldLabel>Name for this phone</FieldLabel>
+                <TextInput
+                  accessibilityLabel="Name for this phone"
+                  value={label}
+                  onChangeText={setLabel}
+                  editable={idle}
+                  maxLength={CLIENT_LABEL_MAX_LENGTH}
+                  autoCorrect={false}
+                  placeholder="Phone"
+                  placeholderTextColor={theme.faint}
                   style={{
-                    gap: 10,
-                    paddingLeft: 14,
-                    paddingRight: 6,
                     height: 52,
                     borderRadius: 16,
+                    paddingHorizontal: 14,
                     backgroundColor: theme.hover,
+                    fontFamily: 'Geist-Regular',
+                    fontSize: 15,
+                    color: theme.fg,
                   }}
-                >
-                  <LinkIcon size={18} color={theme.muted} />
-                  {heldHost ? (
-                    <AppText
-                      accessibilityLabel={`Pairing link for ${heldHost}`}
-                      variant="text-14-regular"
-                      numberOfLines={1}
-                      style={{ flex: 1, color: theme.fg }}
-                    >
-                      Pairing link for {heldHost}
-                    </AppText>
-                  ) : (
-                    <TextInput
-                      accessibilityLabel="Pairing link"
-                      ref={field}
-                      defaultValue=""
-                      secureTextEntry
-                      onChangeText={takeText}
-                      editable={idle}
-                      placeholder="Paste a pairing link"
-                      placeholderTextColor={theme.faint}
-                      autoCapitalize="none"
-                      autoCorrect={false}
-                      spellCheck={false}
-                      keyboardType={Platform.OS === 'ios' ? 'url' : 'default'}
-                      returnKeyType="go"
-                      onSubmitEditing={() => typed && submitLink(text.current, 'paste')}
-                      style={{
-                        flex: 1,
-                        fontFamily: 'Geist-Regular',
-                        fontSize: 15,
-                        color: theme.fg,
-                        paddingVertical: 0,
-                      }}
-                    />
-                  )}
-                  {typed ? (
-                    <FieldIcon label="Clear the link" onPress={clearLink}>
-                      <XIcon size={16} color={theme.muted} />
-                    </FieldIcon>
-                  ) : (
-                    <FieldIcon
-                      label="Paste from clipboard"
-                      onPress={() => void pasteFromClipboard()}
-                    >
-                      <ClipboardTextIcon size={20} color={theme.muted} />
-                    </FieldIcon>
-                  )}
-                </View>
-                <Press
-                  accessibilityRole="button"
-                  accessibilityLabel="Pair with this link"
-                  accessibilityState={{ disabled: !typed || !ready }}
-                  disabled={!typed || !ready}
-                  onPress={() => {
-                    tap()
-                    submitLink(text.current, 'paste')
-                  }}
-                  style={({ pressed }) => ({
-                    width: 52,
-                    height: 52,
-                    borderRadius: 26,
-                    alignItems: 'center',
-                    justifyContent: 'center',
-                    backgroundColor: pressed ? theme.actionHover : theme.actionBg,
-                    opacity: !typed || !ready ? 0.35 : 1,
-                  })}
-                >
-                  <ArrowRightIcon size={20} color={theme.actionFg} weight="bold" />
-                </Press>
+                />
+                {labelRead.ok ? (
+                  <Hint>
+                    Shown on your computer's Devices list. A link made with a name keeps that name.
+                  </Hint>
+                ) : (
+                  <Hint tone="error">{labelRead.problem}</Hint>
+                )}
               </View>
-              {heldHost ? (
-                <Hint>Ready to pair. Nothing is sent until you go.</Hint>
-              ) : (
-                <Hint>
-                  On your computer: Settings, then Devices, then Pair a device. It shows the QR code
-                  and the link.
-                </Hint>
-              )}
-            </View>
-
-            <View style={{ gap: 8 }}>
-              <FieldLabel>Name for this phone</FieldLabel>
-              <TextInput
-                accessibilityLabel="Name for this phone"
-                value={label}
-                onChangeText={setLabel}
-                editable={idle}
-                maxLength={CLIENT_LABEL_MAX_LENGTH}
-                autoCorrect={false}
-                placeholder="Phone"
-                placeholderTextColor={theme.faint}
-                style={{
-                  height: 52,
-                  borderRadius: 16,
-                  paddingHorizontal: 14,
-                  backgroundColor: theme.hover,
-                  fontFamily: 'Geist-Regular',
-                  fontSize: 15,
-                  color: theme.fg,
-                }}
-              />
-              {labelRead.ok ? (
-                <Hint>
-                  Shown on your computer's Devices list. A link made with a name keeps that name.
-                </Hint>
-              ) : (
-                <Hint tone="error">{labelRead.problem}</Hint>
-              )}
-            </View>
-          </ScrollView>
-        </KeyboardAvoidingView>
+            </ScrollView>
+          </KeyboardAvoidingView>
+        </GlassContent>
       </View>
 
       <PairingSheet
@@ -307,7 +323,7 @@ export default function PairScreen() {
           goBack()
         }}
       />
-    </View>
+    </Screen>
   )
 }
 
