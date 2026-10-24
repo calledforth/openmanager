@@ -5,8 +5,20 @@ import {
   type EnvironmentState,
   type EnvironmentStore,
 } from '@openmanager/environment-client'
+import { PROTOCOL_VERSION } from '@openmanager/protocol'
 
 const CACHE_VERSION = 1
+
+/**
+ * What the cache stores: the state, and the protocol it was written under. A
+ * state from another protocol was folded by other rules (an older build's
+ * reducers, events it no longer receives), so it is never resumed: the first
+ * load after an upgrade is a fresh one (docs/sync-foundations.md §4.7.7).
+ */
+interface CachedDocument {
+  protocolVersion: number
+  state: EnvironmentState
+}
 const STATE_STORE = 'state'
 const writes = new Map<string, Promise<void>>()
 
@@ -41,6 +53,7 @@ function openCache(environmentId: string): Promise<IDBDatabase | null> {
 
 export async function readEnvironmentCache(
   environmentId: string,
+  protocolVersion: number = PROTOCOL_VERSION,
 ): Promise<EnvironmentState | null> {
   await writes.get(environmentId)
   const database = await openCache(environmentId)
@@ -50,7 +63,10 @@ export async function readEnvironmentCache(
       const transaction = database.transaction(STATE_STORE, 'readonly')
       const request = transaction.objectStore(STATE_STORE).get('snapshot')
       request.onsuccess = () => {
-        const state = request.result as EnvironmentState | undefined
+        const document = request.result as Partial<CachedDocument> | undefined
+        // A document from another protocol, or from before the cache said
+        // which, is dropped rather than merged into this build's state.
+        const state = document?.protocolVersion === protocolVersion ? document.state : undefined
         const initial = createInitialState()
         // Reject incompatible/corrupt documents rather than leaking another identity.
         if (
@@ -93,7 +109,11 @@ async function persistEnvironmentCache(
       transaction.oncomplete = () => resolve()
       transaction.onerror = () => resolve()
       transaction.onabort = () => resolve()
-      transaction.objectStore(STATE_STORE).put(cacheState(state), 'snapshot')
+      const document: CachedDocument = {
+        protocolVersion: PROTOCOL_VERSION,
+        state: cacheState(state),
+      }
+      transaction.objectStore(STATE_STORE).put(document, 'snapshot')
     })
   } catch {
     // A quota or serialization failure leaves the in-memory store usable.

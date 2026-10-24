@@ -31,7 +31,7 @@ export interface StatusLineView {
   clock: StatusClock | null
 }
 
-type ThreadTimes = Pick<ThreadState, 'turns' | 'interactions' | 'failures'>
+type ThreadTimes = Pick<ThreadState, 'turns' | 'interactions'>
 
 const OPEN_TURN = new Set(['running', 'waiting'])
 
@@ -83,12 +83,13 @@ export function statusClockOf(
   }
 }
 
-/** The failure of the session's last turn, when the environment reported one. */
+/**
+ * The failure of the session's last turn, when the environment reported one.
+ * The turn carries it (`turn.failure`), as its `turn.failed` said.
+ */
 export function failureDetailOf(thread: ThreadTimes | null | undefined): string | null {
   if (!thread) return null
-  const last = thread.turns[thread.turns.length - 1]
-  if (!last) return null
-  return thread.failures.find((failure) => failure.turnId === last.turnId)?.message ?? null
+  return thread.turns[thread.turns.length - 1]?.failure?.message ?? null
 }
 
 /**

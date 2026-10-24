@@ -56,7 +56,7 @@ const WORKSPACE = {
   path: 'C:/repo',
   lastUsedAt: null,
   lastActivityAt: null,
-  capabilities: { git: false, providers: ['opencode'] },
+  capabilities: { git: false },
   exists: true,
 }
 const SESSION = { sessionId: 'session-1', workspaceId: WORKSPACE.workspaceId, title: 'First' }
@@ -227,7 +227,12 @@ describe('a session opened read-only on the phone', () => {
     await flush()
 
     // Another device sends: the environment announces the turn and its prompt.
-    const turn = { turnId: 'turn-2', threadId: THREAD.threadId, state: 'running' as const }
+    const turn = {
+      turnId: 'turn-2',
+      threadId: THREAD.threadId,
+      state: 'running' as const,
+      startedAt: new Date().toISOString(),
+    }
     await act(() =>
       client.emit({
         type: 'event',

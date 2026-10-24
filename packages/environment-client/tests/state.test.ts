@@ -3,17 +3,13 @@ import { ProofEventSchema, type ScopeSnapshot } from '@openmanager/protocol'
 import {
   applyEnvironment,
   applyEvent,
-  applyInteractionResolved,
-  applySessionAcknowledged,
   applySessionCreated,
   applySessionHistory,
   applySessionList,
   applySessionOpen,
-  applySessionSettled,
   applySnapshot,
   applyTurnSendFailed,
   applyTurnSending,
-  applyTurnStarted,
   createInitialState,
   selectActiveThread,
   selectActiveTurn,
@@ -26,6 +22,8 @@ import type { EnvironmentState } from '../src/types'
 import {
   ENV,
   SESSION,
+  SESSION_CREATED,
+  SESSION_SUMMARY,
   THREAD,
   WORKSPACE,
   completed,
@@ -50,7 +48,11 @@ const seeded = (): EnvironmentState => {
   )
   state = applyEvent(
     state,
-    event({ name: 'session.created', scope: environmentScope, payload: { session: SESSION } }),
+    event({
+      name: 'session.created',
+      scope: environmentScope,
+      payload: { session: SESSION_CREATED },
+    }),
   )
   state = applyEvent(
     state,
@@ -77,7 +79,7 @@ describe('applyEvent', () => {
       event({
         name: 'session.created',
         scope: environmentScope,
-        payload: { session: SESSION },
+        payload: { session: SESSION_CREATED },
       }),
     )
     for (const status of ['running', 'waiting', 'error', 'idle'] as const) {
@@ -107,7 +109,7 @@ describe('applyEvent', () => {
       nextCursor: null,
     })
     expect(state.sessions[SESSION.sessionId]?.status).toBe('waiting')
-    state = applyTurnStarted(state, THREAD, turnStarted().payload)
+    state = applyEvent(state, turnStarted())
     expect(state.sessions[SESSION.sessionId]?.status).toBe('waiting')
   })
 
@@ -115,7 +117,11 @@ describe('applyEvent', () => {
     const doneAt = '2026-09-26T10:00:00.000Z'
     let state = applyEvent(
       createInitialState(),
-      event({ name: 'session.created', scope: environmentScope, payload: { session: SESSION } }),
+      event({
+        name: 'session.created',
+        scope: environmentScope,
+        payload: { session: SESSION_CREATED },
+      }),
     )
     state = applyEvent(
       state,
@@ -139,14 +145,7 @@ describe('applyEvent', () => {
     )
     expect(state.sessions[SESSION.sessionId]?.doneAt).toBe(doneAt)
 
-    const acknowledged = applySessionAcknowledged(state, SESSION.sessionId)
-    expect(acknowledged.sessions[SESSION.sessionId]).toMatchObject({
-      doneAt: null,
-      updatedAt: state.sessions[SESSION.sessionId]?.updatedAt,
-    })
-    expect(applySessionAcknowledged(acknowledged, SESSION.sessionId)).toBe(acknowledged)
-
-    // The broadcast from another client lands the same way.
+    // An acknowledgement, from this client or another, lands as an event.
     const fromElsewhere = applyEvent(
       state,
       event({
@@ -164,13 +163,13 @@ describe('applyEvent', () => {
 
   it('keeps the state when an update restates what the session already holds', () => {
     const settledAt = '2026-09-27T10:00:00.000Z'
-    const settled = applySessionSettled(seeded(), SESSION.sessionId, settledAt)
-    // The echo of a settle whose answer the client already applied.
     const echo = event({
       name: 'session.updated',
       scope: environmentScope,
       payload: { sessionId: SESSION.sessionId, settledAt },
     })
+    const settled = applyEvent(seeded(), echo)
+    // The same settle again (a replayed tail) is no change.
     expect(applyEvent(settled, echo)).toBe(settled)
 
     // A status repeated at the same moment (a replayed tail) is no change either.
@@ -185,7 +184,7 @@ describe('applyEvent', () => {
   })
 
   it('keeps the sessions a listing restates as they were', () => {
-    const summary = { ...SESSION, status: 'idle' as const, updatedAt: '2026-09-27T09:00:00.000Z' }
+    const summary = { ...SESSION_SUMMARY, updatedAt: '2026-09-27T09:00:00.000Z' }
     const listed = applySessionList(createInitialState(), [summary])
     expect(applySessionList(listed, [{ ...summary }])).toBe(listed)
     const renamed = applySessionList(listed, [{ ...summary, title: 'Renamed' }])
@@ -204,8 +203,11 @@ describe('applyEvent', () => {
       {
         ...SESSION,
         status: 'idle',
+        providerId: 'opencode',
         threadIds: [THREAD.threadId],
         updatedAt: '2026-09-10T00:00:00.000Z',
+        settledAt: null,
+        doneAt: null,
       },
     ])
   })
@@ -215,7 +217,7 @@ describe('applyEvent', () => {
       ...event({
         name: 'session.created' as const,
         scope: environmentScope,
-        payload: { session: { ...SESSION, sessionId } },
+        payload: { session: { ...SESSION_CREATED, sessionId, updatedAt: timestamp } },
       }),
       timestamp,
     })
@@ -230,15 +232,35 @@ describe('applyEvent', () => {
       'session-old',
     ])
 
-    // Activity moves a session back to the top.
+    // A title, whenever it arrives, moves nothing (§4.7.1).
     state = applyEvent(state, {
       ...event({
         name: 'session.updated' as const,
-        scope: sessionScope,
-        payload: { sessionId: 'session-old', status: 'running' },
+        scope: environmentScope,
+        payload: { sessionId: 'session-old', title: 'Renamed', titleSource: 'user' },
       }),
       timestamp: '2026-09-13T00:00:00.000Z',
     })
+    expect(selectSessionList(state).map((session) => session.sessionId)).toEqual([
+      'session-new',
+      SESSION.sessionId,
+      'session-old',
+    ])
+
+    // Activity moves a session back to the top, at the time the environment states.
+    state = applyEvent(state, {
+      ...event({
+        name: 'session.updated' as const,
+        scope: environmentScope,
+        payload: {
+          sessionId: 'session-old',
+          status: 'running',
+          updatedAt: '2026-09-13T00:00:00.000Z',
+        },
+      }),
+      timestamp: '2026-09-14T00:00:00.000Z',
+    })
+    expect(state.sessions['session-old']?.updatedAt).toBe('2026-09-13T00:00:00.000Z')
     expect(selectSessionList(state).map((session) => session.sessionId)).toEqual([
       'session-old',
       'session-new',
@@ -251,19 +273,20 @@ describe('applyEvent', () => {
     const thread = { threadId: 'thread-new', sessionId: session.sessionId }
     const announcedAt = '2026-09-12T00:00:00.000Z'
     // The answer reaches the client before `session.created` does.
-    const created = applySessionCreated(seeded(), { session, thread, announcedAt })
+    const created = applySessionCreated(seeded(), { session, thread, announcedAt }, 'opencode')
     expect(selectSessionList(created).map((row) => row.sessionId)).toEqual([
       'session-new',
       SESSION.sessionId,
     ])
-    expect(created.workspaces[WORKSPACE.workspaceId]?.lastActivityAt).toBe(announcedAt)
+    // The workspace's recency is the environment's to announce.
+    expect(created.workspaces).toEqual(seeded().workspaces)
 
     // The event then restates it: nothing the sidebar reads changes again.
     const announced = applyEvent(created, {
       ...event({
         name: 'session.created' as const,
         scope: environmentScope,
-        payload: { session },
+        payload: { session: { ...SESSION_CREATED, ...session, updatedAt: announcedAt } },
       }),
       timestamp: announcedAt,
     })
@@ -308,7 +331,7 @@ describe('applyEvent', () => {
     expect(selectActiveTurn(state)).toBeNull()
   })
 
-  it('closes an open thought on the next assistant text or tool update, and a later thought reopens it', () => {
+  it('leaves a thought open until the environment closes it', () => {
     const thought = (text: string) =>
       event({
         name: 'message.reasoning',
@@ -328,24 +351,23 @@ describe('applyEvent', () => {
       })
     const phase = (state: EnvironmentState) => selectActiveThread(state)!.reasoning[0]?.phase
 
-    // ACP providers only ever send deltas; text after the thought ends it.
-    let state = applyEvent(applyEvent(seeded(), turnStarted()), thought('plan'))
-    expect(phase(state)).toBe('delta')
-    state = applyEvent(state, delta('turn-1', 'assistant-1', 'Hello'))
-    expect(phase(state)).toBe('stop')
-    // Closing is idempotent: nothing to close means the thread is untouched.
-    const closedThread = selectActiveThread(state)
-    expect(
-      selectActiveThread(applyEvent(state, delta('turn-1', 'assistant-1', '!')))!.reasoning,
-    ).toBe(closedThread!.reasoning)
+    const stop = event({
+      name: 'message.reasoning',
+      scope: threadScope,
+      payload: { turnId: 'turn-1', messageId: 'reasoning-1', phase: 'stop' },
+    })
 
-    // A tool call ends a thought too, and thinking again after it reopens the block.
-    state = applyEvent(state, thought(' more'))
-    expect(phase(state)).toBe('delta')
+    // Text or a tool after a thought changes nothing about the thought: the
+    // environment says when it ends (docs/sync-foundations.md §4.3.3).
+    let state = applyEvent(applyEvent(seeded(), turnStarted()), thought('plan'))
+    state = applyEvent(state, delta('turn-1', 'assistant-1', 'Hello'))
     state = applyEvent(state, tool('in_progress'))
+    expect(phase(state)).toBe('delta')
+    state = applyEvent(state, stop)
     expect(phase(state)).toBe('stop')
+    // The close names no content: the thought keeps what it said.
     expect(selectActiveThread(state)!.reasoning[0]?.content).toEqual([
-      { type: 'text', text: 'plan more' },
+      { type: 'text', text: 'plan' },
     ])
     expect(selectActiveThread(state)!.tools).toHaveLength(1)
   })
@@ -389,8 +411,9 @@ describe('applyEvent', () => {
       'tool:tool-2',
       'message:assistant-2',
     ])
-    // The second thought is its own block; the first stays closed.
-    expect(thread.reasoning.map((entry) => entry.phase)).toEqual(['stop', 'stop'])
+    // The second thought is its own block; neither is closed until the
+    // environment says so.
+    expect(thread.reasoning.map((entry) => entry.phase)).toEqual(['delta', 'delta'])
     expect(thread.messages.at(-1)?.content).toEqual([{ type: 'text', text: 'Found it' }])
   })
 
@@ -513,11 +536,18 @@ describe('applyEvent', () => {
   })
 
   it('stamps a turn with when it started and finished', () => {
-    const start = turnStarted()
-    let state = applyEvent(seeded(), { ...start, timestamp: '2026-09-24T10:00:00.000Z' })
+    const at = '2026-09-24T10:00:00.000Z'
+    const sent = turnStarted()
+    // The server always says when a turn started (protocol v17).
+    const start = {
+      ...sent,
+      timestamp: at,
+      payload: { ...sent.payload, turn: { ...sent.payload.turn, startedAt: at } },
+    }
+    let state = applyEvent(seeded(), start)
     expect(selectActiveTurn(state)?.startedAt).toBe('2026-09-24T10:00:00.000Z')
-    // The send response arriving second may not rewind the start.
-    state = applyTurnStarted(state, THREAD, start.payload)
+    // A repeated start (a replayed tail) changes nothing.
+    state = applyEvent(state, { ...start, timestamp: '2026-09-24T10:00:30.000Z' })
     expect(selectActiveThread(state)!.turns[0]?.startedAt).toBe('2026-09-24T10:00:00.000Z')
     state = applyEvent(state, { ...completed(), timestamp: '2026-09-24T10:00:45.000Z' })
     expect(selectActiveThread(state)!.turns[0]).toMatchObject({
@@ -546,7 +576,7 @@ describe('applyEvent', () => {
       event({
         name: 'interaction.requested',
         scope: threadScope,
-        payload: { turnId: 'turn-1', interaction: permission },
+        payload: { turnId: 'turn-1', interaction: permission, turnState: 'waiting' },
       }),
     )
     expect(selectPendingInteractions(state)).toHaveLength(1)
@@ -567,6 +597,8 @@ describe('applyEvent', () => {
             interactionId: permission.interactionId,
             outcome,
           },
+          // The environment says what state the turn is in now.
+          turnState: 'running',
         },
       }),
     )
@@ -575,40 +607,7 @@ describe('applyEvent', () => {
     expect(selectSessionList(state)[0]?.status).toBe('idle')
   })
 
-  it('optimistic resolve returns the turn to running and makes the later event a no-op', () => {
-    let state = applyEvent(seeded(), turnStarted())
-    state = applyEvent(
-      state,
-      event({
-        name: 'interaction.requested',
-        scope: threadScope,
-        payload: { turnId: 'turn-1', interaction: permission },
-      }),
-    )
-    state = applyInteractionResolved(state, THREAD, permission.interactionId)
-    expect(selectPendingInteractions(state)).toHaveLength(0)
-    expect(selectActiveTurn(state)?.state).toBe('running')
-    expect(selectSessionList(state)[0]?.status).toBe('idle')
-
-    const replayed = applyEvent(
-      state,
-      event({
-        name: 'interaction.resolved',
-        scope: threadScope,
-        payload: {
-          turnId: 'turn-1',
-          response: {
-            kind: 'permission',
-            interactionId: permission.interactionId,
-            outcome: { outcome: 'selected', optionId: 'allow' },
-          },
-        },
-      }),
-    )
-    expect(replayed).toBe(state)
-  })
-
-  it('records turn failures without guessing the session status', () => {
+  it('records a failure on its turn, as a snapshot carries it, without guessing the session status', () => {
     let state = applyEvent(seeded(), turnStarted())
     state = applyEvent(
       state,
@@ -618,13 +617,83 @@ describe('applyEvent', () => {
         payload: { turnId: 'turn-1', reason: 'provider_error', message: 'boom' },
       }),
     )
-    expect(selectActiveThread(state)?.failures).toEqual([
-      { turnId: 'turn-1', reason: 'provider_error', message: 'boom' },
-    ])
+    expect(selectActiveThread(state)?.turns[0]).toMatchObject({
+      state: 'failed',
+      failure: { reason: 'provider_error', message: 'boom' },
+    })
     expect(selectSessionList(state)[0]?.status).toBe('idle')
   })
 
-  it('removes a workspace and its sessions when the environment announces the removal', () => {
+  it('records who interrupted a turn', () => {
+    let state = applyEvent(seeded(), turnStarted())
+    state = applyEvent(
+      state,
+      event({
+        name: 'turn.interrupted',
+        scope: threadScope,
+        payload: { turnId: 'turn-1', reason: 'server_restarted' },
+      }),
+    )
+    expect(selectActiveThread(state)?.turns[0]).toMatchObject({
+      state: 'interrupted',
+      interruptedBy: 'server_restarted',
+    })
+  })
+
+  it('takes a turn state from the interaction event, and a cancelled request goes', () => {
+    let state = applyEvent(seeded(), turnStarted())
+    for (const interactionId of ['first', 'second']) {
+      state = applyEvent(
+        state,
+        event({
+          name: 'interaction.requested',
+          scope: threadScope,
+          payload: {
+            turnId: 'turn-1',
+            interaction: { ...permission, interactionId },
+            turnState: 'waiting',
+          },
+        }),
+      )
+    }
+    const cancel = (interactionId: string, turnState: 'running' | 'waiting') =>
+      event({
+        name: 'interaction.cancelled',
+        scope: threadScope,
+        payload: {
+          turnId: 'turn-1',
+          response: {
+            kind: 'permission',
+            interactionId,
+            outcome: { outcome: 'cancelled', reason: 'turn_ended' },
+          },
+          turnState,
+        },
+      })
+    state = applyEvent(state, cancel('first', 'waiting'))
+    expect(selectPendingInteractions(state).map((item) => item.interaction.interactionId)).toEqual([
+      'second',
+    ])
+    expect(selectActiveTurn(state)?.state).toBe('waiting')
+    state = applyEvent(state, cancel('second', 'running'))
+    expect(selectPendingInteractions(state)).toEqual([])
+    expect(selectActiveTurn(state)?.state).toBe('running')
+  })
+
+  it('invents no turn for an event that names one it does not hold', () => {
+    const state = seeded()
+    const next = applyEvent(
+      state,
+      event({
+        name: 'turn.completed',
+        scope: threadScope,
+        payload: { turnId: 'turn-unknown' },
+      }),
+    )
+    expect(selectActiveThread(next)?.turns ?? []).toEqual([])
+  })
+
+  it('removes only the workspace: its sessions go on their own announcements', () => {
     const state = seeded()
     const next = applyEvent(
       state,
@@ -635,8 +704,10 @@ describe('applyEvent', () => {
       }),
     )
     expect(next.workspaceOrder).toEqual([])
-    expect(next.sessionOrder).toEqual([])
-    expect(next.activeSessionId).toBeNull()
+    // The environment announces each session before the workspace; the
+    // client mirrors no cascade of its own.
+    expect(next.sessionOrder).toEqual([SESSION.sessionId])
+    expect(next.activeSessionId).toBe(SESSION.sessionId)
     expect(
       applyEvent(
         next,
@@ -743,7 +814,7 @@ describe('applyEvent', () => {
     expect(state.sessions[SESSION.sessionId]).not.toHaveProperty('parentSessionId')
   })
 
-  it('cascades a parent deletion to its descendants and leaves other sessions alone', () => {
+  it('drops exactly the session each deletion names, children announced before their parent', () => {
     const nested = (sessionId: string, parentSessionId: string) => ({
       session: { sessionId, workspaceId: WORKSPACE.workspaceId, title: sessionId, parentSessionId },
       thread: { threadId: `${sessionId}-thread`, sessionId },
@@ -787,14 +858,18 @@ describe('applyEvent', () => {
       sessionOpenFailure: { sessionId: 'session-child', message: 'boom', code: 'internal' },
     }
 
-    const deleted = applyEvent(
-      state,
-      event({
-        name: 'session.deleted',
-        scope: environmentScope,
-        payload: { sessionId: SESSION.sessionId },
-      }),
-    )
+    const remove = (current: typeof state, sessionId: string) =>
+      applyEvent(
+        current,
+        event({ name: 'session.deleted', scope: environmentScope, payload: { sessionId } }),
+      )
+    // The root's own announcement takes the root alone.
+    expect(Object.keys(remove(state, SESSION.sessionId).sessions).sort()).toEqual([
+      'session-child',
+      'session-grandchild',
+      'session-other',
+    ])
+    const deleted = ['session-grandchild', 'session-child', SESSION.sessionId].reduce(remove, state)
     expect(Object.keys(deleted.sessions)).toEqual(['session-other'])
     expect(deleted.sessionOrder).toEqual(['session-other'])
     expect(Object.keys(deleted.threads)).toEqual(['thread-other'])
@@ -803,7 +878,7 @@ describe('applyEvent', () => {
     expect(deleted.sessionOpenFailure).toBeNull()
   })
 
-  it('removes a loaded child when its never-loaded parent is deleted', () => {
+  it('removes a loaded child on its own announcement, whether or not its parent was loaded', () => {
     const child = {
       sessionId: 'session-child',
       workspaceId: WORKSPACE.workspaceId,
@@ -825,13 +900,13 @@ describe('applyEvent', () => {
     )
     expect(state.sessionOrder).toContain(child.sessionId)
 
-    const deleted = applyEvent(
+    const deleted = [child.sessionId, 'parent-1'].reduce(
+      (current, sessionId) =>
+        applyEvent(
+          current,
+          event({ name: 'session.deleted', scope: environmentScope, payload: { sessionId } }),
+        ),
       state,
-      event({
-        name: 'session.deleted',
-        scope: environmentScope,
-        payload: { sessionId: 'parent-1' },
-      }),
     )
     expect(deleted.sessions[child.sessionId]).toBeUndefined()
     expect(deleted.threads['session-child-thread']).toBeUndefined()
@@ -858,16 +933,20 @@ describe('optimistic sends', () => {
   const sending = (commandId: string, text = 'hello') =>
     applyTurnSending(seeded(), THREAD, { commandId, text })
 
-  it('echoes a pending message and confirms it from the response', () => {
+  it('echoes a pending message and confirms it from its turn.started', () => {
     const state = sending('cmd-1')
     expect(state.threads[THREAD.threadId]?.outbox).toEqual([
       { commandId: 'cmd-1', text: 'hello', status: 'pending' },
     ])
-    const confirmed = applyTurnStarted(state, THREAD, {
-      ...turnStarted('turn-1', 'hello', 'cmd-1').payload,
-    })
+    const confirmed = applyEvent(state, turnStarted('turn-1', 'hello', 'cmd-1'))
     expect(confirmed.threads[THREAD.threadId]?.outbox).toEqual([])
     expect(confirmed.threads[THREAD.threadId]?.messages).toHaveLength(1)
+  })
+
+  it('echoes nothing for a retry of a send whose turn is already held', () => {
+    const started = applyEvent(sending('cmd-1'), turnStarted('turn-1', 'hello', 'cmd-1'))
+    const retried = applyTurnSending(started, THREAD, { commandId: 'cmd-1', text: 'hello' })
+    expect(retried).toBe(started)
   })
 
   it('confirms the echo from the event and applies a repeat of it once', () => {
@@ -879,19 +958,15 @@ describe('optimistic sends', () => {
     expect(again.threads[THREAD.threadId]?.turns).toHaveLength(1)
   })
 
-  it('records which message confirmed the echo, whichever confirmation came first', () => {
+  it('records which message confirmed the echo, once', () => {
     const started = turnStarted('turn-1', 'hello', 'cmd-1')
     const messageId = started.payload.userMessage!.messageId
-    const fromResponse = applyTurnStarted(sending('cmd-1'), THREAD, started.payload)
-    expect(fromResponse.threads[THREAD.threadId]?.confirmedEchoes).toEqual({
-      [messageId]: 'cmd-1',
-    })
-    // The event that follows finds no echo left and changes nothing.
-    expect(applyEvent(fromResponse, started).threads[THREAD.threadId]?.confirmedEchoes).toBe(
-      fromResponse.threads[THREAD.threadId]?.confirmedEchoes,
-    )
     const fromEvent = applyEvent(sending('cmd-1'), started)
     expect(fromEvent.threads[THREAD.threadId]?.confirmedEchoes).toEqual({ [messageId]: 'cmd-1' })
+    // A repeat finds no echo left and changes nothing.
+    expect(applyEvent(fromEvent, started).threads[THREAD.threadId]?.confirmedEchoes).toBe(
+      fromEvent.threads[THREAD.threadId]?.confirmedEchoes,
+    )
   })
 
   it('records no echo for a turn this client did not send', () => {
@@ -934,13 +1009,45 @@ describe('optimistic sends', () => {
     expect(applyTurnSendFailed(confirmed, THREAD, 'cmd-1', 'too late')).toBe(confirmed)
   })
 
-  it('clears a failed echo the environment turns out to have accepted', () => {
+  it('clears a failed echo the environment turns out to have accepted, by its command id', () => {
     const state = applyTurnSendFailed(sending('cmd-1'), THREAD, 'cmd-1', 'Connection lost')
+    const snapshot = (commandId?: string) => ({
+      cursor: { scope: threadScope, epoch: 'epoch', sequence: 2 },
+      state: {
+        thread: THREAD,
+        turns: [
+          {
+            turnId: 'turn-1',
+            threadId: THREAD.threadId,
+            state: 'completed' as const,
+            ...(commandId ? { commandId } : {}),
+          },
+        ],
+        messages: [
+          {
+            messageId: 'user-1',
+            threadId: THREAD.threadId,
+            turnId: 'turn-1',
+            role: 'user' as const,
+            content: [{ type: 'text' as const, text: 'hello' }],
+          },
+        ],
+        reasoning: [],
+        tools: [],
+        interactions: [],
+      },
+    })
+    // The same text from another send is not this one: no text matching.
+    expect(
+      applySnapshot(state, snapshot('cmd-other')).threads[THREAD.threadId]?.outbox,
+    ).toHaveLength(1)
     const reconnected = applySnapshot(state, {
       cursor: { scope: threadScope, epoch: 'epoch', sequence: 2 },
       state: {
         thread: THREAD,
-        turns: [{ turnId: 'turn-1', threadId: THREAD.threadId, state: 'completed' }],
+        turns: [
+          { turnId: 'turn-1', threadId: THREAD.threadId, state: 'completed', commandId: 'cmd-1' },
+        ],
         messages: [
           {
             messageId: 'user-1',
@@ -1142,7 +1249,7 @@ describe('snapshots', () => {
     expect(selectSessionList(state)).toHaveLength(1)
   })
 
-  it('moves workspace activity forward on session starts and turns without a relisting', () => {
+  it("takes a workspace's recency only from the environment's workspace.updated", () => {
     let state = createInitialState()
     state = applyEvent(
       state,
@@ -1156,23 +1263,32 @@ describe('snapshots', () => {
 
     state = applyEvent(
       state,
-      event({ name: 'session.created', scope: environmentScope, payload: { session: SESSION } }),
+      event({
+        name: 'session.created',
+        scope: environmentScope,
+        payload: { session: SESSION_CREATED },
+      }),
     )
-    expect(state.workspaces[WORKSPACE.workspaceId]?.lastActivityAt).toBe('2026-09-10T00:00:00.000Z')
-    expect(selectRecentWorkspaces(state).map((w) => w.workspaceId)).toEqual([WORKSPACE.workspaceId])
-
+    // Neither a new session nor a turn moves it here: the client mirrors no rule.
+    expect(state.workspaces[WORKSPACE.workspaceId]?.lastActivityAt).toBe(WORKSPACE.lastActivityAt)
     state = applyEvent(
       state,
       event({ name: 'thread.created', scope: sessionScope, payload: { thread: THREAD } }),
     )
-    const later = { ...turnStarted(), timestamp: '2026-09-11T00:00:00.000Z' }
-    state = applyEvent(state, later)
-    expect(state.workspaces[WORKSPACE.workspaceId]?.lastActivityAt).toBe('2026-09-11T00:00:00.000Z')
+    state = applyEvent(state, { ...turnStarted(), timestamp: '2026-09-11T00:00:00.000Z' })
+    expect(state.workspaces[WORKSPACE.workspaceId]?.lastActivityAt).toBe(WORKSPACE.lastActivityAt)
 
-    // A stale event (older timestamp) never moves activity backwards.
-    const stale = { ...completed(), timestamp: '2026-09-09T00:00:00.000Z' }
-    state = applyEvent(state, stale)
-    expect(state.workspaces[WORKSPACE.workspaceId]?.lastActivityAt).toBe('2026-09-11T00:00:00.000Z')
+    const announced = (lastActivityAt: string | null) =>
+      event({
+        name: 'workspace.updated',
+        scope: environmentScope,
+        payload: { workspace: { ...WORKSPACE, lastActivityAt } },
+      })
+    state = applyEvent(state, announced('2026-09-11T00:00:00.000Z'))
+    expect(selectRecentWorkspaces(state).map((w) => w.workspaceId)).toEqual([WORKSPACE.workspaceId])
+    // It can go back, as when the newest session is deleted.
+    state = applyEvent(state, announced(null))
+    expect(selectRecentWorkspaces(state)).toEqual([])
   })
 
   it('orders recent workspaces by last activity and skips unused or missing ones', () => {
@@ -1270,7 +1386,7 @@ describe('what a status leaves unsaid', () => {
     expect(state.sessions[SESSION.sessionId]).not.toHaveProperty('inBackground')
   })
 
-  it('takes both from a listing, and keeps them through a bare session', () => {
+  it('takes both from a listing', () => {
     const listed = applySessionList(seeded(), [
       {
         ...SESSION,
@@ -1281,11 +1397,6 @@ describe('what a status leaves unsaid', () => {
       },
     ])
     expect(listed.sessions[SESSION.sessionId]?.waitingOn).toBe('question')
-    const replayed = applyEvent(
-      listed,
-      event({ name: 'session.created', scope: environmentScope, payload: { session: SESSION } }),
-    )
-    expect(replayed.sessions[SESSION.sessionId]?.waitingOn).toBe('question')
   })
 })
 
@@ -1320,15 +1431,9 @@ describe('background work', () => {
     expect(emptied.sessions[SESSION.sessionId]).not.toHaveProperty('backgroundTasks')
   })
 
-  it('takes a full listing as the whole truth, and a bare session as saying nothing', () => {
+  it('takes a full listing as the whole truth', () => {
     const working = applyEvent(seeded(), roster(TASK))
-
-    // A `session.created` replay carries no summary fields.
-    const replayed = applyEvent(
-      working,
-      event({ name: 'session.created', scope: environmentScope, payload: { session: SESSION } }),
-    )
-    expect(replayed.sessions[SESSION.sessionId]?.backgroundTasks).toEqual([TASK])
+    expect(working.sessions[SESSION.sessionId]?.backgroundTasks).toEqual([TASK])
 
     // A listing after the environment restarted: the tasks died with it.
     const relisted = applySessionList(working, [
@@ -1376,7 +1481,7 @@ describe('background work', () => {
 
 describe('protocol turn finalization', () => {
   it.each(['turn.completed', 'turn.interrupted', 'turn.failed'] as const)(
-    'settles %s, preserves partial text, closes reasoning and rejects late parts',
+    'settles %s with the closes the environment sent before it, and keeps partial text',
     (name) => {
       let state = applyEvent(seeded(), turnStarted())
       state = applyEvent(state, delta('turn-1', 'assistant-1', 'partial'))
@@ -1398,9 +1503,33 @@ describe('protocol turn finalization', () => {
         event({
           name: 'interaction.requested',
           scope: threadScope,
-          payload: { turnId: 'turn-1', interaction: permission },
+          payload: { turnId: 'turn-1', interaction: permission, turnState: 'waiting' },
         }),
       )
+      // What the environment writes before a turn's end: a close for each
+      // child still open (docs/sync-foundations.md §4.3).
+      for (const close of [
+        event({
+          name: 'message.reasoning',
+          scope: threadScope,
+          payload: { turnId: 'turn-1', messageId: 'reasoning-1', phase: 'stop' },
+        }),
+        event({
+          name: 'interaction.cancelled',
+          scope: threadScope,
+          payload: {
+            turnId: 'turn-1',
+            response: {
+              kind: 'permission',
+              interactionId: permission.interactionId,
+              outcome: { outcome: 'cancelled', reason: 'turn_ended' },
+            },
+            turnState: 'running',
+          },
+        }),
+      ]) {
+        state = applyEvent(state, close)
+      }
       const terminal =
         name === 'turn.failed'
           ? event({
@@ -1408,7 +1537,9 @@ describe('protocol turn finalization', () => {
               scope: threadScope,
               payload: { turnId: 'turn-1', reason: 'provider_error', message: 'Failed' },
             })
-          : event({ name, scope: threadScope, payload: { turnId: 'turn-1' } })
+          : name === 'turn.interrupted'
+            ? event({ name, scope: threadScope, payload: { turnId: 'turn-1', reason: 'user' } })
+            : event({ name, scope: threadScope, payload: { turnId: 'turn-1' } })
       state = applyEvent(state, terminal)
       const settled = state.threads[THREAD.threadId]!
       expect(settled.turns[0]?.state).toBe(name.slice(5))
@@ -1416,11 +1547,9 @@ describe('protocol turn finalization', () => {
       expect(settled.reasoning[0]?.phase).toBe('stop')
       expect(settled.interactions).toEqual([])
       expect(selectActiveTurn(state)).toBeNull()
-      expect(applyEvent(state, terminal).threads[THREAD.threadId]).toBe(settled)
-      expect(
-        applyEvent(state, delta('turn-1', 'assistant-1', 'late')).threads[THREAD.threadId],
-      ).toBe(settled)
-      expect(applyEvent(state, completed()).threads[THREAD.threadId]).toBe(settled)
+      // Folding the same terminal again yields the same thread (the transport
+      // drops repeats by cursor before they get here).
+      expect(applyEvent(state, terminal).threads[THREAD.threadId]).toEqual(settled)
       expect(applyEvent(state, turnStarted()).threads[THREAD.threadId]?.turns[0]?.state).toBe(
         name.slice(5),
       )

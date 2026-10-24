@@ -45,7 +45,7 @@ const WORKSPACE = {
   path: 'C:/repo',
   lastUsedAt: null,
   lastActivityAt: null,
-  capabilities: { git: false, providers: ['claude'] },
+  capabilities: { git: false },
   exists: true,
 }
 const SESSION = { sessionId: 'session-1', workspaceId: WORKSPACE.workspaceId, title: 'First' }
@@ -53,6 +53,7 @@ const THREAD = { threadId: 'thread-1', sessionId: SESSION.sessionId }
 
 const READY = {
   summary: 'ready',
+  available: true,
   refreshing: false,
   install: 'installed',
   auth: 'authenticated',
@@ -509,6 +510,7 @@ describe('the composer as the prompt', () => {
             outcome: { outcome: 'selected', optionId: 'ok' },
           },
           resolvedByClientId: 'web',
+          turnState: 'running',
         },
       } as never),
     )
@@ -530,6 +532,7 @@ describe('the composer as the prompt', () => {
             interactionId: 'b',
             outcome: { outcome: 'cancelled', reason: 'timeout' },
           },
+          turnState: 'running',
         },
       } as never),
     )

@@ -8,6 +8,8 @@ import type { DatabaseSync } from 'node:sqlite'
 import { afterEach, describe, expect, it } from 'vitest'
 import { DATABASE_FILENAME, openEnvironmentDatabase } from '../src/db/database.js'
 import { readSchemaVersion } from '../src/db/migrate.js'
+import { reconcileAfterRestart } from '../src/db/boot-reconcile.js'
+import { createEventRepository } from '../src/db/event-repository.js'
 import {
   MESSAGE_HISTORY_PAGE_SQL,
   MESSAGE_PARTS_SQL,
@@ -54,8 +56,8 @@ describe('checked-in schema fixtures', () => {
     const database = openEnvironmentDatabase(await copyFixture(1))
     databases.push(database)
 
-    expect(readSchemaVersion(database)).toBe(20)
-    expect(database.prepare('PRAGMA user_version').get()).toEqual({ user_version: 20 })
+    expect(readSchemaVersion(database)).toBe(22)
+    expect(database.prepare('PRAGMA user_version').get()).toEqual({ user_version: 22 })
     expect(
       database.prepare('SELECT provider_id, default_model_id FROM provider_profiles').all(),
     ).toEqual([{ provider_id: 'cursor', default_model_id: 'composer-2.5' }])
@@ -68,7 +70,7 @@ describe('checked-in schema fixtures', () => {
     const database = openEnvironmentDatabase(await copyFixture(2))
     databases.push(database)
 
-    expect(readSchemaVersion(database)).toBe(20)
+    expect(readSchemaVersion(database)).toBe(22)
     expect(sessionList(database)).toMatchObject([
       { session_id: 'session-recent', title: 'Recent session', status: 'idle' },
       { session_id: 'session-old', title: 'Older session', status: 'idle' },
@@ -168,8 +170,18 @@ describe('crash recovery', () => {
 
     const recovered = openEnvironmentDatabase(directory)
     databases.push(recovered)
+    // Opening only migrates; the boot reconcile ends the turn, with events.
+    expect(
+      recovered.prepare('SELECT state FROM turns WHERE turn_id = ?').get('turn-crashed'),
+    ).toEqual({ state: 'waiting' })
+    const report = reconcileAfterRestart(
+      recovered,
+      createEventRepository(recovered),
+      'environment-1',
+    )
+    expect(report).toMatchObject({ turnsRecovered: 1, questionsCancelled: 1, failures: [] })
 
-    expect(readSchemaVersion(recovered)).toBe(20)
+    expect(readSchemaVersion(recovered)).toBe(22)
     expect(sessionList(recovered)).toMatchObject([
       { session_id: 'session-crashed', title: 'Interrupted work', status: 'error' },
       { session_id: 'session-recent', status: 'idle' },

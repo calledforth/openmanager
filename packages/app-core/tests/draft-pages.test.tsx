@@ -35,7 +35,7 @@ const project = (name: string, extra: Partial<Workspace> = {}): Workspace => ({
   path: `C:/${name}`,
   lastUsedAt: null,
   lastActivityAt: null,
-  capabilities: { git: false, providers: ['opencode'] },
+  capabilities: { git: false },
   exists: true,
   ...extra,
 })
@@ -66,6 +66,7 @@ const OPENCODE: ProviderCatalogEntry = {
   },
   health: {
     summary: 'ready',
+    available: true,
     refreshing: false,
     install: 'installed',
     auth: 'authenticated',
@@ -587,6 +588,7 @@ describe('draft pages', () => {
             health: {
               ...OPENCODE.health,
               summary: 'error',
+              available: false,
               install: 'missing',
               runtime: { state: 'stopped', liveProcesses: 0, activeTurns: 0 },
               // A reading with nothing running only counts while its probe is fresh.

@@ -18,7 +18,7 @@ import type { ServerThreadRead } from './child-protocol.ts'
  * app makes for an unloaded one), and, for the session on screen, each
  * thread's turns, messages, reasoning, tools, order, the transcript order of
  * reasoning and tools that `order` does not place, pending interactions and
- * (on main) failures.
+ * each turn as the server states it, its failure included.
  *
  * Dropped: everything the client owns or only reads (connection, selection,
  * hydration, the outbox, history cursors, local draft edits, draft
@@ -49,7 +49,6 @@ export interface ThreadView {
   /** Reasoning and tools `order` does not place, as the transcript appends them: in array order. */
   unplaced: { reasoning: string[]; tools: string[] }
   interactions: Record<string, unknown>
-  failures: Record<string, unknown>
 }
 
 /** JSON semantics: `undefined` members vanish, keys sort, so equal state prints equal. */
@@ -117,7 +116,7 @@ function sessionView(session: SessionSummary, onScreen: boolean): unknown {
 export function threadView(
   thread: Pick<
     ThreadState,
-    'turns' | 'messages' | 'reasoning' | 'tools' | 'order' | 'interactions' | 'failures'
+    'turns' | 'messages' | 'reasoning' | 'tools' | 'order' | 'interactions'
   >,
 ): ThreadView {
   return canonical({
@@ -141,11 +140,10 @@ export function threadView(
       thread.interactions.map((item) => ({ turnId: item.turnId, interaction: item.interaction })),
       (item) => item.interaction.interactionId,
     ),
-    failures: keyed(thread.failures, (failure) => failure.turnId),
   }) as ThreadView
 }
 
-/** The server's own read of a thread, in the same shape. It has no failures on main. */
+/** The server's own read of a thread, in the same shape. A failure is on its turn (F3). */
 export function serverThreadView(read: ServerThreadRead): ThreadView {
   return threadView({
     turns: read.turns,
@@ -154,7 +152,6 @@ export function serverThreadView(read: ServerThreadRead): ThreadView {
     tools: read.tools,
     order: read.order,
     interactions: read.interactions,
-    failures: [],
   } as unknown as ThreadState)
 }
 

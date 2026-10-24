@@ -35,7 +35,6 @@ import {
   PAIRING_REDEEM_CAPABILITY,
   PAIRING_REVOKE_CAPABILITY,
   type DurableEvent,
-  type EventEnvelope,
   type ProofEvent,
   type WorkspaceComposerPreference,
 } from '@openmanager/protocol/node'
@@ -68,8 +67,11 @@ import {
   LOCAL_OWNER_CLAIM_HEADER,
   LOCAL_OWNER_PATH,
 } from './local-owner.ts'
+import { createDeliveryQueue } from './event-delivery.ts'
 import { createPersistentEventService } from './event-service.ts'
 import { openEnvironmentDatabase } from './db/database.ts'
+import { raiseReplayFloors } from './db/replay-floor.ts'
+import { reconcileAfterRestart } from './db/boot-reconcile.ts'
 import { createEventRetention } from './db/event-retention.ts'
 import { createReplayReader } from './db/replay.ts'
 import { getSessionSummary } from './db/session-store.ts'
@@ -159,7 +161,6 @@ export async function startServer(config: ServerConfig) {
   const budgetKey = createBudgetKey(config.tunnel?.hostname)
   const identity = await loadEnvironmentIdentity(config.dataDir)
   const audit = createAuditLog(log, { dataDir: config.dataDir })
-  const composerStore = openComposerStore(config.dataDir)
   const environmentSettings = openEnvironmentSettings(config.dataDir)
   const filesystem = createFilesystemService({ settings: environmentSettings })
   let announceClients: () => void = () => undefined
@@ -176,22 +177,87 @@ export async function startServer(config: ServerConfig) {
       details: { previousClientId: previousId },
     })
   }
-  let emitWorkspaceEvent: (event: ProofEvent) => void = () => undefined
   let closeWorkspaceSessions: (workspaceId: string) => void = () => undefined
-  let availableProviders: () => readonly string[] = () => []
   let runnableProviders: () => readonly string[] = () => []
+  // Follows every committed workspace record: bound once the registry and
+  // the runtime exist, which both commit through the event service.
+  let followWorkspaceRecord: (record: DurableEvent) => void = () => undefined
+  const eventDatabase = openEnvironmentDatabase(config.dataDir)
+  const sessionRowExists = eventDatabase.prepare('SELECT 1 FROM sessions WHERE session_id = ?')
+  // Before anything is appended: events stored in an older format are no
+  // longer replayed (docs/sync-foundations.md §4.7.7).
+  const floorsRaised = raiseReplayFloors(eventDatabase)
+  if (floorsRaised > 0)
+    log('info', 'replay floors raised for a new event format', { streams: floorsRaised })
+  // One epoch per process for streams that start here; replay reads it for
+  // scopes that have no stream row yet.
+  const eventEpoch = randomUUID()
+  // Everything sent outside a command's answer leaves through this one
+  // queue, in the order it happened: records in commit order (I4),
+  // transients after the record they followed, provider health and the
+  // device list among them (docs/sync-foundations.md §5.2). The socket
+  // server sends each item and closes any connection it cannot send to, so
+  // nothing is skipped; an answer drains the queue first.
+  const deliveries = createDeliveryQueue({
+    onError: (error, item) =>
+      log('error', 'the delivery queue could not send an item', {
+        kind: item.kind,
+        reason: String(error),
+      }),
+  })
+  const eventService = createPersistentEventService(
+    eventDatabase,
+    (record) => {
+      // The registry's cache follows committed rows at once, not when the
+      // queue drains: a command reads its own result right after its write.
+      if (record.event.name.startsWith('workspace.')) followWorkspaceRecord(record)
+      deliveries.enqueue({ kind: 'record', record })
+    },
+    {
+      epoch: eventEpoch,
+      deliverTransient: (event, after) => deliveries.enqueue({ kind: 'transient', event, after }),
+      onError: (error) => log('error', 'event persistence failed', { reason: String(error) }),
+      // A producer emitted what its projection refuses: a bug. The write is
+      // dropped so it cannot block every write behind it (write-errors.ts).
+      onRefused: (error, event) =>
+        log('error', 'a refused write was dropped', {
+          event: event.name,
+          eventId: event.eventId,
+          reason: String(error),
+        }),
+      ...config.commitHooks,
+    },
+  )
+  // Profiles and workspace preferences: rows the projection writes, read
+  // through the event connection (docs/sync-foundations.md §4.7.11).
+  const composerStore = openComposerStore({
+    database: eventDatabase,
+    environmentId: identity.environmentId,
+    appendAtomic: (events) => eventService.appendAtomic(events),
+  })
   let workspaces
   try {
-    workspaces = openWorkspaceRegistry(config.dataDir, workspaceRoots, audit, {
-      events: {
+    workspaces = openWorkspaceRegistry(
+      {
+        database: eventDatabase,
         environmentId: identity.environmentId,
-        emit: (event) => emitWorkspaceEvent(event),
+        appendAtomic: (events) => eventService.appendAtomic(events),
+        flush: eventService.flush,
       },
-      onUnregister: (workspaceId) => closeWorkspaceSessions(workspaceId),
-      availableProviders: () => availableProviders(),
-    })
+      workspaceRoots,
+      audit,
+      {
+        onUnregister: (workspaceId) => closeWorkspaceSessions(workspaceId),
+        onObservationError: (workspaceId, error) =>
+          log('error', 'workspace observation was not saved', {
+            workspaceId,
+            reason: String(error),
+          }),
+      },
+    )
   } catch (error) {
-    composerStore.close()
+    eventService.close()
+    eventDatabase.close()
     environmentSettings.close()
     clients.close()
     audit.close()
@@ -242,64 +308,13 @@ export async function startServer(config: ServerConfig) {
     (providerId, result) => observeProviderCatalog(providerId, result),
     resolveWorkspace,
   )
-  // Cheap capability input for workspace listings: a provider counts as
-  // available when a session could start with it now (D9, no probing).
-  availableProviders = () =>
-    providerService
-      .snapshot()
-      .filter(({ health }) => health.summary === 'ready' || health.summary === 'warning')
-      .map(({ id }) => id)
-  // Broader than the listing: an unprobed provider is still runnable, so an
+  // Broader than provider health's `available`: an unprobed provider is still runnable, so an
   // explicit create only fails for a provider the server would reject anyway.
   runnableProviders = () =>
     providerService
       .snapshot()
       .filter(({ id }) => providerService.rejection(id) === undefined)
       .map(({ id }) => id)
-  let publishDurableEvent: (record: DurableEvent) => void = () => undefined
-  let publishThreadEvent: (event: EventEnvelope) => void = () => undefined
-  // Bound once the thread service exists, which the event service predates.
-  let sessionProvider: (sessionId: string) => string | undefined = () => undefined
-  const eventDatabase = openEnvironmentDatabase(config.dataDir)
-  // One epoch per process for streams that start here; replay reads it for
-  // scopes that have no stream row yet.
-  const eventEpoch = randomUUID()
-  const eventService = createPersistentEventService(
-    eventDatabase,
-    (record) => {
-      // The event is already stored: a client that is not connected gets it
-      // on replay. A connected client does not notice the gap until its next
-      // snapshot, so a throw here is a programming error to fix, logged
-      // instead of taking the server down with it.
-      const publish = () => {
-        try {
-          publishDurableEvent(record)
-        } catch (error) {
-          log('error', 'event was not sent', {
-            event: record.event.name,
-            reason: String(error),
-          })
-        }
-      }
-      // Thread dispatch persists synchronously; its response must precede events on the socket.
-      if (record.event.name.startsWith('workspace.')) publish()
-      else queueMicrotask(publish)
-    },
-    {
-      epoch: eventEpoch,
-      // The row names the provider the session was created on. The thread
-      // service knows it while the create is still announcing the session; the
-      // workspace default only stands in when no service is creating one.
-      sessionProviderId: (session) => {
-        const created = sessionProvider(session.sessionId)
-        if (created) return created
-        const target = resolveWorkspace(session.workspaceId)
-        if (!target) throw new Error('Cannot persist session without a workspace provider')
-        return target.providerId
-      },
-      onError: (error) => log('error', 'event persistence failed', { reason: String(error) }),
-    },
-  )
   const replayReader = createReplayReader(eventDatabase, {
     epoch: eventEpoch,
     environment: () => ({ environmentId: identity.environmentId, name: identity.label }),
@@ -315,8 +330,8 @@ export async function startServer(config: ServerConfig) {
   const syncProbeDirectory = () => {
     if (config.probeProviders) runtime.setDefaultProbeCwd(workspaces.mostRecent()?.root)
   }
-  emitWorkspaceEvent = (event) => {
-    eventService.append(event)
+  followWorkspaceRecord = (record) => {
+    workspaces.apply(record.event)
     syncProbeDirectory()
   }
   let recordSessionMode: (sessionId: string, modeId: string) => void = () => undefined
@@ -359,13 +374,14 @@ export async function startServer(config: ServerConfig) {
     runtime,
     providerService,
     (event) => eventService.append(event),
-    (event) => publishThreadEvent(event),
+    (event) => eventService.publishTransient(event),
     resolveWorkspace,
     {
       database: eventDatabase,
       artifacts,
       flush: eventService.flush,
-      appendAtomic: (events) => eventService.appendAtomic(events),
+      appendAtomic: (events, options) => eventService.appendAtomic(events, options),
+      finalizeNow: (event) => eventService.finalizeNow(event),
       onPersistenceError: (error, eventName) =>
         log('error', 'event persistence failed', { eventName, reason: String(error) }),
       workspaceAvailability: (workspaceId) => workspaces.availability(workspaceId),
@@ -379,7 +395,6 @@ export async function startServer(config: ServerConfig) {
         log('warn', 'session title was not generated', { sessionId, reason: String(error) }),
     },
   )
-  sessionProvider = (sessionId) => threadService.providerForSession(sessionId)
   closeWorkspaceSessions = (workspaceId) => {
     // Flush before the registry cascades deletion of the projected thread rows.
     eventService.flush()
@@ -389,7 +404,7 @@ export async function startServer(config: ServerConfig) {
     runtime,
     providerService,
     composerStore,
-    (sessionId) => threadService.resolveRuntimeSession(sessionId),
+    (sessionId, context) => threadService.resolveRuntimeSession(sessionId, context),
     {
       // Composer changes ride the environment stream, so every client sees
       // them live and a reconnect replays whatever it missed.
@@ -404,6 +419,7 @@ export async function startServer(config: ServerConfig) {
         } as ProofEvent),
       sessionForThread: (threadId) => threadService.sessionForThread(threadId),
       readSessionComposer: (sessionId) => getSessionSummary(eventDatabase, sessionId)?.composer,
+      hasSession: (sessionId) => sessionRowExists.get(sessionId) !== undefined,
     },
   )
   desiredConfigFor = (args) => composerService.desiredFor(args)
@@ -446,6 +462,32 @@ export async function startServer(config: ServerConfig) {
     onError: (error) => log('error', 'pairing exchange failed', { reason: String(error) }),
   })
   threadService.setEnvironmentId(identity.environmentId)
+  // Before anything listens: turns the last process left open, and children
+  // that turns which ended long ago left open, are closed with events
+  // (docs/sync-foundations.md §4.1, §4.2).
+  eventService.flush()
+  const reconciled = reconcileAfterRestart(
+    eventDatabase,
+    eventService.repository,
+    identity.environmentId,
+  )
+  for (const failure of reconciled.failures) {
+    log('error', `boot ${failure.kind} failed; left for the next start`, {
+      ...failure.ids,
+      reason: failure.reason,
+    })
+  }
+  if (reconciled.eventsWritten > 0) {
+    log('info', 'boot reconcile closed what the last process left open', {
+      turnsRecovered: reconciled.turnsRecovered,
+      toolsCancelled: reconciled.toolsCancelled,
+      thoughtsClosed: reconciled.thoughtsClosed,
+      questionsCancelled: reconciled.questionsCancelled,
+      threadsRepaired: reconciled.threadsRepaired,
+      eventsWritten: reconciled.eventsWritten,
+      durationMs: reconciled.durationMs,
+    })
+  }
   try {
     threadService.forgetStaleBackgroundWork()
   } catch (error) {
@@ -458,8 +500,12 @@ export async function startServer(config: ServerConfig) {
   }
   // Set after listen so port 0 advertises the actual port selected by the OS.
   let websocketUrl: string
+  // This process, as opposed to the environment: a client that reconnects to
+  // a new one reopens its active chat (docs/sync-foundations.md §4.7.3).
+  const instanceId = randomUUID()
   const bootstrap = () =>
     BootstrapResponseSchema.parse({
+      instanceId,
       environmentId: identity.environmentId,
       label: identity.label,
       protocolVersion: PROTOCOL_VERSION,
@@ -711,17 +757,26 @@ export async function startServer(config: ServerConfig) {
       drafts.dispatch(command, context) ??
       pairing.dispatch(command, context) ??
       clientService.dispatch(command, context) ??
-      composerService.dispatch(command),
+      composerService.dispatch(command, context),
     onConnectionsChanged: () => clientService.announce(),
+    drainDeliveries: () => deliveries.drain(),
+    log,
   })
-  clientSockets = sockets
+  clientSockets = {
+    connectedClientIds: () => sockets.connectedClientIds(),
+    hasFollowers: (topic) => sockets.hasFollowers(topic),
+    publishToFollowers: (topic, build) => deliveries.enqueue({ kind: 'followers', topic, build }),
+    disconnectClient: (clientId) => sockets.disconnectClient(clientId),
+  }
   closeClientSockets = (clientId) => {
     sockets.retireClient(clientId, GRANT_CHANGED_CLOSE_CODE, GRANT_CHANGED_CLOSE_REASON)
     // A ticket or transfer was authorized under the old grant; the device asks
     // again under the new one.
     uploads.revokeClient(clientId)
   }
-  const stopHealthEvents = providerService.onHealthChanged((event) => sockets.publishEvent(event))
+  const stopHealthEvents = providerService.onHealthChanged((event) =>
+    deliveries.enqueue({ kind: 'broadcast', event }),
+  )
   try {
     await new Promise<void>((resolve, reject) => {
       server.once('error', reject)
@@ -752,9 +807,9 @@ export async function startServer(config: ServerConfig) {
   const address = server.address() as AddressInfo
   websocketUrl = `ws://127.0.0.1:${address.port}/ws`
   // Nothing goes out before the server listens and can describe itself. No
-  // client can be connected yet, and durable events stay replayable.
-  publishDurableEvent = (record) => sockets.publish(record)
-  publishThreadEvent = (event) => sockets.publishEvent(event)
+  // client can be connected yet, and durable events stay replayable. Looked
+  // up per item, so a test can watch what is sent.
+  deliveries.attach((item) => sockets.deliver(item))
   syncProbeDirectory()
   providerService.start()
   // Started only once the listener is up: the connector's one origin is this

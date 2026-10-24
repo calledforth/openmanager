@@ -10,7 +10,8 @@ import {
 } from '@openmanager/protocol/node'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { createComposerService } from '../src/composer-service.js'
-import { openComposerStore, type ComposerStore } from '../src/composer-store.js'
+import type { ComposerStore } from '../src/composer-store.js'
+import { openTestComposerStore } from './helpers/composer-store.js'
 
 const directories: string[] = []
 const stores: ComposerStore[] = []
@@ -26,7 +27,12 @@ const provider = { id: 'claude' } as ProviderBootstrap
 async function harness() {
   const directory = await mkdtemp(join(tmpdir(), 'openmanager-composer-live-test-'))
   directories.push(directory)
-  const store = openComposerStore(directory)
+  // Everything a client hears: the selection the service publishes, and the
+  // profile and preference events the store commits.
+  const published: Array<{ name: string; payload: unknown }> = []
+  const store = openTestComposerStore(directory, (event) =>
+    published.push({ name: event.name, payload: event.payload }),
+  )
   stores.push(store)
   const runtime = {
     setModel: vi.fn().mockResolvedValue(undefined),
@@ -42,7 +48,6 @@ async function harness() {
     sessionId: `provider-${threadId}`,
   })
   const threads: Record<string, string> = { 'thread-a': 'session-a', 'thread-b': 'session-b' }
-  const published: Array<{ name: string; payload: unknown }> = []
   const service = createComposerService(
     runtime,
     { snapshot: () => [provider], rejection: () => undefined },
@@ -280,6 +285,8 @@ describe('composer broadcasts', () => {
       workspaceId: 'workspace-1',
       providerId: 'claude',
       preference: { modelId: 'opus', modeId: 'plan' },
+      // Two changes, counted by the server.
+      revision: 2,
     })
   })
 
@@ -304,7 +311,12 @@ describe('composer broadcasts', () => {
       },
     })
     expect(named('composer.preferences.updated')).toEqual([
-      { workspaceId: 'workspace-1', providerId: 'claude', preference: { modelId: 'opus' } },
+      {
+        workspaceId: 'workspace-1',
+        providerId: 'claude',
+        preference: { modelId: 'opus' },
+        revision: 1,
+      },
     ])
     expect(named('session.composer.updated')).toEqual([])
   })
@@ -464,7 +476,7 @@ describe('composer broadcasts', () => {
   it('keeps answering with a selection whose durable write failed', async () => {
     const directory = await mkdtemp(join(tmpdir(), 'openmanager-composer-live-test-'))
     directories.push(directory)
-    const store = openComposerStore(directory)
+    const store = openTestComposerStore(directory)
     stores.push(store)
     // The persisted row is what the event projector would have written.
     let persisted: { modelId?: string } | undefined
@@ -513,7 +525,7 @@ describe('composer broadcasts', () => {
   it('never lets a failing publisher fail the command or the runtime event', async () => {
     const directory = await mkdtemp(join(tmpdir(), 'openmanager-composer-live-test-'))
     directories.push(directory)
-    const store = openComposerStore(directory)
+    const store = openTestComposerStore(directory)
     stores.push(store)
     const service = createComposerService(
       {

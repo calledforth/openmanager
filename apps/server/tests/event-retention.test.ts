@@ -87,11 +87,18 @@ function seed(
   return repository
 }
 
+/** Retention's view of a stream; the replay floor (db/replay-floor.ts) is not retention's. */
 function bounds(database: DatabaseSync, scope: SubscriptionScope) {
-  return database.prepare(STREAM_BOUNDS_SQL).get(scopeKey(scope)) as {
+  const row = database.prepare(STREAM_BOUNDS_SQL).get(scopeKey(scope)) as {
     epoch: string
     head_sequence: number
     oldest_sequence: number | null
+    replay_floor: number
+  }
+  return {
+    epoch: row.epoch,
+    head_sequence: row.head_sequence,
+    oldest_sequence: row.oldest_sequence,
   }
 }
 

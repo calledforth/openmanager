@@ -96,6 +96,7 @@ describe('phone connection controller', () => {
         protocolVersion: PROTOCOL_VERSION,
         environmentId: ENV,
         capabilities: ['connection.heartbeat'],
+        instanceId: 'instance-1',
       })
       await flush()
       expect(h.state()).toMatchObject({

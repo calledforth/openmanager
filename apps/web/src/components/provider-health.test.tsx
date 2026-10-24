@@ -17,7 +17,7 @@ const WORKSPACE = {
   lastUsedAt: null,
   lastActivityAt: null,
   exists: true,
-  capabilities: { git: false, providers: ['opencode'] },
+  capabilities: { git: false },
 }
 
 const CAPABILITIES: ProviderCatalogEntry['capabilities'] = {
@@ -49,6 +49,7 @@ const provider = (
   capabilities: CAPABILITIES,
   health: {
     summary: 'ready',
+    available: true,
     refreshing: false,
     install: 'installed',
     auth: 'authenticated',
@@ -113,8 +114,8 @@ describe('provider health on web', () => {
     const user = userEvent.setup()
     const { client } = renderConnected('/settings?tab=providers', [
       provider('opencode', 'OpenCode', {}),
-      provider('cursor', 'Cursor', { summary: 'error', auth: 'unauthenticated' }),
-      provider('claude', 'Claude Code', { summary: 'error', install: 'missing' }),
+      provider('cursor', 'Cursor', { summary: 'error', available: false, auth: 'unauthenticated' }),
+      provider('claude', 'Claude Code', { summary: 'error', available: false, install: 'missing' }),
     ])
     expect(await screen.findByText('Ready · No session running')).toBeInTheDocument()
     expect(screen.getByText('Sign-in required')).toBeInTheDocument()
@@ -149,7 +150,11 @@ describe('provider health on web', () => {
   it('refuses a new chat against an unhealthy provider before creating a session', async () => {
     const user = userEvent.setup()
     const { client } = renderConnected('/', [
-      provider('opencode', 'OpenCode', { summary: 'error', auth: 'unauthenticated' }),
+      provider('opencode', 'OpenCode', {
+        summary: 'error',
+        available: false,
+        auth: 'unauthenticated',
+      }),
     ])
     await user.click(await screen.findByRole('button', { name: 'New agent' }))
     const textbox = await screen.findByRole('textbox')

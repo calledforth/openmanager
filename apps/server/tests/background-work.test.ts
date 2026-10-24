@@ -48,9 +48,7 @@ async function setup(durable = true, onPersistenceError?: (error: unknown) => vo
     database.exec(
       "INSERT INTO workspaces (workspace_id, name, path, created_at, updated_at) VALUES ('/workspace/project', 'Project', '/workspace/project', 1, 1)",
     )
-    events = createPersistentEventService(database, (record) => published.push(record.event), {
-      sessionProviderId: () => 'claude',
-    })
+    events = createPersistentEventService(database, (record) => published.push(record.event), {})
     closers.push(() => {
       events!.close()
       database.close()
@@ -85,12 +83,12 @@ async function setup(durable = true, onPersistenceError?: (error: unknown) => vo
       ? {
           database,
           flush: events!.flush,
-          appendAtomic: (batch) => {
+          appendAtomic: (batch, options) => {
             if (failure.next) {
               failure.next = false
               throw new Error('disk busy')
             }
-            events!.appendAtomic(batch)
+            events!.appendAtomic(batch, options)
           },
           ...(onPersistenceError ? { onPersistenceError } : {}),
         }
@@ -538,7 +536,7 @@ describe('background work across a restart', () => {
     const events = createPersistentEventService(
       database,
       (record) => published.push(record.event),
-      { sessionProviderId: () => 'claude' },
+      {},
     )
     closers.push(() => {
       events.close()
@@ -571,8 +569,16 @@ describe('background work across a restart', () => {
     const session = getSessionSummary(h.database, 'session-1')!
     expect(session.status).toBe('idle')
     expect(session.backgroundTasks).toBeUndefined()
+    // The roster is the fact; the status that follows is derived from the rows
+    // in the same transaction (docs/sync-foundations.md §4.7.8 item 2).
+    // The status change moves the session's time, and its workspace's recency.
     expect(h.published.map((event) => [event.name, event.payload])).toEqual([
-      ['session.updated', { sessionId: 'session-1', backgroundTasks: [], status: 'idle' }],
+      ['session.updated', { sessionId: 'session-1', backgroundTasks: [] }],
+      [
+        'session.updated',
+        { sessionId: 'session-1', status: 'idle', updatedAt: expect.any(String) },
+      ],
+      ['workspace.updated', { workspace: expect.objectContaining({ workspaceId: 'workspace-1' }) }],
     ])
     // Nothing left to say the second time.
     expect(h.service.forgetStaleBackgroundWork()).toBe(0)

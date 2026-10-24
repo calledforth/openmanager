@@ -7,6 +7,7 @@ import type { DatabaseSync } from 'node:sqlite'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import {
   ProofEventSchemas,
+  shouldReplaceSessionTitle,
   ProofResponseSchemas,
   type ProofEvent,
   type SubscriptionScope,
@@ -18,8 +19,11 @@ import { openEnvironmentDatabase } from '../src/db/database.js'
 import {
   createRepositoryEventBatcher,
   createStreamingEventBatcher,
+  DroppedWrite,
+  RefusedBatch,
 } from '../src/db/event-batcher.js'
 import { createEventRepository, type EventRepository } from '../src/db/event-repository.js'
+import { reconcileAfterRestart } from '../src/db/boot-reconcile.js'
 import {
   REASONING_TEXT_BUDGET_BYTES,
   getSessionSummary,
@@ -62,7 +66,12 @@ const started = (eventId = 'event-started') => {
     timestamp: '2026-09-10T10:00:00.000Z',
     scope,
     payload: {
-      turn: { turnId: 'turn-1', threadId: 'thread-1', state: 'running' },
+      turn: {
+        turnId: 'turn-1',
+        threadId: 'thread-1',
+        state: 'running',
+        startedAt: '2026-09-10T10:00:00.000Z',
+      },
       userMessage: {
         messageId: 'message-user',
         threadId: 'thread-1',
@@ -110,6 +119,7 @@ const interactionRequested = () =>
     scope,
     payload: {
       turnId: 'turn-1',
+      turnState: 'waiting',
       interaction: {
         kind: 'plan',
         interactionId: 'interaction-1',
@@ -120,7 +130,10 @@ const interactionRequested = () =>
     },
   })
 
-const interactionResolved = (eventId = 'interaction-resolved') =>
+const interactionResolved = (
+  eventId = 'interaction-resolved',
+  turnState: 'running' | 'waiting' = 'running',
+) =>
   ProofEventSchemas['interaction.resolved'].parse({
     type: 'event',
     name: 'interaction.resolved',
@@ -129,6 +142,7 @@ const interactionResolved = (eventId = 'interaction-resolved') =>
     scope,
     payload: {
       turnId: 'turn-1',
+      turnState,
       response: {
         kind: 'plan',
         interactionId: 'interaction-1',
@@ -198,6 +212,7 @@ describe('event repository transactions', () => {
         eventId: 'question-requested',
         payload: {
           turnId: 'turn-1',
+          turnState: 'waiting',
           interaction: {
             kind: 'question',
             interactionId: 'question-1',
@@ -212,6 +227,7 @@ describe('event repository transactions', () => {
         eventId: 'permission-requested',
         payload: {
           turnId: 'turn-1',
+          turnState: 'waiting',
           interaction: {
             kind: 'permission',
             interactionId: 'permission-1',
@@ -221,7 +237,7 @@ describe('event repository transactions', () => {
         },
       }),
     )
-    append(interactionResolved())
+    append(interactionResolved('interaction-resolved', 'waiting'))
     expect(
       database.prepare('SELECT status FROM sessions WHERE session_id = ?').get('session-1'),
     ).toEqual({ status: 'waiting' })
@@ -237,6 +253,8 @@ describe('event repository transactions', () => {
           eventId: `${kind}-resolved`,
           payload: {
             turnId: 'turn-1',
+            // The permission is still open once the question is answered.
+            turnState: kind === 'question' ? 'waiting' : 'running',
             response: {
               kind,
               interactionId: `${kind}-1`,
@@ -247,10 +265,13 @@ describe('event repository transactions', () => {
       )
     }
     // What it waits on rides along: a question outranks the plan asked before
-    // it and the permission asked after, and each answer moves it on.
+    // it and the permission asked after, and each answer moves it on. The
+    // plan's answer changes neither, but it moves the session's time, and
+    // every move is announced (§4.7.1).
     expect(statuses).toEqual([
       'running',
       'waiting:plan',
+      'waiting:question',
       'waiting:question',
       'waiting:permission',
       'running',
@@ -270,7 +291,7 @@ describe('event repository transactions', () => {
       database
         .prepare("SELECT count(*) AS n FROM event_log WHERE event_name = 'session.updated'")
         .get(),
-    ).toEqual({ n: 6 })
+    ).toEqual({ n: 7 })
   })
 
   it('ranks generated titles above the agent and below nothing the user asked for', async () => {
@@ -306,14 +327,15 @@ describe('event repository transactions', () => {
     expect(summary()).toMatchObject({ title: 'Fix Login Redirect', titleSource: 'generated' })
 
     // Neither the agent renaming its own session afterwards nor a later
-    // prompt's fallback undoes it.
-    title('ACP Session 1234abcd', 'provider')
-    title('another prompt', 'fallback')
+    // prompt's fallback undoes it: the producers do not emit them, and the
+    // projection refuses them outright (I2).
+    expect(() => title('ACP Session 1234abcd', 'provider')).toThrow(/keeps its title/)
+    expect(() => title('another prompt', 'fallback')).toThrow(/keeps its title/)
     expect(summary()).toMatchObject({ title: 'Fix Login Redirect', titleSource: 'generated' })
 
     title('Mine', 'user')
     expect(row()).toEqual({ title: 'Mine', title_source: 'user', title_generated: 0 })
-    title('Agent title', 'provider')
+    expect(() => title('Agent title', 'provider')).toThrow(/keeps its title/)
     expect(summary()).toMatchObject({ title: 'Mine', titleSource: 'user' })
 
     // Regenerating is the user asking, so it may replace their own name.
@@ -347,12 +369,22 @@ describe('event repository transactions', () => {
     expect(row()).toEqual({ settled_at: Date.parse('2026-09-10T09:00:00.000Z'), updated_at: 1 })
 
     expect(broadcasts(repository.appendEvents(scope, [started()]))).toEqual([
-      { sessionId: 'session-1', status: 'running', settledAt: null },
+      {
+        sessionId: 'session-1',
+        status: 'running',
+        updatedAt: '2026-09-10T10:00:00.000Z',
+        settledAt: null,
+      },
     ])
     expect(row()).toMatchObject({ settled_at: null })
     // Only the transition carries it; later status changes leave settling alone.
     expect(broadcasts(repository.appendEvents(scope, [completed()]))).toEqual([
-      { sessionId: 'session-1', status: 'idle', doneAt: expect.any(String) },
+      {
+        sessionId: 'session-1',
+        status: 'idle',
+        updatedAt: '2026-09-10T10:00:02.000Z',
+        doneAt: expect.any(String),
+      },
     ])
 
     repository.appendEvents(environment, [settle('settle-2', '2026-09-10T11:00:00.000Z')])
@@ -409,12 +441,17 @@ describe('event repository transactions', () => {
 
     // Starting is not news.
     expect(broadcasts(repository.appendEvents(scope, [started()]))).toEqual([
-      { sessionId: 'session-1', status: 'running' },
+      { sessionId: 'session-1', status: 'running', updatedAt: '2026-09-10T10:00:00.000Z' },
     ])
     expect(doneAt()).toBeNull()
 
     const [finished] = broadcasts(repository.appendEvents(scope, [completed()]))
-    expect(finished).toEqual({ sessionId: 'session-1', status: 'idle', doneAt: expect.any(String) })
+    expect(finished).toEqual({
+      sessionId: 'session-1',
+      status: 'idle',
+      updatedAt: '2026-09-10T10:00:02.000Z',
+      doneAt: expect.any(String),
+    })
     expect(doneAt()).toBe(Date.parse(finished!.doneAt!))
 
     // Acknowledging clears it and leaves the session's place in the list alone.
@@ -454,7 +491,14 @@ describe('event repository transactions', () => {
           }),
         ]),
       ),
-    ).toEqual([{ sessionId: 'session-1', status: 'running', doneAt: null }])
+    ).toEqual([
+      {
+        sessionId: 'session-1',
+        status: 'running',
+        updatedAt: '2026-09-10T10:00:00.000Z',
+        doneAt: null,
+      },
+    ])
     expect(doneAt()).toBeNull()
 
     // A failed turn is not done: it shows as the error status instead.
@@ -471,7 +515,7 @@ describe('event repository transactions', () => {
           }),
         ]),
       ),
-    ).toEqual([{ sessionId: 'session-1', status: 'error' }])
+    ).toEqual([{ sessionId: 'session-1', status: 'error', updatedAt: '2026-09-10T10:09:00.000Z' }])
     expect(doneAt()).toBeNull()
 
     expect(() =>
@@ -506,6 +550,7 @@ describe('event repository transactions', () => {
       eventId: 'expired',
       payload: {
         turnId: 'turn-1',
+        turnState: 'waiting',
         response: {
           kind: 'plan',
           interactionId: 'interaction-1',
@@ -532,6 +577,7 @@ describe('event repository transactions', () => {
         eventId: 'second-expired',
         payload: {
           ...expiry.payload,
+          turnState: 'running',
           response: { ...expiry.payload.response, interactionId: 'second' },
         },
       },
@@ -545,6 +591,9 @@ describe('event repository transactions', () => {
 
   it('retries a retained status broadcast even after its triggering thread event is pruned', async () => {
     const { database } = await createDatabase()
+    // Used later than the turn starts, so the start moves no recency: the
+    // environment stream holds the status broadcast alone.
+    database.exec(`UPDATE workspaces SET last_used_at = ${Date.parse('2026-09-11T00:00:00.000Z')}`)
     const repository = createEventRepository(database)
     const original = repository.appendEvents(scope, [started()])
     repository.appendEvents(scope, [delta('Hello', 'event-delta')])
@@ -570,16 +619,17 @@ describe('event repository transactions', () => {
         name,
         payload: {
           turnId: 'turn-1',
-          reason: 'provider_process_crashed',
+          reason: name === 'turn.interrupted' ? 'user' : 'provider_process_crashed',
           message: 'Provider crashed',
         },
       })
       const records = repository.finalizeTurn(scope, [terminal])
       const status = name === 'turn.failed' ? 'error' : 'idle'
-      expect(records.at(-1)?.event).toMatchObject({
-        name: 'session.updated',
-        payload: { sessionId: 'session-1', status },
-      })
+      // The status, then the workspace's recency the turn's end moved.
+      expect(records.slice(-2).map((record) => record.event)).toMatchObject([
+        { name: 'session.updated', payload: { sessionId: 'session-1', status } },
+        { name: 'workspace.updated', payload: { workspace: { workspaceId: 'workspace-1' } } },
+      ])
       expect(
         database.prepare('SELECT status FROM sessions WHERE session_id = ?').get('session-1'),
       ).toEqual({ status })
@@ -613,7 +663,8 @@ describe('event repository transactions', () => {
     expect(
       database
         .prepare(
-          `SELECT sequence FROM event_log WHERE event_name != 'session.updated' ORDER BY sequence`,
+          `SELECT sequence FROM event_log
+           WHERE event_name NOT IN ('session.updated', 'workspace.updated') ORDER BY sequence`,
         )
         .all(),
     ).toEqual([{ sequence: 1 }, { sequence: 2 }, { sequence: 3 }])
@@ -695,23 +746,46 @@ describe('event repository transactions', () => {
     })
   })
 
-  it('creates a session and then its thread using host provider identity', async () => {
+  it('creates a session from its summary, and refuses one its row would not read back as', async () => {
     const { database } = await createDatabase()
     const environmentScope = { type: 'environment', environmentId: scope.environmentId } as const
-    const sessionEvent = ProofEventSchemas['session.created'].parse({
-      type: 'event',
-      name: 'session.created',
-      eventId: 'session-created',
-      timestamp: started().timestamp,
-      scope: environmentScope,
-      payload: { session: { sessionId: 'session-2', workspaceId: 'workspace-1', title: 'New' } },
-    })
-    expect(() =>
-      createEventRepository(database).appendEvents(environmentScope, [sessionEvent]),
-    ).toThrow('sessionProviderId')
+    const timestamp = new Date(Date.parse(started().timestamp)).toISOString()
+    const created = (eventId: string, session: Record<string, unknown>) =>
+      ProofEventSchemas['session.created'].parse({
+        type: 'event',
+        name: 'session.created',
+        eventId,
+        timestamp,
+        scope: environmentScope,
+        payload: {
+          session: {
+            sessionId: 'session-2',
+            workspaceId: 'workspace-1',
+            title: 'New',
+            titleSource: 'fallback',
+            status: 'idle',
+            providerId: 'cursor',
+            updatedAt: timestamp,
+            settledAt: null,
+            doneAt: null,
+            ...session,
+          },
+        },
+      })
+    const repository = createEventRepository(database)
+    // A summary the row cannot equal (a status a new row does not have, a
+    // time other than the event's) rolls the write back.
+    for (const [id, drift] of [
+      ['running', { status: 'running' }],
+      ['later', { updatedAt: new Date(Date.parse(timestamp) + 1).toISOString() }],
+      ['settled', { settledAt: timestamp }],
+    ] as const) {
+      expect(() => repository.appendEvents(environmentScope, [created(id, drift)])).toThrow(
+        /its row reads/,
+      )
+    }
     expect(database.prepare('SELECT count(*) AS count FROM event_log').get()).toEqual({ count: 0 })
-    const repository = createEventRepository(database, { sessionProviderId: () => 'cursor' })
-    repository.appendEvents(environmentScope, [sessionEvent])
+    repository.appendEvents(environmentScope, [created('session-created', {})])
     const sessionScope = {
       type: 'session',
       environmentId: scope.environmentId,
@@ -729,9 +803,11 @@ describe('event repository transactions', () => {
     ])
     expect(
       database
-        .prepare('SELECT provider_id, title, status FROM sessions WHERE session_id = ?')
+        .prepare(
+          'SELECT provider_id, title, title_source, status FROM sessions WHERE session_id = ?',
+        )
         .get('session-2'),
-    ).toEqual({ provider_id: 'cursor', title: 'New', status: 'idle' })
+    ).toEqual({ provider_id: 'cursor', title: 'New', title_source: 'fallback', status: 'idle' })
     expect(
       database.prepare('SELECT session_id FROM threads WHERE thread_id = ?').get('thread-2'),
     ).toEqual({ session_id: 'session-2' })
@@ -745,7 +821,7 @@ describe('event repository transactions', () => {
       ) VALUES ('workspace-2', 'Other', '/other', 1, 1);
     `)
     const environmentScope = { type: 'environment', environmentId: scope.environmentId } as const
-    const repository = createEventRepository(database, { sessionProviderId: () => 'cursor' })
+    const repository = createEventRepository(database)
     const created = (session: {
       sessionId: string
       workspaceId: string
@@ -756,9 +832,18 @@ describe('event repository transactions', () => {
         type: 'event',
         name: 'session.created',
         eventId: `created-${session.sessionId}`,
-        timestamp: started().timestamp,
+        timestamp: new Date(Date.parse(started().timestamp)).toISOString(),
         scope: environmentScope,
-        payload: { session },
+        payload: {
+          session: {
+            ...session,
+            status: 'idle',
+            providerId: 'cursor',
+            updatedAt: new Date(Date.parse(started().timestamp)).toISOString(),
+            settledAt: null,
+            doneAt: null,
+          },
+        },
       })
 
     repository.appendEvents(environmentScope, [
@@ -886,8 +971,9 @@ describe('event repository transactions', () => {
         repository.finalizeTurn(scope, [completed()])
       }
       const before = projectionSnapshot(database)
+      // A finished turn takes no new output at all (close-only, I2).
       expect(() => repository.appendEvents(incoming.scope, [incoming])).toThrow(
-        'mismatched or finalized message',
+        mismatch === 'finalized' ? 'finished turn' : 'mismatched or finalized message',
       )
       expect(projectionSnapshot(database)).toEqual(before)
     },
@@ -1032,16 +1118,28 @@ describe('event repository transactions', () => {
 
     const recovered = openEnvironmentDatabase(directory)
     databases.push(recovered)
-    expect(recovered.prepare('SELECT head_sequence FROM event_streams').get()).toEqual({
-      head_sequence: 1,
-    })
+    // The uncommitted batch is gone; the turn it belonged to is still open.
     expect(
       recovered
         .prepare(
-          `SELECT sequence FROM event_log WHERE event_name != 'session.updated' ORDER BY sequence`,
+          `SELECT sequence FROM event_log
+           WHERE event_name NOT IN ('session.updated', 'workspace.updated') ORDER BY sequence`,
         )
         .all(),
     ).toEqual([{ sequence: 1 }])
+    // The boot reconcile ends it with an event on the same stream, next in line.
+    reconcileAfterRestart(recovered, createEventRepository(recovered), 'environment-1')
+    expect(
+      recovered
+        .prepare(
+          `SELECT sequence, event_name FROM event_log
+           WHERE event_name NOT IN ('session.updated', 'workspace.updated') ORDER BY sequence`,
+        )
+        .all(),
+    ).toEqual([
+      { sequence: 1, event_name: 'turn.started' },
+      { sequence: 2, event_name: 'turn.interrupted' },
+    ])
     expect(recovered.prepare('SELECT state FROM turns WHERE turn_id = ?').get('turn-1')).toEqual({
       state: 'interrupted',
     })
@@ -1057,12 +1155,84 @@ describe('event repository transactions', () => {
   })
 })
 
+describe('transients among the durable events', () => {
+  const notice = (eventId = 'notice-1') =>
+    ProofEventSchemas['turn.notice'].parse({
+      type: 'event',
+      name: 'turn.notice',
+      eventId,
+      timestamp: '2026-09-10T10:00:01.500Z',
+      scope,
+      payload: { turnId: 'turn-1', message: 'Retrying' },
+    })
+
+  it('commits the text still in the batcher, then places the notice after it', async () => {
+    const { database } = await createDatabase()
+    const sent: string[] = []
+    const events = createPersistentEventService(
+      database,
+      (record) => {
+        if (record.cursor.scope.type === 'thread')
+          sent.push(`${record.event.name}@${record.cursor.sequence}`)
+      },
+      {
+        epoch: 'process-epoch',
+        deliverTransient: (event, after) => sent.push(`${event.name} after ${after.sequence}`),
+      },
+    )
+    events.append(started())
+    events.append(delta('Hello', 'first'))
+    // The delta waits in the batcher for its 100 ms window.
+    expect(sent).toEqual(['turn.started@1'])
+    events.publishTransient(notice())
+    expect(sent).toEqual(['turn.started@1', 'message.delta@2', 'turn.notice after 2'])
+    events.close()
+  })
+
+  it('places a notice in a scope with no stream at sequence 0 of this process', async () => {
+    const { database } = await createDatabase()
+    const after = vi.fn()
+    const events = createPersistentEventService(database, vi.fn(), {
+      epoch: 'process-epoch',
+      deliverTransient: after,
+    })
+    events.publishTransient(notice())
+    expect(after).toHaveBeenCalledExactlyOnceWith(notice(), {
+      scope,
+      epoch: 'process-epoch',
+      sequence: 0,
+    })
+    events.close()
+  })
+
+  it('still places the notice when the text before it cannot be written yet', async () => {
+    const { database } = await createDatabase()
+    const onError = vi.fn()
+    const after = vi.fn()
+    const events = createPersistentEventService(database, vi.fn(), {
+      epoch: 'process-epoch',
+      onError,
+      deliverTransient: after,
+    })
+    events.append(started())
+    events.append(delta('Hello', 'first'))
+    database.exec('PRAGMA query_only = ON')
+    events.publishTransient(notice())
+    database.exec('PRAGMA query_only = OFF')
+    expect(onError).toHaveBeenCalledTimes(1)
+    // After what did commit: the start, not the text still held for retry.
+    expect(after.mock.calls[0]![1]).toMatchObject({ epoch: 'process-epoch', sequence: 1 })
+    events.close()
+  })
+})
+
 describe('streaming event batching', () => {
   it('routes the terminal batch through finalizeTurn', () => {
     const repository: EventRepository = {
       appendEvents: vi.fn(() => []),
       appendGroups: vi.fn(() => []),
       finalizeTurn: vi.fn(() => []),
+      head: vi.fn(),
     }
     const batcher = createRepositoryEventBatcher(repository)
 
@@ -1127,6 +1297,63 @@ describe('streaming event batching', () => {
     expect(flush.mock.calls[1]).toEqual([scope, [completed()]])
   })
 
+  it('keeps every event appended while an earlier batch cannot be written, in order', () => {
+    let failing = true
+    const written: string[][] = []
+    const batcher = createStreamingEventBatcher((_batchScope, events) => {
+      if (failing) throw new Error('disk full')
+      written.push(events.map((event) => event.eventId))
+    })
+    expect(() => batcher.append(started('first'))).toThrow('disk full')
+    // The retry of the first still fails: these wait behind it, none is dropped.
+    expect(() => batcher.append(delta('Hello', 'text'))).toThrow('disk full')
+    expect(() => batcher.append(completed('done'))).toThrow('disk full')
+    failing = false
+    batcher.flush()
+    expect(written).toEqual([['first'], ['text', 'done']])
+  })
+
+  it('drops a refused write, reports it, and lets every later write through', () => {
+    const written: string[][] = []
+    const refused: string[] = []
+    const batcher = createStreamingEventBatcher(
+      (_batchScope, events) => {
+        if (events.some((event) => event.eventId === 'bad')) {
+          throw new RefusedBatch(new Error('the projection refuses it'))
+        }
+        written.push(events.map((event) => event.eventId))
+      },
+      { onRefused: (_error, event) => refused.push(event.eventId) },
+    )
+    // Its own caller hears of it; the queue does not keep it.
+    expect(() => batcher.append(started('bad'))).toThrow(DroppedWrite)
+    batcher.append(started('after'))
+    expect(written).toEqual([['after']])
+    // A refused event batched with text costs only itself: the text is
+    // written on its own, then the next write goes through.
+    batcher.append(delta('Hello', 'text'))
+    expect(() => batcher.append(completed('bad'))).toThrow(DroppedWrite)
+    batcher.append(started('later'))
+    expect(refused).toEqual(['bad', 'bad'])
+    expect(written.slice(1)).toEqual([['text'], ['later']])
+  })
+
+  it('keeps a barrier event whose buffered text could not be written first', () => {
+    let failing = false
+    const written: string[][] = []
+    const batcher = createStreamingEventBatcher((_batchScope, events) => {
+      if (failing) throw new Error('disk full')
+      written.push(events.map((event) => event.eventId))
+    })
+    batcher.append(delta('Hello', 'text'))
+    failing = true
+    // A non-stream event writes the buffered text first; that write fails.
+    expect(() => batcher.append(started('barrier'))).toThrow('disk full')
+    failing = false
+    batcher.close()
+    expect(written).toEqual([['text'], ['barrier']])
+  })
+
   it('flushes as soon as the byte threshold is reached', () => {
     const batches: ProofEvent[][] = []
     const batcher = createStreamingEventBatcher(
@@ -1141,6 +1368,38 @@ describe('streaming event batching', () => {
 })
 
 describe('durable server event boundary', () => {
+  it('drops a write its projection refuses instead of retrying it ahead of every later write', async () => {
+    const { database } = await createDatabase()
+    database.exec("UPDATE sessions SET title = 'Mine', title_source = 'user'")
+    const refused = vi.fn()
+    const events = createPersistentEventService(database, vi.fn(), { onRefused: refused })
+    const environment = { type: 'environment', environmentId: 'environment-1' } as const
+    const titled = (eventId: string, titleSource: 'provider' | 'user') =>
+      ProofEventSchemas['session.updated'].parse({
+        type: 'event',
+        name: 'session.updated',
+        eventId,
+        timestamp: '2026-09-10T10:00:00.000Z',
+        scope: environment,
+        payload: { sessionId: 'session-1', title: `By ${titleSource}`, titleSource },
+      })
+    // A bug in a producer: an agent's title over the user's.
+    expect(() => events.append(titled('agent', 'provider'))).toThrow(DroppedWrite)
+    expect(refused).toHaveBeenCalledExactlyOnceWith(
+      expect.objectContaining({ name: 'ProjectionRefusal' }),
+      expect.objectContaining({ eventId: 'agent' }),
+    )
+    // Nothing is held back behind it.
+    events.append(titled('rename', 'user'))
+    events.append(started())
+    events.flush()
+    expect(database.prepare('SELECT title FROM sessions').get()).toEqual({ title: 'By user' })
+    expect(database.prepare('SELECT state FROM turns').get()).toEqual({ state: 'running' })
+    expect(
+      database.prepare("SELECT count(*) AS n FROM event_log WHERE event_id = 'agent'").get(),
+    ).toEqual({ n: 0 })
+  })
+
   it('hydrates completed history, summaries, and threads from SQLite after restart and retention', async () => {
     const { database, directory } = await createDatabase()
     const publish = vi.fn((record) => {
@@ -1157,7 +1416,8 @@ describe('durable server event boundary', () => {
     events.append(started())
     events.append(delta('Hello', 'first'))
     events.append(delta(' world', 'second'))
-    expect(publish).toHaveBeenCalledTimes(2)
+    // The start, its status and the workspace recency it moved.
+    expect(publish).toHaveBeenCalledTimes(3)
     events.append(completed())
     expect(
       publish.mock.calls
@@ -1243,6 +1503,7 @@ describe('durable server event boundary', () => {
       database.close()
       const reopened = openEnvironmentDatabase(directory)
       databases.push(reopened)
+      reconcileAfterRestart(reopened, createEventRepository(reopened), 'environment-1')
       expect(reopened.prepare('SELECT state, finished_at FROM turns').get()).toEqual({
         state: 'interrupted',
         finished_at: expect.any(Number),
@@ -1286,7 +1547,8 @@ describe('durable server event boundary', () => {
     for (let i = 0; i < 1024; i++) events.append(delta('x', `token-${i}`))
     expect(commits).toHaveBeenCalledTimes(17)
     expect(database.prepare('SELECT n FROM part_writes').get()).toEqual({ n: 17 })
-    expect(database.prepare('SELECT count(*) AS count FROM event_log').get()).toEqual({ count: 18 })
+    // The start's status and recency records ride its transaction.
+    expect(database.prepare('SELECT count(*) AS count FROM event_log').get()).toEqual({ count: 19 })
     events.append(delta('!', 'sparse'))
     vi.advanceTimersByTime(99)
     expect(commits).toHaveBeenCalledTimes(17)
@@ -1321,7 +1583,7 @@ describe('durable server event boundary', () => {
     expect(database.prepare('SELECT count(*) AS count FROM turns').get()).toEqual({ count: 0 })
     fail = false
     events.flush()
-    expect(publish).toHaveBeenCalledTimes(2)
+    expect(publish).toHaveBeenCalledTimes(3)
     expect(() =>
       events.append({ ...started(), name: 'turn.notice' } as unknown as ProofEvent),
     ).toThrow('transient')
@@ -1337,7 +1599,6 @@ describe('durable server event boundary', () => {
     const publish = vi.fn()
     const events = createPersistentEventService(database, publish, {
       beforeCommit: commits,
-      sessionProviderId: () => 'cursor',
     })
     const runtime = {
       ensureSession: vi.fn().mockResolvedValue({ sessionId: 'provider-session', state: 'created' }),
@@ -1351,7 +1612,11 @@ describe('durable server event boundary', () => {
       undefined,
       (workspaceId) =>
         workspaceId === 'workspace-1' ? { providerId: 'opencode', cwd: '/workspace' } : undefined,
-      { database, flush: events.flush, appendAtomic: (batch) => events.appendAtomic(batch) },
+      {
+        database,
+        flush: events.flush,
+        appendAtomic: (batch, options) => events.appendAtomic(batch, options),
+      },
     )
     service.setEnvironmentId('environment-1')
     const create = (requestId: string) =>
@@ -1379,9 +1644,11 @@ describe('durable server event boundary', () => {
     commits.mockClear()
     const created = ProofResponseSchemas['session.create'].parse(create('create-2'))
     expect(commits).toHaveBeenCalledTimes(1)
+    // The new session is its workspace's newest activity, said in the same commit.
     expect(publish.mock.calls.map(([record]) => record.event.name)).toEqual([
       'session.created',
       'thread.created',
+      'workspace.updated',
     ])
     expect(
       database
@@ -1457,11 +1724,12 @@ describe('durable turn activity', () => {
       'message:text-2',
     ])
     // Text within a run merges; the token estimate keeps its highest reading.
+    // The thought nothing closed is closed by the turn's end (turn-closure.ts).
     expect(page.reasoning).toEqual([
       {
         messageId: 'thought-1',
         turnId: 'turn-1',
-        phase: 'delta',
+        phase: 'stop',
         content: [{ type: 'text', text: 'Plan the change' }],
         tokens: 7,
       },
@@ -1584,7 +1852,12 @@ describe('durable turn activity', () => {
         ...otherStart,
         scope: other,
         payload: {
-          turn: { turnId: 'turn-2', threadId: 'thread-2', state: 'running' },
+          turn: {
+            turnId: 'turn-2',
+            threadId: 'thread-2',
+            state: 'running',
+            startedAt: '2026-09-10T10:00:00.000Z',
+          },
           userMessage: {
             ...otherStart.payload.userMessage,
             messageId: 'other-user',
@@ -1617,13 +1890,33 @@ describe('durable turn activity', () => {
     // Text that doubles when encoded (one newline per character) is budgeted
     // as the frame carries it, so the page still fits.
     const dense = 'z\n'.repeat(400 * 1024)
+    // In a turn of its own: a finished turn takes no new thought (close-only, I2).
     repository.appendEvents(other, [
+      {
+        ...otherStart,
+        eventId: 'other-started-3',
+        scope: other,
+        payload: {
+          turn: {
+            turnId: 'turn-3',
+            threadId: 'thread-2',
+            state: 'running',
+            startedAt: '2026-09-10T10:00:00.000Z',
+          },
+          userMessage: {
+            ...otherStart.payload.userMessage,
+            messageId: 'other-user-3',
+            threadId: 'thread-2',
+            turnId: 'turn-3',
+          },
+        },
+      },
       {
         ...thought('other-r2', 'thought-dense'),
         scope: other,
         payload: {
           ...thought('other-r2', 'thought-dense').payload,
-          turnId: 'turn-2',
+          turnId: 'turn-3',
           content: { type: 'text', text: dense },
         },
       },
@@ -1695,11 +1988,12 @@ describe('durable turn activity', () => {
     expect(page.tools).toEqual([
       { toolCallId: 'tool-1', turnId: 'turn-1', title: 'Read file', status: 'completed' },
     ])
+    // The log holds the close the turn's end wrote, so the backfill has it too.
     expect(page.reasoning).toEqual([
       {
         messageId: 'thought-1',
         turnId: 'turn-1',
-        phase: 'delta',
+        phase: 'stop',
         content: [{ type: 'text', text: 'Check again' }],
       },
     ])
@@ -1732,10 +2026,28 @@ describe('durable turn activity', () => {
       { ordinal: 1 / 3 },
       { ordinal: 2 / 3 },
     ])
+    // A later turn (one the provider began, so it has no prompt of its own);
+    // the finished one takes no new output.
     createEventRepository(upgraded).appendEvents(scope, [
+      ProofEventSchemas['turn.started'].parse({
+        ...started('later-started'),
+        payload: {
+          turn: {
+            turnId: 'turn-2',
+            threadId: 'thread-1',
+            state: 'running',
+            startedAt: '2026-09-10T10:00:05.000Z',
+            origin: 'background',
+          },
+        },
+      }),
       ProofEventSchemas['message.delta'].parse({
         ...delta('later', 'later-delta'),
-        payload: { ...delta('later', 'later-delta').payload, messageId: 'later' },
+        payload: {
+          ...delta('later', 'later-delta').payload,
+          messageId: 'later',
+          turnId: 'turn-2',
+        },
       }),
     ])
     expect(
@@ -1749,6 +2061,223 @@ describe('durable turn activity', () => {
     databases.push(again)
     expect(
       listSessionHistory(again, { sessionId: 'session-1', threadId: 'thread-1' })!.order,
-    ).toEqual([...page.order, { kind: 'message', id: 'later', turnId: 'turn-1' }])
+    ).toEqual([...page.order, { kind: 'message', id: 'later', turnId: 'turn-2' }])
+  })
+})
+
+describe('session status, once per session per transaction (docs/sync-foundations.md §4.3)', () => {
+  const environment = { type: 'environment', environmentId: 'environment-1' } as const
+  const statusEvents = (records: readonly { event: { name: string; scope: { type: string } } }[]) =>
+    records.filter(
+      (record) =>
+        record.event.name === 'session.updated' && record.event.scope.type === 'environment',
+    )
+
+  it('announces a batch that answers a request and ends the turn as one change', async () => {
+    const { database } = await createDatabase()
+    const repository = createEventRepository(database)
+    repository.appendEvents(scope, [started(), interactionRequested()])
+    // waiting -> running -> idle inside one transaction: clients see idle, once.
+    const records = repository.finalizeTurn(scope, [interactionResolved(), completed()])
+    expect(statusEvents(records).map((record) => record.event)).toEqual([
+      expect.objectContaining({
+        eventId: `${completed().eventId}:status`,
+        payload: expect.objectContaining({ sessionId: 'session-1', status: 'idle' }),
+      }),
+    ])
+  })
+
+  it('does not restate a status a producer already stated (an idle provider exit)', async () => {
+    const { database } = await createDatabase()
+    const repository = createEventRepository(database)
+    const records = repository.appendEvents(environment, [
+      ProofEventSchemas['session.updated'].parse({
+        type: 'event',
+        name: 'session.updated',
+        eventId: 'exit-error',
+        timestamp: '2026-09-10T10:00:05.000Z',
+        scope: environment,
+        payload: {
+          sessionId: 'session-1',
+          status: 'error',
+          updatedAt: '2026-09-10T10:00:05.000Z',
+          doneAt: null,
+        },
+      }),
+    ])
+    // The status says all a session.updated could; the move it made to the
+    // workspace's recency is the pass's to say.
+    expect(records.map((record) => record.event.eventId)).toEqual([
+      'exit-error',
+      'exit-error:recency',
+    ])
+    expect(database.prepare('SELECT status FROM sessions').get()).toEqual({ status: 'error' })
+  })
+
+  it('derives the resting status from a background roster', async () => {
+    const { database } = await createDatabase()
+    const repository = createEventRepository(database)
+    const roster = (eventId: string, tasks: unknown[]) =>
+      ProofEventSchemas['session.updated'].parse({
+        type: 'event',
+        name: 'session.updated',
+        eventId,
+        timestamp: '2026-09-10T10:00:05.000Z',
+        scope: environment,
+        payload: { sessionId: 'session-1', backgroundTasks: tasks },
+      })
+    const task = { taskId: 'task-1', kind: 'shell', description: 'watch' }
+    const working = repository.appendEvents(environment, [roster('roster-1', [task])])
+    const at = '2026-09-10T10:00:05.000Z'
+    // The resting status moves the session's time, and so its workspace's recency.
+    expect(working.map((record) => record.event.payload)).toEqual([
+      { sessionId: 'session-1', backgroundTasks: [task] },
+      { sessionId: 'session-1', status: 'running', updatedAt: at, inBackground: true },
+      { workspace: expect.objectContaining({ workspaceId: 'workspace-1', lastActivityAt: at }) },
+    ])
+    const resting = repository.appendEvents(environment, [roster('roster-2', [])])
+    // Same time, so nothing more for the workspace.
+    expect(resting.map((record) => record.event.payload)).toEqual([
+      { sessionId: 'session-1', backgroundTasks: [] },
+      { sessionId: 'session-1', status: 'idle', updatedAt: at },
+    ])
+    // A failed session stays failed whatever its roster says.
+    database.exec("UPDATE sessions SET status = 'error'")
+    const failed = repository.appendEvents(environment, [roster('roster-3', [task])])
+    expect(failed.map((record) => record.event.eventId)).toEqual(['roster-3'])
+  })
+})
+
+describe('a title is not activity; recency is derived (docs/sync-foundations.md §4.7.1)', () => {
+  const environment = { type: 'environment', environmentId: 'environment-1' } as const
+  const titled = (eventId: string, titleSource: 'user' | 'generated' | 'provider' | 'fallback') =>
+    ProofEventSchemas['session.updated'].parse({
+      type: 'event',
+      name: 'session.updated',
+      eventId,
+      timestamp: '2026-09-10T11:00:00.000Z',
+      scope: environment,
+      payload: { sessionId: 'session-1', title: `A ${titleSource} title`, titleSource },
+    })
+
+  it('moves neither the session nor its workspace for any title source', async () => {
+    const { database } = await createDatabase()
+    const repository = createEventRepository(database)
+    for (const source of ['fallback', 'provider', 'generated', 'user'] as const) {
+      const records = repository.appendEvents(environment, [titled(`title-${source}`, source)])
+      expect(records.map((record) => record.event.eventId)).toEqual([`title-${source}`])
+    }
+    expect(database.prepare('SELECT title, updated_at FROM sessions').get()).toEqual({
+      title: 'A user title',
+      updated_at: 1,
+    })
+  })
+
+  it('re-publishes a derived recency with its cursor when its transaction is retried', async () => {
+    const { database } = await createDatabase()
+    const repository = createEventRepository(database)
+    const original = repository.appendEvents(scope, [started()])
+    expect(original.map((record) => record.event.eventId)).toEqual([
+      'event-started',
+      'event-started:status',
+      'event-started:recency',
+    ])
+    expect(original.at(-1)?.event).toMatchObject({
+      name: 'workspace.updated',
+      payload: { workspace: { lastActivityAt: '2026-09-10T10:00:00.000Z' } },
+    })
+    expect(repository.appendEvents(scope, [started()])).toEqual(original)
+    expect(
+      database
+        .prepare("SELECT count(*) AS n FROM event_log WHERE event_name = 'workspace.updated'")
+        .get(),
+    ).toEqual({ n: 1 })
+  })
+})
+
+describe('producer guards are assertions (docs/sync-foundations.md §4.4, I2)', () => {
+  const environment = { type: 'environment', environmentId: 'environment-1' } as const
+  type Stored = 'none' | 'fallback' | 'provider' | 'generated' | 'user'
+  const STORED: readonly Stored[] = ['none', 'fallback', 'provider', 'generated', 'user']
+  const INCOMING = ['fallback', 'provider', 'generated', 'user'] as const
+  const update = (eventId: string, payload: Record<string, unknown>) =>
+    ProofEventSchemas['session.updated'].parse({
+      type: 'event',
+      name: 'session.updated',
+      eventId,
+      timestamp: '2026-09-10T11:00:00.000Z',
+      scope: environment,
+      payload: { sessionId: 'session-1', ...payload },
+    })
+  /** What `applyTitle` and the title model's save decide, from the row's provenance. */
+  const producerEmits = (stored: Stored, incoming: (typeof INCOMING)[number], title: string) => {
+    const source = stored === 'none' ? undefined : stored
+    if (incoming === 'user' || incoming === 'generated') return true
+    if (source === 'user') return false
+    return shouldReplaceSessionTitle(title, source, incoming)
+  }
+
+  for (const stored of STORED) {
+    for (const incoming of INCOMING) {
+      it(`a ${incoming} title over a ${stored} one: refused only where no producer emits it`, async () => {
+        const { database } = await createDatabase()
+        // A placeholder, so the fallback rule turns on provenance alone.
+        database
+          .prepare(
+            'UPDATE sessions SET title = ?, title_source = ?, title_generated = ? WHERE session_id = ?',
+          )
+          .run(
+            'New session - 1',
+            stored === 'none' ? null : stored === 'generated' ? 'provider' : stored,
+            stored === 'generated' ? 1 : 0,
+            'session-1',
+          )
+        const repository = createEventRepository(database)
+        const write = () =>
+          repository.appendEvents(environment, [
+            update(`title-${stored}-${incoming}`, { title: 'Incoming', titleSource: incoming }),
+          ])
+        const refused =
+          (incoming === 'provider' || incoming === 'fallback') &&
+          (stored === 'user' || stored === 'generated')
+        if (refused) {
+          expect(write).toThrow(/keeps its title/)
+          expect(database.prepare('SELECT count(*) AS n FROM event_log').get()).toEqual({ n: 0 })
+        } else {
+          expect(write().map((record) => record.event.eventId)).toEqual([
+            `title-${stored}-${incoming}`,
+          ])
+          expect(database.prepare('SELECT title FROM sessions').get()).toEqual({
+            title: 'Incoming',
+          })
+        }
+        // The producer never emits what the projection refuses.
+        if (refused) expect(producerEmits(stored, incoming, 'New session - 1')).toBe(false)
+      })
+    }
+  }
+
+  it('refuses a roster, a selection or a title for a session without its row', async () => {
+    const { database } = await createDatabase()
+    const repository = createEventRepository(database)
+    const missing = (payload: Record<string, unknown>) => () =>
+      repository.appendEvents(environment, [
+        { ...update('missing', payload), payload: { ...payload, sessionId: 'gone' } } as never,
+      ])
+    expect(missing({ backgroundTasks: [] })).toThrow(/missing session gone/)
+    expect(missing({ title: 'Named', titleSource: 'user' })).toThrow(/gone is missing/)
+    expect(() =>
+      repository.appendEvents(environment, [
+        ProofEventSchemas['session.composer.updated'].parse({
+          type: 'event',
+          name: 'session.composer.updated',
+          eventId: 'selection',
+          timestamp: '2026-09-10T11:00:00.000Z',
+          scope: environment,
+          payload: { sessionId: 'gone', composer: { modeId: 'plan' } },
+        }),
+      ]),
+    ).toThrow(/missing session gone/)
+    expect(database.prepare('SELECT count(*) AS n FROM event_log').get()).toEqual({ n: 0 })
   })
 })

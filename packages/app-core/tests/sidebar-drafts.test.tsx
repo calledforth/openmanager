@@ -30,7 +30,7 @@ const project = (name: string, extra: Partial<Workspace> = {}): Workspace => ({
   path: `C:/${name}`,
   lastUsedAt: null,
   lastActivityAt: null,
-  capabilities: { git: false, providers: ['opencode'] },
+  capabilities: { git: false },
   exists: true,
   ...extra,
 })

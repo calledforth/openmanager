@@ -9,9 +9,7 @@ export interface Target {
 /**
  * Create a session through the client's own API and open it there. It is
  * titled unless `title: null`: an untitled session is named from its first
- * prompt, a `session.updated` that also moves the workspace's recency with
- * no event (WORKSPACE_RECENCY_MIRROR), which only the scenario about that
- * cause should see.
+ * prompt, with a `session.updated` of its own.
  */
 export async function createSession(
   rig: Rig,

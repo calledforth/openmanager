@@ -35,6 +35,9 @@ function SessionOpenBoundary({ children }: { children: ReactNode }) {
   // The folder, not the request, is what has to change, so the pane explains
   // the on-disk fix and still offers a way out that does not need the folder.
   const unavailable = failure.code === 'workspace_unavailable'
+  // Nothing can bring it back (a sub-agent's chat the agent forgot), so the
+  // only move is deleting it; trying again would fail the same way.
+  const unrecoverable = failure.code === 'session_unrecoverable'
   // The error's own cause wins: the workspace list may not have caught up.
   const availability = failure.availability ?? workspace?.availability
   const cause = describeUnavailableWorkspace(availability)
@@ -49,7 +52,11 @@ function SessionOpenBoundary({ children }: { children: ReactNode }) {
       >
         <div role="alert" className="space-y-2">
           <h2 className="font-medium">
-            {unavailable ? 'Project folder unavailable' : 'Could not open session'}
+            {unavailable
+              ? 'Project folder unavailable'
+              : unrecoverable
+                ? 'This chat can’t be reopened'
+                : 'Could not open session'}
           </h2>
           {workspace ? <p className="break-all font-mono text-ui-xs">{workspace.path}</p> : null}
           <p>{failure.message}</p>
@@ -60,23 +67,25 @@ function SessionOpenBoundary({ children }: { children: ReactNode }) {
           ) : null}
         </div>
         <div className="flex flex-wrap items-center gap-2">
-          <button
-            type="button"
-            disabled={retrying || deleting}
-            className={ACTION_CLASS}
-            onClick={() => {
-              setRetrying(true)
-              setConfirmingSessionId(null)
-              setDeleteError(null)
-              void client.commands
-                .openSession(failure.sessionId)
-                .catch(() => undefined)
-                .finally(() => setRetrying(false))
-            }}
-          >
-            {retrying ? 'Trying again…' : 'Try again'}
-          </button>
-          {unavailable ? (
+          {unrecoverable ? null : (
+            <button
+              type="button"
+              disabled={retrying || deleting}
+              className={ACTION_CLASS}
+              onClick={() => {
+                setRetrying(true)
+                setConfirmingSessionId(null)
+                setDeleteError(null)
+                void client.commands
+                  .openSession(failure.sessionId)
+                  .catch(() => undefined)
+                  .finally(() => setRetrying(false))
+              }}
+            >
+              {retrying ? 'Trying again…' : 'Try again'}
+            </button>
+          )}
+          {unavailable || unrecoverable ? (
             <button
               type="button"
               disabled={deleting}

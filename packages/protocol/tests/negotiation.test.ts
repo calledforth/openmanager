@@ -18,6 +18,7 @@ import {
 
 const bootstrap = {
   protocolVersion: PROTOCOL_VERSION,
+  instanceId: 'instance-1',
   environmentId: 'env-1',
   capabilities: ['session.read', 'turn.send'],
   websocketUrl: 'ws://127.0.0.1:3000/ws',

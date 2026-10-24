@@ -45,7 +45,7 @@ const WORKSPACE = {
   path: 'C:/repo',
   lastUsedAt: null,
   lastActivityAt: null,
-  capabilities: { git: false, providers: ['claude'] },
+  capabilities: { git: false },
   exists: true,
 }
 const SESSION = { sessionId: 'session-1', workspaceId: WORKSPACE.workspaceId, title: 'First' }
@@ -73,6 +73,7 @@ const CLAUDE = {
   },
   health: {
     summary: 'ready',
+    available: true,
     refreshing: false,
     install: 'installed',
     auth: 'authenticated',
