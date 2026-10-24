@@ -1242,6 +1242,7 @@ describe('a question answered on another device mid-flow', () => {
             },
           },
           resolvedByClientId: 'web',
+          turnState: 'running',
         },
       } as never),
     )
