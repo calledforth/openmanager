@@ -233,7 +233,7 @@ const SEED: MockSeed = {
   composerPreferences: {
     [ALPHA.workspaceId]: { claude: { modelId: 'sonnet', modeId: 'plan' } },
   },
-  folders: { '/home/me': ['alpha', 'beta', 'gamma'], '/home/me/gamma': [] },
+  folders: { '/home/me': ['alpha', 'beta', 'gamma'], '/home/me/alpha': [], '/home/me/gamma': [] },
   home: '/home/me',
 }
 
@@ -524,6 +524,24 @@ describe('a new session from the phone', () => {
     await act(() => adding)
     await settle(client)
     expect(probe.session.activeWorkspacePath).toBe(ALPHA.workspaceId)
+  })
+
+  it('picks the later of two adds, whichever answers first', async () => {
+    const { client } = await openLanding({ latencyMs: 30 })
+    let first: Promise<void> = Promise.resolve()
+    let second: Promise<void> = Promise.resolve()
+    await act(async () => {
+      first = probe.projects.add!('/home/me/gamma')
+      second = probe.projects.add!('/home/me/alpha')
+      await new Promise((resolve) => setTimeout(resolve, 5))
+    })
+    await act(() => Promise.all([first, second]))
+    await settle(client)
+    const added = probe.projects.workspaces.find(
+      (entry) => entry.name === 'alpha' && entry.path !== ALPHA.workspaceId,
+    )
+    expect(probe.projects.workspaces.some((entry) => entry.name === 'gamma')).toBe(true)
+    expect(probe.session.activeWorkspacePath).toBe(added!.path)
   })
 
   it('leaves another draft alone when an add answers after its page went', async () => {

@@ -6,7 +6,7 @@ import {
   FolderIcon,
   MagnifyingGlassIcon,
 } from 'phosphor-react-native'
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { ActivityIndicator, ScrollView, TextInput, useWindowDimensions, View } from 'react-native'
 import {
   folderName,
@@ -152,6 +152,15 @@ function FolderBrowser({
   const [listing, setListing] = useState<FolderListing | null>(null)
   const [failure, setFailure] = useState<string | null>(null)
   const [adding, setAdding] = useState(false)
+  // An add answering after this browser went (back to the list, or closed)
+  // closes nothing: the sheet may be showing something newer by then.
+  const mounted = useRef(true)
+  useEffect(() => {
+    mounted.current = true
+    return () => {
+      mounted.current = false
+    }
+  }, [])
   // Narrows the folder's children by name; a new folder starts unfiltered.
   const [filter, setFilter] = useState('')
   const go = (next: string) => {
@@ -305,10 +314,16 @@ function FolderBrowser({
             onPress={() => {
               tap()
               setAdding(true)
-              source.add!(listing.path).then(onDone, (error: unknown) => {
-                setAdding(false)
-                setFailure(error instanceof Error ? error.message : 'Could not add the project.')
-              })
+              source.add!(listing.path).then(
+                () => {
+                  if (mounted.current) onDone()
+                },
+                (error: unknown) => {
+                  if (!mounted.current) return
+                  setAdding(false)
+                  setFailure(error instanceof Error ? error.message : 'Could not add the project.')
+                },
+              )
             }}
             style={({ pressed }) => ({
               marginTop: 8,

@@ -40,8 +40,9 @@ export function useProjectSource(): ProjectSource {
     },
     [createSession, isSessionDraftOpen, setDraftWorkspace],
   )
-  // Every pick the user makes counts, even of the project already picked: an
-  // add on its way picks its project only if none was made since it began.
+  // Every pick the user makes counts, even of the project already picked, and
+  // so does every add: an add on its way picks its project only if no pick and
+  // no other add was made since it began. The newest choice stands.
   const picks = useRef(0)
   const pick = useCallback(
     (path: string) => {
@@ -79,7 +80,7 @@ export function useProjectSource(): ProjectSource {
       canAdd
         ? async (path: string) => {
             const before = latest.current
-            const revision = picks.current
+            const revision = ++picks.current
             const workspace = await client.commands.addWorkspace({ path })
             // Picked only for the draft it was added from, and only if nothing
             // was picked since: a later choice, or another draft, stands. The
