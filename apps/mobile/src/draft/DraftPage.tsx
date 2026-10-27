@@ -39,9 +39,11 @@ export function DraftPage() {
   const openAdd = useCallback(() => ui.open({ kind: 'project', browse: true }), [ui])
   const projectName = workspace?.name ?? null
 
+  // The pulled-up composer names no project in its bar: the tray's project
+  // pick does, and picks another from there.
   const composer = useMemo(
-    () => <LiveComposer sessionId={null} ui={ui} contextName={projectName} projects={projects} />,
-    [projectName, projects, ui],
+    () => <LiveComposer sessionId={null} ui={ui} contextName={null} projects={projects} />,
+    [projects, ui],
   )
   const empty = (
     <NewSessionLanding
