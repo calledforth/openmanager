@@ -1,4 +1,4 @@
-import { useCallback, useContext, useMemo, useRef } from 'react'
+import { useCallback, useContext, useEffect, useMemo, useRef } from 'react'
 import {
   SidebarDataContext,
   useConnectionState,
@@ -43,6 +43,15 @@ export function useProjectSource(): ProjectSource {
   // The draft and its project as they are now, for an add that answers later.
   const latest = useRef({ draftId: newSessionDraftId, workspace: activeWorkspacePath, pick })
   latest.current = { draftId: newSessionDraftId, workspace: activeWorkspacePath, pick }
+  // The page that asked is still up: one that went holds a last look that no
+  // longer follows the draft the shared state has open now.
+  const mounted = useRef(true)
+  useEffect(() => {
+    mounted.current = true
+    return () => {
+      mounted.current = false
+    }
+  }, [])
 
   // Re-read with the handshake's capabilities: an environment that has not
   // said yet offers neither.
@@ -65,6 +74,7 @@ export function useProjectSource(): ProjectSource {
             // was picked since: a later choice, or another draft, stands. The
             // project is added either way.
             const now = latest.current
+            if (!mounted.current) return
             if (now.draftId !== before.draftId || now.workspace !== before.workspace) return
             now.pick(workspace.workspaceId)
           }

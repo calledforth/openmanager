@@ -513,6 +513,27 @@ describe('a new session from the phone', () => {
     expect(probe.session.activeWorkspacePath).toBe(BETA.workspaceId)
   })
 
+  it('leaves another draft alone when an add answers after its page went', async () => {
+    const { client } = await openLanding({ latencyMs: 30 })
+    await act(async () => probe.model.setText('Draft A'))
+    await settle(client)
+    const draftA = probe.session.newSessionDraftId
+    let adding: Promise<void> = Promise.resolve()
+    await act(async () => {
+      adding = probe.projects.add!('/home/me/gamma')
+      await new Promise((resolve) => setTimeout(resolve, 5))
+    })
+    // Back to the home, then a new session: draft B, in the landing project.
+    await act(async () => probe.go('/'))
+    await act(async () => probe.go('/draft/new'))
+    await act(async () => probe.model.setText('Draft B'))
+    await act(() => adding)
+    await settle(client)
+    expect(probe.session.newSessionDraftId).not.toBe(draftA)
+    expect(probe.projects.workspaces.some((entry) => entry.name === 'gamma')).toBe(true)
+    expect(probe.session.activeWorkspacePath).toBe(ALPHA.workspaceId)
+  })
+
   it('offers no browser or add where the environment does not', async () => {
     await openLanding({
       capabilities: [
