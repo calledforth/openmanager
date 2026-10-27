@@ -44,9 +44,11 @@ export interface ProjectSource {
   pick: (path: string) => void
   /**
    * `filesystem.browse`; absent when the environment does not offer it.
-   * Without a path, the folder the environment starts Add project in.
+   * Without a path, the folder the environment starts Add project in; with a
+   * prefix, only the folders whose names start with it (how a folder too
+   * large to list whole is reached).
    */
-  browse?: (path?: string) => Promise<FolderListing>
+  browse?: (path?: string, prefix?: string) => Promise<FolderListing>
   /** Add the browsed folder as a project and pick it; absent when it cannot. */
   add?: (path: string) => Promise<void>
 }
@@ -150,6 +152,12 @@ function FolderBrowser({
   const [listing, setListing] = useState<FolderListing | null>(null)
   const [failure, setFailure] = useState<string | null>(null)
   const [adding, setAdding] = useState(false)
+  // Narrows the folder's children by name; a new folder starts unfiltered.
+  const [filter, setFilter] = useState('')
+  const go = (next: string) => {
+    setFilter('')
+    setPath(next)
+  }
   useEffect(() => {
     let live = true
     setListing(null)
@@ -166,7 +174,29 @@ function FolderBrowser({
       live = false
     }
   }, [path, source.browse])
-  const folders = listing ? visibleFolders(listing.entries, '') : []
+  // A folder too large to list whole is asked again by name prefix, as web's
+  // browser does, so every child can be reached by typing its name.
+  const needle = filter.trim()
+  const narrowKey = listing?.omitted && needle ? `${listing.path}\n${needle}` : null
+  const [narrowed, setNarrowed] = useState<{ key: string; listing: FolderListing } | null>(null)
+  useEffect(() => {
+    if (!narrowKey || !listing) return
+    let live = true
+    const timer = setTimeout(() => {
+      source.browse!(listing.path, needle).then(
+        (next) => {
+          if (live) setNarrowed({ key: narrowKey, listing: next })
+        },
+        () => undefined,
+      )
+    }, 250)
+    return () => {
+      live = false
+      clearTimeout(timer)
+    }
+  }, [listing, narrowKey, needle, source.browse])
+  const shown = narrowKey && narrowed?.key === narrowKey ? narrowed.listing : listing
+  const folders = shown ? visibleFolders(shown.entries, needle) : []
   return (
     <View>
       <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6, paddingHorizontal: 4 }}>
@@ -205,8 +235,40 @@ function FolderBrowser({
             <Option
               title=".."
               icon={<FolderIcon size={16} color={theme.muted} />}
-              onPress={() => setPath(listing.parentPath!)}
+              onPress={() => go(listing.parentPath!)}
             />
+          ) : null}
+          {listing.readable && (listing.entries.length > 0 || filter) ? (
+            <View
+              style={{
+                flexDirection: 'row',
+                alignItems: 'center',
+                gap: 8,
+                marginHorizontal: 4,
+                marginVertical: 4,
+                paddingHorizontal: 12,
+                borderRadius: 14,
+                backgroundColor: theme.hover,
+              }}
+            >
+              <MagnifyingGlassIcon size={15} color={theme.faint} />
+              <TextInput
+                accessibilityLabel="Filter folders"
+                value={filter}
+                onChangeText={setFilter}
+                placeholder="Filter folders"
+                placeholderTextColor={theme.faint}
+                autoCorrect={false}
+                autoCapitalize="none"
+                style={{
+                  flex: 1,
+                  paddingVertical: 8,
+                  color: theme.fg,
+                  fontFamily: 'Geist-Regular',
+                  fontSize: 14,
+                }}
+              />
+            </View>
           ) : null}
           {!listing.readable ? (
             <AppText variant="text-13-regular" style={{ color: theme.muted, padding: 12 }}>
@@ -219,14 +281,19 @@ function FolderBrowser({
               title={entry.name}
               icon={<FolderIcon size={16} color={theme.muted} />}
               trailing={<CaretRightIcon size={14} color={theme.faint} />}
-              onPress={() => setPath(entry.path)}
+              onPress={() => go(entry.path)}
             />
           ))}
-          {listing.omitted ? (
+          {needle && folders.length === 0 && !shown?.omitted ? (
+            <AppText variant="text-13-regular" style={{ color: theme.muted, padding: 12 }}>
+              No folder here starts with “{needle}”.
+            </AppText>
+          ) : null}
+          {shown?.omitted ? (
             <AppText variant="text-12-regular" style={{ color: theme.faint, padding: 12 }}>
-              {listing.omitted === 1
-                ? '1 more folder is not listed here.'
-                : `${listing.omitted} more folders are not listed here.`}
+              {shown.omitted === 1
+                ? '1 more folder is not listed here. Type its name to find it.'
+                : `${shown.omitted} more folders are not listed here. Type a name to find one.`}
             </AppText>
           ) : null}
           <Press

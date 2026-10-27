@@ -117,6 +117,7 @@ describe('a new session from the phone, live', () => {
     const { useLiveComposerModel } = await import('../src/composer/useLiveComposerModel')
     const { ThreadBridge } = await import('../src/composer/thread-port')
     const { useProjectSource } = await import('../src/draft/useProjectSource')
+    const { useReadOnlySession } = await import('../src/session/useReadOnlySession')
 
     // ---- the owner, as web --------------------------------------------
     const ownerCredential = readFileSync(join(DATA_DIR, 'owner-credential'), 'utf8').trim()
@@ -165,7 +166,14 @@ describe('a new session from the phone, live', () => {
     let projects: ProjectSource | null = null
     let draftOpen = false
     let path = '/draft/new'
+    let replies = 0
     const moves: string[] = []
+    // The session's page, as the route mounts it once the launch lands there.
+    function SessionPage({ sessionId }: { sessionId: string }) {
+      const view = useReadOnlySession(sessionId)
+      replies = view.messages.filter((message) => message.role === 'assistant').length
+      return null
+    }
     function Page() {
       const composer = useLiveComposerModel(null)
       model = composer.model
@@ -197,7 +205,13 @@ describe('a new session from the phone, live', () => {
           navigateDraft: navigation.navigateDraft,
           onLanding: landing.onLanding,
           landingDraftId: landing.draftId,
-          children: landing.onLanding ? createElement(Page) : null,
+          children: landing.onLanding
+            ? createElement(Page)
+            : address.startsWith('/session/')
+              ? createElement(SessionPage, {
+                  sessionId: decodeURIComponent(address.slice('/session/'.length)),
+                })
+              : null,
         }),
       })
     }
@@ -250,6 +264,10 @@ describe('a new session from the phone, live', () => {
     const sessionId = decodeURIComponent(path.slice('/session/'.length))
     note('sent', { sent: sentSince(since), moves, sessionId })
     expect(sentSince(since)).toContain('session.create')
+    // The session's page opens it (the launch only selected it), so the reply streams in.
+    await wait('the reply on the session page', () => replies > 0, 180_000)
+    note('replied', { replies, sent: sentSince(since) })
+    expect(sentSince(since)).toContain('session.open')
 
     // ---- 3. what web sees ----------------------------------------------
     await until('owner sees the session', () => !!owner.getState().sessions[sessionId], 30_000)

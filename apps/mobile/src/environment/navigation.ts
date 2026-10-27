@@ -29,16 +29,30 @@ const decoded = (path: string) => {
  * (the route's params change, the screen stays), so the field being typed
  * in keeps its focus and the keyboard stays up, as on web, where the page is
  * the same component at either address.
+ *
+ * A session that takes a new-session page's place (`replace`) does so only
+ * while such a page is in front. One whose launch finishes after the reader
+ * went back (to the home, say) leaves them where they are: the phone's stack
+ * has no blank page under the home to stand in for, and replacing the home
+ * would lose it. `stayed` hears of it, so the session the launch selected is
+ * not left held by a page that never came; its row shows it running.
  */
 export function createPhoneNavigation(
   router: PhoneRouter,
-  timers: {
-    setTimeout: (run: () => void, ms: number) => unknown
-    clearTimeout: (handle: unknown) => void
-  } = {
-    setTimeout: (run, ms) => globalThis.setTimeout(run, ms),
-    clearTimeout: (handle) => globalThis.clearTimeout(handle as ReturnType<typeof setTimeout>),
-  },
+  {
+    timers = {
+      setTimeout: (run, ms) => globalThis.setTimeout(run, ms),
+      clearTimeout: (handle) => globalThis.clearTimeout(handle as ReturnType<typeof setTimeout>),
+    },
+    stayed,
+  }: {
+    timers?: {
+      setTimeout: (run: () => void, ms: number) => unknown
+      clearTimeout: (handle: unknown) => void
+    }
+    /** A session's page was not opened in a new-session page's place: the reader left it. */
+    stayed?: (sessionId: string) => void
+  } = {},
 ) {
   let path = ''
   const waiters = new Set<{ to: string; done: () => void }>()
@@ -91,6 +105,10 @@ export function createPhoneNavigation(
     navigateSession(sessionId: string | null, options?: { replace?: boolean }): Promise<void> {
       if (sessionId !== null) {
         const to = sessionHref(sessionId)
+        if (options?.replace && !onLanding() && decoded(path) !== decoded(to)) {
+          stayed?.(sessionId)
+          return Promise.resolve()
+        }
         return go(to, () => (options?.replace ? router.replace(to) : router.push(to)))
       }
       // The blank page: on a new-session page, that page becomes it.

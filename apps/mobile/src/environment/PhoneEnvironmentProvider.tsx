@@ -84,11 +84,21 @@ export function useMissingRuntimeFills(): readonly string[] {
  * application providers also serve the environment's draft cards
  * (`useSidebarDrafts`), which only hosts with draft pages get.
  */
-const navigation = createPhoneNavigation({
-  push: (href) => router.push(href as never),
-  replace: (href) => router.replace(href as never),
-  setParams: (params) => router.setParams(params as never),
-})
+const navigation = createPhoneNavigation(
+  {
+    push: (href) => router.push(href as never),
+    replace: (href) => router.replace(href as never),
+    setParams: (params) => router.setParams(params as never),
+  },
+  {
+    // A launch that finished after the reader left its page: no page holds
+    // the session it selected, so it is let go (a session page opens it again).
+    stayed: (sessionId) => {
+      const client = controller?.getState().client
+      if (client?.getState().activeSessionId === sessionId) client.setActiveSession(null)
+    },
+  },
+)
 const navigateSession = navigation.navigateSession
 const navigateDraft = navigation.navigateDraft
 

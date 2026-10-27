@@ -21,7 +21,13 @@ import type { PhoneConnectionState } from '../src/environment/controller'
 import type { ComposerModel } from '../src/composer/model'
 import type { ProjectSource } from '../src/composer/ProjectSheet'
 
-const connection = { status: 'connected' } as unknown as PhoneConnectionState
+const connection = {
+  status: 'connected',
+  environments: [],
+  selectedId: null,
+  endpoint: null,
+  activity: 'active',
+} as unknown as PhoneConnectionState
 vi.mock('../src/environment/PhoneEnvironmentProvider', () => ({
   usePhoneConnection: () => connection,
 }))
@@ -31,6 +37,7 @@ const { useLiveComposerModel, draftSendBlocked } =
 const { ThreadBridge } = await import('../src/composer/thread-port')
 const { pressPrimary } = await import('../src/composer/model')
 const { useProjectSource } = await import('../src/draft/useProjectSource')
+const { useReadOnlySession } = await import('../src/session/useReadOnlySession')
 const { landingOf, draftHref, sessionHref } = await import('../src/environment/landing-route')
 const { createPhoneNavigation, ARRIVAL_TIMEOUT_MS } = await import('../src/environment/navigation')
 const { svgOfDataUrl } = await import('../src/ui/project-icon')
@@ -109,6 +116,21 @@ describe('the phone navigation', () => {
     navigation.arrived('/draft/d1')
     await navigation.navigateDraft('d1')
     expect(moves).toHaveLength(2)
+  })
+
+  it('opens no session in place of a page the reader has left', async () => {
+    const { moves, router } = fakeRouter()
+    const stayed: string[] = []
+    const navigation = createPhoneNavigation(router, { stayed: (id) => stayed.push(id) })
+    navigation.arrived('/')
+    await navigation.navigateSession('s1', { replace: true })
+    expect(moves).toEqual([])
+    expect(stayed).toEqual(['s1'])
+    // Asked for outright (not in a page's place), it still opens.
+    const pushed = navigation.navigateSession('s2')
+    navigation.arrived('/session/s2')
+    await pushed
+    expect(moves).toEqual(['push /session/s2'])
   })
 
   it('settles a navigation the address never reaches', async () => {
@@ -221,6 +243,9 @@ const probe = {} as {
   session: SessionStateValue
   messages: UIMessage[]
   path: string
+  /** What the session page shows, once one is in front. */
+  page: { phase: string; messages: UIMessage[] } | null
+  go: (path: string) => void
 }
 
 function Probe() {
@@ -232,32 +257,51 @@ function Probe() {
   return <ThreadBridge port={live.port} />
 }
 
+/** The session page's own hook, as `app/session/[externalId].tsx` mounts it. */
+function SessionPage({ sessionId }: { sessionId: string }) {
+  const view = useReadOnlySession(sessionId)
+  probe.page = { phase: view.phase, messages: view.messages }
+  return null
+}
+
 /**
  * The phone's root over an in-memory address: the navigation the real
- * provider builds, a router that moves the address, and the landing read
- * from it. The session page opens what it is given, as `useReadOnlySession`.
+ * provider builds (with its `stayed`), a router that moves the address, and
+ * the landing read from it; at `/session/<id>`, the session page's hook.
  */
 function Host({ client, moves }: { client: MockEnvironmentClient; moves: string[] }) {
   const [path, setPath] = useState('/draft/new')
   const [navigation] = useState(() =>
-    createPhoneNavigation({
-      push: (href) => {
-        moves.push(`push ${href}`)
-        setPath(href)
+    createPhoneNavigation(
+      {
+        push: (href) => {
+          moves.push(`push ${href}`)
+          setPath(href)
+        },
+        replace: (href) => {
+          moves.push(`replace ${href}`)
+          setPath(href)
+        },
+        setParams: (params) => {
+          moves.push(`setParams ${JSON.stringify(params)}`)
+          setPath(draftHref(params.draftId === 'new' ? null : params.draftId!))
+        },
       },
-      replace: (href) => {
-        moves.push(`replace ${href}`)
-        setPath(href)
+      {
+        stayed: (sessionId) => {
+          moves.push(`stayed ${sessionId}`)
+          if (client.getState().activeSessionId === sessionId) client.setActiveSession(null)
+        },
       },
-      setParams: (params) => {
-        moves.push(`setParams ${JSON.stringify(params)}`)
-        setPath(draftHref(params.draftId === 'new' ? null : params.draftId!))
-      },
-    }),
+    ),
   )
   useLayoutEffect(() => navigation.arrived(path), [navigation, path])
   probe.path = path
+  probe.go = setPath
   const landing = landingOf(path)
+  const sessionId = path.startsWith('/session/')
+    ? decodeURIComponent(path.slice('/session/'.length))
+    : null
   return (
     <EnvironmentClientProvider client={client}>
       <EnvironmentApplicationProviders
@@ -268,6 +312,7 @@ function Host({ client, moves }: { client: MockEnvironmentClient; moves: string[
         landingDraftId={landing.draftId}
       >
         {landing.onLanding ? <Probe /> : null}
+        {sessionId ? <SessionPage key={sessionId} sessionId={sessionId} /> : null}
       </EnvironmentApplicationProviders>
     </EnvironmentClientProvider>
   )
@@ -303,7 +348,12 @@ async function openLanding(options: Parameters<typeof createMockEnvironmentClien
     draftSaveDebounceMs: 0,
     ...options,
   })
+  // Event replay, as the environment server advertises it: the session page needs it.
+  client.setConnection({
+    capabilities: [...client.getState().connection.capabilities, 'subscription.replay'],
+  })
   const moves: string[] = []
+  probe.page = null
   await act(() => root.render(<Host client={client} moves={moves} />))
   await settle(client)
   return { client, moves }
@@ -370,6 +420,44 @@ describe('a new session from the phone', () => {
     expect(client.getState().sessions[sessionId]?.workspaceId).toBe(BETA.workspaceId)
     expect(moves.at(-1)).toBe(`replace /session/${sessionId}`)
     expect(probe.path).toBe(`/session/${sessionId}`)
+
+    // The session's page opens it, though the launch already made it the
+    // client's active one: only an open subscribes it, so the reply arrives.
+    const opens = callsOf(client, 'openSession')
+    expect(opens).toContain(sessionId)
+    await settle(client)
+    expect(probe.page?.phase).toBe('ready')
+    const replies = () =>
+      probe.page!.messages.filter((message) => message.role === 'assistant').length
+    await vi.waitFor(async () => {
+      await settle(client)
+      expect(replies()).toBeGreaterThan(0)
+    })
+  })
+
+  it('leaves the reader where they went when a launch finishes after they left', async () => {
+    const { client, moves } = await openLanding({ latencyMs: 40 })
+    await act(async () => probe.model.setText('Start, then go back'))
+    await settle(client)
+    await act(async () => {
+      probe.model.send()
+      await new Promise((resolve) => setTimeout(resolve, 5))
+    })
+    // Back to the home while session.create is on its way.
+    await act(async () => probe.go('/'))
+    await settle(client)
+    const [created] = callsOf(client, 'createSession') as Array<Record<string, unknown>>
+    const sessionId = created!.sessionId as string
+    expect(client.getState().sessions[sessionId]).toBeTruthy()
+    expect(probe.path).toBe('/')
+    expect(moves.filter((move) => move.startsWith('replace'))).toEqual([])
+    expect(moves.at(-1)).toBe(`stayed ${sessionId}`)
+    // No page holds it, so the client does not either; the next compose is a fresh page.
+    expect(client.getState().activeSessionId).toBeNull()
+    await act(async () => probe.go('/draft/new'))
+    await settle(client)
+    expect(probe.session.isSessionDraftOpen).toBe(true)
+    expect(probe.model.text).toBe('')
   })
 
   it('keeps the draft when the environment refuses it, text and all', async () => {

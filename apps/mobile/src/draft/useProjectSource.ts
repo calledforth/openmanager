@@ -45,7 +45,10 @@ export function useProjectSource(): ProjectSource {
   const canBrowse = capabilities.length > 0 && client.supports('browseFolders')
   const canAdd = capabilities.length > 0 && client.supports('addWorkspace')
   const browse = useMemo(
-    () => (canBrowse ? (path?: string) => client.commands.browseFolders(path) : undefined),
+    () =>
+      canBrowse
+        ? (path?: string, prefix?: string) => client.commands.browseFolders(path, prefix)
+        : undefined,
     [canBrowse, client],
   )
   const add = useMemo(

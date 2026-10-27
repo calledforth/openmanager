@@ -101,6 +101,12 @@ export function useReadOnlySession(
   // under one attempt and a newer attempt after it leave an older answer,
   // landing late, nothing to clear (the client already lets it land nowhere).
   const openingRef = useRef<symbol | null>(null)
+  // This page's own open has landed, and it has not let the session go since.
+  // Another hand making it active (a new session's launch selects the session
+  // it created before this page exists) holds no subscription for it: only
+  // `session.open` brings the snapshot and the live events, as on web, whose
+  // session route opens whatever it shows.
+  const heldRef = useRef(false)
   const knownRef = useRef(false)
 
   const open = useCallback(() => {
@@ -108,7 +114,9 @@ export function useReadOnlySession(
     openingRef.current = attempt
     client.commands.openSession(sessionId).then(
       () => {
-        if (openingRef.current === attempt) openingRef.current = null
+        if (openingRef.current !== attempt) return
+        openingRef.current = null
+        heldRef.current = true
       },
       (error: unknown) => {
         if (openingRef.current !== attempt) return
@@ -125,6 +133,7 @@ export function useReadOnlySession(
     const active = client.getState().activeSessionId
     const pending = openingRef.current !== null
     openingRef.current = null
+    heldRef.current = false
     if (active === sessionId || (pending && active === null)) client.setActiveSession(null)
   }, [client, sessionId])
 
@@ -143,12 +152,13 @@ export function useReadOnlySession(
     if (!focused || (connected && !replays)) release()
   }, [connected, focused, release, replays])
 
-  // Opened while this page is in front and the socket is up, unless it is
-  // already the client's (the client opens its active session again itself
+  // Opened while this page is in front and the socket is up, unless this
+  // page already holds it (the client opens its active session again itself
   // after a reconnect) or an open is on its way. Back in front, it opens
-  // again.
+  // again; so does one the client has active that this page never opened.
   useEffect(() => {
-    if (!focused || !connected || !replays || onScreen || openingRef.current !== null) return
+    if (!focused || !connected || !replays || openingRef.current !== null) return
+    if (onScreen && heldRef.current) return
     open()
   }, [connected, focused, onScreen, open, replays, sessionId])
 
