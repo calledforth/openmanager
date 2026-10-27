@@ -149,8 +149,10 @@ export interface SessionThreadProps {
   onRetry?: () => void
   /** The sessions it delegated to, as cards at the end of its transcript. */
   childSessions?: readonly HomeSession[]
-  /** What the ⋯ menu and the title can ask the environment; none before a client exists. */
+  /** What the ⋯ menu and the title can ask the environment; null leaves the ⋯ out. */
   actions?: SessionActions | null
+  /** What an empty, ready transcript shows: a new session's landing. */
+  empty?: ReactNode
   /**
    * The composer: a layer over the whole page that draws the dock (through
    * `DockSlotContext`) and whatever it opens. Without one the dock holds the
@@ -182,6 +184,7 @@ export const SessionThread = memo(function SessionThread({
   onRetry,
   childSessions = NO_CHILDREN,
   actions = null,
+  empty,
   composer,
 }: SessionThreadProps) {
   countRender('SessionThread')
@@ -265,12 +268,16 @@ export const SessionThread = memo(function SessionThread({
       <Screen>
         {/* Hidden from a screen reader while a composer layer covers it, as under a sheet. */}
         <View style={{ flex: 1 }} {...coveredBySheet(covered)}>
-          <SessionHeaderBar topInset={insets.top} onMenu={chrome.openMenu} />
+          <SessionHeaderBar topInset={insets.top} onMenu={actions ? chrome.openMenu : undefined} />
           <GlassContent>
             <SessionHeader title={title} project={project} topInset={insets.top} chrome={chrome} />
 
             <View className="flex-1">
-              {messages.length === 0 ? (
+              {messages.length === 0 && empty && !problem && phase === 'ready' ? (
+                <View className="flex-1" style={{ paddingBottom: dockHeight }}>
+                  {empty}
+                </View>
+              ) : messages.length === 0 ? (
                 <View
                   className="flex-1 items-center justify-center gap-3 px-10"
                   style={{ paddingBottom: dockHeight }}

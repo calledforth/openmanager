@@ -121,7 +121,7 @@ export function ComposerSurface({
           {overlay?.kind === 'settings' ? <SettingsSheet model={model} onClose={ui.close} /> : null}
           {overlay?.kind === 'plan' && plan ? <PlanSheet plan={plan} onClose={ui.close} /> : null}
           {overlay?.kind === 'project' && projects ? (
-            <ProjectSheet source={projects} onClose={ui.close} />
+            <ProjectSheet source={projects} browse={overlay.browse} onClose={ui.close} />
           ) : null}
           {overlay?.kind === 'mode' && model.picks.mode ? (
             <ChoicePopover

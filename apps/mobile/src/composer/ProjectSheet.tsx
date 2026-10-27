@@ -19,13 +19,16 @@ import { AppText } from '../components/ui/AppText'
 import { usePhoneTheme } from '../theme/ThemeProvider'
 import { tap } from '../ui/haptics'
 import { Press } from '../ui/Press'
-import { ProjectSquare } from '../ui/ProjectChip'
+import { ProjectMark } from '../ui/ProjectMark'
 import { Sheet } from '../ui/Sheet'
 
+/** A folder as `filesystem.browse` lists it. */
 export interface FolderListing {
   path: string
   parentPath: string | null
   entries: FolderEntry[]
+  /** Folders left off the end of a listing too large to send whole. */
+  omitted?: number
   readable: boolean
 }
 
@@ -39,8 +42,11 @@ export interface ProjectSource {
   workspaces: readonly WorkspaceEntry[]
   current: string | null
   pick: (path: string) => void
-  /** `filesystem.browse`; absent when the environment does not offer it. */
-  browse?: (path: string) => Promise<FolderListing>
+  /**
+   * `filesystem.browse`; absent when the environment does not offer it.
+   * Without a path, the folder the environment starts Add project in.
+   */
+  browse?: (path?: string) => Promise<FolderListing>
   /** Add the browsed folder as a project and pick it; absent when it cannot. */
   add?: (path: string) => Promise<void>
 }
@@ -139,7 +145,8 @@ function FolderBrowser({
   onDone: () => void
 }) {
   const theme = usePhoneTheme()
-  const [path, setPath] = useState('~')
+  // Where the environment starts Add project (its setting, else home), as web's browser does.
+  const [path, setPath] = useState<string | undefined>(undefined)
   const [listing, setListing] = useState<FolderListing | null>(null)
   const [failure, setFailure] = useState<string | null>(null)
   const [adding, setAdding] = useState(false)
@@ -183,7 +190,7 @@ function FolderBrowser({
           numberOfLines={1}
           style={{ flex: 1, color: theme.muted }}
         >
-          {listing?.path ?? path}
+          {listing?.path ?? path ?? ''}
         </AppText>
       </View>
       {failure ? (
@@ -215,6 +222,13 @@ function FolderBrowser({
               onPress={() => setPath(entry.path)}
             />
           ))}
+          {listing.omitted ? (
+            <AppText variant="text-12-regular" style={{ color: theme.faint, padding: 12 }}>
+              {listing.omitted === 1
+                ? '1 more folder is not listed here.'
+                : `${listing.omitted} more folders are not listed here.`}
+            </AppText>
+          ) : null}
           <Press
             accessibilityRole="button"
             accessibilityLabel={`Use ${folderName(listing.path)}`}
@@ -262,11 +276,20 @@ function FolderBrowser({
  * environment's projects under its name, and Browse a folder… at the end,
  * which opens the folder browser as a second page of the same sheet.
  */
-export function ProjectSheet({ source, onClose }: { source: ProjectSource; onClose: () => void }) {
+export function ProjectSheet({
+  source,
+  onClose,
+  browse = false,
+}: {
+  source: ProjectSource
+  onClose: () => void
+  /** Open on the folder browser (Add project), rather than the list. */
+  browse?: boolean
+}) {
   const theme = usePhoneTheme()
   const { height } = useWindowDimensions()
   const [query, setQuery] = useState('')
-  const [browsing, setBrowsing] = useState(false)
+  const [browsing, setBrowsing] = useState(browse && !!source.browse)
   const needle = query.trim().toLowerCase()
   const matches = (entry: WorkspaceEntry) =>
     !needle ||
@@ -289,7 +312,7 @@ export function ProjectSheet({ source, onClose }: { source: ProjectSource; onClo
       title={entry.name}
       detail={entry.path}
       on={entry.path === source.current}
-      icon={<ProjectSquare name={entry.name} size={16} />}
+      icon={<ProjectMark workspaceId={entry.path} name={entry.name} size={16} />}
       disabledReason={unavailable(entry)}
       onPress={() => pick(entry)}
     />

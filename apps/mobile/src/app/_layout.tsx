@@ -45,7 +45,6 @@ function RootNavigator() {
         <Stack.Screen name="(tabs)" />
         {/* Pages slide in from the side; search, pairing and the theme preview rise. */}
         <Stack.Screen name="session/[externalId]" options={{ animation: 'slide_from_right' }} />
-        <Stack.Screen name="draft/new" options={{ animation: 'slide_from_right' }} />
         <Stack.Screen name="draft/[draftId]" options={{ animation: 'slide_from_right' }} />
         <Stack.Screen
           name="environment/[environmentId]"
