@@ -3,7 +3,7 @@ import { View } from 'react-native'
 
 import { usePhoneTheme } from '../theme/ThemeProvider'
 import { ProviderMark } from '../ui/ProviderMark'
-import { ProjectSquare } from '../ui/ProjectChip'
+import { ProjectMark } from '../ui/ProjectMark'
 import { CaretGlyph, EffortGlyph, effortLevelOf, ModeIcon } from './icons'
 import { PICK_GAP, roomFor, TRAY_MODEL_MAX, type ComposerModel } from './model'
 import { ContextMeter, Pick } from './Pick'
@@ -54,7 +54,13 @@ export function Picks({
           filled
           label={model.project.name}
           accessibilityLabel={`Project: ${model.project.name}`}
-          icon={<ProjectSquare name={model.project.name} size={11} />}
+          icon={
+            <ProjectMark
+              workspaceId={model.project.workspaceId}
+              name={model.project.name}
+              size={11}
+            />
+          }
           disabledReason={model.project.pickable ? null : 'A session stays in its project'}
           onPress={() => ui.open({ kind: 'project' })}
         />

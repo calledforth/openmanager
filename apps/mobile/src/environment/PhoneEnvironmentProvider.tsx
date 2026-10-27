@@ -1,5 +1,12 @@
-import { router } from 'expo-router'
-import { createContext, useContext, useEffect, useSyncExternalStore, type ReactNode } from 'react'
+import { router, usePathname } from 'expo-router'
+import {
+  createContext,
+  useContext,
+  useEffect,
+  useLayoutEffect,
+  useSyncExternalStore,
+  type ReactNode,
+} from 'react'
 import {
   EnvironmentApplicationProviders,
   EnvironmentClientProvider,
@@ -11,7 +18,9 @@ import {
   type PhoneConnectionState,
 } from './controller'
 import { phoneStorage, subscribePhonePageExit } from '../storage'
+import { landingOf } from './landing-route'
 import { appActivity, deviceNetwork } from './lifecycle'
+import { createPhoneNavigation } from './navigation'
 import { missingRuntimeFills, type RuntimeScope } from './runtime-fills'
 
 /**
@@ -70,16 +79,28 @@ export function useMissingRuntimeFills(): readonly string[] {
 }
 
 /**
- * A draft's own page. Given to the application providers, it is what makes
- * them serve the environment's draft cards (`useSidebarDrafts`), which only
- * hosts with draft pages get.
+ * Where the shared session state navigates: a session's page, the blank
+ * new-session page, a draft's own page. Given `navigateDraft`, the
+ * application providers also serve the environment's draft cards
+ * (`useSidebarDrafts`), which only hosts with draft pages get.
  */
-function navigateDraft(draftId: string, options?: { replace?: boolean }): Promise<void> {
-  const href = `/draft/${encodeURIComponent(draftId)}` as const
-  if (options?.replace) router.replace(href)
-  else router.push(href)
-  return Promise.resolve()
-}
+const navigation = createPhoneNavigation(
+  {
+    push: (href) => router.push(href as never),
+    replace: (href) => router.replace(href as never),
+    setParams: (params) => router.setParams(params as never),
+  },
+  {
+    // A launch that finished after the reader left its page: no page holds
+    // the session it selected, so it is let go (a session page opens it again).
+    stayed: (sessionId) => {
+      const client = controller?.getState().client
+      if (client?.getState().activeSessionId === sessionId) client.setActiveSession(null)
+    },
+  },
+)
+const navigateSession = navigation.navigateSession
+const navigateDraft = navigation.navigateDraft
 
 const missingFills = missingRuntimeFills(
   globalThis as unknown as RuntimeScope & { URL?: typeof URL },
@@ -102,6 +123,13 @@ const missingFills = missingRuntimeFills(
 export function PhoneEnvironmentProvider({ children }: { children: ReactNode }) {
   const value = phoneConnectionValue()
   const state = useSyncExternalStore(value.controller.subscribe, value.controller.getState)
+  // The page in front, as the shared session state reads it: a new-session
+  // page holds a draft ready on arrival, as web's `/` and `/drafts/<id>` do.
+  const pathname = usePathname()
+  const landing = landingOf(pathname)
+  useLayoutEffect(() => {
+    navigation.arrived(pathname)
+  }, [pathname])
 
   useEffect(() => {
     if (value.missingFills.length > 0) {
@@ -121,7 +149,10 @@ export function PhoneEnvironmentProvider({ children }: { children: ReactNode }) 
             key={state.selectedId ?? undefined}
             storage={phoneStorage.device}
             subscribePageExit={subscribePhonePageExit}
+            navigateSession={navigateSession}
             navigateDraft={navigateDraft}
+            onLanding={landing.onLanding}
+            landingDraftId={landing.draftId}
           >
             {children}
           </EnvironmentApplicationProviders>

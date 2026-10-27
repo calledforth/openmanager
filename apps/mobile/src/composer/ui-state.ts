@@ -3,7 +3,8 @@ import { createContext, useContext, useSyncExternalStore } from 'react'
 /** What the composer has open over the page. */
 export type ComposerOverlay =
   | { kind: 'model' }
-  | { kind: 'project' }
+  /** The project picker; `browse` opens it on the folder browser. */
+  | { kind: 'project'; browse?: boolean }
   | { kind: 'settings' }
   | { kind: 'plan' }
   | { kind: 'camera' }

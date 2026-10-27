@@ -341,6 +341,8 @@ export interface CapturedPhoto {
 
 export interface ComposerProject {
   name: string
+  /** Its workspace, for the icon it declares; null while none is picked. */
+  workspaceId: string | null
   /** The project can be changed from here (a new session). */
   pickable: boolean
 }

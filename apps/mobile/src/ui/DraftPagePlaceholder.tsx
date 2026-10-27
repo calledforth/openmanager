@@ -12,8 +12,8 @@ import { ProjectChip } from './ProjectChip'
 import { Screen, ScreenBar } from './Screen'
 
 /**
- * The draft page's frame (back, title, project) until the composer arrives:
- * a new session from the compose button, or a draft opened from its row.
+ * The draft page's frame (back, title, project) with no environment to
+ * write to: nothing paired yet, a refused token, or the sample home.
  */
 export function DraftPagePlaceholder({ draftId }: { draftId?: string }) {
   const goBack = useGoBack()
@@ -50,8 +50,7 @@ export function DraftPagePlaceholder({ draftId }: { draftId?: string }) {
         </View>
         <View className="flex-1 items-center justify-center px-10">
           <AppText variant="text-14-regular" style={{ color: theme.muted, textAlign: 'center' }}>
-            Writing and sending arrive with the composer and the draft page; until then, start a
-            session on your computer and it shows up on the home.
+            Pair an environment from Settings to start a session from the phone.
           </AppText>
         </View>
       </GlassContent>

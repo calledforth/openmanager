@@ -1,4 +1,5 @@
 import { ComposerSurface } from './ComposerSurface'
+import type { ProjectSource } from './ProjectSheet'
 import { ThreadBridge } from './thread-port'
 import type { ComposerUi } from './ui-state'
 import { useLiveComposerModel } from './useLiveComposerModel'
@@ -16,18 +17,24 @@ export function LiveComposer({
   sessionId,
   ui,
   contextName,
+  projects,
 }: {
-  /** The session the page shows; until the client has it open, nothing can be sent. */
-  sessionId: string
+  /**
+   * The session the page shows; until the client has it open, nothing can
+   * be sent. Null is the new-session page's draft.
+   */
+  sessionId: string | null
   ui: ComposerUi
   /** The session's project, named in the pulled-up composer's bar. */
   contextName: string | null
+  /** A new session's project picker. */
+  projects?: ProjectSource
 }) {
   const { model, port } = useLiveComposerModel(sessionId)
   return (
     <>
       <ThreadBridge port={port} />
-      <ComposerSurface model={model} ui={ui} contextName={contextName} />
+      <ComposerSurface model={model} ui={ui} contextName={contextName} projects={projects} />
     </>
   )
 }

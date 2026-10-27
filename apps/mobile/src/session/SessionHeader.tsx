@@ -56,14 +56,15 @@ export const HEADER_ROW = 48
 
 /**
  * Back and ⋯ in glass, over the header's first row: beside the page's
- * content rather than in it, so they blur it (see `ScreenBar`).
+ * content rather than in it, so they blur it (see `ScreenBar`). A page with
+ * no actions (a new session's) has no ⋯.
  */
 export const SessionHeaderBar = memo(function SessionHeaderBar({
   topInset,
   onMenu,
 }: {
   topInset: number
-  onMenu: () => void
+  onMenu?: () => void
 }) {
   const goBack = useGoBack()
   const theme = usePhoneTheme()
@@ -77,9 +78,11 @@ export const SessionHeaderBar = memo(function SessionHeaderBar({
         </IconButton>
       }
       right={
-        <IconButton label="Session actions" onPress={onMenu}>
-          <DotsThreeIcon size={20} color={theme.fg} weight="bold" />
-        </IconButton>
+        onMenu ? (
+          <IconButton label="Session actions" onPress={onMenu}>
+            <DotsThreeIcon size={20} color={theme.fg} weight="bold" />
+          </IconButton>
+        ) : undefined
       }
     />
   )
