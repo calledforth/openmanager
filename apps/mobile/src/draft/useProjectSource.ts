@@ -33,16 +33,26 @@ export function useProjectSource(): ProjectSource {
   const createSession = sidebar?.createSession
   const environmentLabel = sidebar?.environment?.label ?? 'This environment'
 
-  const pick = useCallback(
+  const apply = useCallback(
     (path: string) => {
       if (isSessionDraftOpen && setDraftWorkspace) setDraftWorkspace(path)
       else void createSession?.(path)
     },
     [createSession, isSessionDraftOpen, setDraftWorkspace],
   )
+  // Every pick the user makes counts, even of the project already picked: an
+  // add on its way picks its project only if none was made since it began.
+  const picks = useRef(0)
+  const pick = useCallback(
+    (path: string) => {
+      picks.current += 1
+      apply(path)
+    },
+    [apply],
+  )
   // The draft and its project as they are now, for an add that answers later.
-  const latest = useRef({ draftId: newSessionDraftId, workspace: activeWorkspacePath, pick })
-  latest.current = { draftId: newSessionDraftId, workspace: activeWorkspacePath, pick }
+  const latest = useRef({ draftId: newSessionDraftId, workspace: activeWorkspacePath, apply })
+  latest.current = { draftId: newSessionDraftId, workspace: activeWorkspacePath, apply }
   // The page that asked is still up: one that went holds a last look that no
   // longer follows the draft the shared state has open now.
   const mounted = useRef(true)
@@ -69,14 +79,15 @@ export function useProjectSource(): ProjectSource {
       canAdd
         ? async (path: string) => {
             const before = latest.current
+            const revision = picks.current
             const workspace = await client.commands.addWorkspace({ path })
             // Picked only for the draft it was added from, and only if nothing
             // was picked since: a later choice, or another draft, stands. The
             // project is added either way.
             const now = latest.current
-            if (!mounted.current) return
+            if (!mounted.current || picks.current !== revision) return
             if (now.draftId !== before.draftId || now.workspace !== before.workspace) return
-            now.pick(workspace.workspaceId)
+            now.apply(workspace.workspaceId)
           }
         : undefined,
     [canAdd, client],

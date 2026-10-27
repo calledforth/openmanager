@@ -513,6 +513,19 @@ describe('a new session from the phone', () => {
     expect(probe.session.activeWorkspacePath).toBe(BETA.workspaceId)
   })
 
+  it('keeps a re-pick of the same project made while an add was on its way', async () => {
+    const { client } = await openLanding({ latencyMs: 30 })
+    let adding: Promise<void> = Promise.resolve()
+    await act(async () => {
+      adding = probe.projects.add!('/home/me/gamma')
+      await new Promise((resolve) => setTimeout(resolve, 5))
+    })
+    await act(async () => probe.projects.pick(ALPHA.workspaceId))
+    await act(() => adding)
+    await settle(client)
+    expect(probe.session.activeWorkspacePath).toBe(ALPHA.workspaceId)
+  })
+
   it('leaves another draft alone when an add answers after its page went', async () => {
     const { client } = await openLanding({ latencyMs: 30 })
     await act(async () => probe.model.setText('Draft A'))
