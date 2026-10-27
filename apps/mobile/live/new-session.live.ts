@@ -166,12 +166,12 @@ describe('a new session from the phone, live', () => {
     let projects: ProjectSource | null = null
     let draftOpen = false
     let path = '/draft/new'
-    let replies = 0
+    let replyRows = 0
     const moves: string[] = []
     // The session's page, as the route mounts it once the launch lands there.
     function SessionPage({ sessionId }: { sessionId: string }) {
       const view = useReadOnlySession(sessionId)
-      replies = view.messages.filter((message) => message.role === 'assistant').length
+      replyRows = view.messages.filter((message) => message.role === 'assistant').length
       return null
     }
     function Page() {
@@ -249,10 +249,16 @@ describe('a new session from the phone, live', () => {
 
     // ---- 2. picks, the first prompt, send ------------------------------
     await wait('picks', () => model!.groups.some((group) => group.models.length > 1), 60_000)
-    const group = model!.groups.find((each) => each.providerId === model!.picks.providerId)!
+    // Claude Code where the environment has it (it answers reliably), else the draft's own provider.
+    const group =
+      model!.groups.find((each) => each.providerId === 'claude' && each.models.length > 1) ??
+      model!.groups.find((each) => each.providerId === model!.picks.providerId)!
     const pick = group.models.find((each) => each.id !== model!.currentModelId)!
     await act(async () => model!.pickModel(group.providerId, pick.id))
-    await wait('model picked', () => model!.currentModelId === pick.id)
+    await wait(
+      'model picked',
+      () => model!.picks.providerId === group.providerId && model!.currentModelId === pick.id,
+    )
     note('picks', { ...model!.picks, modelId: model!.currentModelId })
 
     since = Date.now() - started
@@ -265,8 +271,18 @@ describe('a new session from the phone, live', () => {
     note('sent', { sent: sentSince(since), moves, sessionId })
     expect(sentSince(since)).toContain('session.create')
     // The session's page opens it (the launch only selected it), so the reply streams in.
-    await wait('the reply on the session page', () => replies > 0, 180_000)
-    note('replied', { replies, sent: sentSince(since) })
+    // The reply's own words (an unsettled turn has an empty assistant row).
+    const replyText = () =>
+      Object.values(client.getState().threads)
+        .filter((thread) => thread.thread.sessionId === sessionId)
+        .flatMap((thread) => thread.messages)
+        .filter((message) => message.role === 'assistant')
+        .flatMap((message) => message.content ?? [])
+        .map((part) => ('text' in part && typeof part.text === 'string' ? part.text : ''))
+        .join(' ')
+    await wait('the reply on the session page', () => /pong/i.test(replyText()), 180_000)
+    note('replied', { replyRows, reply: replyText(), sent: sentSince(since) })
+    expect(replyRows).toBeGreaterThan(0)
     expect(sentSince(since)).toContain('session.open')
 
     // ---- 3. what web sees ----------------------------------------------
@@ -282,5 +298,5 @@ describe('a new session from the phone, live', () => {
     expect(seen.workspaceId).toBe(added!.workspaceId)
     expect(seen.providerId).toBe(group.providerId)
     expect(composer?.modelId).toBe(pick.id)
-  })
+  }, 300_000)
 })

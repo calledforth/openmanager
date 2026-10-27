@@ -427,11 +427,19 @@ describe('a new session from the phone', () => {
     expect(opens).toContain(sessionId)
     await settle(client)
     expect(probe.page?.phase).toBe('ready')
-    const replies = () =>
-      probe.page!.messages.filter((message) => message.role === 'assistant').length
+    // The reply's own words, not just its row: the open is what streams them in.
+    const replyText = () =>
+      Object.values(client.getState().threads)
+        .filter((thread) => thread.thread.sessionId === sessionId)
+        .flatMap((thread) => thread.messages)
+        .filter((message) => message.role === 'assistant')
+        .flatMap((message) => message.content ?? [])
+        .map((part) => ('text' in part && typeof part.text === 'string' ? part.text : ''))
+        .join('')
     await vi.waitFor(async () => {
       await settle(client)
-      expect(replies()).toBeGreaterThan(0)
+      expect(replyText()).toContain('On it.')
+      expect(probe.page!.messages.some((message) => message.role === 'assistant')).toBe(true)
     })
   })
 
@@ -488,6 +496,21 @@ describe('a new session from the phone', () => {
     expect(gamma).toBeTruthy()
     expect(probe.session.activeWorkspacePath).toBe(gamma!.path)
     expect(probe.model.project?.name).toBe('gamma')
+  })
+
+  it('picks an added project only if nothing was picked while it was added', async () => {
+    const { client } = await openLanding({ latencyMs: 30 })
+    let adding: Promise<void> = Promise.resolve()
+    await act(async () => {
+      adding = probe.projects.add!('/home/me/gamma')
+      await new Promise((resolve) => setTimeout(resolve, 5))
+    })
+    // A newer choice while the environment answers.
+    await act(async () => probe.projects.pick(BETA.workspaceId))
+    await act(() => adding)
+    await settle(client)
+    expect(probe.projects.workspaces.some((entry) => entry.name === 'gamma')).toBe(true)
+    expect(probe.session.activeWorkspacePath).toBe(BETA.workspaceId)
   })
 
   it('offers no browser or add where the environment does not', async () => {

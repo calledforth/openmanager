@@ -1,4 +1,4 @@
-import { useCallback, useContext, useMemo } from 'react'
+import { useCallback, useContext, useMemo, useRef } from 'react'
 import {
   SidebarDataContext,
   useConnectionState,
@@ -25,7 +25,8 @@ const NO_WORKSPACES: WorkspaceEntry[] = []
 export function useProjectSource(): ProjectSource {
   const client = useEnvironmentClient()
   const { capabilities } = useConnectionState()
-  const { activeWorkspacePath, isSessionDraftOpen, setDraftWorkspace } = useSessionState()
+  const { activeWorkspacePath, isSessionDraftOpen, newSessionDraftId, setDraftWorkspace } =
+    useSessionState()
   const sidebar = useContext(SidebarDataContext)
   const workspaces = sidebar?.workspaces ?? NO_WORKSPACES
   const recents = sidebar?.recentWorkspaces ?? NO_WORKSPACES
@@ -39,6 +40,9 @@ export function useProjectSource(): ProjectSource {
     },
     [createSession, isSessionDraftOpen, setDraftWorkspace],
   )
+  // The draft and its project as they are now, for an add that answers later.
+  const latest = useRef({ draftId: newSessionDraftId, workspace: activeWorkspacePath, pick })
+  latest.current = { draftId: newSessionDraftId, workspace: activeWorkspacePath, pick }
 
   // Re-read with the handshake's capabilities: an environment that has not
   // said yet offers neither.
@@ -55,11 +59,17 @@ export function useProjectSource(): ProjectSource {
     () =>
       canAdd
         ? async (path: string) => {
+            const before = latest.current
             const workspace = await client.commands.addWorkspace({ path })
-            pick(workspace.workspaceId)
+            // Picked only for the draft it was added from, and only if nothing
+            // was picked since: a later choice, or another draft, stands. The
+            // project is added either way.
+            const now = latest.current
+            if (now.draftId !== before.draftId || now.workspace !== before.workspace) return
+            now.pick(workspace.workspaceId)
           }
         : undefined,
-    [canAdd, client, pick],
+    [canAdd, client],
   )
 
   return useMemo(
