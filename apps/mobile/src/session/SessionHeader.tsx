@@ -1,5 +1,5 @@
 import { CaretLeftIcon, DotsThreeIcon } from 'phosphor-react-native'
-import { memo, useRef, useState } from 'react'
+import { memo, useRef, useState, type ReactNode } from 'react'
 import { Text, TextInput, View, type TextStyle } from 'react-native'
 
 import { ShimmerText } from '../components/chat/ShimmerText'
@@ -57,14 +57,17 @@ export const HEADER_ROW = 48
 /**
  * Back and ⋯ in glass, over the header's first row: beside the page's
  * content rather than in it, so they blur it (see `ScreenBar`). A page with
- * no actions (a new session's) has no ⋯.
+ * no actions (a new session's) has no ⋯; a draft's has its own button there.
  */
 export const SessionHeaderBar = memo(function SessionHeaderBar({
   topInset,
   onMenu,
+  action,
 }: {
   topInset: number
   onMenu?: () => void
+  /** In the ⋯'s place on a page without one. */
+  action?: ReactNode
 }) {
   const goBack = useGoBack()
   const theme = usePhoneTheme()
@@ -82,7 +85,9 @@ export const SessionHeaderBar = memo(function SessionHeaderBar({
           <IconButton label="Session actions" onPress={onMenu}>
             <DotsThreeIcon size={20} color={theme.fg} weight="bold" />
           </IconButton>
-        ) : undefined
+        ) : (
+          action
+        )
       }
     />
   )

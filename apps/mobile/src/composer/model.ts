@@ -367,6 +367,11 @@ export interface ComposerModel {
   isStreaming: boolean
   /** The last thing that went wrong: a refused send, a pick the environment did not take. */
   notice: string | null
+  /**
+   * Why the draft's latest edit has not reached the environment (offline,
+   * refused, failed and being retried); null while it is saved or saving.
+   */
+  unsynced: string | null
   prompt: ComposerPrompt | null
   project: ComposerProject | null
   setText: (text: string) => void

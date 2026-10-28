@@ -8,9 +8,11 @@ import * as SplashScreen from 'expo-splash-screen'
 import { StatusBar } from 'expo-status-bar'
 import { useEffect, useRef } from 'react'
 import { useFonts } from 'expo-font'
+import { GestureHandlerRootView } from 'react-native-gesture-handler'
 import { SafeAreaProvider } from 'react-native-safe-area-context'
 
 import '../../global.css'
+import { DraftDiscardHost } from '../draft/DraftDiscardHost'
 import { PhoneEnvironmentProvider } from '../environment/PhoneEnvironmentProvider'
 import { pairingSession } from '../pairing/session'
 import { ThemeProvider, usePhoneTheme, useTheme } from '../theme/ThemeProvider'
@@ -61,6 +63,7 @@ function RootNavigator() {
         <Stack.Screen name="theme-preview" options={{ presentation: 'modal' }} />
       </Stack>
       <PairingResume />
+      <DraftDiscardHost />
     </>
   )
 }
@@ -111,14 +114,17 @@ export default function RootLayout() {
   }
 
   // The phone reaches its environment through the shared environment client;
-  // the provider owns the connection and hands the client to app-core.
+  // the provider owns the connection and hands the client to app-core. The
+  // gesture root lets a draft row be swiped aside to discard it.
   return (
-    <SafeAreaProvider>
-      <PhoneEnvironmentProvider>
-        <ThemeProvider>
-          <RootNavigator />
-        </ThemeProvider>
-      </PhoneEnvironmentProvider>
-    </SafeAreaProvider>
+    <GestureHandlerRootView style={{ flex: 1 }}>
+      <SafeAreaProvider>
+        <PhoneEnvironmentProvider>
+          <ThemeProvider>
+            <RootNavigator />
+          </ThemeProvider>
+        </PhoneEnvironmentProvider>
+      </SafeAreaProvider>
+    </GestureHandlerRootView>
   )
 }

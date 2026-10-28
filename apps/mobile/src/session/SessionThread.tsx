@@ -153,6 +153,8 @@ export interface SessionThreadProps {
   actions?: SessionActions | null
   /** What an empty, ready transcript shows: a new session's landing. */
   empty?: ReactNode
+  /** A button in the header's corner where there is no ⋯ menu: a draft's Discard. */
+  headerAction?: ReactNode
   /**
    * The composer: a layer over the whole page that draws the dock (through
    * `DockSlotContext`) and whatever it opens. Without one the dock holds the
@@ -185,6 +187,7 @@ export const SessionThread = memo(function SessionThread({
   childSessions = NO_CHILDREN,
   actions = null,
   empty,
+  headerAction,
   composer,
 }: SessionThreadProps) {
   countRender('SessionThread')
@@ -268,7 +271,11 @@ export const SessionThread = memo(function SessionThread({
       <Screen>
         {/* Hidden from a screen reader while a composer layer covers it, as under a sheet. */}
         <View style={{ flex: 1 }} {...coveredBySheet(covered)}>
-          <SessionHeaderBar topInset={insets.top} onMenu={actions ? chrome.openMenu : undefined} />
+          <SessionHeaderBar
+            topInset={insets.top}
+            onMenu={actions ? chrome.openMenu : undefined}
+            action={headerAction}
+          />
           <GlassContent>
             <SessionHeader title={title} project={project} topInset={insets.top} chrome={chrome} />
 

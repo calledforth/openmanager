@@ -21,6 +21,7 @@ import { phoneStorage, subscribePhonePageExit } from '../storage'
 import { landingOf } from './landing-route'
 import { appActivity, deviceNetwork } from './lifecycle'
 import { createPhoneNavigation } from './navigation'
+import { createPhoneFetch, type BlobRequest } from './phone-fetch'
 import { missingRuntimeFills, type RuntimeScope } from './runtime-fills'
 
 /**
@@ -36,10 +37,14 @@ function phoneController(): PhoneConnectionController {
       activity: appActivity,
       network: deviceNetwork,
       // React Native's own socket and fetch. Passed explicitly so nothing
-      // depends on which globals a later polyfill replaces.
+      // depends on which globals a later polyfill replaces. Reads go through
+      // its XMLHttpRequest, whose Blob a kept image can be shown from.
       transport: {
         WebSocket: globalThis.WebSocket as unknown as NativeWebSocketConstructor,
-        fetch: globalThis.fetch,
+        fetch: createPhoneFetch({
+          fetch: globalThis.fetch,
+          createRequest: () => new XMLHttpRequest() as unknown as BlobRequest,
+        }),
         // The fill `polyfills.ts` installed where the runtime had none.
         requestId: () => globalThis.crypto.randomUUID(),
       },

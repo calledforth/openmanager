@@ -1,11 +1,14 @@
 import { useCallback, useContext, useMemo, useRef, useState } from 'react'
 import {
   composerImageSupportMessage,
+  DRAFT_SYNC_EXPLANATION,
   SidebarDataContext,
   configurableSessionOptions,
   readFavoriteModels,
   toggleFavoriteModel,
+  useComposerDraftStore,
   useDeviceStorage,
+  useDraftSyncStatus,
   useEnvironmentClient,
   useEnvironmentState,
   usePlanStateOptional,
@@ -185,12 +188,16 @@ export function useLiveComposerModel(sessionId: string | null): {
     },
     [beginDraftTurn, failTurn, launching, pendingPlan, planState, port],
   )
+  // The page's own session, whatever the client has open: text typed while
+  // it opens (or after the page lets it go) stays in its draft. A new
+  // session's draft is the shared one (`new:<draftId>`), synced with the
+  // environment's drafts as web's is.
+  const draftKey = isDraft ? controls.draftKey : `session:${sessionId}`
+  // As web's "Not synced" mark: said only once an edit is at risk, never
+  // while it waits out the pause in typing or is on the wire.
+  const syncStatus = useDraftSyncStatus(useComposerDraftStore(), draftKey)
   const draft = useComposerDraft({
-    // The page's own session, whatever the client has open: text typed
-    // while it opens (or after the page lets it go) stays in its draft. A
-    // new session's draft is the shared one (`new:<draftId>`), synced with
-    // the environment's drafts as web's is.
-    draftKey: isDraft ? controls.draftKey : `session:${sessionId}`,
+    draftKey,
     imageUploadEnabled,
     imageSupportMessage,
     ports: useMemo(
@@ -297,6 +304,7 @@ export function useLiveComposerModel(sessionId: string | null): {
     primary,
     isStreaming: controls.isStreaming,
     notice: draft.error ?? stopError ?? binding.error,
+    unsynced: DRAFT_SYNC_EXPLANATION[syncStatus] ?? null,
     prompt,
     project: isDraft
       ? {

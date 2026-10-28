@@ -11,7 +11,7 @@ import { coveredBySheet } from '../ui/a11y-focus'
 import { GlassContent, GlassLayer, type GlassTarget } from '../ui/Glass'
 import { IconButton } from '../ui/IconButton'
 import { ProjectSquare } from '../ui/ProjectChip'
-import { ComposerNotice } from './ComposerDock'
+import { ComposerNotice, SyncNotice } from './ComposerDock'
 import { ImageGlyph, SlashGlyph } from './icons'
 import { ImageStrip } from './ImageStrip'
 import { slashPopupOf, type ComposerModel } from './model'
@@ -166,6 +166,7 @@ export function ExpandedComposer({
           <View onLayout={onTrayLayout}>
             <ImageStrip images={model.images} onRemove={model.removeImage} />
             <ComposerNotice model={model} />
+            <SyncNotice model={model} />
             <View
               style={{
                 flexDirection: 'row',

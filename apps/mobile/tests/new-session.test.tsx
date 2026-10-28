@@ -41,6 +41,10 @@ const { useReadOnlySession } = await import('../src/session/useReadOnlySession')
 const { landingOf, draftHref, sessionHref } = await import('../src/environment/landing-route')
 const { createPhoneNavigation, ARRIVAL_TIMEOUT_MS } = await import('../src/environment/navigation')
 const { svgOfDataUrl } = await import('../src/ui/project-icon')
+const { DraftDiscardHost } = await import('../src/draft/DraftDiscardHost')
+const { discardHandoff } = await import('../src/draft/discard-handoff')
+const { DRAFT_SYNC_EXPLANATION } = await import('@openmanager/app-core/logic')
+const { useSidebarDrafts } = await import('@openmanager/app-core/providers/sidebar-provider')
 
 describe('the landing, by address', () => {
   it('reads the blank page, a draft page, and everything else', () => {
@@ -246,6 +250,13 @@ const probe = {} as {
   /** What the session page shows, once one is in front. */
   page: { phase: string; messages: UIMessage[] } | null
   go: (path: string) => void
+  /** The draft cards the home lists, whatever page is in front. */
+  drafts: ReturnType<typeof useSidebarDrafts>
+}
+
+function DraftsProbe() {
+  probe.drafts = useSidebarDrafts()
+  return null
 }
 
 function Probe() {
@@ -313,6 +324,8 @@ function Host({ client, moves }: { client: MockEnvironmentClient; moves: string[
       >
         {landing.onLanding ? <Probe /> : null}
         {sessionId ? <SessionPage key={sessionId} sessionId={sessionId} /> : null}
+        <DraftsProbe />
+        <DraftDiscardHost />
       </EnvironmentApplicationProviders>
     </EnvironmentClientProvider>
   )
@@ -578,6 +591,68 @@ describe('a new session from the phone', () => {
     })
     expect(probe.projects.browse).toBeUndefined()
     expect(probe.projects.add).toBeUndefined()
+  })
+})
+
+describe('drafts on the phone', () => {
+  it('says "Not synced" while an edit cannot reach the environment, and not once it has', async () => {
+    const { client } = await openLanding()
+    await act(async () => probe.model.setText('Typed on the train'))
+    await settle(client)
+    expect(probe.model.unsynced).toBeNull()
+
+    await act(async () => client.setConnection({ phase: 'reconnecting' }))
+    await act(async () => probe.model.setText('Typed on the train, in a tunnel'))
+    expect(probe.model.unsynced).toBe(DRAFT_SYNC_EXPLANATION.offline)
+
+    await act(async () => client.setConnection({ phase: 'connected' }))
+    await settle(client)
+    expect(probe.model.unsynced).toBeNull()
+  })
+
+  it('lists a draft written here once the reader is back on the home, live', async () => {
+    const { client } = await openLanding()
+    await act(async () => probe.model.setText('First line'))
+    await settle(client)
+    const draftId = probe.session.newSessionDraftId!
+    // On its page the draft has no card yet: it gets one once left.
+    expect(probe.drafts?.drafts.map((card) => card.draftId)).toEqual([])
+
+    await act(async () => probe.go('/'))
+    await settle(client)
+    expect(probe.drafts?.drafts.map((card) => card.draftId)).toEqual([draftId])
+    expect(probe.drafts?.drafts[0]?.preview).toBe('First line')
+  })
+
+  it('discards the draft on screen once its page has gone back, and brings it back on Undo', async () => {
+    const { client, moves } = await openLanding()
+    await act(async () => probe.model.setText('Maybe later'))
+    await settle(client)
+    const draftId = probe.session.newSessionDraftId!
+
+    // The page asks, then goes back: nothing is discarded while it is in front.
+    await act(async () => discardHandoff.request(draftId))
+    expect(probe.drafts?.pendingDiscard).toBeNull()
+    await act(async () => probe.go('/'))
+    await settle(client)
+    const before = moves.length
+    expect(probe.drafts?.pendingDiscard?.draftId).toBe(draftId)
+    expect(probe.drafts?.drafts).toEqual([])
+    expect(discardHandoff.waiting()).toBeNull()
+
+    await act(async () => probe.drafts!.undoDiscard(probe.drafts!.pendingDiscard!.key))
+    await settle(client)
+    expect(probe.drafts?.drafts.map((card) => card.draftId)).toEqual([draftId])
+    expect(client.getState().drafts[draftId]).toBeTruthy()
+
+    // Discarded from its row, and let go: the draft is deleted, and the
+    // reader stays on the home.
+    await act(async () => probe.drafts!.discardDraft(draftId))
+    await act(async () => probe.drafts!.confirmDiscard())
+    await settle(client)
+    expect(client.getState().drafts[draftId]).toBeUndefined()
+    expect(probe.path).toBe('/')
+    expect(moves.slice(before)).toEqual([])
   })
 })
 

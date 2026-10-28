@@ -241,6 +241,7 @@ export function FixtureComposer({
     }),
     isStreaming,
     notice: null,
+    unsynced: null,
     prompt,
     project: null,
     setText,
