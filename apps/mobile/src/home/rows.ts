@@ -289,3 +289,14 @@ export function tabCounts(sessions: readonly HomeSession[], drafts: readonly Hom
     drafts: drafts.length,
   }
 }
+
+/**
+ * Where every row stands: its group and its place in it, by key. Changes
+ * when rows come, go or move, never with what a row shows.
+ */
+export function listShapeOf<Row>(
+  sections: readonly { key: string; data: readonly Row[] }[],
+  keyOf: (row: Row) => string,
+): string {
+  return sections.map((section) => `${section.key}:${section.data.map(keyOf).join(',')}`).join('|')
+}

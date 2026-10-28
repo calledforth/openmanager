@@ -1,3 +1,4 @@
+import { PencilSimpleLineIcon } from 'phosphor-react-native'
 import { View } from 'react-native'
 
 import { AppText } from '../components/ui/AppText'
@@ -24,7 +25,9 @@ export function shortAge(when: string | number | undefined, now = Date.now()): s
  * One session: the status mark, the title, where it runs and what it is up
  * to, and how long ago. A child sits under its parent with a connector.
  * Fills, not borders: the pressed state is the hover fill, selection the
- * active fill.
+ * active fill. A session whose composer holds an unsent reply (written here
+ * or on another device) carries web's pen, in the draft accent, beside its
+ * age.
  */
 const INDENT = 34
 
@@ -42,6 +45,7 @@ export function SessionRow({
   const theme = usePhoneTheme()
   const { session, workspace, mark, depth } = row
   const title = session.title?.trim() || 'Untitled session'
+  const unsent = Boolean(session.hasUnsentDraft)
   const line = session.workspaceUnavailable
     ? 'Project folder is unavailable'
     : statusLineOf(session)
@@ -50,6 +54,7 @@ export function SessionRow({
   return (
     <Press
       accessibilityRole="button"
+      accessibilityHint={unsent ? 'Has an unsent draft' : undefined}
       onPress={() => {
         tap()
         onPress?.()
@@ -112,9 +117,14 @@ export function SessionRow({
           ) : null}
         </View>
       </View>
-      <AppText variant="text-12-regular" style={{ color: theme.faint }}>
-        {shortAge(session.updatedAt)}
-      </AppText>
+      <View style={{ flexDirection: 'row', alignItems: 'center', gap: 5 }}>
+        {unsent ? (
+          <PencilSimpleLineIcon size={13} color={theme.tokens['basis-draft']} weight="bold" />
+        ) : null}
+        <AppText variant="text-12-regular" style={{ color: theme.faint }}>
+          {shortAge(session.updatedAt)}
+        </AppText>
+      </View>
     </Press>
   )
 }

@@ -1,19 +1,47 @@
+import { TrashIcon } from 'phosphor-react-native'
 import { useCallback, useContext, useMemo, useState } from 'react'
 import {
   SidebarDataContext,
   useActiveThreadState,
+  useEnvironmentState,
   useSessionState,
   type WorkspaceEntry,
 } from '@openmanager/app-core/logic'
+import { useSidebarDrafts } from '@openmanager/app-core/providers/sidebar-provider'
+import type { EnvironmentState } from '@openmanager/environment-client'
 
 import { LiveComposer } from '../composer/LiveComposer'
 import { createComposerUi } from '../composer/ui-state'
 import { draftSendBlocked } from '../composer/useLiveComposerModel'
 import { SessionThread } from '../session/SessionThread'
+import { usePhoneTheme } from '../theme/ThemeProvider'
+import { useGoBack } from '../ui/goBack'
+import { IconButton } from '../ui/IconButton'
+import { discardHandoff, draftDiscardable } from './discard-handoff'
 import { NewSessionLanding } from './NewSessionLanding'
 import { useProjectSource } from './useProjectSource'
 
 const NO_WORKSPACES: WorkspaceEntry[] = []
+
+/**
+ * Discard, in the header's corner: back to the sessions home, where the
+ * draft's row is gone with an Undo beside the Drafts tab.
+ */
+function DiscardButton({ draftId }: { draftId: string }) {
+  const theme = usePhoneTheme()
+  const goBack = useGoBack()
+  return (
+    <IconButton
+      label="Discard draft"
+      onPress={() => {
+        discardHandoff.request(draftId)
+        goBack()
+      }}
+    >
+      <TrashIcon size={18} color={theme.fg} />
+    </IconButton>
+  )
+}
 
 /**
  * A new session's page: the draft the shared session state holds for the
@@ -38,6 +66,11 @@ export function DraftPage() {
   const openPicker = useCallback(() => ui.open({ kind: 'project' }), [ui])
   const openAdd = useCallback(() => ui.open({ kind: 'project', browse: true }), [ui])
   const projectName = workspace?.name ?? null
+  const draftId = session.newSessionDraftId ?? null
+  const canDiscard = useEnvironmentState(
+    useCallback((state: EnvironmentState) => draftDiscardable(state, draftId), [draftId]),
+  )
+  const discardable = !!useSidebarDrafts() && canDiscard && !pendingDraftSessionStart
 
   // The pulled-up composer names no project in its bar: the tray's project
   // pick does, and picks another from there.
@@ -65,6 +98,7 @@ export function DraftPage() {
       messages={messages}
       phase="ready"
       empty={empty}
+      headerAction={discardable && draftId ? <DiscardButton draftId={draftId} /> : undefined}
       composer={composer}
     />
   )

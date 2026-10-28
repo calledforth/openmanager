@@ -19,6 +19,7 @@ import { useComposerState, type ComposerStateValue } from '../src/providers/comp
 import { useSessionState, type SessionStateValue } from '../src/providers/session-provider'
 import { ThemeProvider } from '../src/providers/theme-provider'
 import { rememberSentDraft, sentDraftSession } from '../src/providers/draft-pages'
+import { useSidebarDrafts, type SidebarDraftsValue } from '../src/providers/sidebar-provider'
 import {
   DraftLaunchContext,
   type DraftLaunchInternals,
@@ -158,6 +159,7 @@ const probe = {} as {
   go: (route: Route) => void
   drafts: ComposerDraftStore
   launch: DraftLaunchInternals
+  sidebarDrafts: SidebarDraftsValue | null
   onRender?: () => void
 }
 /** Navigations held until the test lets each through, as a router that
@@ -174,6 +176,7 @@ function Capture() {
   probe.thread = useActiveThreadState()
   probe.drafts = useComposerDraftStore()
   probe.launch = useContext(DraftLaunchContext)!
+  probe.sidebarDrafts = useSidebarDrafts()
   probe.onRender?.()
   return null
 }
@@ -282,6 +285,42 @@ describe('draft pages', () => {
 
     await type('hello')
     expect(navigations).toHaveLength(1)
+  })
+
+  it('takes the draft off screen while the host shows a page of its own, and discards it there in place', async () => {
+    const client = createMockEnvironmentClient({ seed: SEED })
+    await mount(client)
+    const draftId = probe.session.newSessionDraftId!
+    await type('hello')
+    await settle(client)
+    expect(probe.sidebarDrafts?.openDraftId).toBe(draftId)
+
+    // A page of the host's own (the phone's sessions home, Settings): the
+    // page is kept for its address, but the draft is a card like any other.
+    await act(() => probe.go({ settings: true }))
+    await settle(client)
+    expect(probe.session.newSessionDraftId).toBeNull()
+    expect(probe.sidebarDrafts?.openDraftId).toBeNull()
+    expect(probe.sidebarDrafts?.drafts.map((card) => card.draftId)).toEqual([draftId])
+
+    // Back by its address: the same draft, as it was left.
+    await act(() => probe.go({ draftId }))
+    await settle(client)
+    expect(probe.session.newSessionDraftId).toBe(draftId)
+    expect(composer().value).toBe('hello')
+
+    // Discarded from its card while off screen: nobody is moved anywhere.
+    await act(() => probe.go({ settings: true }))
+    await settle(client)
+    const before = navigations.length
+    await act(() => probe.sidebarDrafts!.discardDraft(draftId))
+    expect(probe.sidebarDrafts?.pendingDiscard?.draftId).toBe(draftId)
+    expect(probe.sidebarDrafts?.drafts).toEqual([])
+    await act(() => probe.sidebarDrafts!.confirmDiscard())
+    await settle(client)
+    expect(navigations.slice(before)).toEqual([])
+    expect(pathOf(probe.route)).toBe('/settings')
+    expect(contentOf(client, draftId)).toBeUndefined()
   })
 
   it('keeps a model or mode pick on the page without saving a draft or giving it an address', async () => {

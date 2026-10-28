@@ -1,3 +1,4 @@
+import { CloudSlashIcon } from 'phosphor-react-native'
 import { View, type LayoutChangeEvent } from 'react-native'
 import { useCallback, useLayoutEffect, useRef, useState } from 'react'
 import Animated, {
@@ -61,6 +62,49 @@ export function ComposerNotice({ model }: { model: ComposerModel }) {
     >
       {text}
     </AppText>
+  )
+}
+
+/**
+ * Web's "Not synced" chip, with its reason beside it: a phone has no tooltip
+ * to hold the reason, and a draft at risk is worth the line. Shown only once
+ * an edit has not reached the environment, never while one is saving.
+ */
+export function SyncNotice({ model }: { model: ComposerModel }) {
+  const theme = usePhoneTheme()
+  if (!model.unsynced) return null
+  return (
+    <View
+      accessible
+      accessibilityRole="text"
+      accessibilityLabel={`Draft not synced. ${model.unsynced}`}
+      accessibilityLiveRegion="polite"
+      style={{ flexDirection: 'row', alignItems: 'center', gap: 8, paddingHorizontal: 10 }}
+    >
+      <View
+        style={{
+          flexDirection: 'row',
+          alignItems: 'center',
+          gap: 4,
+          paddingVertical: 2,
+          paddingHorizontal: 7,
+          borderRadius: 999,
+          backgroundColor: theme.hover,
+        }}
+      >
+        <CloudSlashIcon size={12} color={theme.muted} />
+        <AppText variant="text-11-medium" style={{ color: theme.muted }}>
+          Not synced
+        </AppText>
+      </View>
+      <AppText
+        variant="text-12-regular"
+        numberOfLines={2}
+        style={{ color: theme.faint, flex: 1, minWidth: 0 }}
+      >
+        {model.unsynced}
+      </AppText>
+    </View>
   )
 }
 
@@ -232,6 +276,7 @@ export function ComposerDock({ model, ui }: { model: ComposerModel; ui: Composer
                 </Animated.View>
               ) : null}
               <ComposerNotice model={model} />
+              <SyncNotice model={model} />
             </>
           )}
         </View>

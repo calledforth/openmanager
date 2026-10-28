@@ -626,6 +626,12 @@ function EnvironmentSessionStateProvider({
         : null
 
   const isSessionDraftOpen = activeSessionId === null && shown !== null && !pageUnusable
+  // The draft is on screen only while a new-session page is in front. A host
+  // with draft pages can leave them for a page of its own (the phone's
+  // sessions home, web's settings) with the page kept for when it comes back;
+  // meanwhile the draft is a card like any other, and discarding it leaves
+  // the reader where they are.
+  const draftOnScreen = isSessionDraftOpen && (!routed || onLanding)
   const activeWorkspacePath = activeSessionWorkspaceId ?? draftWorkspaceId
   const isDraftLoading = activeSessionId === null && selectedSessionId === null && pageUnusable
   const isDraftProjectRemoved = isSessionDraftOpen && !!shown?.claimed && draftWorkspaceId === null
@@ -913,7 +919,7 @@ function EnvironmentSessionStateProvider({
   const workspacesRef = useRef(workspaces)
   workspacesRef.current = workspaces
   const onScreenDraftRef = useRef<string | null>(null)
-  onScreenDraftRef.current = isSessionDraftOpen ? pageDraftId : null
+  onScreenDraftRef.current = draftOnScreen ? pageDraftId : null
 
   // The sidebar's draft cards: a draft's own page, by its address. A launch
   // still in flight continues in the sidebar, as when a session is picked.
@@ -1120,7 +1126,7 @@ function EnvironmentSessionStateProvider({
       isSessionDraftOpen,
       // Only where the environment keeps drafts: elsewhere the composer keeps
       // one draft per project, in this browser.
-      newSessionDraftId: sync && isSessionDraftOpen ? pageDraftId : null,
+      newSessionDraftId: sync && draftOnScreen ? pageDraftId : null,
       isDraftLoading,
       isDraftProjectRemoved,
       ...(sync ? { setDraftWorkspace } : {}),
@@ -1179,6 +1185,7 @@ function EnvironmentSessionStateProvider({
       createSession,
       defaultProviderId,
       deleteSession,
+      draftOnScreen,
       draftRequest,
       error,
       fail,
