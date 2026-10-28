@@ -1,4 +1,5 @@
 import { once } from 'node:events'
+import { onServerText } from './helpers/frames.ts'
 import { mkdir, mkdtemp, readFile, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -75,8 +76,8 @@ async function connect(host: Host, browser = false, credential = host.token) {
   clients.push(ws)
   const queue: ServerMessage[] = []
   let waiter: ((message: ServerMessage) => void) | undefined
-  ws.on('message', (data) => {
-    const message = ServerMessageSchema.parse(JSON.parse(data.toString()))
+  onServerText(ws, (text) => {
+    const message = ServerMessageSchema.parse(JSON.parse(text))
     if (waiter) {
       const resolve = waiter
       waiter = undefined
@@ -1277,8 +1278,8 @@ describe('handshake and scoped subscriptions', () => {
   })
 })
 
-describe('protocol heartbeat timers', () => {
-  it('starts after handshake, requires a matching timely pong, and immediately releases timed-out subscriptions', async () => {
+describe('protocol liveness timers', () => {
+  it('starts after handshake, sends keepalives when idle, and closes after 30 s of inbound silence', async () => {
     vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'performance'] })
     const host = await setup()
     const client = await connect(host)
@@ -1287,27 +1288,52 @@ describe('protocol heartbeat timers', () => {
       type: 'environment',
       environmentId: host.server.identity.environmentId,
     })
-    await vi.advanceTimersByTimeAsync(HEARTBEAT_POLICY.serverPingIntervalMs)
-    const ping = await client.next()
-    expect(ping).toMatchObject({ type: 'ping', heartbeatId: expect.any(String) })
-    if (ping.type !== 'ping') throw new Error('Expected ping')
-    client.ws.send(JSON.stringify({ type: 'pong', heartbeatId: ping.heartbeatId }))
-    client.command('unknown.command', null)
-    await client.next() // Barrier: pong processed before advancing the clock.
-    await vi.advanceTimersByTimeAsync(HEARTBEAT_POLICY.serverPingIntervalMs)
-    const nextPing = await client.next()
-    expect(nextPing).toMatchObject({ type: 'ping' })
-    expect(nextPing).not.toEqual(ping)
-    client.ws.send(JSON.stringify({ type: 'pong', heartbeatId: ping.heartbeatId }))
-    client.command('unknown.command', null)
-    await client.next()
+    // Acks count as inbound frames; beats keep the socket alive past 30 s.
+    for (let step = 0; step < 6; step++) {
+      await vi.advanceTimersByTimeAsync(HEARTBEAT_POLICY.clientBeatIntervalMs)
+      client.ws.send(JSON.stringify({ type: 'beat' }))
+    }
+    expect(host.server.sockets.connectionCount).toBe(1)
+    // Nothing written for 15 s: a keepalive came, and needs no answer.
+    const keepalive = await client.next()
+    expect(keepalive).toEqual({ type: 'keepalive' })
     const closed = once(client.ws, 'close')
-    await vi.advanceTimersByTimeAsync(HEARTBEAT_POLICY.pongTimeoutMs)
+    await vi.advanceTimersByTimeAsync(HEARTBEAT_POLICY.serverInboundTimeoutMs)
     expect(host.server.sockets.connectionCount).toBe(0)
     expect(host.server.sockets.subscriptionCount).toBe(0)
     const [code, reason] = await closed
     expect(code).toBe(4000)
     expect(String(reason)).toBe('heartbeat_timeout')
+  })
+
+  it('closes on an ack for bytes it never sent', async () => {
+    const host = await setup()
+    const client = await connect(host)
+    await handshake(client)
+    const closed = once(client.ws, 'close')
+    client.ws.send(JSON.stringify({ type: 'ack', received: 1e12 }))
+    const [code, reason] = await closed
+    expect(code).toBe(1008)
+    expect(String(reason)).toBe('invalid_ack')
+  })
+
+  it('sends a message larger than the socket used to allow, in fragments, without closing', async () => {
+    const host = await setup()
+    const client = await connect(host)
+    await handshake(client)
+    const scope: SubscriptionScope = {
+      type: 'environment',
+      environmentId: host.server.identity.environmentId,
+    }
+    await subscribe(client, scope)
+    const health = {
+      type: 'event' as const,
+      name: 'provider_health_changed',
+      payload: { providerId: 'opencode', note: 'x'.repeat(2_000_000) },
+    }
+    host.server.sockets.deliver({ kind: 'broadcast', event: health })
+    expect(await client.next()).toEqual(health)
+    expect(host.server.sockets.connectionCount).toBe(1)
   })
 
   it('expires connections that never perform a handshake', async () => {

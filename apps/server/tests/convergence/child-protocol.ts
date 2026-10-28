@@ -138,6 +138,13 @@ export interface SocketSample {
   remotePort: number | undefined
   readyState: number
   bufferedAmount: number
+  /** The server writer's bytes not yet written. */
+  queued: number
+  /** Bytes written and not yet acknowledged by the client. */
+  inFlight: number
+  window: number
+  /** Subscriptions of this socket that are lagging. */
+  lagging: number
 }
 
 /**

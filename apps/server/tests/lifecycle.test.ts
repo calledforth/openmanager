@@ -1,4 +1,5 @@
 import { spawn, type ChildProcess } from 'node:child_process'
+import { nextServerText } from './helpers/frames.ts'
 import { once } from 'node:events'
 import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
@@ -202,8 +203,8 @@ describe('process lifecycle', () => {
           },
         }),
       )
-      const [data] = await once(socket, 'message')
-      expect(ServerMessageSchema.parse(JSON.parse(data.toString()))).toMatchObject({
+      const data = await nextServerText(socket)
+      expect(ServerMessageSchema.parse(JSON.parse(data))).toMatchObject({
         type: 'response',
         requestId: 'handshake-1',
       })

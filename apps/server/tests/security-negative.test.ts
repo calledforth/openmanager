@@ -1,4 +1,5 @@
 import { once } from 'node:events'
+import { onServerText } from './helpers/frames.ts'
 import { mkdir, mkdtemp, readFile, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -97,8 +98,8 @@ async function connect(url: string, credential: string) {
   clients.push(ws)
   const queue: ServerMessage[] = []
   let waiter: ((message: ServerMessage) => void) | undefined
-  ws.on('message', (data) => {
-    const message = ServerMessageSchema.parse(JSON.parse(data.toString()))
+  onServerText(ws, (text) => {
+    const message = ServerMessageSchema.parse(JSON.parse(text))
     if (waiter) {
       const resolve = waiter
       waiter = undefined

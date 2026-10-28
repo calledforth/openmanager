@@ -6,7 +6,9 @@ import {
   ReplayCommandSchema,
   ReplayResponseSchema,
   ScopeSnapshotSchema,
+  SubscriptionCatchupSchema,
   SubscriptionEventSchema,
+  SubscriptionLaggingSchema,
   SubscriptionTransientSchema,
   TransientEventSchema,
   decideReplay,
@@ -348,5 +350,31 @@ describe('replay and snapshot wire validation', () => {
         },
       }).success,
     ).toBe(false)
+  })
+})
+
+describe('lagging and catch-up', () => {
+  it('names the subscription and the last cursor written, or none', () => {
+    for (const cursor of [replayCursor, null]) {
+      const lagging = {
+        type: 'event',
+        name: 'subscription.lagging',
+        payload: { subscriptionId: 'sub-1', cursor },
+      }
+      expect(SubscriptionLaggingSchema.parse(lagging)).toEqual(lagging)
+    }
+  })
+
+  it('carries a replay or snapshot payload under the same rules as a replay answer', () => {
+    for (const response of [replayResponse, snapshotResponse]) {
+      const catchup = { type: 'event', name: 'subscription.catchup', payload: response.payload }
+      expect(SubscriptionCatchupSchema.parse(catchup)).toEqual(catchup)
+    }
+    const broken = {
+      type: 'event',
+      name: 'subscription.catchup',
+      payload: { ...(replayResponse.payload as object), events: [] },
+    }
+    expect(SubscriptionCatchupSchema.safeParse(broken).success).toBe(false)
   })
 })

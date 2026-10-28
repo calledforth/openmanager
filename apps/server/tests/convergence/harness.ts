@@ -36,7 +36,7 @@ import {
 } from './child-protocol.ts'
 import type { ClientWire, Provenance } from './provenance.ts'
 import { scopeKey } from '../../src/db/event-repository.ts'
-import type { SubscriptionScope } from '@openmanager/protocol/node'
+import { FragmentAssembler, type SubscriptionScope } from '@openmanager/protocol/node'
 
 /** The batcher holds deltas for at most 100 ms; quiet is that window plus margin (§10.1). */
 export const QUIET_MS = 300
@@ -65,7 +65,13 @@ export async function until<T>(
 function parseJson(data: unknown): Record<string, unknown> | undefined {
   try {
     const text =
-      typeof data === 'string' ? data : Buffer.isBuffer(data) ? data.toString('utf8') : undefined
+      typeof data === 'string'
+        ? data
+        : Buffer.isBuffer(data)
+          ? data.toString('utf8')
+          : data instanceof Uint8Array
+            ? Buffer.from(data).toString('utf8')
+            : undefined
     const value: unknown = text === undefined ? undefined : JSON.parse(text)
     return value && typeof value === 'object' ? (value as Record<string, unknown>) : undefined
   } catch {
@@ -241,8 +247,20 @@ export class Rig {
           // The client fails everything pending on a closed socket.
           outstanding.clear()
         })
+        // Binary frames are fragments of one message (protocol v19).
+        const assembler = new FragmentAssembler()
         this.addEventListener('message', (event) => {
-          const message = parseJson((event as { data: unknown }).data)
+          let data = (event as { data: unknown }).data
+          if (data instanceof ArrayBuffer || ArrayBuffer.isView(data)) {
+            const bytes =
+              data instanceof ArrayBuffer
+                ? new Uint8Array(data)
+                : new Uint8Array(data.buffer, data.byteOffset, data.byteLength)
+            const whole = assembler.push(bytes)
+            if (!whole) return
+            data = whole
+          }
+          const message = parseJson(data)
           if (
             (message?.type === 'response' || message?.type === 'error') &&
             typeof message.requestId === 'string'
