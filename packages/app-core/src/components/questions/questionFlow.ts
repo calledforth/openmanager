@@ -31,8 +31,9 @@ export function firstUnansweredIndex(
   )
 }
 
-/** Multi-select toggles; single-select replaces, and re-picking clears it so a
- * mistaken choice can be undone without a "none" option existing. */
+/** Multi-select toggles; single-select sets. Picking a single-select option
+ * is "this one" — it moves the flow on — so picking the current choice again
+ * keeps it rather than clearing it out from under the advance. */
 export function toggleOption(
   question: Question,
   draft: QuestionDraft,
@@ -47,7 +48,22 @@ export function toggleOption(
         : [...selected, optionId],
     }
   }
-  return { ...draft, selectedOptionIds: selected.includes(optionId) ? [] : [optionId] }
+  return { ...draft, selectedOptionIds: [optionId] }
+}
+
+export type NextStep = { kind: 'goto'; index: number } | { kind: 'submit' }
+
+/** Where moving on from `index` leads. Mid-set it is simply the next question.
+ * From the last one it is the first gap if any remain — never a send with
+ * holes in it — and otherwise the send itself; there is no review step. */
+export function nextStep(
+  questions: Question[],
+  drafts: Record<string, QuestionDraft>,
+  index: number,
+): NextStep {
+  if (index < questions.length - 1) return { kind: 'goto', index: index + 1 }
+  const gap = firstUnansweredIndex(questions, drafts)
+  return gap === -1 ? { kind: 'submit' } : { kind: 'goto', index: gap }
 }
 
 /** Free text is only sent when non-blank — an empty string is not an answer. */
