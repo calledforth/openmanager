@@ -1,15 +1,16 @@
-import { useEffect, useLayoutEffect, useRef, useState, type KeyboardEvent } from 'react'
+import { useEffect, useRef, useState, type KeyboardEvent } from 'react'
 import { ArrowElbowDownLeftIcon, CheckIcon } from '@phosphor-icons/react'
 import { typographyCaption, typographyLabel, typographyTitle } from '../../lib/typography'
 import { cn } from '../../lib/utils'
 import { draftFor, indexForKey, isAnswered, optionKey } from './questionFlow'
 import type { QuestionFlow } from './useQuestionFlow'
 
-/* The row under the cursor is shown by one glass lens that slides between
- * rows (see `.q-glass` / `.q-lens` in globals.css); a choice is shown by its
- * box. Rows never fill themselves, so selections can never stack into a slab. */
+/* Only the row under the cursor (mouse or keyboard) is shaded; a choice is
+ * shown by its box. Chosen rows never fill themselves, so selections can never
+ * stack into a slab. */
 const rowBase =
-  'relative -mx-2 flex w-[calc(100%+1rem)] items-start gap-2.5 rounded-[7px] px-2 py-[5px] text-left focus:outline-none'
+  '-mx-2 flex w-[calc(100%+1rem)] items-start gap-2.5 rounded-[6px] px-2 py-[5px] text-left transition-colors duration-100 focus:outline-none'
+const rowCursor = 'bg-[color-mix(in_srgb,var(--basis-text)_7%,transparent)]'
 
 /** Descriptions this short read better beside the label than beneath it — the
  * layout follows the content rather than a fixed rule. */
@@ -112,28 +113,6 @@ export function QuestionCard({ flow }: { flow: QuestionFlow }) {
     if (!flow.canAdvance) setCursor((current) => (current === primaryStop ? -1 : current))
   }, [flow.canAdvance, primaryStop])
 
-  // The lens: measured off the cursor row, so it can glide between rows of any
-  // height. It appears in place (fade only) and only slides once it is showing.
-  const rowsRef = useRef<HTMLDivElement>(null)
-  const [lens, setLens] = useState<{ top: number; height: number; instant: boolean } | null>(null)
-  useLayoutEffect(() => {
-    const container = rowsRef.current
-    if (!container) return
-    const measure = () => {
-      const row =
-        cursor >= 0 && cursor < options.length
-          ? (container.children[cursor + 1] as HTMLElement | undefined)
-          : undefined
-      setLens((current) =>
-        row ? { top: row.offsetTop, height: row.offsetHeight, instant: !current } : null,
-      )
-    }
-    measure()
-    const observer = new ResizeObserver(measure)
-    observer.observe(container)
-    return () => observer.disconnect()
-  }, [cursor, options.length, index])
-
   const pickAt = (position: number) => {
     const option = options[position]
     if (option) flow.choose(question, option.optionId)
@@ -220,22 +199,11 @@ export function QuestionCard({ flow }: { flow: QuestionFlow }) {
         </div>
 
         <div
-          ref={rowsRef}
           role={multiple ? 'group' : 'radiogroup'}
           aria-label={question.prompt}
-          className="relative flex flex-col gap-px"
+          className="flex flex-col gap-px"
           onMouseLeave={() => setCursor((current) => (current === primaryStop ? current : -1))}
         >
-          <div
-            aria-hidden
-            data-instant={lens?.instant || undefined}
-            className="q-glass q-lens pointer-events-none absolute -inset-x-2 rounded-[7px]"
-            style={{
-              top: lens?.top ?? 0,
-              height: lens?.height ?? 0,
-              opacity: lens ? 1 : 0,
-            }}
-          />
           {options.map((option, position) => {
             const selected = draft.selectedOptionIds.includes(option.optionId)
             const key = optionKey(position)
@@ -256,7 +224,7 @@ export function QuestionCard({ flow }: { flow: QuestionFlow }) {
                 }}
                 onMouseMove={() => setCursor(position)}
                 onClick={() => pickAt(position)}
-                className={rowBase}
+                className={cn(rowBase, cursor === position && rowCursor)}
               >
                 {/* Mark and digit sit in a label-height line box, so they align
                  * with the title even when the description wraps beneath it. */}
@@ -319,9 +287,9 @@ export function QuestionCard({ flow }: { flow: QuestionFlow }) {
           onClick={flow.advance}
           className={cn(
             typographyCaption,
-            'flex h-[22px] items-center gap-1 rounded-[6px] pr-1.5 pl-2 font-medium transition-[background-color,color,box-shadow] duration-100',
+            'flex h-[22px] items-center gap-1 rounded-[6px] pr-1.5 pl-2 font-medium transition-colors duration-100',
             flow.canAdvance
-              ? 'q-glass relative text-[var(--basis-text-strong)] hover:brightness-110'
+              ? 'bg-[color-mix(in_srgb,var(--basis-text)_10%,transparent)] text-[var(--basis-text-strong)] hover:bg-[color-mix(in_srgb,var(--basis-text)_16%,transparent)]'
               : 'bg-[color-mix(in_srgb,var(--basis-text)_5%,transparent)] text-[var(--basis-text-faint)]',
             cursor === primaryStop &&
               'outline-1 outline-offset-2 outline-[color-mix(in_srgb,var(--basis-text)_45%,transparent)]',
