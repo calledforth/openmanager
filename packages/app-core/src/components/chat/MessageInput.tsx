@@ -466,13 +466,9 @@ export function MessageInput() {
               ? {
                   value: questionFlow.text,
                   onChange: questionFlow.setText,
-                  placeholder: questionFlow.onReview
-                    ? 'Press Enter to submit your answers'
-                    : 'Describe another answer…',
+                  placeholder: 'Or type your own answer…',
                   onSubmit: questionFlow.advance,
                   canSubmit: questionFlow.canAdvance,
-                  // Nothing on the review slide owns free text.
-                  readOnly: questionFlow.onReview,
                 }
               : undefined
           }
