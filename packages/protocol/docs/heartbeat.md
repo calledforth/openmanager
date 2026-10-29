@@ -1,74 +1,66 @@
-# Heartbeat and idle-timeout contract
+# Liveness and flow control
 
-OpenManager uses an application-level heartbeat on every handshaken WebSocket.
-The server initiates it because browser WebSocket clients cannot originate or
-inspect WebSocket protocol ping/pong frames. Native transports may also use
-protocol-level keepalives, but those do not replace this portable contract.
+Version 19 (docs/sync-foundations.md §7.2, F5a). Two separate mechanisms:
+**liveness** decides whether a peer is still there; **flow control** bounds what
+the server holds for a connection. Neither depends on how fast the link is.
 
-An environment implementing this contract advertises the
-`connection.heartbeat` capability during bootstrap and handshake.
+## Liveness
 
-## Wire messages
+| Message     | Direction       | Payload    | Meaning                                  |
+| ----------- | --------------- | ---------- | ---------------------------------------- |
+| `beat`      | Client → server | none       | "still here"                             |
+| `ack`       | Client → server | `received` | flow control; also proves liveness       |
+| `keepalive` | Server → client | none       | sent when the server has written nothing |
 
-The server sends a ping with a fresh, opaque ID:
+`HEARTBEAT_POLICY`:
 
-```json
-{ "type": "ping", "heartbeatId": "hb-42" }
-```
+- the client sends a `beat` when it has sent nothing for **10 s**. Commands
+  and acks count as beats;
+- the server closes a connection (`4000 heartbeat_timeout`) when **no inbound
+  frame** has arrived for **30 s**. It never looks at downstream bytes, so a
+  slow download cannot trip it. A frame that arrives after the deadline (a
+  starved timer, a machine that slept) is judged by the same rule first;
+- the server sends a `keepalive` when it has written nothing for **15 s** and
+  no fragmented message is half-written;
+- the client closes (`4000 heartbeat_timeout`) and reconnects after **45 s**
+  with no frame of any kind received. It resets on every frame (text, binary
+  fragment or keepalive) before parsing.
 
-The client immediately echoes that ID in a pong:
+Because a browser surfaces a frame only when all of it has arrived, the
+client's watchdog needs each frame within 45 s; fragment sizing (below) keeps
+that true down to about 12 B/s in steady state, and about 182 B/s for frames
+already in flight when the rate suddenly drops (8 KiB cap).
 
-```json
-{ "type": "pong", "heartbeatId": "hb-42" }
-```
+## Framing
 
-`HeartbeatPingSchema` and `HeartbeatPongSchema` validate these messages.
-`ServerMessageSchema` accepts pings and `ClientMessageSchema` accepts pongs.
-They are connection-control messages, not commands: they have no request ID,
-terminal response, durable sequence, replay cursor, or subscription scope.
-Unknown or stale pong IDs never acknowledge the current ping.
+A message that fits in one fragment is an ordinary text frame. A larger one is
+sent as consecutive binary frames: one flag byte (`1` more follow, `2` last)
+then a slice of the message's UTF-8 bytes. Fragments of one message are never
+interleaved with any other frame. The receiver concatenates the slices and
+decodes once, at the last fragment.
 
-## Timing
+Fragment size, flag included: `clamp(measured rate × 2 s, 512 B, 8 KiB)`,
+1 KiB until the first rate is measured.
 
-`HEARTBEAT_POLICY` is normative for protocol version 7:
+## Flow control
 
-| Setting                |     Value | Meaning                                                          |
-| ---------------------- | --------: | ---------------------------------------------------------------- |
-| `serverPingIntervalMs` | 15,000 ms | Time from handshake, or one sent ping, to the next ping          |
-| `pongTimeoutMs`        | 10,000 ms | Maximum time the server waits for that ping's matching pong      |
-| `clientIdleTimeoutMs`  | 45,000 ms | Maximum time the client accepts without any valid server message |
+- The client acknowledges the total payload bytes received (`ack.received`):
+  every 32 KiB, or 250 ms after the last frame while anything is
+  unacknowledged. A text frame counts its UTF-8 length, a binary frame its byte
+  length.
+- The server writes only while `sent − acked < window`. The window starts at
+  256 KiB and follows twice the measured bandwidth-delay product, up to 4 MiB.
+- Live frames of subscribed scopes waiting for the window are bounded at
+  1 MiB per connection. Past the bound, every scope with frames in the queue
+  goes **lagging**: its queued frames are dropped and the server sends
+  `subscription.lagging {subscriptionId, cursor}` (the last record it wrote).
+  Responses, readings (coalesced to the latest) and the message being written
+  are never dropped.
+- When the queue has drained below half the bound and the window is open, the
+  server builds a catch-up for each lagging scope from that cursor (replay or
+  snapshot, by the same rule as `subscription.replay`), resumes live delivery
+  in the same tick, and sends `subscription.catchup` with the replay-answer
+  payload. The client applies it like a replay answer.
 
-Each peer measures elapsed time with its own monotonic clock; timestamps never
-cross the wire. Exactly one ping may be outstanding. A pong received at its
-deadline is late. On timer or machine-sleep recovery, evaluate the overdue
-timeout before sending more traffic.
-
-The client resets its idle deadline after every valid server message, including
-a ping. Other valid server traffic also proves that the connection is alive.
-The server still requires a matching pong for an outstanding ping because that
-proves the client received server traffic and can respond.
-
-## Timeout behavior
-
-After a client reaches `clientIdleTimeoutMs`, it closes the stale transport with
-code `4000` and reason `heartbeat_timeout`, treats the connection as
-disconnected, and enters its normal bounded-backoff reconnect loop. Pending
-command identities and durable replay cursors follow the existing recovery
-contract; a heartbeat timeout does not settle or blindly repeat a command.
-
-After a server waits `pongTimeoutMs` without a matching pong, it closes the
-socket with the same code and reason. It immediately releases every live
-subscription and other connection-scoped resource for that socket. Durable
-event history remains scope-owned so a later connection can recover through
-replay or snapshot.
-
-The pure helpers make those requirements explicit without owning a clock,
-timer, socket, reconnect scheduler, or subscription registry:
-
-- `advanceServerHeartbeat` returns `send_ping`, `wait`, or a `disconnect`
-  action with `releaseSubscriptions: true`.
-- `acceptHeartbeatPong` clears only a current, timely ping.
-- `observeServerActivity` extends the client's liveness deadline.
-- `advanceClientHeartbeat` returns a `disconnect` action with
-  `enterReconnectLoop: true` when the deadline is reached.
-- `respondToHeartbeat` creates the required pong for a validated ping.
+Nothing is lost: the event log is the truth, and dropping queued frames only
+moves their delivery into the catch-up.

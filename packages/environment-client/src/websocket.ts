@@ -10,19 +10,23 @@ import {
   SERVER_SHUTDOWN_CLOSE_CODE,
   SERVER_SHUTDOWN_CLOSE_REASON,
   ProviderHealthChangedEventSchema,
+  FLOW_POLICY,
+  FragmentAssembler,
   ServerMessageSchema,
+  SubscriptionCatchupSchema,
   SubscriptionEventSchema,
+  SubscriptionLaggingSchema,
   SubscriptionTransientSchema,
-  advanceClientHeartbeat,
+  advanceClientLiveness,
   artifactPath,
-  createClientHeartbeatState,
+  createClientLivenessState,
   draftArtifactPath,
-  observeServerActivity,
   parseProtocolHandshakeResult,
   parseReplayResult,
-  respondToHeartbeat,
+  utf8Length,
   type AuthorizedClientList,
-  type ClientHeartbeatState,
+  type ClientLivenessState,
+  type ReplayResponse,
   type Cursor,
   type SessionListCursor,
   type DurableEvent,
@@ -95,6 +99,11 @@ import {
 /** The subset of the WHATWG WebSocket surface the client relies on. */
 export interface WebSocketLike {
   readonly readyState: number
+  /**
+   * Set to `'arraybuffer'` so binary fragments arrive as `ArrayBuffer`
+   * (protocol v19 framing). Optional for fakes that never send binary.
+   */
+  binaryType?: string
   send(data: string): void
   close(code?: number, reason?: string): void
   addEventListener(type: 'open', listener: () => void): void
@@ -224,7 +233,16 @@ type Subscription = {
    * turn (docs/sync-foundations.md §3.5).
    */
   needsSnapshot?: boolean
+  /**
+   * The server said this subscription is lagging: its live frames were
+   * dropped and a `subscription.catchup` follows. Frames are held meanwhile,
+   * as during a catch-up the client asked for (docs/sync-foundations.md §7.2).
+   */
+  lagging?: boolean
 }
+
+/** A replay answer's payload, or a server-initiated catch-up's: the same union. */
+type AnswerPayload = ReplayResponse['payload']
 
 const scopeKey = (scope: SubscriptionScope) =>
   scope.type === 'environment'
@@ -346,7 +364,14 @@ export function createWebSocketEnvironmentClient(
   let attempts = 0
   let reconnectTimer: unknown = null
   let heartbeatTimer: unknown = null
-  let heartbeat: ClientHeartbeatState | null = null
+  let liveness: ClientLivenessState | null = null
+  // Flow control for the current socket (docs/sync-foundations.md §7.2):
+  // payload bytes received, the total last acknowledged, and the pending
+  // acknowledgement timer. A fragmented message is reassembled here.
+  let received = 0
+  let acknowledged = 0
+  let ackTimer: unknown = null
+  let assembler = new FragmentAssembler()
   let environmentId = options.environmentId ?? null
   let capabilities = new Set<string>()
   /** The id each unacknowledged interaction answer went out under. */
@@ -370,6 +395,8 @@ export function createWebSocketEnvironmentClient(
   const rawSend = (message: unknown) => {
     if (!socket || socket.readyState !== OPEN) return false
     socket.send(JSON.stringify(message))
+    // Anything sent proves this client is alive; no beat is needed for a while.
+    if (liveness) liveness = { ...liveness, lastSentAtMs: now() }
     return true
   }
 
@@ -382,24 +409,67 @@ export function createWebSocketEnvironmentClient(
   const stopHeartbeat = () => {
     if (heartbeatTimer !== null) timers.clearTimeout(heartbeatTimer)
     heartbeatTimer = null
-    heartbeat = null
+    liveness = null
+    if (ackTimer !== null) timers.clearTimeout(ackTimer)
+    ackTimer = null
   }
 
+  /**
+   * Liveness (docs/sync-foundations.md §7.2): a beat when nothing has been
+   * sent for 10 s, and a reconnect after 45 s with no frame of any kind.
+   * Frames move the clock without touching the timer; the timer reads it.
+   */
   const scheduleHeartbeat = () => {
-    if (!heartbeat) return
+    if (!liveness) return
     if (heartbeatTimer !== null) timers.clearTimeout(heartbeatTimer)
-    const action = advanceClientHeartbeat(heartbeat, now())
+    heartbeatTimer = null
+    const action = advanceClientLiveness(liveness, now())
     if (action.type === 'disconnect') {
       socket?.close(action.code, action.reason)
       return
     }
+    if (action.type === 'beat') rawSend({ type: 'beat' })
     heartbeatTimer = timers.setTimeout(scheduleHeartbeat, action.delayMs)
   }
 
-  const observeActivity = () => {
-    if (!heartbeat) return
-    heartbeat = observeServerActivity(heartbeat, now())
-    scheduleHeartbeat()
+  const sendAck = () => {
+    if (ackTimer !== null) timers.clearTimeout(ackTimer)
+    ackTimer = null
+    if (received === acknowledged) return
+    if (rawSend({ type: 'ack', received })) acknowledged = received
+  }
+
+  /**
+   * One frame arrived: it proves the server alive before anything parses it,
+   * counts toward the next acknowledgement, and, if it is a fragment, joins
+   * its message. Returns the whole message's text once there is one.
+   */
+  const receiveFrame = (data: unknown): string | undefined => {
+    if (liveness) liveness = { ...liveness, lastFrameAtMs: now() }
+    let text: string | undefined
+    let bytes: number
+    if (typeof data === 'string') {
+      bytes = utf8Length(data)
+      text = data
+    } else {
+      const frame =
+        data instanceof ArrayBuffer
+          ? new Uint8Array(data)
+          : ArrayBuffer.isView(data)
+            ? new Uint8Array(data.buffer, data.byteOffset, data.byteLength)
+            : undefined
+      if (!frame) return undefined
+      bytes = frame.byteLength
+      const whole = assembler.push(frame)
+      if (whole) text = new TextDecoder().decode(whole)
+    }
+    received += bytes
+    if (received - acknowledged >= FLOW_POLICY.ackEveryBytes) sendAck()
+    else {
+      if (ackTimer !== null) timers.clearTimeout(ackTimer)
+      ackTimer = timers.setTimeout(sendAck, FLOW_POLICY.ackDelayMs)
+    }
+    return text
   }
 
   const clearReconnect = () => {
@@ -445,6 +515,7 @@ export function createWebSocketEnvironmentClient(
       subscription.inflight = false
       subscription.held = undefined
       subscription.recovery = undefined
+      subscription.lagging = false
     }
     rejectAllPending(closedError)
     if (!closedSocket) return
@@ -553,7 +624,7 @@ export function createWebSocketEnvironmentClient(
     ready = true
     attempts = 0
     connectionGeneration += 1
-    heartbeat = createClientHeartbeatState(now())
+    liveness = createClientLivenessState(now())
     scheduleHeartbeat()
     patchConnection({
       phase: 'connected',
@@ -568,20 +639,25 @@ export function createWebSocketEnvironmentClient(
   }
 
   const handleMessage = (data: unknown) => {
+    let text: string | undefined
+    try {
+      text = receiveFrame(data)
+    } catch {
+      // A fragment out of order: the stream cannot be trusted past it.
+      socket?.close(1002, 'invalid_frame')
+      return
+    }
+    if (text === undefined) return
     let raw: unknown
     try {
-      raw = JSON.parse(typeof data === 'string' ? data : String(data))
+      raw = JSON.parse(text)
     } catch {
       return
     }
     const parsed = ServerMessageSchema.safeParse(raw)
     if (!parsed.success) return
-    observeActivity()
     const message = parsed.data
-    if (message.type === 'ping') {
-      rawSend(respondToHeartbeat(message))
-      return
-    }
+    if (message.type === 'keepalive') return
     if (message.type === 'event') {
       handleEvent(raw)
       return
@@ -707,6 +783,77 @@ export function createWebSocketEnvironmentClient(
 
   const foldEvent = (event: ProofEvent) => store.update((state) => applyEvent(state, event))
 
+  const bySubscriptionId = (subscriptionId: string) => {
+    for (const subscription of subscriptions.values()) {
+      if (subscription.subscriptionId === subscriptionId) return subscription
+    }
+    return undefined
+  }
+
+  /**
+   * Apply an answer for a scope, from its own `subscription.replay` or from a
+   * server catch-up: the tail after the cursor, or a snapshot.
+   */
+  const applyAnswer = (subscription: Subscription, payload: AnswerPayload) => {
+    if (payload.mode === 'replay') {
+      // The exact tail after the cursor; one already held is a repeat.
+      for (const record of payload.events) {
+        if (placeRecord(subscription.cursor, record.cursor) !== 'drop') {
+          applyRecord(subscription, record)
+        }
+      }
+      subscription.cursor = payload.to
+      if (subscription.scope.type === 'thread') {
+        const threadId = subscription.scope.threadId
+        store.update((state) => applyThreadHydration(state, threadId, 'ready'))
+      }
+      return
+    }
+    store.update((state) => applySnapshot(state, payload.snapshot))
+    subscription.cursor = payload.snapshot.cursor
+    // Preference events were missed along with the rest of the gap and
+    // the snapshot does not carry them, so held ones read as unloaded.
+    if (subscription.scope.type === 'environment' && payload.reason !== 'initial') {
+      store.update(applyComposerPreferencesReset)
+    }
+    // Drafts are not in the snapshot either; they are listed again.
+    if (subscription.scope.type === 'environment') store.update(applyDraftsUnlisted)
+  }
+
+  /**
+   * A server catch-up for a lagging subscription. It starts where the server
+   * stopped writing, which is where this client's cursor is; if it is not
+   * (a replay from elsewhere, a snapshot older than what is held), the client
+   * catches up by itself from its own cursor instead. Then everything held
+   * meanwhile is placed against the new cursor.
+   */
+  const applyCatchup = (subscription: Subscription, payload: AnswerPayload) => {
+    subscription.lagging = false
+    const cursor = subscription.cursor
+    const fits =
+      payload.mode === 'replay'
+        ? cursor !== null &&
+          payload.from.epoch === cursor.epoch &&
+          payload.from.sequence === cursor.sequence
+        : !(
+            cursor &&
+            payload.snapshot.cursor.epoch === cursor.epoch &&
+            payload.snapshot.cursor.sequence < cursor.sequence
+          )
+    if (!fits) {
+      if (subscription.subscriptionId) sendUnsubscribe(subscription.subscriptionId)
+      subscription.subscriptionId = null
+      subscription.inflight = false
+      void recover(subscription).catch(() => undefined)
+      return
+    }
+    applyAnswer(subscription, payload)
+    const held = subscription.held ?? []
+    subscription.held = undefined
+    release(subscription, held)
+    resnapshot(subscription)
+  }
+
   const handleEvent = (raw: unknown) => {
     const live = SubscriptionEventSchema.safeParse(raw)
     if (live.success) {
@@ -723,6 +870,23 @@ export function createWebSocketEnvironmentClient(
       const { after, event } = transient.data.payload
       const subscription = subscriptions.get(scopeKey(after.scope))
       if (subscription) receive(subscription, { kind: 'transient', after, event })
+      return
+    }
+    // The server stopped sending a subscription's live frames: hold the
+    // scope, as during a catch-up, until its `subscription.catchup`.
+    const lagging = SubscriptionLaggingSchema.safeParse(raw)
+    if (lagging.success) {
+      const subscription = bySubscriptionId(lagging.data.payload.subscriptionId)
+      if (subscription) {
+        subscription.lagging = true
+        subscription.held ??= []
+      }
+      return
+    }
+    const catchup = SubscriptionCatchupSchema.safeParse(raw)
+    if (catchup.success) {
+      const subscription = bySubscriptionId(catchup.data.payload.subscriptionId)
+      if (subscription) applyCatchup(subscription, catchup.data.payload)
       return
     }
     // The device list goes to admin holders as a whole current reading.
@@ -757,6 +921,15 @@ export function createWebSocketEnvironmentClient(
       return
     }
     socket = next
+    // Fragments arrive as ArrayBuffer; counters start over with each socket.
+    try {
+      next.binaryType = 'arraybuffer'
+    } catch {
+      // A fake without binary support.
+    }
+    received = 0
+    acknowledged = 0
+    assembler = new FragmentAssembler()
     const hasConnected = store.getState().connection.hasConnected
     patchConnection({ phase: hasConnected ? 'reconnecting' : 'connecting' })
     next.addEventListener('open', () => {
@@ -928,7 +1101,9 @@ export function createWebSocketEnvironmentClient(
       name: REPLAY_NAME,
       payload: { scope: subscription.scope, cursor: subscription.cursor },
     }
-    subscription.held = first ? [first] : []
+    // Frames already held (a lagging scope that now recovers by itself) stay,
+    // behind the frame that asked for this catch-up.
+    subscription.held = [...(first ? [first] : []), ...(subscription.held ?? [])]
     const recovery = new Promise<void>((resolve, reject) => {
       const fail = (error: EnvironmentClientError) => {
         subscription.inflight = false
@@ -971,29 +1146,7 @@ export function createWebSocketEnvironmentClient(
             return
           }
           subscription.subscriptionId = payload.subscriptionId
-          if (payload.mode === 'replay') {
-            // The exact tail after the cursor; one already held is a repeat.
-            for (const record of payload.events) {
-              if (placeRecord(subscription.cursor, record.cursor) !== 'drop') {
-                applyRecord(subscription, record)
-              }
-            }
-            subscription.cursor = payload.to
-            if (subscription.scope.type === 'thread') {
-              const threadId = subscription.scope.threadId
-              store.update((state) => applyThreadHydration(state, threadId, 'ready'))
-            }
-          } else {
-            store.update((state) => applySnapshot(state, payload.snapshot))
-            subscription.cursor = payload.snapshot.cursor
-            // Preference events were missed along with the rest of the gap and
-            // the snapshot does not carry them, so held ones read as unloaded.
-            if (subscription.scope.type === 'environment' && payload.reason !== 'initial') {
-              store.update(applyComposerPreferencesReset)
-            }
-            // Drafts are not in the snapshot either; they are listed again.
-            if (subscription.scope.type === 'environment') store.update(applyDraftsUnlisted)
-          }
+          applyAnswer(subscription, payload)
           // The catch-up is over: what waited is placed against its cursor,
           // and may start the next one.
           const held = subscription.held ?? []
