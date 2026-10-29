@@ -41,7 +41,7 @@ import {
 } from './composer-provider'
 import { DraftPageContext, DraftPicksContext, type DraftPagePicks } from './draft-pages'
 import { resolveDraftProvider } from './draft-provider'
-import { latestSendingDraft } from './environment-drafts'
+import { latestSendingDraft, sendingNewSessionDraft } from './environment-drafts'
 import { PlatformCapabilitiesContext, providerBlocksComposer } from './platform-provider'
 import { SessionStateContext } from './session-provider'
 
@@ -225,7 +225,11 @@ export function EnvironmentComposerStateProvider({ children }: { children: React
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [client, connection.capabilities],
   )
-  const activeSession = useActiveSession()
+  // The session this composer serves: the one on screen, and only while
+  // session state says one is open. A scope with a draft of its own (the
+  // quick New agent palette) has none, whatever the page behind it shows.
+  const listedSession = useActiveSession()
+  const activeSession = activeSessionId ? listedSession : undefined
   const sync = client.drafts
   // Picks made on a draft the environment does not have yet, by draft id.
   // Its first save takes them along.
@@ -543,7 +547,12 @@ export function EnvironmentComposerStateProvider({ children }: { children: React
     (workspaceId: string): DraftLaunch => {
       // The draft the composer set aside when send was pressed. It launches
       // from its own project even if the page moved on while images uploaded.
-      const sending = sync ? latestSendingDraft(sync) : undefined
+      // Its own draft first: another composer (the quick New agent palette)
+      // may be sending one of its own at the same time.
+      const own = liveRef.current.draftId
+      const sending = sync
+        ? ((own ? sendingNewSessionDraft(sync, own) : undefined) ?? latestSendingDraft(sync))
+        : undefined
       const id = sending?.draftId ?? liveRef.current.draftId
       let kept = sending ? { draftId: sending.draftId, sessionId: sending.sessionId } : undefined
       if (sync && !sending && id) {

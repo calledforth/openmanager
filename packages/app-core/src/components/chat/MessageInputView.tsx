@@ -248,7 +248,7 @@ function useScrollEdgeFade() {
 }
 
 /** An image as the composer shows it, whichever way the draft holds it. */
-type ComposerImage = {
+export type ComposerImage = {
   id: string
   name: string
   /** Absent while a kept image's bytes load, or when they cannot be read. */
@@ -258,45 +258,83 @@ type ComposerImage = {
   failed?: boolean
 }
 
-export function MessageInputView({
-  disabled,
-  pendingDraftSessionStart,
-  activeWorkspacePath,
-  activeSessionId,
-  isSessionDraftOpen,
-  providerReady,
-  currentProviderId,
-  providerModelGroups,
-  currentModelId,
-  configOptions,
-  modeOptions,
-  currentModeId,
-  effortLevels,
-  effortOptions,
-  effortConfigId = 'effort',
-  currentEffort,
-  canChangeSettings,
-  canChangeProvider,
-  showModeControl,
-  showModelControl,
-  isStreaming,
-  isAwaitingPlanReview = false,
-  textOverride,
-  attachedTop = false,
-  draftKey,
-  imageUploadEnabled,
-  imageSupportMessage,
-  settingsError,
-  sendBlockedReason = null,
-  slashCommands = [],
-  usage = null,
-  onModeChange,
-  onProviderModelChange,
-  onConfigOptionChange,
-  onSend,
-  onAbort,
-  uploadImage,
+/** The draft's images as thumbnails: each opens large, and each can be taken out. */
+export function ComposerImageStrip({
+  images,
+  className,
+  onView,
+  onRemove,
 }: {
+  images: readonly ComposerImage[]
+  className?: string
+  onView: (id: string) => void
+  onRemove: (id: string) => void
+}) {
+  if (images.length === 0) return null
+  return (
+    <div className={cn('flex gap-2 overflow-x-auto scrollbar-hide', className)}>
+      {images.map((image) => (
+        <div
+          key={image.id}
+          aria-busy={image.uploading || undefined}
+          className="group relative h-16 w-16 shrink-0 overflow-hidden rounded-lg border border-[var(--basis-border)] bg-[var(--basis-surface)] shadow-sm"
+        >
+          <button
+            type="button"
+            disabled={!image.url}
+            onClick={() => onView(image.id)}
+            aria-label={
+              image.failed ? `${image.name} could not be loaded` : `Preview ${image.name}`
+            }
+            className="block h-full w-full cursor-zoom-in disabled:cursor-default focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-[var(--basis-text-muted)]"
+          >
+            {image.url ? (
+              <img
+                src={image.url}
+                alt={image.name}
+                className={cn(
+                  'h-full w-full object-cover transition-[transform,opacity] duration-200 group-hover:scale-[1.03]',
+                  image.uploading && 'opacity-60',
+                )}
+              />
+            ) : (
+              // Read back from the environment, or not there to read.
+              <span
+                className={cn(
+                  'flex h-full w-full items-center justify-center text-[10px] text-[var(--basis-text-muted)]',
+                  !image.failed && 'animate-pulse bg-[var(--basis-border)]',
+                )}
+              >
+                {image.failed ? 'Unavailable' : null}
+              </span>
+            )}
+            {image.uploading ? (
+              <span className="pointer-events-none absolute inset-0 flex items-center justify-center text-white">
+                <CircleNotchIcon className="h-4 w-4 animate-spin drop-shadow" />
+              </span>
+            ) : image.url ? (
+              <span className="pointer-events-none absolute bottom-1 right-1 flex h-4 w-4 items-center justify-center rounded border border-white/15 bg-black/55 text-white/75 opacity-0 shadow-sm backdrop-blur-sm transition-opacity group-hover:opacity-100 group-focus-within:opacity-100">
+                <ArrowsOutIcon className="h-2.5 w-2.5" />
+              </span>
+            ) : null}
+          </button>
+          <button
+            type="button"
+            onClick={() => onRemove(image.id)}
+            className="absolute right-1 top-1 flex h-5 w-5 items-center justify-center rounded-full bg-black/70 text-white opacity-90 shadow-sm transition hover:bg-black group-hover:opacity-100"
+            aria-label={`Remove ${image.name}`}
+          >
+            <XIcon size={11} />
+          </button>
+        </div>
+      ))}
+    </div>
+  )
+}
+
+/** What the composer takes: its draft, the controls around it, and what
+ * sending does. */
+export interface MessageInputViewProps {
   disabled: boolean
   pendingDraftSessionStart: boolean
   activeWorkspacePath: string | null
@@ -359,7 +397,41 @@ export function MessageInputView({
    * here and upload when sent.
    */
   uploadImage?: (image: DraftImageAttachment) => Promise<UploadedImageAttachment>
-}) {
+}
+
+/**
+ * The composer's workings without its markup: the draft's text and images
+ * (each image uploaded and kept with the draft as it is attached), paste and
+ * drop, slash commands, and the send that clears the box and puts it all back
+ * if the send fails. `MessageInputView` lays it out as the chat composer; the
+ * quick New agent palette lays the same draft out as its own form.
+ */
+export function useMessageInputController({
+  disabled,
+  pendingDraftSessionStart,
+  activeWorkspacePath,
+  activeSessionId,
+  isSessionDraftOpen,
+  providerReady,
+  currentProviderId,
+  providerModelGroups,
+  modeOptions,
+  currentModeId,
+  effortLevels,
+  effortOptions,
+  effortConfigId = 'effort',
+  currentEffort,
+  isAwaitingPlanReview = false,
+  textOverride,
+  draftKey,
+  imageUploadEnabled,
+  imageSupportMessage,
+  sendBlockedReason = null,
+  slashCommands = [],
+  onConfigOptionChange,
+  onSend,
+  uploadImage,
+}: MessageInputViewProps) {
   // Text lives in the host's draft store, which reads synchronously, so a
   // restored draft is on screen at first paint — no frame of empty box.
   const draftStore = useComposerDraftStore()
@@ -951,6 +1023,111 @@ export function MessageInputView({
         }
       : undefined
 
+  return {
+    slashOpen,
+    shellRef,
+    slashMatches,
+    slashActiveIndex,
+    setSlashActiveIndex,
+    acceptSlashCommand,
+    setSlashDismissed,
+    viewingAttachment,
+    viewable,
+    setViewingAttachment,
+    isDragging,
+    setIsDragging,
+    onDrop,
+    fileInputRef,
+    addFiles,
+    images,
+    removeAttachment,
+    textareaRef,
+    text,
+    updateDraft,
+    onKeyDown,
+    onPaste,
+    placeholder,
+    attachmentError,
+    toolbarRef,
+    sending,
+    focusTextarea,
+    effortControl,
+    buildPlanToggle,
+    isPlan,
+    buildModeId,
+    draftStore,
+    sendActive,
+    send,
+    hasContent,
+  }
+}
+
+export function MessageInputView(props: MessageInputViewProps) {
+  const {
+    disabled,
+    pendingDraftSessionStart,
+    currentProviderId,
+    providerModelGroups,
+    currentModelId,
+    configOptions,
+    modeOptions,
+    currentModeId,
+    canChangeSettings,
+    canChangeProvider,
+    showModeControl,
+    showModelControl,
+    isStreaming,
+    isAwaitingPlanReview,
+    textOverride,
+    attachedTop,
+    draftKey,
+    imageUploadEnabled,
+    imageSupportMessage,
+    settingsError,
+    sendBlockedReason,
+    usage,
+    onModeChange,
+    onProviderModelChange,
+    onConfigOptionChange,
+    onAbort,
+  } = props
+  const {
+    slashOpen,
+    shellRef,
+    slashMatches,
+    slashActiveIndex,
+    setSlashActiveIndex,
+    acceptSlashCommand,
+    setSlashDismissed,
+    viewingAttachment,
+    viewable,
+    setViewingAttachment,
+    isDragging,
+    setIsDragging,
+    onDrop,
+    fileInputRef,
+    addFiles,
+    images,
+    removeAttachment,
+    textareaRef,
+    text,
+    updateDraft,
+    onKeyDown,
+    onPaste,
+    placeholder,
+    attachmentError,
+    toolbarRef,
+    sending,
+    focusTextarea,
+    effortControl,
+    buildPlanToggle,
+    isPlan,
+    buildModeId,
+    draftStore,
+    sendActive,
+    send,
+  } = useMessageInputController(props)
+
   return (
     // Attached under a question card or the todo list, the composer is part of
     // a stack that MessageInput frames; on its own it is the card.
@@ -1004,67 +1181,12 @@ export function MessageInputView({
             event.target.value = ''
           }}
         />
-        {images.length > 0 && (
-          <div className="flex gap-2 overflow-x-auto px-2 pt-1.5 pb-0.5 scrollbar-hide">
-            {images.map((image) => (
-              <div
-                key={image.id}
-                aria-busy={image.uploading || undefined}
-                className="group relative h-16 w-16 shrink-0 overflow-hidden rounded-lg border border-[var(--basis-border)] bg-[var(--basis-surface)] shadow-sm"
-              >
-                <button
-                  type="button"
-                  disabled={!image.url}
-                  onClick={() =>
-                    setViewingAttachment(viewable.findIndex((each) => each.id === image.id))
-                  }
-                  aria-label={
-                    image.failed ? `${image.name} could not be loaded` : `Preview ${image.name}`
-                  }
-                  className="block h-full w-full cursor-zoom-in disabled:cursor-default focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-[var(--basis-text-muted)]"
-                >
-                  {image.url ? (
-                    <img
-                      src={image.url}
-                      alt={image.name}
-                      className={cn(
-                        'h-full w-full object-cover transition-[transform,opacity] duration-200 group-hover:scale-[1.03]',
-                        image.uploading && 'opacity-60',
-                      )}
-                    />
-                  ) : (
-                    // Read back from the environment, or not there to read.
-                    <span
-                      className={cn(
-                        'flex h-full w-full items-center justify-center text-[10px] text-[var(--basis-text-muted)]',
-                        !image.failed && 'animate-pulse bg-[var(--basis-border)]',
-                      )}
-                    >
-                      {image.failed ? 'Unavailable' : null}
-                    </span>
-                  )}
-                  {image.uploading ? (
-                    <span className="pointer-events-none absolute inset-0 flex items-center justify-center text-white">
-                      <CircleNotchIcon className="h-4 w-4 animate-spin drop-shadow" />
-                    </span>
-                  ) : image.url ? (
-                    <span className="pointer-events-none absolute bottom-1 right-1 flex h-4 w-4 items-center justify-center rounded border border-white/15 bg-black/55 text-white/75 opacity-0 shadow-sm backdrop-blur-sm transition-opacity group-hover:opacity-100 group-focus-within:opacity-100">
-                      <ArrowsOutIcon className="h-2.5 w-2.5" />
-                    </span>
-                  ) : null}
-                </button>
-                <button
-                  type="button"
-                  onClick={() => removeAttachment(image.id)}
-                  className="absolute right-1 top-1 flex h-5 w-5 items-center justify-center rounded-full bg-black/70 text-white opacity-90 shadow-sm transition hover:bg-black group-hover:opacity-100"
-                  aria-label={`Remove ${image.name}`}
-                >
-                  <XIcon size={11} />
-                </button>
-              </div>
-            ))}
-          </div>
-        )}
+        <ComposerImageStrip
+          images={images}
+          className="px-2 pt-1.5 pb-0.5"
+          onView={(id) => setViewingAttachment(viewable.findIndex((each) => each.id === id))}
+          onRemove={removeAttachment}
+        />
         <textarea
           ref={textareaRef}
           value={text}
