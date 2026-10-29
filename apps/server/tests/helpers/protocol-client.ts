@@ -5,6 +5,7 @@ import { join } from 'node:path'
 import { WebSocket } from 'ws'
 import { expect } from 'vitest'
 import {
+  FragmentAssembler,
   PROTOCOL_VERSION,
   ProofResponseSchemas,
   ProtocolHandshakeResponseSchema,
@@ -63,8 +64,20 @@ export async function connectProtocol(host: ProtocolHost) {
   clients.push(ws)
   const queue: ServerMessage[] = []
   let waiter: ((message: ServerMessage) => void) | undefined
-  ws.on('message', (data) => {
-    const message = ServerMessageSchema.parse(JSON.parse(data.toString()))
+  // A browser-like reader: reassembles fragments and acknowledges every byte
+  // as it arrives, so the server's send window never stalls a test.
+  const assembler = new FragmentAssembler()
+  let received = 0
+  ws.on('message', (data: Buffer, isBinary: boolean) => {
+    received += data.byteLength
+    ws.send(JSON.stringify({ type: 'ack', received }))
+    let text: string
+    if (isBinary) {
+      const whole = assembler.push(new Uint8Array(data))
+      if (!whole) return
+      text = Buffer.from(whole).toString('utf8')
+    } else text = data.toString()
+    const message = ServerMessageSchema.parse(JSON.parse(text))
     if (waiter) {
       const resolve = waiter
       waiter = undefined
@@ -120,15 +133,15 @@ export async function replay(
 export async function nextNonPing(client: ProtocolClient): Promise<ServerMessage> {
   for (;;) {
     const message = await client.next()
-    if (message.type === 'ping') {
-      client.ws.send(JSON.stringify({ type: 'pong', heartbeatId: message.heartbeatId }))
-      continue
-    }
+    if (message.type === 'keepalive') continue
     return message
   }
 }
 
-export async function nextResponse(client: ProtocolClient, requestId: string): Promise<ServerMessage> {
+export async function nextResponse(
+  client: ProtocolClient,
+  requestId: string,
+): Promise<ServerMessage> {
   for (;;) {
     const message = await nextNonPing(client)
     if (
@@ -198,9 +211,7 @@ export function assistantTextFromMessages(messages: readonly Message[]): string 
   return messages
     .filter((message) => message.role === 'assistant')
     .flatMap((message) =>
-      message.content.flatMap((block) =>
-        block.type === 'text' && block.text ? [block.text] : [],
-      ),
+      message.content.flatMap((block) => (block.type === 'text' && block.text ? [block.text] : [])),
     )
     .join('')
 }

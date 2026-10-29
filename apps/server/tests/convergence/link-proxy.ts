@@ -627,9 +627,35 @@ export class LinkProxy {
       () => this.shapes.up,
       () => this.holes,
     )
+    // Protocol v19 sends a message larger than one fragment as binary
+    // frames (a flag byte, then a slice). They are recorded as the one text
+    // message they make, at its last fragment, so scenarios read messages.
+    const fragments = { parts: [] as Buffer[], kept: 0, size: 0 }
     const downInspector = new Inspector(
       INSPECT_HEAD_BYTES,
       (frame) => {
+        if (frame.opcode === 2 && (frame.head[0] === 1 || frame.head[0] === 2)) {
+          const slice = frame.head.subarray(1)
+          fragments.size += frame.size - 1
+          if (fragments.kept < INSPECT_HEAD_BYTES) {
+            const kept = Buffer.from(slice.subarray(0, INSPECT_HEAD_BYTES - fragments.kept))
+            fragments.parts.push(kept)
+            fragments.kept += kept.length
+          }
+          if (frame.head[0] !== 2) return
+          const head = Buffer.concat(fragments.parts, fragments.kept)
+          const message: InspectedFrame = {
+            opcode: 1,
+            size: fragments.size,
+            head,
+            whole: head.length === fragments.size,
+          }
+          fragments.parts = []
+          fragments.kept = 0
+          fragments.size = 0
+          if (this.recording) this.frames.push(this.describe(id, 'down', message))
+          return
+        }
         if (this.recording) this.frames.push(this.describe(id, 'down', frame))
       },
       (raw) => down.push(raw),

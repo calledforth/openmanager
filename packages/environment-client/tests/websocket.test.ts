@@ -41,6 +41,9 @@ class FakeSocket implements WebSocketLike {
   static instances: FakeSocket[] = []
   readyState = 0
   sent: Array<{ type: string; requestId: string; name: string; payload: unknown }> = []
+  /** Beats and acks (connection control), kept apart from commands. */
+  control: Array<{ type: 'beat' } | { type: 'ack'; received: number }> = []
+  binaryType = 'blob'
   private listeners = new Map<string, Listener[]>()
   constructor(
     readonly url: string,
@@ -52,7 +55,9 @@ class FakeSocket implements WebSocketLike {
     this.listeners.set(type, [...(this.listeners.get(type) ?? []), listener])
   }
   send(data: string) {
-    this.sent.push(JSON.parse(data))
+    const message = JSON.parse(data)
+    if (message.type === 'beat' || message.type === 'ack') this.control.push(message)
+    else this.sent.push(message)
   }
   close(code = 1000, reason = '') {
     if (this.readyState === 3) return
@@ -66,6 +71,17 @@ class FakeSocket implements WebSocketLike {
   }
   receive(message: unknown) {
     this.dispatch('message', { data: JSON.stringify(message) })
+  }
+  /** A message as binary fragments of `size` bytes each (flag included). */
+  receiveFragments(message: unknown, size: number) {
+    const bytes = new TextEncoder().encode(JSON.stringify(message))
+    for (let offset = 0; offset < bytes.byteLength; offset += size - 1) {
+      const slice = bytes.subarray(offset, offset + size - 1)
+      const frame = new Uint8Array(slice.byteLength + 1)
+      frame[0] = offset + size - 1 >= bytes.byteLength ? 2 : 1
+      frame.set(slice, 1)
+      this.dispatch('message', { data: frame.buffer })
+    }
   }
   drop(code = 1006, reason = '') {
     this.readyState = 3
@@ -2052,10 +2068,52 @@ describe('websocket environment client', () => {
     expect(next.sent.filter((message) => message.name === 'session.open')).toHaveLength(1)
   })
 
-  it('answers heartbeat pings', async () => {
+  it('asks for binary frames as ArrayBuffer', async () => {
     const { socket } = await connected()
-    socket.receive({ type: 'ping', heartbeatId: 'hb-1' })
-    expect(socket.sent.at(-1)).toEqual({ type: 'pong', heartbeatId: 'hb-1' })
+    expect(socket.binaryType).toBe('arraybuffer')
+  })
+
+  it('beats when it has sent nothing for 10 s, and takes a keepalive as a sign of life', async () => {
+    const { client, socket, timers } = await connected()
+    socket.control.length = 0
+    for (let step = 0; step < 4; step++) {
+      timers.advance(10_000)
+      socket.receive({ type: 'keepalive' })
+    }
+    expect(socket.control.filter((message) => message.type === 'beat').length).toBeGreaterThan(2)
+    expect(client.getState().connection.phase).toBe('connected')
+  })
+
+  it('reconnects after 45 s without any frame, and any frame resets that', async () => {
+    const { client, socket, timers } = await connected()
+    timers.advance(40_000)
+    socket.receive({ type: 'keepalive' })
+    timers.advance(40_000)
+    expect(client.getState().connection.phase).toBe('connected')
+    timers.advance(5_000)
+    expect(client.getState().connection.phase).toBe('reconnecting')
+    expect(socket.readyState).toBe(3)
+  })
+
+  it('reassembles a fragmented message, and acknowledges the bytes it received', async () => {
+    const { client, socket, timers } = await connected()
+    const environment = { environmentId: ENV, name: 'Fragmented '.repeat(500) }
+    socket.control.length = 0
+    const request = socket.last('environment.get')
+    socket.receiveFragments(
+      { type: 'response', requestId: request.requestId, payload: { environment } },
+      512,
+    )
+    await flush()
+    expect(client.getState().environment?.name).toBe(environment.name)
+    // Every 32 KiB, or 250 ms after the last frame.
+    timers.advance(250)
+    const acks = socket.control.filter((message) => message.type === 'ack')
+    expect(acks.length).toBeGreaterThan(0)
+    const last = acks.at(-1) as { received: number }
+    expect(last.received).toBeGreaterThan(
+      new TextEncoder().encode(JSON.stringify({ environment })).byteLength,
+    )
   })
 
   it('reconnects with backoff, re-handshakes and re-opens the active session', async () => {
@@ -2519,6 +2577,105 @@ describe('cursor replay on reconnect', () => {
         (message) => message.name === 'session.open' || message.name === 'session.history',
       ),
     ).toBe(false)
+    client.dispose()
+  })
+
+  /** A thread opened by an initial snapshot at sequence 1, subscribed as `sub-thread`. */
+  async function opened() {
+    const { client, socket, timers } = await connected(REPLAY_CAPABILITIES)
+    const open = client.commands.openSession(SESSION.sessionId)
+    socket.respond('session.open', { session: SESSION_SUMMARY, threads: [THREAD] })
+    await flush()
+    socket.respond('subscription.replay', {
+      mode: 'snapshot',
+      subscriptionId: 'sub-thread',
+      reason: 'initial',
+      snapshot: {
+        cursor: cursor(1),
+        state: {
+          thread: THREAD,
+          turns: [],
+          messages: [],
+          reasoning: [],
+          tools: [],
+          interactions: [],
+          nextCursor: null,
+        },
+      },
+    })
+    await open
+    return { client, socket, timers }
+  }
+
+  it('holds a lagging scope until its catch-up, then places what it held', async () => {
+    const { client, socket } = await opened()
+    socket.receive(live(2, turnStarted()))
+    socket.receive({
+      type: 'event',
+      name: 'subscription.lagging',
+      payload: { subscriptionId: 'sub-thread', cursor: cursor(2) },
+    })
+    // Arrives after the catch-up was built: held, then placed after it.
+    socket.receive(live(5, delta('turn-1', 'assistant-1', '!')))
+    expect(selectActiveThread(client.getState())?.messages).toHaveLength(1)
+    socket.receive({
+      type: 'event',
+      name: 'subscription.catchup',
+      payload: {
+        mode: 'replay',
+        subscriptionId: 'sub-thread',
+        from: cursor(2),
+        to: cursor(4),
+        events: [
+          record(3, delta('turn-1', 'assistant-1', 'Hi')),
+          record(4, delta('turn-1', 'assistant-1', ' there')),
+        ],
+      },
+    })
+    expect(selectActiveThread(client.getState())?.messages[1]?.content).toEqual([
+      { type: 'text', text: 'Hi there!' },
+    ])
+    // No replay of its own was needed.
+    expect(socket.sent.filter((message) => message.name === 'subscription.replay')).toHaveLength(1)
+    client.dispose()
+  })
+
+  it('catches up by itself when a catch-up does not start at its cursor', async () => {
+    const { client, socket } = await opened()
+    socket.receive({
+      type: 'event',
+      name: 'subscription.lagging',
+      payload: { subscriptionId: 'sub-thread', cursor: cursor(1) },
+    })
+    socket.receive({
+      type: 'event',
+      name: 'subscription.catchup',
+      payload: {
+        mode: 'replay',
+        subscriptionId: 'sub-thread',
+        from: cursor(7),
+        to: cursor(7),
+        events: [],
+      },
+    })
+    const replays = socket.sent.filter((message) => message.name === 'subscription.replay')
+    expect(replays).toHaveLength(2)
+    expect(replays[1]!.payload).toEqual({ scope: cursor(1).scope, cursor: cursor(1) })
+    expect(socket.last('subscription.unsubscribe').payload).toEqual({
+      subscriptionId: 'sub-thread',
+    })
+    client.dispose()
+  })
+
+  it('ignores lagging frames for a subscription it no longer holds', async () => {
+    const { client, socket } = await opened()
+    socket.receive({
+      type: 'event',
+      name: 'subscription.lagging',
+      payload: { subscriptionId: 'someone-else', cursor: cursor(1) },
+    })
+    socket.receive(live(2, turnStarted()))
+    expect(selectActiveThread(client.getState())?.turns).toHaveLength(1)
     client.dispose()
   })
 

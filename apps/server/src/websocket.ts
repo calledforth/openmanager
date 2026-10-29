@@ -3,10 +3,9 @@ import type { Server } from 'node:http'
 import { isDeepStrictEqual } from 'node:util'
 import { WebSocket, WebSocketServer } from 'ws'
 import {
-  acceptHeartbeatPong,
-  advanceServerHeartbeat,
+  advanceServerLiveness,
   ClientMessageSchema,
-  createServerHeartbeatState,
+  createServerLivenessState,
   CursorSchema,
   DurableEventSchema,
   HEARTBEAT_CAPABILITY,
@@ -25,18 +24,25 @@ import {
   sameScope,
   SERVER_SHUTDOWN_CLOSE_CODE,
   SERVER_SHUTDOWN_CLOSE_REASON,
+  SubscriptionCatchupSchema,
   SubscriptionScopeSchema,
   TransientEventSchema,
   type BootstrapResponse,
   type CommandEnvelope,
   type Cursor,
   type ErrorCode,
-  type ServerHeartbeatState,
+  type ServerLivenessState,
   type SubscriptionScope,
 } from '@openmanager/protocol/node'
 import { auditValue, type AuditLog } from './audit.ts'
 import type { AuthenticatedClient } from './authorized-clients.ts'
 import type { CommandContext } from './command-context.ts'
+import {
+  createConnectionWriter,
+  type ConnectionWriter,
+  type LaggingScope,
+  type WriterStats,
+} from './connection-writer.ts'
 import type { ReplayResult } from './db/replay.ts'
 import type { Delivery } from './event-delivery.ts'
 import type { Logger } from './logger.ts'
@@ -57,8 +63,11 @@ export const SOCKET_LIMITS = Object.freeze({
   maxSubscriptions: 128,
   maxCommands: 1024,
   maxPayloadBytes: 65_536,
-  maxBufferedBytes: 1_048_576,
 })
+
+/** Where one queued frame goes in a connection's writer (connection-writer.ts). */
+type DeliveryTarget =
+  { kind: 'scoped'; subscriptionId: string; cursor?: Cursor } | { kind: 'reading'; key: string }
 
 const errorResult = (requestId: string | null, code: ErrorCode, message: string) => ({
   type: 'error' as const,
@@ -89,6 +98,15 @@ const UNBUDGETED_READS: ReadonlySet<string> = new Set([CLIENT_LIST_CAPABILITY])
  */
 export const DELIVERY_FAILED_CLOSE_CODE = 1011
 export const DELIVERY_FAILED_CLOSE_REASON = 'delivery_failed'
+
+/**
+ * A reading's key: a newer reading of the same key replaces a queued older
+ * one (provider health per provider).
+ */
+function readingKey(event: { name: string; payload?: unknown }): string {
+  const payload = event.payload as { providerId?: unknown } | undefined
+  return `${event.name}:${typeof payload?.providerId === 'string' ? payload.providerId : ''}`
+}
 
 export const REVOKED_CLOSE_CODE = CLIENT_REVOKED_CLOSE_CODE
 export const REVOKED_CLOSE_REASON = CLIENT_REVOKED_CLOSE_REASON
@@ -147,12 +165,15 @@ export function attachWebSocket(
     retired: boolean
     send: (message: unknown) => void
     /**
-     * Send one queued frame. A frame that cannot be built or sent closes
-     * this connection: the client reconnects and replays from its bookmark,
-     * so nothing is skipped silently.
+     * Queue one frame of the delivery queue. A frame that cannot be built
+     * closes this connection: the client reconnects and replays from its
+     * bookmark, so nothing is skipped silently. A scoped frame the writer's
+     * backlog bound refuses is not lost: its scope goes lagging and catches
+     * up from the log (docs/sync-foundations.md §7.2).
      */
-    deliver: (frame: () => unknown) => void
+    deliver: (frame: () => unknown, target: DeliveryTarget) => void
     close: (code: number, reason: string) => void
+    writer: ConnectionWriter
   }
   const connections = new Map<WebSocket, Connection>()
   // Clients being retired: a socket that authenticated under the old grant
@@ -246,7 +267,7 @@ export function attachWebSocket(
     wss.handleUpgrade(request, socket, head, (ws) => {
       let active = true
       let ready = false
-      let heartbeat: ServerHeartbeatState | undefined
+      let liveness: ServerLivenessState | undefined
       let timer: ReturnType<typeof setTimeout>
       let termination: ReturnType<typeof setTimeout> | undefined
       const subscriptions = new Map<string, SubscriptionScope>()
@@ -267,40 +288,118 @@ export function attachWebSocket(
         termination = setTimeout(() => ws.terminate(), SOCKET_LIMITS.closeTimeoutMs)
         termination.unref()
       }
+      const sent = (error?: Error) => {
+        if (error) {
+          cleanup()
+          ws.terminate()
+        }
+      }
+      // Everything this connection sends goes through its writer: in order,
+      // inside the send window, large messages in rate-sized fragments. There
+      // is no size-based close (docs/sync-foundations.md §7.2).
+      const writer = createConnectionWriter({
+        now,
+        socket: {
+          sendText: (text) => {
+            if (active && ws.readyState === WebSocket.OPEN) ws.send(text, sent)
+          },
+          sendBinary: (frame) => {
+            if (active && ws.readyState === WebSocket.OPEN) ws.send(frame, { binary: true }, sent)
+          },
+        },
+        onCatchupReady: (lagging) => catchUp(lagging),
+      })
       const send = (message: unknown) => {
         if (!active || ws.readyState !== WebSocket.OPEN) return
-        const encoded = JSON.stringify(message)
-        if (ws.bufferedAmount + Buffer.byteLength(encoded) > SOCKET_LIMITS.maxBufferedBytes) {
-          close(1008, 'slow_consumer')
+        writer.enqueueResponse(JSON.stringify(message))
+      }
+      /**
+       * Liveness: the connection is dead after 30 s with no inbound frame;
+       * after 15 s of writing nothing the server sends a keepalive. Neither
+       * looks at how fast the download goes.
+       */
+      const tick = () => {
+        if (!active || !liveness) return
+        liveness = { ...liveness, lastOutboundAtMs: writer.lastWriteAt }
+        const action = advanceServerLiveness(liveness, now())
+        if (action.type === 'disconnect') {
+          close(action.code, action.reason)
           return
         }
-        ws.send(encoded, (error) => {
-          if (error) {
-            cleanup()
-            ws.terminate()
-          }
-        })
+        if (action.type === 'keepalive') writer.keepalive()
+        timer = setTimeout(tick, action.delayMs)
       }
-      const tick = () => {
-        if (!active || !heartbeat) return
-        const next = advanceServerHeartbeat(heartbeat, now(), randomUUID())
-        heartbeat = next.state
-        if (next.action.type === 'disconnect') {
-          close(next.action.code, next.action.reason)
-        } else {
-          if (next.action.type === 'send_ping') send(next.action.message)
-          if (active)
-            timer = setTimeout(
-              tick,
-              next.action.type === 'wait' ? next.action.delayMs : next.action.pongTimeoutMs,
+      /**
+       * Catch up lagging scopes from the cursor each was sure to reach: one
+       * answer per scope, by the replay rule, built and registered in one
+       * tick so no live record falls between it and the frames that follow.
+       */
+      const catchUp = (lagging: LaggingScope[]) => {
+        for (const { subscriptionId, cursor } of lagging) {
+          if (!active) return
+          const scope = subscriptions.get(subscriptionId)
+          if (!scope || !options.replay) {
+            writer.release(subscriptionId)
+            continue
+          }
+          // Records committed before the read go out first; the client drops
+          // the ones the catch-up covers by its cursor.
+          options.drainDeliveries?.()
+          let result: ReplayResult
+          let text: string
+          try {
+            result = options.replay(scope, cursor)
+            if (result.mode === 'missing') {
+              subscriptions.delete(subscriptionId)
+              writer.release(subscriptionId)
+              continue
+            }
+            text = JSON.stringify(
+              SubscriptionCatchupSchema.parse({
+                type: 'event',
+                name: 'subscription.catchup',
+                payload:
+                  result.mode === 'replay'
+                    ? {
+                        mode: 'replay',
+                        subscriptionId,
+                        from: result.from,
+                        to: result.to,
+                        events: result.events,
+                      }
+                    : {
+                        mode: 'snapshot',
+                        subscriptionId,
+                        reason: result.reason,
+                        snapshot: result.snapshot,
+                      },
+              }),
             )
+          } catch (error) {
+            options.log?.('error', 'a catch-up could not be built; closing its connection', {
+              clientId: client.clientId,
+              reason: String(error),
+            })
+            close(DELIVERY_FAILED_CLOSE_CODE, DELIVERY_FAILED_CLOSE_REASON)
+            return
+          }
+          writer.resume(subscriptionId)
+          writer.enqueueResponse(text, {
+            subscriptionId,
+            cursor: result.mode === 'replay' ? result.to : result.snapshot.cursor,
+          })
         }
       }
       timer = setTimeout(() => close(1008, 'handshake_timeout'), SOCKET_LIMITS.handshakeTimeoutMs)
-      const deliver = (frame: () => unknown) => {
-        if (!active) return
+      const deliver = (frame: () => unknown, target: DeliveryTarget) => {
+        if (!active || ws.readyState !== WebSocket.OPEN) return
         try {
-          send(frame())
+          const text = JSON.stringify(frame())
+          if (target.kind === 'scoped') {
+            writer.enqueueScoped(target.subscriptionId, text, target.cursor)
+          } else {
+            writer.enqueueReading(target.key, text)
+          }
         } catch (error) {
           options.log?.('error', 'a frame could not be sent; closing its connection', {
             clientId: client.clientId,
@@ -318,6 +417,7 @@ export function attachWebSocket(
         send,
         deliver,
         close,
+        writer,
       }
       connections.set(ws, connection)
       ws.on('close', () => {
@@ -330,10 +430,15 @@ export function attachWebSocket(
       })
       ws.on('message', (data, isBinary) => {
         if (!active) return
-        // Machine-sleep/timer recovery must enforce overdue heartbeat deadlines first.
-        if (heartbeat?.awaitingPong && now() >= heartbeat.awaitingPong.deadlineMs) {
-          tick()
-          return
+        // A frame that arrives after the inbound deadline (a starved timer, a
+        // machine that slept) is judged by the deadline first.
+        if (liveness) {
+          const action = advanceServerLiveness(liveness, now())
+          if (action.type === 'disconnect') {
+            close(action.code, action.reason)
+            return
+          }
+          liveness = { ...liveness, lastInboundAtMs: now() }
         }
         let raw: unknown
         try {
@@ -358,6 +463,14 @@ export function attachWebSocket(
           return
         }
         const message = parsed.data
+        // Connection control: a beat only proves liveness (above); an ack
+        // opens the send window. Both are handled even on a retired socket,
+        // whose last replies still have to drain.
+        if (message.type === 'beat') return
+        if (message.type === 'ack') {
+          if (!writer.ack(message.received)) close(1008, 'invalid_ack')
+          return
+        }
         if (connection.retired) {
           // Authorized under a grant that no longer holds; the socket closes
           // once the current replies are out and reconnects under the new one.
@@ -366,23 +479,14 @@ export function attachWebSocket(
           }
           return
         }
-        if (message.type === 'pong') {
-          if (!ready || !heartbeat) {
-            close(1008, 'handshake_required')
-            return
-          }
-          const pong = acceptHeartbeatPong(heartbeat, message, now())
-          heartbeat = pong.state
-          if (pong.accepted) {
-            clearTimeout(timer)
-            tick()
-          }
-          return
-        }
         // An answer goes out after everything already queued (`drainDeliveries`).
+        // A replay answer also names the cursor it brings its subscription to.
+        let advances: { subscriptionId: string; cursor: Cursor } | undefined
         const answer = (result: unknown) => {
           options.drainDeliveries?.()
-          send(result)
+          if (!active || ws.readyState !== WebSocket.OPEN) return
+          writer.enqueueResponse(JSON.stringify(result), advances)
+          advances = undefined
         }
         const previous = results.get(message.requestId)
         if (previous) {
@@ -443,7 +547,7 @@ export function attachWebSocket(
           connection.ready = true
           options.onConnectionsChanged?.()
           clearTimeout(timer)
-          heartbeat = createServerHeartbeatState(now())
+          liveness = createServerLivenessState(now())
           tick()
           return
         }
@@ -557,6 +661,10 @@ export function attachWebSocket(
           // queue held is placed by its `after`. Nothing is lost.
           const subscriptionId = randomUUID()
           subscriptions.set(subscriptionId, scope)
+          advances = {
+            subscriptionId,
+            cursor: result.mode === 'replay' ? result.to : result.snapshot.cursor,
+          }
           reply(
             ReplayResponseSchema.parse({
               type: 'response',
@@ -586,6 +694,7 @@ export function attachWebSocket(
             reply(errorResult(message.requestId, 'validation', 'Invalid subscription ID.'))
             return
           }
+          writer.release(command.data.payload.subscriptionId)
           if (!subscriptions.delete(command.data.payload.subscriptionId)) {
             reply(
               errorResult(
@@ -627,7 +736,12 @@ export function attachWebSocket(
    */
   const deliverScoped = (
     rawScope: unknown,
-    prepare: () => { scope: SubscriptionScope; frame: (subscriptionId: string) => unknown },
+    prepare: () => {
+      scope: SubscriptionScope
+      /** A record's own cursor: the position its subscription reaches once it is written. */
+      cursor?: Cursor
+      frame: (subscriptionId: string) => unknown
+    },
   ) => {
     let prepared: ReturnType<typeof prepare>
     try {
@@ -662,7 +776,11 @@ export function attachWebSocket(
       }
       if (subscriptionId !== undefined) {
         const id = subscriptionId
-        connection.deliver(() => prepared.frame(id))
+        connection.deliver(() => prepared.frame(id), {
+          kind: 'scoped',
+          subscriptionId: id,
+          ...(prepared.cursor ? { cursor: prepared.cursor } : {}),
+        })
       }
     }
   }
@@ -696,6 +814,7 @@ export function attachWebSocket(
             const record = DurableEventSchema.parse(item.record)
             return {
               scope: record.cursor.scope,
+              cursor: record.cursor,
               frame: (subscriptionId: string) => ({
                 type: 'event',
                 name: 'subscription.event',
@@ -723,17 +842,29 @@ export function attachWebSocket(
           return
         case 'broadcast':
           for (const connection of connections.values()) {
-            if (connection.ready && !connection.retired) connection.deliver(() => item.event)
+            if (connection.ready && !connection.retired) {
+              connection.deliver(() => item.event, { kind: 'reading', key: readingKey(item.event) })
+            }
           }
           return
         case 'followers':
           for (const connection of connections.values()) {
             if (connection.ready && !connection.retired && connection.follows.has(item.topic)) {
-              connection.deliver(() => item.build(connection.client))
+              connection.deliver(() => item.build(connection.client), {
+                kind: 'reading',
+                key: `follow:${item.topic}`,
+              })
             }
           }
           return
       }
+    },
+    /**
+     * Each open connection's writer: queued, in-flight and window bytes, and
+     * its lagging subscriptions (a test seam, §7.2 (e)).
+     */
+    flowStats(): Array<{ ws: WebSocket } & WriterStats> {
+      return [...connections].map(([ws, connection]) => ({ ws, ...connection.writer.stats() }))
     },
     /** Whether any open connection follows `topic`. */
     hasFollowers(topic: string): boolean {

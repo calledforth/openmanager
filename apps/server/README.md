@@ -689,18 +689,24 @@ The running server still uses the in-memory event service and publishes directly
 to sockets; its epoch and sequences reset on restart. Integrating the repository
 with live session/provider services is separate work.
 
-Heartbeat uses the protocol's monotonic-clock helpers: a fresh application ping
-every 15 seconds after handshake, with 10 seconds to return its matching pong.
-Other traffic and stale pongs do not extend that deadline. Timeout closes with
-`4000 / heartbeat_timeout` and immediately releases live subscriptions and command
-state. Graceful and abrupt socket closes also release all connection state.
-Close handshakes have a one-second termination fallback for unresponsive peers.
+Liveness follows the protocol's contract (`packages/protocol/docs/heartbeat.md`):
+after the handshake a connection is closed with `4000 / heartbeat_timeout` once no
+inbound frame (beat, ack or command) has arrived for 30 seconds, which immediately
+releases its subscriptions and command state; after 15 seconds of writing nothing
+the server sends a `keepalive`. Neither looks at how fast a download goes. Graceful
+and abrupt socket closes also release all connection state. Close handshakes have a
+one-second termination fallback for unresponsive peers.
 
-Transport limits bound memory: 128 sockets, 128 subscriptions and 1,024 retained
-command results per connection, 64 KiB inbound messages and 1 MiB outbound buffers.
+Everything a connection sends goes through its writer (`src/connection-writer.ts`):
+in order, inside a send window of unacknowledged bytes (256 KiB, tuned up to 4 MiB),
+with messages larger than one rate-sized fragment (at most 8 KiB) sent as binary
+fragments. Live frames waiting for the window are bounded at 1 MiB; past that the
+affected subscriptions go lagging and catch up from the log. There is no size-based
+close. Transport limits bound peers' resources: 128 sockets, 128 subscriptions and
+1,024 retained command results per connection, and 64 KiB inbound messages.
 Connection/subscription exhaustion returns `unavailable`; command-cache exhaustion
-returns `unavailable` and closes so callers establish a fresh connection. Slow
-consumers close with `1008 / slow_consumer`. WebSocket compression is disabled.
+returns `unavailable` and closes so callers establish a fresh connection. WebSocket
+compression is disabled.
 Per-client command budgets are listed under [Rate limits](#rate-limits).
 
 ## Shutdown and turn recovery contract

@@ -69,7 +69,13 @@ import {
 // `subscription.transient`, placed after the durable record it followed
 // (`after`). A frame the server cannot send closes that socket instead of
 // being skipped. A v17 client would never see a notice.
-export const PROTOCOL_VERSION = 18 as const
+// Version 19 replaces ping/pong with upstream beats, server keepalives and
+// flow control (docs/sync-foundations.md §7, F5a): messages larger than one
+// fragment arrive as binary fragments, the client acknowledges received
+// bytes, and a scope whose live frames outrun the link is told it is
+// lagging and then caught up (`subscription.lagging`, `subscription.catchup`).
+// There is no size-based close any more. A v18 client would answer no beat.
+export const PROTOCOL_VERSION = 19 as const
 
 export const ProtocolVersionSchema = z.number().int().positive().max(Number.MAX_SAFE_INTEGER)
 export const CapabilitySchema = MessageNameSchema

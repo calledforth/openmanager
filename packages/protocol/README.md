@@ -63,8 +63,8 @@ and the application-level WebSocket handshake. Use `evaluateBootstrap` to gate
 a client from one bootstrap response and `negotiateProtocolHandshake` /
 `parseProtocolHandshakeResult` at the WebSocket boundary.
 
-The [heartbeat contract](./docs/heartbeat.md) defines portable server-initiated
-ping/pong messages, fixed timing, client reconnect behavior, and server cleanup
+The [liveness and flow-control contract](./docs/heartbeat.md) defines client beats,
+server keepalives, acks, fragments, fixed timing, client reconnect behavior, and server cleanup
 behavior. Its pure state helpers drive transport timers without depending on a
 browser or Node runtime.
 

@@ -8,14 +8,15 @@ by this package.
 
 ## Direction and shapes
 
-| Type       | Direction       | Required fields besides `type`          |
-| ---------- | --------------- | --------------------------------------- |
-| `command`  | Client → server | `requestId`, `name`, `payload`          |
-| `response` | Server → client | `requestId`, `payload`                  |
-| `error`    | Server → client | `requestId`, `error: { code, message }` |
-| `event`    | Server → client | `name`, `payload`                       |
-| `ping`     | Server → client | `heartbeatId`                           |
-| `pong`     | Client → server | `heartbeatId`                           |
+| Type        | Direction       | Required fields besides `type`          |
+| ----------- | --------------- | --------------------------------------- |
+| `command`   | Client → server | `requestId`, `name`, `payload`          |
+| `response`  | Server → client | `requestId`, `payload`                  |
+| `error`     | Server → client | `requestId`, `error: { code, message }` |
+| `event`     | Server → client | `name`, `payload`                       |
+| `keepalive` | Server → client | none                                    |
+| `beat`      | Client → server | none                                    |
+| `ack`       | Client → server | `received`                              |
 
 Use `ClientMessageSchema` at server ingress and `ServerMessageSchema` at client
 ingress. `EnvelopeSchema` accepts all six types for tools that inspect both
@@ -36,8 +37,8 @@ payload fields are preserved for the domain validator. Unknown envelope types
 and error codes fail validation. A parser must never turn a failed parse into a
 successful response. Version/capability negotiation has a
 [separate contract](./negotiation.md).
-Ping and pong are connection-control messages governed by the
-[heartbeat contract](./heartbeat.md); they never settle commands or enter the
+Keepalive, beat and ack are connection-control messages governed by the
+[liveness and flow-control contract](./heartbeat.md); they never settle commands or enter the
 durable event stream.
 
 ## Identity and responses
@@ -105,16 +106,16 @@ Every correlated error terminates that logical command. `ERROR_RETRY_POLICY`
 describes whether a **new attempt with a new ID** may be appropriate after the
 client handles the error. Replaying the failed ID still returns the same error.
 
-| Code                 | Meaning                                                                                                                 | Exported policy / client action                                                                                                  |
-| -------------------- | ----------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------- |
-| `auth`               | Authentication or authorization prevents execution; no effect occurred.                                                 | `after_auth`: sign in/refresh or obtain access before a new attempt. Never loop while access remains denied.                     |
-| `validation`         | Invalid envelope, unknown command, or invalid payload; no effect occurred.                                              | `after_change`: fix the request first. Terminal for the unchanged request.                                                       |
-| `not_found`          | A referenced resource does not exist or is not visible; no effect occurred.                                             | `after_change`: refresh state or select another resource.                                                                        |
-| `conflict`           | State precondition failed or a request identity was reused for a different command; the rejected attempt had no effect. | `after_change`: reconcile state or fix ID generation. The original command may still run for an ID collision.                    |
-| `capability_missing` | This environment cannot perform the operation; no effect occurred.                                                      | `never`: disable it for this environment/capability set.                                                                         |
-| `protocol_incompatible` | Client and environment protocol versions differ; no command was dispatched.                                        | `after_upgrade`: show the incompatibility state and retry only after the client or environment changes version.                  |
-| `unavailable`        | Temporary capacity/dependency failure **before any effect**.                                                            | `after_backoff`: retry with bounded backoff and a new ID.                                                                        |
-| `internal`           | Unexpected execution failure; effects may already have occurred.                                                        | `reconcile`: show failure and recover/check the outcome before considering a new attempt. Never automatically repeat a mutation. |
+| Code                    | Meaning                                                                                                                 | Exported policy / client action                                                                                                  |
+| ----------------------- | ----------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------- |
+| `auth`                  | Authentication or authorization prevents execution; no effect occurred.                                                 | `after_auth`: sign in/refresh or obtain access before a new attempt. Never loop while access remains denied.                     |
+| `validation`            | Invalid envelope, unknown command, or invalid payload; no effect occurred.                                              | `after_change`: fix the request first. Terminal for the unchanged request.                                                       |
+| `not_found`             | A referenced resource does not exist or is not visible; no effect occurred.                                             | `after_change`: refresh state or select another resource.                                                                        |
+| `conflict`              | State precondition failed or a request identity was reused for a different command; the rejected attempt had no effect. | `after_change`: reconcile state or fix ID generation. The original command may still run for an ID collision.                    |
+| `capability_missing`    | This environment cannot perform the operation; no effect occurred.                                                      | `never`: disable it for this environment/capability set.                                                                         |
+| `protocol_incompatible` | Client and environment protocol versions differ; no command was dispatched.                                             | `after_upgrade`: show the incompatibility state and retry only after the client or environment changes version.                  |
+| `unavailable`           | Temporary capacity/dependency failure **before any effect**.                                                            | `after_backoff`: retry with bounded backoff and a new ID.                                                                        |
+| `internal`              | Unexpected execution failure; effects may already have occurred.                                                        | `reconcile`: show failure and recover/check the outcome before considering a new attempt. Never automatically repeat a mutation. |
 
 Use `internal`, not `unavailable`, whenever the host cannot guarantee that no
 effect occurred. None of these policies makes arbitrary commands idempotent.

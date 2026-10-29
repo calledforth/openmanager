@@ -18,13 +18,13 @@ import {
   reasoningBudgetMarker,
   snapshotMergeDropsOlderActivity,
 } from './causes.ts'
-import { FlipError, demonstrateDiff, expectConverges, recordEvidence } from './evidence.ts'
+import { demonstrateDiff, expectConverges, recordEvidence } from './evidence.ts'
 import { Driver, sleep, until, type Rig, type TestClient } from './harness.ts'
 import type { FrameFields, FrameRecord } from './link-proxy.ts'
 import { serverSessionsView, serverThreadView, type ThreadView } from './normalize.ts'
 import { witnessOf } from './fixtures.ts'
 import { createdAt } from './mirror.ts'
-import { afterPhase, scenario } from './scenario.ts'
+import { scenario } from './scenario.ts'
 import {
   createSession,
   scriptedTurn,
@@ -212,65 +212,27 @@ async function threadWithAnswer(rig: Rig, bytes: number): Promise<Target> {
 }
 
 /**
- * The heartbeat floor on main (S7, S14): a client on a slow link opens a
- * thread right after its handshake; the ping queued at 15 s waits behind the
- * answer, the pong deadline passes, and the server closes with
- * `heartbeat_timeout`. The client reconnects and asks for the thread again.
+ * A slow but healthy download (S7, S14): a client on a slow link opens a
+ * thread right after its handshake and must get it on its first socket, with
+ * no close on either side. Before F5a the ping queued behind the answer
+ * missed its deadline and the server closed the socket as dead.
  */
-async function demonstrateHeartbeatLoop(
+async function completesOverSlowLink(
   name: string,
   rig: Rig,
   target: Target,
   link: { bytesPerSecond: number; bufferBytes: number },
+  timeoutMs: number,
 ) {
   rig.proxy.throttle('down', link.bytesPerSecond, link.bufferBytes)
-  // Recording is always on; what follows is judged from here.
-  const mark = rig.proxy.frames.length
   const client = await rig.connect('C')
-  const connectedAt = rig.now()
-  void client.client.commands.openSession(target.sessionId).catch(() => undefined)
-  let ready = false
-  const unsubscribe = client.store.subscribe(() => {
-    if (thread(client, target)?.hydration === 'ready') ready = true
-  })
-  try {
-    // A loop: two sockets in a row closed as dead while the answer was still arriving.
-    await until(
-      () => ready || (proxiedCloses(rig, 'heartbeat_timeout').length >= 2 && client.dials >= 2),
-      `${name}: two heartbeat closes in a row`,
-      140_000,
-      100,
-    )
-  } finally {
-    unsubscribe()
-  }
-  if (ready) {
-    throw new FlipError(name, 'The thread loaded over the slow link; enable its after-F5a half.')
-  }
-  recordEvidence({
-    scenario: name,
-    bucket: 'known-divergence',
-    cause:
-      'The pong deadline runs from when the ping was queued, behind the answer (heartbeat.ts:12-16, ' +
-      ':121-131; websocket.ts:259-273), so a slow but healthy download is closed as dead.',
-    observed: {
-      link,
-      clientConnectedAtMs: connectedAt,
-      heartbeatCloses: proxiedCloses(rig, 'heartbeat_timeout').map(({ at, code, reason }) => ({
-        atMs: rig.since(at),
-        code,
-        reason,
-      })),
-      clientDials: client.dials,
-      clientCloses: client.closes,
-      threadReplayRequests: threadReplays(rig.proxy.frames.slice(mark), target.threadId).map(
-        (frame) => ({
-          connection: frame.connection,
-          atMs: frame.at,
-        }),
-      ),
-    },
-  })
+  const started = rig.now()
+  await client.client.commands.openSession(target.sessionId)
+  await untilThread(client, target, (state) => state.hydration === 'ready', 'the answer', timeoutMs)
+  expect(client.dials, 'the first socket carried it').toBe(1)
+  expect(proxiedCloses(rig, 'heartbeat_timeout'), 'no server heartbeat close').toEqual([])
+  expect(client.closes, 'no client close').toEqual([])
+  await expectConverges(name, rig, client, { link, downloadMs: rig.now() - started })
 }
 
 /**
@@ -527,42 +489,25 @@ describe('§8.4 scenarios on main', () => {
     await expectConverges('S5 (state, notices excluded)', rig, a)
   })
 
-  scenario('S6(a) a 1.2 MB message, then a fresh client opens the thread (W4)', {}, async (rig) => {
-    const target = await threadWithAnswer(rig, 1_200_000)
-    const fresh = await rig.connect('F', { link: 'direct' })
-    void fresh.client.commands.openSession(target.sessionId).catch(() => undefined)
-    let ready = false
-    const unsubscribe = fresh.store.subscribe(() => {
-      if (thread(fresh, target)?.hydration === 'ready') ready = true
-    })
-    try {
-      await until(
-        () => ready || fresh.closes.filter((close) => close.reason === 'slow_consumer').length >= 2,
-        'S6(a): two slow_consumer closes',
-        30_000,
-        50,
-      )
-    } finally {
-      unsubscribe()
-    }
-    if (ready) throw new FlipError('S6(a)', 'The thread loaded; evaluate the property instead.')
-    recordEvidence({
-      scenario: 'S6(a)',
-      bucket: 'known-divergence',
-      cause:
-        'send() closes with slow_consumer when bufferedAmount + frame > 1 MiB (websocket.ts:248-251); ' +
-        'a single snapshot frame over 1 MiB on an idle socket trips it, on every retry. W4.',
-      observed: {
-        clientCloses: fresh.closes,
-        serverCloses: rig.server.closes.map(({ at, code, reason }) => ({
-          atMs: rig.since(at),
-          code,
-          reason,
-        })),
-        clientDials: fresh.dials,
-      },
-    })
-  })
+  /**
+   * Guard since F5a (§7.2): a message over 1 MiB goes out in fragments, and
+   * nothing closes a socket for the size of what it carries. On main the
+   * snapshot frame passed the 1 MiB buffer limit and the server closed with
+   * `slow_consumer`, on every retry (W4).
+   */
+  scenario(
+    'S6(a) a 1.2 MB message, then a fresh client opens the thread (guard)',
+    {},
+    async (rig) => {
+      const target = await threadWithAnswer(rig, 1_200_000)
+      const fresh = await rig.connect('F', { link: 'direct' })
+      await fresh.client.commands.openSession(target.sessionId)
+      await untilThread(fresh, target, (state) => state.hydration === 'ready', 'the thread')
+      expect(fresh.closes, 'no close').toEqual([])
+      expect(fresh.dials).toBe(1)
+      await expectConverges('S6(a)', rig, fresh)
+    },
+  )
 
   scenario('S6(b) thoughts over 384 KiB (§7.1)', {}, async (rig) => {
     const a = await rig.connect('A')
@@ -603,14 +548,17 @@ describe('§8.4 scenarios on main', () => {
   })
 
   scenario(
-    'S7 a 600 KB answer over a 10 KB/s link (heartbeat floor)',
-    { nightly: true, timeoutMs: 150_000 },
+    'S7 a 600 KB answer over a 10 KB/s link completes on the first socket (guard)',
+    { nightly: true, timeoutMs: 180_000 },
     async (rig) => {
       const target = await threadWithAnswer(rig, 600_000)
-      await demonstrateHeartbeatLoop('S7', rig, target, {
-        bytesPerSecond: 10_000,
-        bufferBytes: 256 * KiB,
-      })
+      await completesOverSlowLink(
+        'S7',
+        rig,
+        target,
+        { bytesPerSecond: 10_000, bufferBytes: 256 * KiB },
+        150_000,
+      )
     },
   )
 
@@ -1085,129 +1033,37 @@ describe('§8.4 scenarios on main', () => {
   })
 
   scenario(
-    'S14 a 30 KB answer over a 300 B/s link, on main (heartbeat floor)',
-    { nightly: true, timeoutMs: 150_000 },
+    'S14 a 30 KB answer over a 300 B/s link completes on the first socket (guard)',
+    { nightly: true, timeoutMs: 300_000 },
     async (rig) => {
       const target = await threadWithAnswer(rig, 30_000)
-      await demonstrateHeartbeatLoop('S14', rig, target, {
-        bytesPerSecond: 300,
-        bufferBytes: 64 * KiB,
-      })
-    },
-  )
-
-  afterPhase(
-    'S14 the same answer completes over 300 B/s with no reconnect',
-    'F5a (beats, rate-sized fragments)',
-    { timeoutMs: 300_000 },
-    async (rig) => {
-      const target = await threadWithAnswer(rig, 30_000)
-      rig.proxy.throttle('down', 300, 64 * KiB)
-      const client = await rig.connect('C')
-      await client.client.commands.openSession(target.sessionId)
-      await untilThread(
-        client,
+      await completesOverSlowLink(
+        'S14',
+        rig,
         target,
-        (state) => state.hydration === 'ready',
-        'the answer',
+        { bytesPerSecond: 300, bufferBytes: 64 * KiB },
         240_000,
       )
-      expect(client.dials, 'the first socket carried it').toBe(1)
-      expect(proxiedCloses(rig, 'heartbeat_timeout'), 'no server heartbeat close').toEqual([])
-      expect(client.closes, 'no client close').toEqual([])
-      await expectConverges('S14 after F5a', rig, client)
     },
   )
 
+  /**
+   * Guard since F5a (§7.2 point 2): a provider writes about 100 KiB/s into a
+   * thread whose reader's link takes 10 KiB/s. The server holds at most the
+   * window, the backlog bound and one catch-up answer for that socket; the
+   * scope is told it is lagging and then caught up, nothing closes, and once
+   * the producer stops and the link recovers the reader converges. On main
+   * the server closed the socket with `slow_consumer` (or, with a large
+   * proxy buffer, buffered without bound).
+   *
+   * Delivering all ~6 MB at 10 KiB/s would take ten minutes whatever the
+   * protocol does, so the link is healed once the producer stops.
+   */
   scenario(
-    'S15 a fast producer and a slow consumer, on main',
-    { nightly: true, timeoutMs: 150_000 },
+    'S15 a fast producer and a slow consumer stay bounded, lag and catch up (guard)',
+    { nightly: true, timeoutMs: 240_000 },
     async (rig) => {
-      const a = await rig.connect('A')
-      const target = await createSession(rig, a, QUIET)
-      await startTurn(a, target)
-      rig.proxy.throttle('down', 10 * KiB, 256 * KiB)
-      const streaming = rig
-        .provider({
-          op: 'streamText',
-          sessionId: target.sessionId,
-          bytesPerSecond: 100 * KiB,
-          durationMs: 60_000,
-        })
-        .catch(() => undefined)
-      // `producedBytes` is what the provider had handed the server: the
-      // construction needs it near 100 KiB/s, so a run that cannot push that
-      // through the batcher and SQLite shows why it missed the threshold.
-      const samples: Array<{
-        atMs: number
-        bufferedAmount: number
-        proxyQueued: number
-        producedBytes: number
-      }> = []
-      const started = rig.now()
-      while (proxiedCloses(rig, 'slow_consumer').length === 0 && rig.now() - started < 70_000) {
-        const sockets = await rig.server.sampleSockets()
-        const proxied = sockets.filter(
-          (socket) =>
-            socket.remotePort !== undefined && rig.proxy.serverSidePorts.has(socket.remotePort),
-        )
-        const produced = await rig.server.call<{ bytes: number }>({ op: 'readStreamed' })
-        samples.push({
-          atMs: rig.now() - started,
-          bufferedAmount: proxied.reduce((total, socket) => total + socket.bufferedAmount, 0),
-          proxyQueued: rig.proxy
-            .backlog()
-            .reduce((total, entry) => total + entry.down + entry.inspecting, 0),
-          producedBytes: produced.bytes,
-        })
-        await sleep(1_000)
-      }
-      await rig.provider({ op: 'completeTurn', sessionId: target.sessionId }).catch(() => undefined)
-      await streaming
-      const closes = proxiedCloses(rig, 'slow_consumer')
-      if (closes.length === 0) {
-        // What the server and the link held meanwhile, so a flip can be judged.
-        recordEvidence({
-          scenario: 'S15',
-          bucket: 'flip-diagnostics',
-          cause: 'no slow_consumer close',
-          observed: {
-            samples,
-            serverCloses: rig.server.closes.map(({ code, reason, at }) => ({
-              code,
-              reason,
-              atMs: rig.since(at) - started,
-            })),
-            clientCloses: a.closes,
-            fatals: rig.server.fatals,
-          },
-        })
-        throw new FlipError('S15', 'No slow_consumer close in 70 s; enable its after-F5a half.')
-      }
-      recordEvidence({
-        scenario: 'S15',
-        bucket: 'known-divergence',
-        cause:
-          'With no flow control, the server buffers what the slow link cannot take until ' +
-          'bufferedAmount + frame passes 1 MiB, then closes with slow_consumer (websocket.ts:248-251).',
-        observed: {
-          samples,
-          closes: closes.map(({ at, code, reason }) => ({
-            atMs: rig.since(at) - started,
-            code,
-            reason,
-          })),
-        },
-      })
-    },
-  )
-
-  afterPhase(
-    'S15 the backlog stays bounded, the scope lags and catches up',
-    'F5a (send window, backlog bound, subscription.lagging and .catchup)',
-    { timeoutMs: 200_000 },
-    async (rig) => {
-      // §7.3 FLOW_POLICY: 4 MiB maximum window, 1 MiB backlog bound.
+      // FLOW_POLICY: 4 MiB maximum window, 1 MiB backlog bound.
       const bound = 4 * 1024 * KiB + 1024 * KiB
       const a = await rig.connect('A')
       const target = await createSession(rig, a, QUIET)
@@ -1221,70 +1077,107 @@ describe('§8.4 scenarios on main', () => {
         bytesPerSecond: 100 * KiB,
         durationMs: 60_000,
       })
-      let largest = 0
+      const samples: Array<{ atMs: number; held: number; lagging: number; produced: number }> = []
       const started = rig.now()
-      while (rig.now() - started < 61_000) {
-        const sockets = await rig.server.sampleSockets()
-        const held = sockets.reduce((total, socket) => total + socket.bufferedAmount, 0)
-        largest = Math.max(largest, held)
-        // One materialized catch-up answer may come on top; the thread is the only scope here.
-        expect(held, 'server buffering stays within window + backlog + one answer').toBeLessThan(
-          bound + 8 * 1024 * KiB,
+      let done = false
+      void streaming.finally(() => {
+        done = true
+      })
+      while (!done) {
+        const sockets = (await rig.server.sampleSockets()).filter(
+          (socket) =>
+            socket.remotePort !== undefined && rig.proxy.serverSidePorts.has(socket.remotePort),
         )
+        const held = sockets.reduce((total, socket) => total + socket.queued + socket.inFlight, 0)
+        const produced = await rig.server.call<{ bytes: number }>({ op: 'readStreamed' })
+        samples.push({
+          atMs: rig.now() - started,
+          held,
+          lagging: sockets.reduce((total, socket) => total + socket.lagging, 0),
+          produced: produced.bytes,
+        })
         await sleep(1_000)
       }
       await streaming
+      const largest = Math.max(...samples.map((sample) => sample.held))
+      const produced = samples.at(-1)?.produced ?? 0
+      // One materialized catch-up answer may come on top: at most the thread.
+      expect(largest, 'server holds window + backlog + one answer at most').toBeLessThanOrEqual(
+        bound + produced + 64 * KiB,
+      )
+      expect(proxiedCloses(rig, 'slow_consumer'), 'never closed').toEqual([])
+      expect(a.closes, 'the reader kept its socket').toEqual([])
+      rig.proxy.heal()
       await rig.provider({ op: 'completeTurn', sessionId: target.sessionId })
+      await rig.waitQuiet()
       const names = downFrames(rig.proxy.frames.slice(mark)).map((frame) => info(frame).name)
       const lagging = names.indexOf('subscription.lagging')
       expect(lagging, 'A was told the scope is lagging').toBeGreaterThanOrEqual(0)
       expect(names.indexOf('subscription.catchup', lagging), 'then caught up').toBeGreaterThan(
         lagging,
       )
-      expect(proxiedCloses(rig, 'slow_consumer'), 'never closed').toEqual([])
       recordEvidence({
-        scenario: 'S15 after F5a',
+        scenario: 'S15',
         bucket: 'regression-guard',
         cause: 'bounded',
-        observed: { largest },
+        observed: { largest, produced, bound, samples },
       })
-      await expectConverges('S15 after F5a', rig, a)
+      await expectConverges('S15', rig, a)
     },
   )
 
-  afterPhase(
-    'S16 a sudden rate drop mid-answer',
-    'F5a (8 KiB fragment cap, per-frame browser watchdog)',
-    { timeoutMs: 1_800_000 },
-    async (rig) => {
-      // Nightly shape: drop with about 1 MB left. The CI variant drops with
-      // about 64 KiB left (set `leftAtDrop` to 64 KiB).
-      const answer = 2_000_000
-      const leftAtDrop = 1_000_000
-      const target = await threadWithAnswer(rig, answer)
-      rig.proxy.throttle('down', 5_000_000, 256 * KiB)
-      const client = await rig.connect('C')
-      void client.client.commands.openSession(target.sessionId)
-      const before = rig.proxy.delivered().down
-      await until(
-        () => rig.proxy.delivered().down - before >= answer - leftAtDrop,
-        'the first part of the answer at 5 MB/s',
-        60_000,
-        5,
-      )
-      rig.proxy.throttle('down', KiB, 256 * KiB)
-      await untilThread(
-        client,
-        target,
-        (state) => state.hydration === 'ready',
-        'the rest',
-        1_500_000,
-      )
-      expect(client.dials, 'no reconnect').toBe(1)
-      expect(client.closes, 'the watchdog never fired').toEqual([])
-      await expectConverges('S16', rig, client)
+  /**
+   * Guard since F5a (§7.2 point 1, the 8 KiB fragment cap): a large answer is
+   * downloading fast when the link drops to 1 KiB/s. Every frame already in
+   * flight is at most 8 KiB, so each still arrives within about 8 s, the
+   * browser's 45 s watchdog never fires, and the answer completes on its
+   * first socket. The nightly shape drops with about 1 MB left (some 17
+   * minutes at 1 KiB/s); the fast one with about 64 KiB left.
+   */
+  for (const shape of [
+    {
+      name: 'S16 a sudden rate drop mid-answer (guard)',
+      answer: 400_000,
+      left: 64 * KiB,
+      nightly: false,
     },
-  )
+    {
+      name: 'S16 a sudden rate drop mid-answer, 1 MB left (guard)',
+      answer: 2_000_000,
+      left: 1_000_000,
+      nightly: true,
+    },
+  ]) {
+    scenario(
+      shape.name,
+      { nightly: shape.nightly, timeoutMs: shape.nightly ? 1_800_000 : 300_000 },
+      async (rig) => {
+        const target = await threadWithAnswer(rig, shape.answer)
+        rig.proxy.throttle('down', 5_000_000, 256 * KiB)
+        const client = await rig.connect('C')
+        const before = rig.proxy.delivered().down
+        void client.client.commands.openSession(target.sessionId).catch(() => undefined)
+        await until(
+          () => rig.proxy.delivered().down - before >= shape.answer - shape.left,
+          'the first part of the answer at 5 MB/s',
+          60_000,
+          5,
+        )
+        rig.proxy.throttle('down', KiB, 256 * KiB)
+        await untilThread(
+          client,
+          target,
+          (state) => state.hydration === 'ready',
+          'the rest',
+          shape.nightly ? 1_500_000 : 240_000,
+        )
+        expect(client.dials, 'no reconnect').toBe(1)
+        expect(client.closes, 'the watchdog never fired').toEqual([])
+        rig.proxy.heal()
+        await expectConverges(shape.name, rig, client)
+      },
+    )
+  }
 
   // W1-W7, the crash windows: crash-windows.test.ts.
 })
