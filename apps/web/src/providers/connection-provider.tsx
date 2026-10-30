@@ -19,10 +19,8 @@ import {
   type ConnectionUiState,
   type DeriveConnectionInput,
   type EnvironmentSelection,
-  type RouteFailure,
   type RouteFailureReason,
   type RouteOffer,
-  type RouteSearch,
   type TransportStatus,
 } from '../lib/connection-state'
 import {
@@ -51,6 +49,15 @@ import {
   type RouteHealthReport,
   type StoredEnvironment,
 } from '../lib/environment-store'
+import {
+  connectionOf,
+  dropConnection,
+  NO_CONNECTIONS,
+  patchConnection,
+  tokenIsRefused,
+  type EnvironmentConnection,
+  type EnvironmentConnections,
+} from '../lib/environment-connections'
 import { fetchLocalOwner } from '../lib/local-owner'
 import { searchRoutes } from '../lib/route-fallback'
 import {
@@ -85,11 +92,6 @@ const SILENT_REASONS: ReadonlySet<RouteFailureReason> = new Set([
 
 /** The route the client switched to for each environment, by environment ID. */
 type ActiveRoutes = Readonly<Record<string, string>>
-
-type TrackedFailure = RouteFailure & { environmentId: string }
-type TrackedSearch = RouteSearch & { environmentId: string }
-/** What the live socket on a route last said about itself. */
-type SocketReport = { environmentId: string; endpoint: string; connected: boolean }
 
 type PendingConnect = {
   endpoint: string
@@ -303,7 +305,6 @@ export function ConnectionProvider({
     preview ? EMPTY_REGISTRY : readEnvironmentRegistry(),
   )
   const [pending, setPending] = useState<PendingConnect | null>(null)
-  const [hasConnected, setHasConnected] = useState(false)
   const [bootstrapNonce, setBootstrapNonce] = useState(0)
   const [localOwnerClaimFailure, setLocalOwnerClaimFailure] =
     useState<LocalOwnerClaimFailure | null>(null)
@@ -335,43 +336,35 @@ export function ConnectionProvider({
     setActiveRoutes(next)
   }, [])
 
-  // Why no route reaches the selected environment, and whether its other
-  // routes are being tried right now. A search is identified by its
-  // generation; anything that changes what is being reached bumps it, so a
-  // late answer cannot move a selection that has moved on.
-  const [routeFailure, setRouteFailureState] = useState<TrackedFailure | null>(null)
-  const routeFailureRef = useRef<TrackedFailure | null>(null)
-  const setRouteFailure = useCallback((failure: TrackedFailure | null) => {
-    routeFailureRef.current = failure
-    setRouteFailureState(failure)
+  // Each environment's connection, by environment ID. Only the selected
+  // environment is reached today, so at most its entry is ever in use: leaving
+  // it ends its connection (`update`), the way it replaces its client.
+  const [connections, setConnections] = useState<EnvironmentConnections>(NO_CONNECTIONS)
+  const connectionsRef = useRef(connections)
+  const storeConnections = useCallback((next: EnvironmentConnections) => {
+    if (next === connectionsRef.current) return
+    connectionsRef.current = next
+    setConnections(next)
   }, [])
-  const [routeSearch, setRouteSearch] = useState<TrackedSearch | null>(null)
-  /**
-   * Whether the live socket on the selected route is connected. While it is,
-   * the socket is what says the environment is there: a bootstrap asked again
-   * meanwhile (a retry, the network coming back) can only be older news, so it
-   * may neither take the connection down nor move it to another route.
-   */
-  const [socketReport, setSocketReportState] = useState<SocketReport | null>(null)
-  const socketReportRef = useRef<SocketReport | null>(null)
-  const setSocketReport = useCallback((report: SocketReport) => {
-    const current = socketReportRef.current
-    if (
-      current?.environmentId === report.environmentId &&
-      current.endpoint === report.endpoint &&
-      current.connected === report.connected
-    ) {
-      return
-    }
-    socketReportRef.current = report
-    setSocketReportState(report)
-  }, [])
-  const forgetSocket = useCallback((environmentId: string, endpoint: string) => {
-    const current = socketReportRef.current
-    if (current?.environmentId !== environmentId || current.endpoint !== endpoint) return
-    socketReportRef.current = null
-    setSocketReportState(null)
-  }, [])
+  const changeConnection = useCallback(
+    (environmentId: string, change: Partial<EnvironmentConnection>) => {
+      storeConnections(patchConnection(connectionsRef.current, environmentId, change))
+    },
+    [storeConnections],
+  )
+  const setHasConnected = useCallback(
+    (environmentId: string | null, hasConnected: boolean) => {
+      if (environmentId) changeConnection(environmentId, { hasConnected })
+    },
+    [changeConnection],
+  )
+  const forgetSocket = useCallback(
+    (environmentId: string, endpoint: string) => {
+      const { socket } = connectionOf(connectionsRef.current, environmentId)
+      if (socket?.endpoint === endpoint) changeConnection(environmentId, { socket: null })
+    },
+    [changeConnection],
+  )
   /**
    * Environments that closed their socket because they were shutting down,
    * each kept until one of its routes answers again. A gateway in front of a
@@ -381,31 +374,40 @@ export function ConnectionProvider({
   const announcedStops = useRef(new Set<string>())
   /** How many shutdowns each environment has announced, to date answers by. */
   const stopCounts = useRef(new Map<string, number>())
-  const searchGeneration = useRef(0)
-  const searching = useRef(false)
-  const retryAttempt = useRef(0)
   /**
-   * Cancel any search and drop the reason on screen. A token the environment
+   * The search each environment has out, by a ticket no other search has held.
+   * Anything that changes what is being reached takes the ticket away, so a
+   * late answer cannot move a connection that has moved on. Tickets come from
+   * one counter so a search started after an environment was left cannot be
+   * mistaken for one from before.
+   */
+  const lastSearchTicket = useRef(0)
+  const searchTickets = useRef(new Map<string, number>())
+  /** How many times each environment's routes have been asked again in a row. */
+  const retryAttempts = useRef(new Map<string, number>())
+  /**
+   * Cancel the environment's search and drop the reason on screen. A token it
    * refused is the exception unless a person asked (`reset`): only their
    * action, or the socket getting through, may send that token again.
    * Anything automatic (the network returning, a route being forgotten)
    * leaves it refused.
    */
   const stopRouteSearch = useCallback(
-    (reset = false) => {
-      searchGeneration.current += 1
-      searching.current = false
-      retryAttempt.current = 0
-      setRouteSearch(null)
-      if (reset || routeFailureRef.current?.reason !== 'credential_rejected') setRouteFailure(null)
+    (environmentId: string | null, reset = false) => {
+      if (!environmentId) return
+      searchTickets.current.delete(environmentId)
+      retryAttempts.current.delete(environmentId)
+      const refused = tokenIsRefused(connectionOf(connectionsRef.current, environmentId))
+      changeConnection(environmentId, {
+        routeSearch: null,
+        ...(reset || !refused ? { routeFailure: null } : {}),
+      })
     },
-    [setRouteFailure],
+    [changeConnection],
   )
   /** The environment refused its token: nothing may be retried on its own. */
   const tokenRefused = useCallback(
-    (environmentId: string) =>
-      routeFailureRef.current?.environmentId === environmentId &&
-      routeFailureRef.current.reason === 'credential_rejected',
+    (environmentId: string) => tokenIsRefused(connectionOf(connectionsRef.current, environmentId)),
     [],
   )
 
@@ -420,6 +422,11 @@ export function ConnectionProvider({
   // Route probes and socket reports land between renders, so every change is
   // computed from the latest registry rather than the one a render captured.
   const registryRef = useRef(registry)
+  /** Stop what is running for the selected environment. */
+  const stopSelectedRouteSearch = useCallback(
+    (reset = false) => stopRouteSearch(registryRef.current.selectedId, reset),
+    [stopRouteSearch],
+  )
   const mounted = useRef(true)
   useEffect(() => {
     mounted.current = true
@@ -445,6 +452,12 @@ export function ConnectionProvider({
       persistedRef.current = next
       setRegistry(next)
       writeEnvironmentRegistry(next)
+      // Only the selected environment is reached, so its connection ends here.
+      if (current.selectedId && current.selectedId !== next.selectedId) {
+        searchTickets.current.delete(current.selectedId)
+        retryAttempts.current.delete(current.selectedId)
+        storeConnections(dropConnection(connectionsRef.current, current.selectedId))
+      }
       // A token taken from another tab is not the one that was refused.
       if (next !== changed) {
         for (const environment of next.environments) {
@@ -453,13 +466,13 @@ export function ConnectionProvider({
             before?.credential !== environment.credential &&
             tokenRefused(environment.environmentId)
           ) {
-            stopRouteSearch(true)
+            stopRouteSearch(environment.environmentId, true)
           }
         }
       }
       return next
     },
-    [preview, stopRouteSearch, tokenRefused],
+    [preview, stopRouteSearch, storeConnections, tokenRefused],
   )
 
   const environment = preview?.environment ?? toSelection(registry, pending, activeRoutes)
@@ -472,6 +485,7 @@ export function ConnectionProvider({
   // is one the selected environment already has: reconnecting to it, or
   // re-entering it with a new token.
   const selectedRecord = selectedStoredEnvironment(registry)
+  const selectedConnection = connectionOf(connections, registry.selectedId)
   const failureId =
     storedId ??
     (pending && selectedRecord?.routes.some((route) => route.endpoint === pending.endpoint)
@@ -566,17 +580,17 @@ export function ConnectionProvider({
     ) => {
       const record = findStoredEnvironment(registryRef.current.environments, environmentId)
       if (!record || tokenRefused(environmentId)) return
-      const generation = ++searchGeneration.current
-      searching.current = true
+      const ticket = ++lastSearchTicket.current
+      searchTickets.current.set(environmentId, ticket)
       const from = inUseFor(record, activeRoutesRef.current)!
-      if (origin === 'bootstrap') setRouteSearch({ environmentId, from })
+      if (origin === 'bootstrap') changeConnection(environmentId, { routeSearch: { from } })
       void searchRoutes(record, {
         known,
         first: origin === 'socket' ? from : undefined,
       }).then((result) => {
-        if (generation !== searchGeneration.current || !mounted.current) return
-        searching.current = false
-        setRouteSearch(null)
+        if (searchTickets.current.get(environmentId) !== ticket || !mounted.current) return
+        searchTickets.current.delete(environmentId)
+        changeConnection(environmentId, { routeSearch: null })
         // A blip check that found the route answering says nothing about the
         // socket, which is still failing: its own report stays on record.
         const blip = origin === 'socket' && result.found === from
@@ -590,15 +604,16 @@ export function ConnectionProvider({
         if (result.found === null) {
           const stopped =
             announcedStops.current.has(environmentId) && SILENT_REASONS.has(result.failure.reason)
-          setRouteFailure({
-            ...result.failure,
-            ...(stopped ? { reason: 'environment_offline', stopped: true } : {}),
-            environmentId,
+          changeConnection(environmentId, {
+            routeFailure: {
+              ...result.failure,
+              ...(stopped ? { reason: 'environment_offline', stopped: true } : {}),
+            },
           })
           return
         }
         announcedStops.current.delete(environmentId)
-        setRouteFailure(null)
+        changeConnection(environmentId, { routeFailure: null })
         const latest = findStoredEnvironment(registryRef.current.environments, environmentId)
         const inUse = inUseFor(latest, activeRoutesRef.current)
         if (origin === 'socket' && result.found === inUse) return
@@ -606,7 +621,7 @@ export function ConnectionProvider({
         setBootstrapNonce((value) => value + 1)
       })
     },
-    [noteLiveReport, setActiveRoute, setRouteFailure, tokenRefused, update],
+    [changeConnection, noteLiveReport, setActiveRoute, tokenRefused, update],
   )
 
   useEffect(() => {
@@ -618,10 +633,8 @@ export function ConnectionProvider({
       // The socket on this route is connected, which says more than a failed
       // bootstrap: nothing to record, and no other route to look for. If the
       // socket drops, it starts its own search.
-      const socket = socketReportRef.current
-      if (socket?.connected && socket.environmentId === storedId && socket.endpoint === endpoint) {
-        return
-      }
+      const { socket } = connectionOf(connectionsRef.current, storedId)
+      if (socket?.connected && socket.endpoint === endpoint) return
       const report = failureId ? routeHealthFromBootstrap(liveBootstrap, failureId) : null
       if (failureId && report) {
         noteLiveReport(failureId, endpoint)
@@ -641,7 +654,7 @@ export function ConnectionProvider({
     const answeredId = liveBootstrap.environmentId
     if (!answeredId) return
     if (pending?.claimedEnvironmentId && pending.claimedEnvironmentId !== answeredId) {
-      setHasConnected(false)
+      setHasConnected(registryRef.current.selectedId, false)
       if (localOwnerClaimFailure?.endpoint !== endpoint) {
         setLocalOwnerClaimFailure({
           endpoint,
@@ -666,7 +679,7 @@ export function ConnectionProvider({
       // localhost port, a tunnel handed to another machine. Say so on the
       // route and stay put. Only a person connecting to the address adopts
       // whatever answers there.
-      setHasConnected(false)
+      setHasConnected(storedId, false)
       if (fresh) {
         noteLiveReport(storedId, endpoint)
         update((current) =>
@@ -700,8 +713,8 @@ export function ConnectionProvider({
     if (fresh) announcedStops.current.delete(answeredId)
     if (pending) setActiveRoute(answeredId, endpoint)
     if (liveBootstrap.status === 'ready') {
-      setHasConnected(true)
-      retryAttempt.current = 0
+      setHasConnected(answeredId, true)
+      retryAttempts.current.delete(answeredId)
     }
     if (pending) setPending(null)
   }, [
@@ -719,6 +732,7 @@ export function ConnectionProvider({
     online,
     startRouteSearch,
     setActiveRoute,
+    setHasConnected,
   ])
 
   const answeredByAnother =
@@ -733,9 +747,8 @@ export function ConnectionProvider({
     liveBootstrap.environmentId === storedId
   const socketConnected =
     storedId !== undefined &&
-    socketReport?.connected === true &&
-    socketReport.environmentId === storedId &&
-    socketReport.endpoint === endpoint
+    selectedConnection.socket?.connected === true &&
+    selectedConnection.socket.endpoint === endpoint
   const answeredBootstrap: BootstrapOutcome =
     localOwnerClaimFailure?.endpoint === endpoint
       ? { status: 'unauthorized', message: localOwnerClaimFailure.message }
@@ -768,15 +781,12 @@ export function ConnectionProvider({
     bootstrap: effectiveBootstrap,
     transport: transportFromBootstrap(
       effectiveBootstrap,
-      hasConnected || effectiveBootstrap.status === 'ready',
+      selectedConnection.hasConnected || effectiveBootstrap.status === 'ready',
     ),
     network: { online },
     routeOffer,
-    routeFailure: storedId && routeFailure?.environmentId === storedId ? routeFailure : undefined,
-    routeSearch:
-      storedId && !socketConnected && routeSearch?.environmentId === storedId
-        ? routeSearch
-        : undefined,
+    routeFailure: (storedId && selectedConnection.routeFailure) || undefined,
+    routeSearch: (storedId && !socketConnected && selectedConnection.routeSearch) || undefined,
     // Only a saved selection has routes to search and retry; a typed connect
     // that fails waits for the person.
     autoRetry: storedId !== undefined,
@@ -794,9 +804,9 @@ export function ConnectionProvider({
     if (!wasOffline.current) return
     wasOffline.current = false
     // A refused token is still refused after the network comes back.
-    stopRouteSearch()
+    stopSelectedRouteSearch()
     setBootstrapNonce((value) => value + 1)
-  }, [online, preview, stopRouteSearch])
+  }, [online, preview, stopSelectedRouteSearch])
 
   // While no route answers, ask them all again with a growing delay. A token
   // the environment refused is not retried, nor is a browser that blocked
@@ -804,17 +814,20 @@ export function ConnectionProvider({
   // strip says so. With more routes saved the search goes on, since the
   // blocked route outranks a tunnel that is merely down and would otherwise
   // hide its return until someone pressed Retry.
+  const { routeFailure } = selectedConnection
+  const failingId = routeFailure ? registry.selectedId : null
   useEffect(() => {
-    if (preview || !online || !routeFailure) return
+    if (preview || !online || !failingId || !routeFailure) return
     if (routeFailure.reason === 'credential_rejected') return
     if (routeFailure.reason === 'local_access_blocked' && routeFailure.tried <= 1) return
-    const delay = retryDelaysMs[Math.min(retryAttempt.current, retryDelaysMs.length - 1)]
+    const attempt = retryAttempts.current.get(failingId) ?? 0
+    const delay = retryDelaysMs[Math.min(attempt, retryDelaysMs.length - 1)]
     const timer = setTimeout(() => {
-      retryAttempt.current += 1
-      startRouteSearch(routeFailure.environmentId, 'retry')
+      retryAttempts.current.set(failingId, (retryAttempts.current.get(failingId) ?? 0) + 1)
+      startRouteSearch(failingId, 'retry')
     }, delay)
     return () => clearTimeout(timer)
-  }, [preview, online, routeFailure, startRouteSearch, retryDelaysMs])
+  }, [preview, online, failingId, routeFailure, startRouteSearch, retryDelaysMs])
 
   const ui = deriveConnectionUi(input)
 
@@ -827,11 +840,11 @@ export function ConnectionProvider({
       // A refused token stays refused until the typed connect exists: cleared
       // any earlier, the old selection would be dialled again with it while a
       // local owner claim is still out.
-      stopRouteSearch()
-      setHasConnected(false)
+      stopSelectedRouteSearch()
+      setHasConnected(registryRef.current.selectedId, false)
       setLocalOwnerClaimFailure(null)
       const begin = (nextCredential: string, claimedEnvironmentId?: string) => {
-        stopRouteSearch(true)
+        stopSelectedRouteSearch(true)
         setPending({ endpoint, credential: nextCredential, claimedEnvironmentId })
         setBootstrapNonce((value) => value + 1)
       }
@@ -851,7 +864,7 @@ export function ConnectionProvider({
         begin(claim?.credential ?? '', claim?.environmentId)
       })
     },
-    [stopRouteSearch],
+    [setHasConnected, stopSelectedRouteSearch],
   )
 
   /**
@@ -863,9 +876,9 @@ export function ConnectionProvider({
       setPending(null)
       setLocalOwnerClaimFailure(null)
       claimGeneration.current += 1
-      stopRouteSearch(reset)
+      stopSelectedRouteSearch(reset)
     },
-    [stopRouteSearch],
+    [stopSelectedRouteSearch],
   )
 
   const confirmRoute = useCallback(() => {
@@ -881,7 +894,7 @@ export function ConnectionProvider({
   const selectEnvironment = useCallback(
     (environmentId: string) => {
       if (!findStoredEnvironment(registryRef.current.environments, environmentId)) return
-      setHasConnected(false)
+      setHasConnected(registryRef.current.selectedId, false)
       abandonPendingConnect()
       // Selecting an environment starts again from its first route in search
       // order, a local one when it has one.
@@ -889,13 +902,13 @@ export function ConnectionProvider({
       update((current) => selectStoredEnvironment(current, environmentId))
       setBootstrapNonce((value) => value + 1)
     },
-    [abandonPendingConnect, setActiveRoute, update],
+    [abandonPendingConnect, setActiveRoute, setHasConnected, update],
   )
 
   const removeEnvironment = useCallback(
     (environmentId: string) => {
       const selected = registryRef.current.selectedId === environmentId
-      if (selected) setHasConnected(false)
+      if (selected) setHasConnected(environmentId, false)
       // Removing another environment is no answer to the selected one's
       // refused token.
       abandonPendingConnect(selected)
@@ -903,7 +916,7 @@ export function ConnectionProvider({
       update((current) => removeStoredEnvironment(current, environmentId))
       setBootstrapNonce((value) => value + 1)
     },
-    [abandonPendingConnect, setActiveRoute, update],
+    [abandonPendingConnect, setActiveRoute, setHasConnected, update],
   )
 
   const chooseRoute = useCallback(
@@ -920,13 +933,13 @@ export function ConnectionProvider({
         if (next !== current) update(() => next)
         return
       }
-      setHasConnected(false)
+      setHasConnected(current.selectedId, false)
       abandonPendingConnect()
       setActiveRoute(environmentId, routeEndpoint)
       update(() => next)
       setBootstrapNonce((value) => value + 1)
     },
-    [abandonPendingConnect, setActiveRoute, update],
+    [abandonPendingConnect, setActiveRoute, setHasConnected, update],
   )
 
   const removeRoute = useCallback(
@@ -941,16 +954,16 @@ export function ConnectionProvider({
       const after = inUseFor(selectedStoredEnvironment(next), activeRoutesRef.current)
       // Forgetting the route in use moves the connection to the next one.
       if (before && after && before !== after) {
-        stopRouteSearch()
-        setHasConnected(false)
+        stopSelectedRouteSearch()
+        setHasConnected(current.selectedId, false)
         setBootstrapNonce((value) => value + 1)
       } else if (
-        routeFailureRef.current?.environmentId === environmentId &&
+        connectionOf(connectionsRef.current, environmentId).routeFailure &&
         !tokenRefused(environmentId)
       ) {
         // The reason on screen was worked out from routes that included this
         // one. Ask again without it.
-        stopRouteSearch()
+        stopRouteSearch(environmentId)
         setBootstrapNonce((value) => value + 1)
       }
       // A connect to the forgotten address must not bring the route back when
@@ -967,7 +980,14 @@ export function ConnectionProvider({
       }
       update(() => next)
     },
-    [setActiveRoute, stopRouteSearch, tokenRefused, update],
+    [
+      setActiveRoute,
+      setHasConnected,
+      stopRouteSearch,
+      stopSelectedRouteSearch,
+      tokenRefused,
+      update,
+    ],
   )
 
   const reportRouteHealth = useCallback(
@@ -991,7 +1011,7 @@ export function ConnectionProvider({
           : findStoredEnvironment(readEnvironmentRegistry().environments, environmentId)?.credential
         if (saved && saved !== credential) {
           update((current) => setStoredCredential(current, environmentId, saved))
-          if (tokenRefused(environmentId)) stopRouteSearch(true)
+          if (tokenRefused(environmentId)) stopRouteSearch(environmentId, true)
           return
         }
       }
@@ -1002,61 +1022,55 @@ export function ConnectionProvider({
       const selected = selectedStoredEnvironment(registryRef.current)
       if (pendingRef.current || selected?.environmentId !== environmentId) return
       if (inUseFor(selected, activeRoutesRef.current) !== routeEndpoint) return
-      setSocketReport({
-        environmentId,
-        endpoint: routeEndpoint,
-        connected: report.status === 'available',
+      changeConnection(environmentId, {
+        socket: { endpoint: routeEndpoint, connected: report.status === 'available' },
       })
       if (report.stopped) {
         announcedStops.current.add(environmentId)
         stopCounts.current.set(environmentId, (stopCounts.current.get(environmentId) ?? 0) + 1)
         // A search already out started before the server said it stopped; a
         // route it finds answering says nothing about the server now.
-        searchGeneration.current += 1
-        searching.current = false
-        setRouteSearch(null)
+        searchTickets.current.delete(environmentId)
+        changeConnection(environmentId, { routeSearch: null })
       }
       if (report.status === 'available') {
         announcedStops.current.delete(environmentId)
         // The socket is back: a search still out for it would only find, too
         // late, that nothing answered while the socket was down.
-        searchGeneration.current += 1
-        searching.current = false
-        retryAttempt.current = 0
-        setRouteSearch(null)
-        if (routeFailureRef.current) setRouteFailure(null)
+        searchTickets.current.delete(environmentId)
+        retryAttempts.current.delete(environmentId)
+        changeConnection(environmentId, { routeSearch: null, routeFailure: null })
         return
       }
       if (report.status === 'unauthorized') {
         // The environment itself refused the token, and every route carries
         // the same one: nothing to search for.
-        searchGeneration.current += 1
-        searching.current = false
-        setRouteSearch(null)
-        setRouteFailure({
-          environmentId,
-          reason: 'credential_rejected',
-          endpoint: routeEndpoint,
-          local: isLoopbackEnvironmentEndpoint(routeEndpoint),
-          tried: 1,
-          ...(report.message ? { message: report.message } : {}),
+        searchTickets.current.delete(environmentId)
+        changeConnection(environmentId, {
+          routeSearch: null,
+          routeFailure: {
+            reason: 'credential_rejected',
+            endpoint: routeEndpoint,
+            local: isLoopbackEnvironmentEndpoint(routeEndpoint),
+            tried: 1,
+            ...(report.message ? { message: report.message } : {}),
+          },
         })
         return
       }
       if (
         report.status === 'unreachable' &&
         onlineRef.current &&
-        !searching.current &&
-        !routeFailureRef.current
+        !searchTickets.current.has(environmentId) &&
+        !connectionOf(connectionsRef.current, environmentId).routeFailure
       ) {
         startRouteSearch(environmentId, 'socket')
       }
     },
     [
+      changeConnection,
       noteLiveReport,
       preview,
-      setRouteFailure,
-      setSocketReport,
       startRouteSearch,
       stopRouteSearch,
       tokenRefused,
@@ -1154,16 +1168,16 @@ export function ConnectionProvider({
   )
 
   const retry = useCallback(() => {
-    stopRouteSearch(true)
+    stopSelectedRouteSearch(true)
     setBootstrapNonce((value) => value + 1)
-  }, [stopRouteSearch])
+  }, [stopSelectedRouteSearch])
 
   const changeEnvironment = useCallback(() => {
-    setHasConnected(false)
+    setHasConnected(registryRef.current.selectedId, false)
     abandonPendingConnect()
     update((current) => ({ ...current, selectedId: null }))
     setBootstrapNonce((value) => value + 1)
-  }, [abandonPendingConnect, update])
+  }, [abandonPendingConnect, setHasConnected, update])
 
   const inUseEndpoint = inUseFor(selectedRecord, activeRoutes)
 
@@ -1173,7 +1187,9 @@ export function ConnectionProvider({
       const next = update((current) => setStoredCredential(current, environmentId, credential))
       // The old token's refusal, if its socket reported one first, is not a
       // refusal of the new one.
-      if (next && next !== before && tokenRefused(environmentId)) stopRouteSearch(true)
+      if (next && next !== before && tokenRefused(environmentId)) {
+        stopRouteSearch(environmentId, true)
+      }
     },
     [stopRouteSearch, tokenRefused, update],
   )
@@ -1191,14 +1207,14 @@ export function ConnectionProvider({
       if (inMemory?.credential || persisted?.credential) return false
       const next = update((current) => upsertStoredEnvironment(current, { ...input, endpoint }))
       if (!next) return false
-      setHasConnected(false)
+      setHasConnected(next.selectedId, false)
       abandonPendingConnect()
       forgottenRoutes.current.delete(routeKey(input.environmentId, endpoint))
       setActiveRoute(input.environmentId, endpoint)
       setBootstrapNonce((value) => value + 1)
       return true
     },
-    [abandonPendingConnect, preview, setActiveRoute, update],
+    [abandonPendingConnect, preview, setActiveRoute, setHasConnected, update],
   )
 
   // Another tab rotated a token (or connected again with a new one): this tab
@@ -1217,7 +1233,7 @@ export function ConnectionProvider({
         registryRef.current = next
         persistedRef.current = setStoredCredential(persistedRef.current, id, saved.credential)
         setRegistry(next)
-        if (tokenRefused(id)) stopRouteSearch(true)
+        if (tokenRefused(id)) stopRouteSearch(id, true)
       }
     }
     window.addEventListener('storage', onStorage)
