@@ -1,0 +1,155 @@
+name: Mobile Release
+
+# Every merge to dev that can change the phone app publishes a signed Android
+# APK to a `mobile-v<version>` GitHub Release, and points the feed the installed
+# app reads at it. See docs/RELEASING.md.
+
+on:
+  push:
+    branches: [dev]
+    paths:
+      - 'apps/mobile/**'
+      - 'packages/**'
+      - 'pnpm-lock.yaml'
+      - '.github/workflows/release-mobile.yml'
+
+permissions:
+  contents: read
+
+# The newest merge wins: an older build must not publish after it.
+concurrency:
+  group: mobile-release
+  cancel-in-progress: true
+
+env:
+  # The fingerprint of the release key. An APK signed with anything else cannot
+  # update the installed app, so the build stops here instead of publishing it.
+  ANDROID_CERT_SHA256: '67ee4bc738be415b3e0e679bac34872ce0d5f5aafbd0d31f5d3cb603fbb2ed19'
+  # How many versioned releases stay up. The repository's release feed lists
+  # only the newest ten, and the desktop updater reads that feed. Tags stay.
+  KEEP_RELEASES: 3
+
+jobs:
+  release:
+    name: Build and publish the APK
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    permissions:
+      contents: write
+    env:
+      EXPO_PUBLIC_DISTRIBUTION: github
+      OPENMANAGER_BUILD_NUMBER: ${{ github.run_number }}
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+
+      - name: Set up pnpm
+        uses: pnpm/action-setup@f40ffcd9367d9f12939873eb1018b921a783ffaa # v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 24
+          cache: pnpm
+          cache-dependency-path: pnpm-lock.yaml
+
+      - name: Set up Java
+        uses: actions/setup-java@b843ebf9b913146b38da2eaa7aeddf76074ae1ad # v6.1.0
+        with:
+          distribution: temurin
+          java-version: 21
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@8da46b539cd8fe6ab27ca75128919a18d757604c # v6.4.1
+
+      - name: Install dependencies
+        # Expo's recommended pnpm layout for a native build.
+        run: pnpm install --frozen-lockfile --config.node-linker=hoisted
+
+      - name: Generate the Android project
+        working-directory: apps/mobile
+        run: npx expo prebuild --platform android --no-install --clean
+
+      - name: Read the version
+        id: version
+        working-directory: apps/mobile
+        run: |
+          version=$(npx expo config --json --type public | node -e "console.log(JSON.parse(require('fs').readFileSync(0)).version)")
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "Releasing $version"
+
+      - name: Build the signed APK
+        working-directory: apps/mobile/android
+        env:
+          ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+        run: |
+          set -euo pipefail
+          keystore="$RUNNER_TEMP/release.p12"
+          printf '%s' "$ANDROID_KEYSTORE_BASE64" | base64 -d > "$keystore"
+          ./gradlew assembleRelease --no-daemon \
+            -PreactNativeArchitectures=arm64-v8a \
+            -Pandroid.injected.signing.store.file="$keystore" \
+            -Pandroid.injected.signing.store.password="$ANDROID_KEYSTORE_PASSWORD" \
+            -Pandroid.injected.signing.key.alias=openmanager \
+            -Pandroid.injected.signing.key.password="$ANDROID_KEYSTORE_PASSWORD"
+          rm -f "$keystore"
+
+      - name: Check the signature and version
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          set -euo pipefail
+          apk=apps/mobile/android/app/build/outputs/apk/release/app-release.apk
+          tools=$(ls -d "$ANDROID_HOME"/build-tools/* | sort -V | tail -1)
+          certs=$("$tools/apksigner" verify --print-certs "$apk")
+          echo "$certs"
+          echo "$certs" | grep -qi "SHA-256 digest: $ANDROID_CERT_SHA256"
+          badging=$("$tools/aapt2" dump badging "$apk")
+          echo "$badging" | head -1
+          echo "$badging" | grep -q "versionCode='$OPENMANAGER_BUILD_NUMBER'"
+          echo "$badging" | grep -q "versionName='$VERSION'"
+          echo "$badging" | grep -q "android.permission.REQUEST_INSTALL_PACKAGES"
+
+      - name: Publish the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          set -euo pipefail
+          tag="mobile-v$VERSION"
+          name="openmanager-$VERSION.apk"
+          cp apps/mobile/android/app/build/outputs/apk/release/app-release.apk "$name"
+          # Never "latest": that belongs to the other release trains.
+          gh release create "$tag" "$name" --target "$GITHUB_SHA" --prerelease --latest=false \
+            --title "OpenManager mobile $VERSION" \
+            --notes "Android APK built from $GITHUB_SHA. The installed app offers this update by itself."
+
+          url="https://github.com/$GH_REPO/releases/download/$tag/$name"
+          size=$(stat -c %s "$name")
+          printf '{"version":"%s","build":%s,"url":"%s","size":%s}\n' \
+            "$VERSION" "$OPENMANAGER_BUILD_NUMBER" "$url" "$size" > latest.json
+          cat latest.json
+
+          # The feed: one fixed address, so the app asks for one small file and
+          # not GitHub's rate-limited API, and only once the APK is really there.
+          if ! gh release view mobile-latest >/dev/null 2>&1; then
+            gh release create mobile-latest --target "$GITHUB_SHA" --prerelease --latest=false \
+              --title 'OpenManager mobile update feed' \
+              --notes 'What installed phones read to find the newest APK. Do not delete it.'
+          fi
+          gh release upload mobile-latest latest.json --clobber
+
+      - name: Remove old releases
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          gh release list --limit 100 --json tagName,createdAt \
+            --jq "[.[] | select(.tagName | startswith(\"mobile-v\"))] | sort_by(.createdAt) | reverse | .[$KEEP_RELEASES:] | .[].tagName" |
+            while read -r tag; do
+              echo "Removing the $tag release; its tag stays."
+              gh release delete "$tag" --yes
+            done

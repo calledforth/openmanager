@@ -16,6 +16,7 @@ import { DraftDiscardHost } from '../draft/DraftDiscardHost'
 import { PhoneEnvironmentProvider } from '../environment/PhoneEnvironmentProvider'
 import { pairingSession } from '../pairing/session'
 import { ThemeProvider, usePhoneTheme, useTheme } from '../theme/ThemeProvider'
+import { UpdateChecks } from '../updates/useUpdater'
 
 // A cold deep link (a session, search) still has the tabs under it, so its
 // back control returns to them.
@@ -64,6 +65,7 @@ function RootNavigator() {
       </Stack>
       <PairingResume />
       <DraftDiscardHost />
+      <UpdateChecks />
     </>
   )
 }

@@ -1,6 +1,6 @@
 import Constants from 'expo-constants'
 import * as Device from 'expo-device'
-import { useRouter } from 'expo-router'
+import { useFocusEffect, useRouter } from 'expo-router'
 import {
   CaretRightIcon,
   DeviceMobileIcon,
@@ -20,6 +20,8 @@ import { EnvironmentCard } from '../../settings/EnvironmentCard'
 import { environmentCards } from '../../settings/environments'
 import { SettingsRow } from '../../settings/SettingsRow'
 import { usePhoneTheme } from '../../theme/ThemeProvider'
+import { UpdateRow } from '../../updates/UpdateRow'
+import { useCheckOnFocus } from '../../updates/useUpdater'
 import { BigTitle, FadeOut, SectionLabel } from '../../ui/chrome'
 import { GlassContent } from '../../ui/Glass'
 import { Screen } from '../../ui/Screen'
@@ -49,6 +51,7 @@ export default function SettingsScreen() {
       : `${client} (environment ${environment})`
   const version = Constants.expoConfig?.version ?? '—'
   const paired = connection.environments.filter((item) => item.paired).length
+  useFocusEffect(useCheckOnFocus())
 
   return (
     <Screen tab="settings">
@@ -95,6 +98,7 @@ export default function SettingsScreen() {
               title="About"
               sub={`OpenManager ${version} · protocol ${protocol}`}
             />
+            <UpdateRow />
           </ScrollView>
           <FadeOut />
         </View>

@@ -49,6 +49,12 @@ followed by pairing again.
 sessions and drafts from `src/home/fixture.ts`, a session page from a recorded thread); without
 it an unpaired phone shows the empty home.
 
+## Releases
+
+Every merge to `dev` that can change the app publishes a signed APK, and installed copies offer
+it on the home and in Settings. See [Mobile releases](../../docs/RELEASING.md#mobile-releases).
+Local builds have no updater; `src/updates/distribution.ts` is the switch.
+
 ## Installing dependencies
 
 Do **not** use `pnpm dlx expo install` in this workspace: it shells out to
