@@ -31,6 +31,7 @@ import { composerChip } from './chatComposerStyles'
 import { ProviderIcon, type ProviderIconId } from '../providers/ProviderIcon'
 import { Tooltip } from '../ui/Tooltip'
 import { usePortaledMenu } from '../ui/usePortaledMenu'
+import { behindModal } from '../../lib/modal-layers'
 import { useHoldFocus, useRegisterPicker } from '../command/pickerRegistry'
 import { modelHint, modelLabel } from './modelLabel'
 import { contextWindowConfigOption, effortConfigOption } from './modelConfig'
@@ -432,13 +433,16 @@ export function ProviderModelPicker<P extends PickerProviderId = ProviderId>({
     const onKeyDown = (event: KeyboardEvent) => {
       if (event.repeat || event.defaultPrevented || !matchesShortcut(event, parsed)) return
       if (disabledRef.current) return
+      // A dialog laid over this picker (the quick New agent palette, which has
+      // a composer of its own) owns the keys: the press is that one's.
+      if (behindModal(wrapRef.current)) return
       event.preventDefault()
       if (openRef.current) finishRef.current()
       else setOpen(true)
     }
     window.addEventListener('keydown', onKeyDown)
     return () => window.removeEventListener('keydown', onKeyDown)
-  }, [shortcut, setOpen])
+  }, [shortcut, setOpen, wrapRef])
 
   // The command palette's "Switch model…".
   useRegisterPicker('model', () => setOpen(true), paletteEntry && !disabled)

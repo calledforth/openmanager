@@ -52,6 +52,7 @@
     "./components/chat/UserMessage": "./src/components/chat/UserMessage.tsx",
     "./components/chat/userMessageStyles": "./src/components/chat/userMessageStyles.ts",
     "./components/command/CommandPalette": "./src/components/command/CommandPalette.tsx",
+    "./components/command/QuickAgentPalette": "./src/components/command/QuickAgentPalette.tsx",
     "./components/fluid/ui/button": "./src/components/fluid/ui/button.tsx",
     "./components/fluid/ui/dialog": "./src/components/fluid/ui/dialog.tsx",
     "./components/fluid/ui/sidebar": "./src/components/fluid/ui/sidebar.tsx",

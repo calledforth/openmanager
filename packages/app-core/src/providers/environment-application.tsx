@@ -1955,7 +1955,7 @@ function EnvironmentInteractionProviders({ children }: { children: ReactNode }) 
   )
 }
 
-function EnvironmentViewActions({
+export function EnvironmentViewActions({
   actions,
   children,
 }: {

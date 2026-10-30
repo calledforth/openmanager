@@ -323,7 +323,16 @@ function importLocalDrafts(state: EnvironmentState, sync: DraftSync) {
  * Gives the composer the environment's drafts when the client keeps them;
  * otherwise the composer falls back to this browser's storage.
  */
-export function EnvironmentComposerDraftProvider({ children }: { children: ReactNode }) {
+export function EnvironmentComposerDraftProvider({
+  importLocal = true,
+  children,
+}: {
+  /** Bring this browser's old localStorage drafts in. Only the page's own
+   *  store does; a scope with a draft of its own (the quick New agent
+   *  palette) leaves it to that one. @default true */
+  importLocal?: boolean
+  children: ReactNode
+}) {
   const client = useEnvironmentClient()
   const sync = client.drafts
   const page = useContext(DraftPageContext)
@@ -349,9 +358,9 @@ export function EnvironmentComposerDraftProvider({ children }: { children: React
   const workspaceCount = useEnvironmentState((state) => state.workspaceOrder.length)
   useEffect(() => {
     // After the listing, so an import never overwrites a draft made elsewhere.
-    if (!sync || !listed) return
+    if (!importLocal || !sync || !listed) return
     importLocalDrafts(client.getState(), sync)
-  }, [client, listed, sessionCount, sync, workspaceCount])
+  }, [client, importLocal, listed, sessionCount, sync, workspaceCount])
   return (
     <ComposerDraftStoreContext.Provider value={store}>
       {children}

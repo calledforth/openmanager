@@ -7,12 +7,15 @@ import { useCallback, useEffect, useRef, useSyncExternalStore, type RefObject } 
  */
 export type PickerId = 'model' | 'project'
 
-const openers = new Map<PickerId, () => void>()
+// Per picker, every copy mounted and usable, oldest first. The newest one
+// answers: a second composer (the quick New agent palette) laid over the
+// page's takes "Switch model…" while it is open, and hands it back on close.
+const openers = new Map<PickerId, Array<() => void>>()
 const listeners = new Set<() => void>()
 let snapshot: ReadonlySet<PickerId> = new Set()
 
 function publish() {
-  snapshot = new Set(openers.keys())
+  snapshot = new Set([...openers].filter(([, stack]) => stack.length > 0).map(([id]) => id))
   listeners.forEach((listener) => listener())
 }
 
@@ -27,7 +30,7 @@ const getSnapshot = () => snapshot
 
 /** Opens a registered picker; false when none is mounted. */
 export function requestPicker(id: PickerId): boolean {
-  const open = openers.get(id)
+  const open = openers.get(id)?.at(-1)
   if (!open) return false
   open()
   return true
@@ -46,13 +49,14 @@ export function useRegisterPicker(id: PickerId, open: () => void, enabled = true
   useEffect(() => {
     if (!enabled) return
     const opener = () => openRef.current()
-    openers.set(id, opener)
+    const stack = openers.get(id) ?? []
+    openers.set(id, [...stack, opener])
     publish()
     return () => {
-      if (openers.get(id) === opener) {
-        openers.delete(id)
-        publish()
-      }
+      const left = (openers.get(id) ?? []).filter((entry) => entry !== opener)
+      if (left.length > 0) openers.set(id, left)
+      else openers.delete(id)
+      publish()
     }
   }, [id, enabled])
 }

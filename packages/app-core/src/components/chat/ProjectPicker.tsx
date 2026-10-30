@@ -20,6 +20,7 @@ import { ProjectIcon } from '../sidebar/ProjectIcon'
 import { Tooltip } from '../ui/Tooltip'
 import { usePortaledMenu } from '../ui/usePortaledMenu'
 import { useHoldFocus, useRegisterPicker } from '../command/pickerRegistry'
+import { behindModal } from '../../lib/modal-layers'
 
 const MENU_WIDTH = 360
 /** The "Add project" row's value; no workspace path can collide with it. */
@@ -56,6 +57,7 @@ export function ProjectPicker({
   environmentLabel,
   onSelect,
   onAddWorkspace,
+  variant = 'title',
 }: {
   workspaces: WorkspaceEntry[]
   recentWorkspaces: WorkspaceEntry[]
@@ -64,10 +66,14 @@ export function ProjectPicker({
   environmentLabel?: string
   onSelect: (workspacePath: string) => void
   onAddWorkspace: () => void
+  /** `title` is the landing's headline control; `chip` a property chip, as
+   *  in the quick New agent palette's header. @default "title" */
+  variant?: 'title' | 'chip'
 }) {
   const [query, setQuery] = useState('')
+  const chip = variant === 'chip'
   const { open, setOpen, toggle, close, menuCoords, wrapRef, triggerRef, menuRef } =
-    usePortaledMenu({ placement: 'below', minWidth: MENU_WIDTH, align: 'center' })
+    usePortaledMenu({ placement: 'below', minWidth: MENU_WIDTH, align: chip ? 'start' : 'center' })
 
   const byPath = useMemo(
     () => new Map(workspaces.map((workspace) => [workspace.path, workspace])),
@@ -122,13 +128,15 @@ export function ProjectPicker({
     const parsed = parseShortcut(SHORTCUT)
     const onKeyDown = (event: KeyboardEvent) => {
       if (event.repeat || event.defaultPrevented || !matchesShortcut(event, parsed)) return
+      // A dialog laid over this picker owns the keys (see `behindModal`).
+      if (behindModal(wrapRef.current)) return
       event.preventDefault()
       if (openRef.current) dismissRef.current()
       else setOpen(true)
     }
     window.addEventListener('keydown', onKeyDown)
     return () => window.removeEventListener('keydown', onKeyDown)
-  }, [setOpen])
+  }, [setOpen, wrapRef])
 
   const pick = (value: string) => {
     releaseFocus()
@@ -220,7 +228,10 @@ export function ProjectPicker({
               : 'Choose a project'
           }
           className={cn(
-            'inline-flex min-w-0 max-w-full items-center gap-1.5 rounded-md border-0 bg-transparent px-1.5 py-0.5 text-16-medium text-[var(--basis-text-strong)] transition-colors',
+            'inline-flex min-w-0 max-w-full items-center gap-1.5 rounded-md border-0 bg-transparent transition-colors',
+            chip
+              ? 'h-7 px-2 text-[13px] text-[var(--basis-text)]'
+              : 'px-1.5 py-0.5 text-16-medium text-[var(--basis-text-strong)]',
             'hover:bg-hover',
             open && 'bg-hover',
           )}
@@ -229,12 +240,17 @@ export function ProjectPicker({
             <ProjectIcon
               workspacePath={activeWorkspace.path}
               fallbackIcon={FolderSimpleIcon}
-              className="h-4 w-4 text-[var(--basis-text-muted)]"
+              className={cn(chip ? 'h-3.5 w-3.5' : 'h-4 w-4', 'text-[var(--basis-text-muted)]')}
             />
           ) : (
-            <FolderSimpleIcon weight="light" className="h-4 w-4 text-[var(--basis-text-muted)]" />
+            <FolderSimpleIcon
+              weight="light"
+              className={cn(chip ? 'h-3.5 w-3.5' : 'h-4 w-4', 'text-[var(--basis-text-muted)]')}
+            />
           )}
-          <span className="truncate">{activeWorkspace?.name ?? 'a project'}</span>
+          <span className="truncate">
+            {activeWorkspace?.name ?? (chip ? 'Pick a project' : 'a project')}
+          </span>
           <CaretDownIcon
             weight="light"
             className={cn(

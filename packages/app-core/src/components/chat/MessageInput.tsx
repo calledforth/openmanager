@@ -14,7 +14,7 @@ import { ComposerPlanPrompt } from '../plans/ComposerPlanPrompt'
 import { ComposerTodos, useSessionPlanEntries } from '../plans/ComposerTodos'
 import { cn } from '../../lib/utils'
 import { composerFrame } from './chatComposerStyles'
-import { MessageInputView } from './MessageInputView'
+import { MessageInputView, type MessageInputViewProps } from './MessageInputView'
 import {
   buildProviderModelGroups,
   metadataModeOptions,
@@ -49,6 +49,27 @@ const keptAttachment = (image: KeptImage): UploadedImageAttachment => ({
  * and model vision checks come from the host through `ViewActions`.
  */
 export function MessageInput() {
+  const { viewProps, questionFlow, planEntries, attachedTop } = useMessageInputBinding()
+  return (
+    <div className="flex w-full flex-col">
+      {questionFlow ? null : <ComposerPlanPrompt />}
+      <div className={cn('flex w-full flex-col', attachedTop && composerFrame)}>
+        {questionFlow ? <QuestionCard flow={questionFlow} /> : null}
+        <ComposerTodos entries={planEntries} />
+        <MessageInputView {...viewProps} />
+      </div>
+    </div>
+  )
+}
+
+/**
+ * Everything the composer is given, worked out from the application
+ * providers: the draft or session it writes, the provider, model, mode and
+ * settings it offers, whether images can go, and what sending does. The
+ * pending question and plan come along for `MessageInput`, which lays them
+ * out above the box.
+ */
+export function useMessageInputBinding() {
   const {
     activeSessionId,
     activeWorkspacePath,
@@ -428,99 +449,87 @@ export function MessageInput() {
   // three share one floating card.
   const attachedTop = planEntries.length > 0 || !!questionFlow
 
-  return (
-    <div className="flex w-full flex-col">
-      {questionFlow ? null : <ComposerPlanPrompt />}
-      <div className={cn('flex w-full flex-col', attachedTop && composerFrame)}>
-        {questionFlow ? <QuestionCard flow={questionFlow} /> : null}
-        <ComposerTodos entries={planEntries} />
-        <MessageInputView
-          disabled={disabled}
-          pendingDraftSessionStart={pendingDraftSessionStart}
-          activeWorkspacePath={activeWorkspacePath}
-          activeSessionId={activeSessionId}
-          isSessionDraftOpen={isSessionDraftOpen}
-          providerReady={providerReady}
-          currentProviderId={currentProviderId}
-          providerModelGroups={providerModelGroups}
-          currentModelId={currentModelId}
-          configOptions={runtimeState?.configOptions ?? []}
-          modeOptions={modeOptions}
-          currentModeId={currentModeId}
-          effortLevels={effortLevels}
-          {...(effortOptions ? { effortOptions } : {})}
-          effortConfigId={effortConfigId}
-          currentEffort={currentEffort}
-          canChangeSettings={canChangeSettings}
-          canChangeProvider={isSessionDraftOpen && !activeSessionId}
-          showModeControl={chrome.modePicker !== null || modeOptions.length > 0}
-          showModelControl={
-            chrome.modelPicker !== null ||
-            modelOptions.length > 0 ||
-            providerModelGroups.some((group) => group.models.length > 0)
-          }
-          isStreaming={isStreaming}
-          isAwaitingPlanReview={!!pendingPlan}
-          textOverride={
-            questionFlow
-              ? {
-                  value: questionFlow.text,
-                  onChange: questionFlow.setText,
-                  placeholder: 'Or type your own answer…',
-                  onSubmit: questionFlow.advance,
-                  canSubmit: questionFlow.canAdvance,
-                }
-              : undefined
-          }
-          attachedTop={attachedTop}
-          draftKey={draftKey}
-          imageUploadEnabled={
-            canUploadImages &&
-            providerSupportsImages &&
-            modelImageSupport !== false &&
-            modelImageSupport !== undefined
-          }
-          imageSupportMessage={imageSupportMessage}
-          settingsError={composerError}
-          sendBlockedReason={sendBlockedReason}
-          slashCommands={slashCommands}
-          usage={usage}
-          onModeChange={(id) => {
-            if (activeSessionId) {
-              void setSessionMode(activeSessionId, id)
-              return
-            }
-            setDraftMode(id)
-          }}
-          onProviderModelChange={(providerId, modelId) => {
-            if (activeSessionId) {
-              if (providerId === currentProviderId) {
-                void setSessionModel(activeSessionId, modelId)
-              }
-              return
-            }
-            if (providerId !== currentProviderId) {
-              setDraftProvider(providerId, modelId)
-              return
-            }
-            setDraftModel(modelId)
-          }}
-          onConfigOptionChange={(configId, value) => {
-            if (activeSessionId) {
-              void setSessionConfigOption(activeSessionId, configId, value)
-              return
-            }
-            setDraftConfigOption(configId, value)
-          }}
-          onSend={uploadAndSend}
-          {...(uploadImage ? { uploadImage } : {})}
-          onAbort={() => {
-            if (activeSessionId) {
-              void abortSession(activeSessionId)
-            }
-          }}
-        />
-      </div>
-    </div>
-  )
+  const viewProps: MessageInputViewProps = {
+    disabled,
+    pendingDraftSessionStart,
+    activeWorkspacePath,
+    activeSessionId,
+    isSessionDraftOpen,
+    providerReady,
+    currentProviderId,
+    providerModelGroups,
+    currentModelId,
+    configOptions: runtimeState?.configOptions ?? [],
+    modeOptions,
+    currentModeId,
+    effortLevels,
+    ...(effortOptions ? { effortOptions } : {}),
+    effortConfigId,
+    currentEffort,
+    canChangeSettings,
+    canChangeProvider: isSessionDraftOpen && !activeSessionId,
+    showModeControl: chrome.modePicker !== null || modeOptions.length > 0,
+    showModelControl:
+      chrome.modelPicker !== null ||
+      modelOptions.length > 0 ||
+      providerModelGroups.some((group) => group.models.length > 0),
+    isStreaming,
+    isAwaitingPlanReview: !!pendingPlan,
+    textOverride: questionFlow
+      ? {
+          value: questionFlow.text,
+          onChange: questionFlow.setText,
+          placeholder: 'Or type your own answer…',
+          onSubmit: questionFlow.advance,
+          canSubmit: questionFlow.canAdvance,
+        }
+      : undefined,
+    attachedTop,
+    draftKey,
+    imageUploadEnabled:
+      canUploadImages &&
+      providerSupportsImages &&
+      modelImageSupport !== false &&
+      modelImageSupport !== undefined,
+    imageSupportMessage,
+    settingsError: composerError,
+    sendBlockedReason,
+    slashCommands,
+    usage,
+    onModeChange: (id) => {
+      if (activeSessionId) {
+        void setSessionMode(activeSessionId, id)
+        return
+      }
+      setDraftMode(id)
+    },
+    onProviderModelChange: (providerId, modelId) => {
+      if (activeSessionId) {
+        if (providerId === currentProviderId) {
+          void setSessionModel(activeSessionId, modelId)
+        }
+        return
+      }
+      if (providerId !== currentProviderId) {
+        setDraftProvider(providerId, modelId)
+        return
+      }
+      setDraftModel(modelId)
+    },
+    onConfigOptionChange: (configId, value) => {
+      if (activeSessionId) {
+        void setSessionConfigOption(activeSessionId, configId, value)
+        return
+      }
+      setDraftConfigOption(configId, value)
+    },
+    onSend: uploadAndSend,
+    ...(uploadImage ? { uploadImage } : {}),
+    onAbort: () => {
+      if (activeSessionId) {
+        void abortSession(activeSessionId)
+      }
+    },
+  }
+  return { viewProps, questionFlow, planEntries, attachedTop }
 }

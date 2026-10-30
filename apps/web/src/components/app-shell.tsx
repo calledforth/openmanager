@@ -14,6 +14,12 @@ import {
   CommandPalette,
   type CommandPaletteItemData,
 } from '@openmanager/app-core/components/command/CommandPalette'
+import {
+  QUICK_AGENT_SHORTCUT,
+  QuickAgentPalette,
+  requestQuickAgent,
+  useQuickAgentAvailable,
+} from '@openmanager/app-core/components/command/QuickAgentPalette'
 import { ArrowsClockwiseIcon, FolderPlusIcon, NotePencilIcon } from '@phosphor-icons/react'
 import {
   Sidebar,
@@ -154,8 +160,10 @@ function ConnectedOverlays({
     (workspaceId: string) => void createSession(workspaceId),
     [createSession],
   )
-  // New agent starts where the sidebar's button would: the open project,
-  // else the first one still on disk.
+  // New agent opens the quick palette over the page; where there is none
+  // (an environment that keeps no drafts) it opens a page where the
+  // sidebar's button would: the open project, else the first one on disk.
+  const quickAgent = useQuickAgentAvailable()
   const newAgentTarget =
     workspaces.find((workspace) => workspace.path === activeWorkspacePath && !workspace.missing)
       ?.path ??
@@ -163,18 +171,30 @@ function ConnectedOverlays({
     null
   const commands = useMemo<CommandPaletteItemData[]>(
     () => [
-      ...(newAgentTarget
+      ...(quickAgent
         ? [
             {
               value: 'action:new-agent',
-              label: 'New agent',
+              label: 'New agent…',
               icon: NewAgentIcon,
               group: 'Actions',
-              keywords: ['new', 'agent', 'session', 'chat', 'thread', 'start'],
-              onSelect: () => void createSession(newAgentTarget),
+              shortcut: QUICK_AGENT_SHORTCUT,
+              keywords: ['new', 'agent', 'session', 'chat', 'thread', 'start', 'create'],
+              onSelect: () => void requestQuickAgent(),
             },
           ]
-        : []),
+        : newAgentTarget
+          ? [
+              {
+                value: 'action:new-agent',
+                label: 'New agent',
+                icon: NewAgentIcon,
+                group: 'Actions',
+                keywords: ['new', 'agent', 'session', 'chat', 'thread', 'start'],
+                onSelect: () => void createSession(newAgentTarget),
+              },
+            ]
+          : []),
       {
         value: 'action:add-project',
         label: 'Add project',
@@ -198,11 +218,19 @@ function ConnectedOverlays({
           ]
         : []),
     ],
-    [newAgentTarget, createSession, addWorkspace, activeSessionId, regenerateSessionTitle],
+    [
+      quickAgent,
+      newAgentTarget,
+      createSession,
+      addWorkspace,
+      activeSessionId,
+      regenerateSessionTitle,
+    ],
   )
   return (
     <>
       <ShellCommandPalette commands={commands} />
+      <QuickAgentPalette />
       <AddWorkspaceDialog
         client={client}
         open={addingWorkspace}
