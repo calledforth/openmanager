@@ -16,6 +16,14 @@ describe('the pill highlight', () => {
     expect(tabEmphasis(0, 1)).toBe(0)
     expect(tabEmphasis(2.4, 1)).toBe(0)
   })
+
+  // PillNav calls these from useAnimatedStyle, on the UI thread. Without the
+  // directive the call throws there and takes the whole app down on launch.
+  it('marks what the animated styles call as worklets', () => {
+    for (const helper of [pillOffset, tabEmphasis]) {
+      expect(helper.toString()).toMatch(/['"]worklet['"]/)
+    }
+  })
 })
 
 describe('background work in words', () => {

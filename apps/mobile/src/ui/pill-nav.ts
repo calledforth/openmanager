@@ -11,6 +11,7 @@ export const PILL_PADDING = 6
 
 /** Where the highlight sits for the tab at `index`, from the pill's content edge. */
 export function pillOffset(index: number): number {
+  'worklet'
   return index * (TAB_WIDTH + TAB_GAP)
 }
 
