@@ -302,6 +302,34 @@ fallback route does not switch back when a route ahead of it recovers: moving
 a working connection is a disruption, so it waits for the next reload,
 reselection or failure.
 
+## Every saved environment at once
+
+Every saved environment connects on load, each with its own client, its own
+bootstrap, its own route search and retry timer, and its own socket. One failing
+does not touch the others, and moving the selection does not touch a connection
+that is working. Selecting one that is not through is a person asking for it: it
+starts again from its first route, and a token it refused may be tried once more.
+
+Each client exists as soon as the environment's cache is read, which is what
+lets an environment that cannot be reached still show its sessions and unsent
+drafts after a reload. Existing is not dialling. The rules for a token are the
+same as with one environment:
+
+- A socket opens only on a route that has answered, on this attempt, as this
+  environment. Nothing else calls `connect()`.
+- Until the socket has got through, the page gets a view of the client without
+  its artifact calls, since those go over HTTP with the token.
+- A token the environment refused is not sent again without a person asking, and
+  what is cached of that environment is hidden.
+
+An environment that has never connected from this browser has nothing cached, so
+it shows the connecting state until it answers.
+
+An environment off screen saves its cache every 2 seconds instead of every 250
+ms. A save copies the whole state on the main thread, and with several busy
+environments those would add up. Nobody is typing there, and what a reload loses
+comes back from the environment.
+
 ## Health
 
 Health is the last thing this client learned about a route, persisted so it

@@ -1031,6 +1031,48 @@ describe('websocket environment client', () => {
     expect(selectActiveThread(client.getState())?.hydration).toBe('ready')
   })
 
+  describe('opening a session with no connection', () => {
+    function cachedStore(hydration: 'ready' | 'idle') {
+      const state = createInitialState()
+      state.environment = { environmentId: ENV, name: 'Local' }
+      state.sessions = { [SESSION.sessionId]: { ...SESSION_SUMMARY, threadIds: [THREAD.threadId] } }
+      state.sessionOrder = [SESSION.sessionId]
+      state.threads = { [THREAD.threadId]: createThreadState(THREAD, hydration) }
+      return createEnvironmentStore(state)
+    }
+    const offlineClient = (hydration: 'ready' | 'idle') => {
+      FakeSocket.instances = []
+      return createWebSocketEnvironmentClient({
+        url: 'ws://127.0.0.1:1/ws',
+        WebSocket: FakeSocket,
+        environmentId: ENV,
+        store: cachedStore(hydration),
+      })
+    }
+
+    it('keeps a chat that is already here readable, with no failure on top', async () => {
+      const client = offlineClient('ready')
+      await expect(client.commands.openSession(SESSION.sessionId)).rejects.toMatchObject({
+        code: 'unavailable',
+      })
+      expect(client.getState().sessionOpenFailure).toBeNull()
+      expect(client.getState().activeSessionId).toBe(SESSION.sessionId)
+      expect(selectActiveThread(client.getState())?.hydration).toBe('ready')
+      expect(FakeSocket.instances).toHaveLength(0)
+    })
+
+    it('still says so when there is nothing here to read', async () => {
+      const client = offlineClient('idle')
+      await expect(client.commands.openSession(SESSION.sessionId)).rejects.toMatchObject({
+        code: 'unavailable',
+      })
+      expect(client.getState().sessionOpenFailure).toMatchObject({
+        sessionId: SESSION.sessionId,
+        code: 'unavailable',
+      })
+    })
+  })
+
   it('authenticates through subprotocols and negotiates the handshake', async () => {
     const { client, socket } = await connected()
     expect(socket.protocols).toEqual(['openmanager.v1', `openmanager.auth.${'a'.repeat(64)}`])

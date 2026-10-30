@@ -11,12 +11,52 @@ import { ThemeProvider } from './providers/theme-provider'
 import { createQueryClient } from './query-client'
 import { createWebRouter } from './router'
 
+type MockEnvironmentClient = ReturnType<typeof createMockEnvironmentClient>
+
+/**
+ * The mock reads as connected from the moment it exists. A real client has
+ * nothing to say until it dials, so this one waits for `connect()` too, and
+ * calls `onDial` the first time it comes.
+ */
+export function idleUntilDialled(client: MockEnvironmentClient, onDial?: () => void) {
+  const { connect, getState, subscribe } = client
+  const listeners = new Set<() => void>()
+  let dialled = false
+  let idle: ReturnType<typeof getState> | undefined
+  client.getState = () => {
+    if (dialled) return getState()
+    idle ??= {
+      ...getState(),
+      environment: null,
+      connection: { ...getState().connection, phase: 'idle' },
+    }
+    return idle
+  }
+  client.subscribe = (listener) => {
+    listeners.add(listener)
+    const unsubscribe = subscribe(listener)
+    return () => {
+      listeners.delete(listener)
+      unsubscribe()
+    }
+  }
+  client.connect = () => {
+    if (!dialled) onDial?.()
+    dialled = true
+    connect()
+    for (const listener of listeners) listener()
+  }
+  return client
+}
+
 function createTestEnvironmentClient(options: WebSocketEnvironmentClientOptions) {
-  return createMockEnvironmentClient({
-    seed: {
-      environment: { environmentId: options.environmentId ?? 'env-local', name: 'Environment' },
-    },
-  })
+  return idleUntilDialled(
+    createMockEnvironmentClient({
+      seed: {
+        environment: { environmentId: options.environmentId ?? 'env-local', name: 'Environment' },
+      },
+    }),
+  )
 }
 
 export function renderWebApp(

@@ -1,15 +1,15 @@
-import { useEffect, useRef, useState, type ReactNode } from 'react'
+import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react'
 import {
   createWebSocketEnvironmentClient,
   type EnvironmentClient,
 } from '@openmanager/environment-client'
 import { EnvironmentClientProvider } from '@openmanager/app-core/providers/environment-client'
 import { environmentSocketUrl } from '../lib/environment-socket'
-import { findStoredEnvironment } from '../lib/environment-store'
 import { routeHealthFromConnection } from '../lib/route-health'
 import { createEnvironmentCache, writeEnvironmentCache } from '../lib/environment-cache'
 import { useConnection } from './connection-provider'
 import type { ConnectionUiState } from '../lib/connection-state'
+import type { EnvironmentLink } from '../lib/environment-link'
 
 /** States that waiting does not fix. The client goes; a person decides what next. */
 const NEEDS_A_PERSON: ReadonlySet<ConnectionUiState['kind']> = new Set([
@@ -19,61 +19,79 @@ const NEEDS_A_PERSON: ReadonlySet<ConnectionUiState['kind']> = new Set([
   'incompatible_protocol',
 ])
 
+/** How long changes wait before they are saved to this browser's cache. */
+const CACHE_SAVE_DELAY_MS = 250
 /**
- * Owns the WebSocket client for the selected environment. The client exists
- * only once bootstrap has proven the endpoint is compatible and the selection
- * carries an environment ID; it is replaced whenever the endpoint, credential,
- * or environment identity changes. Identity never changes with the endpoint:
- * a different route to the same environment gets a new socket and the same
- * environment ID, so sessions and the credential carry over.
+ * The same for an environment not on screen. A save copies the whole state on
+ * the main thread, and several busy environments would otherwise add that up.
+ * Nobody is typing there, and what a reload loses comes back from the
+ * environment.
  */
-export function WebEnvironmentClientProvider({
-  children,
-  createClient = createWebSocketEnvironmentClient,
+const BACKGROUND_CACHE_SAVE_DELAY_MS = 2000
+
+type EnvironmentCache = ReturnType<typeof createEnvironmentCache>
+type Connection = ReturnType<typeof useConnection>
+
+/**
+ * A client that has not got through yet, as the page may see it: the same
+ * cached state and drafts, and nothing that reaches the route. The artifact
+ * calls are left out because they go over HTTP with the token, and a route
+ * that has not answered as this environment must never be sent that.
+ */
+function cachedView(client: EnvironmentClient): EnvironmentClient {
+  return { ...client, fetchArtifact: undefined, uploadArtifact: undefined }
+}
+
+/**
+ * Owns one saved environment's client, from its cached state to its socket.
+ * The client exists as soon as the cache is read, so an environment that
+ * cannot be reached still shows what this browser kept of it, but it only
+ * dials once bootstrap has proven the route answers as this environment. It is
+ * replaced whenever the route or credential changes. Identity never changes
+ * with the endpoint: a different route to the same environment gets a new
+ * client on the same store, so sessions and the credential carry over.
+ */
+function EnvironmentHost({
+  link,
+  onScreen,
+  cache,
+  createClient,
+  reportRouteHealth,
+  forgetSocket,
+  publish,
 }: {
-  children: ReactNode
-  createClient?: typeof createWebSocketEnvironmentClient
+  link: EnvironmentLink
+  onScreen: boolean
+  cache: EnvironmentCache
+  createClient: typeof createWebSocketEnvironmentClient
+  reportRouteHealth: Connection['reportRouteHealth']
+  forgetSocket: Connection['forgetSocket']
+  publish: (environmentId: string, client: EnvironmentClient | null) => void
 }) {
-  const {
-    ui,
-    environment,
-    environments,
-    retryNonce,
-    reportRouteHealth,
-    forgetSocket,
-    wrongEnvironment,
-    routeVerified,
-  } = useConnection()
-  const endpoint = environment.status === 'selected' ? environment.endpoint : null
-  // Identity comes only from the selection's environment ID (filled from the
-  // registry once bootstrap has answered). An endpoint can belong to several
-  // environments over time, so it is never used to pick a credential.
-  const environmentId =
-    environment.status === 'selected' ? (environment.environmentId ?? null) : null
-  const stored = findStoredEnvironment(environments, environmentId)
-  const credential = stored?.credential || undefined
+  const { environmentId, endpoint, routeVerified, wrongEnvironment, attempt } = link
+  const credential = link.credential || undefined
+  const needsPerson = NEEDS_A_PERSON.has(link.ui.kind)
   // A drop, an offline blip, or a route that is slow to answer must not tear
   // the client down: the socket's own backoff loop is what recovers the
   // session, and disposing would drop the store and unmount the page with it.
-  // Only a different environment (the effect's keys), or a failure that needs
-  // a person, replaces the client.
+  // Only a different route or token (the effect's keys), or a failure that
+  // needs a person, replaces the client.
   // A route that answered as another environment never gets a socket, even
   // when the device being offline outranks that in the interface: the socket
   // would hand this environment's token to whatever answered.
-  const alive = !NEEDS_A_PERSON.has(ui.kind) && !wrongEnvironment
+  const alive = !needsPerson && !wrongEnvironment
 
   // Staying alive and being opened are different permissions. A client that
-  // exists rides out an offline gap, but a new one is only opened on a route
+  // has dialled rides out an offline gap, but one is only opened on a route
   // that has answered as this environment: offline says nothing about what is
   // at the address, and the socket upgrade carries the environment's token.
-  const connectionKey = endpoint && environmentId ? JSON.stringify([endpoint, environmentId]) : null
+  const connectionKey = JSON.stringify([endpoint, environmentId])
   const [verifiedKey, setVerifiedKey] = useState<string | null>(null)
-  const nextVerifiedKey =
-    !alive || !connectionKey
-      ? null
-      : routeVerified || verifiedKey === connectionKey
-        ? connectionKey
-        : null
+  const nextVerifiedKey = !alive
+    ? null
+    : routeVerified || verifiedKey === connectionKey
+      ? connectionKey
+      : null
   if (nextVerifiedKey !== verifiedKey) setVerifiedKey(nextVerifiedKey)
   const open = nextVerifiedKey !== null
 
@@ -81,17 +99,15 @@ export function WebEnvironmentClientProvider({
   // StrictMode's setup → cleanup → setup replay (and any real remount) gets a
   // fresh instance; a disposed client ignores connect() for good.
   const [client, setClient] = useState<EnvironmentClient | null>(null)
-  const transport = useRef<EnvironmentClient | null>(null)
-  const cache = useRef<ReturnType<typeof createEnvironmentCache> | null>(null)
-  if (!cache.current) cache.current = createEnvironmentCache()
+  const onScreenRef = useRef(onScreen)
   useEffect(() => {
-    if (!endpoint || !environmentId || !open) {
-      setClient(null)
-      return
-    }
+    onScreenRef.current = onScreen
+  }, [onScreen])
+  useEffect(() => {
+    if (needsPerson) return
     let cancelled = false
     let release: (() => void) | undefined
-    void cache.current!.getStore(environmentId).then((store) => {
+    void cache.getStore(environmentId).then((store) => {
       if (cancelled) return
       const next = createClient({
         url: environmentSocketUrl(endpoint),
@@ -99,14 +115,20 @@ export function WebEnvironmentClientProvider({
         environmentId,
         store,
       })
-      transport.current = next
+      const cached = cachedView(next)
       let authorized = false
-      const publishAuthorizedClient = () => {
-        const { connection } = next.getState()
+      let shown: EnvironmentClient | null | undefined
+      const show = () => {
+        const { connection, environment } = next.getState()
+        const refused = connection.failure?.code === 'auth'
         if (connection.phase === 'connected') authorized = true
-        if (connection.failure?.code === 'auth') authorized = false
-        if (authorized) setClient(next)
-        else setClient((current) => (current === next ? null : current))
+        if (refused) authorized = false
+        // What this browser kept is shown until the environment refuses this
+        // client. With nothing kept there is nothing to show yet.
+        const visible = authorized ? next : environment && !refused ? cached : null
+        if (visible === shown) return
+        shown = visible
+        publish(environmentId, visible)
       }
       let saveTimer: ReturnType<typeof setTimeout> | undefined
       const save = () => {
@@ -114,7 +136,9 @@ export function WebEnvironmentClientProvider({
         void writeEnvironmentCache(environmentId, store.getServerState())
       }
       const unsubscribeCache = store.subscribe(() => {
-        if (saveTimer === undefined) saveTimer = setTimeout(save, 250)
+        if (saveTimer !== undefined) return
+        const delay = onScreenRef.current ? CACHE_SAVE_DELAY_MS : BACKGROUND_CACHE_SAVE_DELAY_MS
+        saveTimer = setTimeout(save, delay)
       })
       // A reload inside the pause would lose the last keystrokes of a draft
       // that has not reached the environment yet.
@@ -129,15 +153,15 @@ export function WebEnvironmentClientProvider({
       // is worth reading.
       let seen: unknown
       const unsubscribe = next.subscribe(() => {
-        publishAuthorizedClient()
+        show()
         const { connection } = next.getState()
         if (connection === seen) return
         seen = connection
         const report = routeHealthFromConnection(connection)
         if (report) reportRouteHealth(environmentId, endpoint, report, credential ?? '')
       })
-      next.connect()
-      publishAuthorizedClient()
+      show()
+      setClient(next)
       release = () => {
         unsubscribe()
         // Whatever this socket said about the route stops being true now. Left
@@ -145,7 +169,6 @@ export function WebEnvironmentClientProvider({
         // before anything had answered there.
         forgetSocket(environmentId, endpoint)
         next.dispose()
-        if (transport.current === next) transport.current = null
         unsubscribeCache()
         window.removeEventListener('pagehide', saveNow)
         if (saveTimer !== undefined) clearTimeout(saveTimer)
@@ -157,16 +180,81 @@ export function WebEnvironmentClientProvider({
       cancelled = true
       release?.()
     }
-  }, [createClient, credential, endpoint, environmentId, forgetSocket, open, reportRouteHealth])
+  }, [
+    cache,
+    createClient,
+    credential,
+    endpoint,
+    environmentId,
+    forgetSocket,
+    needsPerson,
+    publish,
+    reportRouteHealth,
+    wrongEnvironment,
+  ])
 
-  // A manual retry, or the network coming back, should dial now rather than at
-  // the end of the current backoff window. connect() on a live client is a
-  // no-op, so this is safe to run on every change.
+  // The page keeps what it has while a replacement is on its way; these two
+  // are the cases where nothing takes its place.
   useEffect(() => {
-    if (retryNonce === 0) return
-    const current = client ?? transport.current
-    current?.connect()
-  }, [client, retryNonce])
+    if (needsPerson) publish(environmentId, null)
+  }, [environmentId, needsPerson, publish])
+  useEffect(() => () => publish(environmentId, null), [environmentId, publish])
 
-  return <EnvironmentClientProvider client={client}>{children}</EnvironmentClientProvider>
+  // Dial once the route has answered. Asking again, or the network coming
+  // back, should dial now rather than at the end of the current backoff
+  // window; connect() on a live client is a no-op, so this is safe to run on
+  // every change. This is the only place a socket is opened.
+  useEffect(() => {
+    if (open) client?.connect()
+  }, [attempt, client, open])
+
+  return null
+}
+
+/**
+ * Keeps a client for every saved environment and hands the selected one to the
+ * page. Each environment connects on its own, whichever one is on screen.
+ */
+export function WebEnvironmentClientProvider({
+  children,
+  createClient = createWebSocketEnvironmentClient,
+}: {
+  children: ReactNode
+  createClient?: typeof createWebSocketEnvironmentClient
+}) {
+  const { environment, links, reportRouteHealth, forgetSocket } = useConnection()
+  const cache = useRef<EnvironmentCache | null>(null)
+  if (!cache.current) cache.current = createEnvironmentCache()
+  const [clients, setClients] = useState<Readonly<Record<string, EnvironmentClient>>>({})
+  const publish = useCallback((environmentId: string, client: EnvironmentClient | null) => {
+    setClients((current) => {
+      if ((current[environmentId] ?? null) === client) return current
+      const next = { ...current }
+      if (client) next[environmentId] = client
+      else delete next[environmentId]
+      return next
+    })
+  }, [])
+  // Identity comes only from the selection's environment ID, which a connect
+  // has none of until the address has answered.
+  const shownId = environment.status === 'selected' ? environment.environmentId : undefined
+  return (
+    <>
+      {links.map((link) => (
+        <EnvironmentHost
+          key={link.environmentId}
+          link={link}
+          onScreen={link.environmentId === shownId}
+          cache={cache.current!}
+          createClient={createClient}
+          reportRouteHealth={reportRouteHealth}
+          forgetSocket={forgetSocket}
+          publish={publish}
+        />
+      ))}
+      <EnvironmentClientProvider client={(shownId && clients[shownId]) || null}>
+        {children}
+      </EnvironmentClientProvider>
+    </>
+  )
 }
