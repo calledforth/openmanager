@@ -1,11 +1,13 @@
 # Releasing OpenManager
 
-OpenManager uses GitHub Actions and public GitHub Releases. There are two independent release
+OpenManager uses GitHub Actions and public GitHub Releases. There are three independent release
 trains in this repository:
 
 - **Desktop app**, tags `v*`: the Windows NSIS installer and portable build. Most of this page.
 - **Environment server**, tags `server-v*`: the self-contained `openmanager` executable. See
   [Environment server releases](#environment-server-releases) below.
+- **Android app**, tags `mobile-v*`: a signed APK on every merge to `dev`. See
+  [Mobile releases](#mobile-releases) below.
 
 A desktop release tag builds the Windows NSIS installer, portable executable, updater metadata,
 blockmap, checksums, and a GitHub artifact attestation. The installed NSIS build checks GitHub
@@ -48,6 +50,41 @@ published tag; fix forward with a new patch version. To ship a newer embedded No
 
 After publishing, check an install from the release on Windows and on Linux or WSL
 ([install.md](./install.md)), and `openmanager update` from the previous version.
+
+## Mobile releases
+
+`.github/workflows/release-mobile.yml` runs on every merge to `dev` that touches `apps/mobile`,
+`packages` or the lockfile. It builds an arm64 Android APK and publishes it, with nothing to do by
+hand:
+
+- **The release:** tag `mobile-v<version>`, asset `openmanager-<version>.apk`, always a prerelease
+  and never "latest". The version is `app.json`'s with its last part replaced by the workflow's run
+  number (`0.1.14`), and the same number becomes Android's `versionCode`. To move to `0.2.x`, edit
+  `version` in `apps/mobile/app.json`.
+- **The feed:** the `mobile-latest` release holds one file, `latest.json`, which the workflow
+  rewrites after the APK is up. The installed app reads that fixed address when it opens, when it
+  returns to the front (at most every 30 minutes) and when Settings opens, and offers a newer
+  `build` on the home and in Settings. Never delete this release; every installed phone reads it.
+- **Cleanup:** only the newest three `mobile-v*` releases stay, and their tags are kept. The
+  repository's release feed lists ten entries and the desktop updater reads it, so a release per
+  merge must not fill it.
+
+Only these APKs update themselves. `EXPO_PUBLIC_DISTRIBUTION=github` turns on the updater and adds
+Android's `REQUEST_INSTALL_PACKAGES` permission (`apps/mobile/app.config.js`); a build without it
+has neither. **A Play build must leave it unset:** Play does not allow an app to install its own
+updates.
+
+Android asks for confirmation on every update, and once for "Install unknown apps". A build that
+cannot start cannot update itself: install the next APK by hand from the Releases page.
+
+### The signing key
+
+Android updates an app in place only when the new APK has the same signature, so **the key can
+never change**: a lost key means every phone uninstalls and pairs again. The workflow takes it from
+two repository secrets, `ANDROID_KEYSTORE_BASE64` (a PKCS12 keystore, alias `openmanager`) and
+`ANDROID_KEYSTORE_PASSWORD`, and refuses to publish an APK whose certificate does not match
+`ANDROID_CERT_SHA256`. GitHub secrets cannot be read back, so keep your own copy of the keystore
+and password somewhere safe.
 
 ## One-time GitHub setup
 

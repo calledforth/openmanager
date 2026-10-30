@@ -23,6 +23,7 @@ import { ActionButton } from '../../pairing/ActionButton'
 import { ConnectionPanel } from '../../settings/ConnectionPanel'
 import { useTitleEnvironment } from '../../settings/title-environment'
 import { usePhoneTheme } from '../../theme/ThemeProvider'
+import { UpdateNotice } from '../../updates/UpdateRow'
 import { BigTitle, FadeOut, SectionLabel } from '../../ui/chrome'
 import { DraftRow } from '../../ui/DraftRow'
 import { GlassContent } from '../../ui/Glass'
@@ -192,6 +193,7 @@ export default function SessionsHome() {
             sections={sections}
             keyExtractor={keyOf}
             renderItem={renderItem}
+            ListHeaderComponent={<UpdateNotice />}
             renderSectionHeader={({ section }) => <SectionLabel>{section.label}</SectionLabel>}
             stickySectionHeadersEnabled={false}
             contentContainerStyle={{ paddingHorizontal: 8, paddingBottom: insets.bottom + 140 }}
