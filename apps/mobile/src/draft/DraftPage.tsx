@@ -94,6 +94,7 @@ export function DraftPage() {
     <SessionThread
       title="New session"
       project={messages.length > 0 ? (projectName ?? undefined) : undefined}
+      projectId={messages.length > 0 ? (workspace?.path ?? null) : null}
       status={null}
       messages={messages}
       phase="ready"

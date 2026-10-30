@@ -11,7 +11,7 @@ import { useHomeSource } from '../home/source'
 import { usePhoneTheme } from '../theme/ThemeProvider'
 import { SectionLabel } from '../ui/chrome'
 import { useGoBack } from '../ui/goBack'
-import { ProjectSquare } from '../ui/ProjectChip'
+import { ProjectMark } from '../ui/ProjectMark'
 import { SessionRow } from '../ui/SessionRow'
 import { Press } from '../ui/Press'
 
@@ -121,6 +121,7 @@ export default function Search() {
                 {hits.projects.map((w) => (
                   <ProjectRow
                     key={w.path}
+                    path={w.path}
                     name={w.name}
                     count={sessionCount(w.path)}
                     onPress={() => setQuery(w.name)}
@@ -143,6 +144,7 @@ export default function Search() {
             {workspaces.map((w) => (
               <ProjectRow
                 key={w.path}
+                path={w.path}
                 name={w.name}
                 count={sessionCount(w.path)}
                 onPress={() => setQuery(w.name)}
@@ -156,10 +158,12 @@ export default function Search() {
 }
 
 function ProjectRow({
+  path,
   name,
   count,
   onPress,
 }: {
+  path: string
   name: string
   count: number
   onPress?: () => void
@@ -178,7 +182,7 @@ function ProjectRow({
         backgroundColor: pressed ? theme.hover : 'transparent',
       })}
     >
-      <ProjectSquare name={name} size={24} />
+      <ProjectMark workspaceId={path} name={name} size={24} />
       <AppText variant="text-14-medium" style={{ color: theme.fg, flex: 1 }}>
         {name}
       </AppText>

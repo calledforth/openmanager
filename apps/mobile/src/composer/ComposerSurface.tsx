@@ -100,7 +100,12 @@ export function ComposerSurface({
         onLayout={(event) => setLayer(event.nativeEvent.layout.height)}
       >
         <View style={StyleSheet.absoluteFill} pointerEvents="box-none" {...coveredBySheet(covered)}>
-          <SessionDock status={slot.status} bottomInset={slot.bottomInset} onHeight={slot.onHeight}>
+          <SessionDock
+            status={slot.status}
+            above={slot.above}
+            bottomInset={slot.bottomInset}
+            onHeight={slot.onHeight}
+          >
             <ComposerDock model={model} ui={ui} />
           </SessionDock>
         </View>

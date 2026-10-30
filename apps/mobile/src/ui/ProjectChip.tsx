@@ -2,42 +2,35 @@ import { View } from 'react-native'
 
 import { AppText } from '../components/ui/AppText'
 import { usePhoneTheme } from '../theme/ThemeProvider'
+import { ProjectMark } from './ProjectMark'
+
+export { projectColor, ProjectSquare } from './ProjectMark'
 
 /**
- * A project's mark: the icon the environment declares once declared project
- * icons reach the phone; until then a square in a colour fixed by the name
- * (`theme.projectMarks`), so a project keeps its colour across screens and
- * devices.
+ * A project's name with its mark: the icon its folder declares (as web's
+ * sidebar and the project picker show it) when the chip knows which project
+ * it is (`workspaceId`, the project's path), else the square in the colour
+ * its name fixes.
  */
-export function projectColor(name: string, marks: readonly string[]): string {
-  let hash = 0
-  for (const ch of name) hash = (hash * 31 + ch.charCodeAt(0)) >>> 0
-  return marks[hash % marks.length]!
-}
-
-export function ProjectSquare({ name, size = 12 }: { name: string; size?: number }) {
+export function ProjectChip({
+  name,
+  workspaceId = null,
+  muted = true,
+  size = 12,
+}: {
+  name: string
+  workspaceId?: string | null
+  muted?: boolean
+  size?: number
+}) {
   const theme = usePhoneTheme()
   return (
-    <View
-      style={{
-        width: size,
-        height: size,
-        borderRadius: size / 4,
-        backgroundColor: projectColor(name, theme.projectMarks),
-      }}
-    />
-  )
-}
-
-export function ProjectChip({ name, muted = true }: { name: string; muted?: boolean }) {
-  const theme = usePhoneTheme()
-  return (
-    <View className="flex-row items-center gap-1.5">
-      <ProjectSquare name={name} />
+    <View className="flex-row items-center gap-1.5" style={{ flexShrink: 1 }}>
+      <ProjectMark workspaceId={workspaceId} name={name} size={size} />
       <AppText
         variant="text-12-regular"
         numberOfLines={1}
-        style={{ color: muted ? theme.muted : theme.fg }}
+        style={{ color: muted ? theme.muted : theme.fg, flexShrink: 1 }}
       >
         {name}
       </AppText>

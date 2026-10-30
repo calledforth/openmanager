@@ -1,5 +1,5 @@
 import { useContext, useEffect, useState } from 'react'
-import { Image } from 'react-native'
+import { Image, View } from 'react-native'
 import { SvgXml } from 'react-native-svg'
 import {
   WORKSPACE_ICONS_UNSET,
@@ -7,8 +7,34 @@ import {
   type ViewActions,
 } from '@openmanager/app-core/logic'
 
-import { ProjectSquare } from './ProjectChip'
+import { usePhoneTheme } from '../theme/ThemeProvider'
 import { svgOfDataUrl } from './project-icon'
+
+/**
+ * A project's colour until its declared icon reaches the phone: fixed by
+ * the name (`theme.projectMarks`), so a project keeps its colour across
+ * screens and devices.
+ */
+export function projectColor(name: string, marks: readonly string[]): string {
+  let hash = 0
+  for (const ch of name) hash = (hash * 31 + ch.charCodeAt(0)) >>> 0
+  return marks[hash % marks.length]!
+}
+
+/** The square a project shows when it declares no icon. */
+export function ProjectSquare({ name, size = 12 }: { name: string; size?: number }) {
+  const theme = usePhoneTheme()
+  return (
+    <View
+      style={{
+        width: size,
+        height: size,
+        borderRadius: size / 4,
+        backgroundColor: projectColor(name, theme.projectMarks),
+      }}
+    />
+  )
+}
 
 type Lookup = NonNullable<ViewActions['resolveWorkspaceIcon']>
 

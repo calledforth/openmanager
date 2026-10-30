@@ -20,6 +20,13 @@ import { buildMarkdownStyles } from './markdownStyles'
 const trimEnd = (content: string) => (content.endsWith('\n') ? content.slice(0, -1) : content)
 
 const RULES: RenderRules = {
+  // Every run of text is selectable, so a reader can copy from a reply: the
+  // library's own rule draws a plain Text.
+  textgroup: (node, children, _parent, styles) => (
+    <Text key={node.key} selectable style={styles.textgroup}>
+      {children}
+    </Text>
+  ),
   fence: (node) => (
     <CodeBlock
       key={node.key}

@@ -86,7 +86,7 @@ export function DraftRow({
       )}
     >
       {/* Opaque, so the Discard behind never shows through the row. */}
-      <View style={{ backgroundColor: theme.bg, borderRadius: 12 }}>{body}</View>
+      <View style={{ backgroundColor: theme.bg, borderRadius: 14 }}>{body}</View>
     </ReanimatedSwipeable>
   )
 }
@@ -130,19 +130,22 @@ function DraftRowBody({
         gap: 12,
         paddingVertical: 10,
         paddingHorizontal: 12,
-        borderRadius: 12,
-        backgroundColor: pressed ? theme.hover : 'transparent',
+        borderRadius: 14,
+        marginVertical: 1,
+        // A draft card is filled with the accent at rest and deepens when
+        // pressed, as web's `draftFillClass`.
+        backgroundColor: pressed ? theme.draft.hover : theme.draft.fill,
       })}
     >
       <View style={{ width: 22, height: 22, alignItems: 'center', justifyContent: 'center' }}>
         {draft.sending ? (
-          <PaperPlaneTiltIcon size={16} color={theme.faint} />
+          <PaperPlaneTiltIcon size={16} color={theme.draft.accent} />
         ) : draft.unsynced ? (
-          <CloudSlashIcon size={16} color={theme.faint} />
+          <CloudSlashIcon size={16} color={theme.status.needs} />
         ) : draft.imageCount ? (
-          <ImageIcon size={16} color={theme.faint} />
+          <ImageIcon size={16} color={theme.draft.accent} />
         ) : (
-          <PencilSimpleLineIcon size={16} color={theme.faint} />
+          <PencilSimpleLineIcon size={16} color={theme.draft.accent} />
         )}
       </View>
       <View style={{ flex: 1, minWidth: 0 }}>
@@ -155,7 +158,7 @@ function DraftRowBody({
           {draft.preview || images(draft.imageCount)}
         </AppText>
         <View className="mt-0.5 flex-row items-center gap-1.5">
-          {workspace ? <ProjectChip name={workspace.name} /> : null}
+          {workspace ? <ProjectChip name={workspace.name} workspaceId={workspace.path} /> : null}
           {workspace ? (
             <AppText variant="text-12-regular" style={{ color: theme.faint }}>
               ·

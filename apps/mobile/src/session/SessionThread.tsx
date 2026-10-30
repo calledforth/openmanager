@@ -141,6 +141,10 @@ function ScrollToLatest({
 export interface SessionThreadProps {
   title: string
   project?: string
+  /** The project's path, for its declared icon. */
+  projectId?: string | null
+  /** Above the status line in the dock: the session's background work. */
+  above?: ReactNode
   /** The line above the dock; none at rest. */
   status: StatusLineView | null
   messages: UIMessage[]
@@ -179,6 +183,8 @@ const NO_CHILDREN: readonly HomeSession[] = []
 export const SessionThread = memo(function SessionThread({
   title,
   project,
+  projectId = null,
+  above = null,
   status,
   messages,
   phase,
@@ -255,8 +261,8 @@ export const SessionThread = memo(function SessionThread({
   // A composer sheet, popover, camera or the pulled-up editor over the page.
   const [covered, setCovered] = useState(false)
   const dockSlot = useMemo<DockSlot>(
-    () => ({ status, bottomInset, onHeight: onDockHeight, onCovered: setCovered }),
-    [bottomInset, onDockHeight, status],
+    () => ({ status, above, bottomInset, onHeight: onDockHeight, onCovered: setCovered }),
+    [above, bottomInset, onDockHeight, status],
   )
 
   return (
@@ -277,7 +283,13 @@ export const SessionThread = memo(function SessionThread({
             action={headerAction}
           />
           <GlassContent>
-            <SessionHeader title={title} project={project} topInset={insets.top} chrome={chrome} />
+            <SessionHeader
+              title={title}
+              project={project}
+              projectId={projectId}
+              topInset={insets.top}
+              chrome={chrome}
+            />
 
             <View className="flex-1">
               {messages.length === 0 && empty && !problem && phase === 'ready' ? (
@@ -371,7 +383,12 @@ export const SessionThread = memo(function SessionThread({
           ) : null}
 
           {composer ? null : (
-            <SessionDock status={status} bottomInset={bottomInset} onHeight={onDockHeight}>
+            <SessionDock
+              status={status}
+              above={above}
+              bottomInset={bottomInset}
+              onHeight={onDockHeight}
+            >
               <ReadOnlyBar />
             </SessionDock>
           )}

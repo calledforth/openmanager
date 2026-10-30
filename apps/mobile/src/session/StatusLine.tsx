@@ -36,10 +36,8 @@ export const StatusLine = memo(function StatusLine({ view }: { view: StatusLineV
   countRender('StatusLine')
   const theme = usePhoneTheme()
   if (!view) return null
-  const toned =
-    view.mark === 'needs' || view.mark === 'question' || view.mark === 'error'
-      ? theme.status[view.mark]
-      : theme.muted
+  // The state's own colour, as the web sidebar paints its status words.
+  const toned = theme.status[view.mark]
   return (
     <Animated.View
       // Keyed by the state, so only a change of state fades; the clock and

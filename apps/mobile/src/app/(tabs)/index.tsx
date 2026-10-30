@@ -9,13 +9,14 @@ import { AppText } from '../../components/ui/AppText'
 import { DraftDiscardToast } from '../../draft/DraftDiscard'
 import {
   listShapeOf,
-  selectDraftRows,
-  selectHomeRows,
+  selectTabRows,
+  statusMarkOf,
   tabCounts,
-  type HomeDraftRow,
+  type HomeListRow,
   type HomeRow,
   type HomeTab,
 } from '../../home/rows'
+import { SessionActionsSheet } from '../../session/SessionActionsSheet'
 import { phoneConnectionView } from '../../environment/connection-ui'
 import { usePhoneConnection } from '../../environment/PhoneEnvironmentProvider'
 import { useHomeSource } from '../../home/source'
@@ -32,7 +33,7 @@ import { Screen, ScreenBar } from '../../ui/Screen'
 import { SegmentedTabs } from '../../ui/SegmentedTabs'
 import { SessionRow } from '../../ui/SessionRow'
 
-type ListRow = HomeRow | HomeDraftRow
+type ListRow = HomeListRow
 type ListSection = { key: string; label: string; data: ListRow[] }
 
 const EMPTY: Record<HomeTab, { title: string; body: string }> = {
@@ -137,14 +138,32 @@ export default function SessionsHome() {
   const discardDraft = source.kind === 'environment' ? sidebarDrafts?.discardDraft : undefined
 
   const counts = useMemo(() => tabCounts(sessions, drafts), [sessions, drafts])
-  const sections = useMemo<ListSection[]>(() => {
-    const groups =
-      tab === 'drafts'
-        ? selectDraftRows({ drafts, workspaces })
-        : selectHomeRows({ sessions, workspaces, tab })
-    return groups.map((group) => ({ key: group.key, label: group.label, data: group.rows }))
-  }, [sessions, drafts, workspaces, tab])
+  const sections = useMemo<ListSection[]>(
+    () =>
+      selectTabRows({ sessions, drafts, workspaces, tab }).map((group) => ({
+        key: group.key,
+        label: group.label,
+        data: group.rows,
+      })),
+    [sessions, drafts, workspaces, tab],
+  )
   useRowsMove(tab, listShapeOf(sections, keyOf))
+
+  // The session a long press opened the actions for, read fresh from the
+  // listing while the sheet is up, so a rename shows in it as it lands.
+  const [actionsId, setActionsId] = useState<string | null>(null)
+  const actionsRow = useMemo<HomeRow | null>(() => {
+    const session = actionsId ? sessions.find((s) => s.externalId === actionsId) : undefined
+    if (!session) return null
+    return {
+      kind: 'session',
+      session,
+      workspace: workspaces.find((w) => w.path === session.workspacePath),
+      mark: statusMarkOf(session),
+      depth: 0,
+    }
+  }, [actionsId, sessions, workspaces])
+  const closeActions = useCallback(() => setActionsId(null), [])
 
   const renderItem = useCallback<SectionListRenderItem<ListRow, ListSection>>(
     ({ item }) =>
@@ -158,6 +177,7 @@ export default function SessionsHome() {
         <SessionRow
           row={item}
           onPress={() => router.push(`/session/${encodeURIComponent(item.session.externalId)}`)}
+          onLongPress={() => setActionsId(item.session.externalId)}
         />
       ),
     [discardDraft, router],
@@ -246,6 +266,7 @@ export default function SessionsHome() {
         </View>
       </GlassContent>
       <DraftDiscardToast />
+      {actionsRow ? <SessionActionsSheet row={actionsRow} onClose={closeActions} /> : null}
     </Screen>
   )
 }

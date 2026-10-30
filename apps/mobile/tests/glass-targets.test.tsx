@@ -39,6 +39,17 @@ vi.mock('../src/theme/ThemeProvider', () => {
 })
 vi.mock('../src/ui/haptics', () => ({ tap: () => undefined }))
 vi.mock('expo-router', () => ({ useRouter: () => ({ push: () => undefined }) }))
+// The pill's sliding highlight: its values read at rest, nothing animates here.
+vi.mock('react-native-reanimated', async () => {
+  // @ts-expect-error -- react-native-web ships no types.
+  const web = (await import('react-native-web')) as { View: unknown }
+  return {
+    default: { View: web.View },
+    useSharedValue: (value: number) => ({ value }),
+    useAnimatedStyle: (style: () => object) => style(),
+    withSpring: (value: number) => value,
+  }
+})
 vi.mock('phosphor-react-native', () => {
   const Icon = () => null
   return { GearSixIcon: Icon, ListIcon: Icon, MagnifyingGlassIcon: Icon, TrayIcon: Icon }
