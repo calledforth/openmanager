@@ -9,8 +9,10 @@ import {
   type WebSocketEnvironmentClientOptions,
 } from '@openmanager/environment-client'
 import { useEnvironmentClientOptional } from '@openmanager/app-core/providers/environment-client'
-import { ENVIRONMENT_STORAGE_KEY } from '../lib/environment-store'
-import { WRONG_ENVIRONMENT_MESSAGE } from '../lib/route-health'
+import {
+  ENVIRONMENT_STORAGE_KEY,
+  WRONG_ENVIRONMENT_MESSAGE,
+} from '@openmanager/environment-client/connection'
 import { createQueryClient } from '../query-client'
 import { ConnectionProvider, useConnection } from './connection-provider'
 import { WebEnvironmentClientProvider } from './environment-client-provider'

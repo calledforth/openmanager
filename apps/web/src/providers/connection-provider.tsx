@@ -10,22 +10,11 @@ import {
   useSyncExternalStore,
   type ReactNode,
 } from 'react'
-import { fetchBootstrap, PROTOCOL_VERSION } from '../lib/bootstrap'
-import { isBrowserOnline, subscribeToNetworkStatus } from '../lib/browser-runtime'
 import {
+  fetchBootstrap,
+  PROTOCOL_VERSION,
   bootstrapOutcomeFromQuery,
   deriveConnectionUi,
-  type BootstrapOutcome,
-  type ConnectionUiState,
-  type DeriveConnectionInput,
-  type EnvironmentSelection,
-  type RouteFailure,
-  type RouteFailureReason,
-  type RouteOffer,
-  type RouteSearch,
-  type TransportStatus,
-} from '../lib/connection-state'
-import {
   addStoredRoute,
   classifyDiscoveredRoute,
   EMPTY_REGISTRY,
@@ -47,17 +36,27 @@ import {
   setStoredRouteHealth,
   upsertStoredEnvironment,
   writeEnvironmentRegistry,
-  type EnvironmentRegistry,
-  type RouteHealthReport,
-  type StoredEnvironment,
-} from '../lib/environment-store'
-import { fetchLocalOwner } from '../lib/local-owner'
-import { searchRoutes } from '../lib/route-fallback'
-import {
+  searchRoutes,
   probeRouteHealth,
   routeHealthFromBootstrap,
   WRONG_ENVIRONMENT_MESSAGE,
-} from '../lib/route-health'
+  type BootstrapOutcome,
+  type ConnectionUiState,
+  type DeriveConnectionInput,
+  type EnvironmentSelection,
+  type RouteFailure,
+  type RouteFailureReason,
+  type RouteOffer,
+  type RouteSearch,
+  type TransportStatus,
+  type EnvironmentRegistry,
+  type RouteHealthReport,
+  type StoredEnvironment,
+} from '@openmanager/environment-client/connection'
+import { isBrowserOnline, subscribeToNetworkStatus } from '../lib/browser-runtime'
+import { loopbackAccessDenied } from '../lib/local-access'
+import { fetchLocalOwner } from '../lib/local-owner'
+import { browserRegistryStorage } from '../lib/registry-storage'
 
 /**
  * How long to wait before asking every saved route again while none reaches
@@ -300,7 +299,7 @@ export function ConnectionProvider({
   retryDelaysMs?: readonly number[]
 }) {
   const [registry, setRegistry] = useState<EnvironmentRegistry>(() =>
-    preview ? EMPTY_REGISTRY : readEnvironmentRegistry(),
+    preview ? EMPTY_REGISTRY : readEnvironmentRegistry(browserRegistryStorage),
   )
   const [pending, setPending] = useState<PendingConnect | null>(null)
   const [hasConnected, setHasConnected] = useState(false)
@@ -440,11 +439,15 @@ export function ConnectionProvider({
       if (changed === current || environmentRegistriesEqual(changed, current)) return current
       const next = preview
         ? changed
-        : adoptPersistedCredentials(changed, persistedRef.current, readEnvironmentRegistry())
+        : adoptPersistedCredentials(
+            changed,
+            persistedRef.current,
+            readEnvironmentRegistry(browserRegistryStorage),
+          )
       registryRef.current = next
       persistedRef.current = next
       setRegistry(next)
-      writeEnvironmentRegistry(next)
+      writeEnvironmentRegistry(next, browserRegistryStorage)
       // A token taken from another tab is not the one that was refused.
       if (next !== changed) {
         for (const environment of next.environments) {
@@ -486,7 +489,7 @@ export function ConnectionProvider({
       // HTTP bootstrap is unauthenticated discovery. The stored credential is
       // for the later WebSocket upgrade; sending Authorization here would
       // preflight CORS and the environment server does not handle OPTIONS.
-      return fetchBootstrap(endpoint, { timeoutMs: BOOTSTRAP_TIMEOUT_MS })
+      return fetchBootstrap(endpoint, { timeoutMs: BOOTSTRAP_TIMEOUT_MS, loopbackAccessDenied })
     },
     // Asking the same route again keeps its last answer on screen while the
     // new one is out. Without it every retry, and every return from offline,
@@ -573,6 +576,7 @@ export function ConnectionProvider({
       void searchRoutes(record, {
         known,
         first: origin === 'socket' ? from : undefined,
+        loopbackAccessDenied,
       }).then((result) => {
         if (generation !== searchGeneration.current || !mounted.current) return
         searching.current = false
@@ -988,7 +992,10 @@ export function ConnectionProvider({
         }
         const saved = preview
           ? undefined
-          : findStoredEnvironment(readEnvironmentRegistry().environments, environmentId)?.credential
+          : findStoredEnvironment(
+              readEnvironmentRegistry(browserRegistryStorage).environments,
+              environmentId,
+            )?.credential
         if (saved && saved !== credential) {
           update((current) => setStoredCredential(current, environmentId, saved))
           if (tokenRefused(environmentId)) stopRouteSearch(true)
@@ -1087,26 +1094,28 @@ export function ConnectionProvider({
         probing.current.add(key)
         const reportsAtStart = liveReports.current.get(key) ?? 0
         const stopsAtStart = stopCounts.current.get(item.environmentId) ?? 0
-        void probeRouteHealth(item.environmentId, route.endpoint).then((report) => {
-          probing.current.delete(key)
-          if (!mounted.current) return
-          // The route was used while the probe was out: what the connection
-          // said about it is newer than this answer.
-          if ((liveReports.current.get(key) ?? 0) !== reportsAtStart) return
-          // The environment answered since it said it was shutting down, if
-          // this check started after it said so.
-          if (
-            report.status === 'available' &&
-            (stopCounts.current.get(item.environmentId) ?? 0) === stopsAtStart
-          ) {
-            announcedStops.current.delete(item.environmentId)
-          }
-          update((latest) =>
-            isInUse(latest, item.environmentId, route.endpoint)
-              ? latest
-              : setStoredRouteHealth(latest, item.environmentId, route.endpoint, report),
-          )
-        })
+        void probeRouteHealth(item.environmentId, route.endpoint, { loopbackAccessDenied }).then(
+          (report) => {
+            probing.current.delete(key)
+            if (!mounted.current) return
+            // The route was used while the probe was out: what the connection
+            // said about it is newer than this answer.
+            if ((liveReports.current.get(key) ?? 0) !== reportsAtStart) return
+            // The environment answered since it said it was shutting down, if
+            // this check started after it said so.
+            if (
+              report.status === 'available' &&
+              (stopCounts.current.get(item.environmentId) ?? 0) === stopsAtStart
+            ) {
+              announcedStops.current.delete(item.environmentId)
+            }
+            update((latest) =>
+              isInUse(latest, item.environmentId, route.endpoint)
+                ? latest
+                : setStoredRouteHealth(latest, item.environmentId, route.endpoint, report),
+            )
+          },
+        )
       }
     }
   }, [preview, update])
@@ -1124,7 +1133,10 @@ export function ConnectionProvider({
       }
       if (preview) return { ok: false, message: 'Routes cannot be added in a preview.' }
       // Unauthenticated, as every bootstrap is: no token goes anywhere here.
-      const outcome = await fetchBootstrap(routeEndpoint, { timeoutMs: ADD_ROUTE_TIMEOUT_MS })
+      const outcome = await fetchBootstrap(routeEndpoint, {
+        timeoutMs: ADD_ROUTE_TIMEOUT_MS,
+        loopbackAccessDenied,
+      })
       if (outcome.status !== 'ready' && outcome.status !== 'incompatible_protocol') {
         const reason =
           outcome.status === 'unreachable' || outcome.status === 'unauthorized'
@@ -1187,7 +1199,10 @@ export function ConnectionProvider({
       const inMemory = findStoredEnvironment(registryRef.current.environments, input.environmentId)
       const persisted = preview
         ? undefined
-        : findStoredEnvironment(readEnvironmentRegistry().environments, input.environmentId)
+        : findStoredEnvironment(
+            readEnvironmentRegistry(browserRegistryStorage).environments,
+            input.environmentId,
+          )
       if (inMemory?.credential || persisted?.credential) return false
       const next = update((current) => upsertStoredEnvironment(current, { ...input, endpoint }))
       if (!next) return false
@@ -1209,7 +1224,7 @@ export function ConnectionProvider({
       if (event.key !== ENVIRONMENT_STORAGE_KEY) return
       // The token is already saved, so this tab takes it without writing
       // its own copy of everything else back over the other tab's.
-      for (const saved of readEnvironmentRegistry().environments) {
+      for (const saved of readEnvironmentRegistry(browserRegistryStorage).environments) {
         const id = saved.environmentId
         const mine = findStoredEnvironment(registryRef.current.environments, id)
         if (!mine || !saved.credential || saved.credential === mine.credential) continue

@@ -10,7 +10,7 @@ import {
 import type { ComponentProps } from 'react'
 import type { WebApp } from './app'
 import { environmentSocketUrl } from './lib/environment-socket'
-import { ENVIRONMENT_STORAGE_KEY } from './lib/environment-store'
+import { ENVIRONMENT_STORAGE_KEY } from '@openmanager/environment-client/connection'
 import { renderWebApp } from './test-utils'
 
 type CreateClient = ComponentProps<typeof WebApp>['createEnvironmentClient']

@@ -28,10 +28,11 @@ import {
   setStoredRouteHealth,
   upsertStoredEnvironment,
   writeEnvironmentRegistry,
+  clearEnvironmentRegistry,
   type EnvironmentRegistry,
   type EnvironmentRoute,
   type StoredEnvironment,
-} from './environment-store'
+} from '../../src/connection/environment-store'
 
 const LOCAL = 'http://127.0.0.1:43120'
 const TUNNEL = 'https://tunnel.example'
@@ -504,7 +505,9 @@ describe('readEnvironmentRegistry', () => {
       version: 2,
     })
     expect(readEnvironmentRegistry(storage)).toEqual(registry)
-    expect(readEnvironmentRegistry({ getItem: () => 'not-json' })).toEqual(EMPTY_REGISTRY)
+    expect(
+      readEnvironmentRegistry(memoryStorage({ [ENVIRONMENT_STORAGE_KEY]: 'not-json' })),
+    ).toEqual(EMPTY_REGISTRY)
   })
 
   it('upgrades a version 1 endpoint list into routes, keeping order, selection and token', () => {
@@ -563,19 +566,21 @@ describe('readEnvironmentRegistry', () => {
     })
   })
 
-  it('returns empty when the default storage access throws', () => {
-    const original = window.localStorage
-    Object.defineProperty(window, 'localStorage', {
-      configurable: true,
-      get() {
-        throw new DOMException('blocked', 'SecurityError')
+  it('returns empty when the storage throws', () => {
+    const blocked = {
+      getItem: () => {
+        throw new Error('blocked')
       },
-    })
-    try {
-      expect(readEnvironmentRegistry()).toEqual(EMPTY_REGISTRY)
-    } finally {
-      Object.defineProperty(window, 'localStorage', { configurable: true, value: original })
+      setItem: () => {
+        throw new Error('blocked')
+      },
+      removeItem: () => {
+        throw new Error('blocked')
+      },
     }
+    expect(readEnvironmentRegistry(blocked)).toEqual(EMPTY_REGISTRY)
+    expect(() => writeEnvironmentRegistry(EMPTY_REGISTRY, blocked)).not.toThrow()
+    expect(() => clearEnvironmentRegistry(blocked)).not.toThrow()
   })
 })
 

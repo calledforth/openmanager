@@ -1,8 +1,12 @@
 import { PROTOCOL_VERSION } from '@openmanager/protocol'
-import { describe, expect, it, vi } from 'vitest'
-import type { BootstrapOutcome } from './connection-state'
-import type { StoredEnvironment } from './environment-store'
-import { routeFailureReason, searchRoutes, summarizeRouteFailures } from './route-fallback'
+import { afterEach, describe, expect, it, vi } from 'vitest'
+import type { BootstrapOutcome } from '../../src/connection/connection-state'
+import type { StoredEnvironment } from '../../src/connection/environment-store'
+import {
+  routeFailureReason,
+  searchRoutes,
+  summarizeRouteFailures,
+} from '../../src/connection/route-fallback'
 
 const LOCAL = 'http://127.0.0.1:43120'
 const TUNNEL = 'https://tunnel.example'
@@ -175,6 +179,21 @@ describe('summarizeRouteFailures', () => {
 })
 
 describe('searchRoutes', () => {
+  afterEach(() => {
+    vi.unstubAllGlobals()
+  })
+
+  it("hands the host's loopback check to the probes it makes itself", async () => {
+    vi.stubGlobal('fetch', vi.fn().mockRejectedValue(new TypeError('Failed to fetch')))
+    const result = await searchRoutes(environment([LOCAL]), {
+      loopbackAccessDenied: async () => true,
+    })
+    expect(result).toMatchObject({
+      found: null,
+      failure: { reason: 'local_access_blocked', endpoint: LOCAL },
+    })
+  })
+
   it('tries the local route first, even when it is not the first choice', async () => {
     const probe = vi.fn(async (endpoint: string) => (endpoint === LOCAL ? ready() : nothing))
     const result = await searchRoutes(environment([TUNNEL, LOCAL]), { probe })

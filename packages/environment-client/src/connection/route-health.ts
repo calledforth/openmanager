@@ -1,5 +1,5 @@
-import type { ConnectionState } from '@openmanager/environment-client'
-import { fetchBootstrap } from './bootstrap'
+import type { ConnectionState } from '../types'
+import { fetchBootstrap, type BootstrapProbeOptions } from './bootstrap'
 import type { BootstrapOutcome } from './connection-state'
 import type { RouteHealthReport, RouteHealthStatus } from './environment-store'
 
@@ -56,8 +56,12 @@ export function routeHealthFromConnection(
 export async function probeRouteHealth(
   environmentId: string,
   endpoint: string,
+  options: BootstrapProbeOptions,
 ): Promise<RouteHealthReport> {
-  const outcome = await fetchBootstrap(endpoint, { signal: AbortSignal.timeout(PROBE_TIMEOUT_MS) })
+  const outcome = await fetchBootstrap(endpoint, {
+    signal: AbortSignal.timeout(PROBE_TIMEOUT_MS),
+    loopbackAccessDenied: options.loopbackAccessDenied,
+  })
   return routeHealthFromBootstrap(outcome, environmentId) ?? { status: 'unreachable' }
 }
 
