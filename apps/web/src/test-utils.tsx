@@ -16,9 +16,14 @@ type MockEnvironmentClient = ReturnType<typeof createMockEnvironmentClient>
 /**
  * The mock reads as connected from the moment it exists. A real client has
  * nothing to say until it dials, so this one waits for `connect()` too, and
- * calls `onDial` the first time it comes.
+ * calls `onDial` the first time it comes. With `cached`, its state already
+ * names the environment, as one restored from this browser's cache does.
  */
-export function idleUntilDialled(client: MockEnvironmentClient, onDial?: () => void) {
+export function idleUntilDialled(
+  client: MockEnvironmentClient,
+  onDial?: () => void,
+  { cached = false }: { cached?: boolean } = {},
+) {
   const { connect, getState, subscribe } = client
   const listeners = new Set<() => void>()
   let dialled = false
@@ -27,7 +32,7 @@ export function idleUntilDialled(client: MockEnvironmentClient, onDial?: () => v
     if (dialled) return getState()
     idle ??= {
       ...getState(),
-      environment: null,
+      environment: cached ? getState().environment : null,
       connection: { ...getState().connection, phase: 'idle' },
     }
     return idle

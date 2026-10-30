@@ -315,12 +315,15 @@ lets an environment that cannot be reached still show its sessions and unsent
 drafts after a reload. Existing is not dialling. The rules for a token are the
 same as with one environment:
 
-- A socket opens only on a route that has answered, on this attempt, as this
-  environment. Nothing else calls `connect()`.
+- A client dials only on the answer to the latest question to its route, and
+  only if that answer is this environment. Nothing else calls `connect()`. A
+  socket that was already open retries on its own backoff after a drop; if a
+  search finds its route now answers as another environment, that client goes.
 - Until the socket has got through, the page gets a view of the client without
   its artifact calls, since those go over HTTP with the token.
-- A token the environment refused is not sent again without a person asking, and
-  what is cached of that environment is hidden.
+- A token the environment refused is not sent again without a person asking,
+  and what is cached of that environment is hidden. The refusal is saved, so a
+  reload dials only the selected environment's refused token, not every one.
 
 An environment that has never connected from this browser has nothing cached, so
 it shows the connecting state until it answers.

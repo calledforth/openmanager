@@ -62,6 +62,11 @@ export type StoredEnvironment = {
   /** Never empty, sorted by priority. */
   routes: EnvironmentRoute[]
   credential: string
+  /**
+   * The environment's socket refused this credential, and nothing has answered
+   * that yet. Absent otherwise. It keeps the refusal across a reload.
+   */
+  tokenRefused?: true
 }
 
 export type EnvironmentRegistry = {
@@ -256,6 +261,7 @@ export function parseStoredEnvironment(input: unknown): StoredEnvironment | null
     label: parseLabel(record.label),
     routes,
     credential,
+    ...(record.tokenRefused === true && credential ? { tokenRefused: true as const } : {}),
   }
 }
 
@@ -358,8 +364,14 @@ export function upsertStoredEnvironment(
   const credential = parseEnvironmentCredential(input.credential ?? '')
   const existing = registry.environments.find((item) => item.environmentId === environmentId)
   const known = existing?.routes.find((item) => item.endpoint === endpoint)
+  // A refusal was of the token it was given to.
+  const keptRefusal =
+    existing?.tokenRefused && (!credential || credential === existing.credential)
+      ? { tokenRefused: true as const }
+      : {}
   const record: StoredEnvironment = existing
     ? {
+        ...keptRefusal,
         environmentId,
         label: input.label !== undefined ? parseLabel(input.label) : existing.label,
         routes:
@@ -514,6 +526,12 @@ export function setStoredRouteHealth(
   return { ...registry, environments: replaceEnvironment(registry, record) }
 }
 
+function withoutTokenRefusal(environment: StoredEnvironment): StoredEnvironment {
+  const record = { ...environment }
+  delete record.tokenRefused
+  return record
+}
+
 /**
  * Replace a saved environment's client token, as after the environment
  * rotated it. Routes, label and selection are untouched. Returns the registry
@@ -529,8 +547,25 @@ export function setStoredCredential(
   if (!existing || !parsed || parsed === existing.credential) return registry
   return {
     ...registry,
-    environments: replaceEnvironment(registry, { ...existing, credential: parsed }),
+    environments: replaceEnvironment(registry, {
+      ...withoutTokenRefusal(existing),
+      credential: parsed,
+    }),
   }
+}
+
+/** Note whether the socket refused the environment's token. */
+export function setStoredTokenRefused(
+  registry: EnvironmentRegistry,
+  environmentId: string,
+  refused: boolean,
+): EnvironmentRegistry {
+  const existing = findStoredEnvironment(registry.environments, environmentId)
+  if (!existing || Boolean(existing.tokenRefused) === refused) return registry
+  const record: StoredEnvironment = refused
+    ? { ...existing, tokenRefused: true }
+    : withoutTokenRefusal(existing)
+  return { ...registry, environments: replaceEnvironment(registry, record) }
 }
 
 /**

@@ -1522,9 +1522,11 @@ export function createWebSocketEnvironmentClient(
   async function openSessionAt(sessionId: string, generation: number): Promise<void> {
     const previous = store.getState().activeSessionId
     // What is already here to read, should the environment not be reachable.
+    // Its messages, not its hydration: an open cut off earlier leaves a chat
+    // that reads perfectly well marked as loading.
     const before = store.getState()
     const loadedThreads = (before.sessions[sessionId]?.threadIds ?? []).filter(
-      (threadId) => before.threads[threadId]?.hydration === 'ready',
+      (threadId) => (before.threads[threadId]?.messages.length ?? 0) > 0,
     )
     store.update((state) => applySessionOpening(state, sessionId))
     // Selected already, so the session left behind is released now, as

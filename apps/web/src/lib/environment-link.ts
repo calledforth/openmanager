@@ -17,9 +17,9 @@ export type EnvironmentLink = {
   /** What the route last answered, which may be from before a new question. */
   answer: BootstrapOutcome
   /**
-   * The route has answered, on this connection attempt, as this environment. A
-   * new socket may only be opened on a route that has: before that, nothing
-   * says the address still leads to the environment whose token it would carry.
+   * The route's answer to the latest question is that it is this environment.
+   * A socket may only be dialled while that holds: otherwise nothing says the
+   * address still leads to the environment whose token it would carry.
    */
   routeVerified: boolean
   /**
@@ -34,6 +34,15 @@ export type EnvironmentLink = {
    * then, instead of waiting out its backoff.
    */
   attempt: number
+}
+
+/** The address answered, and it is not this environment. */
+export function answeredAsAnother(answer: BootstrapOutcome, environmentId: string): boolean {
+  return (
+    (answer.status === 'ready' || answer.status === 'incompatible_protocol') &&
+    answer.environmentId !== undefined &&
+    answer.environmentId !== environmentId
+  )
 }
 
 export function transportFromBootstrap(
@@ -83,8 +92,7 @@ export function deriveEnvironmentLink({
 }): EnvironmentLink {
   const { environmentId, label, credential } = record
   const answered = answer.status === 'ready' || answer.status === 'incompatible_protocol'
-  const wrongEnvironment =
-    answered && answer.environmentId !== undefined && answer.environmentId !== environmentId
+  const wrongEnvironment = answeredAsAnother(answer, environmentId)
   const routeVerified =
     fresh && answer.status === 'ready' && answer.environmentId === environmentId
   const socketConnected =

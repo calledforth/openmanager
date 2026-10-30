@@ -81,20 +81,6 @@ function EnvironmentHost({
   // would hand this environment's token to whatever answered.
   const alive = !needsPerson && !wrongEnvironment
 
-  // Staying alive and being opened are different permissions. A client that
-  // has dialled rides out an offline gap, but one is only opened on a route
-  // that has answered as this environment: offline says nothing about what is
-  // at the address, and the socket upgrade carries the environment's token.
-  const connectionKey = JSON.stringify([endpoint, environmentId])
-  const [verifiedKey, setVerifiedKey] = useState<string | null>(null)
-  const nextVerifiedKey = !alive
-    ? null
-    : routeVerified || verifiedKey === connectionKey
-      ? connectionKey
-      : null
-  if (nextVerifiedKey !== verifiedKey) setVerifiedKey(nextVerifiedKey)
-  const open = nextVerifiedKey !== null
-
   // The client is created inside the effect rather than memoized so that
   // StrictMode's setup → cleanup → setup replay (and any real remount) gets a
   // fresh instance; a disposed client ignores connect() for good.
@@ -200,13 +186,16 @@ function EnvironmentHost({
   }, [environmentId, needsPerson, publish])
   useEffect(() => () => publish(environmentId, null), [environmentId, publish])
 
-  // Dial once the route has answered. Asking again, or the network coming
-  // back, should dial now rather than at the end of the current backoff
-  // window; connect() on a live client is a no-op, so this is safe to run on
-  // every change. This is the only place a socket is opened.
+  // Staying alive and dialling are different permissions. A client that has
+  // dialled rides out a drop on its own backoff, but dialling is only allowed
+  // on an answer to the latest question: offline says nothing about what is at
+  // the address, and the socket upgrade carries the environment's token. So
+  // asking again, or the network coming back, dials as soon as that answer is
+  // in rather than at the end of the backoff window. connect() on a live client
+  // is a no-op. This is the only place a socket is opened.
   useEffect(() => {
-    if (open) client?.connect()
-  }, [attempt, client, open])
+    if (alive && routeVerified) client?.connect()
+  }, [alive, attempt, client, routeVerified])
 
   return null
 }

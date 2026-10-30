@@ -1032,26 +1032,33 @@ describe('websocket environment client', () => {
   })
 
   describe('opening a session with no connection', () => {
-    function cachedStore(hydration: 'ready' | 'idle') {
+    function cachedStore(hydration: 'ready' | 'loading' | 'idle', messages: unknown[]) {
       const state = createInitialState()
       state.environment = { environmentId: ENV, name: 'Local' }
       state.sessions = { [SESSION.sessionId]: { ...SESSION_SUMMARY, threadIds: [THREAD.threadId] } }
       state.sessionOrder = [SESSION.sessionId]
-      state.threads = { [THREAD.threadId]: createThreadState(THREAD, hydration) }
+      state.threads = {
+        [THREAD.threadId]: {
+          ...createThreadState(THREAD, hydration),
+          messages: messages as never,
+        },
+      }
       return createEnvironmentStore(state)
     }
-    const offlineClient = (hydration: 'ready' | 'idle') => {
+    const offlineClient = (hydration: 'ready' | 'loading' | 'idle', messages: unknown[] = []) => {
       FakeSocket.instances = []
       return createWebSocketEnvironmentClient({
         url: 'ws://127.0.0.1:1/ws',
         WebSocket: FakeSocket,
         environmentId: ENV,
-        store: cachedStore(hydration),
+        store: cachedStore(hydration, messages),
       })
     }
 
-    it('keeps a chat that is already here readable, with no failure on top', async () => {
-      const client = offlineClient('ready')
+    // An open cut off by a drop leaves its threads loading; a chat is no less
+    // readable for that.
+    it.each(['ready', 'loading', 'idle'] as const)('keeps a chat read as %s readable, with no failure on top', async (hydration) => {
+      const client = offlineClient(hydration, [{ messageId: 'cached' }])
       await expect(client.commands.openSession(SESSION.sessionId)).rejects.toMatchObject({
         code: 'unavailable',
       })
@@ -1061,8 +1068,8 @@ describe('websocket environment client', () => {
       expect(FakeSocket.instances).toHaveLength(0)
     })
 
-    it('still says so when there is nothing here to read', async () => {
-      const client = offlineClient('idle')
+    it.each(['ready', 'idle'] as const)('still says so when a %s thread has nothing to read', async (hydration) => {
+      const client = offlineClient(hydration)
       await expect(client.commands.openSession(SESSION.sessionId)).rejects.toMatchObject({
         code: 'unavailable',
       })

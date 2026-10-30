@@ -1781,15 +1781,137 @@ describe('what may open a socket', () => {
     // The port was handed to something else.
     answering = 'env-other'
     act(() => screen.getByRole('button', { name: 'retry' }).click())
-    // Retry nudges the client it already has, which is a no-op on a live socket.
-    const before = dials.length
     await waitFor(() =>
       expect(storedRoutes()[0]!.health).toMatchObject({ message: WRONG_ENVIRONMENT_MESSAGE }),
     )
     await act(async () => {
       await new Promise((resolve) => setTimeout(resolve, 20))
     })
-    expect(dials).toHaveLength(before)
+    expect(dials).toEqual(['ws://127.0.0.1:43120/ws'])
+  })
+
+  it('does not dial on retry until the route has answered again', async () => {
+    seedTwoRoutes()
+    let hang = false
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => {
+        if (hang) await new Promise(() => undefined)
+        return bootstrapAnswer()
+      }),
+    )
+    const { client, script } = scriptedClient()
+    renderProvider(() => client)
+    await waitFor(() => expect(screen.getByText('ready:client')).toBeInTheDocument())
+    const dialled = client.connect.mock.calls.length
+
+    // The socket is down, and the address may have changed hands since.
+    script.connection = { phase: 'reconnecting', failure: null }
+    script.tell()
+    hang = true
+    act(() => screen.getByRole('button', { name: 'retry' }).click())
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 20))
+    })
+    expect(client.connect).toHaveBeenCalledTimes(dialled)
+  })
+
+  it('takes the client down when a search finds its route is someone else now', async () => {
+    seedEnvironment()
+    let answering = 'env-local'
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => bootstrapAnswer(answering)),
+    )
+    const { client, script } = scriptedClient()
+    renderProvider(() => client, { retryDelaysMs: [60_000] })
+    await waitFor(() => expect(screen.getByText('ready:client')).toBeInTheDocument())
+
+    // The socket drops and its own backoff would dial the same address again.
+    answering = 'env-other'
+    script.connection = { phase: 'reconnecting', failure: { code: 'unavailable', message: 'Closed.' } }
+    script.tell()
+
+    await waitFor(() => expect(client.dispose).toHaveBeenCalled())
+  })
+
+  it('leaves a refused token alone when Retry is about a typed connect', async () => {
+    seedTwoRoutes()
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (input: RequestInfo | URL) => {
+        if (String(input).startsWith(TUNNEL)) throw new TypeError('Failed to fetch')
+        return bootstrapAnswer()
+      }),
+    )
+    const { client, script } = scriptedClient()
+    const next = createFakeClient()
+    const createClient = vi
+      .fn<(options: WebSocketEnvironmentClientOptions) => EnvironmentClient>()
+      .mockImplementationOnce(() => client)
+      .mockImplementation(() => next)
+    renderProvider(createClient)
+    await waitFor(() => expect(screen.getByText('ready:client')).toBeInTheDocument())
+
+    script.connection = { phase: 'closed', failure: { code: 'auth', message: 'Revoked.' } }
+    script.tell()
+    await waitFor(() => expect(client.dispose).toHaveBeenCalled())
+
+    act(() => screen.getByRole('button', { name: 'connect tunnel' }).click())
+    await waitFor(() => expect(askedOf(TUNNEL)).toBeGreaterThan(0))
+    act(() => screen.getByRole('button', { name: 'retry' }).click())
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 30))
+    })
+    expect(createClient).toHaveBeenCalledTimes(1)
+    expect(next.connect).not.toHaveBeenCalled()
+  })
+
+  it('does not dial a token refused before the reload until its environment is asked for', async () => {
+    seedTwoEnvironments()
+    const registry = JSON.parse(localStorage.getItem(ENVIRONMENT_STORAGE_KEY)!) as {
+      environments: Array<Record<string, unknown>>
+    }
+    registry.environments[1]!.tokenRefused = true
+    localStorage.setItem(ENVIRONMENT_STORAGE_KEY, JSON.stringify(registry))
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (input: RequestInfo | URL) =>
+        bootstrapAnswer(String(input).startsWith(OTHER) ? 'env-other' : 'env-local'),
+      ),
+    )
+    const { createClient, dials } = trackDials()
+    renderProvider(createClient)
+    await waitFor(() => expect(screen.getByText('ready:client')).toBeInTheDocument())
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 30))
+    })
+    expect(dials).toEqual(['ws://127.0.0.1:43120/ws'])
+
+    act(() => screen.getByRole('button', { name: 'select other' }).click())
+    await waitFor(() => expect(dials).toContain('wss://other.example/ws'))
+  })
+
+  it('remembers a refusal, and forgets it once the socket gets through', async () => {
+    seedTwoRoutes()
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => bootstrapAnswer()),
+    )
+    const { client, script } = scriptedClient()
+    renderProvider(() => client)
+    await waitFor(() => expect(screen.getByText('ready:client')).toBeInTheDocument())
+    const saved = () =>
+      (JSON.parse(localStorage.getItem(ENVIRONMENT_STORAGE_KEY)!) as {
+        environments: Array<{ tokenRefused?: boolean }>
+      }).environments[0]!.tokenRefused
+
+    script.connection = { phase: 'closed', failure: { code: 'auth', message: 'Revoked.' } }
+    script.tell()
+    expect(saved()).toBe(true)
+    script.connection = { phase: 'connected', failure: null }
+    script.tell()
+    expect(saved()).toBeUndefined()
   })
 
   it('does not take an earlier answer as leave to dial again after a refusal', async () => {

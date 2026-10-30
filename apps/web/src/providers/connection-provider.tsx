@@ -43,6 +43,7 @@ import {
   ENVIRONMENT_STORAGE_KEY,
   setStoredCredential,
   setStoredRouteHealth,
+  setStoredTokenRefused,
   upsertStoredEnvironment,
   writeEnvironmentRegistry,
   type EnvironmentRegistry,
@@ -59,6 +60,7 @@ import {
   type EnvironmentConnections,
 } from '../lib/environment-connections'
 import {
+  answeredAsAnother,
   deriveEnvironmentLink,
   transportFromBootstrap,
   type EnvironmentLink,
@@ -197,6 +199,29 @@ type ConnectionValue = {
 }
 
 const ConnectionContext = createContext<ConnectionValue | null>(null)
+
+/**
+ * A token refused before this page loaded stays refused for an environment
+ * nobody has asked for yet: dialling it would spend the address's budget for
+ * failed tokens on every reload, once per such environment. The selected one
+ * is dialled, as reloading the page you are on is asking for it.
+ */
+function connectionsAtLoad(registry: EnvironmentRegistry): EnvironmentConnections {
+  let connections = NO_CONNECTIONS
+  for (const environment of registry.environments) {
+    if (!environment.tokenRefused || environment.environmentId === registry.selectedId) continue
+    const { endpoint } = routeInUse(environment)
+    connections = patchConnection(connections, environment.environmentId, {
+      routeFailure: {
+        reason: 'credential_rejected',
+        endpoint,
+        local: isLoopbackEnvironmentEndpoint(endpoint),
+        tried: 1,
+      },
+    })
+  }
+  return connections
+}
 
 function routeKey(environmentId: string, endpoint: string): string {
   return JSON.stringify([environmentId, endpoint])
@@ -345,7 +370,9 @@ export function ConnectionProvider({
 
   // Each environment's connection, by environment ID. Each saved environment
   // keeps its own, whichever is selected; only removing it ends one (`update`).
-  const [connections, setConnections] = useState<EnvironmentConnections>(NO_CONNECTIONS)
+  const [connections, setConnections] = useState<EnvironmentConnections>(() =>
+    connectionsAtLoad(registry),
+  )
   const connectionsRef = useRef(connections)
   const storeConnections = useCallback((next: EnvironmentConnections) => {
     if (next === connectionsRef.current) return
@@ -632,6 +659,12 @@ export function ConnectionProvider({
           if (!report) continue
           noteLiveReport(environmentId, probe.endpoint)
           update((current) => setStoredRouteHealth(current, environmentId, probe.endpoint, report))
+        }
+        // The socket's backoff is dialling this route. Asking it again puts the
+        // answer on the connection, which takes that client down: nothing else
+        // would stop the token going to whatever answers there now.
+        if (result.probes.some((p) => p.endpoint === from && answeredAsAnother(p.outcome, environmentId))) {
+          askAgain(environmentId)
         }
         if (result.found === null) {
           const stopped =
@@ -1044,7 +1077,12 @@ export function ConnectionProvider({
         }
       }
       noteLiveReport(environmentId, routeEndpoint)
-      update((current) => setStoredRouteHealth(current, environmentId, routeEndpoint, report))
+      update((current) => {
+        const next = setStoredRouteHealth(current, environmentId, routeEndpoint, report)
+        return report.status === 'unauthorized' || report.status === 'available'
+          ? setStoredTokenRefused(next, environmentId, report.status === 'unauthorized')
+          : next
+      })
       // Only the socket on the environment's route in use drives its connection.
       const record = findStoredEnvironment(registryRef.current.environments, environmentId)
       if (inUseFor(record, activeRoutesRef.current) !== routeEndpoint) return
@@ -1190,13 +1228,17 @@ export function ConnectionProvider({
   )
 
   const retry = useCallback(() => {
-    const { selectedId } = registryRef.current
-    if (selectedId) {
-      stopRouteSearch(selectedId, true)
-      askAgain(selectedId)
+    // While a person is connecting, the strip's Retry is about that address. It
+    // is no answer to a token the selected environment refused.
+    if (pending) {
+      setConnectAttempt((value) => value + 1)
+      return
     }
-    setConnectAttempt((value) => value + 1)
-  }, [askAgain, stopRouteSearch])
+    const { selectedId } = registryRef.current
+    if (!selectedId) return
+    stopRouteSearch(selectedId, true)
+    askAgain(selectedId)
+  }, [askAgain, pending, stopRouteSearch])
 
   const changeEnvironment = useCallback(() => {
     abandonPendingConnect()
