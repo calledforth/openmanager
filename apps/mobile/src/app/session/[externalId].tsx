@@ -4,6 +4,8 @@ import { useWindowDimensions } from 'react-native'
 import { useEnvironmentClient, useEnvironmentClientOptional } from '@openmanager/app-core/logic'
 import { selectActiveThread } from '@openmanager/environment-client'
 
+import { BackgroundTasksRow, useBackgroundTasks } from '../../session/BackgroundTasks'
+
 import { LiveComposer } from '../../composer/LiveComposer'
 import { FixtureComposer } from '../../composer/FixtureComposer'
 import { createComposerUi, fixtureComposerUi } from '../../composer/ui-state'
@@ -45,6 +47,27 @@ function LiveSession({ sessionId }: { sessionId: string }) {
   const subscribe = useCallback((listener: () => void) => client.subscribe(listener), [client])
   const status = useStatusLine(session, subscribe, getThread)
   const notices = useMemo(() => threadNoticeSource(subscribe, getThread), [getThread, subscribe])
+  // Work the agent left running: above the status line, with its Stop.
+  const tasks = useBackgroundTasks(client, sessionId)
+  const stopTasks = useCallback(
+    (taskIds?: string[]) =>
+      client.commands.stopBackgroundTasks({ sessionId, ...(taskIds ? { taskIds } : {}) }),
+    [client, sessionId],
+  )
+  // One element while the tasks are the same, so the page's memo holds.
+  const canStop = client.supports('stopBackgroundTasks')
+  const above = useMemo(
+    () =>
+      tasks.length > 0 ? (
+        <BackgroundTasksRow
+          // Per session: a stop pending in one must not show as pending in the next.
+          key={sessionId}
+          tasks={tasks}
+          onStop={canStop ? stopTasks : undefined}
+        />
+      ) : null,
+    [canStop, sessionId, stopTasks, tasks],
+  )
   const childSessions = useChildSessions(sessions, sessionId)
   const [ui] = useState(() => createComposerUi())
   const openSettings = useCallback(() => ui.open({ kind: 'settings' }), [ui])
@@ -60,6 +83,8 @@ function LiveSession({ sessionId }: { sessionId: string }) {
       <SessionThread
         title={untitled(session?.title ?? title)}
         project={workspace?.name}
+        projectId={workspace?.path ?? null}
+        above={above}
         status={status}
         messages={messages}
         phase={phase}
@@ -99,6 +124,7 @@ function FixtureSession({ sessionId, opened }: { sessionId: string; opened?: str
         <SessionThread
           title={untitled(session?.title)}
           project={workspace?.name}
+          projectId={workspace?.path ?? null}
           status={status}
           messages={messages}
           phase="ready"

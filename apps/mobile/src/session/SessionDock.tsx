@@ -22,11 +22,14 @@ export const DOCK_SIDE = 12
  */
 export const SessionDock = memo(function SessionDock({
   status,
+  above = null,
   bottomInset,
   onHeight,
   children,
 }: {
   status: StatusLineView | null
+  /** Above the status line: the session's background work, when it has any. */
+  above?: ReactNode
   /** The safe area below the dock (the home indicator, the gesture bar). */
   bottomInset: number
   onHeight: (height: number) => void
@@ -73,6 +76,7 @@ export const SessionDock = memo(function SessionDock({
           gap: DOCK_GAP,
         }}
       >
+        {above}
         <StatusLine view={status} />
         {children}
       </View>
@@ -102,6 +106,7 @@ export const useDockHold = () => useContext(DockHoldContext)
  */
 export interface DockSlot {
   status: StatusLineView | null
+  above?: ReactNode
   bottomInset: number
   onHeight: (height: number) => void
   /** A layer of the composer covers the page: the page hides itself from a screen reader. */

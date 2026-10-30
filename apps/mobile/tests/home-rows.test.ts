@@ -7,6 +7,8 @@ import {
   dayLabel,
   selectDraftRows,
   selectHomeRows,
+  selectTabRows,
+  statusCountOf,
   statusLineOf,
   statusMarkOf,
   tabCounts,
@@ -60,12 +62,99 @@ describe('status marks', () => {
     expect(statusMarkOf(session({ status: 'something-new' }))).toBe('idle')
   })
 
-  it('puts the ask into words', () => {
+  it('puts the ask into words, as the web sidebar does', () => {
     expect(statusLineOf(session({ status: 'waiting', waitingOn: 'plan' }))).toBe('Plan ready')
-    expect(
-      statusLineOf(session({ status: 'running', inBackground: true, backgroundTaskCount: 2 })),
-    ).toBe('2 in the background')
+    expect(statusLineOf(session({ status: 'waiting', waitingOn: 'permission' }))).toBe(
+      'Needs input',
+    )
+    expect(statusLineOf(session({ status: 'waiting', waitingOn: 'question' }))).toBe(
+      'Has a question',
+    )
+    expect(statusLineOf(session({ status: 'running', inBackground: true }))).toBe('Background')
     expect(statusLineOf(session({ status: 'ready' }))).toBeNull()
+  })
+
+  it('counts background work beside a live status, and nowhere else', () => {
+    const bg = session({ status: 'running', inBackground: true, backgroundTaskCount: 2 })
+    expect(statusCountOf(bg)).toBe(2)
+    // A turn in flight with work behind it still says how much.
+    expect(statusCountOf(session({ status: 'running', backgroundTaskCount: 1 }))).toBe(1)
+    expect(statusCountOf(session({ status: 'running' }))).toBeNull()
+    expect(statusCountOf(session({ status: 'done', backgroundTaskCount: 3 }))).toBeNull()
+  })
+})
+
+describe('tab rows with drafts', () => {
+  const now = NOW
+  const today = local(2026, 10, 21, 9)
+  const yesterday = local(2026, 10, 20, 9)
+  const draft = (overrides: Partial<(typeof FIXTURE_DRAFTS)[number]>) => ({
+    ...FIXTURE_DRAFTS[0]!,
+    draftId: 'd1',
+    sessionId: 's-d1',
+    workspaceId: FIXTURE_WORKSPACES[0]!.path,
+    ...overrides,
+  })
+
+  it('opens Active with a Drafts group above the live work', () => {
+    const rows = selectTabRows({
+      sessions: [session({ externalId: 'a', status: 'running', updatedAt: today })],
+      drafts: [draft({ editedAt: new Date(yesterday).getTime() })],
+      workspaces: FIXTURE_WORKSPACES,
+      tab: 'active',
+      now,
+    })
+    expect(rows.map((g) => g.label)).toEqual(['Drafts', 'Working'])
+    expect(rows[0]!.rows[0]!.kind).toBe('draft')
+  })
+
+  it('leaves the Drafts group out of Active when there are none', () => {
+    const rows = selectTabRows({
+      sessions: [session({ externalId: 'a', status: 'running', updatedAt: today })],
+      drafts: [],
+      workspaces: FIXTURE_WORKSPACES,
+      tab: 'active',
+      now,
+    })
+    expect(rows.map((g) => g.label)).toEqual(['Working'])
+  })
+
+  it('places a draft in All on the day it was edited, above that day sessions', () => {
+    const rows = selectTabRows({
+      sessions: [
+        session({ externalId: 'a', updatedAt: today }),
+        session({ externalId: 'b', updatedAt: yesterday }),
+      ],
+      drafts: [draft({ editedAt: new Date(yesterday).getTime() + 60_000 })],
+      workspaces: FIXTURE_WORKSPACES,
+      tab: 'all',
+      now,
+    })
+    expect(rows.map((g) => g.label)).toEqual(['Today', 'Yesterday'])
+    expect(rows[1]!.rows.map((r) => r.kind)).toEqual(['draft', 'session'])
+  })
+
+  it('lets a fresh draft start a day of its own, newest first', () => {
+    const rows = selectTabRows({
+      sessions: [session({ externalId: 'b', updatedAt: yesterday })],
+      drafts: [draft({ editedAt: new Date(today).getTime() })],
+      workspaces: FIXTURE_WORKSPACES,
+      tab: 'all',
+      now,
+    })
+    expect(rows.map((g) => g.label)).toEqual(['Today', 'Yesterday'])
+    expect(rows[0]!.rows[0]!.kind).toBe('draft')
+  })
+
+  it('keeps the Drafts tab to drafts alone', () => {
+    const rows = selectTabRows({
+      sessions: [session({ externalId: 'a', updatedAt: today })],
+      drafts: [draft({ editedAt: new Date(today).getTime() })],
+      workspaces: FIXTURE_WORKSPACES,
+      tab: 'drafts',
+      now,
+    })
+    expect(rows.flatMap((g) => g.rows.map((r) => r.kind))).toEqual(['draft'])
   })
 })
 

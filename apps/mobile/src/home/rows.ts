@@ -63,19 +63,20 @@ export function statusMarkOf(
   )
 }
 
-/** A short line under the title for what the session is up to. */
+/**
+ * A short line under the title for what the session is up to, in the web
+ * sidebar's words (`STATUS_COPY`), drawn in the state's colour.
+ */
 export function statusLineOf(session: HomeSession): string | null {
   switch (statusMarkOf(session)) {
     case 'working':
       return 'Working'
     case 'background':
-      return session.backgroundTaskCount
-        ? `${session.backgroundTaskCount} in the background`
-        : 'In the background'
+      return 'Background'
     case 'needs':
-      return session.waitingOn === 'plan' ? 'Plan ready' : 'Needs you'
+      return session.waitingOn === 'plan' ? 'Plan ready' : 'Needs input'
     case 'question':
-      return 'Asked a question'
+      return 'Has a question'
     case 'error':
       return 'Failed'
     case 'done':
@@ -83,6 +84,18 @@ export function statusLineOf(session: HomeSession): string | null {
     default:
       return null
   }
+}
+
+/**
+ * How much background work a live session carries, beside its status line
+ * ("Background · 2"); null when none or when it is not running. Web says it
+ * for background work alone; the phone says it while a turn runs too, since
+ * there is no hover to name the tasks.
+ */
+export function statusCountOf(session: HomeSession): number | null {
+  const mark = statusMarkOf(session)
+  if (mark !== 'working' && mark !== 'background') return null
+  return session.backgroundTaskCount ? session.backgroundTaskCount : null
 }
 
 /** Active is everything the user has not settled. */
@@ -271,6 +284,54 @@ export function selectDraftRows({
     groups.set(label, group)
   }
   return [...groups.values()]
+}
+
+/** A row of any tab: a session, or a draft. */
+export type HomeListRow = HomeRow | HomeDraftRow
+
+const newestOf = (rows: readonly HomeListRow[]) =>
+  Math.max(
+    0,
+    ...rows.map((row) => (row.kind === 'draft' ? row.draft.editedAt : time(row.session.updatedAt))),
+  )
+
+/**
+ * A tab's rows, drafts included, as the web sidebar lists them: Drafts
+ * holds the drafts alone; Active opens with a Drafts group above the live
+ * work; All keeps its days, a draft taking its place in the day it was last
+ * edited, above that day's sessions. Days run newest first by whatever is
+ * newest in them.
+ */
+export function selectTabRows({
+  sessions,
+  drafts,
+  workspaces,
+  tab,
+  now = new Date(),
+}: {
+  sessions: readonly HomeSession[]
+  drafts: readonly HomeDraft[]
+  workspaces: readonly WorkspaceEntry[]
+  tab: HomeTab
+  now?: Date
+}): HomeGroup<HomeListRow>[] {
+  const draftGroups = selectDraftRows({ drafts, workspaces, now })
+  if (tab === 'drafts') return draftGroups
+  const sessionGroups = selectHomeRows({ sessions, workspaces, tab, now })
+  if (tab === 'active') {
+    const draftRows = draftGroups.flatMap((group) => group.rows)
+    return draftRows.length
+      ? [{ key: 'drafts', label: 'Drafts', rows: draftRows }, ...sessionGroups]
+      : sessionGroups
+  }
+  const byLabel = new Map<string, HomeGroup<HomeListRow>>()
+  for (const group of draftGroups) byLabel.set(group.label, { ...group, rows: [...group.rows] })
+  for (const group of sessionGroups) {
+    const merged = byLabel.get(group.label)
+    if (merged) merged.rows.push(...group.rows)
+    else byLabel.set(group.label, { ...group, rows: [...group.rows] })
+  }
+  return [...byLabel.values()].sort((a, b) => newestOf(b.rows) - newestOf(a.rows))
 }
 
 /** How many sessions wait on the reader: the inbox badge. */

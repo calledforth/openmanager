@@ -7,6 +7,7 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context'
 import { AppText } from '../../components/ui/AppText'
 import { statusMarkOf, type HomeRow } from '../../home/rows'
 import { useHomeSource } from '../../home/source'
+import { SessionActionsSheet } from '../../session/SessionActionsSheet'
 import { useTitleEnvironment } from '../../settings/title-environment'
 import { usePhoneTheme } from '../../theme/ThemeProvider'
 import { BigTitle, FadeOut, SectionLabel } from '../../ui/chrome'
@@ -78,11 +79,26 @@ export default function Inbox() {
   const doneCount = countOf('done')
   const failedCount = countOf('failed')
 
+  const [actionsId, setActionsId] = useState<string | null>(null)
+  const actionsRow = useMemo<HomeRow | null>(() => {
+    const session = actionsId ? sessions.find((s) => s.externalId === actionsId) : undefined
+    if (!session) return null
+    return {
+      kind: 'session',
+      session,
+      workspace: byPath.get(session.workspacePath),
+      mark: statusMarkOf(session),
+      depth: 0,
+    }
+  }, [actionsId, byPath, sessions])
+  const closeActions = useCallback(() => setActionsId(null), [])
+
   const renderItem = useCallback<SectionListRenderItem<HomeRow, InboxSection>>(
     ({ item }) => (
       <SessionRow
         row={item}
         onPress={() => router.push(`/session/${encodeURIComponent(item.session.externalId)}`)}
+        onLongPress={() => setActionsId(item.session.externalId)}
       />
     ),
     [router],
@@ -143,6 +159,7 @@ export default function Inbox() {
           <FadeOut />
         </View>
       </GlassContent>
+      {actionsRow ? <SessionActionsSheet row={actionsRow} onClose={closeActions} /> : null}
     </Screen>
   )
 }

@@ -31,7 +31,7 @@ const ICONS: Record<SessionMenuItemId, ComponentType<IconProps>> = {
 const MENU_IN = FadeIn.duration(160).easing(Easing.out(Easing.quad))
 const MENU_OUT = FadeOut.duration(120).easing(Easing.in(Easing.quad))
 
-function MenuRow({
+export function MenuRow({
   item,
   said,
   onChoose,

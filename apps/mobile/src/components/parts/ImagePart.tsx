@@ -1,10 +1,13 @@
 import { ImageIcon } from 'phosphor-react-native'
 import { useEffect, useState } from 'react'
-import { Image, View } from 'react-native'
+import { Image } from 'react-native'
 import { useEnvironmentClientOptional, type ArtifactSource } from '@openmanager/app-core/logic'
 
 import { readAsDataUri } from '../../lib/dataUri'
 import { usePhoneTheme } from '../../theme/ThemeProvider'
+import { tap } from '../../ui/haptics'
+import { Press } from '../../ui/Press'
+import { ImageViewer } from './ImageViewer'
 
 /**
  * The bytes of a stored image, fetched through the environment client
@@ -46,7 +49,7 @@ function useArtifactUri(artifact: ArtifactSource | undefined): string | null | u
 /**
  * An image in the transcript: inline bytes as they came, a stored one
  * through `fetchArtifact`. A fill holds its place while it loads, and stays
- * with an image glyph when it cannot be read.
+ * with an image glyph when it cannot be read. A tap opens it full size.
  */
 export function ImagePart({
   url,
@@ -60,28 +63,41 @@ export function ImagePart({
   const theme = usePhoneTheme()
   const fetched = useArtifactUri(url ? undefined : artifact)
   const uri = url ?? fetched
+  const [open, setOpen] = useState(false)
   return (
-    <View
-      style={{
-        width: size,
-        height: size,
-        borderRadius: 12,
-        overflow: 'hidden',
-        backgroundColor: theme.hover,
-        alignItems: 'center',
-        justifyContent: 'center',
-      }}
-    >
-      {uri ? (
-        <Image
-          source={{ uri }}
-          resizeMode="cover"
-          style={{ width: size, height: size }}
-          accessibilityIgnoresInvertColors
-        />
-      ) : uri === null ? (
-        <ImageIcon size={22} color={theme.faint} />
-      ) : null}
-    </View>
+    <>
+      <Press
+        accessibilityRole="imagebutton"
+        accessibilityLabel="Image"
+        accessibilityHint={uri ? 'Opens the image full size' : undefined}
+        disabled={!uri}
+        onPress={() => {
+          tap()
+          setOpen(true)
+        }}
+        style={({ pressed }) => ({
+          width: size,
+          height: size,
+          borderRadius: 12,
+          overflow: 'hidden',
+          backgroundColor: theme.hover,
+          alignItems: 'center',
+          justifyContent: 'center',
+          opacity: pressed ? 0.85 : 1,
+        })}
+      >
+        {uri ? (
+          <Image
+            source={{ uri }}
+            resizeMode="cover"
+            style={{ width: size, height: size }}
+            accessibilityIgnoresInvertColors
+          />
+        ) : uri === null ? (
+          <ImageIcon size={22} color={theme.faint} />
+        ) : null}
+      </Press>
+      {open && uri ? <ImageViewer uri={uri} onClose={() => setOpen(false)} /> : null}
+    </>
   )
 }

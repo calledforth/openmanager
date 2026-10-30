@@ -1,5 +1,6 @@
 import { Tabs } from 'expo-router/js-tabs'
 import { useState } from 'react'
+import { Easing } from 'react-native'
 
 import { countNeedsYou } from '../../home/rows'
 import { useHomeSource } from '../../home/source'
@@ -31,7 +32,36 @@ export default function TabsLayout() {
           // Each screen paints the canvas itself; the navigator's own
           // background (white, by default) must never show through.
           sceneStyle: { backgroundColor: theme.bg },
-          animation: 'fade',
+          // The screens cross-fade while the one coming in slides a little
+          // from its side of the pill and the one leaving slides out the
+          // other way, eased out, so a switch reads as one fluid move.
+          animation: 'shift',
+          transitionSpec: {
+            animation: 'timing',
+            config: { duration: 300, easing: Easing.bezier(0.22, 1, 0.36, 1) },
+          },
+          sceneStyleInterpolator: ({ current }) => ({
+            sceneStyle: {
+              opacity: current.progress.interpolate({
+                inputRange: [-1, -0.4, 0, 0.4, 1],
+                outputRange: [0, 0, 1, 0, 0],
+              }),
+              transform: [
+                {
+                  translateX: current.progress.interpolate({
+                    inputRange: [-1, 0, 1],
+                    outputRange: [-36, 0, 36],
+                  }),
+                },
+                {
+                  scale: current.progress.interpolate({
+                    inputRange: [-1, 0, 1],
+                    outputRange: [0.985, 1, 0.985],
+                  }),
+                },
+              ],
+            },
+          }),
         }}
       >
         <Tabs.Screen name="index" options={{ title: 'Sessions' }} />

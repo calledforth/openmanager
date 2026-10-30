@@ -3,8 +3,9 @@ import { View } from 'react-native'
 
 import { AppText } from '../components/ui/AppText'
 import { formatRelativeTime } from '../lib/relativeTime'
-import { statusLineOf, type HomeRow } from '../home/rows'
+import { statusCountOf, statusLineOf, type HomeRow, type StatusMark as Mark } from '../home/rows'
 import { usePhoneTheme } from '../theme/ThemeProvider'
+import type { PhoneTheme } from '../theme/tokens'
 import { ProjectChip } from './ProjectChip'
 import { StatusMark } from './StatusMark'
 import { tap } from './haptics'
@@ -22,12 +23,30 @@ export function shortAge(when: string | number | undefined, now = Date.now()): s
 }
 
 /**
+ * The fill a card takes at rest, as the web sidebar's `cardFillClass`: a
+ * session holding an unsent reply reads as a draft; one that finished or
+ * failed since you looked carries a wash of its status; the rest sit on the
+ * canvas. Null is the canvas.
+ */
+export function rowFill(
+  theme: PhoneTheme,
+  mark: Mark,
+  { unsent, settled }: { unsent: boolean; settled: boolean },
+): string | null {
+  if (unsent && !settled) return theme.draft.fill
+  if (mark === 'done') return theme.wash(theme.status.done)
+  if (mark === 'error') return theme.wash(theme.status.error)
+  return null
+}
+
+/**
  * One session: the status mark, the title, where it runs and what it is up
- * to, and how long ago. A child sits under its parent with a connector.
- * Fills, not borders: the pressed state is the hover fill, selection the
- * active fill. A session whose composer holds an unsent reply (written here
- * or on another device) carries web's pen, in the draft accent, beside its
- * age.
+ * to (in the state's colour, as the web sidebar says it), and how long ago.
+ * A child sits under its parent with a connector. Fills, not borders: the
+ * pressed state is the hover fill, selection the active fill, and a card at
+ * rest takes its status wash or the draft fill (`rowFill`). A session whose
+ * composer holds an unsent reply carries web's pen, in the draft accent,
+ * beside its age. A long press opens its actions.
  */
 const INDENT = 34
 
@@ -49,17 +68,28 @@ export function SessionRow({
   const line = session.workspaceUnavailable
     ? 'Project folder is unavailable'
     : statusLineOf(session)
+  const count = session.workspaceUnavailable ? null : statusCountOf(session)
+  const tone = mark === 'idle' ? theme.muted : theme.status[mark]
+  const rest = rowFill(theme, mark, { unsent, settled: !!session.settledAt })
   // One step per generation, capped so a deep tree still leaves the title room.
   const indent = INDENT * Math.min(depth, 2)
   return (
     <Press
       accessibilityRole="button"
-      accessibilityHint={unsent ? 'Has an unsent draft' : undefined}
+      accessibilityHint={unsent ? 'Has an unsent draft. Long press for actions' : 'Long press for actions'}
       onPress={() => {
         tap()
         onPress?.()
       }}
-      onLongPress={onLongPress}
+      onLongPress={
+        onLongPress
+          ? () => {
+              tap()
+              onLongPress()
+            }
+          : undefined
+      }
+      delayLongPress={320}
       style={({ pressed }) => ({
         flexDirection: 'row',
         alignItems: 'center',
@@ -67,8 +97,15 @@ export function SessionRow({
         paddingVertical: 10,
         paddingRight: 12,
         paddingLeft: 12 + indent,
-        borderRadius: 12,
-        backgroundColor: selected ? theme.active : pressed ? theme.hover : 'transparent',
+        borderRadius: 14,
+        marginVertical: 1,
+        backgroundColor: selected
+          ? theme.active
+          : pressed
+            ? unsent && !session.settledAt
+              ? theme.draft.hover
+              : theme.hover
+            : (rest ?? 'transparent'),
         opacity: session.workspaceUnavailable ? 0.6 : 1,
       })}
     >
@@ -100,7 +137,9 @@ export function SessionRow({
           {title}
         </AppText>
         <View className="mt-0.5 flex-row items-center gap-1.5">
-          {workspace ? <ProjectChip name={workspace.name} /> : null}
+          {workspace ? (
+            <ProjectChip name={workspace.name} workspaceId={workspace.path} />
+          ) : null}
           {workspace && line ? (
             <AppText variant="text-12-regular" style={{ color: theme.faint }}>
               ·
@@ -108,18 +147,26 @@ export function SessionRow({
           ) : null}
           {line ? (
             <AppText
-              variant="text-12-regular"
+              variant={mark === 'idle' ? 'text-12-regular' : 'text-12-medium'}
               numberOfLines={1}
-              style={{ color: theme.muted, flexShrink: 1 }}
+              style={{ color: session.workspaceUnavailable ? theme.muted : tone, flexShrink: 1 }}
             >
               {line}
+            </AppText>
+          ) : null}
+          {count ? (
+            <AppText
+              variant="text-12-regular"
+              style={{ color: tone, opacity: 0.75, fontVariant: ['tabular-nums'] }}
+            >
+              · {count}
             </AppText>
           ) : null}
         </View>
       </View>
       <View style={{ flexDirection: 'row', alignItems: 'center', gap: 5 }}>
         {unsent ? (
-          <PencilSimpleLineIcon size={13} color={theme.tokens['basis-draft']} weight="bold" />
+          <PencilSimpleLineIcon size={13} color={theme.draft.accent} weight="bold" />
         ) : null}
         <AppText variant="text-12-regular" style={{ color: theme.faint }}>
           {shortAge(session.updatedAt)}

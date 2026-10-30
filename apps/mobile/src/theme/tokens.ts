@@ -70,6 +70,10 @@ export interface PhoneTheme {
   /** The ink a glyph on each status fill takes: `bg` or `fg`, by contrast. */
   statusInk: StatusColors
   statusWash: { done: string; error: string }
+  /** A row's soft fill in a status colour: the web sidebar's wash, flat. */
+  wash: (color: string) => string
+  /** The draft accent and the fills a draft card takes (web's `--basis-draft-*`). */
+  draft: { accent: string; fill: string; hover: string }
   /** CSS box-shadow text React Native's `boxShadow` style takes as-is. */
   shadow: { float: string; rest: string }
   shadowLayers: { float: ShadowLayer[]; rest: ShadowLayer[] }
@@ -192,6 +196,12 @@ export function phoneTheme(scheme: SchemeId): PhoneTheme {
       error: inkOn(status.error),
     },
     statusWash: { done: t['basis-status-done-wash'], error: t['basis-status-error-wash'] },
+    wash: (color: string) => withAlpha(color, colorScheme === 'dark' ? 0.13 : 0.11),
+    draft: {
+      accent: t['basis-draft'],
+      fill: t['basis-draft-fill'],
+      hover: t['basis-draft-hover'],
+    },
     shadow: { float: t['float-shadow'], rest: t['float-shadow-rest'] },
     shadowLayers: { float: shadows['float-shadow'], rest: shadows['float-shadow-rest'] },
     tokens: t,

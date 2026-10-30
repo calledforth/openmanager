@@ -39,7 +39,7 @@ export function DraftPagePlaceholder({ draftId }: { draftId?: string }) {
       <GlassContent style={{ paddingTop: insets.top + 6 }}>
         <View style={{ height: 48 }} />
         <View className="px-5 pt-0.5">
-          {workspace ? <ProjectChip name={workspace.name} /> : null}
+          {workspace ? <ProjectChip name={workspace.name} workspaceId={workspace.path} /> : null}
           <AppText
             variant="text-20-medium"
             numberOfLines={2}

@@ -66,7 +66,7 @@ describe('status line', () => {
   it('counts a wait from when the environment asked', () => {
     const thread = permissionThread(NOW)
     const view = statusLineView(session({ status: 'waiting', waitingOn: 'permission' }), thread)
-    expect(view).toMatchObject({ mark: 'needs', label: 'Needs you' })
+    expect(view).toMatchObject({ mark: 'needs', label: 'Needs input' })
     expect(formatClock(view!.clock!, NOW)).toBe('waiting 2m')
   })
 
@@ -255,7 +255,7 @@ describe('status line in the background', () => {
       session({ status: 'running', inBackground: true, backgroundTaskCount: 2 }),
       thread,
     )
-    expect(view).toMatchObject({ mark: 'background', label: '2 in the background' })
+    expect(view).toMatchObject({ mark: 'background', label: 'Background' })
     expect(view?.clock).toEqual({ kind: 'elapsed', since: NOW - 240_000 })
     expect(formatClock(view!.clock!, NOW)).toBe('4m')
   })
