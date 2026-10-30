@@ -1069,6 +1069,120 @@ describe('WebEnvironmentClientProvider', () => {
     await waitFor(() => expect(screen.getByText('connecting:none')).toBeInTheDocument())
   })
 
+  it('drops a search still out when pairing moves to another environment', async () => {
+    seedTwoRoutes()
+    let localUp = true
+    let answerTunnel = (): void => undefined
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (input: RequestInfo | URL) => {
+        const url = String(input)
+        if (url.startsWith(OTHER)) return bootstrapAnswer('env-other')
+        if (url.startsWith(ENDPOINT) && !localUp) throw new TypeError('Failed to fetch')
+        if (url.startsWith(TUNNEL)) {
+          await new Promise<void>((resolve) => {
+            answerTunnel = resolve
+          })
+        }
+        return bootstrapAnswer()
+      }),
+    )
+    let notify = () => {}
+    let connection: unknown = { phase: 'connected', failure: null }
+    const client = createFakeClient()
+    client.getState.mockImplementation(() => ({
+      ...createInitialState(),
+      connection: connection as ReturnType<EnvironmentClient['getState']>['connection'],
+    }))
+    client.subscribe.mockImplementation(((listener: () => void) => {
+      notify = listener
+      return () => undefined
+    }) as never)
+    const createClient = vi
+      .fn<(options: WebSocketEnvironmentClientOptions) => EnvironmentClient>()
+      .mockImplementationOnce(() => client)
+      .mockImplementation(() => createFakeClient())
+    renderProvider(createClient)
+    await waitFor(() => expect(screen.getByText('ready:client')).toBeInTheDocument())
+
+    localUp = false
+    connection = { phase: 'reconnecting', failure: { code: 'unavailable', message: 'Closed.' } }
+    act(() => notify())
+    await waitFor(() => expect(askedOf(TUNNEL)).toBeGreaterThan(0))
+
+    act(() => screen.getByRole('button', { name: 'pair other' }).click())
+    await waitFor(() => expect(screen.getByText(`in use: ${OTHER}`)).toBeInTheDocument())
+    await waitFor(() => expect(screen.getByText('ready:client')).toBeInTheDocument())
+    const asked = askedOf(OTHER)
+
+    await act(async () => {
+      answerTunnel()
+      await new Promise((resolve) => setTimeout(resolve, 20))
+    })
+
+    expect(askedOf(OTHER)).toBe(asked)
+  })
+
+  it('leaves a refused token behind when pairing moves to another environment', async () => {
+    seedTwoRoutes()
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (input: RequestInfo | URL) =>
+        bootstrapAnswer(String(input).startsWith(OTHER) ? 'env-other' : 'env-local'),
+      ),
+    )
+    let notify = () => {}
+    let connection: unknown = { phase: 'connected', failure: null }
+    const refused = createFakeClient()
+    refused.getState.mockImplementation(() => ({
+      ...createInitialState(),
+      connection: connection as ReturnType<EnvironmentClient['getState']>['connection'],
+    }))
+    refused.subscribe.mockImplementation(((listener: () => void) => {
+      notify = listener
+      return () => undefined
+    }) as never)
+    const createClient = vi
+      .fn<(options: WebSocketEnvironmentClientOptions) => EnvironmentClient>()
+      .mockImplementationOnce(() => refused)
+      .mockImplementation(() => createFakeClient())
+    renderProvider(createClient)
+    await waitFor(() => expect(screen.getByText('ready:client')).toBeInTheDocument())
+
+    connection = { phase: 'closed', failure: { code: 'auth', message: 'Token revoked.' } }
+    act(() => notify())
+    await waitFor(() =>
+      expect(screen.getByText('reason: credential_rejected')).toBeInTheDocument(),
+    )
+
+    act(() => screen.getByRole('button', { name: 'pair other' }).click())
+    await waitFor(() => expect(screen.getByText(`in use: ${OTHER}`)).toBeInTheDocument())
+    await waitFor(() => expect(screen.getByText('ready:client')).toBeInTheDocument())
+
+    // Selecting it again is a person's action, so its token may be tried again.
+    act(() => screen.getByRole('button', { name: 'select local' }).click())
+    await waitFor(() => expect(screen.getByText(`in use: ${ENDPOINT}`)).toBeInTheDocument())
+    await waitFor(() => expect(screen.getByText('ready:client')).toBeInTheDocument())
+    expect(screen.queryByText('reason: credential_rejected')).not.toBeInTheDocument()
+  })
+
+  it('reads a typed connect as connecting, not as a reconnect', async () => {
+    seedTwoRoutes()
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (input: RequestInfo | URL) => {
+        if (String(input).startsWith(TUNNEL)) await new Promise(() => undefined)
+        return bootstrapAnswer()
+      }),
+    )
+    renderProvider(vi.fn(() => createFakeClient() as EnvironmentClient))
+    await waitFor(() => expect(screen.getByText('ready:client')).toBeInTheDocument())
+
+    act(() => screen.getByRole('button', { name: 'connect tunnel' }).click())
+
+    await waitFor(() => expect(screen.getByText('connecting:none')).toBeInTheDocument())
+  })
+
   it('does not let a search answer after a retry replaced it', async () => {
     seedTwoRoutes()
     let localUp = true

@@ -578,6 +578,8 @@ export function ConnectionProvider({
       origin: 'bootstrap' | 'socket' | 'retry',
       known?: { endpoint: string; outcome: BootstrapOutcome },
     ) => {
+      // A timer or effect from just before the selection moved may still ask.
+      if (environmentId !== registryRef.current.selectedId) return
       const record = findStoredEnvironment(registryRef.current.environments, environmentId)
       if (!record || tokenRefused(environmentId)) return
       const ticket = ++lastSearchTicket.current
