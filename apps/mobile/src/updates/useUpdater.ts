@@ -26,7 +26,11 @@ export function useUpdater(): { updater: Updater; state: UpdateState } | null {
   return updater ? { updater, state } : null
 }
 
-/** Asks when the app opens and whenever it comes back to the front. */
+/**
+ * Asks when the app opens and whenever it comes back to the front. Mounted
+ * above the environment provider, which remounts everything under it when a
+ * pairing is accepted: that must not clear a download or ask again.
+ */
 export function UpdateChecks() {
   useEffect(() => {
     if (!updater) return

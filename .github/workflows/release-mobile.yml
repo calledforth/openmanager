@@ -122,9 +122,13 @@ jobs:
           name="openmanager-$VERSION.apk"
           cp apps/mobile/android/app/build/outputs/apk/release/app-release.apk "$name"
           # Never "latest": that belongs to the other release trains.
-          gh release create "$tag" "$name" --target "$GITHUB_SHA" --prerelease --latest=false \
-            --title "OpenManager mobile $VERSION" \
-            --notes "Android APK built from $GITHUB_SHA. The installed app offers this update by itself."
+          if gh release view "$tag" >/dev/null 2>&1; then
+            gh release upload "$tag" "$name" --clobber
+          else
+            gh release create "$tag" "$name" --target "$GITHUB_SHA" --prerelease --latest=false \
+              --title "OpenManager mobile $VERSION" \
+              --notes "Android APK built from $GITHUB_SHA. The installed app offers this update by itself."
+          fi
 
           url="https://github.com/$GH_REPO/releases/download/$tag/$name"
           size=$(stat -c %s "$name")
@@ -147,8 +151,8 @@ jobs:
           GH_REPO: ${{ github.repository }}
         run: |
           set -euo pipefail
-          gh release list --limit 100 --json tagName,createdAt \
-            --jq "[.[] | select(.tagName | startswith(\"mobile-v\"))] | sort_by(.createdAt) | reverse | .[$KEEP_RELEASES:] | .[].tagName" |
+          gh release list --limit 100 --json tagName,publishedAt \
+            --jq "[.[] | select(.tagName | startswith(\"mobile-v\"))] | sort_by(.publishedAt) | reverse | .[$KEEP_RELEASES:] | .[].tagName" |
             while read -r tag; do
               echo "Removing the $tag release; its tag stays."
               gh release delete "$tag" --yes

@@ -65,7 +65,6 @@ function RootNavigator() {
       </Stack>
       <PairingResume />
       <DraftDiscardHost />
-      <UpdateChecks />
     </>
   )
 }
@@ -120,6 +119,7 @@ export default function RootLayout() {
   // gesture root lets a draft row be swiped aside to discard it.
   return (
     <GestureHandlerRootView style={{ flex: 1 }}>
+      <UpdateChecks />
       <SafeAreaProvider>
         <PhoneEnvironmentProvider>
           <ThemeProvider>

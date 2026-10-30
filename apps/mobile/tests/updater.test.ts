@@ -177,9 +177,9 @@ describe('createUpdater', () => {
     expect(listener).toHaveBeenCalledTimes(1)
     expect(updater.getState()).not.toBe(before)
     expect(showsHomeNotice(updater.getState(), updater.dismissedBuild())).toBe(false)
-    expect(
-      showsHomeNotice({ kind: 'available', release: { ...RELEASE, build: 15 } }, 14),
-    ).toBe(true)
+    expect(showsHomeNotice({ kind: 'available', release: { ...RELEASE, build: 15 } }, 14)).toBe(
+      true,
+    )
   })
 })
 
