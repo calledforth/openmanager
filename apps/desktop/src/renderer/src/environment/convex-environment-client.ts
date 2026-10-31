@@ -192,7 +192,8 @@ type PendingPlanRow = {
 }
 type JobStatusRow = { status: string; lastError?: string } | null
 
-type SessionOpenPayload = ProofResponse<'session.open'>['payload']
+/** Convex has no event streams, so its reads state no position. */
+type SessionOpenPayload = Omit<ProofResponse<'session.open'>['payload'], 'at'>
 type SessionHistoryPayload = LegacyHistory
 
 type Waiter<T> = { resolve: (value: T) => void; reject: (error: Error) => void }
