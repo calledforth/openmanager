@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest'
 import {
   addStoredRoute,
   adoptPersistedCredentials,
+  adoptPersistedEnvironments,
   classifyDiscoveredRoute,
   findStoredEnvironment,
   DEFAULT_ENVIRONMENT_LABEL,
@@ -26,6 +27,7 @@ import {
   selectStoredEnvironment,
   setStoredCredential,
   setStoredRouteHealth,
+  setStoredTokenRefused,
   upsertStoredEnvironment,
   writeEnvironmentRegistry,
   type EnvironmentRegistry,
@@ -465,6 +467,71 @@ describe('adoptPersistedCredentials', () => {
       adoptPersistedCredentials(mine, base, rotatedElsewhere).environments[0]!.credential,
     ).toBe('token-mine')
   })
+
+  it('does not hold a refusal of the old token against the one it takes', () => {
+    const base = setStoredTokenRefused(twoRoutes(), 'env-local', true)
+    const rotatedElsewhere = setStoredCredential(base, 'env-local', 'token-rotated')
+
+    const merged = adoptPersistedCredentials(base, base, rotatedElsewhere)
+
+    expect(merged.environments[0]!.credential).toBe('token-rotated')
+    expect(merged.environments[0]!.tokenRefused).toBeUndefined()
+  })
+})
+
+describe('adoptPersistedEnvironments', () => {
+  const a = environment('env-a', [route('http://127.0.0.1:43120')], { label: 'A' })
+  const b = environment('env-b', [route('http://127.0.0.1:43121')], { label: 'B' })
+  const both = { selectedId: 'env-a', environments: [a, b] }
+  const ids = (registry: EnvironmentRegistry) =>
+    registry.environments.map((item) => item.environmentId)
+
+  it('keeps an environment another tab removed out, and the selection with it', () => {
+    const removed = { selectedId: 'env-b', environments: [b] }
+    const merged = adoptPersistedEnvironments(both, both, removed)
+    expect(ids(merged)).toEqual(['env-b'])
+    expect(merged.selectedId).toBeNull()
+  })
+
+  it('keeps an environment another tab added, so a write here does not lose it', () => {
+    const justA = { selectedId: 'env-a', environments: [a] }
+    const merged = adoptPersistedEnvironments(justA, justA, both)
+    expect(ids(merged)).toEqual(['env-a', 'env-b'])
+    expect(merged.selectedId).toBe('env-a')
+  })
+
+  it('leaves what this tab did itself alone', () => {
+    const justA = { selectedId: 'env-a', environments: [a] }
+    // Added here, not yet saved.
+    expect(adoptPersistedEnvironments(both, justA, justA)).toBe(both)
+    // Removed here, still saved.
+    expect(adoptPersistedEnvironments(justA, both, both)).toBe(justA)
+  })
+
+  it('reads nothing into storage that says nothing', () => {
+    // Writes fail in private windows, which leaves this tab the only copy.
+    const unreadable = readEnvironmentRegistry({ getItem: () => null })
+    expect(adoptPersistedEnvironments(both, both, unreadable)).toBe(both)
+  })
+
+  it('takes an emptied list from another tab', () => {
+    const emptied = { selectedId: null, environments: [] }
+    expect(ids(adoptPersistedEnvironments(both, both, emptied))).toEqual([])
+  })
+})
+
+describe('an environment ID', () => {
+  it.each(['constructor', 'toString', '__proto__'])(
+    'cannot be %s, which every plain object already has',
+    (environmentId) => {
+      expect(
+        upsertStoredEnvironment(
+          { selectedId: null, environments: [] },
+          { environmentId, endpoint: 'http://127.0.0.1:43120', label: 'Mine' },
+        ),
+      ).toBeNull()
+    },
+  )
 })
 
 describe('removeStoredEnvironment and selectStoredEnvironment', () => {

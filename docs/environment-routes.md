@@ -319,11 +319,18 @@ same as with one environment:
   only if that answer is this environment. Nothing else calls `connect()`. A
   socket that was already open retries on its own backoff after a drop; if a
   search finds its route now answers as another environment, that client goes.
+- A new token, from a rotation or another tab, asks the route again first: the
+  answer already held says nothing about who has the address now.
 - Until the socket has got through, the page gets a view of the client without
-  its artifact calls, since those go over HTTP with the token.
+  its artifact calls, since those go over HTTP with the token. The client also
+  refuses to read an artifact with no handshake holding, which covers a drop.
 - A token the environment refused is not sent again without a person asking,
   and what is cached of that environment is hidden. The refusal is saved, so a
-  reload dials only the selected environment's refused token, not every one.
+  reload dials only the selected environment's refused token, not every one,
+  and the cache stays hidden until a socket gets through.
+
+Tabs share the saved list. An environment removed in one tab ends in the others
+rather than being written back with its token, and one added in a tab is kept.
 
 An environment that has never connected from this browser has nothing cached, so
 it shows the connecting state until it answers.

@@ -148,6 +148,9 @@ function parseEnvironmentId(raw: unknown): string | null {
   if (typeof raw !== 'string') return null
   const environmentId = raw.trim()
   if (!environmentId || environmentId.length > 256 || /\s/.test(environmentId)) return null
+  // Connection state is kept in plain objects by this ID, and `/bootstrap` is
+  // unauthenticated: a name every object inherits would read as an entry.
+  if (environmentId in Object.prototype) return null
   return environmentId
 }
 
@@ -586,9 +589,41 @@ export function adoptPersistedCredentials(
     const known = findStoredEnvironment(base.environments, id)?.credential
     if (!saved || saved === known || environment.credential !== known) return environment
     changed = true
-    return { ...environment, credential: saved }
+    // A refusal was of the token it was given to.
+    return { ...withoutTokenRefusal(environment), credential: saved }
   })
   return changed ? { ...next, environments } : next
+}
+
+/**
+ * Keep the saved list as other tabs left it since this tab last read or wrote
+ * the registry (`base`). Each tab writes all of it, so an environment removed
+ * elsewhere would otherwise come back with its token, and one added elsewhere
+ * would be lost. Nothing readable in storage says nothing about either.
+ */
+export function adoptPersistedEnvironments(
+  next: EnvironmentRegistry,
+  base: EnvironmentRegistry,
+  persisted: EnvironmentRegistry,
+): EnvironmentRegistry {
+  if (persisted === EMPTY_REGISTRY) return next
+  const has = (registry: EnvironmentRegistry, environmentId: string) =>
+    Boolean(findStoredEnvironment(registry.environments, environmentId))
+  const kept = next.environments.filter(
+    ({ environmentId }) => !has(base, environmentId) || has(persisted, environmentId),
+  )
+  const added = persisted.environments.filter(
+    ({ environmentId }) => !has(base, environmentId) && !has(next, environmentId),
+  )
+  if (kept.length === next.environments.length && added.length === 0) return next
+  const environments = [...kept, ...added]
+  return {
+    ...next,
+    environments,
+    selectedId: environments.some((item) => item.environmentId === next.selectedId)
+      ? next.selectedId
+      : null,
+  }
 }
 
 export function removeStoredEnvironment(

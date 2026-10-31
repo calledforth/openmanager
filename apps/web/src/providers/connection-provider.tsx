@@ -40,6 +40,7 @@ import {
   selectedStoredEnvironment,
   selectStoredEnvironment,
   adoptPersistedCredentials,
+  adoptPersistedEnvironments,
   ENVIRONMENT_STORAGE_KEY,
   setStoredCredential,
   setStoredRouteHealth,
@@ -222,6 +223,10 @@ function connectionsAtLoad(registry: EnvironmentRegistry): EnvironmentConnection
   }
   return connections
 }
+
+/** Stable while the answers are, which the results `useQueries` returns are not. */
+const answerData = (results: readonly { data?: BootstrapOutcome }[]) =>
+  results.map((result) => result.data)
 
 function routeKey(environmentId: string, endpoint: string): string {
   return JSON.stringify([environmentId, endpoint])
@@ -443,6 +448,18 @@ export function ConnectionProvider({
     (environmentId: string) => tokenIsRefused(connectionOf(connectionsRef.current, environmentId)),
     [],
   )
+  /**
+   * The environment has a new token, so its client is replaced and dials again.
+   * An old refusal is not of this token, and an old answer says nothing about
+   * who holds the address now that a token is about to go there.
+   */
+  const tokenChanged = useCallback(
+    (environmentId: string) => {
+      if (tokenRefused(environmentId)) stopRouteSearch(environmentId, true)
+      askAgain(environmentId)
+    },
+    [askAgain, stopRouteSearch, tokenRefused],
+  )
 
   // Socket reports arrive outside render and need what the latest render saw.
   const onlineRef = useRef(online)
@@ -465,41 +482,49 @@ export function ConnectionProvider({
   // The registry as this tab last read or wrote it, to tell what other tabs
   // have saved since.
   const persistedRef = useRef(registry)
+  /** Removing an environment is the one thing that ends its connection. */
+  const endRemovedConnections = useCallback(
+    (before: EnvironmentRegistry, after: EnvironmentRegistry) => {
+      for (const { environmentId } of before.environments) {
+        if (findStoredEnvironment(after.environments, environmentId)) continue
+        searchTickets.current.delete(environmentId)
+        retryAttempts.current.delete(environmentId)
+        setActiveRoute(environmentId, null)
+        storeConnections(dropConnection(connectionsRef.current, environmentId))
+      }
+    },
+    [setActiveRoute, storeConnections],
+  )
   const update = useCallback(
     (change: (current: EnvironmentRegistry) => EnvironmentRegistry | null) => {
       const current = registryRef.current
       const changed = change(current)
       if (!changed) return null
       if (changed === current || environmentRegistriesEqual(changed, current)) return current
-      const next = preview
-        ? changed
-        : adoptPersistedCredentials(changed, persistedRef.current, readEnvironmentRegistry())
+      const persisted = preview ? null : readEnvironmentRegistry()
+      const next = persisted
+        ? adoptPersistedEnvironments(
+            adoptPersistedCredentials(changed, persistedRef.current, persisted),
+            persistedRef.current,
+            persisted,
+          )
+        : changed
       registryRef.current = next
       persistedRef.current = next
       setRegistry(next)
       writeEnvironmentRegistry(next)
-      // Removing an environment is the one thing that ends its connection.
-      for (const { environmentId } of current.environments) {
-        if (findStoredEnvironment(next.environments, environmentId)) continue
-        searchTickets.current.delete(environmentId)
-        retryAttempts.current.delete(environmentId)
-        storeConnections(dropConnection(connectionsRef.current, environmentId))
-      }
-      // A token taken from another tab is not the one that was refused.
+      endRemovedConnections(current, next)
       if (next !== changed) {
         for (const environment of next.environments) {
           const before = findStoredEnvironment(changed.environments, environment.environmentId)
-          if (
-            before?.credential !== environment.credential &&
-            tokenRefused(environment.environmentId)
-          ) {
-            stopRouteSearch(environment.environmentId, true)
+          if (before && before.credential !== environment.credential) {
+            tokenChanged(environment.environmentId)
           }
         }
       }
       return next
     },
-    [preview, stopRouteSearch, storeConnections, tokenRefused],
+    [endRemovedConnections, preview, tokenChanged],
   )
 
   const environment = preview?.environment ?? toSelection(registry, pending, activeRoutes)
@@ -528,6 +553,7 @@ export function ConnectionProvider({
     queries: watched.map(({ record, endpoint, attempt }) =>
       bootstrapQuestion(record.environmentId, endpoint, attempt),
     ),
+    combine: answerData,
   })
   const connectQuery = useQuery({
     ...bootstrapQuestion('connect', pending?.endpoint ?? '', connectAttempt),
@@ -549,7 +575,7 @@ export function ConnectionProvider({
     setLastAnswers((current) => {
       let next = current
       watched.forEach(({ record, endpoint }, index) => {
-        const outcome = answers[index]?.data
+        const outcome = answers[index]
         if (!outcome || current[record.environmentId]?.outcome === outcome) return
         next = { ...next, [record.environmentId]: { endpoint, outcome } }
       })
@@ -560,7 +586,7 @@ export function ConnectionProvider({
   const links = useMemo(
     () =>
       watched.map(({ record, endpoint, attempt }, index) => {
-        const data = answers[index]?.data
+        const data = answers[index]
         const last = lastAnswers[record.environmentId]
         return deriveEnvironmentLink({
           record,
@@ -1072,7 +1098,7 @@ export function ConnectionProvider({
           : findStoredEnvironment(readEnvironmentRegistry().environments, environmentId)?.credential
         if (saved && saved !== credential) {
           update((current) => setStoredCredential(current, environmentId, saved))
-          if (tokenRefused(environmentId)) stopRouteSearch(environmentId, true)
+          tokenChanged(environmentId)
           return
         }
       }
@@ -1136,8 +1162,7 @@ export function ConnectionProvider({
       noteLiveReport,
       preview,
       startRouteSearch,
-      stopRouteSearch,
-      tokenRefused,
+      tokenChanged,
       update,
     ],
   )
@@ -1251,13 +1276,9 @@ export function ConnectionProvider({
     (environmentId: string, credential: string) => {
       const before = registryRef.current
       const next = update((current) => setStoredCredential(current, environmentId, credential))
-      // The old token's refusal, if its socket reported one first, is not a
-      // refusal of the new one.
-      if (next && next !== before && tokenRefused(environmentId)) {
-        stopRouteSearch(environmentId, true)
-      }
+      if (next && next !== before) tokenChanged(environmentId)
     },
-    [stopRouteSearch, tokenRefused, update],
+    [tokenChanged, update],
   )
 
   const addPairedEnvironment = useCallback(
@@ -1283,26 +1304,36 @@ export function ConnectionProvider({
 
   // Another tab rotated a token (or connected again with a new one): this tab
   // switches to it rather than redialing, or being refused, with the old one.
+  // One it removed ends here too, or this tab would keep its socket open and
+  // write it back, token included, with its next health report.
   useEffect(() => {
     if (preview) return
     const onStorage = (event: StorageEvent) => {
       if (event.key !== ENVIRONMENT_STORAGE_KEY) return
-      // The token is already saved, so this tab takes it without writing
-      // its own copy of everything else back over the other tab's.
-      for (const saved of readEnvironmentRegistry().environments) {
+      // All of it is already saved, so this tab takes it without writing its
+      // own copy of everything else back over the other tab's.
+      const persisted = readEnvironmentRegistry()
+      const before = registryRef.current
+      const merged = adoptPersistedEnvironments(before, persistedRef.current, persisted)
+      if (merged !== before) {
+        registryRef.current = merged
+        setRegistry(merged)
+        endRemovedConnections(before, merged)
+      }
+      persistedRef.current = persisted
+      for (const saved of persisted.environments) {
         const id = saved.environmentId
         const mine = findStoredEnvironment(registryRef.current.environments, id)
         if (!mine || !saved.credential || saved.credential === mine.credential) continue
         const next = setStoredCredential(registryRef.current, id, saved.credential)
         registryRef.current = next
-        persistedRef.current = setStoredCredential(persistedRef.current, id, saved.credential)
         setRegistry(next)
-        if (tokenRefused(id)) stopRouteSearch(id, true)
+        tokenChanged(id)
       }
     }
     window.addEventListener('storage', onStorage)
     return () => window.removeEventListener('storage', onStorage)
-  }, [preview, stopRouteSearch, tokenRefused])
+  }, [endRemovedConnections, preview, tokenChanged])
 
   const value = useMemo(
     () => ({

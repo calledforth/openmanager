@@ -86,9 +86,11 @@ function EnvironmentHost({
   // fresh instance; a disposed client ignores connect() for good.
   const [client, setClient] = useState<EnvironmentClient | null>(null)
   const onScreenRef = useRef(onScreen)
+  const tokenRefusedRef = useRef(link.tokenRefused)
   useEffect(() => {
     onScreenRef.current = onScreen
-  }, [onScreen])
+    tokenRefusedRef.current = link.tokenRefused
+  }, [link.tokenRefused, onScreen])
   useEffect(() => {
     if (needsPerson) return
     let cancelled = false
@@ -109,9 +111,10 @@ function EnvironmentHost({
         const refused = connection.failure?.code === 'auth'
         if (connection.phase === 'connected') authorized = true
         if (refused) authorized = false
+        const hidden = refused || tokenRefusedRef.current
         // What this browser kept is shown until the environment refuses this
         // client. With nothing kept there is nothing to show yet.
-        const visible = authorized ? next : environment && !refused ? cached : null
+        const visible = authorized ? next : environment && !hidden ? cached : null
         if (visible === shown) return
         shown = visible
         publish(environmentId, visible)

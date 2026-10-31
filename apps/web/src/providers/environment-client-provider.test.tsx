@@ -1746,6 +1746,45 @@ describe('every saved environment at once', () => {
   })
 })
 
+describe('the links it hands out', () => {
+  it('stays the same while nothing has changed', async () => {
+    seedTwoEnvironments()
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (input: RequestInfo | URL) =>
+        bootstrapAnswer(String(input).startsWith(OTHER) ? 'env-other' : 'env-local'),
+      ),
+    )
+    let links: unknown
+    function Links() {
+      links = useConnection().links
+      return null
+    }
+    const queryClient = createQueryClient()
+    const tree = () => (
+      <QueryClientProvider client={queryClient}>
+        <ConnectionProvider>
+          <Links />
+        </ConnectionProvider>
+      </QueryClientProvider>
+    )
+    const { rerender } = render(tree())
+    await waitFor(() =>
+      expect(links).toEqual([
+        expect.objectContaining({ routeVerified: true }),
+        expect.objectContaining({ routeVerified: true }),
+      ]),
+    )
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 0))
+    })
+
+    const before = links
+    rerender(tree())
+    expect(links).toBe(before)
+  })
+})
+
 describe('what may open a socket', () => {
   /** A client that says what it is told, so no socket report outranks bootstrap. */
   function scriptedClient() {
@@ -1865,6 +1904,103 @@ describe('what may open a socket', () => {
     })
     expect(createClient).toHaveBeenCalledTimes(1)
     expect(next.connect).not.toHaveBeenCalled()
+  })
+
+  it('asks the route again before a new token goes out on an old answer', async () => {
+    seedTwoEnvironments()
+    let answer = (): void => undefined
+    let gate: Promise<void> = Promise.resolve()
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (input: RequestInfo | URL) => {
+        if (!String(input).startsWith(OTHER)) return bootstrapAnswer()
+        await gate
+        return bootstrapAnswer('env-other')
+      }),
+    )
+    const { createClient, dials } = trackDials()
+    renderProvider(createClient)
+    await waitFor(() => expect(dials).toContain('wss://other.example/ws'))
+    const before = dials.length
+
+    // Hours later, another tab saves a new token for it.
+    gate = new Promise((resolve) => {
+      answer = resolve
+    })
+    const registry = JSON.parse(localStorage.getItem(ENVIRONMENT_STORAGE_KEY)!) as {
+      environments: Array<{ credential: string }>
+    }
+    registry.environments[1]!.credential = 'rotated-elsewhere'
+    localStorage.setItem(ENVIRONMENT_STORAGE_KEY, JSON.stringify(registry))
+    act(() => {
+      window.dispatchEvent(new StorageEvent('storage', { key: ENVIRONMENT_STORAGE_KEY }))
+    })
+    await waitFor(() =>
+      expect(createClient).toHaveBeenLastCalledWith(
+        expect.objectContaining({ credential: 'rotated-elsewhere' }),
+      ),
+    )
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 20))
+    })
+    expect(dials).toHaveLength(before)
+
+    answer()
+    await waitFor(() => expect(dials).toHaveLength(before + 1))
+  })
+
+  it('ends an environment another tab removed, and does not write it back', async () => {
+    seedTwoEnvironments()
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (input: RequestInfo | URL) =>
+        bootstrapAnswer(String(input).startsWith(OTHER) ? 'env-other' : 'env-local'),
+      ),
+    )
+    const { createClient, dials, clients } = trackDials()
+    renderProvider(createClient)
+    await waitFor(() => expect(dials).toHaveLength(2))
+    const other = clients[createClient.mock.calls.findIndex(([o]) => o.environmentId === 'env-other')]!
+
+    const registry = JSON.parse(localStorage.getItem(ENVIRONMENT_STORAGE_KEY)!) as {
+      environments: Array<{ environmentId: string }>
+    }
+    registry.environments = registry.environments.slice(0, 1)
+    localStorage.setItem(ENVIRONMENT_STORAGE_KEY, JSON.stringify(registry))
+    act(() => {
+      window.dispatchEvent(new StorageEvent('storage', { key: ENVIRONMENT_STORAGE_KEY }))
+    })
+    await waitFor(() => expect(other.dispose).toHaveBeenCalled())
+
+    act(() => screen.getByRole('button', { name: 'use tunnel' }).click())
+    await waitFor(() => expect(screen.getByText(`in use: ${TUNNEL}`)).toBeInTheDocument())
+    const saved = JSON.parse(localStorage.getItem(ENVIRONMENT_STORAGE_KEY)!) as typeof registry
+    expect(saved.environments.map((item) => item.environmentId)).toEqual(['env-local'])
+  })
+
+  it('does not write back an environment removed elsewhere before hearing of it', async () => {
+    seedTwoEnvironments()
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (input: RequestInfo | URL) =>
+        bootstrapAnswer(String(input).startsWith(OTHER) ? 'env-other' : 'env-local'),
+      ),
+    )
+    const { createClient, dials } = trackDials()
+    renderProvider(createClient)
+    await waitFor(() => expect(dials).toHaveLength(2))
+
+    const registry = JSON.parse(localStorage.getItem(ENVIRONMENT_STORAGE_KEY)!) as {
+      environments: Array<{ environmentId: string }>
+    }
+    registry.environments = registry.environments.slice(0, 1)
+    localStorage.setItem(ENVIRONMENT_STORAGE_KEY, JSON.stringify(registry))
+    // This tab's own write lands before the storage event does.
+    act(() => screen.getByRole('button', { name: 'use tunnel' }).click())
+    await waitFor(() => expect(screen.getByText(`in use: ${TUNNEL}`)).toBeInTheDocument())
+
+    const saved = JSON.parse(localStorage.getItem(ENVIRONMENT_STORAGE_KEY)!) as typeof registry
+    expect(saved.environments.map((item) => item.environmentId)).toEqual(['env-local'])
   })
 
   it('does not dial a token refused before the reload until its environment is asked for', async () => {
@@ -2099,6 +2235,37 @@ describe('an environment this browser has a cache of', () => {
     await waitFor(async () =>
       expect((await readEnvironmentCache('env-other'))?.activeSessionId).toBe('typed'),
     )
+  })
+
+  it('stays hidden after a reload when the token was refused, until a socket gets through', async () => {
+    vi.stubGlobal('indexedDB', new IDBFactory())
+    await writeEnvironmentCache('env-local', CACHED)
+    seedTwoRoutes()
+    const registry = JSON.parse(localStorage.getItem(ENVIRONMENT_STORAGE_KEY)!) as {
+      environments: Array<Record<string, unknown>>
+    }
+    registry.environments[0]!.tokenRefused = true
+    localStorage.setItem(ENVIRONMENT_STORAGE_KEY, JSON.stringify(registry))
+    let up = false
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => {
+        if (!up) throw new TypeError('Failed to fetch')
+        return bootstrapAnswer()
+      }),
+    )
+    const { createClient, opened } = realClients()
+    renderProvider(createClient, { retryDelaysMs: [20] })
+
+    await waitFor(() => expect(screen.getByText('unreachable:none')).toBeInTheDocument())
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 30))
+    })
+    expect(screen.getByText('unreachable:none')).toBeInTheDocument()
+
+    // Reloading the page you are on is asking for it, so it is tried when it answers.
+    up = true
+    await waitFor(() => expect(opened).toEqual(['ws://127.0.0.1:43120/ws']))
   })
 
   it('dials the moment a route answers as it', async () => {

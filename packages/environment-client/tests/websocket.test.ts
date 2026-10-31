@@ -1628,11 +1628,10 @@ describe('websocket environment client', () => {
 
   it('reads artifact bytes from the HTTP route beside the socket, with the credential', async () => {
     const requests: Array<{ url: string; authorization: string | null }> = []
-    const client = createWebSocketEnvironmentClient({
+    const { client } = await connected(FULL_CAPABILITIES, {}, {
       // A tunnel may put a path prefix in front of the environment.
       url: 'wss://tunnel.example/env-1/ws',
       credential: 'secret',
-      WebSocket: FakeSocket,
       fetch: async (input, init) => {
         requests.push({
           url: String(input),
@@ -1653,27 +1652,43 @@ describe('websocket environment client', () => {
   })
 
   it('maps a refused artifact read to a typed error', async () => {
-    const answer = (status: number, body: unknown) =>
-      createWebSocketEnvironmentClient({
-        url: 'ws://127.0.0.1:1/ws',
-        WebSocket: FakeSocket,
+    const answer = async (status: number, body: unknown) => {
+      const { client } = await connected(FULL_CAPABILITIES, {}, {
         fetch: async () => new Response(JSON.stringify(body), { status }),
-      }).fetchArtifact!({ sessionId: 's', artifactId: 'a' })
+      })
+      return client.fetchArtifact!({ sessionId: 's', artifactId: 'a' })
+    }
 
     await expect(
       answer(401, { error: { code: 'auth', message: 'A valid client credential is required.' } }),
     ).rejects.toMatchObject({ code: 'auth', message: 'A valid client credential is required.' })
     await expect(answer(404, {})).rejects.toMatchObject({ code: 'not_found' })
     await expect(answer(429, null)).rejects.toMatchObject({ code: 'unavailable' })
+    const { client } = await connected(FULL_CAPABILITIES, {}, {
+      fetch: async () => {
+        throw new TypeError('fetch failed')
+      },
+    })
     await expect(
-      createWebSocketEnvironmentClient({
-        url: 'ws://127.0.0.1:1/ws',
-        WebSocket: FakeSocket,
-        fetch: async () => {
-          throw new TypeError('fetch failed')
-        },
-      }).fetchArtifact!({ sessionId: 's', artifactId: 'a' }),
+      client.fetchArtifact!({ sessionId: 's', artifactId: 'a' }),
     ).rejects.toMatchObject({ code: 'unavailable' })
+  })
+
+  it('reads no artifact, so sends no token, without a handshake holding', async () => {
+    const fetchBytes = vi.fn(async () => new Response('bytes'))
+    const { client, socket } = await connected(FULL_CAPABILITIES, {}, { fetch: fetchBytes })
+    await client.fetchArtifact!({ sessionId: 's', artifactId: 'a' })
+    expect(fetchBytes).toHaveBeenCalledTimes(1)
+
+    // The address may lead somewhere else now, and only a handshake would say.
+    socket.close(1006)
+    await flush()
+
+    await expect(
+      client.fetchArtifact!({ sessionId: 's', artifactId: 'a' }),
+    ).rejects.toMatchObject({ code: 'unavailable' })
+    expect(fetchBytes).toHaveBeenCalledTimes(1)
+    client.dispose()
   })
 
   it('uploads an artifact with a ticket and a PUT of the bytes beside the socket', async () => {

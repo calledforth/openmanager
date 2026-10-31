@@ -1974,6 +1974,11 @@ export function createWebSocketEnvironmentClient(
       }
     },
     async fetchArtifact(input, init) {
+      // The token goes in this request, so it goes only where a handshake is
+      // holding now. After a drop nothing says the address still leads here.
+      if (!ready) {
+        throw new EnvironmentClientError('unavailable', 'Not connected to the environment.')
+      }
       const fetchBytes = options.fetch ?? globalThis.fetch
       let response: Response
       try {

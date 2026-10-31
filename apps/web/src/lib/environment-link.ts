@@ -28,6 +28,12 @@ export type EnvironmentLink = {
    * token to whatever answered.
    */
   wrongEnvironment: boolean
+  /**
+   * The environment refused this token, and nothing has got through with it
+   * since. Saved, so it holds across a reload: until a socket gets through,
+   * what this browser kept of the environment stays hidden.
+   */
+  tokenRefused: boolean
   ui: ConnectionUiState
   /**
    * Goes up each time the route is asked again. The socket dials immediately
@@ -127,6 +133,7 @@ export function deriveEnvironmentLink({
     answer,
     routeVerified,
     wrongEnvironment,
+    tokenRefused: record.tokenRefused === true,
     ui,
     attempt,
   }
