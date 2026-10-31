@@ -1,8 +1,10 @@
 import { foldProtocolEvent, placeActivity } from '@agentpack/view/protocol'
-import { unpackComposerListings } from '@openmanager/protocol'
+import { sameScope, unpackComposerListings } from '@openmanager/protocol'
 import type {
   BackgroundTask,
   ComposerListing,
+  Cursor,
+  DurableEvent,
   InteractionKind,
   Message,
   ProofEvent,
@@ -13,6 +15,7 @@ import type {
   ScopeSnapshot,
   Session,
   SessionSummary as ProtocolSessionSummary,
+  SubscriptionScope,
   Thread,
   Turn,
   TurnStart,
@@ -31,6 +34,7 @@ import type {
   ThreadState,
 } from './types'
 import { emptyOverlay } from './overlay'
+import { placeRead } from './placement'
 import {
   applyDraftDeleted,
   applyDraftSaved,
@@ -64,6 +68,7 @@ export function createInitialState(): EnvironmentState {
     draftTombstones: {},
     draftEdits: {},
     draftsListed: false,
+    cursors: { environment: null, sessions: {} },
     activeSessionId: null,
     activeThreadId: null,
     connection: INITIAL_CONNECTION,
@@ -188,14 +193,16 @@ function upsertSession(
   }
 }
 
+const sameIds = (left: readonly string[], right: readonly string[]) =>
+  left.length === right.length && left.every((id, index) => id === right[index])
+
 /** Field by field; thread lists by their members, since a listing rebuilds them. */
 function sameSummary(left: SessionSummary, right: SessionSummary): boolean {
   const keys = Object.keys(left) as (keyof SessionSummary)[]
   if (keys.length !== Object.keys(right).length) return false
   return keys.every((key) =>
     key === 'threadIds'
-      ? left.threadIds.length === right.threadIds.length &&
-        left.threadIds.every((id, index) => id === right.threadIds[index])
+      ? sameIds(left.threadIds, right.threadIds)
       : Object.is(left[key], right[key]),
   )
 }
@@ -299,6 +306,8 @@ function dropInteraction(current: ThreadState, interactionId: string): ThreadSta
 function removeSession(state: EnvironmentState, sessionId: string): EnvironmentState {
   const removed = new Set([sessionId])
   if (!(sessionId in state.sessions)) return removeSessionDrafts(state, removed)
+  const sessionCursors = { ...state.cursors.sessions }
+  delete sessionCursors[sessionId]
   const sessions = { ...state.sessions }
   const threads = { ...state.threads }
   for (const id of removed) {
@@ -311,6 +320,7 @@ function removeSession(state: EnvironmentState, sessionId: string): EnvironmentS
     sessions,
     sessionOrder: state.sessionOrder.filter((id) => !removed.has(id)),
     threads,
+    cursors: { ...state.cursors, sessions: sessionCursors },
     activeSessionId: clearActive ? null : state.activeSessionId,
     activeThreadId: clearActive ? null : state.activeThreadId,
     sessionOpenFailure:
@@ -518,18 +528,24 @@ export function applyEvent(state: EnvironmentState, event: ProofEvent): Environm
  *
  * - **Environment:** the environment, workspaces, sessions and their orders,
  *   composer preferences, provider profiles and workspace listings. Threads
- *   of sessions that no longer exist go.
+ *   of sessions that no longer exist go, with their cursors.
  * - **Session:** its summary and its thread list.
  * - **Thread:** turns, messages, reasoning, tools, order, pending requests
  *   and listing. The client's own echoes are settled against it; notices start
  *   over (the transport places held transients after it).
+ *
+ * The scope's cursor moves here too, in the same update as what it describes.
  */
 export function applySnapshot(state: EnvironmentState, snapshot: ScopeSnapshot): EnvironmentState {
   const scope = snapshot.cursor.scope
   if (scope.type === 'environment') {
-    return replaceEnvironment(
-      state,
-      (snapshot as Extract<ScopeSnapshot, { cursor: { scope: { type: 'environment' } } }>).state,
+    return applyCursor(
+      replaceEnvironment(
+        state,
+        (snapshot as Extract<ScopeSnapshot, { cursor: { scope: { type: 'environment' } } }>).state,
+      ),
+      scope,
+      snapshot.cursor,
     )
   }
   if (scope.type === 'session') {
@@ -542,7 +558,7 @@ export function applySnapshot(state: EnvironmentState, snapshot: ScopeSnapshot):
       threads.map((thread) => thread.threadId),
     )
     for (const thread of threads) next = ensureThread(next, thread)
-    return next
+    return applyCursor(next, scope, snapshot.cursor)
   }
   const snapshotState = (
     snapshot as Extract<ScopeSnapshot, { cursor: { scope: { type: 'thread' } } }>
@@ -556,6 +572,7 @@ export function applySnapshot(state: EnvironmentState, snapshot: ScopeSnapshot):
     // Which messages were this client's echoes is the client's own
     // knowledge, settled by the turns the snapshot holds.
     ...reconcileOutbox(existing, snapshotState.turns, snapshotState.messages),
+    cursor: share(existing.cursor, snapshot.cursor),
     turns: shareById(existing.turns, snapshotState.turns, (item) => item.turnId),
     messages,
     reasoning: shareById(existing.reasoning, snapshotState.reasoning, (item) => item.messageId),
@@ -600,6 +617,10 @@ function replaceEnvironment(
   const threads: EnvironmentState['threads'] = {}
   for (const [threadId, thread] of Object.entries(state.threads)) {
     if (sessions[thread.thread.sessionId]) threads[threadId] = thread
+  }
+  const sessionCursors: EnvironmentState['cursors']['sessions'] = {}
+  for (const [sessionId, cursor] of Object.entries(state.cursors.sessions)) {
+    if (sessions[sessionId]) sessionCursors[sessionId] = cursor
   }
   const composerPreferences: EnvironmentState['composerPreferences'] = {}
   const composerRevisions: EnvironmentState['composerRevisions'] = {}
@@ -653,6 +674,7 @@ function replaceEnvironment(
     ),
     threads:
       Object.keys(threads).length === Object.keys(state.threads).length ? state.threads : threads,
+    cursors: { ...state.cursors, sessions: share(state.cursors.sessions, sessionCursors) },
     composerPreferences: share(state.composerPreferences, composerPreferences),
     composerRevisions: share(state.composerRevisions, composerRevisions),
     composerListings: share(state.composerListings, composerListings),
@@ -662,18 +684,93 @@ function replaceEnvironment(
   }
 }
 
-/** `session.open` loads identities only; the thread's snapshot brings the transcript. */
+/** The cursor kept for a scope. Never another scope's, or another environment's. */
+export function selectCursor(state: EnvironmentState, scope: SubscriptionScope): Cursor | null {
+  const cursor =
+    scope.type === 'environment'
+      ? state.cursors.environment
+      : scope.type === 'session'
+        ? state.cursors.sessions[scope.sessionId]
+        : state.threads[scope.threadId]?.cursor
+  return cursor && sameScope(cursor.scope, scope) ? cursor : null
+}
+
+/**
+ * Keep a scope's cursor, or forget it (`null`). A cursor is a promise that the
+ * copy holds everything up to it, so it is kept only beside the copy it
+ * describes: with no such session or thread there is nothing to write on.
+ * An unchanged cursor keeps the state's identity.
+ */
+export function applyCursor(
+  state: EnvironmentState,
+  scope: SubscriptionScope,
+  cursor: Cursor | null,
+): EnvironmentState {
+  const held = selectCursor(state, scope)
+  if (held?.epoch === cursor?.epoch && held?.sequence === cursor?.sequence) return state
+  if (scope.type === 'environment') {
+    return { ...state, cursors: { ...state.cursors, environment: cursor } }
+  }
+  if (scope.type === 'session') {
+    if (!state.sessions[scope.sessionId]) return state
+    const sessions = { ...state.cursors.sessions }
+    if (cursor) sessions[scope.sessionId] = cursor
+    else delete sessions[scope.sessionId]
+    return { ...state, cursors: { ...state.cursors, sessions } }
+  }
+  const thread = state.threads[scope.threadId]
+  if (!thread) return state
+  const next = { ...thread }
+  if (cursor) next.cursor = cursor
+  else delete next.cursor
+  return { ...state, threads: { ...state.threads, [scope.threadId]: next } }
+}
+
+/** One durable record and the cursor it moves, in one update. */
+export function applyRecord(state: EnvironmentState, record: DurableEvent): EnvironmentState {
+  return applyCursor(applyEvent(state, record.event), record.cursor.scope, record.cursor)
+}
+
+/**
+ * Notices are never stored, so a catch-up starts them over whichever way it
+ * answers: a chat caught up by replay shows what a fresh load shows, none, and
+ * the transport places held transients after the answer.
+ */
+export function applyNoticesCleared(state: EnvironmentState, threadId: string): EnvironmentState {
+  const thread = state.threads[threadId]
+  if (!thread || thread.notices.length === 0) return state
+  return { ...state, threads: { ...state.threads, [threadId]: { ...thread, notices: [] } } }
+}
+
+/**
+ * `session.open` loads identities only; the thread's snapshot brings the
+ * transcript. The answer is a read with a stated position, on two streams: its
+ * summary changes on the environment's, its thread list on the session's. Each
+ * part applies unless its stream is already past the read, in which case what
+ * is held includes everything the read saw and more. A session the
+ * environment's stream has moved past and no longer holds was deleted since.
+ * Hosts with no streams state no position, and always apply.
+ */
 export function applySessionOpen(
   state: EnvironmentState,
   payload: Omit<ProofResponse<'session.open'>['payload'], 'at'> & {
     at?: ProofResponse<'session.open'>['payload']['at']
   },
 ): EnvironmentState {
-  let next = upsertSession(
-    state,
-    payload.session,
-    payload.threads.map((thread) => thread.threadId),
-  )
+  const { session, at } = payload
+  const threadIds = payload.threads.map((thread) => thread.threadId)
+  const summary = !at || placeRead(state.cursors.environment, at.environment) === 'apply'
+  const list = !at || placeRead(state.cursors.sessions[session.sessionId], at.session) === 'apply'
+  const held = state.sessions[session.sessionId]
+  if (!summary && !held) return state
+  let next = state
+  if (summary) next = upsertSession(next, session, list ? threadIds : undefined)
+  else if (list && !sameIds(held!.threadIds, threadIds)) {
+    next = {
+      ...next,
+      sessions: { ...next.sessions, [session.sessionId]: { ...held!, threadIds } },
+    }
+  }
   for (const thread of payload.threads) {
     const current = next.threads[thread.threadId]
     next = {
@@ -1031,14 +1128,6 @@ export function applyComposerPreference(
       },
     },
   }
-}
-
-/** Forget every held preference, so each reads as "not loaded" until asked for again. */
-export function applyComposerPreferencesReset(state: EnvironmentState): EnvironmentState {
-  return Object.keys(state.composerPreferences).length === 0 &&
-    Object.keys(state.composerRevisions).length === 0
-    ? state
-    : { ...state, composerPreferences: {}, composerRevisions: {} }
 }
 
 export function applySessionRemoved(state: EnvironmentState, sessionId: string): EnvironmentState {

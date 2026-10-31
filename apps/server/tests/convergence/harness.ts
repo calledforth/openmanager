@@ -131,6 +131,15 @@ const reconnect = { initialDelayMs: 100, maxDelayMs: 2_000 }
 export class Rig {
   readonly clients: TestClient[] = []
   workspaceId = ''
+  /**
+   * A browser hands each message over in its own task, so what the client does
+   * after an answer (an awaited command's continuation) runs before the next
+   * message, and that is the default here. `ws` can deliver a whole TCP read
+   * at once instead; a client must not depend on the difference. Applies to
+   * clients connected from now on; `CONVERGENCE_SYNC_DELIVERY=1` turns it on
+   * for a whole run.
+   */
+  synchronousDelivery = process.env.CONVERGENCE_SYNC_DELIVERY === '1'
   private readonly started = performance.now()
   private seed = 1
 
@@ -211,9 +220,10 @@ export class Rig {
     // A direct client always dials the live server, whatever port it is on now.
     const url = () => (link === 'proxy' ? this.proxy.url : `ws://127.0.0.1:${this.server.port}/ws`)
     const now = () => this.now()
+    const delivery = { allowSynchronousEvents: this.synchronousDelivery }
     class RecordingWebSocket extends WebSocket {
       constructor(_url: string, protocols?: string[]) {
-        super(url(), protocols)
+        super(url(), protocols, delivery)
         record.dials += 1
         this.addEventListener('open', () => {
           const port = (this as unknown as { _socket?: { localPort?: number } })._socket?.localPort
@@ -340,8 +350,10 @@ export class Rig {
     old: TestClient,
     link: Link = 'proxy',
     wait: boolean | 'connected' = true,
+    /** What happened to the cached copy meanwhile, for a scenario that needs it. */
+    tamper: (cached: EnvironmentState) => EnvironmentState = (cached) => cached,
   ): Promise<TestClient> {
-    const cached = cacheState(old.client.getState())
+    const cached = tamper(cacheState(old.store.getServerState()))
     old.dispose()
     return this.connect(`${old.name}*`, {
       link,

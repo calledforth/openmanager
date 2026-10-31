@@ -28,6 +28,23 @@ export function placeRecord(cursor: Cursor | null, record: Cursor): Placement {
 }
 
 /**
+ * A read answer that states where it read (`session.open`): a client holding
+ * the stream past that point has something newer, by the server's numbers.
+ * Behind it, or with no position to compare (no cursor, another epoch), the
+ * read applies, and the records in between fold over it in their order.
+ *
+ * | Read at `A`, cursor `C`         | Action |
+ * | ------------------------------- | ------ |
+ * | no cursor, or another epoch     | apply  |
+ * | same epoch, `A.seq >= C.seq`    | apply  |
+ * | same epoch, `A.seq < C.seq`     | drop   |
+ */
+export function placeRead(cursor: Cursor | null | undefined, read: Cursor): 'apply' | 'drop' {
+  if (!cursor || read.epoch !== cursor.epoch) return 'apply'
+  return read.sequence < cursor.sequence ? 'drop' : 'apply'
+}
+
+/**
  * The transient table. A transient happened right after the record at
  * `after`, so it applies only when the cursor is exactly there.
  *

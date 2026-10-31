@@ -72,7 +72,10 @@ export async function readEnvironmentCache(
         if (
           !state ||
           state.environment?.environmentId !== environmentId ||
+          // Includes a document from before kept cursors: it has no `cursors`,
+          // and the first load after the upgrade is a fresh one.
           Object.keys(initial).some((key) => !(key in state)) ||
+          typeof state.cursors?.sessions !== 'object' ||
           !Array.isArray(state.sessionOrder) ||
           !Array.isArray(state.workspaceOrder) ||
           !Array.isArray(state.providerOrder)
