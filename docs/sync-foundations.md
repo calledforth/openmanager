@@ -1711,6 +1711,65 @@ row 27's preference re-read cover the same ground.
 - Fragments, beats, keepalives, acks, the send window and lagging catch-ups (§7.2).
 - Protocol bump. No migration.
 
+### 6.4 As built (F5b, protocol v20)
+
+Decisions the design above left open, or where the code differed:
+
+- **Replay answers are the stored JSON.** The reader concatenates each row's `event_json` inside the
+  fixed record wrapper and the socket sends that text as is, so `replayBytes` (`octet_length` sum,
+  wrapper, digit count, envelope) is exactly what is sent. A unit test compares the formula with the
+  serialized answer. Snapshots are validated once (`ScopeSnapshotSchema`) and serialized once.
+- **The environment snapshot also carries provider profiles.** `provider.catalog.updated` is an
+  environment-scope event and profiles are client-visible rows; a server-initiated catch-up runs no
+  resync, so a missed profile change would otherwise wait for the next reconnect. Drafts stay out:
+  the client marks them unlisted on every environment snapshot but the first, and `draft-sync`
+  relists.
+- **`session.list`, `session.history` and `composer.preferences.get` are deleted from the server
+  too**, with `HistoryCursorSchema`, the session list cursor, `PAGE_LIMIT_*` and the pagers. The
+  thread service keeps `summaries()` and `threadState()` as inspection reads for tests.
+- **`readThreadState`** reads a thread with one query per table (turns, messages, parts, activity,
+  pending requests); the old reader hydrated each message and each turn's requests separately.
+- **Every scope recovers by `subscription.replay`**, the session scope included; the client folds
+  a replay answer in one `store.update`. A replace keeps the identity of unchanged objects
+  (`share`), so a catch-up that changes nothing re-renders nothing.
+- **Small scopes now often catch up by snapshot.** For a short chat a snapshot is frequently smaller
+  than even a short replay; that is the rule working, not a fallback.
+- **Whole chats and the whole sidebar are a deliberate choice for now.** Nothing is paged: opening a
+  chat or catching up brings all of it. Paging is planned for later, done properly, with one read
+  function serving open, catch-up and older history, rather than the separate paths this phase
+  removed.
+- **Desktop** files its whole Convex transcript through its own `legacy-history.ts`.
+- **What a provider lists is not sidebar state.** A session's commands and settings came to about
+  1.3 MB of a 1.5 MB environment answer, and a whole environment made a phone reload slower than
+  the paged list did. `SessionSummary.composer` keeps `modelId`, `modeId`, `configValues` and
+  `usage`. A chat's listing lives on `threads.listing_json`: it arrives in the thread snapshot and
+  as thread-scope `thread.listing.updated`, so only a browser with that chat open gets it. The event
+  names only the fields that changed, so a model switch or a new setting value does not store the
+  commands again; an empty command list is a change like any other.
+- **A new chat borrows from the server, not from other sessions.** `composer_listings` holds what
+  each provider last listed in each workspace, announced by `composer.listing.updated`, which names
+  only the fields that changed. Settings compare without their current values, because a draft
+  shows its own preference. That only covers settings values: two chats on one pair can really list
+  different things, one with an extra MCP server, and would trade the row and a large event for as
+  long as both reported. So the row records the chat that wrote it (`source_session_id`, which the
+  event carries, so the row still changes only through the event), and the most recently active
+  chat wins. A report from a chat less recently active than the writer changes nothing, for commands
+  and settings alike; a writer that no longer exists holds nothing, and the next report wins.
+  Activity is `sessions.updated_at`, which a title does not move, and ties go by session id, the
+  sidebar's own order. A chat that outranks the writer takes over even when it repeats the list, with
+  an event that names no field; otherwise the old writer's next report would still count. The
+  environment snapshot carries every pair, each distinct command and setting once
+  (`ComposerListingsSnapshotSchema`): 84 KB where whole lists would be 303 KB on the same data.
+  A subscription scope per pair would cost the snapshot nothing, at the price of a fourth kind of
+  scope; that is the next step if 84 KB ever matters.
+- **`session.open` states where it read.** Its summary changes on the environment stream and its
+  thread list on the session stream, and neither arrives in order with the answer, so the answer
+  carries both heads (`at`), read in the same tick as the rows. A client whose own cursor is past
+  one has something newer, by the server's numbers, and drops that part.
+- **Event format 3.** `session.composer.updated` lost two fields and its schema is strict, so a
+  stored one is not a valid event any more. Replay answers are stored JSON, so the bump is what keeps
+  them away from clients: boot raises every floor, and a client below one catches up by snapshot.
+
 ---
 
 ## 7. Rule 5: no artificial limits, liveness and flow control

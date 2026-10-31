@@ -12,7 +12,7 @@ import {
 import { openEnvironmentDatabase } from '../src/db/database.js'
 import { runMigrations } from '../src/db/migrate.js'
 import { MIGRATIONS } from '../src/db/migrations.js'
-import { getSessionSummary, listSessionHistory } from '../src/db/session-store.js'
+import { getSessionSummary, readThreadState } from '../src/db/session-store.js'
 import { createPersistentEventService } from '../src/event-service.js'
 import { createThreadService, type WorkspaceRuntimeResolver } from '../src/thread-service.js'
 
@@ -239,7 +239,7 @@ describe('background work', () => {
     // with the wait between the turns marked as background work.
     expect(h.statuses()).toEqual(['running', 'running:background', 'running', 'idle'])
 
-    const history = listSessionHistory(h.database!, { ...h.created.thread })!
+    const history = readThreadState(h.database!, { ...h.created.thread })!
     expect(history.turns).toHaveLength(2)
     expect(history.turns.map((turn) => turn.state)).toEqual(['completed', 'completed'])
     const backgroundTurn = history.turns.find((turn) => turn.turnId !== sent.turn.turnId)!
@@ -300,7 +300,7 @@ describe('background work', () => {
     h.completed('assistant-0')
     h.events!.flush()
 
-    const history = listSessionHistory(h.database!, { ...h.created.thread })!
+    const history = readThreadState(h.database!, { ...h.created.thread })!
     expect(history.turns.map((turn) => [turn.turnId, turn.state])).toEqual([
       [sent.turn.turnId, 'waiting'],
     ])
@@ -325,7 +325,7 @@ describe('background work', () => {
     expect(failures).toHaveLength(1)
     // The start was written before anything was filed under it, so no write
     // was poisoned, and the follow-up is in the transcript with its ending.
-    const history = listSessionHistory(h.database!, { ...h.created.thread })!
+    const history = readThreadState(h.database!, { ...h.created.thread })!
     expect(history.turns).toHaveLength(2)
     expect(history.turns.find((turn) => turn.origin === 'background')).toMatchObject({
       state: 'completed',
@@ -351,7 +351,7 @@ describe('background work', () => {
 
     // Nothing was filed under a turn the log never heard of.
     expect(failures.length).toBeGreaterThan(1)
-    expect(listSessionHistory(h.database!, { ...h.created.thread })!.turns).toHaveLength(1)
+    expect(readThreadState(h.database!, { ...h.created.thread })!.turns).toHaveLength(1)
     h.roster()
     expect(h.summary().status).toBe('idle')
   })
@@ -368,7 +368,7 @@ describe('background work', () => {
     })
 
     const turnOf = (state: string) =>
-      listSessionHistory(h.database!, { ...h.created.thread })!.turns.find(
+      readThreadState(h.database!, { ...h.created.thread })!.turns.find(
         (turn) => turn.state === state,
       )
     const turnId = turnOf('running')!.turnId

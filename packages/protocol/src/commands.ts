@@ -8,23 +8,14 @@ import {
   WorkspaceIconDataUrlSchema,
   SessionSchema,
   SessionSummarySchema,
-  SessionListCursorSchema,
-  HistoryCursorSchema,
-  PageLimitSchema,
   ThreadSchema,
-  TurnSchema,
   TurnStartSchema,
-  MessageSchema,
-  ReasoningBlockSchema,
-  ToolCallStateSchema,
-  ActivityRefSchema,
   SubscriptionScopeSchema,
   InteractionResponseSchema,
-  InteractionSchema,
-  PlanHistoryEntrySchema,
   TimestampSchema,
 } from './domains.js'
 import { WorkspaceComposerPreferenceSchema } from './composer.js'
+import { CursorSchema } from './replay.js'
 
 const command = <N extends string, P extends z.ZodType>(name: N, payload: P) =>
   CommandEnvelopeSchema.extend({ name: z.literal(name), payload })
@@ -54,14 +45,6 @@ export const ProofCommandSchemas = {
   // the folder itself (openmanager.json, then well-known icon files). Named by
   // ID like every workspace read (D9); a folder without one answers null.
   'workspace.icon': command('workspace.icon', z.object({ workspaceId: EntityIdSchema })),
-  'session.list': command(
-    'session.list',
-    z.object({
-      workspaceId: EntityIdSchema.optional(),
-      cursor: SessionListCursorSchema.optional(),
-      limit: PageLimitSchema.optional(),
-    }),
-  ),
   // A draft launches in one command: the environment files the draft's picks,
   // starts the provider, and runs the first turn in the picked mode. A mode
   // only takes effect on a first turn, so it needs one. Images uploaded while
@@ -138,13 +121,6 @@ export const ProofCommandSchemas = {
       taskIds: z.array(EntityIdSchema).min(1).max(BACKGROUND_TASKS_MAX).optional(),
     }),
   ),
-  'session.history': command(
-    'session.history',
-    ThreadTargetSchema.extend({
-      cursor: HistoryCursorSchema.optional(),
-      limit: PageLimitSchema.optional(),
-    }),
-  ),
   // `commandId` makes a send retryable: the environment answers a repeat of an
   // id it has already run with that same turn instead of starting a second one.
   // Optional on the wire so an older client still sends; the environment mints
@@ -195,7 +171,6 @@ export const ProofCommandSchema = z.discriminatedUnion('name', [
   ProofCommandSchemas['workspace.add'],
   ProofCommandSchemas['workspace.remove'],
   ProofCommandSchemas['workspace.icon'],
-  ProofCommandSchemas['session.list'],
   ProofCommandSchemas['session.create'],
   ProofCommandSchemas['session.open'],
   ProofCommandSchemas['session.rename'],
@@ -204,7 +179,6 @@ export const ProofCommandSchema = z.discriminatedUnion('name', [
   ProofCommandSchemas['session.settle'],
   ProofCommandSchemas['session.acknowledge'],
   ProofCommandSchemas['session.background.stop'],
-  ProofCommandSchemas['session.history'],
   ProofCommandSchemas['turn.send'],
   ProofCommandSchemas['turn.interrupt'],
   ProofCommandSchemas['interaction.respond'],
@@ -221,12 +195,6 @@ export const ProofResponseSchemas = {
   'workspace.add': response(z.object({ workspace: WorkspaceSchema })),
   'workspace.remove': response(z.null()),
   'workspace.icon': response(z.object({ iconDataUrl: WorkspaceIconDataUrlSchema.nullable() })),
-  'session.list': response(
-    z.object({
-      sessions: z.array(SessionSummarySchema),
-      nextCursor: SessionListCursorSchema.nullable(),
-    }),
-  ),
   'session.create': response(
     z.object({
       session: SessionSchema,
@@ -246,6 +214,12 @@ export const ProofResponseSchemas = {
     z.object({
       session: SessionSummarySchema,
       threads: z.array(ThreadSchema),
+      /**
+       * Where this read stands in the streams that change it: the summary on
+       * the environment's, the thread list on the session's. A client holding
+       * a stream past that point already has something newer.
+       */
+      at: z.object({ environment: CursorSchema, session: CursorSchema }),
     }),
   ),
   'session.rename': response(z.object({ session: SessionSchema })),
@@ -254,23 +228,6 @@ export const ProofResponseSchemas = {
   'session.settle': response(z.object({ settledAt: TimestampSchema.nullable() })),
   'session.acknowledge': response(z.null()),
   'session.background.stop': response(z.null()),
-  'session.history': response(
-    z.object({
-      messages: z.array(MessageSchema),
-      turns: z.array(TurnSchema),
-      interactions: z.array(z.object({ threadId: EntityIdSchema, interaction: InteractionSchema })),
-      plans: z.array(PlanHistoryEntrySchema).optional(),
-      /**
-       * The reasoning blocks and tool calls of the turns on this page, and the
-       * order they and the page's messages happened in. Absent from an older
-       * environment, which keeps messages only.
-       */
-      reasoning: z.array(ReasoningBlockSchema).optional(),
-      tools: z.array(ToolCallStateSchema).optional(),
-      order: z.array(ActivityRefSchema).optional(),
-      nextCursor: HistoryCursorSchema.nullable(),
-    }),
-  ),
   'turn.send': response(TurnStartSchema),
   'turn.interrupt': response(z.object({ turnId: EntityIdSchema })),
   'interaction.respond': response(z.null()),

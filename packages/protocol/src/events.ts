@@ -22,6 +22,7 @@ import {
   InteractionResponseSchema,
 } from './domains.js'
 import {
+  ComposerListingSchema,
   ComposerPreferenceTargetSchema,
   PreferenceRevisionSchema,
   ProviderComposerProfileSchema,
@@ -50,7 +51,7 @@ const event = <N extends string, S extends z.ZodType, P extends z.ZodType>(
  * replay floor at boot, so no stored event is replayed in a form this
  * version cannot state (docs/sync-foundations.md §4.7.7).
  */
-export const EVENT_FORMAT_VERSION = 2 as const
+export const EVENT_FORMAT_VERSION = 3 as const
 
 /** A turn's state once an interaction event is applied: still asking, or running again. */
 export const InteractionTurnStateSchema = z.enum(['running', 'waiting'])
@@ -120,6 +121,22 @@ export const ProofEventSchemas = {
     z.object({ sessionId: EntityIdSchema, composer: SessionComposerStateSchema }),
   ),
   /**
+   * What a provider last listed in this workspace, which a new chat there
+   * offers until it has a session of its own. Names only the fields that
+   * changed: settings are relisted on a model switch, commands hardly ever.
+   *
+   * `sourceSessionId` is the chat that said so. The most recently active chat
+   * holds the listing, and the row records it so a less active one cannot
+   * overwrite it. A chat that takes over a list it repeats names no field.
+   */
+  'composer.listing.updated': event(
+    'composer.listing.updated',
+    EnvironmentScopeSchema,
+    ComposerPreferenceTargetSchema.extend(ComposerListingSchema.shape).extend({
+      sourceSessionId: EntityIdSchema,
+    }),
+  ),
+  /**
    * The remembered selection a new draft in this workspace opens with, and
    * the revision this change gave it.
    */
@@ -152,6 +169,17 @@ export const ProofEventSchemas = {
     z.object({ profile: ProviderComposerProfileSchema }),
   ),
   'thread.created': event('thread.created', SessionScopeSchema, z.object({ thread: ThreadSchema })),
+  /**
+   * What the provider offers this chat. Thread scope, so only a browser with
+   * the chat open receives it. Names only the fields that changed, each whole,
+   * so a model switch does not store the commands again and applying one twice
+   * is safe. An empty list is a change like any other.
+   */
+  'thread.listing.updated': event(
+    'thread.listing.updated',
+    ThreadScopeSchema,
+    ComposerListingSchema,
+  ),
   'turn.started': event(
     'turn.started',
     ThreadScopeSchema,
@@ -267,11 +295,13 @@ export const ProofEventSchema = z.discriminatedUnion('name', [
   ProofEventSchemas['session.updated'],
   ProofEventSchemas['session.deleted'],
   ProofEventSchemas['session.composer.updated'],
+  ProofEventSchemas['composer.listing.updated'],
   ProofEventSchemas['composer.preferences.updated'],
   ProofEventSchemas['provider.catalog.updated'],
   ProofEventSchemas['draft.saved'],
   ProofEventSchemas['draft.deleted'],
   ProofEventSchemas['thread.created'],
+  ProofEventSchemas['thread.listing.updated'],
   ProofEventSchemas['turn.started'],
   ProofEventSchemas['turn.completed'],
   ProofEventSchemas['turn.interrupted'],

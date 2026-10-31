@@ -1,7 +1,8 @@
 import { foldProtocolEvent, placeActivity } from '@agentpack/view/protocol'
-import { sessionListCursorOf } from '@openmanager/protocol'
+import { unpackComposerListings } from '@openmanager/protocol'
 import type {
   BackgroundTask,
+  ComposerListing,
   InteractionKind,
   Message,
   ProofEvent,
@@ -20,7 +21,6 @@ import type {
   WorkspaceComposerPreference,
 } from '@openmanager/protocol'
 import type {
-  ActivityRef,
   ConnectionState,
   EnvironmentState,
   OutboxEntry,
@@ -59,6 +59,7 @@ export function createInitialState(): EnvironmentState {
     providerOrder: [],
     composerPreferences: {},
     composerRevisions: {},
+    composerListings: {},
     drafts: {},
     draftTombstones: {},
     draftEdits: {},
@@ -82,6 +83,7 @@ export function createThreadState(
     tools: [],
     order: [],
     interactions: [],
+    listing: {},
     notices: [],
     outbox: [],
     hydration,
@@ -89,40 +91,52 @@ export function createThreadState(
 }
 
 /**
- * The transcript order a page of persisted messages implies on its own. An
- * environment that keeps no reasoning or tool state (an older one, or a
- * snapshot that starts them over) still lists its messages in order.
+ * Structural sharing: `next`, except that any part deep-equal to the same part
+ * of `previous` is `previous`'s object. A replace that changes nothing hands
+ * every reader the objects it already holds, so nothing re-renders and the
+ * transcript keeps its scroll anchor (docs/sync-foundations.md §6.2).
  */
-function orderOfMessages(messages: readonly Message[]): ActivityRef[] {
-  return messages.map((message) => ({
-    kind: 'message',
-    id: message.messageId,
-    turnId: message.turnId,
-  }))
-}
-
-/** `primary`, then the entries of `secondary` whose key `primary` lacks. */
-function mergeById<T>(
-  primary: readonly T[],
-  secondary: readonly T[],
-  key: (item: T) => string,
-): T[] {
-  const known = new Set(primary.map(key))
-  const extra = secondary.filter((item) => !known.has(key(item)))
-  return extra.length === 0 ? [...primary] : [...primary, ...extra]
-}
-
-/** `base`, then whatever `extra` places that `base` does not, in `extra`'s order. */
-function mergeOrder(base: readonly ActivityRef[], extra: readonly ActivityRef[]): ActivityRef[] {
-  const placed = new Set(base.map((ref) => `${ref.kind}:${ref.id}`))
-  const merged = [...base]
-  for (const ref of extra) {
-    const key = `${ref.kind}:${ref.id}`
-    if (placed.has(key)) continue
-    placed.add(key)
-    merged.push(ref)
+function share<T>(previous: T | undefined, next: T): T {
+  if (previous === undefined || Object.is(previous, next)) return next
+  if (
+    typeof previous !== 'object' ||
+    typeof next !== 'object' ||
+    previous === null ||
+    next === null
+  ) {
+    return next
   }
-  return merged
+  if (Array.isArray(previous) !== Array.isArray(next)) return next
+  if (Array.isArray(next)) {
+    const before = previous as unknown as unknown[]
+    let same = before.length === next.length
+    const items = next.map((item, index) => {
+      const kept = share(before[index], item)
+      if (kept !== before[index]) same = false
+      return kept
+    })
+    return same ? previous : (items as unknown as T)
+  }
+  const before = previous as Record<string, unknown>
+  const after = next as Record<string, unknown>
+  const keys = Object.keys(after)
+  let same = keys.length === Object.keys(before).length
+  const out: Record<string, unknown> = {}
+  for (const key of keys) {
+    const kept = share(before[key], after[key])
+    if (kept !== before[key] || !(key in before)) same = false
+    out[key] = kept
+  }
+  return same ? previous : (out as T)
+}
+
+/** `next` by id, each entry sharing what it can with the entry of the same id in `previous`. */
+function shareById<T>(previous: readonly T[], next: readonly T[], key: (item: T) => string): T[] {
+  const held = new Map(previous.map((item) => [key(item), item]))
+  const items = next.map((item) => share(held.get(key(item)), item))
+  return items.length === previous.length && items.every((item, index) => item === previous[index])
+    ? (previous as T[])
+    : items
 }
 
 const upsertById = <T>(items: readonly T[], id: (item: T) => string, next: T): T[] => {
@@ -150,46 +164,23 @@ export function deriveSessionStatus(threads: readonly ThreadState[]): SessionSta
   return status
 }
 
+/**
+ * File a session as the environment states it. Every source states the whole
+ * summary (a snapshot, `session.created`, `session.open`), so this replaces
+ * the held one; `threadIds` are the session's own list when the source names
+ * them (`session.open`, a session snapshot), and kept otherwise.
+ */
 function upsertSession(
   state: EnvironmentState,
   session: ProtocolSessionSummary,
   threadIds?: readonly string[],
 ): EnvironmentState {
   const existing = state.sessions[session.sessionId]
-  const listed = session as Partial<ProtocolSessionSummary>
-  const titleSource = listed.titleSource ?? existing?.titleSource
-  const parentSessionId = session.parentSessionId ?? existing?.parentSessionId
-  const summary: SessionSummary = {
-    sessionId: session.sessionId,
-    workspaceId: session.workspaceId,
-    title: session.title,
-    ...(titleSource ? { titleSource } : {}),
-    ...(parentSessionId ? { parentSessionId } : {}),
-    status: listed.status ?? existing?.status ?? 'idle',
-    providerId: session.providerId,
-    updatedAt: session.updatedAt,
-    ...settledOf(listed.settledAt, existing?.settledAt),
-    ...doneOf(listed.doneAt, existing?.doneAt),
-    // A full summary is the whole truth: naming no background work means
-    // there is none, which is how work that died with a restarted environment
-    // is cleared. A bare `Session` says nothing either way.
-    ...backgroundOf(
-      listed.status === undefined ? undefined : (listed.backgroundTasks ?? []),
-      existing?.backgroundTasks,
-    ),
-    // Like background work, a full summary is the whole truth; a bare
-    // `Session` keeps what an event delivered.
-    ...(listed.status === undefined
-      ? activityOf(existing?.status ?? 'idle', existing?.waitingOn, existing?.inBackground)
-      : activityOf(listed.status, listed.waitingOn, listed.inBackground)),
-    ...composerOf(listed.composer, existing?.composer),
-    threadIds: threadIds
-      ? Array.from(new Set([...(existing?.threadIds ?? []), ...threadIds]))
-      : (existing?.threadIds ?? []),
-  }
-  // Listing again (a reconnect, the next page) restates most sessions as they
-  // are; keeping those objects keeps every reader of them still.
-  if (existing && sameSummary(existing, summary)) return state
+  const summary = share(existing, {
+    ...(session as SessionSummary),
+    threadIds: threadIds ? [...threadIds] : (existing?.threadIds ?? []),
+  })
+  if (existing === summary) return state
   return {
     ...state,
     sessions: { ...state.sessions, [session.sessionId]: summary },
@@ -207,24 +198,6 @@ function sameSummary(left: SessionSummary, right: SessionSummary): boolean {
         left.threadIds.every((id, index) => id === right.threadIds[index])
       : Object.is(left[key], right[key]),
   )
-}
-
-/** A listing that says nothing about settling (an older environment) keeps what is known. */
-function settledOf(
-  listed: string | null | undefined,
-  existing: string | null | undefined,
-): Pick<SessionSummary, 'settledAt'> {
-  const settledAt = listed !== undefined ? listed : existing
-  return settledAt !== undefined ? { settledAt } : {}
-}
-
-/** Likewise for unseen completions: silence from an older environment keeps what is known. */
-function doneOf(
-  listed: string | null | undefined,
-  existing: string | null | undefined,
-): Pick<SessionSummary, 'doneAt'> {
-  const doneAt = listed !== undefined ? listed : existing
-  return doneAt !== undefined ? { doneAt } : {}
 }
 
 /**
@@ -251,20 +224,6 @@ function backgroundOf(
   const tasks = reported ?? held
   if (!tasks?.length) return {}
   return { backgroundTasks: held && sameJson(tasks, held) ? held : tasks }
-}
-
-/**
- * A listing that names a selection is current; one that does not (a bare
- * `Session`, an older environment) must not erase what an event delivered.
- * The held object is kept when nothing changed, so selectors stay stable.
- */
-function composerOf(
-  listed: SessionComposerState | undefined,
-  existing: SessionComposerState | undefined,
-): { composer?: SessionComposerState } {
-  const composer =
-    listed && existing && sameJson(listed, existing) ? existing : (listed ?? existing)
-  return composer ? { composer } : {}
 }
 
 function upsertWorkspace(state: EnvironmentState, workspace: Workspace): EnvironmentState {
@@ -441,6 +400,25 @@ export function applyEvent(state: EnvironmentState, event: ProofEvent): Environm
         },
       }
     }
+    case 'composer.listing.updated': {
+      // Which chat said so is the server's, for deciding the next report.
+      const { workspaceId, providerId, sourceSessionId: _source, ...changed } = event.payload
+      if (!state.workspaces[workspaceId]) return state
+      const held = state.composerListings[workspaceId]
+      return {
+        ...state,
+        composerListings: {
+          ...state.composerListings,
+          [workspaceId]: {
+            ...held,
+            [providerId]: {
+              listing: { ...held?.[providerId]?.listing, ...changed },
+              updatedAt: event.timestamp,
+            },
+          },
+        },
+      }
+    }
     case 'composer.preferences.updated':
       // A workspace this client no longer lists must not get a preference back.
       return state.workspaces[event.payload.workspaceId]
@@ -522,94 +500,174 @@ export function applyEvent(state: EnvironmentState, event: ProofEvent): Environm
           event.payload.turnState,
         ),
       )
+    case 'thread.listing.updated':
+      // A field the event does not name stays as held.
+      return patchThread(state, thread, (current) => {
+        const listing = share(current.listing, { ...current.listing, ...event.payload })
+        return listing === current.listing ? current : { ...current, listing }
+      })
     default:
       return state
   }
 }
 
-/** Replace a scope wholesale. Threads outside the snapshot are untouched. */
+/**
+ * Replace a scope with its snapshot (docs/sync-foundations.md §6.2). Only the
+ * server-owned part is replaced: drafts, selection, connection and the
+ * pending overlay stay, and unchanged objects keep their identity.
+ *
+ * - **Environment:** the environment, workspaces, sessions and their orders,
+ *   composer preferences, provider profiles and workspace listings. Threads
+ *   of sessions that no longer exist go.
+ * - **Session:** its summary and its thread list.
+ * - **Thread:** turns, messages, reasoning, tools, order, pending requests
+ *   and listing. The client's own echoes are settled against it; notices start
+ *   over (the transport places held transients after it).
+ */
 export function applySnapshot(state: EnvironmentState, snapshot: ScopeSnapshot): EnvironmentState {
   const scope = snapshot.cursor.scope
   if (scope.type === 'environment') {
-    const { environment, workspaces, sessions } = (
-      snapshot as Extract<ScopeSnapshot, { cursor: { scope: { type: 'environment' } } }>
-    ).state
-    let next: EnvironmentState = { ...state, environment }
-    for (const workspace of workspaces) next = upsertWorkspace(next, workspace)
-    for (const session of sessions) next = upsertSession(next, session)
-    return next
+    return replaceEnvironment(
+      state,
+      (snapshot as Extract<ScopeSnapshot, { cursor: { scope: { type: 'environment' } } }>).state,
+    )
   }
   if (scope.type === 'session') {
     const { session, threads } = (
       snapshot as Extract<ScopeSnapshot, { cursor: { scope: { type: 'session' } } }>
     ).state
-    let next = upsertSession(state, session)
+    let next = upsertSession(
+      state,
+      session,
+      threads.map((thread) => thread.threadId),
+    )
     for (const thread of threads) next = ensureThread(next, thread)
     return next
   }
-  const threadSnapshot = (
+  const snapshotState = (
     snapshot as Extract<ScopeSnapshot, { cursor: { scope: { type: 'thread' } } }>
   ).state
-  const thread = threadSnapshot.thread
+  const thread = snapshotState.thread
   const withThread = ensureThread(state, thread)
   const existing = withThread.threads[thread.threadId]!
-  const messages = retainOlderMessages(existing.messages, threadSnapshot.messages)
+  const messages = shareById(existing.messages, snapshotState.messages, (item) => item.messageId)
   const replaced: ThreadState = {
-    ...createThreadState(thread, 'ready'),
-    // A snapshot describes what the environment has; a send it has not
-    // answered yet is still the client's to show, unless the snapshot is
-    // itself the answer. Which messages were this client's echoes is the
-    // client's own knowledge and survives the replacement.
-    ...reconcileOutbox(existing, threadSnapshot.turns, threadSnapshot.messages),
-    turns: threadSnapshot.turns,
+    ...createThreadState(share(existing.thread, thread), 'ready'),
+    // Which messages were this client's echoes is the client's own
+    // knowledge, settled by the turns the snapshot holds.
+    ...reconcileOutbox(existing, snapshotState.turns, snapshotState.messages),
+    turns: shareById(existing.turns, snapshotState.turns, (item) => item.turnId),
     messages,
-    // Older pages the client keeps in front of the snapshot place their
-    // messages; the snapshot places its own page, reasoning and tools included
-    // when the environment reports them.
-    order: [
-      ...orderOfMessages(messages.slice(0, messages.length - threadSnapshot.messages.length)),
-      ...(threadSnapshot.order ?? orderOfMessages(threadSnapshot.messages)),
-    ],
-    historyCursor:
-      existing.historyCursor !== undefined &&
-      existing.messages.findIndex(
-        (message) => message.messageId === threadSnapshot.messages[0]?.messageId,
-      ) > 0
-        ? existing.historyCursor
-        : threadSnapshot.nextCursor,
-    reasoning: threadSnapshot.reasoning,
-    tools: threadSnapshot.tools,
-    interactions: threadSnapshot.interactions.map((item) => ({
-      sessionId: thread.sessionId,
-      threadId: thread.threadId,
-      turnId: item.turnId,
-      interaction: item.interaction,
-    })),
+    reasoning: shareById(existing.reasoning, snapshotState.reasoning, (item) => item.messageId),
+    tools: shareById(existing.tools, snapshotState.tools, (item) => item.toolCallId),
+    order: share(existing.order, snapshotState.order),
+    interactions: shareById(
+      existing.interactions,
+      snapshotState.interactions.map((item) => ({
+        sessionId: thread.sessionId,
+        threadId: thread.threadId,
+        turnId: item.turnId,
+        interaction: item.interaction,
+      })),
+      (item) => item.interaction.interactionId,
+    ),
+    listing: share(existing.listing, snapshotState.listing),
   }
   return { ...withThread, threads: { ...withThread.threads, [thread.threadId]: replaced } }
 }
 
-/**
- * A thread snapshot carries the newest page of messages. History is only ever
- * appended to and the client keeps it in order, so everything it holds before
- * the first message the page names is older than the page: earlier pages it
- * loaded. Those stay in front of the snapshot, in the order they were in, and
- * the cursor the host keeps for the next older page stays valid. Anything
- * after that point that the page does not name is not history the page
- * predates, so the page's word is final for it.
- */
-function retainOlderMessages(known: readonly Message[], newest: readonly Message[]): Message[] {
-  if (known.length === 0) return [...newest]
-  const inSnapshot = new Set(newest.map((message) => message.messageId))
-  const overlap = known.findIndex((message) => inSnapshot.has(message.messageId))
-  const older = overlap === -1 ? [] : known.slice(0, overlap)
-  return older.length === 0 ? [...newest] : [...older, ...newest]
+type EnvironmentSnapshotState = Extract<
+  ScopeSnapshot,
+  { cursor: { scope: { type: 'environment' } } }
+>['state']
+
+function replaceEnvironment(
+  state: EnvironmentState,
+  snapshot: EnvironmentSnapshotState,
+): EnvironmentState {
+  const workspaces: EnvironmentState['workspaces'] = {}
+  for (const workspace of snapshot.workspaces) {
+    workspaces[workspace.workspaceId] = share(state.workspaces[workspace.workspaceId], workspace)
+  }
+  const sessions: EnvironmentState['sessions'] = {}
+  for (const session of snapshot.sessions) {
+    const existing = state.sessions[session.sessionId]
+    sessions[session.sessionId] = share(existing, {
+      ...(session as SessionSummary),
+      threadIds: existing?.threadIds ?? [],
+    })
+  }
+  const threads: EnvironmentState['threads'] = {}
+  for (const [threadId, thread] of Object.entries(state.threads)) {
+    if (sessions[thread.thread.sessionId]) threads[threadId] = thread
+  }
+  const composerPreferences: EnvironmentState['composerPreferences'] = {}
+  const composerRevisions: EnvironmentState['composerRevisions'] = {}
+  for (const entry of snapshot.preferences) {
+    composerPreferences[entry.workspaceId] = {
+      ...composerPreferences[entry.workspaceId],
+      [entry.providerId]: share(
+        state.composerPreferences[entry.workspaceId]?.[entry.providerId],
+        entry.preference,
+      ),
+    }
+    composerRevisions[entry.workspaceId] = {
+      ...composerRevisions[entry.workspaceId],
+      [entry.providerId]: entry.revision,
+    }
+  }
+  const composerListings: EnvironmentState['composerListings'] = {}
+  for (const { workspaceId, providerId, listing, updatedAt } of unpackComposerListings(
+    snapshot.listings,
+  )) {
+    composerListings[workspaceId] = {
+      ...composerListings[workspaceId],
+      [providerId]: { listing, updatedAt },
+    }
+  }
+  const profiles = new Map(
+    snapshot.providerProfiles.map((profile) => [profile.providerId, profile]),
+  )
+  const providers: EnvironmentState['providers'] = {}
+  for (const [providerId, provider] of Object.entries(state.providers)) {
+    const profile = profiles.get(providerId)
+    const { profile: held, ...rest } = provider
+    providers[providerId] = share(
+      provider,
+      profile ? { ...rest, profile: share(held, profile) } : rest,
+    )
+  }
+  const activeGone = state.activeSessionId !== null && !sessions[state.activeSessionId]
+  return {
+    ...state,
+    environment: share(state.environment ?? undefined, snapshot.environment),
+    workspaces: share(state.workspaces, workspaces),
+    workspaceOrder: share(
+      state.workspaceOrder,
+      snapshot.workspaces.map((workspace) => workspace.workspaceId),
+    ),
+    sessions: share(state.sessions, sessions),
+    sessionOrder: share(
+      state.sessionOrder,
+      snapshot.sessions.map((session) => session.sessionId),
+    ),
+    threads:
+      Object.keys(threads).length === Object.keys(state.threads).length ? state.threads : threads,
+    composerPreferences: share(state.composerPreferences, composerPreferences),
+    composerRevisions: share(state.composerRevisions, composerRevisions),
+    composerListings: share(state.composerListings, composerListings),
+    providers: share(state.providers, providers),
+    activeSessionId: activeGone ? null : state.activeSessionId,
+    activeThreadId: activeGone ? null : state.activeThreadId,
+  }
 }
 
-/** `session.open` loads identities only; `session.history` hydrates the transcript. */
+/** `session.open` loads identities only; the thread's snapshot brings the transcript. */
 export function applySessionOpen(
   state: EnvironmentState,
-  payload: ProofResponse<'session.open'>['payload'],
+  payload: Omit<ProofResponse<'session.open'>['payload'], 'at'> & {
+    at?: ProofResponse<'session.open'>['payload']['at']
+  },
 ): EnvironmentState {
   let next = upsertSession(
     state,
@@ -630,91 +688,6 @@ export function applySessionOpen(
   }
   // The server summary is authoritative while history is still loading.
   return next
-}
-
-/** Fold one history page into a thread. Newer pages replace; older pages prepend. */
-export function applySessionHistory(
-  state: EnvironmentState,
-  thread: Thread,
-  payload: ProofResponse<'session.history'>['payload'],
-  older = false,
-): EnvironmentState {
-  // A resumed transcript with no turns has no turn state to derive a status
-  // from, so the persisted one stands.
-  const persistedStatus = state.sessions[thread.sessionId]?.status
-  const next = patchThread(state, thread, (current) => {
-    const existingIds = new Set(current.messages.map((message) => message.messageId))
-    const incoming = payload.messages.filter((message) => !existingIds.has(message.messageId))
-    const messages =
-      !older && current.hydration !== 'ready'
-        ? payload.messages
-        : [...incoming, ...current.messages]
-    // The page places its messages, reasoning and tools in the order they
-    // happened; an older environment names messages only. Live activity that
-    // arrived while the page loaded keeps the place it already has, after
-    // everything the page names.
-    const pageOrder = payload.order ?? orderOfMessages(payload.messages)
-    const fresh = !older && current.hydration !== 'ready'
-    const order = fresh
-      ? mergeOrder(pageOrder, current.order)
-      : [
-          ...pageOrder.filter(
-            (ref) => !current.order.some((known) => known.kind === ref.kind && known.id === ref.id),
-          ),
-          ...current.order,
-        ]
-    // Reasoning and tools are keyed by id, so a page's entries replace what
-    // the client held for them and leave live ones it does not name alone.
-    const reasoning = fresh
-      ? mergeById(payload.reasoning ?? [], current.reasoning, (entry) => entry.messageId)
-      : mergeById(current.reasoning, payload.reasoning ?? [], (entry) => entry.messageId)
-    const tools = fresh
-      ? mergeById(payload.tools ?? [], current.tools, (tool) => tool.toolCallId)
-      : mergeById(current.tools, payload.tools ?? [], (tool) => tool.toolCallId)
-    const openTurn = payload.turns.find(
-      (turn) => turn.state === 'waiting' || turn.state === 'running',
-    )
-    const interactions: PendingInteraction[] = payload.interactions
-      .filter((item) => item.threadId === thread.threadId)
-      .map((item) => ({
-        sessionId: thread.sessionId,
-        threadId: thread.threadId,
-        turnId: openTurn?.turnId ?? payload.turns.at(-1)?.turnId ?? '',
-        interaction: item.interaction,
-      }))
-    return {
-      ...current,
-      turns: older
-        ? [
-            ...payload.turns.filter(
-              (turn) => !current.turns.some((known) => known.turnId === turn.turnId),
-            ),
-            ...current.turns,
-          ]
-        : payload.turns.length > 0
-          ? payload.turns
-          : current.turns,
-      messages,
-      reasoning,
-      tools,
-      order,
-      ...reconcileOutbox(current, payload.turns, payload.messages),
-      interactions:
-        !older && (interactions.length > 0 || current.hydration !== 'ready')
-          ? interactions
-          : current.interactions,
-      hydration: older ? current.hydration : 'ready',
-      historyCursor: payload.nextCursor,
-    }
-  })
-  const restored = next.sessions[thread.sessionId]
-  if (!persistedStatus || !restored || next.threads[thread.threadId]?.turns.length !== 0) {
-    return next
-  }
-  return {
-    ...next,
-    sessions: { ...next.sessions, [thread.sessionId]: { ...restored, status: persistedStatus } },
-  }
 }
 
 /**
@@ -921,15 +894,6 @@ export function applySessionCreated(
   }
 }
 
-export function applySessionList(
-  state: EnvironmentState,
-  sessions: readonly ProtocolSessionSummary[],
-): EnvironmentState {
-  let next = state
-  for (const session of sessions) next = upsertSession(next, session)
-  return next
-}
-
 export function applyWorkspaceList(
   state: EnvironmentState,
   workspaces: readonly Workspace[],
@@ -954,12 +918,15 @@ export function applyWorkspaceRemoved(
   delete composerPreferences[workspaceId]
   const composerRevisions = { ...state.composerRevisions }
   delete composerRevisions[workspaceId]
+  const composerListings = { ...state.composerListings }
+  delete composerListings[workspaceId]
   return {
     ...state,
     workspaces,
     workspaceOrder: state.workspaceOrder.filter((id) => id !== workspaceId),
     composerPreferences,
     composerRevisions,
+    composerListings,
   }
 }
 
@@ -1234,6 +1201,39 @@ export function selectSessionComposer(
   return state.sessions[sessionId]?.composer ?? null
 }
 
+/** What the provider offers a chat; empty until the chat has loaded. */
+export function selectSessionListing(
+  state: EnvironmentState,
+  sessionId: string,
+): ComposerListing | null {
+  const threadId = state.sessions[sessionId]?.threadIds[0]
+  return (threadId && state.threads[threadId]?.listing) || null
+}
+
+/**
+ * What a new chat offers: what the provider last listed in this workspace, or
+ * failing that its newest listing anywhere. An empty command list is the
+ * provider offering none, so it is an answer; empty settings are not.
+ */
+export function selectDraftListing<K extends keyof ComposerListing>(
+  state: EnvironmentState,
+  field: K,
+  workspaceId: string,
+  providerId: string,
+): NonNullable<ComposerListing[K]> | undefined {
+  const own = state.composerListings[workspaceId]?.[providerId]?.listing[field]
+  if (own) return own
+  let newest: { at: string; listed: NonNullable<ComposerListing[K]> } | undefined
+  for (const byProvider of Object.values(state.composerListings)) {
+    const held = byProvider[providerId]
+    const listed = held?.listing[field]
+    if (held && listed && (!newest || held.updatedAt > newest.at)) {
+      newest = { at: held.updatedAt, listed }
+    }
+  }
+  return newest?.listed
+}
+
 /** Null until a composer command has answered for this workspace and provider. */
 export function selectComposerPreference(
   state: EnvironmentState,
@@ -1279,7 +1279,8 @@ function sortNewestFirst(state: EnvironmentState): SessionSummary[] {
   const keyed: { session: SessionSummary; at: number }[] = []
   for (const id of state.sessionOrder) {
     const session = state.sessions[id]
-    if (session) keyed.push({ session, at: Date.parse(sessionListCursorOf(session).updatedAt) })
+    if (session)
+      keyed.push({ session, at: Date.parse(session.updatedAt ?? '1970-01-01T00:00:00.000Z') })
   }
   return keyed
     .sort((left, right) => {

@@ -1,18 +1,21 @@
 import { describe, expect, it } from 'vitest'
-import type { ProofEvent } from '@openmanager/protocol'
+import { packComposerListings, type ComposerListing, type ProofEvent } from '@openmanager/protocol'
 import { createMockEnvironmentClient } from '../src/mock'
 import {
   applyComposerPreference,
   applyComposerPreferencesReset,
   applyEvent,
   applyProviderCatalog,
-  applySessionList,
   applySnapshot,
   applyWorkspaceList,
+  applyWorkspaceRemoved,
   createInitialState,
   selectComposerPreference,
+  selectDraftListing,
   selectSessionComposer,
+  selectSessionListing,
 } from '../src/state'
+import { applySessionList } from './seed'
 import {
   ENV,
   PROVIDER,
@@ -23,9 +26,13 @@ import {
   WORKSPACE,
   environmentScope,
   event,
+  sessionScope,
+  threadScope,
 } from './fixtures'
 
 type ComposerUpdated = Extract<ProofEvent, { name: 'session.composer.updated' }>
+type ThreadListingUpdated = Extract<ProofEvent, { name: 'thread.listing.updated' }>
+type WorkspaceListingUpdated = Extract<ProofEvent, { name: 'composer.listing.updated' }>
 type PreferencesUpdated = Extract<ProofEvent, { name: 'composer.preferences.updated' }>
 type CatalogUpdated = Extract<ProofEvent, { name: 'provider.catalog.updated' }>
 
@@ -43,6 +50,122 @@ const listed = () =>
     SESSION_SUMMARY,
     SIBLING,
   ])
+
+describe('provider listings', () => {
+  const review = { name: 'review', description: 'Review the diff' }
+  const fast = { type: 'boolean' as const, id: 'fast', name: 'Fast', currentValue: true }
+  const listingUpdated = (
+    timestamp: string,
+    workspaceId: string,
+    providerId: string,
+    listing: ComposerListing,
+  ) => ({
+    ...event<WorkspaceListingUpdated>({
+      name: 'composer.listing.updated',
+      scope: environmentScope,
+      payload: { workspaceId, providerId, sourceSessionId: SESSION.sessionId, ...listing },
+    }),
+    timestamp,
+  })
+  const withWorkspaces = (...ids: string[]) =>
+    applyWorkspaceList(
+      createInitialState(),
+      ids.map((workspaceId) => ({ ...WORKSPACE, workspaceId })),
+    )
+  const AT = '2026-10-31T10:00:00.000Z'
+  const LATER = '2026-10-31T11:00:00.000Z'
+
+  it('files what a chat listing changed on its thread, field by field', () => {
+    const state = listed()
+    const opened = applySnapshot(state, {
+      cursor: { scope: sessionScope, epoch: 'epoch', sequence: 1 },
+      state: { session: SESSION_SUMMARY, threads: [THREAD] },
+    })
+    const update = (listing: ComposerListing) =>
+      event<ThreadListingUpdated>({
+        name: 'thread.listing.updated',
+        scope: threadScope,
+        payload: listing,
+      })
+    const first = applyEvent(opened, update({ availableCommands: [review] }))
+    expect(selectSessionListing(first, SESSION.sessionId)).toEqual({ availableCommands: [review] })
+    // A field the event does not name stays as held.
+    const second = applyEvent(first, update({ configOptions: [fast] }))
+    expect(selectSessionListing(second, SESSION.sessionId)).toEqual({
+      availableCommands: [review],
+      configOptions: [fast],
+    })
+    // An empty list is an answer, and takes the place of the last.
+    const third = applyEvent(second, update({ availableCommands: [] }))
+    expect(selectSessionListing(third, SESSION.sessionId)).toEqual({
+      availableCommands: [],
+      configOptions: [fast],
+    })
+    // A list restated changes nothing, down to its identity.
+    expect(applyEvent(third, update({ configOptions: [fast] }))).toBe(third)
+  })
+
+  it('gives a new chat its workspace’s listing, or the provider’s newest elsewhere', () => {
+    let state = withWorkspaces('a', 'b', 'c')
+    state = applyEvent(state, listingUpdated(AT, 'a', 'claude', { availableCommands: [review] }))
+    state = applyEvent(state, listingUpdated(LATER, 'b', 'claude', { configOptions: [fast] }))
+    // A field the event does not name stays as held.
+    state = applyEvent(state, listingUpdated(LATER, 'a', 'claude', { configOptions: [fast] }))
+    // Which chat said so stays with the server.
+    expect(state.composerListings.a?.claude).toEqual({
+      listing: { availableCommands: [review], configOptions: [fast] },
+      updatedAt: LATER,
+    })
+    expect(selectDraftListing(state, 'availableCommands', 'a', 'claude')).toEqual([review])
+    expect(selectDraftListing(state, 'availableCommands', 'c', 'claude')).toEqual([review])
+    expect(selectDraftListing(state, 'availableCommands', 'c', 'cursor')).toBeUndefined()
+
+    // An empty list is an answer; it does not fall back.
+    state = applyEvent(state, listingUpdated(LATER, 'b', 'claude', { availableCommands: [] }))
+    expect(selectDraftListing(state, 'availableCommands', 'b', 'claude')).toEqual([])
+
+    // A listing goes with its workspace, and none comes back for one not listed.
+    const removed = applyWorkspaceRemoved(state, 'a')
+    expect(removed.composerListings.a).toBeUndefined()
+    expect(
+      applyEvent(removed, listingUpdated(LATER, 'a', 'claude', { configOptions: [fast] })),
+    ).toBe(removed)
+  })
+
+  it('takes the environment snapshot’s listings whole, the same as the events built them', () => {
+    let live = withWorkspaces(WORKSPACE.workspaceId)
+    live = applyEvent(
+      live,
+      listingUpdated(AT, WORKSPACE.workspaceId, 'claude', { availableCommands: [review] }),
+    )
+    const snapshot = {
+      cursor: { scope: environmentScope, epoch: 'epoch', sequence: 1 },
+      state: {
+        environment: { environmentId: ENV, name: 'Environment' },
+        workspaces: [WORKSPACE],
+        sessions: [],
+        preferences: [],
+        providerProfiles: [],
+        listings: packComposerListings([
+          {
+            workspaceId: WORKSPACE.workspaceId,
+            providerId: 'claude',
+            listing: { availableCommands: [review] },
+            updatedAt: AT,
+          },
+        ]),
+      },
+    }
+    const fresh = applySnapshot(createInitialState(), snapshot)
+    expect(fresh.composerListings).toEqual(live.composerListings)
+    // A snapshot that no longer states one takes it away.
+    const emptied = applySnapshot(live, {
+      ...snapshot,
+      state: { ...snapshot.state, listings: packComposerListings([]) },
+    })
+    expect(emptied.composerListings).toEqual({})
+  })
+})
 
 describe('live session composer state', () => {
   it('follows a selection another client or the agent made, for that session only', () => {
@@ -68,13 +191,13 @@ describe('live session composer state', () => {
     expect(applyEvent(state, composerUpdated('unlisted', { modelId: 'opus' }))).toBe(state)
   })
 
-  it('takes the selection from a listing and keeps it when session.created names none', () => {
+  it('takes the selection from a listing, and a whole summary that names none clears it', () => {
     let state = applySessionList(applyWorkspaceList(createInitialState(), [WORKSPACE]), [
       { ...SESSION_SUMMARY, composer: { modelId: 'opus' } },
     ])
     expect(selectSessionComposer(state, SESSION.sessionId)).toEqual({ modelId: 'opus' })
 
-    // `session.created` names no selection: a new row has none.
+    // `session.created` is the whole row: one that names no selection has none.
     state = applyEvent(
       state,
       event<Extract<ProofEvent, { name: 'session.created' }>>({
@@ -83,7 +206,7 @@ describe('live session composer state', () => {
         payload: { session: SESSION_CREATED },
       }),
     )
-    expect(selectSessionComposer(state, SESSION.sessionId)).toEqual({ modelId: 'opus' })
+    expect(selectSessionComposer(state, SESSION.sessionId)).toBeNull()
   })
 
   it('restores the selection from an environment snapshot after a reconnect', () => {
@@ -93,6 +216,9 @@ describe('live session composer state', () => {
         environment: { environmentId: ENV, name: 'Local' },
         workspaces: [WORKSPACE],
         sessions: [{ ...SESSION_SUMMARY, composer: { modelId: 'opus', modeId: 'plan' } }],
+        preferences: [],
+        providerProfiles: [],
+        listings: { commands: [], configOptions: [], entries: [] },
       },
     })
     expect(selectSessionComposer(state, SESSION.sessionId)).toEqual({

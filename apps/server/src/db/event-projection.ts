@@ -119,6 +119,12 @@ export function createEventProjector(
     updateSessionComposer: database.prepare(
       'UPDATE sessions SET composer_json = ? WHERE session_id = ?',
     ),
+    // Field by field: the event names what changed. A list is replaced whole,
+    // an empty one included, and a field it does not name stays as held.
+    updateThreadListing: database.prepare(
+      `UPDATE threads SET listing_json = json_patch(COALESCE(listing_json, '{}'), ?)
+       WHERE thread_id = ?`,
+    ),
     deleteSession: database.prepare('DELETE FROM sessions WHERE session_id = ?'),
     // What a deletion must already have said, so no foreign key removes a
     // client-visible row silently (db/deletions.ts).
@@ -618,6 +624,22 @@ export function createEventProjector(
           )
         }
         return
+      case 'thread.listing.updated':
+        // As above: published only while the session has its row.
+        if (
+          s.updateThreadListing.run(JSON.stringify(event.payload), event.scope.threadId).changes !==
+          1
+        ) {
+          throw new ProjectionRefusal(
+            `Cannot record a listing for missing thread ${event.scope.threadId}`,
+          )
+        }
+        return
+      case 'composer.listing.updated': {
+        const { workspaceId, providerId, sourceSessionId, ...listing } = event.payload
+        composer.listing({ workspaceId, providerId }, sourceSessionId, listing, at)
+        return
+      }
       case 'draft.saved':
         drafts.saved(event.payload.draft)
         return

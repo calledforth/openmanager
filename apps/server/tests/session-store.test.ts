@@ -9,8 +9,8 @@ import { createEventRepository } from '../src/db/event-repository.js'
 import {
   findSessionIdByProviderSession,
   getSessionSummary,
-  listSessionHistory,
-  listSessionSummaries,
+  listAllSessionSummaries,
+  readThreadState,
   listThreadsForSession,
 } from '../src/db/session-store.js'
 
@@ -69,39 +69,13 @@ afterEach(async () => {
 })
 
 describe('session summary list', () => {
-  it('returns an empty page when the environment has no sessions', async () => {
+  it('lists nothing when the environment has no sessions', async () => {
     const database = await createDatabase()
     seedWorkspace(database)
-    expect(listSessionSummaries(database)).toEqual({ sessions: [], nextCursor: null })
-    expect(listSessionSummaries(database, { workspaceId: 'workspace-1' })).toEqual({
-      sessions: [],
-      nextCursor: null,
-    })
+    expect(listAllSessionSummaries(database)).toEqual([])
   })
 
-  it('returns one page of summaries without threads or messages', async () => {
-    const database = await createDatabase()
-    seedWorkspace(database)
-    seedSession(database, { sessionId: 'session-new', title: 'New', updatedAt: 2_000 })
-    seedSession(database, { sessionId: 'session-old', title: 'Old', updatedAt: 1_000 })
-
-    const page = listSessionSummaries(database, { limit: 50 })
-    expect(page.nextCursor).toBeNull()
-    expect(page.sessions.map((session) => session.sessionId)).toEqual([
-      'session-new',
-      'session-old',
-    ])
-    expect(page.sessions[0]).toMatchObject({
-      title: 'New',
-      status: 'idle',
-      workspaceId: 'workspace-1',
-      providerId: 'opencode',
-    })
-    expect(page.sessions[0]).not.toHaveProperty('threads')
-    expect(page.sessions[0]).not.toHaveProperty('messages')
-  })
-
-  it('pages newest-first with a keyset cursor', async () => {
+  it('lists every session newest first, as summaries without threads or messages', async () => {
     const database = await createDatabase()
     seedWorkspace(database)
     for (const index of [1, 2, 3, 4, 5]) {
@@ -111,21 +85,22 @@ describe('session summary list', () => {
         updatedAt: index * 1_000,
       })
     }
-
-    const first = listSessionSummaries(database, { limit: 2 })
-    expect(first.sessions.map((session) => session.sessionId)).toEqual(['session-5', 'session-4'])
-    expect(first.nextCursor).toEqual({
-      updatedAt: first.sessions[1]!.updatedAt,
-      sessionId: 'session-4',
+    const sessions = listAllSessionSummaries(database)
+    expect(sessions.map((session) => session.sessionId)).toEqual([
+      'session-5',
+      'session-4',
+      'session-3',
+      'session-2',
+      'session-1',
+    ])
+    expect(sessions[0]).toMatchObject({
+      title: 'Session 5',
+      status: 'idle',
+      workspaceId: 'workspace-1',
+      providerId: 'opencode',
     })
-
-    const second = listSessionSummaries(database, { cursor: first.nextCursor!, limit: 2 })
-    expect(second.sessions.map((session) => session.sessionId)).toEqual(['session-3', 'session-2'])
-    expect(second.nextCursor?.sessionId).toBe('session-2')
-
-    const last = listSessionSummaries(database, { cursor: second.nextCursor!, limit: 2 })
-    expect(last.sessions.map((session) => session.sessionId)).toEqual(['session-1'])
-    expect(last.nextCursor).toBeNull()
+    expect(sessions[0]).not.toHaveProperty('threads')
+    expect(sessions[0]).not.toHaveProperty('messages')
   })
 
   it('reports a parent session id only for the rows that have one', async () => {
@@ -139,12 +114,12 @@ describe('session summary list', () => {
       parentSessionId: 'session-parent',
     })
 
-    const page = listSessionSummaries(database, { limit: 50 })
-    expect(page.sessions.map((session) => session.parentSessionId)).toEqual([
+    const sessions = listAllSessionSummaries(database)
+    expect(sessions.map((session) => session.parentSessionId)).toEqual([
       undefined,
       'session-parent',
     ])
-    expect(page.sessions[0]).not.toHaveProperty('parentSessionId')
+    expect(sessions[0]).not.toHaveProperty('parentSessionId')
     expect(getSessionSummary(database, 'session-child')).toMatchObject({
       parentSessionId: 'session-parent',
     })
@@ -174,8 +149,8 @@ describe('provider session lookup', () => {
   })
 })
 
-describe('session history pages', () => {
-  it('opens a session as identities only, then pages history separately', async () => {
+describe('whole thread state', () => {
+  it('opens a session as identities only, and reads its whole thread in one go', async () => {
     const database = await createDatabase()
     seedWorkspace(database)
     seedSession(database, { sessionId: 'session-1', title: 'Chat', updatedAt: 1_000 })
@@ -233,33 +208,26 @@ describe('session history pages', () => {
       { threadId: 'thread-1', sessionId: 'session-1' },
     ])
 
-    const newest = listSessionHistory(database, {
-      sessionId: 'session-1',
-      threadId: 'thread-1',
-      limit: 2,
-    })
-    expect(newest?.messages.map((message) => message.messageId)).toEqual(['message-1', 'message-2'])
-    expect(newest?.nextCursor).toEqual({ ordinal: 1 })
-    expect(newest?.interactions).toEqual([
+    const thread = readThreadState(database, { sessionId: 'session-1', threadId: 'thread-1' })
+    expect(thread?.messages.map((message) => message.messageId)).toEqual([
+      'message-0',
+      'message-1',
+      'message-2',
+    ])
+    expect(thread?.order.map((ref) => ref.id)).toEqual(['message-0', 'message-1', 'message-2'])
+    expect(thread?.interactions).toEqual([
       {
-        threadId: 'thread-1',
         turnId: 'turn-1',
         interaction: expect.objectContaining({ interactionId: 'interaction-pending' }),
       },
     ])
-
-    const older = listSessionHistory(database, {
-      sessionId: 'session-1',
-      threadId: 'thread-1',
-      cursor: newest!.nextCursor!,
-      limit: 2,
-    })
-    expect(older?.messages.map((message) => message.messageId)).toEqual(['message-0'])
-    expect(older?.nextCursor).toBeNull()
+    expect(
+      readThreadState(database, { sessionId: 'foreign', threadId: 'thread-1' }),
+    ).toBeUndefined()
   })
 })
 
-describe('durable plan history', () => {
+describe('durable plans', () => {
   it('keeps pending, accepted, rejected and cancelled plans across reopening the database', async () => {
     const database = await createDatabase()
     seedWorkspace(database)
@@ -296,29 +264,24 @@ describe('durable plan history', () => {
       )
     }
     const query = { sessionId: 'session-plans', threadId: 'thread-plans' }
-    const page = listSessionHistory(database, query)!
-    expect(page.interactions).toHaveLength(1)
-    expect(page.plans.map((entry) => entry.state)).toEqual([
-      'pending',
-      'resolved',
-      'resolved',
-      'cancelled',
-    ])
-    expect(page.plans.map((entry) => entry.outcome)).toEqual(outcomes)
-    expect(listSessionHistory(database, { ...query, sessionId: 'foreign' })).toBeUndefined()
+    const thread = readThreadState(database, query)!
+    // Only the pending plan is a request; settled plans are history the
+    // transcript does not reopen.
+    expect(thread.interactions.map((entry) => entry.interaction.interactionId)).toEqual(['plan-0'])
     database.close()
     databases.splice(databases.indexOf(database), 1)
     const reopened = openEnvironmentDatabase(directories.at(-1)!)
     databases.push(reopened)
     reconcileAfterRestart(reopened, createEventRepository(reopened), 'environment-1')
-    const recovered = listSessionHistory(reopened, query)!
-    expect(recovered.interactions).toEqual([])
-    expect(recovered.plans.map((entry) => entry.state)).toEqual([
+    expect(readThreadState(reopened, query)!.interactions).toEqual([])
+    const states = reopened
+      .prepare(`SELECT state FROM interactions WHERE turn_id = 'turn-plans' ORDER BY created_at`)
+      .all() as Array<{ state: string }>
+    expect(states.map((row) => row.state)).toEqual([
       'cancelled',
       'resolved',
       'resolved',
       'cancelled',
     ])
-    expect(recovered.plans.slice(1)).toEqual(page.plans.slice(1))
   })
 })

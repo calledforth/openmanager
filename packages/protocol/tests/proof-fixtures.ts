@@ -107,12 +107,6 @@ export const proofCommands = [
   },
   {
     type: 'command',
-    requestId: 'r-3',
-    name: 'session.list',
-    payload: { workspaceId: 'workspace-1', limit: 50 },
-  },
-  {
-    type: 'command',
     requestId: 'r-4',
     name: 'session.create',
     payload: {
@@ -123,12 +117,6 @@ export const proofCommands = [
     },
   },
   { type: 'command', requestId: 'r-5', name: 'session.open', payload: { sessionId: 'session-1' } },
-  {
-    type: 'command',
-    requestId: 'r-13',
-    name: 'session.history',
-    payload: { sessionId: 'session-1', threadId: 'thread-1', limit: 50 },
-  },
   {
     type: 'command',
     requestId: 'r-6',
@@ -213,11 +201,6 @@ export const proofResponses = {
     requestId: 'r-14',
     payload: { iconDataUrl: 'data:image/svg+xml;base64,PHN2Zz48L3N2Zz4=' },
   },
-  'session.list': {
-    type: 'response',
-    requestId: 'r-3',
-    payload: { sessions: [sessionSummary], nextCursor: null },
-  },
   'session.create': {
     type: 'response',
     requestId: 'r-4',
@@ -226,12 +209,22 @@ export const proofResponses = {
   'session.open': {
     type: 'response',
     requestId: 'r-5',
-    payload: { session: sessionSummary, threads: [thread] },
-  },
-  'session.history': {
-    type: 'response',
-    requestId: 'r-13',
-    payload: { messages: [], turns: [turn], interactions: [], nextCursor: null },
+    payload: {
+      session: sessionSummary,
+      threads: [thread],
+      at: {
+        environment: {
+          scope: { type: 'environment', environmentId: 'environment-1' },
+          epoch: 'epoch-1',
+          sequence: 4,
+        },
+        session: {
+          scope: { type: 'session', environmentId: 'environment-1', sessionId: 'session-1' },
+          epoch: 'epoch-1',
+          sequence: 1,
+        },
+      },
+    },
   },
   'turn.send': {
     type: 'response',
@@ -300,26 +293,19 @@ export const proofEvents = [
         modelId: 'claude-opus',
         modeId: 'plan',
         configValues: { effort: 'high', fast: true },
-        configOptions: [
-          {
-            type: 'select',
-            id: 'effort',
-            name: 'Effort',
-            category: 'thought_level',
-            currentValue: 'high',
-            options: [
-              { value: 'low', name: 'Low' },
-              { value: 'high', name: 'High' },
-            ],
-          },
-          { type: 'boolean', id: 'fast', name: 'Fast mode', currentValue: true },
-        ],
-        availableCommands: [
-          { name: 'review', description: 'Review the current diff' },
-          { name: 'search', description: 'Search the workspace', placeholder: 'query' },
-        ],
         usage: { used: 19_433, size: 200_000, cost: { amount: 0.42, currency: 'USD' } },
       },
+    },
+  },
+  {
+    ...base,
+    name: 'composer.listing.updated',
+    scope: environmentScope,
+    payload: {
+      workspaceId: 'workspace-1',
+      providerId: 'claude-code',
+      sourceSessionId: 'session-1',
+      availableCommands: [{ name: 'review', description: 'Review the current diff' }],
     },
   },
   {
@@ -382,6 +368,31 @@ export const proofEvents = [
     },
   },
   { ...base, name: 'thread.created', scope: sessionScope, payload: { thread } },
+  {
+    ...base,
+    name: 'thread.listing.updated',
+    scope: threadScope,
+    payload: {
+      configOptions: [
+        {
+          type: 'select',
+          id: 'effort',
+          name: 'Effort',
+          category: 'thought_level',
+          currentValue: 'high',
+          options: [
+            { value: 'low', name: 'Low' },
+            { value: 'high', name: 'High' },
+          ],
+        },
+        { type: 'boolean', id: 'fast', name: 'Fast mode', currentValue: true },
+      ],
+      availableCommands: [
+        { name: 'review', description: 'Review the current diff' },
+        { name: 'search', description: 'Search the workspace', placeholder: 'query' },
+      ],
+    },
+  },
   {
     ...base,
     name: 'turn.started',

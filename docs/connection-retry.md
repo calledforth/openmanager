@@ -120,20 +120,16 @@ live and in order, after the answer. An answer the client cannot reconcile
 with what it asked for (`parseReplayResult`) is not applied; the scope is
 subscribed plainly instead. A scope the environment no longer has is dropped.
 
-A thread snapshot carries all turns, pending interactions and the newest
-history page of messages, as `session.open` followed by `session.history`
-would load it. Older pages the client had already loaded stay in front of it:
-history is only appended to, so what the client holds before the first message
-the page names is older than the page, and the cursor for the next older page
-stays valid. Reasoning and
-tool state exist only in the event log, which is what the snapshot stands in
-for, so they start over. An environment snapshot carries the environment,
-every workspace and the newest page of sessions.
+A thread snapshot carries the whole thread: every turn, message, thought and
+tool call, their order and the pending requests. It replaces the client's copy
+(docs/sync-foundations.md §6.2). An environment snapshot carries the
+environment, every workspace, every session, every composer preference and
+every provider profile, and replaces the sidebar the same way.
 
-The catalog reads and the `session.open` of the active session still run after
-recovery, as they did before replay existed: after an environment restart the
-open is what re-attaches the provider session, and the history merge is keyed
-by message ID, so it adds nothing a replay already delivered.
+After recovery the only extra read is the provider catalog (a current reading
+of models and health), and the active session is opened again only when the
+environment is a new process: the open is what re-attaches the provider
+session.
 
 ## How the shell maps this to UI
 

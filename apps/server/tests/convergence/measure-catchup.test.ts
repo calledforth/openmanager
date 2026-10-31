@@ -13,7 +13,6 @@ import { DatabaseSync } from 'node:sqlite'
 import { it } from 'vitest'
 import { WebSocket } from 'ws'
 import {
-  applySessionHistory,
   applySnapshot,
   cacheState,
   createEnvironmentStore,
@@ -25,14 +24,12 @@ import {
 } from '@openmanager/environment-client'
 import {
   FragmentAssembler,
-  ProofResponseSchemas,
-  ReplayResponseSchema,
   parseReplayResult,
   type ReplayCommand,
   type SubscriptionScope,
 } from '@openmanager/protocol/node'
-import { createReplayReader } from '../../src/db/replay.ts'
-import { listSessionHistory, listSessionSummaries } from '../../src/db/session-store.ts'
+import { answerPayloadJson, createReplayReader } from '../../src/db/replay.ts'
+import { listAllSessionSummaries } from '../../src/db/session-store.ts'
 import { readWorkspaces } from '../../src/db/workspace-rows.ts'
 import { LinkProxy } from './link-proxy.ts'
 import { ServerProcess } from './server-process.ts'
@@ -114,56 +111,17 @@ function inProcess(dataDir: string, environmentId: string) {
     name: 'subscription.replay',
     payload: { scope, cursor: null },
   })
-  /** The `subscription.replay` answer exactly as the socket builds and sends it. */
+  /** The `subscription.replay` answer exactly as the socket builds and sends it (F5b). */
   const answerOf = (scope: SubscriptionScope) => {
     const result = reader.read(scope, null)
     if (result.mode !== 'snapshot') throw new Error('expected a snapshot')
-    return JSON.stringify(
-      ReplayResponseSchema.parse({
-        type: 'response',
-        requestId: 'measure',
-        payload: {
-          mode: 'snapshot',
-          subscriptionId: 'measure',
-          reason: 'initial',
-          snapshot: result.snapshot,
-        },
-      }),
-    )
-  }
-  /** Every history page of a thread, newest first, as `session.history` answers them. */
-  const pagesOf = (row: (typeof threads)[number], limit?: number) => {
-    const pages: string[] = []
-    let cursor: { ordinal: number } | undefined
-    for (;;) {
-      const page = listSessionHistory(database, {
-        sessionId: row.session_id,
-        threadId: row.thread_id,
-        ...(cursor ? { cursor } : {}),
-        ...(limit ? { limit } : { limit: 100 }),
-      })!
-      pages.push(
-        JSON.stringify(
-          ProofResponseSchemas['session.history'].parse({
-            type: 'response',
-            requestId: 'measure',
-            payload: page,
-          }),
-        ),
-      )
-      if (!page.nextCursor) return pages
-      cursor = page.nextCursor
-    }
+    return `{"type":"response","requestId":"measure","payload":${answerPayloadJson(result, 'measure')}}`
   }
 
-  // Sizes over every chat: the newest-100 snapshot main sends, and the whole chat.
+  // Since F5b the first snapshot is the whole chat.
   const sizes = threads.map((row) => {
     const first = Buffer.byteLength(answerOf(threadScope(row)))
-    const whole = pagesOf(row, 1_000_000).reduce(
-      (total, page) => total + Buffer.byteLength(page),
-      0,
-    )
-    return { threadId: row.thread_id, first, whole }
+    return { threadId: row.thread_id, first, whole: first }
   })
   const quantile = (values: number[], q: number) =>
     [...values].sort((a, b) => a - b)[Math.min(values.length - 1, Math.floor(q * values.length))]!
@@ -179,26 +137,6 @@ function inProcess(dataDir: string, environmentId: string) {
     if (payload.type !== 'response' || payload.payload.mode !== 'snapshot') throw new Error('shape')
     const snapshot = payload.payload.snapshot
     const apply = bench(() => applySnapshot(createInitialState(), snapshot))
-    // Main's whole chat: the snapshot, then every older page loaded on scroll.
-    const pageBuild = bench(() => pagesOf(row))
-    const older = pageBuild.result.slice(1)
-    const olderBytes = older.reduce((total, page) => total + Buffer.byteLength(page), 0)
-    const olderClient = bench(() => {
-      let state: EnvironmentState = applySnapshot(createInitialState(), snapshot)
-      for (const page of older) {
-        const parsed = ProofResponseSchemas['session.history'].parse(JSON.parse(page))
-        state = applySessionHistory(
-          state,
-          { threadId: row.thread_id, sessionId: row.session_id },
-          parsed.payload,
-          true,
-        )
-      }
-      return state
-    })
-    // The whole chat as one answer (what F5 sends): one page with no limit.
-    const whole = pagesOf(row, 1_000_000)[0]!
-    const wholeParse = bench(() => ProofResponseSchemas['session.history'].parse(JSON.parse(whole)))
     return {
       threadId: row.thread_id,
       messages: (
@@ -215,16 +153,7 @@ function inProcess(dataDir: string, environmentId: string) {
         clientValidateMs: { first: validate.first, median: validate.median },
         clientApplyMs: { first: apply.first, median: apply.median },
       },
-      olderPages: {
-        count: older.length,
-        bytes: olderBytes,
-        serverBuildAllPagesMs: { first: pageBuild.first, median: pageBuild.median },
-        clientParseValidateApplyMs: { first: olderClient.first, median: olderClient.median },
-      },
-      wholeAsOneAnswer: {
-        bytes: Buffer.byteLength(whole),
-        clientParseValidateMs: { first: wholeParse.first, median: wholeParse.median },
-      },
+      olderPages: { count: 0, bytes: 0 },
     }
   })
 
@@ -239,9 +168,7 @@ function inProcess(dataDir: string, environmentId: string) {
     throw new Error('env')
   const envSnapshot = envPayload.payload.snapshot
   const envApply = bench(() => applySnapshot(createInitialState(), envSnapshot))
-  const everySession = bench(() =>
-    JSON.stringify(listSessionSummaries(database, { limit: 1_000_000 })),
-  )
+  const everySession = bench(() => JSON.stringify(listAllSessionSummaries(database)))
   const counts = {
     sessions: (database.prepare('SELECT COUNT(*) AS n FROM sessions').get() as { n: number }).n,
     threads: threads.length,
@@ -453,15 +380,6 @@ async function endToEnd(
       await client.commands.openSession(largest.session_id)
       mark('chatOpenNewestPage')
       const openMs = performance.now() - opened
-      for (;;) {
-        const cursor = client.getState().threads[largest.thread_id]?.historyCursor
-        if (!cursor) break
-        await client.commands.loadSessionHistory({
-          sessionId: largest.session_id,
-          threadId: largest.thread_id,
-          cursor,
-        })
-      }
       mark('chatWhole')
       const state = client.getState()
       const received = log.received

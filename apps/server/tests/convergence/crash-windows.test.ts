@@ -147,11 +147,9 @@ const WINDOWS: Window<unknown>[] = [
     landed: async (rig) => {
       const probe = await rig.connect('probe', { link: 'direct' })
       try {
-        const preference = await probe.client.commands.getComposerPreference({
-          workspaceId: rig.workspaceId,
-          providerId: 'opencode',
-        })
-        return preference.modeId === 'plan'
+        // The environment snapshot the probe caught up with carries it.
+        const preference = probe.client.getState().composerPreferences[rig.workspaceId]?.opencode
+        return preference?.modeId === 'plan'
       } finally {
         probe.dispose()
       }

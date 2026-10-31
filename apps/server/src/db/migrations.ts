@@ -839,6 +839,96 @@ export const MIGRATIONS: readonly Migration[] = [
       }
     },
   },
+  {
+    version: 23,
+    name: 'composer_listings',
+    up(database) {
+      // What a provider lists leaves the session row, which goes to every
+      // browser in the sidebar: a chat keeps its listing on its thread, and a
+      // workspace keeps the last one each provider gave it for a new chat to
+      // borrow. A workspace's listings go with it, and `workspace.removed`
+      // says so (docs/sync-foundations.md §6.4). `source_session_id` is the
+      // chat that wrote the row; it has no foreign key, because a deletion
+      // changes this row by no event. A writer that is gone holds nothing.
+      const threadColumns = database.prepare('PRAGMA table_info(threads)').all() as {
+        name: string
+      }[]
+      if (!threadColumns.some((column) => column.name === 'listing_json')) {
+        database.exec(`ALTER TABLE threads ADD COLUMN listing_json TEXT
+          CHECK (listing_json IS NULL OR json_valid(listing_json))`)
+      }
+      database.exec(`
+        CREATE TABLE IF NOT EXISTS composer_listings (
+          workspace_id TEXT NOT NULL REFERENCES workspaces(workspace_id) ON DELETE CASCADE,
+          provider_id TEXT NOT NULL,
+          config_options_json TEXT
+            CHECK (config_options_json IS NULL OR json_valid(config_options_json)),
+          commands_json TEXT CHECK (commands_json IS NULL OR json_valid(commands_json)),
+          source_session_id TEXT NOT NULL,
+          updated_at INTEGER NOT NULL,
+          PRIMARY KEY (workspace_id, provider_id)
+        ) STRICT;
+      `)
+      const sessions = database
+        .prepare(
+          `SELECT session_id, workspace_id, provider_id, composer_json, updated_at
+           FROM sessions WHERE composer_json IS NOT NULL ORDER BY updated_at, session_id`,
+        )
+        .all() as Array<{
+        session_id: string
+        workspace_id: string
+        provider_id: string
+        composer_json: string
+        updated_at: number
+      }>
+      const writeThread = database.prepare(
+        'UPDATE threads SET listing_json = ? WHERE session_id = ?',
+      )
+      const writeSession = database.prepare(
+        'UPDATE sessions SET composer_json = ? WHERE session_id = ?',
+      )
+      // Oldest session first, in the order live reports are ranked (activity
+      // time, a title does not move it, then id), so the newest report on a
+      // pair stands and is its source. As live: an empty command list is an
+      // answer, empty settings are not.
+      const writeWorkspace = database.prepare(`
+        INSERT INTO composer_listings (
+          workspace_id, provider_id, config_options_json, commands_json, source_session_id,
+          updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?)
+        ON CONFLICT(workspace_id, provider_id) DO UPDATE SET
+          config_options_json = COALESCE(excluded.config_options_json, config_options_json),
+          commands_json = COALESCE(excluded.commands_json, commands_json),
+          source_session_id = excluded.source_session_id,
+          updated_at = excluded.updated_at
+      `)
+      for (const session of sessions) {
+        const { configOptions, availableCommands, ...selection } = JSON.parse(
+          session.composer_json,
+        ) as { configOptions?: unknown[]; availableCommands?: unknown[] }
+        if (configOptions === undefined && availableCommands === undefined) continue
+        writeThread.run(
+          JSON.stringify({
+            ...(configOptions ? { configOptions } : {}),
+            ...(availableCommands ? { availableCommands } : {}),
+          }),
+          session.session_id,
+        )
+        writeSession.run(JSON.stringify(selection), session.session_id)
+        const options = configOptions?.length ? JSON.stringify(configOptions) : null
+        const commands = availableCommands ? JSON.stringify(availableCommands) : null
+        if (options === null && commands === null) continue
+        writeWorkspace.run(
+          session.workspace_id,
+          session.provider_id,
+          options,
+          commands,
+          session.session_id,
+          session.updated_at,
+        )
+      }
+    },
+  },
 ]
 
 type RetainedActivityRow = {

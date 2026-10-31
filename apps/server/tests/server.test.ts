@@ -9,7 +9,6 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import { DATABASE_FILENAME } from '../src/db/database.js'
 import {
   BootstrapResponseSchema,
-  COMPOSER_PREFERENCES_GET_CAPABILITY,
   COMPOSER_PREFERENCES_SET_CAPABILITY,
   PROTOCOL_VERSION,
 } from '@openmanager/protocol/node'
@@ -201,15 +200,9 @@ describe('headless listener', () => {
 
     const restarted = await startServer(config)
     servers.push(restarted)
-    expect(
-      restarted.composerService.dispatch({
-        type: 'command',
-        requestId: 'get-1',
-        name: COMPOSER_PREFERENCES_GET_CAPABILITY,
-        payload: { workspaceId: 'workspace-1', providerId: 'cursor' },
-      }),
-    ).toMatchObject({
-      payload: { preference: { modelId: 'opus', configValues: { effort: 'high' } } },
+    expect(restarted.composerStore.getPreference('workspace-1', 'cursor')).toEqual({
+      modelId: 'opus',
+      configValues: { effort: 'high' },
     })
   })
 

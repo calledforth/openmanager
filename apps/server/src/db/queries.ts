@@ -4,29 +4,6 @@
  * introduces a table scan or a temporary sort fails that test.
  */
 
-/**
- * Newest sessions across the whole environment, keyset-paginated by
- * `(updated_at, session_id)`. The row-value comparison lets SQLite bind both
- * cursor columns to one descending index range. The first page passes a cursor
- * above every real row, such as `(MAX_SAFE_INTEGER, '')`.
- */
-export const SESSION_LIST_FOR_ENVIRONMENT_SQL = `
-  SELECT session_id, workspace_id, parent_session_id, provider_id, title, title_source, title_generated, status,
-         composer_json, background_tasks_json, settled_at, done_at, created_at, updated_at
-  FROM sessions
-  WHERE (updated_at, session_id) < (?, ?)
-  ORDER BY updated_at DESC, session_id DESC
-  LIMIT ?`
-
-/** Newest sessions for one workspace, keyset-paginated by `(updated_at, session_id)`. */
-export const SESSION_LIST_FOR_WORKSPACE_SQL = `
-  SELECT session_id, workspace_id, parent_session_id, provider_id, title, title_source, title_generated, status,
-         composer_json, background_tasks_json, settled_at, done_at, created_at, updated_at
-  FROM sessions
-  WHERE workspace_id = ? AND (updated_at, session_id) < (?, ?)
-  ORDER BY updated_at DESC, session_id DESC
-  LIMIT ?`
-
 /** The requests a waiting session is waiting on: the pending interactions of its open turns. */
 export const PENDING_INTERACTIONS_FOR_SESSION_SQL = `
   SELECT interactions.kind, interactions.created_at
@@ -49,21 +26,14 @@ export const THREAD_IN_SESSION_SQL = `
   FROM threads
   WHERE thread_id = ? AND session_id = ?`
 
+export const THREAD_LISTING_SQL = 'SELECT listing_json FROM threads WHERE thread_id = ?'
+
 /** Threads of a session in creation order; the first step of session history. */
 export const THREADS_FOR_SESSION_SQL = `
   SELECT thread_id, session_id, workspace_id, provider_thread_id, created_at, updated_at
   FROM threads
   WHERE session_id = ?
   ORDER BY created_at, thread_id`
-
-/** One page of a thread's history, walking backwards from a message ordinal. */
-export const MESSAGE_HISTORY_PAGE_SQL = `
-  SELECT message_id, workspace_id, thread_id, turn_id, external_id, role, ordinal,
-         metadata_json, is_final, created_at, updated_at
-  FROM messages
-  WHERE thread_id = ? AND ordinal < ?
-  ORDER BY ordinal DESC
-  LIMIT ?`
 
 /** Complete ordered content blocks for one message on a history page. */
 export const MESSAGE_PARTS_SQL = `
@@ -79,26 +49,6 @@ export const TURNS_FOR_THREAD_SQL = `
   FROM turns
   WHERE thread_id = ?
   ORDER BY started_at, turn_id`
-
-/**
- * The reasoning blocks and tool calls between two message ordinals of a
- * thread, both exclusive, in the order they happened. `ordinal` shares the
- * thread-wide counter with `messages.ordinal`, so a history page's window
- * partitions activity across pages exactly and callers interleave it with
- * the page's messages by sorting on it.
- */
-export const TURN_ACTIVITY_PAGE_SQL = `
-  SELECT activity_id, turn_id, kind, ordinal, state_json
-  FROM turn_activity
-  WHERE thread_id = ? AND ordinal > ? AND ordinal < ?
-  ORDER BY ordinal`
-
-/** Pending interactions of one turn; settled rows stay out of history. Sorted by callers. */
-export const INTERACTIONS_FOR_TURN_SQL = `
-  SELECT interaction_id, turn_id, kind, state, request_json, response_json, expires_at,
-         created_at, resolved_at, resolved_by_client_id
-  FROM interactions
-  WHERE turn_id = ? AND state = 'pending'`
 
 /** Retry dedupe: the turn a command id already started in a thread, if any. */
 export const TURN_FOR_COMMAND_ID_SQL = `
@@ -129,6 +79,63 @@ export const EVENTS_AFTER_CURSOR_SQL = `
   WHERE scope_key = ? AND sequence > ?
   ORDER BY sequence
   LIMIT ?`
+
+/**
+ * The exact size of a replay's records, before building it: the stored event
+ * JSON's UTF-8 bytes (`octet_length`, not `LENGTH`, which counts characters)
+ * and how many rows (docs/sync-foundations.md §6.1).
+ */
+export const REPLAY_SIZE_SQL = `
+  SELECT COALESCE(SUM(octet_length(event_json)), 0) AS bytes, COUNT(*) AS count
+  FROM event_log
+  WHERE scope_key = ? AND sequence > ?`
+
+/**
+ * A lower bound on a thread snapshot's size: it embeds every message part and
+ * activity row of the thread byte for byte.
+ */
+export const THREAD_STATE_BYTES_SQL = `
+  SELECT
+    (SELECT COALESCE(SUM(octet_length(p.content_json)), 0)
+     FROM message_parts p JOIN messages m ON m.message_id = p.message_id
+     WHERE m.thread_id = ?)
+  + (SELECT COALESCE(SUM(octet_length(state_json)), 0) FROM turn_activity WHERE thread_id = ?)
+    AS bytes`
+
+/** Every message of a thread in order, for the whole-thread snapshot. */
+export const MESSAGES_FOR_THREAD_SQL = `
+  SELECT message_id, thread_id, turn_id, role, ordinal
+  FROM messages
+  WHERE thread_id = ?
+  ORDER BY ordinal`
+
+/** Every message part of a thread, in message then part order. */
+export const MESSAGE_PARTS_FOR_THREAD_SQL = `
+  SELECT p.message_id, p.content_json
+  FROM message_parts p JOIN messages m ON m.message_id = p.message_id
+  WHERE m.thread_id = ?
+  ORDER BY m.ordinal, p.ordinal`
+
+/** Every reasoning block and tool call of a thread, in the order they happened. */
+export const TURN_ACTIVITY_FOR_THREAD_SQL = `
+  SELECT activity_id, turn_id, kind, ordinal, state_json
+  FROM turn_activity
+  WHERE thread_id = ?
+  ORDER BY ordinal`
+
+/** Pending interactions of a thread, in turn order. */
+export const PENDING_INTERACTIONS_FOR_THREAD_SQL = `
+  SELECT i.turn_id, i.request_json, i.state, i.created_at, i.resolved_at, i.resolved_by_client_id
+  FROM interactions i JOIN turns t ON t.turn_id = i.turn_id
+  WHERE t.thread_id = ? AND i.state = 'pending'
+  ORDER BY t.started_at, t.turn_id, i.created_at, i.interaction_id`
+
+/** Every session, newest first: the environment snapshot's sidebar. */
+export const ALL_SESSIONS_SQL = `
+  SELECT session_id, workspace_id, parent_session_id, provider_id, title, title_source, title_generated, status,
+         composer_json, background_tasks_json, settled_at, done_at, created_at, updated_at
+  FROM sessions
+  ORDER BY updated_at DESC, session_id DESC`
 
 /**
  * Retention: how many rows per scope have expired and the newest of them, from

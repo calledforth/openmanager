@@ -13,12 +13,8 @@
  *     (todo).
  */
 import { describe, expect } from 'vitest'
-import {
-  environmentSnapshotNeverRemoves,
-  reasoningBudgetMarker,
-  snapshotMergeDropsOlderActivity,
-} from './causes.ts'
-import { demonstrateDiff, expectConverges, recordEvidence } from './evidence.ts'
+import { selectDraftListing } from '@openmanager/environment-client'
+import { expectConverges, recordEvidence } from './evidence.ts'
 import { Driver, sleep, until, type Rig, type TestClient } from './harness.ts'
 import type { FrameFields, FrameRecord } from './link-proxy.ts'
 import { serverSessionsView, serverThreadView, type ThreadView } from './normalize.ts'
@@ -113,37 +109,9 @@ async function buildLongThread(
   return early
 }
 
-/** Walk every older history page, as scrolling to the top of the chat does. */
-async function walkHistory(client: TestClient, target: Target) {
-  for (;;) {
-    const cursor = thread(client, target)?.historyCursor
-    if (!cursor) return
-    await client.client.commands.loadSessionHistory({ ...target, cursor })
-  }
-}
-
 /** The server's own read of a thread, normalized. */
 async function serverThread(rig: Rig, target: Target): Promise<ThreadView> {
   return serverThreadView(await rig.server.readThread(target.sessionId, target.threadId))
-}
-
-/**
- * The server's read of the activity of `turnIds`: what the snapshot merge
- * drops, as the fresh load must show it.
- */
-function olderActivity(server: ThreadView, threadId: string, turnIds: readonly string[]) {
-  const inTurns = (value: unknown) => turnIds.includes((value as { turnId: string }).turnId)
-  const pick = (record: Record<string, unknown>) =>
-    Object.fromEntries(Object.entries(record).filter(([, value]) => inTurns(value)))
-  const reasoning = pick(server.reasoning)
-  const tools = pick(server.tools)
-  const refs = (server.order as Array<{ kind: string; id: string; turnId: string }>).filter(
-    (ref) => (ref.kind === 'reasoning' || ref.kind === 'tool') && turnIds.includes(ref.turnId),
-  ) as Array<{ kind: 'reasoning' | 'tool'; id: string; turnId: string }>
-  if (Object.keys(reasoning).length === 0 || Object.keys(tools).length === 0) {
-    throw new Error('The fixture has no older activity to lose.')
-  }
-  return { threadId, reasoning, tools, refs }
 }
 
 const downFrames = (frames: readonly FrameRecord[]) =>
@@ -400,24 +368,34 @@ describe('§8.4 scenarios on main', () => {
     })
   })
 
+  /**
+   * Guard since F5b (§6): a thread longer than the old 100-message page, with
+   * thoughts and tools in its earliest turns, and a gap far past the old
+   * 500-event / 256 KiB replay cap. The catch-up is a replay of the gap or
+   * the whole thread, whichever is smaller, and either way the client ends
+   * up with the whole thread. On main the cap turned the gap into a snapshot
+   * of the newest 100 messages, and the merge dropped the older turns'
+   * thoughts and tools for good (W2).
+   */
   scenario(
-    'S4 a long thread, a gap past the replay cap, then a reconnect (W2)',
+    'S4 a long thread, a gap past the old replay cap, then a reconnect (guard)',
     { timeoutMs: 180_000 },
     async (rig) => {
       const a = await rig.connect('A')
       const target = await createSession(rig, a, QUIET)
       const early = await buildLongThread(rig, a, target, { turns: 52, activityTurns: 2 })
-      await walkHistory(a, target)
+      // The whole thread arrived with the open: no page to walk.
       expect(thread(a, target)?.messages.length).toBe(104)
-      // A valid baseline: before the gap A agrees with the server (since F3
-      // the server closes the thoughts, so S2's cause no longer shows here).
-      const server = await serverThread(rig, target)
-      const older = olderActivity(server, target.threadId, early)
+      const held = thread(a, target)!
+      for (const turnId of early) {
+        expect(held.reasoning.some((item) => item.turnId === turnId)).toBe(true)
+        expect(held.tools.some((item) => item.turnId === turnId)).toBe(true)
+      }
       await expectConverges('S4 baseline', rig, a)
       rig.proxy.down()
       rig.proxy.cut()
       await until(() => a.client.getState().connection.phase !== 'connected', 'A to notice the cut')
-      // 300 KB in one turn: past the 256 KiB replay budget, only two messages more.
+      // 300 KB in one turn: past the old 256 KiB replay budget.
       const driver = await rig.connect('driver', { link: 'direct' })
       const turnId = await startTurn(driver, target, 'One long answer, please')
       await emitLargeText(rig, target, 300_000, 'text')
@@ -431,13 +409,18 @@ describe('§8.4 scenarios on main', () => {
         target,
         (state) => state.turns.some((turn) => turn.turnId === turnId && turn.state === 'completed'),
         'A to catch up after the gap',
-        20_000,
+        30_000,
       )
       const answer = downFrames(rig.proxy.frames.slice(mark)).find(
-        (frame) => info(frame).reason === 'gap_expired' && info(frame).threadId === target.threadId,
+        (frame) => info(frame).type === 'response' && info(frame).threadId === target.threadId,
       )
-      expect(answer, 'the catch-up was a gap_expired snapshot').toBeDefined()
-      await demonstrateDiff('S4', rig, a, snapshotMergeDropsOlderActivity(older))
+      recordEvidence({
+        scenario: 'S4',
+        bucket: 'regression-guard',
+        cause: 'whole catch-up',
+        observed: { mode: info(answer).mode, reason: info(answer).reason ?? null },
+      })
+      await expectConverges('S4', rig, a)
     },
   )
 
@@ -509,20 +492,16 @@ describe('§8.4 scenarios on main', () => {
     },
   )
 
-  scenario('S6(b) thoughts over 384 KiB (§7.1)', {}, async (rig) => {
+  /**
+   * Guard since F5b (§7.1): thoughts over the old 384 KiB budget. A fresh
+   * load gets the whole text; on main it got a "not loaded" note while the
+   * live client held the full thought.
+   */
+  scenario('S6(b) thoughts over 384 KiB (guard)', {}, async (rig) => {
     const a = await rig.connect('A')
-    // Quiet creation isolates the reasoning budget. Before connect() waited
-    // for the client's own resync, this fixture once (1 run in 75, under
-    // load) also showed a recency-only entry: no live turn.started had
-    // reached A, though the session.updated committed with it had. A's open
-    // had been overtaken by its resync's open of the same session, so it
-    // resolved before the chat was subscribed and the turn arrived in the
-    // thread snapshot, which carries no recency. Not a lost event: S19
-    // demonstrates it deterministically.
     const target = await createSession(rig, a, QUIET)
     await startTurn(a, target)
-    // The turn stays open: any end of it would also close the thought in A's
-    // fold (S2), and this scenario shows the budget alone.
+    // The turn stays open, as on main's demonstration.
     const text = await emitLargeText(rig, target, 400 * KiB, 'thought')
     await untilThread(
       a,
@@ -534,17 +513,10 @@ describe('§8.4 scenarios on main', () => {
       'A to hold the whole thought',
     )
     await rig.waitQuiet()
-    const [messageId] = Object.keys((await serverThread(rig, target)).reasoning)
-    await demonstrateDiff(
-      'S6(b)',
-      rig,
-      a,
-      reasoningBudgetMarker({
-        threadId: target.threadId,
-        messageId: messageId!,
-        text,
-      }),
-    )
+    const server = await serverThread(rig, target)
+    const [messageId] = Object.keys(server.reasoning)
+    expect(JSON.stringify(server.reasoning[messageId!])).not.toContain('not loaded')
+    await expectConverges('S6(b)', rig, a)
   })
 
   scenario(
@@ -727,67 +699,60 @@ describe('§8.4 scenarios on main', () => {
     return { driver, b, parent, child: child.sessionId, others, targets, total, rows }
   }
 
+  /**
+   * Guard since F5b (§6.2): B is away while a parent and its child are
+   * deleted and 501 renames push the environment far past the old replay
+   * cap, and turns keep moving sessions while it reconnects. B catches the
+   * environment up by a replay or the whole environment, whichever is
+   * smaller, and drops both sessions either way. On main the environment
+   * snapshot only upserted the newest 100 sessions and the catalog walk
+   * never settled, so B kept the deleted sessions.
+   */
   scenario(
-    'S9 a deleted parent and child, a gap past the replay cap, a moving catalog',
+    'S9 a deleted parent and child, a gap past the old replay cap, a moving catalog (guard)',
     { timeoutMs: 180_000 },
     async (rig) => {
-      const { driver, b, parent, child, targets, total, rows } = await s9Setup(rig, 'fake-child-s9')
+      const { driver, b, parent, child, targets, total } = await s9Setup(rig, 'fake-child-s9')
       // Each turn ends by itself, so a session is free again long before its next one.
       await rig.provider({ op: 'setAutoScript', steps: [{ op: 'complete' }] })
       let turns = 0
-      const movePage = async () => {
-        // A whole page of sessions moves above wherever B's read began: a
-        // turn is activity, and its start moves the session (§4.7.1).
+      // A whole page of sessions moves while B reconnects: a turn is activity.
+      const moving = (async () => {
         for (let index = 0; index < 101; index++) {
           const target = targets[turns++ % targets.length]!
           await (
             await driver.client()
           ).client.commands.sendTurn({ ...target, text: `Move ${turns}` })
         }
-      }
-      let listReads = 0
-      // Every catalog read B makes waits until a page of sessions has moved.
-      rig.proxy.gate((text) => {
-        const message = JSON.parse(text) as { type?: string; name?: string }
-        if (message.type !== 'command' || message.name !== 'session.list') return undefined
-        listReads += 1
-        return movePage()
-      })
+      })()
       // Recording is always on; what follows is judged from here.
       const mark = rig.proxy.frames.length
       rig.proxy.up()
-      // Two pages for the first walk, then three passes of two pages each;
-      // or reconciliation settled and the parent is gone (then the property holds).
+      await moving
       await until(
-        () => listReads >= 8 || !b.client.getState().sessions[parent.sessionId],
-        'B to make every catalog read',
+        () =>
+          !b.client.getState().sessions[parent.sessionId] && !b.client.getState().sessions[child],
+        'B to drop the deleted parent and child',
         60_000,
         50,
       )
       await rig.waitQuiet()
-      const environmentReplay = downFrames(rig.proxy.frames.slice(mark)).find(
-        (frame) => info(frame).mode === 'snapshot' && info(frame).scopeType === 'environment',
+      const environmentAnswer = downFrames(rig.proxy.frames.slice(mark)).find(
+        (frame) => info(frame).type === 'response' && info(frame).scopeType === 'environment',
       )
-      expect(
-        info(environmentReplay).reason,
-        'B caught up with a gap_expired environment snapshot',
-      ).toBe('gap_expired')
-      // The turns that move the catalog announce their recency (§4.7.1), so
-      // the deleted sessions are all that is left: no X1 allowance.
-      await demonstrateDiff('S9', rig, b, environmentSnapshotNeverRemoves({ rows }))
       recordEvidence({
         scenario: 'S9',
-        bucket: 'known-divergence',
-        cause: 'construction',
+        bucket: 'regression-guard',
+        cause: 'whole environment',
         observed: {
           sessions: total,
-          catalogReads: listReads,
           renames: 501,
           movingTurns: turns,
-          parent: parent.sessionId,
-          child,
+          mode: info(environmentAnswer).mode,
+          reason: info(environmentAnswer).reason ?? null,
         },
       })
+      await expectConverges('S9', rig, b)
       driver.dispose()
     },
   )
@@ -828,6 +793,11 @@ describe('§8.4 scenarios on main', () => {
       'the child session',
     )
     const other = await createSession(rig, a, { title: 'Other', open: false, quiet: true })
+    // Enough other sessions that the whole environment is larger than the
+    // two deletions, so the catch-up is a replay of them (§6.1).
+    for (let index = 0; index < 12; index++) {
+      await createSession(rig, a, { title: `Filler ${index}`, open: false, quiet: true })
+    }
     const b = await rig.connect('B')
     await until(
       () => b.client.getState().sessions[child.sessionId],
@@ -875,31 +845,31 @@ describe('§8.4 scenarios on main', () => {
     expect(b.client.getState().sessions[child.sessionId]).toBeUndefined()
   })
 
-  scenario(
-    'S10 a long thread, all pages walked, then a reload (W2)',
-    { timeoutMs: 180_000 },
-    async (rig) => {
-      const a = await rig.connect('A')
-      const target = await createSession(rig, a, QUIET)
-      const early = await buildLongThread(rig, a, target, { turns: 52, activityTurns: 2 })
-      await walkHistory(a, target)
-      expect(thread(a, target)?.messages.length).toBe(104)
-      const older = olderActivity(await serverThread(rig, target), target.threadId, early)
-      await expectConverges('S10 baseline', rig, a)
-      // Recording is always on; what follows is judged from here.
-      const mark = rig.proxy.frames.length
-      const reloaded = await rig.reload(a)
-      // The cache already says "ready"; wait for the reload's own initial snapshot.
-      await until(
-        () =>
-          downFrames(rig.proxy.frames.slice(mark)).some(
-            (frame) => info(frame).reason === 'initial' && info(frame).threadId === target.threadId,
-          ),
-        'the reload to receive its initial thread snapshot',
-      )
-      await demonstrateDiff('S10', rig, reloaded, snapshotMergeDropsOlderActivity(older))
-    },
-  )
+  /**
+   * Guard since F5b (§6.2): a reload with the cache seeded asks for the
+   * thread with no cursor and gets all of it, which replaces the cached copy.
+   * On main the newest-100 snapshot was merged over the cache and the older
+   * turns' thoughts and tools were dropped.
+   */
+  scenario('S10 a long thread, then a reload (guard)', { timeoutMs: 180_000 }, async (rig) => {
+    const a = await rig.connect('A')
+    const target = await createSession(rig, a, QUIET)
+    await buildLongThread(rig, a, target, { turns: 52, activityTurns: 2 })
+    expect(thread(a, target)?.messages.length).toBe(104)
+    await expectConverges('S10 baseline', rig, a)
+    // Recording is always on; what follows is judged from here.
+    const mark = rig.proxy.frames.length
+    const reloaded = await rig.reload(a)
+    // The cache already says "ready"; wait for the reload's own initial snapshot.
+    await until(
+      () =>
+        downFrames(rig.proxy.frames.slice(mark)).some(
+          (frame) => info(frame).reason === 'initial' && info(frame).threadId === target.threadId,
+        ),
+      'the reload to receive its initial thread snapshot',
+    )
+    await expectConverges('S10', rig, reloaded)
+  })
 
   scenario(
     'S11 a 30 s blackhole while idle (guard)',
@@ -937,10 +907,13 @@ describe('§8.4 scenarios on main', () => {
     },
   )
 
-  scenario('S12 a short cut while streaming, under the replay cap (guard)', {}, async (rig) => {
+  scenario('S12 a short cut while streaming, replayed (guard)', {}, async (rig) => {
     const a = await rig.connect('A')
     const target = await createSession(rig, a, QUIET)
     const turnId = await startTurn(a, target)
+    // Text before the cut, so the whole thread is larger than the short gap
+    // and the catch-up is the replay this guard checks (§6.1).
+    await emitLargeText(rig, target, 64 * KiB, 'text')
     for (let index = 0; index < 5; index++) {
       await rig.provider({ op: 'emitText', sessionId: target.sessionId, text: `Part ${index}. ` })
     }
@@ -1328,7 +1301,7 @@ describe('divergences on main that §8.4 does not list', () => {
       rig.proxy.gate((text) => {
         const message = JSON.parse(text) as { type?: string; name?: string }
         if (message.type !== 'command') return undefined
-        if (message.name === 'session.list' && !holds.has('reads')) return hold('reads')
+        if (message.name === 'provider.catalog.get' && !holds.has('reads')) return hold('reads')
         if (message.name === 'session.open') {
           opens += 1
           if (opens === 1) {
@@ -1470,13 +1443,161 @@ describe('divergences on main that §8.4 does not list', () => {
    * `session.updated` whose status does not change (event-repository.ts,
    * `activityChanged`). A sidebar-only client must follow every step.
    */
+  /**
+   * What a provider lists goes to the browser with the chat open and nowhere
+   * else as a chat's: the sidebar's stream names only what a new chat borrows,
+   * and a second browser in the sidebar, or a fresh load, ends up the same.
+   * A settings change names the settings alone, so a browser that missed one
+   * replays it onto the commands it holds and still matches a fresh load.
+   */
+  scenario('G3 a listing reaches the open chat, not the sidebar (guard)', {}, async (rig) => {
+    const a = await rig.connect('A')
+    const b = await rig.connect('B')
+    const target = await createSession(rig, a, QUIET)
+    await until(() => b.client.getState().sessions[target.sessionId], 'B to list the session')
+    await startTurn(a, target)
+    await rig.provider({ op: 'emitCommands', sessionId: target.sessionId, names: ['review'] })
+    await untilThread(
+      a,
+      target,
+      (state) => state.listing.availableCommands?.[0]?.name === 'review',
+      'A to hold the listing with the chat',
+    )
+    const { workspaceId, providerId } = b.client.getState().sessions[target.sessionId]!
+    await until(
+      () =>
+        selectDraftListing(b.client.getState(), 'availableCommands', workspaceId, providerId!)
+          ?.length || undefined,
+      'B to hold what a new chat here would offer',
+    )
+    // B has no chat open, so the list reached it only as the workspace's.
+    expect(b.client.getState().threads[target.threadId]?.listing ?? {}).toEqual({})
+    expect(b.client.getState().sessions[target.sessionId]?.composer ?? {}).not.toHaveProperty(
+      'availableCommands',
+    )
+    // Past a replay: a settings change is the only thing A missed. A long
+    // list of commands makes the chat larger than the replay.
+    const many = Array.from({ length: 200 }, (_, index) => `command-${index}`)
+    await rig.provider({ op: 'emitCommands', sessionId: target.sessionId, names: many })
+    await untilThread(a, target, (state) => state.listing.availableCommands?.length === 200, 'A')
+    await rig.waitQuiet()
+    rig.proxy.down()
+    rig.proxy.cut()
+    await until(() => a.client.getState().connection.phase !== 'connected', 'A to notice the cut')
+    await rig.provider({
+      op: 'emitSetting',
+      sessionId: target.sessionId,
+      settingId: 'effort',
+      currentValue: 'high',
+    })
+    await rig.waitQuiet()
+    const mark = rig.proxy.frames.length
+    rig.proxy.up()
+    await untilThread(
+      a,
+      target,
+      (state) => state.listing.configOptions?.[0]?.id === 'effort',
+      'A to replay the settings',
+      20_000,
+    )
+    const replay = threadReplays(rig.proxy.frames.slice(mark), target.threadId)[0]
+    const requestId = field(replay?.json, 'requestId')
+    const answer = downFrames(rig.proxy.frames.slice(mark)).find(
+      (frame) => info(frame).requestId === requestId,
+    )
+    expect(info(answer).mode, 'a replay of the one change').toBe('replay')
+    const records = field(answer?.json, 'payload', 'events') as Array<{
+      event: { name: string; payload: Record<string, unknown> }
+    }>
+    const listing = records.filter((record) => record.event.name === 'thread.listing.updated')
+    expect(Object.keys(listing[0]?.event.payload ?? {})).toEqual(['configOptions'])
+    expect(a.client.getState().threads[target.threadId]?.listing.availableCommands).toHaveLength(
+      200,
+    )
+    await expectConverges('G3 after a replayed settings change', rig, a)
+    // None now: the next chat here offers none, and A's chat shows none.
+    await rig.provider({ op: 'emitCommands', sessionId: target.sessionId, names: [] })
+    await untilThread(
+      a,
+      target,
+      (state) => state.listing.availableCommands?.length === 0,
+      'A to hold the empty listing',
+    )
+    await expectConverges('G3 chat', rig, a)
+    await expectConverges('G3 sidebar', rig, b)
+  })
+
+  /**
+   * Two chats on one workspace and provider, one with a command the other
+   * lacks. The more recently active one holds what a new chat borrows, and
+   * the sidebar's stream hears of it once, however often both report.
+   */
+  scenario('G4 two chats do not trade the workspace listing (guard)', {}, async (rig) => {
+    const a = await rig.connect('A')
+    const quieter = await createSession(rig, a, QUIET)
+    await startTurn(a, quieter)
+    const active = await createSession(rig, a, QUIET)
+    await startTurn(a, active)
+    const { workspaceId, providerId } = a.client.getState().sessions[active.sessionId]!
+    const offered = () =>
+      selectDraftListing(a.client.getState(), 'availableCommands', workspaceId, providerId!)?.map(
+        (command) => command.name,
+      )
+    const announced = () =>
+      rig.proxy.frames.filter(
+        (frame) =>
+          frame.direction === 'down' &&
+          field(frame.json, 'payload', 'record', 'event', 'name') === 'composer.listing.updated',
+      ).length
+
+    await rig.waitQuiet()
+    const before = announced()
+    await rig.provider({
+      op: 'emitCommands',
+      sessionId: active.sessionId,
+      names: ['review', 'extra-mcp'],
+    })
+    await until(() => offered()?.length === 2 || undefined, 'the active chat to hold the list')
+    for (let round = 0; round < 3; round++) {
+      await rig.provider({ op: 'emitCommands', sessionId: quieter.sessionId, names: ['review'] })
+      await rig.provider({
+        op: 'emitCommands',
+        sessionId: active.sessionId,
+        names: ['review', 'extra-mcp'],
+      })
+      await rig.waitQuiet()
+    }
+    expect(offered()).toEqual(['review', 'extra-mcp'])
+    expect(announced() - before, 'one announcement, however often both report').toBe(1)
+    await expectConverges('G4 sidebar', rig, a)
+
+    // Activity moves the listing, once.
+    await rig.provider({ op: 'completeTurn', sessionId: quieter.sessionId })
+    await until(
+      () => a.client.getState().sessions[quieter.sessionId]?.status === 'idle' || undefined,
+      'the quieter chat to finish',
+    )
+    await startTurn(a, quieter)
+    await rig.provider({ op: 'emitCommands', sessionId: quieter.sessionId, names: ['newer'] })
+    await until(() => offered()?.[0] === 'newer' || undefined, 'the list to follow the activity')
+    await rig.provider({
+      op: 'emitCommands',
+      sessionId: active.sessionId,
+      names: ['review', 'extra-mcp'],
+    })
+    await rig.waitQuiet()
+    expect(offered()).toEqual(['newer'])
+    expect(announced() - before, 'and once more').toBe(2)
+    await expectConverges('G4 after activity', rig, a)
+  })
+
   scenario('G1 waitingOn follows a question over a permission (#219, guard)', {}, async (rig) => {
     const a = await rig.connect('A')
     const b = await rig.connect('B')
     // Cursor is the provider whose agent asks questions (cursor/ask_question).
     const target = await createSession(rig, a, { providerId: 'cursor', quiet: true })
-    // B lists the session once, so it knows its provider (not X2's subject here).
-    await b.client.commands.listSessions()
+    // B holds the session, so it knows its provider (not X2's subject here).
+    await until(() => b.client.getState().sessions[target.sessionId], 'B to list the session')
     await startTurn(a, target)
     const waitingOn = () => b.client.getState().sessions[target.sessionId]?.waitingOn
     const steps: Array<{ step: string; waitingOn: unknown }> = []
@@ -1538,7 +1659,7 @@ describe('divergences on main that §8.4 does not list', () => {
       const a = await rig.connect('A')
       const b = await rig.connect('B')
       const target = await createSession(rig, a, { providerId: 'claude', quiet: true })
-      await b.client.commands.listSessions()
+      await until(() => b.client.getState().sessions[target.sessionId], 'B to list the session')
       const row = () => b.client.getState().sessions[target.sessionId]
       const steps: Array<{ step: string; status: unknown; inBackground: unknown }> = []
       const settle = async (step: string, status: string, inBackground: true | undefined) => {
@@ -1578,10 +1699,10 @@ describe('divergences on main that §8.4 does not list', () => {
   )
 
   /**
-   * Persisted drafts and composer preferences (normalize compares both, and
-   * the composer read the app makes): B follows them live, across a short gap
-   * that replays, and across one past the replay cap, after which the client
-   * forgets its preferences (websocket.ts:875-881) and lists drafts again.
+   * Persisted drafts and composer preferences (normalize compares both): B
+   * follows them live, across a short gap that replays, and across a long one
+   * whose catch-up is the whole environment, preferences included, after
+   * which drafts are listed again.
    */
   scenario(
     'G2 drafts and composer preferences across both kinds of gap (guard)',
@@ -1590,6 +1711,11 @@ describe('divergences on main that §8.4 does not list', () => {
       const a = await rig.connect('A', { link: 'direct' })
       const b = await rig.connect('B')
       const target = await createSession(rig, a, { title: 'With a draft', quiet: true })
+      // Enough sessions that the whole environment is larger than the short
+      // gap below, so that gap is replayed (§6.1).
+      for (let index = 0; index < 12; index++) {
+        await createSession(rig, a, { title: `Filler ${index}`, open: false, quiet: true })
+      }
       await b.client.commands.openSession(target.sessionId)
       // A turn, so the session's last change is one every client mirrors.
       const turnId = await startTurn(a, target)
@@ -1640,7 +1766,8 @@ describe('divergences on main that §8.4 does not list', () => {
       )
       expect(info(replayed).mode, 'the first gap was caught up by replay').toBe('replay')
 
-      // A gap past the replay cap: a snapshot, then preferences forgotten and drafts listed again.
+      // A long gap: the whole environment is smaller than its replay. It
+      // carries the preferences; drafts are listed again.
       rig.proxy.down()
       rig.proxy.cut()
       await until(() => b.client.getState().connection.phase !== 'connected', 'B to notice the cut')
@@ -1662,7 +1789,7 @@ describe('divergences on main that §8.4 does not list', () => {
         (frame) => info(frame).mode === 'snapshot' && info(frame).scopeType === 'environment',
       )
       expect(info(environment).reason, 'the second gap was caught up by snapshot').toBe(
-        'gap_expired',
+        'snapshot_smaller',
       )
       expect(held()).toEqual({ draft: 'third words', newDraft: undefined, mode: 'plan' })
       driver.dispose()

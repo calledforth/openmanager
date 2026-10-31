@@ -31,8 +31,8 @@ import {
   type SubscriptionScope,
 } from '@openmanager/protocol/node'
 import {
-  listSessionHistory,
-  listSessionSummaries,
+  listAllSessionSummaries,
+  readThreadState,
   listThreadsForSession,
 } from '../../src/db/session-store.ts'
 import {
@@ -781,30 +781,16 @@ async function promptOf(sessionId: string, timeoutMs = 10_000): Promise<ActivePr
 }
 
 function readThread(sessionId: string, threadId: string): ServerThreadRead {
-  const pages = []
-  let cursor: { ordinal: number } | undefined
-  for (;;) {
-    const page = listSessionHistory(database(), {
-      sessionId,
-      threadId,
-      ...(cursor ? { cursor } : {}),
-    })
-    if (!page) throw new Error(`Thread ${threadId} is not in session ${sessionId}.`)
-    pages.push(page)
-    if (!page.nextCursor) break
-    cursor = page.nextCursor
-  }
-  const oldestFirst = [...pages].reverse()
+  const thread = readThreadState(database(), { sessionId, threadId })
+  if (!thread) throw new Error(`Thread ${threadId} is not in session ${sessionId}.`)
   return {
-    turns: pages[0]!.turns,
-    messages: oldestFirst.flatMap((page) => page.messages),
-    reasoning: oldestFirst.flatMap((page) => page.reasoning),
-    tools: oldestFirst.flatMap((page) => page.tools),
-    order: oldestFirst.flatMap((page) => page.order),
-    interactions: pages[0]!.interactions.map(({ turnId, interaction }) => ({
-      turnId,
-      interaction,
-    })),
+    turns: thread.turns,
+    messages: thread.messages,
+    reasoning: thread.reasoning,
+    tools: thread.tools,
+    order: thread.order,
+    interactions: thread.interactions,
+    listing: thread.listing,
   }
 }
 
@@ -817,6 +803,24 @@ async function handle(request: ChildRequest): Promise<unknown> {
       return update(await promptOf(request.sessionId), {
         sessionUpdate: 'agent_message_chunk',
         content: text(request.text),
+      })
+    case 'emitCommands':
+      return update(await promptOf(request.sessionId), {
+        sessionUpdate: 'available_commands_update',
+        availableCommands: request.names.map((name) => ({ name, description: `Run ${name}` })),
+      })
+    case 'emitSetting':
+      return update(await promptOf(request.sessionId), {
+        sessionUpdate: 'config_option_update',
+        configOptions: [
+          {
+            type: 'select',
+            id: request.settingId,
+            name: request.settingId,
+            currentValue: request.currentValue,
+            options: [{ value: request.currentValue, name: request.currentValue }],
+          },
+        ],
       })
     case 'emitThought':
       return update(await promptOf(request.sessionId), {
@@ -992,14 +996,7 @@ async function handle(request: ChildRequest): Promise<unknown> {
     case 'readSessions': {
       // The server's own summary, `waitingOn` and `inBackground` included
       // (sessionRowToSummary → readSessionActivity), never re-derived here.
-      const sessions = []
-      let cursor: { updatedAt: string; sessionId: string } | undefined
-      for (;;) {
-        const page = listSessionSummaries(database(), { limit: 100, ...(cursor ? { cursor } : {}) })
-        sessions.push(...page.sessions)
-        if (!page.nextCursor) return sessions
-        cursor = page.nextCursor
-      }
+      return listAllSessionSummaries(database())
     }
     case 'readAudit':
       return readAudit()

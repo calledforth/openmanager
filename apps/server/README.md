@@ -233,9 +233,9 @@ command's capability before any service sees it:
 - `protocol.handshake` and heartbeat messages need no capability beyond a
   valid credential.
 
-The mapping for today's commands: `read` covers subscriptions, `session.list`,
-`session.open`, `session.history`, provider catalog, discovery, health and
-probe, `composer.preferences.get` and `draft.list`;
+The mapping for today's commands: `read` covers subscriptions (and so every
+replay and snapshot), `session.open`, provider catalog, discovery, health and
+probe, and `draft.list`;
 `operate` covers `session.create`, `composer.preferences.set`,
 `upload.ticket.create`, `draft.save` and `draft.delete`; `agent`
 covers `turn.send`, `turn.interrupt`, `interaction.respond` and the composer
@@ -577,8 +577,9 @@ latest snapshot across reconnect gaps.
 
 `provider.catalog.get` returns the discovery rows enriched with the latest
 persisted model/mode profile learned from probes and live sessions.
-`composer.preferences.get` and `composer.preferences.set` read and patch the
-selection for one workspace/provider pair. `composer.model.set`,
+`composer.preferences.set` patches the selection for one workspace/provider
+pair; every pair's selection, with its revision, rides the environment
+snapshot. `composer.model.set`,
 `composer.mode.set`, and `composer.config_option.set` apply a selection to the
 addressed live session before persisting it. A model change also reconciles the
 remembered config values against the provider's refreshed option list, matching
@@ -595,10 +596,11 @@ workspace can run different models, and the session setters change only the
 addressed one. The workspace preference is "last used" and seeds the next
 draft. Every change is pushed to all clients as a durable environment event
 (`session.composer.updated`, `composer.preferences.updated`,
-`provider.catalog.updated`, advertised as `composer.events`), including a mode
-the agent switched by itself, and session summaries carry the current
-selection, so a reconnect restores it from replay or from the snapshot. See
-`docs/decisions/live-composer-state.md`.
+`composer.listing.updated`, `provider.catalog.updated`, advertised as
+`composer.events`), including a mode the agent switched by itself, and session
+summaries carry the current selection, so a reconnect restores it from replay
+or from the snapshot. What a provider lists for a chat travels in that chat's
+stream (`thread.listing.updated`). See `docs/decisions/live-composer-state.md`.
 
 Composer drafts are kept here too, so a draft survives a reload and reaches
 every paired device. `draft.list`, `draft.save` and `draft.delete` read and
@@ -610,9 +612,10 @@ draft back. `session.create` takes the sent draft's `draftId` and the
 the session, and restored if the session is rolled back. See
 `docs/decisions/composer-drafts.md`.
 
-`session.list` returns lightweight summaries with cursor pagination.
-`session.open` returns the summary and thread identities only;
-`session.history` pages one thread's transcript. `session.create`,
+The sidebar (every session summary, workspace, preference and provider profile)
+and each transcript come whole from `subscription.replay`: the events since the
+client's cursor, or a snapshot of the whole scope, whichever is smaller.
+`session.open` returns the summary and thread identities only. `session.create`,
 `session.open`, `turn.send`, `turn.interrupt`, and `interaction.respond` route directly
 to the mounted runtime. Session creation resolves its workspace ID through the
 registry to a canonical root and, until workspace/provider preferences land,
@@ -836,7 +839,7 @@ messages are tagged so a failure log can tell layers apart:
 | Tag             | Meaning                                                                 |
 | --------------- | ----------------------------------------------------------------------- |
 | `[protocol]`    | Envelope, request correlation, event names, or sequence continuity      |
-| `[persistence]` | `session.list` / `session.history` / replay snapshot disagree with live |
+| `[persistence]` | Environment or thread snapshot disagrees with live                      |
 | `[ui]`          | Reconstructed transcript (folded deltas) has gaps, duplicates, or wrong text |
 
 This harness does not mount the web UI. `[ui]` is the chat view a client would
