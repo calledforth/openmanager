@@ -8,18 +8,14 @@ import { useSessionState } from '../../providers/session-provider'
  */
 export const LAUNCH_PILL_MIN_VISIBLE_MS = 600
 
-/**
- * "Creating session…" just above the composer while a draft's first message
- * becomes a session. The message itself is already in the transcript; this
- * is the only place the launch shows, so nothing else on screen changes state.
- */
-export function SessionLaunchPillView({ visible }: { visible: boolean }) {
+/** A short status just above the composer, as a floating pill. */
+export function ComposerStatusPill({ visible, label }: { visible: boolean; label: string }) {
   const reduceMotion = useReducedMotion()
   return (
     <AnimatePresence initial={false}>
       {visible ? (
         <motion.div
-          key="launch"
+          key={label}
           role="status"
           initial={reduceMotion ? false : { opacity: 0, y: 4 }}
           animate={{ opacity: 1, y: 0 }}
@@ -33,13 +29,22 @@ export function SessionLaunchPillView({ visible }: { visible: boolean }) {
               aria-hidden="true"
             />
             <span className="truncate text-11-regular leading-none text-[var(--basis-text)]">
-              Creating session…
+              {label}
             </span>
           </div>
         </motion.div>
       ) : null}
     </AnimatePresence>
   )
+}
+
+/**
+ * "Creating session…" just above the composer while a draft's first message
+ * becomes a session. The message itself is already in the transcript; this
+ * is the only place the launch shows, so nothing else on screen changes state.
+ */
+export function SessionLaunchPillView({ visible }: { visible: boolean }) {
+  return <ComposerStatusPill visible={visible} label="Creating session…" />
 }
 
 /**

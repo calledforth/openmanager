@@ -47,6 +47,7 @@ import { placeRecord, placeTransient } from './placement'
 import {
   applyActiveSession,
   applyActiveThread,
+  applyCatchingUp,
   applyConnection,
   applyCursor,
   applyEnvironment,
@@ -63,9 +64,11 @@ import {
   applySnapshot,
   applyThreadHydration,
   applyTurnSendFailed,
+  applyTurnSendReleased,
   applyTurnSending,
   applyWorkspaceList,
   applyWorkspaceRemoved,
+  selectChatCatchingUp,
   selectCursor,
   selectSessionList,
 } from './state'
@@ -344,6 +347,10 @@ export function createWebSocketEnvironmentClient(
     },
   }
   if (options.store) {
+    // Catch-ups belonged to the transport this one replaces.
+    store.update((state) =>
+      Object.keys(state.catchingUp).length ? { ...state, catchingUp: {} } : state,
+    )
     // Held drafts stay on screen; the listing replaces them once connected.
     store.update(applyDraftsUnlisted)
   }
@@ -512,7 +519,7 @@ export function createWebSocketEnvironmentClient(
     for (const subscription of subscriptions.values()) {
       subscription.subscriptionId = null
       subscription.inflight = false
-      subscription.held = undefined
+      setHeld(subscription, undefined)
       subscription.recovery = undefined
       subscription.lagging = false
     }
@@ -633,7 +640,13 @@ export function createWebSocketEnvironmentClient(
       retriesExhausted: false,
     })
     for (const flush of queued.splice(0)) flush()
-    void resync()
+    const generation = connectionGeneration
+    resyncing = true
+    void resync().finally(() => {
+      if (generation !== connectionGeneration) return
+      resyncing = false
+      scheduleHeldSends()
+    })
   }
 
   const handleMessage = (data: unknown) => {
@@ -669,6 +682,19 @@ export function createWebSocketEnvironmentClient(
       entry.reject(EnvironmentClientError.fromProtocol(message.error))
     } else {
       entry.resolve(raw)
+    }
+  }
+
+  /**
+   * Start or end holding a scope's frames. Held is what a catch-up is, whoever
+   * asked for it, so the "catching up" signal for a thread is read here and
+   * has no other writer.
+   */
+  const setHeld = (subscription: Subscription, held: Held[] | undefined) => {
+    subscription.held = held
+    const { scope } = subscription
+    if (scope.type === 'thread') {
+      store.update((state) => applyCatchingUp(state, scope.threadId, held !== undefined))
     }
   }
 
@@ -884,7 +910,7 @@ export function createWebSocketEnvironmentClient(
     }
     applyAnswer(subscription, payload)
     const held = subscription.held ?? []
-    subscription.held = undefined
+    setHeld(subscription, undefined)
     release(subscription, held)
     resnapshot(subscription)
   }
@@ -914,7 +940,7 @@ export function createWebSocketEnvironmentClient(
       const subscription = bySubscriptionId(lagging.data.payload.subscriptionId)
       if (subscription) {
         subscription.lagging = true
-        subscription.held ??= []
+        setHeld(subscription, subscription.held ?? [])
       }
       return
     }
@@ -1134,11 +1160,11 @@ export function createWebSocketEnvironmentClient(
     }
     // Frames already held (a lagging scope that now recovers by itself) stay,
     // behind the frame that asked for this catch-up.
-    subscription.held = [...(first ? [first] : []), ...(subscription.held ?? [])]
+    setHeld(subscription, [...(first ? [first] : []), ...(subscription.held ?? [])])
     const recovery = new Promise<void>((resolve, reject) => {
       const fail = (error: EnvironmentClientError) => {
         subscription.inflight = false
-        subscription.held = undefined
+        setHeld(subscription, undefined)
         if (subscriptions.get(key) === subscription && generation === connectionGeneration) {
           const resumed = command.payload.cursor !== null
           // The environment has no such scope, or the answer to this cursor
@@ -1195,7 +1221,7 @@ export function createWebSocketEnvironmentClient(
           // The catch-up is over: what waited is placed against its cursor,
           // and may start the next one.
           const held = subscription.held ?? []
-          subscription.held = undefined
+          setHeld(subscription, undefined)
           subscription.recovery = undefined
           release(subscription, held)
           resolve()
@@ -1233,6 +1259,7 @@ export function createWebSocketEnvironmentClient(
     const subscription = subscriptions.get(key)
     if (!subscription) return
     subscriptions.delete(key)
+    setHeld(subscription, undefined)
     if (subscription.subscriptionId) sendUnsubscribe(subscription.subscriptionId)
   }
 
@@ -1305,6 +1332,98 @@ export function createWebSocketEnvironmentClient(
       for (const scope of sessionScopes(activeSessionId)) subscribe(scope)
     }
   }
+
+  /**
+   * Sends made while the open chat catches up wait for it, on this device, in
+   * the order they were made (docs/sync-foundations.md §6.6). This orders the
+   * client's own commands and decides nothing about server state: when the
+   * catch-up ends the send goes, and the environment answers as it would any
+   * send. What keeps the text safe is the outbox: a held entry stays on screen,
+   * and in the cache, until the environment takes it.
+   *
+   * A connection that drops only extends the wait. Leaving the chat ends it,
+   * since nothing is catching up for a chat that is not open; so does a
+   * catch-up that fails. A connection given up on fails the send, with its text
+   * and a retry on its row. A transport replaced leaves its held sends in the
+   * store for the next client, as a reload does.
+   */
+  type HeldSend = {
+    thread: Thread
+    commandId: string
+    release: () => void
+    fail: (error: EnvironmentClientError) => void
+  }
+  const heldSends: HeldSend[] = []
+  /** A handshake's resync is running: the catch-up it starts is not visible yet. */
+  let resyncing = false
+  let heldSendsScheduled = false
+  let stopWatchingHeldSends: (() => void) | null = null
+
+  const scheduleHeldSends = () => {
+    if (heldSendsScheduled || heldSends.length === 0) return
+    // A microtask, so a selection that moves in two steps (a route leaving one
+    // chat and opening the next) is read once it has landed.
+    heldSendsScheduled = true
+    queueMicrotask(() => {
+      heldSendsScheduled = false
+      releaseHeldSends()
+    })
+  }
+
+  const takeHeldSend = (held: HeldSend) => {
+    heldSends.splice(heldSends.indexOf(held), 1)
+    if (heldSends.length === 0) {
+      stopWatchingHeldSends?.()
+      stopWatchingHeldSends = null
+    }
+  }
+
+  const releaseHeldSends = () => {
+    if (disposed) return
+    const state = store.getState()
+    if (state.connection.phase === 'closed') {
+      for (const held of [...heldSends]) {
+        takeHeldSend(held)
+        held.fail(
+          new EnvironmentClientError('unavailable', 'Connection closed before the send went out.'),
+        )
+      }
+      return
+    }
+    if (!ready || resyncing) return
+    // A send waits behind the sends of its chat, never another chat's.
+    const waiting = new Set<string>()
+    for (const held of [...heldSends]) {
+      const { threadId } = held.thread
+      if (waiting.has(threadId)) continue
+      const entry = store
+        .getServerState()
+        .threads[threadId]?.outbox.find((item) => item.commandId === held.commandId)
+      if (entry?.status !== 'held') {
+        // Its turn came with the catch-up, or its chat is gone: nothing to send.
+        takeHeldSend(held)
+        held.fail(new EnvironmentClientError('superseded', 'This send has already landed.'))
+      } else if (selectChatCatchingUp(state, threadId)) {
+        waiting.add(threadId)
+      } else {
+        takeHeldSend(held)
+        store.update((current) => applyTurnSendReleased(current, held.thread, held.commandId))
+        held.release()
+      }
+    }
+  }
+
+  const holdSend = (thread: Thread, commandId: string) =>
+    new Promise<void>((release, fail) => {
+      heldSends.push({ thread, commandId, release, fail })
+      stopWatchingHeldSends ??= store.subscribe(scheduleHeldSends)
+      scheduleHeldSends()
+    })
+
+  /** Whether a send for this chat waits: behind its catch-up, or behind a send that does. */
+  const mustHold = (threadId: string) =>
+    heldSends.some((held) => held.thread.threadId === threadId) ||
+    selectChatCatchingUp(store.getState(), threadId)
 
   /**
    * Every command that shows its own effect before the environment confirms
@@ -1697,10 +1816,12 @@ export function createWebSocketEnvironmentClient(
       // Echoed first, so the message is on screen before the round trip. The
       // id makes every later signal about this send resolve the same row.
       const artifactIds = input.artifactIds?.length ? input.artifactIds : undefined
+      const held = mustHold(thread.threadId)
       store.update((state) =>
-        applyTurnSending(state, thread, { commandId, text: input.text, artifactIds }),
+        applyTurnSending(state, thread, { commandId, text: input.text, artifactIds, held }),
       )
       try {
+        if (held) await holdSend(thread, commandId)
         // The turn comes with its `turn.started`, which settles this echo by
         // its command id; the answer only says the send was taken (§3.5).
         return await request('turn.send', { ...input, artifactIds, commandId })
@@ -1843,6 +1964,23 @@ export function createWebSocketEnvironmentClient(
     supported: () => capabilities.has(WIRE_COMMANDS.saveDraft),
   })
 
+  // Sends a reload, or the transport this one replaces, left held. They wait
+  // like any other, and go under their own command ids.
+  if (options.store) {
+    for (const { thread, outbox } of Object.values(store.getServerState().threads)) {
+      for (const entry of outbox) {
+        if (entry.status !== 'held') continue
+        const { commandId, text, artifactIds } = entry
+        void holdSend(thread, commandId)
+          .then(() => request('turn.send', { ...thread, text, artifactIds, commandId }))
+          .catch((error: unknown) => {
+            const message = error instanceof Error ? error.message : String(error)
+            store.update((state) => applyTurnSendFailed(state, thread, commandId, message))
+          })
+      }
+    }
+  }
+
   return {
     commands,
     drafts,
@@ -1971,6 +2109,12 @@ export function createWebSocketEnvironmentClient(
         kind: 'closed',
         error: new EnvironmentClientError('unavailable', 'Client is disposed.'),
       })
+      // Held sends stay in the store for the client that takes it over; a
+      // disposed transport cannot mark them failed.
+      for (const held of [...heldSends]) {
+        takeHeldSend(held)
+        held.fail(new EnvironmentClientError('unavailable', 'Client is disposed.'))
+      }
       clearReconnect()
       stopHeartbeat()
       const current = socket

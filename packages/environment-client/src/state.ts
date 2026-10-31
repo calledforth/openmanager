@@ -69,6 +69,7 @@ export function createInitialState(): EnvironmentState {
     draftEdits: {},
     draftsListed: false,
     cursors: { environment: null, sessions: {} },
+    catchingUp: {},
     activeSessionId: null,
     activeThreadId: null,
     connection: INITIAL_CONNECTION,
@@ -742,6 +743,19 @@ export function applyNoticesCleared(state: EnvironmentState, threadId: string): 
   return { ...state, threads: { ...state.threads, [threadId]: { ...thread, notices: [] } } }
 }
 
+/** A thread's catch-up started or ended. Nothing else moves, so no chat renders for it. */
+export function applyCatchingUp(
+  state: EnvironmentState,
+  threadId: string,
+  catchingUp: boolean,
+): EnvironmentState {
+  if ((state.catchingUp[threadId] === true) === catchingUp) return state
+  const threads = { ...state.catchingUp }
+  if (catchingUp) threads[threadId] = true
+  else delete threads[threadId]
+  return { ...state, catchingUp: threads }
+}
+
 /**
  * `session.open` loads identities only; the thread's snapshot brings the
  * transcript. The answer is a read with a stated position, on two streams: its
@@ -903,22 +917,44 @@ export const withSessionUpserted = (
 export function applyTurnSending(
   state: EnvironmentState,
   thread: Thread,
-  send: { commandId: string; text: string; artifactIds?: string[] },
+  send: { commandId: string; text: string; artifactIds?: string[]; held?: boolean },
 ): EnvironmentState {
-  const entry: OutboxEntry = {
-    commandId: send.commandId,
-    text: send.text,
-    ...(send.artifactIds?.length ? { artifactIds: send.artifactIds } : {}),
-    status: 'pending',
-  }
-  return patchThread(state, thread, (current) =>
+  return patchThread(state, thread, (current) => {
     // A retry of a send whose turn this client already holds: the answer
     // comes from the environment's log and no event follows, so there is
     // nothing to echo.
-    current.turns.some((turn) => turn.commandId === send.commandId)
-      ? current
-      : { ...current, outbox: upsertById(current.outbox, (item) => item.commandId, entry) },
-  )
+    if (current.turns.some((turn) => turn.commandId === send.commandId)) return current
+    const waited =
+      send.held || current.outbox.some((item) => item.commandId === send.commandId && item.waited)
+    const entry: OutboxEntry = {
+      commandId: send.commandId,
+      text: send.text,
+      ...(send.artifactIds?.length ? { artifactIds: send.artifactIds } : {}),
+      status: send.held ? 'held' : 'pending',
+      ...(waited ? { waited: true as const } : {}),
+    }
+    return { ...current, outbox: upsertById(current.outbox, (item) => item.commandId, entry) }
+  })
+}
+
+/** A held send leaves the device. Its row keeps showing it waits until it is taken. */
+export function applyTurnSendReleased(
+  state: EnvironmentState,
+  thread: Thread,
+  commandId: string,
+): EnvironmentState {
+  if (!state.threads[thread.threadId]) return state
+  return patchThread(state, thread, (current) => {
+    const entry = current.outbox.find((item) => item.commandId === commandId)
+    if (entry?.status !== 'held') return current
+    return {
+      ...current,
+      outbox: upsertById(current.outbox, (item) => item.commandId, {
+        ...entry,
+        status: 'pending',
+      }),
+    }
+  })
 }
 
 /** Mark an echoed send failed, keeping it on screen with the reason. */
@@ -928,6 +964,8 @@ export function applyTurnSendFailed(
   commandId: string,
   message: string,
 ): EnvironmentState {
+  // A chat deleted meanwhile took its sends with it; a failure names no thread to bring back.
+  if (!state.threads[thread.threadId]) return state
   return patchThread(state, thread, (current) => {
     const entry = current.outbox.find((item) => item.commandId === commandId)
     if (!entry) return current
@@ -1394,6 +1432,30 @@ export function selectActiveTurn(state: EnvironmentState): Turn | null {
   const thread = selectActiveThread(state)
   if (!thread) return null
   return thread.turns.find((turn) => turn.state === 'running' || turn.state === 'waiting') ?? null
+}
+
+/**
+ * The chat on screen is a saved copy that is out of date and on its way to
+ * current: being opened (`hydration`), recovering after a reconnect, or
+ * lagging (`catchingUp`). UI state only; server data never depends on it.
+ *
+ * Connected only: with no link nothing is catching up, and the connection's
+ * own status says so. With no messages on screen it is a first open, which has
+ * the empty loading state instead. A copy whose cursor was forgotten is still
+ * a copy on screen, downloading whole.
+ */
+export function selectOpenChatCatchingUp(state: EnvironmentState): boolean {
+  return state.activeThreadId !== null && selectChatCatchingUp(state, state.activeThreadId)
+}
+
+/** The same question, of the chat a send is for. Only the open chat ever is. */
+export function selectChatCatchingUp(state: EnvironmentState, threadId: string): boolean {
+  if (state.connection.phase !== 'connected' || state.activeThreadId !== threadId) return false
+  // A session being created has its first message from the answer, not a copy.
+  if (state.activeSessionId && state.pending.creates[state.activeSessionId]) return false
+  const thread = state.threads[threadId]
+  if (!thread?.messages.length) return false
+  return thread.hydration === 'loading' || state.catchingUp[threadId] === true
 }
 
 export function selectPendingInteractions(

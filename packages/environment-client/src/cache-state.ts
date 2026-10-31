@@ -12,6 +12,7 @@ export function cacheState(state: EnvironmentState): EnvironmentState {
     ...state,
     connection: createInitialState().connection,
     sessionOpenFailure: null,
+    catchingUp: {},
     // The user's unconfirmed actions belong to the old transport's commands.
     pending: emptyOverlay(),
     // A send cut off by the reload has an outcome this page never learns, and
@@ -27,7 +28,17 @@ export function cacheState(state: EnvironmentState): EnvironmentState {
         {
           ...thread,
           // Pending commands belong to the old transport and are never replayed.
-          outbox: [],
+          // A send that waited for a catch-up is the exception. Its text has
+          // left the composer and may never have left the device, so it stays
+          // and the next client sends it. Its command id makes that safe: one
+          // that did get through is answered from the environment's log.
+          outbox: thread.outbox.flatMap((entry) =>
+            !entry.waited
+              ? []
+              : entry.status === 'pending'
+                ? [{ ...entry, status: 'held' as const }]
+                : [entry],
+          ),
           // Which messages were echoes only matters to rows the old page drew.
           confirmedEchoes: undefined,
           // Never stored by the server, so a fresh load has none. The cursor

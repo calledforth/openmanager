@@ -104,9 +104,16 @@ export interface OutboxEntry {
   text: string
   /** Uploaded artifacts the send names, so a retry carries them again. */
   artifactIds?: string[]
-  status: 'pending' | 'failed'
+  /** `held`: on this device only, waiting for the chat to catch up (`waited`). */
+  status: 'held' | 'pending' | 'failed'
   /** Why the send failed. Set only while `status` is `failed`. */
   error?: string
+  /**
+   * It was held for a catch-up. The row shows it is waiting until the
+   * environment takes it, and a reload keeps it: the user has seen this
+   * message go, and the composer has let it go.
+   */
+  waited?: true
 }
 
 export interface HeldComposerListing {
@@ -239,6 +246,12 @@ export interface EnvironmentState {
   draftEdits: Record<string, DraftEdit>
   /** Whether `drafts` was listed since the client last caught up with the environment. */
   draftsListed: boolean
+  /**
+   * Threads with a catch-up under way: asked for, or the server said the
+   * subscription is lagging. The transport's own state, for the UI alone. Read
+   * it through `selectOpenChatCatchingUp`.
+   */
+  catchingUp: Record<string, true>
   /**
    * Where the held copy of the environment and of each session stands (a
    * thread keeps its own, on `ThreadState.cursor`). Same promise: the copy

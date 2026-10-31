@@ -10,7 +10,12 @@ export function createWebRouter(options?: { history?: RouterHistory; queryClient
     history: options?.history ?? createBrowserHistory(),
     context: { queryClient },
     defaultPreload: 'intent',
-    scrollRestoration: true,
+    // Off, and it must stay off. The router's restoration remembers any element
+    // that scrolled, by its place in the page, and writes that offset back
+    // after every navigation. The chat's scroller is one element across
+    // sessions and places its own reader (ChatView), so the router would run
+    // last and move every reopened chat, to the top or to another chat's
+    // offset.
   })
 }
 

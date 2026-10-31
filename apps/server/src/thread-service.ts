@@ -1795,15 +1795,13 @@ export function createThreadService(
     if (!resolveWorkspace(workspaceId, context)) {
       return rejectWorkspace(command.requestId, workspaceId, SEND_WORKSPACE_UNAVAILABLE)
     }
-    // A live thread has served every send since this process started, so
-    // its own map answers without touching the log. Only a thread that is
-    // no longer in memory needs the durable lookup, which is exactly the
-    // retry that crosses a restart.
+    // A thread's own map holds only what this process served. A thread loaded
+    // after a restart starts with it empty, and a retry that crosses the
+    // restart must still find its turn, so a miss goes to the log.
     const replayed = !input.commandId
       ? undefined
-      : record
-        ? record.commandTurns.get(input.commandId)
-        : findPersistedTurn(input.sessionId, input.threadId, input.commandId)
+      : (record?.commandTurns.get(input.commandId) ??
+        findPersistedTurn(input.sessionId, input.threadId, input.commandId))
     if (replayed) return turnSendResult(command.requestId, replayed)
     if (!record) {
       // A chat the rows hold and this process has not loaded (after a

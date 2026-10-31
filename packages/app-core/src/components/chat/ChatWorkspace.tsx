@@ -5,6 +5,7 @@ import { FloatingChatComposer } from './FloatingChatComposer'
 import { MessageInput } from './MessageInput'
 import { SessionBackgroundTasks } from './BackgroundTasksPill'
 import { SessionLaunchPill } from './SessionLaunchPill'
+import { SyncingPill } from './SyncingPill'
 import { useState, type ReactNode } from 'react'
 import { noticeAnchorRef } from '../../lib/notice-anchors'
 import { cn } from '../../lib/utils'
@@ -159,18 +160,18 @@ export function ChildSessionBanner({ onBack }: { onBack: () => void }) {
  * read-only banner when a subagent transcript is open. Hosts wrap it in
  * their own chrome (title bar, sidebar, panels).
  */
-export function ChatWorkspace() {
+export function ChatWorkspace({ connectionProblem = false }: { connectionProblem?: boolean }) {
   const client = useEnvironmentClientOptional()
   return client ? (
     <SessionOpenBoundary>
-      <ChatWorkspaceContent />
+      <ChatWorkspaceContent connectionProblem={connectionProblem} />
     </SessionOpenBoundary>
   ) : (
-    <ChatWorkspaceContent />
+    <ChatWorkspaceContent connectionProblem={connectionProblem} />
   )
 }
 
-function ChatWorkspaceContent() {
+function ChatWorkspaceContent({ connectionProblem }: { connectionProblem: boolean }) {
   const { closeChildSession } = useSessionState()
   const { activeThread } = useActiveThreadState()
   const parentExternalId = activeThread?.parentExternalId
@@ -185,6 +186,7 @@ function ChatWorkspaceContent() {
           {/* Registered so a notice (a discarded draft's undo) can sit above it. */}
           <div ref={noticeAnchorRef('composer')}>
             <SessionLaunchPill />
+            <SyncingPill connectionProblem={connectionProblem} />
             <SessionBackgroundTasks />
             <MessageInput />
           </div>

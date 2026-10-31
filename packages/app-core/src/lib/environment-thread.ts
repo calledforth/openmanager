@@ -417,6 +417,7 @@ export function projectThread(
         isOptimistic: true,
         commandId: entry.commandId,
         ...(entry.error ? { sendError: entry.error } : {}),
+        ...(entry.waited && !entry.error ? { sendWaiting: true } : {}),
       }
       outboxRows.set(entry, row)
       messages.push(row)
