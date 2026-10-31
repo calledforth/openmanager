@@ -1446,6 +1446,7 @@ describe('durable server event boundary', () => {
       () => ({ providerId: 'cursor', cwd: '/workspace' }),
       { database: reopened },
     )
+    service.setEnvironmentId('environment-1')
     const dispatch = (name: string, payload: Record<string, string>) =>
       service.dispatch({
         type: 'command',
