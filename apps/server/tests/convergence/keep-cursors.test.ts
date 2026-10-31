@@ -380,6 +380,36 @@ describe('kept cursors', () => {
     },
   )
 
+  scenario('KC10 a send held across a reload goes once', {}, async (rig) => {
+    const a = await rig.connect('A')
+    const { target, other } = await twoChats(rig, a)
+    await a.client.commands.openSession(other.sessionId)
+    await rig.settle()
+    rig.proxy.latency(400)
+    void a.client.commands.openSession(target.sessionId).catch(() => undefined)
+    await untilThread(a, target, (state) => state.hydration === 'loading', 'the chat to reopen')
+    void a.client.commands.sendTurn({ ...target, text: 'Held send' }).catch(() => undefined)
+    await untilThread(
+      a,
+      target,
+      (state) => state.outbox.some((entry) => entry.status === 'held'),
+      'the send to be held',
+    )
+    expect(JSON.stringify(thread(a, target)?.messages)).not.toContain('Held send')
+    const reloaded = await rig.reload(a, 'proxy', 'connected')
+    expect(thread(reloaded, target)?.outbox).toMatchObject([{ text: 'Held send', status: 'held' }])
+    await untilThread(
+      reloaded,
+      target,
+      (state) => JSON.stringify(state.messages).includes('Held send') && state.outbox.length === 0,
+      'the held send to reach the chat',
+      30_000,
+    )
+    rig.proxy.heal()
+    await expectConverges('KC10', rig, reloaded)
+    expect(JSON.stringify(thread(reloaded, target)?.messages).match(/Held send/g)).toHaveLength(1)
+  })
+
   scenario('KC9 a notice does not outlive a replay', {}, async (rig) => {
     const a = await rig.connect('A')
     const { target, other } = await twoChats(rig, a)

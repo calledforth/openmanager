@@ -104,9 +104,16 @@ export interface OutboxEntry {
   text: string
   /** Uploaded artifacts the send names, so a retry carries them again. */
   artifactIds?: string[]
-  status: 'pending' | 'failed'
+  /** `held`: on this device only, waiting for the chat to catch up (`waited`). */
+  status: 'held' | 'pending' | 'failed'
   /** Why the send failed. Set only while `status` is `failed`. */
   error?: string
+  /**
+   * It was held for a catch-up. The row shows it is waiting until the
+   * environment takes it, and a reload keeps it: the user has seen this
+   * message go, and the composer has let it go.
+   */
+  waited?: true
 }
 
 export interface HeldComposerListing {

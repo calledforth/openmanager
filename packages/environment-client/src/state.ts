@@ -917,22 +917,43 @@ export const withSessionUpserted = (
 export function applyTurnSending(
   state: EnvironmentState,
   thread: Thread,
-  send: { commandId: string; text: string; artifactIds?: string[] },
+  send: { commandId: string; text: string; artifactIds?: string[]; held?: boolean },
 ): EnvironmentState {
-  const entry: OutboxEntry = {
-    commandId: send.commandId,
-    text: send.text,
-    ...(send.artifactIds?.length ? { artifactIds: send.artifactIds } : {}),
-    status: 'pending',
-  }
-  return patchThread(state, thread, (current) =>
+  return patchThread(state, thread, (current) => {
     // A retry of a send whose turn this client already holds: the answer
     // comes from the environment's log and no event follows, so there is
     // nothing to echo.
-    current.turns.some((turn) => turn.commandId === send.commandId)
-      ? current
-      : { ...current, outbox: upsertById(current.outbox, (item) => item.commandId, entry) },
-  )
+    if (current.turns.some((turn) => turn.commandId === send.commandId)) return current
+    const waited =
+      send.held || current.outbox.some((item) => item.commandId === send.commandId && item.waited)
+    const entry: OutboxEntry = {
+      commandId: send.commandId,
+      text: send.text,
+      ...(send.artifactIds?.length ? { artifactIds: send.artifactIds } : {}),
+      status: send.held ? 'held' : 'pending',
+      ...(waited ? { waited: true as const } : {}),
+    }
+    return { ...current, outbox: upsertById(current.outbox, (item) => item.commandId, entry) }
+  })
+}
+
+/** A held send leaves the device. Its row keeps showing it waits until it is taken. */
+export function applyTurnSendReleased(
+  state: EnvironmentState,
+  thread: Thread,
+  commandId: string,
+): EnvironmentState {
+  return patchThread(state, thread, (current) => {
+    const entry = current.outbox.find((item) => item.commandId === commandId)
+    if (entry?.status !== 'held') return current
+    return {
+      ...current,
+      outbox: upsertById(current.outbox, (item) => item.commandId, {
+        ...entry,
+        status: 'pending',
+      }),
+    }
+  })
 }
 
 /** Mark an echoed send failed, keeping it on screen with the reason. */
@@ -1421,12 +1442,17 @@ export function selectActiveTurn(state: EnvironmentState): Turn | null {
  * a copy on screen, downloading whole.
  */
 export function selectOpenChatCatchingUp(state: EnvironmentState): boolean {
-  if (state.connection.phase !== 'connected' || !state.activeThreadId) return false
+  return state.activeThreadId !== null && selectChatCatchingUp(state, state.activeThreadId)
+}
+
+/** The same question, of the chat a send is for. Only the open chat ever is. */
+export function selectChatCatchingUp(state: EnvironmentState, threadId: string): boolean {
+  if (state.connection.phase !== 'connected' || state.activeThreadId !== threadId) return false
   // A session being created has its first message from the answer, not a copy.
   if (state.activeSessionId && state.pending.creates[state.activeSessionId]) return false
-  const thread = state.threads[state.activeThreadId]
+  const thread = state.threads[threadId]
   if (!thread?.messages.length) return false
-  return thread.hydration === 'loading' || state.catchingUp[state.activeThreadId] === true
+  return thread.hydration === 'loading' || state.catchingUp[threadId] === true
 }
 
 export function selectPendingInteractions(

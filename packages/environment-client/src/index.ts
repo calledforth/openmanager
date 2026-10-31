@@ -93,6 +93,7 @@ export {
   selectSessionListing,
   selectConnection,
   selectPendingInteractions,
+  selectChatCatchingUp,
   selectOpenChatCatchingUp,
   selectProviderCatalog,
   selectSessionList,

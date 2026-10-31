@@ -3731,18 +3731,214 @@ describe('the open chat is catching up', () => {
     client.dispose()
   })
 
-  it('lets a send through while catching up: the replay brings its turn, once', async () => {
+  it('does not survive a reload', async () => {
     const { client, socket, store } = await onScreen()
-    socket.drop(1006)
+    const cursor = store.getServerState().threads[THREAD.threadId]!.cursor!
+    socket.receive({
+      type: 'event',
+      name: 'subscription.lagging',
+      payload: { subscriptionId: 'sub-thread', cursor },
+    })
+    expect(cacheState(store.getServerState()).catchingUp).toEqual({})
     client.dispose()
-    const next = await connected(FULL_CAPABILITIES, {}, { environmentId: ENV, store })
+  })
+})
+
+describe('sends made while the open chat catches up', () => {
+  /** A saved chat being reopened: the replay is unanswered, so it is catching up. */
+  async function catchingUp() {
+    const store = createEnvironmentStore()
+    const first = await connected(FULL_CAPABILITIES, {}, { environmentId: ENV, store })
+    await answerCatalog(first.socket, undefined, { sessions: [SESSION_SUMMARY, OTHER] })
+    await flush()
+    const open = first.client.commands.openSession(SESSION.sessionId)
+    await answerOpen(first.socket)
+    await open
+    first.socket.publish(turnStarted())
+    first.socket.publish(completed())
+    const client = first.client
+    const socket = first.socket
+    const away = client.commands.openSession(OTHER.sessionId)
+    await answerOpen(socket, OTHER, [OTHER_THREAD])
+    await away
+    const back = client.commands.openSession(SESSION.sessionId).catch(() => undefined)
+    await flush()
+    socket.respond('session.open', { session: SESSION_SUMMARY, threads: [THREAD] })
+    await flush()
+    return { ...first, store, back }
+  }
+  const OTHER = { ...SESSION_SUMMARY, sessionId: 'session-2' }
+  const OTHER_THREAD = { threadId: 'thread-2', sessionId: OTHER.sessionId }
+  const sendsOn = (socket: FakeSocket) =>
+    socket.sent
+      .filter((message) => message.name === 'turn.send')
+      .map((message) => (message.payload as { text: string }).text)
+  const outbox = (client: EnvironmentClient) =>
+    client.getState().threads[THREAD.threadId]!.outbox.map(({ text, status, waited }) => ({
+      text,
+      status,
+      waited,
+    }))
+  const answerThread = async (socket: FakeSocket) => {
+    answerKept(socket, lastReplay(socket, 'thread', THREAD.threadId)!, 'sub-thread')
+    const session = lastReplay(socket, 'session', SESSION.sessionId)
+    if (session) answerKept(socket, session, 'sub-session')
+    await flush()
+  }
+
+  it('shows the message at once, holds it, and sends it by itself when the catch-up ends', async () => {
+    const { client, socket, back } = await catchingUp()
+    const sending = client.commands.sendTurn({ ...THREAD, text: 'go', commandId: 'cmd-1' })
+    await flush()
+    expect(outbox(client)).toEqual([{ text: 'go', status: 'held', waited: true }])
+    expect(sendsOn(socket)).toEqual([])
+    await answerThread(socket)
+    await back
+    expect(sendsOn(socket)).toEqual(['go'])
+    expect(outbox(client)).toEqual([{ text: 'go', status: 'pending', waited: true }])
+    socket.respond('turn.send', turnStarted('turn-9', 'go', 'cmd-1').payload)
+    await sending
+    client.dispose()
+  })
+
+  it('sends straight away when nothing is catching up, with no waiting symbol', async () => {
+    const { client, socket, back } = await catchingUp()
+    await answerThread(socket)
+    await back
+    void client.commands.sendTurn({ ...THREAD, text: 'go', commandId: 'cmd-1' }).catch(() => null)
+    await flush()
+    expect(sendsOn(socket)).toEqual(['go'])
+    expect(outbox(client)).toEqual([{ text: 'go', status: 'pending', waited: undefined }])
+    client.dispose()
+  })
+
+  it('keeps the order of several held sends', async () => {
+    const { client, socket, back } = await catchingUp()
+    for (const text of ['one', 'two', 'three']) {
+      void client.commands.sendTurn({ ...THREAD, text }).catch(() => null)
+    }
+    await flush()
+    expect(sendsOn(socket)).toEqual([])
+    await answerThread(socket)
+    await back
+    expect(sendsOn(socket)).toEqual(['one', 'two', 'three'])
+    client.dispose()
+  })
+
+  it('refuses like any send if a turn turned out to be running, and keeps the text', async () => {
+    const { client, socket, back } = await catchingUp()
+    const sending = client.commands.sendTurn({ ...THREAD, text: 'go', commandId: 'cmd-1' })
+    await answerThread(socket)
+    await back
+    socket.receive({
+      type: 'error',
+      requestId: socket.last('turn.send').requestId,
+      error: { code: 'conflict', message: 'A turn is already in progress.' },
+    })
+    await expect(sending).rejects.toMatchObject({ code: 'conflict' })
+    expect(client.getState().threads[THREAD.threadId]!.outbox[0]).toMatchObject({
+      text: 'go',
+      status: 'failed',
+      error: 'A turn is already in progress.',
+    })
+    client.dispose()
+  })
+
+  it('keeps holding through a dropped connection, and sends after the next catch-up', async () => {
+    const { client, socket, timers } = await catchingUp()
+    const sending = client.commands.sendTurn({ ...THREAD, text: 'go', commandId: 'cmd-1' })
+    await flush()
+    socket.drop(1006)
+    await flush()
+    expect(outbox(client)).toEqual([{ text: 'go', status: 'held', waited: true }])
+    timers.advance(2_000)
+    const next = FakeSocket.instances.at(-1)!
+    next.open()
+    next.respond('protocol.handshake', bootstrap(FULL_CAPABILITIES))
+    await flush()
+    expect(sendsOn(next)).toEqual([])
+    await answerThread(next)
+    await flush()
+    expect(sendsOn(next)).toEqual(['go'])
+    next.respond('turn.send', turnStarted('turn-9', 'go', 'cmd-1').payload)
+    await sending
+    client.dispose()
+  })
+
+  it('fails with its text and a retry when the connection is given up on', async () => {
+    const { client, back } = await catchingUp()
+    const sending = client.commands.sendTurn({ ...THREAD, text: 'go', commandId: 'cmd-1' })
+    await flush()
+    client.disconnect()
+    await back
+    await expect(sending).rejects.toMatchObject({ code: 'unavailable' })
+    expect(client.getState().threads[THREAD.threadId]!.outbox[0]).toMatchObject({
+      text: 'go',
+      status: 'failed',
+    })
+    client.dispose()
+  })
+
+  it('sends when the user leaves the chat: nothing is catching up for it now', async () => {
+    const { client, socket } = await catchingUp()
+    void client.commands.sendTurn({ ...THREAD, text: 'go', commandId: 'cmd-1' }).catch(() => null)
+    await flush()
+    expect(sendsOn(socket)).toEqual([])
+    client.setActiveSession(null)
+    await flush()
+    expect(sendsOn(socket)).toEqual(['go'])
+    client.dispose()
+  })
+
+  it('sends after a catch-up that fails, and the environment answers', async () => {
+    const { client, socket, back } = await catchingUp()
+    void client.commands.sendTurn({ ...THREAD, text: 'go', commandId: 'cmd-1' }).catch(() => null)
+    await flush()
+    socket.receive({
+      type: 'error',
+      requestId: lastReplay(socket, 'thread', THREAD.threadId)!.requestId,
+      error: { code: 'internal', message: 'No.' },
+    })
+    await back
+    await flush()
+    expect(client.getState().threads[THREAD.threadId]!.hydration).toBe('failed')
+    expect(sendsOn(socket)).toEqual(['go'])
+    client.dispose()
+  })
+
+  it('keeps a held send across a reload, and the next client sends it under its id', async () => {
+    const { client, store } = await catchingUp()
+    void client.commands.sendTurn({ ...THREAD, text: 'go', commandId: 'cmd-1' }).catch(() => null)
+    await flush()
+    const cached = structuredClone(cacheState(store.getServerState()))
+    client.dispose()
+    const nextStore = createEnvironmentStore(cached)
+    const next = await connected(FULL_CAPABILITIES, {}, { environmentId: ENV, store: nextStore })
+    expect(selectActiveThread(next.client.getState())?.outbox).toHaveLength(1)
+    await flush()
+    expect(sendsOn(next.socket)).toEqual([])
     next.socket.respond('session.open', { session: SESSION_SUMMARY, threads: [THREAD] })
     await flush()
-    expect(signal(next.client)).toBe(true)
+    expect(sendsOn(next.socket)).toEqual([])
+    await answerThread(next.socket)
+    await flush()
+    expect(sendsOn(next.socket)).toEqual(['go'])
+    expect(next.socket.last('turn.send').payload).toMatchObject({ commandId: 'cmd-1' })
+    next.client.dispose()
+  })
+
+  it('sends nothing if the catch-up shows its turn already started', async () => {
+    const { client, store } = await catchingUp()
+    void client.commands.sendTurn({ ...THREAD, text: 'go', commandId: 'cmd-1' }).catch(() => null)
+    await flush()
+    const cached = structuredClone(cacheState(store.getServerState()))
+    client.dispose()
+    const nextStore = createEnvironmentStore(cached)
+    const next = await connected(FULL_CAPABILITIES, {}, { environmentId: ENV, store: nextStore })
+    next.socket.respond('session.open', { session: SESSION_SUMMARY, threads: [THREAD] })
+    await flush()
     const replay = lastReplay(next.socket, 'thread', THREAD.threadId)!
     const from = (replay.payload as { cursor: { sequence: number } }).cursor
-    const sending = next.client.commands.sendTurn({ ...THREAD, text: 'go', commandId: 'cmd-1' })
-    expect(selectActiveThread(next.client.getState())?.outbox).toHaveLength(1)
     const to = { ...from, sequence: from.sequence + 1 }
     next.socket.receive({
       type: 'response',
@@ -3755,57 +3951,49 @@ describe('the open chat is catching up', () => {
         events: [{ cursor: to, event: turnStarted('turn-9', 'go', 'cmd-1') }],
       },
     })
-    next.socket.respond('turn.send', turnStarted('turn-9', 'go', 'cmd-1').payload)
-    await sending
     await flush()
+    await answerThread(next.socket).catch(() => undefined)
+    await flush()
+    expect(sendsOn(next.socket)).toEqual([])
     const thread = selectActiveThread(next.client.getState())!
     expect(thread.outbox).toEqual([])
-    expect(thread.turns.filter((turn) => turn.turnId === 'turn-9')).toHaveLength(1)
-    expect(thread.messages.filter((item) => item.turnId === 'turn-9')).toHaveLength(1)
+    expect(thread.messages.filter((message) => message.turnId === 'turn-9')).toHaveLength(1)
     next.client.dispose()
   })
 
-  it('lets a send through while catching up: its live turn waits behind the answer', async () => {
-    const { client, socket, store } = await onScreen()
-    socket.drop(1006)
+  it('keeps a send that left but was never answered across a reload', async () => {
+    const { client, socket, store, back } = await catchingUp()
+    void client.commands.sendTurn({ ...THREAD, text: 'go', commandId: 'cmd-1' }).catch(() => null)
+    await answerThread(socket)
+    await back
+    expect(sendsOn(socket)).toEqual(['go'])
+    const cached = cacheState(store.getServerState()).threads[THREAD.threadId]!
+    expect(cached.outbox).toMatchObject([{ text: 'go', status: 'held', waited: true }])
     client.dispose()
+  })
+
+  it('never keeps a normal unanswered send across a reload', async () => {
+    const { client, socket, store, back } = await catchingUp()
+    await answerThread(socket)
+    await back
+    void client.commands.sendTurn({ ...THREAD, text: 'go' }).catch(() => null)
+    expect(cacheState(store.getServerState()).threads[THREAD.threadId]!.outbox).toEqual([])
+    client.dispose()
+  })
+
+  it('hands held sends to the transport that takes the store over', async () => {
+    const { client, store } = await catchingUp()
+    const sending = client.commands.sendTurn({ ...THREAD, text: 'go', commandId: 'cmd-1' })
+    await flush()
+    client.dispose()
+    await expect(sending).rejects.toMatchObject({ code: 'unavailable' })
+    expect(store.getServerState().threads[THREAD.threadId]!.outbox[0]?.status).toBe('held')
     const next = await connected(FULL_CAPABILITIES, {}, { environmentId: ENV, store })
     next.socket.respond('session.open', { session: SESSION_SUMMARY, threads: [THREAD] })
     await flush()
-    const replay = lastReplay(next.socket, 'thread', THREAD.threadId)!
-    const from = (replay.payload as { cursor: { sequence: number; epoch: string } }).cursor
-    const sending = next.client.commands.sendTurn({ ...THREAD, text: 'go', commandId: 'cmd-1' })
-    const after = { ...from, sequence: from.sequence + 1 }
-    // Frames of the scope arrive first and are held: nothing applies yet.
-    next.socket.receive({
-      type: 'event',
-      name: 'subscription.event',
-      payload: {
-        subscriptionId: 'sub-thread-2',
-        record: { cursor: after, event: turnStarted('turn-9', 'go', 'cmd-1') },
-      },
-    })
-    expect(selectActiveThread(next.client.getState())?.outbox).toHaveLength(1)
-    answerKept(next.socket, replay, 'sub-thread-2')
+    await answerThread(next.socket)
     await flush()
-    next.socket.respond('turn.send', turnStarted('turn-9', 'go', 'cmd-1').payload)
-    await sending
-    const thread = selectActiveThread(next.client.getState())!
-    expect(thread.outbox).toEqual([])
-    expect(thread.messages.filter((item) => item.turnId === 'turn-9')).toHaveLength(1)
-    expect(thread.cursor?.sequence).toBe(after.sequence)
+    expect(sendsOn(next.socket)).toEqual(['go'])
     next.client.dispose()
-  })
-
-  it('does not survive a reload', async () => {
-    const { client, socket, store } = await onScreen()
-    const cursor = store.getServerState().threads[THREAD.threadId]!.cursor!
-    socket.receive({
-      type: 'event',
-      name: 'subscription.lagging',
-      payload: { subscriptionId: 'sub-thread', cursor },
-    })
-    expect(cacheState(store.getServerState()).catchingUp).toEqual({})
-    client.dispose()
   })
 })

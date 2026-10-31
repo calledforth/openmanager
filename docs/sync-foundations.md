@@ -1820,9 +1820,22 @@ subscription need no signal of their own. A reconnect marks nothing as loading, 
 screen, which is a first open.
 
 It is UI state. It moves no server data, is never cached, and its writer changes nothing a chat
-renders from. Hosts decide what to show: web shows "Syncing…" after a delay (`SyncingPill`). Sending
-stays open while catching up: a send is ordered by the server, its echo sits in the outbox, and its
-`turn.started` either comes in the answer or waits behind it.
+renders from. Hosts decide what to show: web shows "Syncing…" after a delay (`SyncingPill`).
+
+**A send made while the open chat catches up waits for it,** by the same signal with no delay. This
+orders the client's own command and guesses nothing about server state.
+
+- The echo goes in the outbox as `held`, on screen at once with a waiting symbol. When the catch-up
+  ends it goes out by itself, in order, and the symbol stays until `turn.started` settles the entry.
+- If a turn turned out to be running, the environment refuses it as it refuses any send during a
+  turn, and the row shows why with a retry. The text stays on the row.
+- A dropped connection only extends the wait. Leaving the chat or a failed catch-up ends it: nothing
+  is catching up any more, and the environment answers. A connection given up on (closed) fails the
+  send, keeping its text and retry.
+- `cacheState` keeps every entry that waited, so a reload cannot lose one. The next client sends it
+  under the same command id, which is safe if it did get through: the environment answers from its
+  log, and the catch-up has usually settled the entry first. A transport replaced by another leaves
+  its held sends in the store in the same way.
 
 ---
 
