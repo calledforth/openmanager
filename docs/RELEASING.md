@@ -68,6 +68,10 @@ hand:
 - **Cleanup:** only the newest three `mobile-v*` releases stay, and their tags are kept. The
   repository's release feed lists ten entries and the desktop updater reads it, so a release per
   merge must not fill it.
+- **The cache:** the workflow saves Gradle's cache from `dev`, so a build reuses dependencies and
+  compiled output from the last one. The C++ builds and the JS bundle are not cached and run every
+  time. If a build ever misbehaves in a way the code cannot explain, delete the cache from the
+  repository's Actions page and rebuild.
 
 Only these APKs update themselves. `EXPO_PUBLIC_DISTRIBUTION=github` turns on the updater and adds
 Android's `REQUEST_INSTALL_PACKAGES` permission (`apps/mobile/app.config.js`); a build without it
