@@ -1,5 +1,6 @@
 import { Buffer } from 'node:buffer'
 import type { DatabaseSync } from 'node:sqlite'
+import type { Logger } from '../logger.ts'
 import {
   ScopeSnapshotSchema,
   decideReplay,
@@ -56,6 +57,7 @@ export interface ReplayReaderOptions {
   epoch: string
   environment: () => Environment
   workspaces: () => Workspace[]
+  log?: Logger
 }
 
 interface StreamBoundsRow {
@@ -198,7 +200,9 @@ export function createReplayReader(database: DatabaseSync, options: ReplayReader
           preferences,
           providerProfiles: readProfileRows(database).map(profileFromRow),
           listings: packComposerListings(
-            readWorkspaceListings(database).filter((entry) => known.has(entry.workspaceId)),
+            readWorkspaceListings(database, options.log).filter((entry) =>
+              known.has(entry.workspaceId),
+            ),
           ),
         },
       })
@@ -214,10 +218,11 @@ export function createReplayReader(database: DatabaseSync, options: ReplayReader
         },
       })
     }
-    const state = readThreadState(database, {
-      sessionId: scope.sessionId,
-      threadId: scope.threadId,
-    })
+    const state = readThreadState(
+      database,
+      { sessionId: scope.sessionId, threadId: scope.threadId },
+      options.log,
+    )
     if (!state) return undefined
     return ScopeSnapshotSchema.parse({ cursor: head, state })
   }

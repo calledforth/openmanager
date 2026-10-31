@@ -1,7 +1,8 @@
 import type { DatabaseSync } from 'node:sqlite'
+import type { Logger } from '../logger.ts'
+import { storedListing } from './composer-rows.ts'
 import { readSessionActivity } from './session-activity.ts'
 import {
-  ComposerListingSchema,
   ContentBlockSchema,
   InteractionSchema,
   ReasoningBlockSchema,
@@ -246,6 +247,7 @@ export function getProviderSessionId(
 export function readThreadState(
   database: DatabaseSync,
   query: { sessionId: string; threadId: string },
+  log?: Logger,
 ): ThreadState | undefined {
   const thread = database.prepare(THREAD_IN_SESSION_SQL).get(query.threadId, query.sessionId) as
     ThreadRow | undefined
@@ -309,7 +311,7 @@ export function readThreadState(
     tools,
     order,
     interactions,
-    listing: readThreadListing(database, query.threadId) ?? {},
+    listing: readThreadListing(database, query.threadId, log) ?? {},
   }
 }
 
@@ -317,10 +319,13 @@ export function readThreadState(
 export function readThreadListing(
   database: DatabaseSync,
   threadId: string,
+  log?: Logger,
 ): ComposerListing | undefined {
   const row = database.prepare(THREAD_LISTING_SQL).get(threadId) as
     { listing_json: string | null } | undefined
-  return row?.listing_json ? ComposerListingSchema.parse(JSON.parse(row.listing_json)) : undefined
+  return row?.listing_json
+    ? storedListing(JSON.parse(row.listing_json), { threadId }, log)
+    : undefined
 }
 
 function messageFromRow(database: DatabaseSync, row: MessageRow): Message {

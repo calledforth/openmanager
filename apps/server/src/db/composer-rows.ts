@@ -1,4 +1,5 @@
 import type { DatabaseSync } from 'node:sqlite'
+import type { LogFields, Logger } from '../logger.ts'
 import { ProjectionRefusal } from './write-errors.ts'
 import {
   ComposerListingSchema,
@@ -77,14 +78,40 @@ export function readPreferenceRows(
 
 type ListingRow = { config_options_json: string | null; commands_json: string | null }
 
-const listingFromRow = (row: ListingRow): ComposerListing =>
-  ComposerListingSchema.parse({
-    ...(row.config_options_json ? { configOptions: JSON.parse(row.config_options_json) } : {}),
-    ...(row.commands_json ? { availableCommands: JSON.parse(row.commands_json) } : {}),
+/**
+ * A stored listing, if it still reads. These rows run inside the snapshots, so
+ * one that does not must cost only itself: reported and left out, it would
+ * otherwise fail every client's catch-up. The next report replaces it.
+ */
+export function storedListing(
+  stored: unknown,
+  where: LogFields,
+  log?: Logger,
+): ComposerListing | undefined {
+  const listing = ComposerListingSchema.safeParse(stored)
+  if (listing.success) return listing.data
+  log?.('warn', 'Skipped a stored listing that does not read', {
+    ...where,
+    reason: listing.error.issues[0]?.message,
   })
+  return undefined
+}
+
+const listingFromRow = (row: ListingRow, target: ComposerPreferenceTarget, log?: Logger) =>
+  storedListing(
+    {
+      ...(row.config_options_json ? { configOptions: JSON.parse(row.config_options_json) } : {}),
+      ...(row.commands_json ? { availableCommands: JSON.parse(row.commands_json) } : {}),
+    },
+    target,
+    log,
+  )
 
 /** What each provider last listed in each workspace, for the environment snapshot. */
-export function readWorkspaceListings(database: DatabaseSync): WorkspaceComposerListing[] {
+export function readWorkspaceListings(
+  database: DatabaseSync,
+  log?: Logger,
+): WorkspaceComposerListing[] {
   const rows = database
     .prepare(
       `SELECT workspace_id, provider_id, config_options_json, commands_json, updated_at
@@ -93,18 +120,18 @@ export function readWorkspaceListings(database: DatabaseSync): WorkspaceComposer
     .all() as unknown as Array<
     ListingRow & { workspace_id: string; provider_id: string; updated_at: number }
   >
-  return rows.map((row) => ({
-    workspaceId: row.workspace_id,
-    providerId: row.provider_id,
-    listing: listingFromRow(row),
-    updatedAt: new Date(row.updated_at).toISOString(),
-  }))
+  return rows.flatMap((row) => {
+    const target = { workspaceId: row.workspace_id, providerId: row.provider_id }
+    const listing = listingFromRow(row, target, log)
+    return listing ? [{ ...target, listing, updatedAt: new Date(row.updated_at).toISOString() }] : []
+  })
 }
 
 /** What the provider last listed in this workspace, if it ever listed anything. */
 export function readWorkspaceListing(
   database: DatabaseSync,
   target: ComposerPreferenceTarget,
+  log?: Logger,
 ): ComposerListing | undefined {
   const row = database
     .prepare(
@@ -112,7 +139,7 @@ export function readWorkspaceListing(
        WHERE workspace_id = ? AND provider_id = ?`,
     )
     .get(target.workspaceId, target.providerId) as ListingRow | undefined
-  return row ? listingFromRow(row) : undefined
+  return row ? listingFromRow(row, target, log) : undefined
 }
 
 export function profileFromRow(row: ProfileRow): ProviderComposerProfile {

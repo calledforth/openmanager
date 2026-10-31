@@ -316,6 +316,7 @@ export async function startServer(config: ServerConfig) {
     epoch: eventEpoch,
     environment: () => ({ environmentId: identity.environmentId, name: identity.label }),
     workspaces: () => workspaces.list(),
+    log,
   })
   const stopRetention = createEventRetention(eventDatabase).schedule({
     onError: (error) => log('error', 'event retention failed', { reason: String(error) }),
@@ -426,8 +427,8 @@ export async function startServer(config: ServerConfig) {
         }),
       sessionForThread: (threadId) => threadService.sessionForThread(threadId),
       readSessionComposer: (sessionId) => getSessionSummary(eventDatabase, sessionId)?.composer,
-      readThreadListing: (threadId) => readThreadListing(eventDatabase, threadId),
-      readWorkspaceListing: (target) => readWorkspaceListing(eventDatabase, target),
+      readThreadListing: (threadId) => readThreadListing(eventDatabase, threadId, log),
+      readWorkspaceListing: (target) => readWorkspaceListing(eventDatabase, target, log),
       listingTarget: (sessionId) => {
         const session = getSessionSummary(eventDatabase, sessionId)
         return session?.providerId

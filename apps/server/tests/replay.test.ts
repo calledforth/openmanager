@@ -2,7 +2,7 @@ import { mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import type { DatabaseSync } from 'node:sqlite'
-import { afterEach, describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import {
   EVENT_FORMAT_VERSION,
   ProofEventSchemas,
@@ -23,6 +23,7 @@ import {
 } from '../src/db/replay.js'
 import { raiseReplayFloors, storedEventFormat } from '../src/db/replay-floor.js'
 import { findTurnByCommandId } from '../src/db/session-store.js'
+import type { Logger } from '../src/logger.js'
 
 const directories: string[] = []
 const databases: DatabaseSync[] = []
@@ -153,13 +154,14 @@ function padThread(database: DatabaseSync) {
   `)
 }
 
-async function seeded(options: { pad?: boolean } = {}) {
+async function seeded(options: { pad?: boolean; log?: Logger } = {}) {
   const database = await createDatabase()
   const repository = createEventRepository(database, { epoch: 'epoch-1', now: () => T0 })
   const reader = createReplayReader(database, {
     epoch: 'epoch-fresh',
     environment: () => environment,
     workspaces: () => [workspace],
+    ...(options.log ? { log: options.log } : {}),
   })
   if (options.pad) padThread(database)
   const records = [
@@ -455,6 +457,40 @@ describe('replay reader', () => {
       availableCommands: [{ name: 'review', description: 'Review the diff' }],
     })
     expect(at(1).scope).toEqual(threadScope)
+  })
+
+  it('leaves out a stored listing that does not read, and answers with the rest', async () => {
+    const log = vi.fn<Logger>()
+    const { database, reader } = await seeded({ log })
+    const commands = JSON.stringify([{ name: 'review', description: 'Review the diff' }])
+    database.exec(`
+      INSERT INTO composer_listings (workspace_id, provider_id, commands_json, updated_at) VALUES
+        ('workspace-1', 'bad', '"not a list"', 1000),
+        ('workspace-1', 'good', '${commands}', 2000);
+      UPDATE threads SET listing_json = '{"availableCommands":"not a list"}';
+    `)
+
+    const environmentAnswer = reader.read(environmentScope, null)
+    if (environmentAnswer.mode !== 'snapshot' || !('sessions' in environmentAnswer.snapshot.state))
+      throw new Error('Expected environment snapshot')
+    expect(environmentAnswer.snapshot.state.listings.entries).toEqual([
+      expect.objectContaining({ providerId: 'good' }),
+    ])
+    expect(log).toHaveBeenCalledWith(
+      'warn',
+      'Skipped a stored listing that does not read',
+      expect.objectContaining({ workspaceId: 'workspace-1', providerId: 'bad' }),
+    )
+
+    const chat = reader.read(threadScope, null)
+    if (chat.mode !== 'snapshot' || !('thread' in chat.snapshot.state))
+      throw new Error('Expected thread snapshot')
+    expect(chat.snapshot.state.listing).toEqual({})
+    expect(log).toHaveBeenCalledWith(
+      'warn',
+      'Skipped a stored listing that does not read',
+      expect.objectContaining({ threadId: threadScope.threadId }),
+    )
   })
 
   it('snapshots environment and session scopes from the catalog', async () => {
