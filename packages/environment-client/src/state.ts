@@ -665,7 +665,9 @@ function replaceEnvironment(
 /** `session.open` loads identities only; the thread's snapshot brings the transcript. */
 export function applySessionOpen(
   state: EnvironmentState,
-  payload: ProofResponse<'session.open'>['payload'],
+  payload: Omit<ProofResponse<'session.open'>['payload'], 'at'> & {
+    at?: ProofResponse<'session.open'>['payload']['at']
+  },
 ): EnvironmentState {
   let next = upsertSession(
     state,
