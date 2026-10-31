@@ -228,6 +228,7 @@ function threadState(thread: typeof THREAD, history: typeof EMPTY_HISTORY) {
       id: message.messageId,
       turnId: message.turnId,
     })),
+    listing: {},
     interactions: history.interactions.map((item) => ({
       turnId: item.turnId ?? open?.turnId ?? turns.at(-1)?.turnId ?? '',
       interaction: item.interaction,
@@ -266,6 +267,7 @@ async function answerCatalog(
       sessions: [],
       preferences: [],
       providerProfiles: [],
+      listings: { commands: [], configOptions: [], entries: [] },
       ...state,
     })
   }
@@ -1769,6 +1771,7 @@ describe('websocket environment client', () => {
               sessions: [],
               preferences: [],
               providerProfiles: [],
+              listings: { commands: [], configOptions: [], entries: [] },
             },
           },
         },
@@ -2085,6 +2088,7 @@ describe('cursor replay on reconnect', () => {
           tools: [],
           order: [],
           interactions: [],
+          listing: {},
         },
       },
     })
@@ -2202,6 +2206,7 @@ describe('cursor replay on reconnect', () => {
           tools: [],
           order: [],
           interactions: [],
+          listing: {},
         },
       },
     })
@@ -2324,6 +2329,7 @@ describe('cursor replay on reconnect', () => {
           tools: [],
           order: [],
           interactions: [],
+          listing: {},
         },
       },
     })
@@ -2407,6 +2413,7 @@ describe('cursor replay on reconnect', () => {
           tools: [],
           order: [],
           interactions: [],
+          listing: {},
         },
       },
     })
@@ -2508,6 +2515,7 @@ describe('one ordered queue on the client (§5.2)', () => {
         tools: [],
         order: [],
         interactions: [],
+        listing: {},
       },
     },
   })

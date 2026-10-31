@@ -24,10 +24,12 @@ import {
   type SubscriptionScope,
 } from './domains.js'
 import {
+  ComposerListingSchema,
   PreferenceRevisionSchema,
   ProviderComposerProfileSchema,
   WorkspaceComposerPreferenceSchema,
 } from './composer.js'
+import { ComposerListingsSnapshotSchema } from './composer-listings.js'
 import { ProofEventSchema, ProofEventSchemas, type ProofEvent } from './events.js'
 
 export const SequenceSchema = z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER)
@@ -115,8 +117,9 @@ const EnvironmentSnapshotSchema = z
     cursor: CursorSchema.extend({ scope: EnvironmentScopeSchema }),
     /**
      * The whole environment (docs/sync-foundations.md §6.2): every workspace,
-     * every session, every composer preference with its revision, and every
-     * provider's composer profile. A client replaces its copy with it.
+     * every session, every composer preference with its revision, every
+     * provider's composer profile, and what each provider last listed in each
+     * workspace. A client replaces its copy with it.
      */
     state: z.object({
       environment: EnvironmentSchema,
@@ -131,6 +134,7 @@ const EnvironmentSnapshotSchema = z
         }),
       ),
       providerProfiles: z.array(ProviderComposerProfileSchema),
+      listings: ComposerListingsSnapshotSchema,
     }),
   })
   .superRefine((snapshot, ctx) => {
@@ -188,6 +192,8 @@ const ThreadSnapshotSchema = z
       /** Every message, reasoning block and tool of the thread, in the order they happened. */
       order: z.array(ActivityRefSchema),
       interactions: z.array(z.object({ turnId: EntityIdSchema, interaction: InteractionSchema })),
+      /** What the provider offers this chat. */
+      listing: ComposerListingSchema,
     }),
   })
   .superRefine((snapshot, ctx) => {

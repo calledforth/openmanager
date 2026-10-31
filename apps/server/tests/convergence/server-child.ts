@@ -790,6 +790,7 @@ function readThread(sessionId: string, threadId: string): ServerThreadRead {
     tools: thread.tools,
     order: thread.order,
     interactions: thread.interactions,
+    listing: thread.listing,
   }
 }
 
@@ -802,6 +803,11 @@ async function handle(request: ChildRequest): Promise<unknown> {
       return update(await promptOf(request.sessionId), {
         sessionUpdate: 'agent_message_chunk',
         content: text(request.text),
+      })
+    case 'emitCommands':
+      return update(await promptOf(request.sessionId), {
+        sessionUpdate: 'available_commands_update',
+        availableCommands: request.names.map((name) => ({ name, description: `Run ${name}` })),
       })
     case 'emitThought':
       return update(await promptOf(request.sessionId), {

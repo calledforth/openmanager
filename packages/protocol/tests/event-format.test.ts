@@ -14,6 +14,7 @@ import { EVENT_FORMAT_VERSION, ProofEventSchema } from '../src/index.js'
  */
 const DIGESTS: Record<number, string> = {
   2: 'e78efd375337c4e2b90f6bcffce9b1f4618173def70e6804f7ef0c96c004a909',
+  3: 'd7580dfc1dd7f0b07916e49c2e4960c914c35b78503df4e77b800f6cd35acc10',
 }
 
 function digest(): string {

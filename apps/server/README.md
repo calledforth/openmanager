@@ -596,10 +596,11 @@ workspace can run different models, and the session setters change only the
 addressed one. The workspace preference is "last used" and seeds the next
 draft. Every change is pushed to all clients as a durable environment event
 (`session.composer.updated`, `composer.preferences.updated`,
-`provider.catalog.updated`, advertised as `composer.events`), including a mode
-the agent switched by itself, and session summaries carry the current
-selection, so a reconnect restores it from replay or from the snapshot. See
-`docs/decisions/live-composer-state.md`.
+`composer.listing.updated`, `provider.catalog.updated`, advertised as
+`composer.events`), including a mode the agent switched by itself, and session
+summaries carry the current selection, so a reconnect restores it from replay
+or from the snapshot. What a provider lists for a chat travels in that chat's
+stream (`thread.listing.updated`). See `docs/decisions/live-composer-state.md`.
 
 Composer drafts are kept here too, so a draft survives a reload and reaches
 every paired device. `draft.list`, `draft.save` and `draft.delete` read and

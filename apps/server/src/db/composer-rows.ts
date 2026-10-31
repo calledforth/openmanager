@@ -1,9 +1,13 @@
 import type { DatabaseSync } from 'node:sqlite'
 import { ProjectionRefusal } from './write-errors.ts'
 import {
+  ComposerListingSchema,
   ProviderComposerProfileSchema,
   WorkspaceComposerPreferenceSchema,
+  type ComposerListing,
+  type ComposerPreferenceTarget,
   type ProviderComposerProfile,
+  type WorkspaceComposerListing,
   type WorkspaceComposerPreference,
 } from '@openmanager/protocol/node'
 
@@ -71,6 +75,46 @@ export function readPreferenceRows(
     .all() as unknown as Array<PreferenceRow & { workspace_id: string; provider_id: string }>
 }
 
+type ListingRow = { config_options_json: string | null; commands_json: string | null }
+
+const listingFromRow = (row: ListingRow): ComposerListing =>
+  ComposerListingSchema.parse({
+    ...(row.config_options_json ? { configOptions: JSON.parse(row.config_options_json) } : {}),
+    ...(row.commands_json ? { availableCommands: JSON.parse(row.commands_json) } : {}),
+  })
+
+/** What each provider last listed in each workspace, for the environment snapshot. */
+export function readWorkspaceListings(database: DatabaseSync): WorkspaceComposerListing[] {
+  const rows = database
+    .prepare(
+      `SELECT workspace_id, provider_id, config_options_json, commands_json, updated_at
+       FROM composer_listings ORDER BY workspace_id, provider_id`,
+    )
+    .all() as unknown as Array<
+    ListingRow & { workspace_id: string; provider_id: string; updated_at: number }
+  >
+  return rows.map((row) => ({
+    workspaceId: row.workspace_id,
+    providerId: row.provider_id,
+    listing: listingFromRow(row),
+    updatedAt: new Date(row.updated_at).toISOString(),
+  }))
+}
+
+/** What the provider last listed in this workspace, if it ever listed anything. */
+export function readWorkspaceListing(
+  database: DatabaseSync,
+  target: ComposerPreferenceTarget,
+): ComposerListing | undefined {
+  const row = database
+    .prepare(
+      `SELECT config_options_json, commands_json FROM composer_listings
+       WHERE workspace_id = ? AND provider_id = ?`,
+    )
+    .get(target.workspaceId, target.providerId) as ListingRow | undefined
+  return row ? listingFromRow(row) : undefined
+}
+
 export function profileFromRow(row: ProfileRow): ProviderComposerProfile {
   return ProviderComposerProfileSchema.parse({
     providerId: row.provider_id,
@@ -114,6 +158,15 @@ export function prepareComposerProjection(database: DatabaseSync) {
       default_mode_id = excluded.default_mode_id,
       updated_at = excluded.updated_at
   `)
+  const writeListing = database.prepare(`
+    INSERT INTO composer_listings (
+      workspace_id, provider_id, config_options_json, commands_json, updated_at
+    ) VALUES (?, ?, ?, ?, ?)
+    ON CONFLICT(workspace_id, provider_id) DO UPDATE SET
+      config_options_json = COALESCE(excluded.config_options_json, config_options_json),
+      commands_json = COALESCE(excluded.commands_json, commands_json),
+      updated_at = excluded.updated_at
+  `)
   const writePreference = database.prepare(`
     INSERT INTO workspace_composer_preferences (
       workspace_id, provider_id, model_id, mode_id, config_values_json, revision, updated_at
@@ -137,6 +190,16 @@ export function prepareComposerProjection(database: DatabaseSync) {
         profile.defaultModelId ?? null,
         profile.defaultModeId ?? null,
         profile.updatedAt,
+      )
+    },
+    /** The fields a workspace's listing changed in; the others stay as held. */
+    listing(target: ComposerPreferenceTarget, listing: ComposerListing, at: number): void {
+      writeListing.run(
+        target.workspaceId,
+        target.providerId,
+        json(listing.configOptions),
+        json(listing.availableCommands),
+        at,
       )
     },
     /**

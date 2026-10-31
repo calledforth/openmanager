@@ -3,6 +3,7 @@ import type {
   AuthorizedClient,
   AuthorizedClientList,
   BackgroundTask,
+  ComposerListing,
   Draft,
   DraftContent,
   DraftList,
@@ -107,6 +108,12 @@ export interface OutboxEntry {
   error?: string
 }
 
+export interface HeldComposerListing {
+  listing: ComposerListing
+  /** When it last changed, so a workspace with none can borrow the newest. */
+  updatedAt: string
+}
+
 export interface TurnNotice {
   turnId: string
   message: string
@@ -128,6 +135,8 @@ export interface ThreadState {
   /** Messages, reasoning and tools in arrival order; see `ProtocolThreadView.order`. */
   order: ActivityRef[]
   interactions: PendingInteraction[]
+  /** What the provider offers this chat. It arrives with the chat. */
+  listing: ComposerListing
   notices: TurnNotice[]
   /** Sends still waiting on the environment, oldest first, newest last. */
   outbox: OutboxEntry[]
@@ -200,6 +209,11 @@ export interface EnvironmentState {
    * an event or a read answer brings it.
    */
   composerRevisions: Record<string, Record<string, number>>
+  /**
+   * What each provider last listed in each workspace, by workspace ID and then
+   * provider ID. A new chat has no session of its own, so it offers these.
+   */
+  composerListings: Record<string, Record<string, HeldComposerListing>>
   /**
    * Composer drafts as the environment last reported them, by draft id.
    * Displayed through `draftEdits` first: an edit not saved yet is newer.

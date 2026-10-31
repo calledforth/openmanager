@@ -119,6 +119,9 @@ export function createEventProjector(
     updateSessionComposer: database.prepare(
       'UPDATE sessions SET composer_json = ? WHERE session_id = ?',
     ),
+    updateThreadListing: database.prepare(
+      'UPDATE threads SET listing_json = ? WHERE thread_id = ?',
+    ),
     deleteSession: database.prepare('DELETE FROM sessions WHERE session_id = ?'),
     // What a deletion must already have said, so no foreign key removes a
     // client-visible row silently (db/deletions.ts).
@@ -618,6 +621,22 @@ export function createEventProjector(
           )
         }
         return
+      case 'thread.listing.updated':
+        // As above: published only while the session has its row.
+        if (
+          s.updateThreadListing.run(JSON.stringify(event.payload.listing), event.scope.threadId)
+            .changes !== 1
+        ) {
+          throw new ProjectionRefusal(
+            `Cannot record a listing for missing thread ${event.scope.threadId}`,
+          )
+        }
+        return
+      case 'composer.listing.updated': {
+        const { workspaceId, providerId, ...listing } = event.payload
+        composer.listing({ workspaceId, providerId }, listing, at)
+        return
+      }
       case 'draft.saved':
         drafts.saved(event.payload.draft)
         return

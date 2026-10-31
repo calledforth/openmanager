@@ -457,7 +457,14 @@ describe('applyEvent', () => {
 
     const fromSnapshot = applySnapshot(seeded(), {
       cursor: { scope: threadScope, epoch: 'epoch', sequence: 9 },
-      state: { thread: THREAD, turns: [turn], messages, interactions: [], ...activity },
+      state: {
+        thread: THREAD,
+        turns: [turn],
+        messages,
+        interactions: [],
+        listing: {},
+        ...activity,
+      },
     }).threads[THREAD.threadId]!
     expect(fromSnapshot.reasoning).toEqual(activity.reasoning)
     expect(fromSnapshot.tools).toEqual(activity.tools)
@@ -919,6 +926,7 @@ describe('optimistic sends', () => {
         tools: [],
         order: [],
         interactions: [],
+        listing: {},
       },
     })
     expect(replaced.threads[THREAD.threadId]?.confirmedEchoes).toEqual({
@@ -969,6 +977,7 @@ describe('optimistic sends', () => {
         tools: [],
         order: [],
         interactions: [],
+        listing: {},
       },
     })
     // The same text from another send is not this one: no text matching.
@@ -995,6 +1004,7 @@ describe('optimistic sends', () => {
         tools: [],
         order: [],
         interactions: [],
+        listing: {},
       },
     })
     expect(reconnected.threads[THREAD.threadId]?.outbox).toEqual([])
@@ -1036,6 +1046,7 @@ describe('optimistic sends', () => {
         tools: [],
         order: [],
         interactions: [],
+        listing: {},
       },
     })
     expect(replaced.threads[THREAD.threadId]?.outbox).toHaveLength(1)
@@ -1062,6 +1073,7 @@ describe('snapshots', () => {
         tools: [{ toolCallId: 'tool-1', turnId: 'turn-1', status: 'completed' }],
         order: [],
         interactions: [],
+        listing: {},
       },
     }
     const state = applySnapshot(applyEvent(seeded(), turnStarted()), snapshot)
@@ -1096,6 +1108,7 @@ describe('snapshots', () => {
           },
         ],
         providerProfiles: [],
+        listings: { commands: [], configOptions: [], entries: [] },
       },
     })
     const first = applySnapshot(
@@ -1188,6 +1201,7 @@ describe('snapshots', () => {
         sessions: [],
         preferences: [],
         providerProfiles: [],
+        listings: { commands: [], configOptions: [], entries: [] },
       },
     })
     // Listing order is preserved for the sidebar; recents are a separate view.

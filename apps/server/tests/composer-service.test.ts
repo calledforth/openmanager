@@ -548,7 +548,8 @@ describe('what a provider and its models accept in a prompt', () => {
       store,
       () => undefined,
       {
-        publish: (_name, payload) => announced.push(payload.sessionId),
+        publish: (_name, payload) =>
+          announced.push('sessionId' in payload ? payload.sessionId : ''),
         hasSession: (sessionId) => sessionId === 'kept',
       },
     )

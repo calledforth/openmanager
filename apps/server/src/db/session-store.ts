@@ -1,6 +1,7 @@
 import type { DatabaseSync } from 'node:sqlite'
 import { readSessionActivity } from './session-activity.ts'
 import {
+  ComposerListingSchema,
   ContentBlockSchema,
   InteractionSchema,
   ReasoningBlockSchema,
@@ -9,6 +10,7 @@ import {
   TurnSchema,
   TURN_FAILURE_MESSAGES,
   type ActivityRef,
+  type ComposerListing,
   type Interaction,
   type Message,
   type ReasoningBlock,
@@ -28,6 +30,7 @@ import {
   MESSAGES_FOR_THREAD_SQL,
   PENDING_INTERACTIONS_FOR_THREAD_SQL,
   THREAD_IN_SESSION_SQL,
+  THREAD_LISTING_SQL,
   THREADS_FOR_SESSION_SQL,
   TURN_ACTIVITY_FOR_THREAD_SQL,
   TURN_FOR_COMMAND_ID_SQL,
@@ -52,6 +55,8 @@ export interface ThreadState {
   order: ActivityRef[]
   /** Pending requests, each with the turn it belongs to. */
   interactions: Array<{ turnId: string; interaction: Interaction }>
+  /** What the provider offers this chat. */
+  listing: ComposerListing
 }
 
 type SessionRow = {
@@ -304,7 +309,18 @@ export function readThreadState(
     tools,
     order,
     interactions,
+    listing: readThreadListing(database, query.threadId) ?? {},
   }
+}
+
+/** What the provider last listed for this chat, if the thread exists and it has. */
+export function readThreadListing(
+  database: DatabaseSync,
+  threadId: string,
+): ComposerListing | undefined {
+  const row = database.prepare(THREAD_LISTING_SQL).get(threadId) as
+    { listing_json: string | null } | undefined
+  return row?.listing_json ? ComposerListingSchema.parse(JSON.parse(row.listing_json)) : undefined
 }
 
 function messageFromRow(database: DatabaseSync, row: MessageRow): Message {

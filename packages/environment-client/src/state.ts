@@ -1,6 +1,8 @@
 import { foldProtocolEvent, placeActivity } from '@agentpack/view/protocol'
+import { unpackComposerListings } from '@openmanager/protocol'
 import type {
   BackgroundTask,
+  ComposerListing,
   InteractionKind,
   Message,
   ProofEvent,
@@ -57,6 +59,7 @@ export function createInitialState(): EnvironmentState {
     providerOrder: [],
     composerPreferences: {},
     composerRevisions: {},
+    composerListings: {},
     drafts: {},
     draftTombstones: {},
     draftEdits: {},
@@ -80,6 +83,7 @@ export function createThreadState(
     tools: [],
     order: [],
     interactions: [],
+    listing: {},
     notices: [],
     outbox: [],
     hydration,
@@ -396,6 +400,35 @@ export function applyEvent(state: EnvironmentState, event: ProofEvent): Environm
         },
       }
     }
+    case 'thread.listing.updated': {
+      const thread = state.threads[event.scope.threadId]
+      if (!thread) return state
+      return {
+        ...state,
+        threads: {
+          ...state.threads,
+          [event.scope.threadId]: { ...thread, listing: event.payload.listing },
+        },
+      }
+    }
+    case 'composer.listing.updated': {
+      const { workspaceId, providerId, ...changed } = event.payload
+      if (!state.workspaces[workspaceId]) return state
+      const held = state.composerListings[workspaceId]
+      return {
+        ...state,
+        composerListings: {
+          ...state.composerListings,
+          [workspaceId]: {
+            ...held,
+            [providerId]: {
+              listing: { ...held?.[providerId]?.listing, ...changed },
+              updatedAt: event.timestamp,
+            },
+          },
+        },
+      }
+    }
     case 'composer.preferences.updated':
       // A workspace this client no longer lists must not get a preference back.
       return state.workspaces[event.payload.workspaceId]
@@ -488,11 +521,11 @@ export function applyEvent(state: EnvironmentState, event: ProofEvent): Environm
  * pending overlay stay, and unchanged objects keep their identity.
  *
  * - **Environment:** the environment, workspaces, sessions and their orders,
- *   composer preferences and provider profiles. Threads of sessions that no
- *   longer exist go.
+ *   composer preferences, provider profiles and workspace listings. Threads
+ *   of sessions that no longer exist go.
  * - **Session:** its summary and its thread list.
- * - **Thread:** turns, messages, reasoning, tools, order and pending
- *   requests. The client's own echoes are settled against it; notices start
+ * - **Thread:** turns, messages, reasoning, tools, order, pending requests
+ *   and listing. The client's own echoes are settled against it; notices start
  *   over (the transport places held transients after it).
  */
 export function applySnapshot(state: EnvironmentState, snapshot: ScopeSnapshot): EnvironmentState {
@@ -542,6 +575,7 @@ export function applySnapshot(state: EnvironmentState, snapshot: ScopeSnapshot):
       })),
       (item) => item.interaction.interactionId,
     ),
+    listing: share(existing.listing, snapshotState.listing),
   }
   return { ...withThread, threads: { ...withThread.threads, [thread.threadId]: replaced } }
 }
@@ -586,6 +620,15 @@ function replaceEnvironment(
       [entry.providerId]: entry.revision,
     }
   }
+  const composerListings: EnvironmentState['composerListings'] = {}
+  for (const { workspaceId, providerId, listing, updatedAt } of unpackComposerListings(
+    snapshot.listings,
+  )) {
+    composerListings[workspaceId] = {
+      ...composerListings[workspaceId],
+      [providerId]: { listing, updatedAt },
+    }
+  }
   const profiles = new Map(
     snapshot.providerProfiles.map((profile) => [profile.providerId, profile]),
   )
@@ -616,6 +659,7 @@ function replaceEnvironment(
       Object.keys(threads).length === Object.keys(state.threads).length ? state.threads : threads,
     composerPreferences: share(state.composerPreferences, composerPreferences),
     composerRevisions: share(state.composerRevisions, composerRevisions),
+    composerListings: share(state.composerListings, composerListings),
     providers: share(state.providers, providers),
     activeSessionId: activeGone ? null : state.activeSessionId,
     activeThreadId: activeGone ? null : state.activeThreadId,
@@ -876,12 +920,15 @@ export function applyWorkspaceRemoved(
   delete composerPreferences[workspaceId]
   const composerRevisions = { ...state.composerRevisions }
   delete composerRevisions[workspaceId]
+  const composerListings = { ...state.composerListings }
+  delete composerListings[workspaceId]
   return {
     ...state,
     workspaces,
     workspaceOrder: state.workspaceOrder.filter((id) => id !== workspaceId),
     composerPreferences,
     composerRevisions,
+    composerListings,
   }
 }
 
@@ -1154,6 +1201,39 @@ export function selectSessionComposer(
   sessionId: string,
 ): SessionComposerState | null {
   return state.sessions[sessionId]?.composer ?? null
+}
+
+/** What the provider offers a chat; empty until the chat has loaded. */
+export function selectSessionListing(
+  state: EnvironmentState,
+  sessionId: string,
+): ComposerListing | null {
+  const threadId = state.sessions[sessionId]?.threadIds[0]
+  return (threadId && state.threads[threadId]?.listing) || null
+}
+
+/**
+ * What a new chat offers: what the provider last listed in this workspace, or
+ * failing that its newest listing anywhere. An empty command list is the
+ * provider offering none, so it is an answer; empty settings are not.
+ */
+export function selectDraftListing<K extends keyof ComposerListing>(
+  state: EnvironmentState,
+  field: K,
+  workspaceId: string,
+  providerId: string,
+): NonNullable<ComposerListing[K]> | undefined {
+  const own = state.composerListings[workspaceId]?.[providerId]?.listing[field]
+  if (own) return own
+  let newest: { at: string; listed: NonNullable<ComposerListing[K]> } | undefined
+  for (const byProvider of Object.values(state.composerListings)) {
+    const held = byProvider[providerId]
+    const listed = held?.listing[field]
+    if (held && listed && (!newest || held.updatedAt > newest.at)) {
+      newest = { at: held.updatedAt, listed }
+    }
+  }
+  return newest?.listed
 }
 
 /** Null until a composer command has answered for this workspace and provider. */

@@ -7,6 +7,7 @@ import {
   ComposerCommandOptionSchema,
   ComposerCommandSchemas,
   ComposerConfigOptionSchema,
+  ComposerListingSchema,
   ComposerResponseSchemas,
   ComposerUsageSchema,
   PROVIDER_CATALOG_CAPABILITY,
@@ -14,7 +15,9 @@ import {
   type CommandEnvelope,
   type ComposerCommandOption,
   type ComposerConfigOption,
+  type ComposerListing,
   type ComposerModelOption,
+  type ComposerPreferenceTarget,
   type ErrorCode,
   type PromptCapabilities,
   type ProofEvent,
@@ -52,7 +55,7 @@ type RuntimeControl = Pick<
   'setModel' | 'setMode' | 'setConfigOption' | 'applyDesiredConfig' | 'modelImageInputSupport'
 >
 
-type ComposerEventName = 'session.composer.updated'
+type ComposerEventName = 'session.composer.updated' | 'composer.listing.updated'
 type ComposerEventPayload<N extends ComposerEventName> = Extract<ProofEvent, { name: N }>['payload']
 
 export interface ComposerServiceOptions {
@@ -64,10 +67,24 @@ export interface ComposerServiceOptions {
    * tracks selections in memory, for tests and offline hosts.
    */
   publish?: <N extends ComposerEventName>(name: N, payload: ComposerEventPayload<N>) => void
+  /**
+   * Announce what the provider offers a chat, in that chat's own stream: a
+   * listing is too large to send every browser for every session.
+   */
+  publishThreadListing?: (
+    target: { sessionId: string; threadId: string },
+    listing: ComposerListing,
+  ) => void
   /** The host session that owns a runtime thread; probes and unknown threads have none. */
   sessionForThread?: (threadId: string) => string | undefined
   /** The session's persisted selection. Without it selections live in memory. */
   readSessionComposer?: (sessionId: string) => SessionComposerState | undefined
+  /** The chat's persisted listing. Without it listings live in memory. */
+  readThreadListing?: (threadId: string) => ComposerListing | undefined
+  /** What the provider last listed in this workspace, for a new chat to borrow. */
+  readWorkspaceListing?: (target: ComposerPreferenceTarget) => ComposerListing | undefined
+  /** The workspace and provider a session lists for. Without it nothing is kept for new chats. */
+  listingTarget?: (sessionId: string) => ComposerPreferenceTarget | undefined
   /**
    * Whether the session still has its row. A selection reported for one
    * being deleted is not announced: its projection would have no row to
@@ -256,6 +273,60 @@ export function createComposerService(
     return merged.data
   }
 
+  /**
+   * A new chat has no session to list for it, so the workspace keeps what its
+   * provider last listed. An empty command list is the provider offering
+   * none; empty settings are a session that has not reported yet. Settings
+   * are compared without their values: a draft shows its own preference, and
+   * two sessions on one provider would otherwise take turns announcing.
+   */
+  const updateWorkspaceListing = (sessionId: string, patch: ComposerListing) => {
+    const target = options.listingTarget?.(sessionId)
+    if (!target) return
+    const held = options.readWorkspaceListing?.(target)
+    const changed: ComposerListing = {
+      ...(patch.configOptions?.length &&
+      !isDeepStrictEqual(settingsOffered(patch.configOptions), settingsOffered(held?.configOptions))
+        ? { configOptions: patch.configOptions }
+        : {}),
+      ...(patch.availableCommands &&
+      !isDeepStrictEqual(patch.availableCommands, held?.availableCommands)
+        ? { availableCommands: patch.availableCommands }
+        : {}),
+    }
+    if (Object.keys(changed).length > 0) {
+      publish('composer.listing.updated', { ...target, ...changed })
+    }
+  }
+
+  // Like `memorySelections`: with a persisted reader, only what failed to write.
+  const memoryListings = new Map<string, ComposerListing>()
+  const listingOf = (threadId: string): ComposerListing =>
+    memoryListings.get(threadId) ?? options.readThreadListing?.(threadId) ?? {}
+
+  /** What the provider offers one chat: the chat's own, then the workspace's for the next one. */
+  const updateListing = (sessionId: string, threadId: string, patch: ComposerListing) => {
+    const current = listingOf(threadId)
+    const merged = ComposerListingSchema.safeParse({ ...current, ...defined(patch) })
+    if (!merged.success) return
+    if (options.hasSession && !options.hasSession(sessionId)) {
+      memoryListings.delete(threadId)
+      return
+    }
+    // The workspace's is checked whatever the chat's says: a crash between
+    // the two writes must not leave it behind for good.
+    if (!isDeepStrictEqual(merged.data, current)) {
+      try {
+        options.publishThreadListing?.({ sessionId, threadId }, merged.data)
+        if (options.readThreadListing) memoryListings.delete(threadId)
+        else memoryListings.set(threadId, merged.data)
+      } catch {
+        memoryListings.set(threadId, merged.data)
+      }
+    }
+    updateWorkspaceListing(sessionId, defined(patch))
+  }
+
   // What a probe learned, outside any session. It decides which models are
   // listed and never how a listed one reads: a session describes its models
   // in the agent's own words, and a probe that rewrote them would trade the
@@ -363,6 +434,9 @@ export function createComposerService(
     /** The selection a client would see for this session right now. */
     sessionComposer: selectionOf,
 
+    /** The listing a client would see for this chat right now. */
+    threadListing: listingOf,
+
     /**
      * A draft's picks, filed by `session.create` before the provider starts,
      * and the preference the new session launches on. The same write as
@@ -439,6 +513,8 @@ export function createComposerService(
               modelId: current.modelId ?? preference.modelId ?? event.data.models?.currentModelId,
               modeId: reportedMode(event.event, current.modeId, event.data.modes),
               configValues: current.configValues ?? preference.configValues,
+            })
+            updateListing(sessionId, event.threadId, {
               configOptions: configOptionsPatch(event.data.configOptions),
             })
           }
@@ -504,7 +580,7 @@ export function createComposerService(
           return
         }
         if (event.event === 'config_option_update' && sessionId) {
-          updateSelection(sessionId, {
+          updateListing(sessionId, event.threadId, {
             configOptions: configOptionsPatch(event.data.configOptions),
           })
           return
@@ -512,7 +588,7 @@ export function createComposerService(
         if (event.event === 'available_commands_update' && sessionId) {
           // The provider lists its commands again whenever a session loads, so
           // an empty listing is a real "none now", not a gap to fill.
-          updateSelection(sessionId, {
+          updateListing(sessionId, event.threadId, {
             availableCommands: commandsPatch(event.data.availableCommands),
           })
           return
@@ -716,6 +792,10 @@ function configOptionsPatch(
     return parsed.success ? [parsed.data] : []
   })
 }
+
+/** Settings as a list of what is on offer, whatever each is set to now. */
+const settingsOffered = (options: readonly ComposerConfigOption[] | undefined) =>
+  options?.map(({ currentValue: _value, ...offered }) => offered)
 
 /** Same rule for commands: one the protocol cannot carry costs only itself. */
 function commandsPatch(

@@ -41,6 +41,7 @@ export type ScriptStep =
 
 export type ProviderOp =
   | { op: 'emitText'; sessionId: string; text: string }
+  | { op: 'emitCommands'; sessionId: string; names: string[] }
   | { op: 'emitThought'; sessionId: string; text: string }
   | { op: 'openTool'; sessionId: string; toolCallId: string; title?: string }
   | {
@@ -248,4 +249,5 @@ export interface ServerThreadRead {
   tools: unknown[]
   order: unknown[]
   interactions: Array<{ turnId: string; interaction: unknown }>
+  listing: unknown
 }

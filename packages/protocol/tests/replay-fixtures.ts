@@ -71,6 +71,7 @@ export const scopeSnapshots: ScopeSnapshot[] = [
         },
       ],
       providerProfiles: [{ providerId: 'opencode', updatedAt: 1 }],
+      listings: { commands: [], configOptions: [], entries: [] },
     },
   },
   {
@@ -111,6 +112,7 @@ export const scopeSnapshots: ScopeSnapshot[] = [
         { kind: 'message', id: 'message-2', turnId: 'turn-1' },
       ],
       interactions: [],
+      listing: {},
     },
   },
 ]

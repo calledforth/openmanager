@@ -13,6 +13,7 @@
  *     (todo).
  */
 import { describe, expect } from 'vitest'
+import { selectDraftListing } from '@openmanager/environment-client'
 import { expectConverges, recordEvidence } from './evidence.ts'
 import { Driver, sleep, until, type Rig, type TestClient } from './harness.ts'
 import type { FrameFields, FrameRecord } from './link-proxy.ts'
@@ -1442,6 +1443,48 @@ describe('divergences on main that §8.4 does not list', () => {
    * `session.updated` whose status does not change (event-repository.ts,
    * `activityChanged`). A sidebar-only client must follow every step.
    */
+  /**
+   * What a provider lists goes to the browser with the chat open and nowhere
+   * else as a chat's: the sidebar's stream names only what a new chat borrows,
+   * and a second browser in the sidebar, or a fresh load, ends up the same.
+   */
+  scenario('G3 a listing reaches the open chat, not the sidebar (guard)', {}, async (rig) => {
+    const a = await rig.connect('A')
+    const b = await rig.connect('B')
+    const target = await createSession(rig, a, QUIET)
+    await until(() => b.client.getState().sessions[target.sessionId], 'B to list the session')
+    await startTurn(a, target)
+    await rig.provider({ op: 'emitCommands', sessionId: target.sessionId, names: ['review'] })
+    await untilThread(
+      a,
+      target,
+      (state) => state.listing.availableCommands?.[0]?.name === 'review',
+      'A to hold the listing with the chat',
+    )
+    const { workspaceId, providerId } = b.client.getState().sessions[target.sessionId]!
+    await until(
+      () =>
+        selectDraftListing(b.client.getState(), 'availableCommands', workspaceId, providerId!)
+          ?.length || undefined,
+      'B to hold what a new chat here would offer',
+    )
+    // B has no chat open, so the list reached it only as the workspace's.
+    expect(b.client.getState().threads[target.threadId]?.listing ?? {}).toEqual({})
+    expect(b.client.getState().sessions[target.sessionId]?.composer ?? {}).not.toHaveProperty(
+      'availableCommands',
+    )
+    // None now: the next chat here offers none, and A's chat shows none.
+    await rig.provider({ op: 'emitCommands', sessionId: target.sessionId, names: [] })
+    await untilThread(
+      a,
+      target,
+      (state) => state.listing.availableCommands?.length === 0,
+      'A to hold the empty listing',
+    )
+    await expectConverges('G3 chat', rig, a)
+    await expectConverges('G3 sidebar', rig, b)
+  })
+
   scenario('G1 waitingOn follows a question over a permission (#219, guard)', {}, async (rig) => {
     const a = await rig.connect('A')
     const b = await rig.connect('B')

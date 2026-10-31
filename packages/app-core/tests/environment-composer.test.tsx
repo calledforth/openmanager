@@ -649,21 +649,33 @@ describe('the composer over the environment client', () => {
     await settle(client)
     expect(probe.composer.acpSessionState?.availableCommands).toBeUndefined()
 
+    const commands = [
+      { name: 'review', description: 'Review the diff' },
+      { name: 'search', description: 'Search', placeholder: 'query' },
+    ]
     client.emit({
       type: 'event',
       eventId: 'session-commands',
       timestamp: new Date().toISOString(),
-      name: 'session.composer.updated',
+      name: 'thread.listing.updated',
+      scope: {
+        type: 'thread',
+        environmentId: 'mock-environment',
+        sessionId: SESSION.sessionId,
+        threadId: client.getState().sessions[SESSION.sessionId]!.threadIds[0]!,
+      },
+      payload: { listing: { availableCommands: commands } },
+    })
+    client.emit({
+      type: 'event',
+      eventId: 'workspace-commands',
+      timestamp: new Date().toISOString(),
+      name: 'composer.listing.updated',
       scope: { type: 'environment', environmentId: 'mock-environment' },
       payload: {
-        sessionId: SESSION.sessionId,
-        composer: {
-          modelId: 'opus',
-          availableCommands: [
-            { name: 'review', description: 'Review the diff' },
-            { name: 'search', description: 'Search', placeholder: 'query' },
-          ],
-        },
+        workspaceId: WORKSPACE.workspaceId,
+        providerId: 'opencode',
+        availableCommands: commands,
       },
     })
     await settle(client)
@@ -694,22 +706,20 @@ describe('the composer over the environment client', () => {
     const client = createMockEnvironmentClient({ seed: SEED })
     await mount(client)
     const list = (
-      sessionId: string,
+      eventId: string,
       availableCommands: Array<{ name: string; description: string }>,
     ) =>
       client.emit({
         type: 'event',
-        eventId: `commands-${sessionId}`,
+        eventId,
         timestamp: new Date().toISOString(),
-        name: 'session.composer.updated',
+        name: 'composer.listing.updated',
         scope: { type: 'environment', environmentId: 'mock-environment' },
-        payload: { sessionId, composer: { availableCommands } },
+        payload: { workspaceId: WORKSPACE.workspaceId, providerId: 'opencode', availableCommands },
       })
-    list(SESSION.sessionId, [{ name: 'review', description: 'Review the diff' }])
-    list(SIBLING.sessionId, [])
-    // The draft is opened from the sibling, whose empty listing is the answer.
-    await act(() => probe.session.selectSession(WORKSPACE.workspaceId, SIBLING.sessionId))
-    await settle(client)
+    list('older', [{ name: 'review', description: 'Review the diff' }])
+    list('newer', [])
+    // The last listing is the answer, empty or not.
     await openDraft(client)
     expect(probe.composer.draftSessionState?.availableCommands).toEqual([])
   })

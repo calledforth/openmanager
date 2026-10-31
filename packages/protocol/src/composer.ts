@@ -103,6 +103,7 @@ export const ComposerPreferenceTargetSchema = z.strictObject({
   workspaceId: EntityIdSchema,
   providerId: EntityIdSchema,
 })
+export type ComposerPreferenceTarget = z.infer<typeof ComposerPreferenceTargetSchema>
 const preferenceTarget = ComposerPreferenceTargetSchema
 const sessionTarget = z.strictObject({ sessionId: EntityIdSchema })
 

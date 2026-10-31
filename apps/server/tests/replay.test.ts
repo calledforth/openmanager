@@ -375,9 +375,7 @@ describe('replay reader', () => {
 
   it('snapshots the whole environment: every session, preference and provider profile', async () => {
     const { database, reader } = await seeded()
-    const composer = JSON.stringify({
-      availableCommands: [{ name: 'large', description: '界'.repeat(7_000) }],
-    })
+    const composer = JSON.stringify({ configValues: { large: '界'.repeat(7_000) } })
     const insert = database.prepare(`INSERT INTO sessions
       (session_id, workspace_id, provider_id, status, composer_json, created_at, updated_at)
       VALUES (?, 'workspace-1', 'opencode', 'idle', ?, 1000, 1000)`)
@@ -407,6 +405,54 @@ describe('replay reader', () => {
     ])
     // Over 1 MiB, and nothing cut it.
     expect(Buffer.byteLength(result.snapshotJson)).toBeGreaterThan(1024 * 1024)
+  })
+
+  it('keeps what providers list off the sidebar: a chat has its own, a workspace shares items', async () => {
+    const { database, reader, at } = await seeded({ pad: true })
+    const commands = JSON.stringify([{ name: 'review', description: 'Review the diff' }])
+    database.exec(`
+      INSERT INTO workspaces (workspace_id, name, path, created_at, updated_at)
+        VALUES ('workspace-gone', 'gone', '/gone', 1, 1);
+      INSERT INTO composer_listings (workspace_id, provider_id, commands_json, updated_at) VALUES
+        ('workspace-1', 'opencode', '${commands}', 1000),
+        ('workspace-1', 'cursor', '${commands}', 2000),
+        ('workspace-gone', 'cursor', '${commands}', 3000);
+      UPDATE threads SET listing_json = '{"availableCommands":${commands}}';
+    `)
+    const environmentSnapshot = reader.read(environmentScope, null)
+    if (
+      environmentSnapshot.mode !== 'snapshot' ||
+      !('sessions' in environmentSnapshot.snapshot.state)
+    )
+      throw new Error('Expected environment snapshot')
+    // The same command twice over, once on the wire; a workspace this
+    // environment does not list is not stated.
+    expect(environmentSnapshot.snapshot.state.listings).toEqual({
+      commands: [{ name: 'review', description: 'Review the diff' }],
+      configOptions: [],
+      entries: [
+        {
+          workspaceId: 'workspace-1',
+          providerId: 'cursor',
+          commands: [0],
+          updatedAt: new Date(2000).toISOString(),
+        },
+        {
+          workspaceId: 'workspace-1',
+          providerId: 'opencode',
+          commands: [0],
+          updatedAt: new Date(1000).toISOString(),
+        },
+      ],
+    })
+
+    const chat = reader.read(threadScope, null)
+    if (chat.mode !== 'snapshot' || !('thread' in chat.snapshot.state))
+      throw new Error('Expected thread snapshot')
+    expect(chat.snapshot.state.listing).toEqual({
+      availableCommands: [{ name: 'review', description: 'Review the diff' }],
+    })
+    expect(at(1).scope).toEqual(threadScope)
   })
 
   it('snapshots environment and session scopes from the catalog', async () => {

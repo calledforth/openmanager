@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import type { ProofEvent } from '@openmanager/protocol'
+import { packComposerListings, type ComposerListing, type ProofEvent } from '@openmanager/protocol'
 import { createMockEnvironmentClient } from '../src/mock'
 import {
   applyComposerPreference,
@@ -8,9 +8,12 @@ import {
   applyProviderCatalog,
   applySnapshot,
   applyWorkspaceList,
+  applyWorkspaceRemoved,
   createInitialState,
   selectComposerPreference,
+  selectDraftListing,
   selectSessionComposer,
+  selectSessionListing,
 } from '../src/state'
 import { applySessionList } from './seed'
 import {
@@ -23,9 +26,13 @@ import {
   WORKSPACE,
   environmentScope,
   event,
+  sessionScope,
+  threadScope,
 } from './fixtures'
 
 type ComposerUpdated = Extract<ProofEvent, { name: 'session.composer.updated' }>
+type ThreadListingUpdated = Extract<ProofEvent, { name: 'thread.listing.updated' }>
+type WorkspaceListingUpdated = Extract<ProofEvent, { name: 'composer.listing.updated' }>
 type PreferencesUpdated = Extract<ProofEvent, { name: 'composer.preferences.updated' }>
 type CatalogUpdated = Extract<ProofEvent, { name: 'provider.catalog.updated' }>
 
@@ -43,6 +50,111 @@ const listed = () =>
     SESSION_SUMMARY,
     SIBLING,
   ])
+
+describe('provider listings', () => {
+  const review = { name: 'review', description: 'Review the diff' }
+  const fast = { type: 'boolean' as const, id: 'fast', name: 'Fast', currentValue: true }
+  const listingUpdated = (
+    timestamp: string,
+    workspaceId: string,
+    providerId: string,
+    listing: ComposerListing,
+  ) => ({
+    ...event<WorkspaceListingUpdated>({
+      name: 'composer.listing.updated',
+      scope: environmentScope,
+      payload: { workspaceId, providerId, ...listing },
+    }),
+    timestamp,
+  })
+  const withWorkspaces = (...ids: string[]) =>
+    applyWorkspaceList(
+      createInitialState(),
+      ids.map((workspaceId) => ({ ...WORKSPACE, workspaceId })),
+    )
+  const AT = '2026-10-31T10:00:00.000Z'
+  const LATER = '2026-10-31T11:00:00.000Z'
+
+  it('files a chat listing on its thread, replacing the last', () => {
+    const state = listed()
+    const opened = applySnapshot(state, {
+      cursor: { scope: sessionScope, epoch: 'epoch', sequence: 1 },
+      state: { session: SESSION_SUMMARY, threads: [THREAD] },
+    })
+    const update = (listing: ComposerListing) =>
+      event<ThreadListingUpdated>({
+        name: 'thread.listing.updated',
+        scope: threadScope,
+        payload: { listing },
+      })
+    const first = applyEvent(opened, update({ availableCommands: [review] }))
+    expect(selectSessionListing(first, SESSION.sessionId)).toEqual({ availableCommands: [review] })
+    const second = applyEvent(first, update({ configOptions: [fast] }))
+    expect(selectSessionListing(second, SESSION.sessionId)).toEqual({ configOptions: [fast] })
+    // A chat this client has no thread for holds nothing until it opens it.
+    expect(applyEvent(state, update({}))).toBe(state)
+  })
+
+  it('gives a new chat its workspace’s listing, or the provider’s newest elsewhere', () => {
+    let state = withWorkspaces('a', 'b', 'c')
+    state = applyEvent(state, listingUpdated(AT, 'a', 'claude', { availableCommands: [review] }))
+    state = applyEvent(state, listingUpdated(LATER, 'b', 'claude', { configOptions: [fast] }))
+    // A field the event does not name stays as held.
+    state = applyEvent(state, listingUpdated(LATER, 'a', 'claude', { configOptions: [fast] }))
+    expect(state.composerListings.a?.claude).toEqual({
+      listing: { availableCommands: [review], configOptions: [fast] },
+      updatedAt: LATER,
+    })
+    expect(selectDraftListing(state, 'availableCommands', 'a', 'claude')).toEqual([review])
+    expect(selectDraftListing(state, 'availableCommands', 'c', 'claude')).toEqual([review])
+    expect(selectDraftListing(state, 'availableCommands', 'c', 'cursor')).toBeUndefined()
+
+    // An empty list is an answer; it does not fall back.
+    state = applyEvent(state, listingUpdated(LATER, 'b', 'claude', { availableCommands: [] }))
+    expect(selectDraftListing(state, 'availableCommands', 'b', 'claude')).toEqual([])
+
+    // A listing goes with its workspace, and none comes back for one not listed.
+    const removed = applyWorkspaceRemoved(state, 'a')
+    expect(removed.composerListings.a).toBeUndefined()
+    expect(
+      applyEvent(removed, listingUpdated(LATER, 'a', 'claude', { configOptions: [fast] })),
+    ).toBe(removed)
+  })
+
+  it('takes the environment snapshot’s listings whole, the same as the events built them', () => {
+    let live = withWorkspaces(WORKSPACE.workspaceId)
+    live = applyEvent(
+      live,
+      listingUpdated(AT, WORKSPACE.workspaceId, 'claude', { availableCommands: [review] }),
+    )
+    const snapshot = {
+      cursor: { scope: environmentScope, epoch: 'epoch', sequence: 1 },
+      state: {
+        environment: { environmentId: ENV, name: 'Environment' },
+        workspaces: [WORKSPACE],
+        sessions: [],
+        preferences: [],
+        providerProfiles: [],
+        listings: packComposerListings([
+          {
+            workspaceId: WORKSPACE.workspaceId,
+            providerId: 'claude',
+            listing: { availableCommands: [review] },
+            updatedAt: AT,
+          },
+        ]),
+      },
+    }
+    const fresh = applySnapshot(createInitialState(), snapshot)
+    expect(fresh.composerListings).toEqual(live.composerListings)
+    // A snapshot that no longer states one takes it away.
+    const emptied = applySnapshot(live, {
+      ...snapshot,
+      state: { ...snapshot.state, listings: packComposerListings([]) },
+    })
+    expect(emptied.composerListings).toEqual({})
+  })
+})
 
 describe('live session composer state', () => {
   it('follows a selection another client or the agent made, for that session only', () => {
@@ -95,6 +207,7 @@ describe('live session composer state', () => {
         sessions: [{ ...SESSION_SUMMARY, composer: { modelId: 'opus', modeId: 'plan' } }],
         preferences: [],
         providerProfiles: [],
+        listings: { commands: [], configOptions: [], entries: [] },
       },
     })
     expect(selectSessionComposer(state, SESSION.sessionId)).toEqual({

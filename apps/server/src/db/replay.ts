@@ -3,6 +3,7 @@ import type { DatabaseSync } from 'node:sqlite'
 import {
   ScopeSnapshotSchema,
   decideReplay,
+  packComposerListings,
   type Cursor,
   type Environment,
   type ScopeSnapshot,
@@ -15,6 +16,7 @@ import {
   profileFromRow,
   readPreferenceRows,
   readProfileRows,
+  readWorkspaceListings,
 } from './composer-rows.ts'
 import { scopeKey } from './event-repository.ts'
 import {
@@ -174,8 +176,8 @@ export function createReplayReader(database: DatabaseSync, options: ReplayReader
     if (scope.type === 'environment') {
       const workspaces = options.workspaces()
       const known = new Set(workspaces.map((workspace) => workspace.workspaceId))
-      // Every session, preference and provider profile: the client replaces
-      // its whole sidebar with this (§6.2).
+      // Every session, preference, provider profile and workspace listing:
+      // the client replaces its whole sidebar with this (§6.2).
       const sessions = listAllSessionSummaries(database).filter((session) =>
         known.has(session.workspaceId),
       )
@@ -195,6 +197,9 @@ export function createReplayReader(database: DatabaseSync, options: ReplayReader
           sessions,
           preferences,
           providerProfiles: readProfileRows(database).map(profileFromRow),
+          listings: packComposerListings(
+            readWorkspaceListings(database).filter((entry) => known.has(entry.workspaceId)),
+          ),
         },
       })
     }

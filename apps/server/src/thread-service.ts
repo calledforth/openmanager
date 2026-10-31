@@ -1987,6 +1987,7 @@ export function createThreadService(
         interactions: [...record.interactions.values()]
           .filter((entry) => !entry.settled && record.activeTurn?.turn.turnId === entry.turnId)
           .map((entry) => ({ turnId: entry.turnId, interaction: entry.interaction })),
+        listing: {},
       }
     },
 

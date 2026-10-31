@@ -278,26 +278,18 @@ export const proofEvents = [
         modelId: 'claude-opus',
         modeId: 'plan',
         configValues: { effort: 'high', fast: true },
-        configOptions: [
-          {
-            type: 'select',
-            id: 'effort',
-            name: 'Effort',
-            category: 'thought_level',
-            currentValue: 'high',
-            options: [
-              { value: 'low', name: 'Low' },
-              { value: 'high', name: 'High' },
-            ],
-          },
-          { type: 'boolean', id: 'fast', name: 'Fast mode', currentValue: true },
-        ],
-        availableCommands: [
-          { name: 'review', description: 'Review the current diff' },
-          { name: 'search', description: 'Search the workspace', placeholder: 'query' },
-        ],
         usage: { used: 19_433, size: 200_000, cost: { amount: 0.42, currency: 'USD' } },
       },
+    },
+  },
+  {
+    ...base,
+    name: 'composer.listing.updated',
+    scope: environmentScope,
+    payload: {
+      workspaceId: 'workspace-1',
+      providerId: 'claude-code',
+      availableCommands: [{ name: 'review', description: 'Review the current diff' }],
     },
   },
   {
@@ -360,6 +352,33 @@ export const proofEvents = [
     },
   },
   { ...base, name: 'thread.created', scope: sessionScope, payload: { thread } },
+  {
+    ...base,
+    name: 'thread.listing.updated',
+    scope: threadScope,
+    payload: {
+      listing: {
+        configOptions: [
+          {
+            type: 'select',
+            id: 'effort',
+            name: 'Effort',
+            category: 'thought_level',
+            currentValue: 'high',
+            options: [
+              { value: 'low', name: 'Low' },
+              { value: 'high', name: 'High' },
+            ],
+          },
+          { type: 'boolean', id: 'fast', name: 'Fast mode', currentValue: true },
+        ],
+        availableCommands: [
+          { name: 'review', description: 'Review the current diff' },
+          { name: 'search', description: 'Search the workspace', placeholder: 'query' },
+        ],
+      },
+    },
+  },
   {
     ...base,
     name: 'turn.started',

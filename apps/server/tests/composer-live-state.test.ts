@@ -6,6 +6,7 @@ import {
   COMPOSER_MODEL_SET_CAPABILITY,
   COMPOSER_MODE_SET_CAPABILITY,
   COMPOSER_PREFERENCES_SET_CAPABILITY,
+  type ComposerListing,
   type ProviderBootstrap,
 } from '@openmanager/protocol/node'
 import { afterEach, describe, expect, it, vi } from 'vitest'
@@ -48,6 +49,7 @@ async function harness() {
     sessionId: `provider-${threadId}`,
   })
   const threads: Record<string, string> = { 'thread-a': 'session-a', 'thread-b': 'session-b' }
+  let workspace: ComposerListing | undefined
   const service = createComposerService(
     runtime,
     { snapshot: () => [provider], rejection: () => undefined },
@@ -60,12 +62,19 @@ async function harness() {
           : undefined,
     {
       publish: (name, payload) => published.push({ name, payload }),
+      publishThreadListing: (target, listing) =>
+        published.push({ name: 'thread.listing.updated', payload: { ...target, listing } }),
       sessionForThread: (threadId) => threads[threadId],
+      listingTarget: () => ({ workspaceId: 'workspace-1', providerId: 'claude' }),
+      readWorkspaceListing: () => workspace,
     },
   )
   const named = (name: string) =>
     published.filter((event) => event.name === name).map((event) => event.payload)
-  return { runtime, service, store, published, named }
+  const holdWorkspaceListing = (listing: ComposerListing) => {
+    workspace = listing
+  }
+  return { runtime, service, store, published, named, holdWorkspaceListing }
 }
 
 const runtimeEvent = (threadId: string) => ({
@@ -194,12 +203,20 @@ describe('per-session composer selection', () => {
     loaded('default')
     expect(service.sessionComposer('session-a').modeId).toBe('bypassPermissions')
     expect(
-      service.desiredFor({ providerId: 'claude', workspacePath: 'workspace-1', threadId: 'thread-a' }),
+      service.desiredFor({
+        providerId: 'claude',
+        workspacePath: 'workspace-1',
+        threadId: 'thread-a',
+      }),
     ).toEqual({ modeId: 'bypassPermissions' })
     // The sibling never picked a mode, so the workspace's last pick is not
     // forced on it.
     expect(
-      service.desiredFor({ providerId: 'claude', workspacePath: 'workspace-1', threadId: 'thread-b' }),
+      service.desiredFor({
+        providerId: 'claude',
+        workspacePath: 'workspace-1',
+        threadId: 'thread-b',
+      }),
     ).toBeUndefined()
 
     // A mode the provider stopped offering gives way to what it reports.
@@ -223,7 +240,11 @@ describe('per-session composer selection', () => {
       data: { currentModeId: 'default', availableModes: [] },
     })
     expect(
-      service.desiredFor({ providerId: 'claude', workspacePath: 'workspace-1', threadId: 'thread-a' }),
+      service.desiredFor({
+        providerId: 'claude',
+        workspacePath: 'workspace-1',
+        threadId: 'thread-a',
+      }),
     ).toEqual({ modeId: 'default' })
   })
 
@@ -256,7 +277,11 @@ describe('per-session composer selection', () => {
       configValues: { effort: 'high' },
     })
     expect(
-      service.desiredFor({ providerId: 'claude', workspacePath: 'workspace-1', threadId: 'thread-a' }),
+      service.desiredFor({
+        providerId: 'claude',
+        workspacePath: 'workspace-1',
+        threadId: 'thread-a',
+      }),
     ).toEqual({ modelId: 'opus', values: { effort: 'high' } })
     // With no picks, a launch reads what the workspace remembers.
     expect(service.launchPreference('workspace-1', 'claude')).toEqual({
@@ -378,7 +403,7 @@ describe('composer broadcasts', () => {
         ],
       },
     })
-    expect(service.sessionComposer('session-a').configOptions).toEqual([
+    expect(service.threadListing('thread-a').configOptions).toEqual([
       { type: 'boolean', id: 'fast', name: 'Fast mode', currentValue: true },
     ])
   })
@@ -398,32 +423,85 @@ describe('composer broadcasts', () => {
       { name: 'search', description: '', input: { type: 'unstructured', placeholder: 'query' } },
       { name: '', description: 'Nameless' },
     ])
-    expect(named('session.composer.updated')).toEqual([
+    const listed = [
+      { name: 'review', description: 'Review the diff' },
+      { name: 'search', description: '', placeholder: 'query' },
+    ]
+    expect(named('thread.listing.updated')).toEqual([
       {
         sessionId: 'session-a',
-        composer: {
-          availableCommands: [
-            { name: 'review', description: 'Review the diff' },
-            { name: 'search', description: '', placeholder: 'query' },
-          ],
-        },
+        threadId: 'thread-a',
+        listing: { availableCommands: listed },
       },
     ])
-    expect(service.sessionComposer('session-b')).toEqual({})
+    // Nothing a provider lists reaches the sidebar's stream as a session's.
+    expect(named('session.composer.updated')).toEqual([])
+    expect(service.threadListing('thread-b')).toEqual({})
 
     // A reloaded session lists again; the same listing is not news, none is.
     list([
       { name: 'review', description: 'Review the diff' },
       { name: 'search', description: '', input: { type: 'unstructured', placeholder: 'query' } },
     ])
-    expect(named('session.composer.updated')).toHaveLength(1)
+    expect(named('thread.listing.updated')).toHaveLength(1)
     list([])
-    expect(service.sessionComposer('session-a').availableCommands).toEqual([])
+    expect(service.threadListing('thread-a').availableCommands).toEqual([])
+  })
+
+  it('keeps what a provider listed for the next chat in the workspace', async () => {
+    const { service, named, holdWorkspaceListing } = await harness()
+    const report = (threadId: string, event: string, data: unknown) =>
+      service.onRuntimeEvent({
+        ...runtimeEvent(threadId),
+        category: 'session',
+        event,
+        data,
+      } as Parameters<typeof service.onRuntimeEvent>[0])
+    const review = { name: 'review', description: 'Review the diff' }
+    const select = (currentValue: string) => ({
+      type: 'select' as const,
+      id: 'style',
+      name: 'Style',
+      currentValue,
+      options: [{ value: 'plain', name: 'Plain' }],
+    })
+    const target = { workspaceId: 'workspace-1', providerId: 'claude' }
+
+    report('thread-a', 'available_commands_update', { availableCommands: [review] })
+    expect(named('composer.listing.updated')).toEqual([{ ...target, availableCommands: [review] }])
+    holdWorkspaceListing({ availableCommands: [review] })
+
+    // The same commands from a sibling are not news.
+    report('thread-b', 'available_commands_update', { availableCommands: [review] })
+    expect(named('composer.listing.updated')).toHaveLength(1)
+
+    // Settings announce alone, and empty settings are a session yet to report.
+    report('thread-a', 'config_option_update', { configOptions: [] })
+    expect(named('composer.listing.updated')).toHaveLength(1)
+    report('thread-a', 'config_option_update', { configOptions: [select('plain')] })
+    expect(named('composer.listing.updated')[1]).toEqual({
+      ...target,
+      configOptions: [select('plain')],
+    })
+    holdWorkspaceListing({ availableCommands: [review], configOptions: [select('plain')] })
+
+    // A value alone changes what a chat shows, not what a provider offers.
+    report('thread-b', 'config_option_update', { configOptions: [select('other')] })
+    expect(named('composer.listing.updated')).toHaveLength(2)
+    expect(named('thread.listing.updated')).toHaveLength(5)
+
+    // An empty command list is the provider offering none: the next chat has none.
+    report('thread-b', 'available_commands_update', { availableCommands: [] })
+    expect(named('composer.listing.updated')[2]).toEqual({ ...target, availableCommands: [] })
   })
 
   it('carries the context usage a provider reports, and nothing for one that reports none', async () => {
     const { service, named } = await harness()
-    const report = (data: { used: number; size: number; cost?: { amount: number; currency: string } }) =>
+    const report = (data: {
+      used: number
+      size: number
+      cost?: { amount: number; currency: string }
+    }) =>
       service.onRuntimeEvent({
         ...runtimeEvent('thread-a'),
         category: 'session',
@@ -435,7 +513,9 @@ describe('composer broadcasts', () => {
     expect(named('session.composer.updated')).toEqual([
       {
         sessionId: 'session-a',
-        composer: { usage: { used: 19_433, size: 200_000, cost: { amount: 0.42, currency: 'USD' } } },
+        composer: {
+          usage: { used: 19_433, size: 200_000, cost: { amount: 0.42, currency: 'USD' } },
+        },
       },
     ])
     // A sibling whose provider never reports usage has no meter to show.

@@ -73,7 +73,8 @@ import { raiseReplayFloors } from './db/replay-floor.ts'
 import { reconcileAfterRestart } from './db/boot-reconcile.ts'
 import { createEventRetention } from './db/event-retention.ts'
 import { createReplayReader } from './db/replay.ts'
-import { getSessionSummary } from './db/session-store.ts'
+import { readWorkspaceListing } from './db/composer-rows.ts'
+import { getSessionSummary, readThreadListing } from './db/session-store.ts'
 import { createLogger, resolveLogSink } from './logger.ts'
 import { createProviderService } from './provider-service.ts'
 import { createRateLimiter } from './rate-limit.ts'
@@ -403,7 +404,8 @@ export async function startServer(config: ServerConfig) {
     (sessionId, context) => threadService.resolveRuntimeSession(sessionId, context),
     {
       // Composer changes ride the environment stream, so every client sees
-      // them live and a reconnect replays whatever it missed.
+      // them live and a reconnect replays whatever it missed. A chat's listing
+      // rides its thread: only a browser with that chat open wants it.
       publish: (name, payload) =>
         eventService.append({
           type: 'event',
@@ -413,8 +415,25 @@ export async function startServer(config: ServerConfig) {
           scope: { type: 'environment', environmentId: identity.environmentId },
           payload,
         } as ProofEvent),
+      publishThreadListing: ({ sessionId, threadId }, listing) =>
+        eventService.append({
+          type: 'event',
+          name: 'thread.listing.updated',
+          eventId: randomUUID(),
+          timestamp: new Date().toISOString(),
+          scope: { type: 'thread', environmentId: identity.environmentId, sessionId, threadId },
+          payload: { listing },
+        }),
       sessionForThread: (threadId) => threadService.sessionForThread(threadId),
       readSessionComposer: (sessionId) => getSessionSummary(eventDatabase, sessionId)?.composer,
+      readThreadListing: (threadId) => readThreadListing(eventDatabase, threadId),
+      readWorkspaceListing: (target) => readWorkspaceListing(eventDatabase, target),
+      listingTarget: (sessionId) => {
+        const session = getSessionSummary(eventDatabase, sessionId)
+        return session?.providerId
+          ? { workspaceId: session.workspaceId, providerId: session.providerId }
+          : undefined
+      },
       hasSession: (sessionId) => sessionRowExists.get(sessionId) !== undefined,
     },
   )

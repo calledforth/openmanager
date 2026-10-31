@@ -74,9 +74,9 @@ describe('schema migrations', () => {
   it('initializes a fresh database to the latest numbered version', async () => {
     const database = openEnvironmentDatabase(await dataDir())
     databases.push(database)
-    expect(readSchemaVersion(database)).toBe(22)
+    expect(readSchemaVersion(database)).toBe(23)
     expect(database.prepare('PRAGMA user_version').get() as { user_version: number }).toEqual({
-      user_version: 22,
+      user_version: 23,
     })
     expect(database.prepare('PRAGMA journal_mode').get() as { journal_mode: string }).toEqual({
       journal_mode: 'wal',
@@ -94,6 +94,7 @@ describe('schema migrations', () => {
       'attachments',
       'audit_events',
       'authorized_clients',
+      'composer_listings',
       'drafts',
       'environment_metadata',
       'environment_settings',
@@ -115,7 +116,7 @@ describe('schema migrations', () => {
       'workspace_composer_preferences',
       'workspaces',
     ])
-    expect(runMigrations(database, MIGRATIONS)).toBe(22)
+    expect(runMigrations(database, MIGRATIONS)).toBe(23)
   })
 
   it('upgrades sequentially across restarts and leaves already-applied versions untouched', async () => {
@@ -202,7 +203,7 @@ describe('schema migrations', () => {
 
     const database = openEnvironmentDatabase(directory)
     databases.push(database)
-    expect(readSchemaVersion(database)).toBe(22)
+    expect(readSchemaVersion(database)).toBe(23)
     expect(database.prepare('SELECT provider_id FROM provider_profiles').all()).toEqual([
       { provider_id: 'cursor' },
     ])
@@ -333,7 +334,7 @@ describe('schema migrations', () => {
 
     const database = openEnvironmentDatabase(directory)
     databases.push(database)
-    expect(readSchemaVersion(database)).toBe(22)
+    expect(readSchemaVersion(database)).toBe(23)
     expect(database.prepare('SELECT * FROM attachments ORDER BY attachment_id').all()).toEqual(
       before,
     )
@@ -372,7 +373,7 @@ describe('schema migrations', () => {
 
     const database = openEnvironmentDatabase(directory)
     databases.push(database)
-    expect(readSchemaVersion(database)).toBe(22)
+    expect(readSchemaVersion(database)).toBe(23)
     expect(
       database
         .prepare('SELECT client_id, kind, expires_at FROM authorized_clients ORDER BY client_id')
@@ -386,7 +387,9 @@ describe('schema migrations', () => {
       VALUES ('implicit', 'Implicit', X'03', '["read"]', 3000)
     `)
     expect(
-      database.prepare('SELECT kind, expires_at FROM authorized_clients WHERE client_id = ?').get('implicit'),
+      database
+        .prepare('SELECT kind, expires_at FROM authorized_clients WHERE client_id = ?')
+        .get('implicit'),
     ).toEqual({ kind: 'paired', expires_at: 0 })
     expect(() =>
       database.exec(`
@@ -409,11 +412,11 @@ describe('schema migrations', () => {
 
     const database = openEnvironmentDatabase(directory)
     databases.push(database)
-    expect(readSchemaVersion(database)).toBe(22)
+    expect(readSchemaVersion(database)).toBe(23)
     expect(tableNames(database)).toContain('audit_events')
-    expect(
-      database.prepare('SELECT client_id FROM authorized_clients').all(),
-    ).toEqual([{ client_id: 'client-1' }])
+    expect(database.prepare('SELECT client_id FROM authorized_clients').all()).toEqual([
+      { client_id: 'client-1' },
+    ])
     database.exec(`
       INSERT INTO audit_events (
         event_id, type, outcome, at, client_id, command, remote_address, details_json
@@ -421,9 +424,9 @@ describe('schema migrations', () => {
         'event-1', 'token.issued', 'issued', 1, 'client-1', 'client.issue', NULL, '{}'
       )
     `)
-    expect(
-      database.prepare('SELECT type, outcome, command FROM audit_events').all(),
-    ).toEqual([{ type: 'token.issued', outcome: 'issued', command: 'client.issue' }])
+    expect(database.prepare('SELECT type, outcome, command FROM audit_events').all()).toEqual([
+      { type: 'token.issued', outcome: 'issued', command: 'client.issue' },
+    ])
     expect(() =>
       database.exec(`
         INSERT INTO audit_events (
@@ -557,6 +560,73 @@ describe('schema migrations', () => {
       { client_id: 'client-1' },
     ])
     expect(database.prepare('PRAGMA foreign_key_check').all()).toEqual([])
+  })
+
+  it('moves what providers listed off the sessions, onto their chats and workspaces', async () => {
+    const directory = await dataDir()
+    const previous = openEnvironmentDatabase(directory, MIGRATIONS.slice(0, 22))
+    const older = [{ name: 'older', description: '' }]
+    const newer = [{ name: 'newer', description: '' }]
+    const fast = [{ type: 'boolean', id: 'fast', name: 'Fast', currentValue: true }]
+    const insertSession = previous.prepare(`
+      INSERT INTO sessions (session_id, workspace_id, provider_id, status, composer_json,
+        created_at, updated_at) VALUES (?, 'workspace-1', 'cursor', 'idle', ?, 1, ?)`)
+    previous.exec(`
+      INSERT INTO workspaces (workspace_id, name, path, created_at, updated_at)
+        VALUES ('workspace-1', 'one', '/one', 1, 1);
+    `)
+    insertSession.run(
+      'old',
+      JSON.stringify({ modelId: 'a', availableCommands: older, configOptions: fast }),
+      5,
+    )
+    // The newest report on the pair stands; its empty settings are no report.
+    insertSession.run('new', JSON.stringify({ availableCommands: newer, configOptions: [] }), 9)
+    insertSession.run('plain', JSON.stringify({ modelId: 'b' }), 12)
+    previous.exec(`
+      INSERT INTO threads (thread_id, session_id, workspace_id, created_at, updated_at) VALUES
+        ('thread-old', 'old', 'workspace-1', 1, 1),
+        ('thread-new', 'new', 'workspace-1', 1, 1),
+        ('thread-plain', 'plain', 'workspace-1', 1, 1);
+    `)
+    previous.close()
+
+    const database = openEnvironmentDatabase(directory)
+    databases.push(database)
+    expect(
+      database
+        .prepare('SELECT session_id, composer_json FROM sessions ORDER BY session_id')
+        .all()
+        .map((row) => ({ ...row })),
+    ).toEqual([
+      { session_id: 'new', composer_json: '{}' },
+      { session_id: 'old', composer_json: '{"modelId":"a"}' },
+      { session_id: 'plain', composer_json: '{"modelId":"b"}' },
+    ])
+    const listing = (threadId: string) =>
+      (
+        database.prepare('SELECT listing_json FROM threads WHERE thread_id = ?').get(threadId) as {
+          listing_json: string | null
+        }
+      ).listing_json
+    expect(JSON.parse(listing('thread-old')!)).toEqual({
+      availableCommands: older,
+      configOptions: fast,
+    })
+    expect(JSON.parse(listing('thread-new')!)).toEqual({
+      availableCommands: newer,
+      configOptions: [],
+    })
+    expect(listing('thread-plain')).toBeNull()
+    expect({
+      ...(database.prepare('SELECT * FROM composer_listings').get() as object),
+    }).toEqual({
+      workspace_id: 'workspace-1',
+      provider_id: 'cursor',
+      config_options_json: JSON.stringify(fast),
+      commands_json: JSON.stringify(newer),
+      updated_at: 9,
+    })
   })
 
   it('rejects a catalog that skips versions', () => {

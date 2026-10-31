@@ -22,6 +22,7 @@ import {
   InteractionResponseSchema,
 } from './domains.js'
 import {
+  ComposerListingSchema,
   ComposerPreferenceTargetSchema,
   PreferenceRevisionSchema,
   ProviderComposerProfileSchema,
@@ -50,7 +51,7 @@ const event = <N extends string, S extends z.ZodType, P extends z.ZodType>(
  * replay floor at boot, so no stored event is replayed in a form this
  * version cannot state (docs/sync-foundations.md §4.7.7).
  */
-export const EVENT_FORMAT_VERSION = 2 as const
+export const EVENT_FORMAT_VERSION = 3 as const
 
 /** A turn's state once an interaction event is applied: still asking, or running again. */
 export const InteractionTurnStateSchema = z.enum(['running', 'waiting'])
@@ -120,6 +121,16 @@ export const ProofEventSchemas = {
     z.object({ sessionId: EntityIdSchema, composer: SessionComposerStateSchema }),
   ),
   /**
+   * What a provider last listed in this workspace, which a new chat there
+   * offers until it has a session of its own. Names only the fields that
+   * changed: settings are relisted on a model switch, commands hardly ever.
+   */
+  'composer.listing.updated': event(
+    'composer.listing.updated',
+    EnvironmentScopeSchema,
+    ComposerPreferenceTargetSchema.extend(ComposerListingSchema.shape),
+  ),
+  /**
    * The remembered selection a new draft in this workspace opens with, and
    * the revision this change gave it.
    */
@@ -152,6 +163,15 @@ export const ProofEventSchemas = {
     z.object({ profile: ProviderComposerProfileSchema }),
   ),
   'thread.created': event('thread.created', SessionScopeSchema, z.object({ thread: ThreadSchema })),
+  /**
+   * What the provider offers this chat. Thread scope, so only a browser with
+   * the chat open receives it. The whole listing, so applying one twice is safe.
+   */
+  'thread.listing.updated': event(
+    'thread.listing.updated',
+    ThreadScopeSchema,
+    z.object({ listing: ComposerListingSchema }),
+  ),
   'turn.started': event(
     'turn.started',
     ThreadScopeSchema,
@@ -267,11 +287,13 @@ export const ProofEventSchema = z.discriminatedUnion('name', [
   ProofEventSchemas['session.updated'],
   ProofEventSchemas['session.deleted'],
   ProofEventSchemas['session.composer.updated'],
+  ProofEventSchemas['composer.listing.updated'],
   ProofEventSchemas['composer.preferences.updated'],
   ProofEventSchemas['provider.catalog.updated'],
   ProofEventSchemas['draft.saved'],
   ProofEventSchemas['draft.deleted'],
   ProofEventSchemas['thread.created'],
+  ProofEventSchemas['thread.listing.updated'],
   ProofEventSchemas['turn.started'],
   ProofEventSchemas['turn.completed'],
   ProofEventSchemas['turn.interrupted'],

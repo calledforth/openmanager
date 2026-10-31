@@ -26,6 +26,8 @@ export const THREAD_IN_SESSION_SQL = `
   FROM threads
   WHERE thread_id = ? AND session_id = ?`
 
+export const THREAD_LISTING_SQL = 'SELECT listing_json FROM threads WHERE thread_id = ?'
+
 /** Threads of a session in creation order; the first step of session history. */
 export const THREADS_FOR_SESSION_SQL = `
   SELECT thread_id, session_id, workspace_id, provider_thread_id, created_at, updated_at
