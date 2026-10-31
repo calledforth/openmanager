@@ -848,10 +848,15 @@ export const MIGRATIONS: readonly Migration[] = [
       // workspace keeps the last one each provider gave it for a new chat to
       // borrow. A workspace's listings go with it, and `workspace.removed`
       // says so (docs/sync-foundations.md §6.4).
+      const threadColumns = database.prepare('PRAGMA table_info(threads)').all() as {
+        name: string
+      }[]
+      if (!threadColumns.some((column) => column.name === 'listing_json')) {
+        database.exec(`ALTER TABLE threads ADD COLUMN listing_json TEXT
+          CHECK (listing_json IS NULL OR json_valid(listing_json))`)
+      }
       database.exec(`
-        ALTER TABLE threads ADD COLUMN listing_json TEXT
-          CHECK (listing_json IS NULL OR json_valid(listing_json));
-        CREATE TABLE composer_listings (
+        CREATE TABLE IF NOT EXISTS composer_listings (
           workspace_id TEXT NOT NULL REFERENCES workspaces(workspace_id) ON DELETE CASCADE,
           provider_id TEXT NOT NULL,
           config_options_json TEXT

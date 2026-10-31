@@ -307,6 +307,9 @@ export function createComposerService(
   /** What the provider offers one chat: the chat's own, then the workspace's for the next one. */
   const updateListing = (sessionId: string, threadId: string, patch: ComposerListing) => {
     const current = listingOf(threadId)
+    // Every ACP session reports its settings on creation, most of them none.
+    // A chat that never had any has nothing to say, and says nothing.
+    if (patch.configOptions?.length === 0 && current.configOptions === undefined) return
     const merged = ComposerListingSchema.safeParse({ ...current, ...defined(patch) })
     if (!merged.success) return
     if (options.hasSession && !options.hasSession(sessionId)) {

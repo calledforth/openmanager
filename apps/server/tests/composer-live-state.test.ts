@@ -488,7 +488,7 @@ describe('composer broadcasts', () => {
     // A value alone changes what a chat shows, not what a provider offers.
     report('thread-b', 'config_option_update', { configOptions: [select('other')] })
     expect(named('composer.listing.updated')).toHaveLength(2)
-    expect(named('thread.listing.updated')).toHaveLength(5)
+    expect(named('thread.listing.updated')).toHaveLength(4)
 
     // An empty command list is the provider offering none: the next chat has none.
     report('thread-b', 'available_commands_update', { availableCommands: [] })
