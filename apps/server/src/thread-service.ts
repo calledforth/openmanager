@@ -23,12 +23,14 @@ import {
   type Session,
   type SessionStatus,
   type SessionSummary,
+  type SubscriptionScope,
   type SessionTitleSource,
   type Thread,
   type TurnFailureReason,
   type Turn,
   type TurnStart,
   type WorkspaceComposerPreference,
+  type Cursor,
 } from '@openmanager/protocol/node'
 import {
   projectAgentEvent,
@@ -279,7 +281,11 @@ type ThreadRecord = {
 
 /** Why a session the rows hold could not be loaded: the answer an open gives. */
 export type LoadRefusal = { code: ErrorCode; message: string; details?: unknown }
-type Loaded = { refused: LoadRefusal } | { session: SessionSummary; threads: Thread[] }
+type SessionOpenPosition = { environment: Cursor; session: Cursor }
+
+type Loaded =
+  | { refused: LoadRefusal }
+  | { session: SessionSummary; threads: Thread[]; at: SessionOpenPosition }
 
 const errorResult = (requestId: string, code: ErrorCode, message: string, details?: unknown) => ({
   type: 'error' as const,
@@ -363,6 +369,8 @@ export function createThreadService(
     artifacts?: ArtifactStore
     database?: DatabaseSync
     flush?: () => void
+    /** A stream's head, for stating where a read stands. */
+    head?: (scope: SubscriptionScope) => Cursor
     /**
      * Commit several host events together; falls back to one append per
      * event. `options` carries host-private facts that ride the write, such
@@ -887,6 +895,8 @@ export function createThreadService(
     options.flush?.()
     const session = getSessionSummary(database, sessionId)
     if (!session) return { refused: { code: 'not_found', message: 'Session not found.' } }
+    // Read with the summary: restoring below may write events of its own.
+    const at = readPosition(sessionId)
     if (unrecoverable.has(sessionId)) return { refused: UNRECOVERABLE }
     const providerId = session.providerId as ProviderId
     // No identity means the provider never received anything: a crash came
@@ -917,7 +927,21 @@ export function createThreadService(
       return { refused: { code: 'not_found', message: 'Thread not found.' } }
     }
     restoreSession(session, providerId, providerSessionId, target.cwd, restoredThreads)
-    return { session, threads: restoredThreads }
+    return { session, threads: restoredThreads, at }
+  }
+
+  /**
+   * The answer to `session.open` states a position (docs/sync-foundations.md
+   * §6.5): the heads of the streams that change what it reads, in the tick of
+   * that read. Memory-only mode has no streams.
+   */
+  const readPosition = (sessionId: string): SessionOpenPosition => {
+    const head = (scope: SubscriptionScope): Cursor =>
+      options.head?.(scope) ?? { scope, epoch: 'memory', sequence: 0 }
+    return {
+      environment: head({ type: 'environment', environmentId }),
+      session: head({ type: 'session', environmentId, sessionId }),
+    }
   }
 
   /** What `rejectWorkspace` answers, for the loader. */
@@ -2650,7 +2674,7 @@ export function createThreadService(
           return ProofResponseSchemas['session.open'].parse({
             type: 'response',
             requestId: command.requestId,
-            payload: { session: loaded.session, threads: loaded.threads },
+            payload: { session: loaded.session, threads: loaded.threads, at: loaded.at },
           })
         }
         const record = sessions.get(parsed.data.payload.sessionId)
@@ -2684,6 +2708,7 @@ export function createThreadService(
             threads: options.database
               ? listThreadsForSession(options.database, record.session.sessionId)
               : [record.thread],
+            at: readPosition(record.session.sessionId),
           },
         })
       }

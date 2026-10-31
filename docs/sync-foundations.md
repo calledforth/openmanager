@@ -1762,6 +1762,10 @@ Decisions the design above left open, or where the code differed:
   (`ComposerListingsSnapshotSchema`): 84 KB where whole lists would be 303 KB on the same data.
   A subscription scope per pair would cost the snapshot nothing, at the price of a fourth kind of
   scope; that is the next step if 84 KB ever matters.
+- **`session.open` states where it read.** Its summary changes on the environment stream and its
+  thread list on the session stream, and neither arrives in order with the answer, so the answer
+  carries both heads (`at`), read in the same tick as the rows. A client whose own cursor is past
+  one has something newer, by the server's numbers, and drops that part.
 - **Event format 3.** `session.composer.updated` lost two fields and its schema is strict, so a
   stored one is not a valid event any more. Replay answers are stored JSON, so the bump is what keeps
   them away from clients: boot raises every floor, and a client below one catches up by snapshot.

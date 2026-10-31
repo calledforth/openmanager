@@ -381,6 +381,7 @@ export async function startServer(config: ServerConfig) {
       database: eventDatabase,
       artifacts,
       flush: eventService.flush,
+      head: (scope) => eventService.repository.head(scope),
       appendAtomic: (events, options) => eventService.appendAtomic(events, options),
       finalizeNow: (event) => eventService.finalizeNow(event),
       onPersistenceError: (error, eventName) =>

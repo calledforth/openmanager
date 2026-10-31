@@ -209,7 +209,22 @@ export const proofResponses = {
   'session.open': {
     type: 'response',
     requestId: 'r-5',
-    payload: { session: sessionSummary, threads: [thread] },
+    payload: {
+      session: sessionSummary,
+      threads: [thread],
+      at: {
+        environment: {
+          scope: { type: 'environment', environmentId: 'environment-1' },
+          epoch: 'epoch-1',
+          sequence: 4,
+        },
+        session: {
+          scope: { type: 'session', environmentId: 'environment-1', sessionId: 'session-1' },
+          epoch: 'epoch-1',
+          sequence: 1,
+        },
+      },
+    },
   },
   'turn.send': {
     type: 'response',

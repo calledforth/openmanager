@@ -15,6 +15,7 @@ import {
   TimestampSchema,
 } from './domains.js'
 import { WorkspaceComposerPreferenceSchema } from './composer.js'
+import { CursorSchema } from './replay.js'
 
 const command = <N extends string, P extends z.ZodType>(name: N, payload: P) =>
   CommandEnvelopeSchema.extend({ name: z.literal(name), payload })
@@ -213,6 +214,12 @@ export const ProofResponseSchemas = {
     z.object({
       session: SessionSummarySchema,
       threads: z.array(ThreadSchema),
+      /**
+       * Where this read stands in the streams that change it: the summary on
+       * the environment's, the thread list on the session's. A client holding
+       * a stream past that point already has something newer.
+       */
+      at: z.object({ environment: CursorSchema, session: CursorSchema }),
     }),
   ),
   'session.rename': response(z.object({ session: SessionSchema })),
