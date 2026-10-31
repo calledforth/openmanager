@@ -6,8 +6,6 @@ import { createRoot, type Root } from 'react-dom/client'
 import {
   createMockEnvironmentClient,
   createEnvironmentStore,
-  applySessionHistory,
-  type SessionHistoryPage,
   type MockEnvironmentClient,
   type MockSeed,
 } from '@openmanager/environment-client'
@@ -336,7 +334,7 @@ describe('the shared application over the environment client', () => {
   it('renders folder icons when the environment cannot resolve workspace icons', async () => {
     const client = createMockEnvironmentClient({
       seed: SEEDED_HISTORY,
-      capabilities: ['listWorkspaces', 'listSessions', 'createSession', 'openSession'],
+      capabilities: ['listWorkspaces', 'createSession', 'openSession'],
     })
     await render(<App client={client} />)
     await settle(client)
@@ -408,61 +406,15 @@ describe('the shared application over the environment client', () => {
     expect(meter()?.getAttribute('aria-label')).toBe('Context window 25% full')
   })
 
-  it('loads an older history page through the chat and prevents duplicate clicks', async () => {
-    const mock = createMockEnvironmentClient({
+  it('shows the whole chat with no way to load older messages', async () => {
+    const client = createMockEnvironmentClient({
       seed: { ...SEEDED_HISTORY, activeSessionId: SESSION.sessionId },
     })
-    const initial = mock.getState()
-    const store = createEnvironmentStore({
-      ...initial,
-      threads: {
-        ...initial.threads,
-        [THREAD.threadId]: { ...initial.threads[THREAD.threadId]!, historyCursor: { ordinal: 2 } },
-      },
-    })
-    let release: ((page: SessionHistoryPage) => void) | undefined
-    const load = vi.fn(async () => {
-      const page = await new Promise<SessionHistoryPage>((resolve) => {
-        release = resolve
-      })
-      store.update((state) => applySessionHistory(state, THREAD, page, true))
-      return page
-    })
-    const client = {
-      ...mock,
-      getState: store.getState,
-      subscribe: store.subscribe,
-      commands: { ...mock.commands, loadSessionHistory: load },
-    }
     await render(<App client={client} />)
-    await act(() => {
-      buttonWithText('Load older messages')!.click()
-      buttonWithText('Load older messages')!.click()
-    })
-    expect(load).toHaveBeenCalledTimes(1)
-    expect(load).toHaveBeenCalledWith({ ...THREAD, cursor: { ordinal: 2 } })
-    expect(buttonWithText('Loading older messages')?.disabled).toBe(true)
-    await act(() =>
-      release!({
-        messages: [
-          {
-            messageId: 'older-user',
-            threadId: THREAD.threadId,
-            turnId: 'older-turn',
-            role: 'user',
-            content: [{ type: 'text', text: 'An earlier question' }],
-          },
-        ],
-        turns: [{ turnId: 'older-turn', threadId: THREAD.threadId, state: 'completed' }],
-        interactions: [],
-        nextCursor: null,
-      }),
-    )
-    expect(container.textContent).toContain('An earlier question')
+    await settle(client)
     expect(occurrences('What changed?')).toBe(1)
-    expect(occurrences('Two files were edited.')).toBe(1)
     expect(buttonWithText('Load older messages')).toBeUndefined()
-    mock.dispose()
+    client.dispose()
   })
 
   it('starts a session from a draft and streams the reply through the composer', async () => {
@@ -816,7 +768,7 @@ describe('the shared application over the environment client', () => {
   it('keeps a refused prompt on screen with its reason and retries it under one id', async () => {
     const client = createMockEnvironmentClient({
       seed: { ...SEEDED_HISTORY, activeSessionId: SESSION.sessionId },
-      capabilities: ['listWorkspaces', 'listSessions', 'openSession', 'createSession'],
+      capabilities: ['listWorkspaces', 'openSession', 'createSession'],
     })
     await render(<App client={client} />)
     await type('echo me')

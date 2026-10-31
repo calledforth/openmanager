@@ -81,7 +81,7 @@ describe('proof slice wire families', () => {
   it('selects response payload validation from the pending command', () => {
     expect(() =>
       parseProofResult(
-        { name: 'session.list', requestId: 'r-2' },
+        { name: 'session.open', requestId: 'r-2' },
         proofResponses['workspace.list'],
       ),
     ).toThrow()

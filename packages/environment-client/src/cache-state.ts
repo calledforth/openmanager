@@ -30,6 +30,9 @@ export function cacheState(state: EnvironmentState): EnvironmentState {
           outbox: [],
           // Which messages were echoes only matters to rows the old page drew.
           confirmedEchoes: undefined,
+          // Never stored by the server, so a fresh load has none. The cursor
+          // stays: durable state and cursor were written together.
+          notices: [],
           hydration: thread.hydration === 'loading' ? 'idle' : thread.hydration,
         },
       ]),

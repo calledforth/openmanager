@@ -1649,8 +1649,7 @@ row 27's preference re-read cover the same ground.
    Unchanged objects keep their identity.
 
 5. **Reload with the IndexedDB cache** (`apps/web/src/lib/environment-cache.ts:17-40`). The cache
-   paints first; the first replay is `initial` and replaces it. Caching cursors with the state,
-   written atomically, is a possible later optimization.
+   paints first, and every scope resumes from the cursor saved with it (§6.5).
 
 #### Merge helpers to delete
 
@@ -1710,6 +1709,106 @@ row 27's preference re-read cover the same ground.
 - `session.created`'s payload becomes a `SessionSummary`.
 - Fragments, beats, keepalives, acks, the send window and lagging catch-ups (§7.2).
 - Protocol bump. No migration.
+
+### 6.4 As built (F5b, protocol v20)
+
+Decisions the design above left open, or where the code differed:
+
+- **Replay answers are the stored JSON.** The reader concatenates each row's `event_json` inside the
+  fixed record wrapper and the socket sends that text as is, so `replayBytes` (`octet_length` sum,
+  wrapper, digit count, envelope) is exactly what is sent. A unit test compares the formula with the
+  serialized answer. Snapshots are validated once (`ScopeSnapshotSchema`) and serialized once.
+- **The environment snapshot also carries provider profiles.** `provider.catalog.updated` is an
+  environment-scope event and profiles are client-visible rows; a server-initiated catch-up runs no
+  resync, so a missed profile change would otherwise wait for the next reconnect. Drafts stay out:
+  the client marks them unlisted on every environment snapshot but the first, and `draft-sync`
+  relists.
+- **`session.list`, `session.history` and `composer.preferences.get` are deleted from the server
+  too**, with `HistoryCursorSchema`, the session list cursor, `PAGE_LIMIT_*` and the pagers. The
+  thread service keeps `summaries()` and `threadState()` as inspection reads for tests.
+- **`readThreadState`** reads a thread with one query per table (turns, messages, parts, activity,
+  pending requests); the old reader hydrated each message and each turn's requests separately.
+- **Every scope recovers by `subscription.replay`**, the session scope included; the client folds
+  a replay answer in one `store.update`. A replace keeps the identity of unchanged objects
+  (`share`), so a catch-up that changes nothing re-renders nothing.
+- **Small scopes now often catch up by snapshot.** For a short chat a snapshot is frequently smaller
+  than even a short replay; that is the rule working, not a fallback.
+- **Whole chats and the whole sidebar are a deliberate choice for now.** Nothing is paged: opening a
+  chat or catching up brings all of it. Paging is planned for later, done properly, with one read
+  function serving open, catch-up and older history, rather than the separate paths this phase
+  removed.
+- **Desktop** files its whole Convex transcript through its own `legacy-history.ts`.
+- **What a provider lists is not sidebar state.** A session's commands and settings came to about
+  1.3 MB of a 1.5 MB environment answer, and a whole environment made a phone reload slower than
+  the paged list did. `SessionSummary.composer` keeps `modelId`, `modeId`, `configValues` and
+  `usage`. A chat's listing lives on `threads.listing_json`: it arrives in the thread snapshot and
+  as thread-scope `thread.listing.updated`, so only a browser with that chat open gets it. The event
+  names only the fields that changed, so a model switch or a new setting value does not store the
+  commands again; an empty command list is a change like any other.
+- **A new chat borrows from the server, not from other sessions.** `composer_listings` holds what
+  each provider last listed in each workspace, announced by `composer.listing.updated`, which names
+  only the fields that changed. Settings compare without their current values, because a draft
+  shows its own preference. That only covers settings values: two chats on one pair can really list
+  different things, one with an extra MCP server, and would trade the row and a large event for as
+  long as both reported. So the row records the chat that wrote it (`source_session_id`, which the
+  event carries, so the row still changes only through the event), and the most recently active
+  chat wins. A report from a chat less recently active than the writer changes nothing, for commands
+  and settings alike; a writer that no longer exists holds nothing, and the next report wins.
+  Activity is `sessions.updated_at`, which a title does not move, and ties go by session id, the
+  sidebar's own order. A chat that outranks the writer takes over even when it repeats the list, with
+  an event that names no field; otherwise the old writer's next report would still count. The
+  environment snapshot carries every pair, each distinct command and setting once
+  (`ComposerListingsSnapshotSchema`): 84 KB where whole lists would be 303 KB on the same data.
+  A subscription scope per pair would cost the snapshot nothing, at the price of a fourth kind of
+  scope; that is the next step if 84 KB ever matters.
+- **`session.open` states where it read.** Its summary changes on the environment stream and its
+  thread list on the session stream, and neither arrives in order with the answer, so the answer
+  carries both heads (`at`), read in the same tick as the rows. A client whose own cursor is past
+  one has something newer, by the server's numbers, and drops that part.
+- **Event format 3.** `session.composer.updated` lost two fields and its schema is strict, so a
+  stored one is not a valid event any more. Replay answers are stored JSON, so the bump is what keeps
+  them away from clients: boot raises every floor, and a client below one catches up by snapshot.
+
+### 6.5 Kept cursors
+
+A client with an up-to-date copy does not download it again. Leaving a chat keeps its cursor, and a
+reload sends the cursors it saved, so an unchanged scope costs an empty replay. The whole chat comes
+down only on a first open in that browser, or when the server says a snapshot is needed or smaller.
+
+- **The promise.** A cursor says the copy holds every record up to it and no others. A cursor ahead
+  of its copy loses events silently; one behind repeats deltas.
+- **Where it lives.** In the store, written by the reducer that writes the data: `applySnapshot`
+  takes it from the snapshot, `applyRecord` from the record, and a replay answer moves it in the
+  update that folds the tail. A thread's cursor is on `ThreadState`, so it goes with the thread and a
+  rebuilt thread has none. The environment's and each session's are in `state.cursors`; a session's
+  goes in `removeSession` and in `replaceEnvironment`. The transport holds no cursor of its own. The
+  single IndexedDB document then saves each cursor with what it describes, and any older document is
+  still consistent.
+- **Only an answer anchors a cursor.** A scope subscribed with no answer behind it (a failed
+  catch-up falling back to `subscription.subscribe`) keeps its position on the subscription, for
+  placing frames, and never in the store: resuming from it would skip what came before it.
+- **What forgets a cursor.** A record naming an unknown turn; a `not_found` answer; a refused or
+  invalid answer to a resumed catch-up, which is then retried once with no cursor, so a bad cursor
+  cannot leave a chat unloadable. Removing a session or thread takes its cursors with it. Its scopes
+  are released at the same moment, so a reconnect does not recover them.
+- **Equal to a fresh load (rule 6).** Notices are never stored, so a catch-up empties them whichever
+  way it answers, and `cacheState` drops them. Streaming needs nothing special: deltas are durable,
+  so the cursor stands at the last one folded and the replay carries on from there. Hydration flags,
+  the outbox and overlays are as before: client state, and not part of the copy the cursor describes.
+- **The sidebar by replay.** A new transport no longer forgets composer preferences: a replay
+  restates only what changed, so the held ones must stand. A snapshot still replaces them. Drafts are
+  listed once per transport as before, and on any later environment snapshot. Provider profiles come
+  from the catalog read every resync. Workspace listings arrive as `composer.listing.updated`.
+- **Reads have a place too.** With kept cursors nothing would repair a summary overwritten by an
+  older read, so `applySessionOpen` places the answer by its stated position (§6.4) with
+  `placeRead`. The harness runs one message per task, as a browser does, and the fast set also
+  passes with whole TCP reads delivered at once (`CONVERGENCE_SYNC_DELIVERY=1`); KC4b keeps that
+  mode on for this case.
+- **Epochs.** A stream keeps its epoch across restarts, so a restart resumes by replay. A scope with
+  no stream yet sits at sequence 0 of the process's epoch, so it answers `stream_reset` after one;
+  those scopes hold nothing to lose.
+- **Old documents.** A cached document with no `cursors` is dropped by the existing key check, so
+  `CACHE_VERSION` (which versions the object stores, not the document) stays.
 
 ---
 

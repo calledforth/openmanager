@@ -20,6 +20,8 @@ import {
   subscribe,
   type ProtocolClient,
   type ProtocolHost,
+  listedSessions,
+  threadState,
 } from './helpers/protocol-client.js'
 import {
   disconnect,
@@ -38,8 +40,7 @@ const SUFFIX = 'lo'
 const FULL = `${PREFIX}${SUFFIX}`
 
 const liveProvider =
-  process.env.OPENMANAGER_LIVE_PROVIDER === 'claude' ||
-  process.env.OPENMANAGER_LIVE_CLAUDE === '1'
+  process.env.OPENMANAGER_LIVE_PROVIDER === 'claude' || process.env.OPENMANAGER_LIVE_CLAUDE === '1'
     ? 'claude'
     : process.env.OPENMANAGER_LIVE_PROVIDER === 'opencode' ||
         process.env.OPENMANAGER_LIVE_OPENCODE === '1'
@@ -87,9 +88,10 @@ describe('proof slice e2e harness', () => {
         (records) => records.some((record) => record.event.name === 'turn.completed'),
         'stream completed turn',
       )
-      expect(eventStart(completed), layer('protocol', 'completed turn starts with turn.started')).toBe(
-        'turn.started',
-      )
+      expect(
+        eventStart(completed),
+        layer('protocol', 'completed turn starts with turn.started'),
+      ).toBe('turn.started')
       expectContiguous(completed, 1, 'completed turn')
       expectTerminal(completed, 'turn.completed', firstTurnId, 'completed turn')
       expect(assistantText(completed), layer('ui', 'completed turn reconstructed text')).toBe(FULL)
@@ -232,20 +234,17 @@ describe('proof slice e2e harness', () => {
         rest.some((record) => record.event.eventId === last.event.eventId),
         layer('ui', 'catch-up must not duplicate the prefix the UI already applied'),
       ).toBe(false)
-      expect(
-        assistantText([...prefix, ...rest]),
-        layer('ui', 'caught-up reconstructed text'),
-      ).toBe(FULL)
-
-      const historyAfter = await expectCommand(
-        recovered.client,
-        'session.history',
-        { sessionId, threadId },
-        'history after catch-up',
+      expect(assistantText([...prefix, ...rest]), layer('ui', 'caught-up reconstructed text')).toBe(
+        FULL,
       )
-      expectHistoryTurn(historyAfter.payload, turnId, 'completed', 'after catch-up')
+
+      const historyAfter = await threadState(recovered.client, host.server.identity.environmentId, {
+        sessionId,
+        threadId,
+      })
+      expectHistoryTurn(historyAfter, turnId, 'completed', 'after catch-up')
       expect(
-        assistantTextFromMessages(historyAfter.payload.messages),
+        assistantTextFromMessages(historyAfter.messages),
         layer('persistence', 'after catch-up: persisted assistant text'),
       ).toBe(FULL)
     },
@@ -330,7 +329,13 @@ describe.skipIf(!liveProvider)('proof slice e2e harness (live provider)', () => 
       expectTerminal(interrupted, 'turn.interrupted', secondTurnId, 'live interrupted turn')
 
       disconnect(client)
-      const recovered = await reconnectAndOpen(host, scope, sessionId, threadId, 'live after interrupt')
+      const recovered = await reconnectAndOpen(
+        host,
+        scope,
+        sessionId,
+        threadId,
+        'live after interrupt',
+      )
       expectHistoryTurn(recovered.history, firstTurnId, 'completed', 'live after interrupt')
       expectHistoryTurn(recovered.history, secondTurnId, 'interrupted', 'live after interrupt')
     },
@@ -343,8 +348,8 @@ async function listCatalog(client: ProtocolClient, host: ProtocolHost, step: str
     workspaces.payload.workspaces.some((workspace) => workspace.workspaceId === host.workspaceId),
     layer('persistence', `${step}: configured workspace is listed`),
   ).toBe(true)
-  const sessions = await expectCommand(client, 'session.list', {}, `${step}: session.list`)
-  return { ...workspaces.payload, ...sessions.payload }
+  const sessions = await listedSessions(client, host.server.identity.environmentId)
+  return { ...workspaces.payload, sessions }
 }
 
 async function createOpenedSession(
@@ -364,9 +369,9 @@ async function createOpenedSession(
     `${step}: session.create`,
   )
   const { session, thread } = created.payload
-  const listed = await expectCommand(client, 'session.list', {}, `${step}: session.list after create`)
+  const listed = await listedSessions(client, host.server.identity.environmentId)
   expect(
-    listed.payload.sessions.some((row) => row.sessionId === session.sessionId),
+    listed.some((row) => row.sessionId === session.sessionId),
     layer('persistence', `${step}: created session appears in the catalog`),
   ).toBe(true)
   const opened = await expectCommand(
@@ -379,26 +384,19 @@ async function createOpenedSession(
     opened.payload.threads.some((row) => row.threadId === thread.threadId),
     layer('protocol', `${step}: open returns the created thread`),
   ).toBe(true)
-  const history = await expectCommand(
-    client,
-    'session.history',
-    { sessionId: session.sessionId, threadId: thread.threadId },
-    `${step}: session.history`,
-  )
-  expect(history.payload.turns, layer('persistence', `${step}: new thread history is empty`)).toEqual(
-    [],
-  )
-  expect(
-    history.payload.messages,
-    layer('persistence', `${step}: new thread has no messages`),
-  ).toEqual([])
+  const history = await threadState(client, host.server.identity.environmentId, {
+    sessionId: session.sessionId,
+    threadId: thread.threadId,
+  })
+  expect(history.turns, layer('persistence', `${step}: new thread history is empty`)).toEqual([])
+  expect(history.messages, layer('persistence', `${step}: new thread has no messages`)).toEqual([])
   const scope: SubscriptionScope = {
     type: 'thread',
     environmentId: host.server.identity.environmentId,
     sessionId: session.sessionId,
     threadId: thread.threadId,
   }
-  return { sessionId: session.sessionId, threadId: thread.threadId, scope, history: history.payload }
+  return { sessionId: session.sessionId, threadId: thread.threadId, scope, history }
 }
 
 async function reconnectAndOpen(
@@ -415,21 +413,18 @@ async function reconnectAndOpen(
   )
   const listed = await listCatalog(client, host, `${step}: catalog`)
   const opened = await expectCommand(client, 'session.open', { sessionId }, `${step}: session.open`)
-  expect(
-    opened.payload.session.sessionId,
-    layer('protocol', `${step}: reopened session id`),
-  ).toBe(sessionId)
-  const history = await expectCommand(
-    client,
-    'session.history',
-    { sessionId, threadId },
-    `${step}: session.history`,
+  expect(opened.payload.session.sessionId, layer('protocol', `${step}: reopened session id`)).toBe(
+    sessionId,
   )
+  const history = await threadState(client, host.server.identity.environmentId, {
+    sessionId,
+    threadId,
+  })
   expect(
-    history.payload.turns.length,
+    history.turns.length,
     layer('persistence', `${step}: history must still contain the turn`),
   ).toBeGreaterThan(0)
-  return { client, listed, opened: opened.payload, history: history.payload, scope }
+  return { client, listed, opened: opened.payload, history, scope }
 }
 
 async function replayCaughtUp(
@@ -445,9 +440,10 @@ async function replayCaughtUp(
     const reason = error instanceof Error ? error.message : String(error)
     throw new Error(layer('protocol', `${step}: subscription.replay failed: ${reason}`))
   }
-  expect(answer.payload.mode, layer('protocol', `${step}: reconnect should replay, not snapshot`)).toBe(
-    'replay',
-  )
+  expect(
+    answer.payload.mode,
+    layer('protocol', `${step}: reconnect should replay, not snapshot`),
+  ).toBe('replay')
   if (answer.payload.mode === 'replay') {
     expect(answer.payload.from.sequence, layer('protocol', `${step}: replay from cursor`)).toBe(
       cursor.sequence,

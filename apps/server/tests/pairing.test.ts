@@ -711,8 +711,11 @@ describe('pairing through the environment server', () => {
     const phone = await connectProtocol({ ...host, token: paired.credential })
     await handshake(phone)
     // `read` only: the phone can look but cannot hand out or see access.
-    const listId = phone.command('session.list', {})
-    expect(await nextResponse(phone, listId)).toMatchObject({ type: 'response' })
+    const environmentReplay = phone.command('subscription.replay', {
+      scope: { type: 'environment', environmentId: host.server.identity.environmentId },
+      cursor: null,
+    })
+    expect(await nextResponse(phone, environmentReplay)).toMatchObject({ type: 'response' })
     for (const [name, payload] of [
       ['pairing.create', { capabilities: ['read'] }],
       ['pairing.list', null],

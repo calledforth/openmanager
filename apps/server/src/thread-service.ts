@@ -4,7 +4,6 @@ import {
   ProofCommandSchemas,
   ProofEventSchemas,
   ProofResponseSchemas,
-  pageThreadMessages,
   BACKGROUND_TASKS_MAX,
   shouldReplaceSessionTitle,
   TURN_FAILURE_MESSAGES,
@@ -24,12 +23,14 @@ import {
   type Session,
   type SessionStatus,
   type SessionSummary,
+  type SubscriptionScope,
   type SessionTitleSource,
   type Thread,
   type TurnFailureReason,
   type Turn,
   type TurnStart,
   type WorkspaceComposerPreference,
+  type Cursor,
 } from '@openmanager/protocol/node'
 import {
   projectAgentEvent,
@@ -48,15 +49,15 @@ import {
   getProviderSessionId,
   getSessionSummary,
   hasInteraction,
-  listSessionHistory,
-  listSessionSummaries,
+  listAllSessionSummaries,
   listThreadsForSession,
+  readThreadState,
+  type ThreadState,
 } from './db/session-store.ts'
 import type { ArtifactStore } from './artifacts.ts'
 import { waitingKind } from './db/session-activity.ts'
 import type { WriteOptions } from './db/event-repository.ts'
 import { sessionDeletionEvents } from './db/deletions.ts'
-import { pageSessionSummaries } from './session-pagination.ts'
 import type { CommandContext } from './command-context.ts'
 import { formatTitleContext, type TitleContextMessage } from './session-titles/context.ts'
 import { TitleGenerationError, type TitleGenerator } from './session-titles/generator.ts'
@@ -280,7 +281,11 @@ type ThreadRecord = {
 
 /** Why a session the rows hold could not be loaded: the answer an open gives. */
 export type LoadRefusal = { code: ErrorCode; message: string; details?: unknown }
-type Loaded = { refused: LoadRefusal } | { session: SessionSummary; threads: Thread[] }
+type SessionOpenPosition = { environment: Cursor; session: Cursor }
+
+type Loaded =
+  | { refused: LoadRefusal }
+  | { session: SessionSummary; threads: Thread[]; at: SessionOpenPosition }
 
 const errorResult = (requestId: string, code: ErrorCode, message: string, details?: unknown) => ({
   type: 'error' as const,
@@ -364,6 +369,8 @@ export function createThreadService(
     artifacts?: ArtifactStore
     database?: DatabaseSync
     flush?: () => void
+    /** A stream's head, for stating where a read stands. */
+    head?: (scope: SubscriptionScope) => Cursor
     /**
      * Commit several host events together; falls back to one append per
      * event. `options` carries host-private facts that ride the write, such
@@ -808,8 +815,8 @@ export function createThreadService(
     if (!item.backgroundTasks?.length) return
     item.backgroundTasks = undefined
     item.backgroundTaskIds = undefined
-    void runtime.closeThread
-      ?.({ providerId: item.providerId, threadId: item.thread.threadId })
+    void runtime
+      .closeThread?.({ providerId: item.providerId, threadId: item.thread.threadId })
       .catch(() => undefined)
   }
 
@@ -888,6 +895,8 @@ export function createThreadService(
     options.flush?.()
     const session = getSessionSummary(database, sessionId)
     if (!session) return { refused: { code: 'not_found', message: 'Session not found.' } }
+    // Read with the summary: restoring below may write events of its own.
+    const at = readPosition(sessionId)
     if (unrecoverable.has(sessionId)) return { refused: UNRECOVERABLE }
     const providerId = session.providerId as ProviderId
     // No identity means the provider never received anything: a crash came
@@ -918,7 +927,21 @@ export function createThreadService(
       return { refused: { code: 'not_found', message: 'Thread not found.' } }
     }
     restoreSession(session, providerId, providerSessionId, target.cwd, restoredThreads)
-    return { session, threads: restoredThreads }
+    return { session, threads: restoredThreads, at }
+  }
+
+  /**
+   * The answer to `session.open` states a position (docs/sync-foundations.md
+   * §6.5): the heads of the streams that change what it reads, in the tick of
+   * that read. Memory-only mode has no streams.
+   */
+  const readPosition = (sessionId: string): SessionOpenPosition => {
+    const head = (scope: SubscriptionScope): Cursor =>
+      options.head?.(scope) ?? { scope, epoch: 'memory', sequence: 0 }
+    return {
+      environment: head({ type: 'environment', environmentId }),
+      session: head({ type: 'session', environmentId, sessionId }),
+    }
   }
 
   /** What `rejectWorkspace` answers, for the loader. */
@@ -1014,19 +1037,31 @@ export function createThreadService(
     projectOwnEvent(record, event, active, completionState, failureReason)
     // A generated image is filed after the tool call that produced it, so the
     // transcript shows the result where it happened: after the work, not before.
-    if (active && options.artifacts && (event.event === 'tool_call' ||
-      event.event === 'tool_call_update' || event.event === 'tool_call_content')) {
-      const items = event.event === 'tool_call_content' ? [event.data.item] : event.data.content ?? []
+    if (
+      active &&
+      options.artifacts &&
+      (event.event === 'tool_call' ||
+        event.event === 'tool_call_update' ||
+        event.event === 'tool_call_content')
+    ) {
+      const items =
+        event.event === 'tool_call_content' ? [event.data.item] : (event.data.content ?? [])
       for (const item of items) {
         if (item.type !== 'content' || item.content.type !== 'image') continue
         const image = item.content
-        const key = createHash('sha256').update(event.data.toolCallId)
-          .update(image.mimeType).update(image.data).digest('hex')
+        const key = createHash('sha256')
+          .update(event.data.toolCallId)
+          .update(image.mimeType)
+          .update(image.data)
+          .digest('hex')
         active.generatedImages ??= new Set()
         if (active.generatedImages.has(key)) continue
         active.generatedImages.add(key)
-        projectOwnEvent(record, { ...event, category: 'stream', event: 'agent_message_chunk',
-          data: { content: image } }, active)
+        projectOwnEvent(
+          record,
+          { ...event, category: 'stream', event: 'agent_message_chunk', data: { content: image } },
+          active,
+        )
       }
     }
   }
@@ -1058,7 +1093,12 @@ export function createThreadService(
   ): void => {
     // The durable prompt already names its uploaded images. Provider echoes must
     // neither duplicate them nor relabel them as generated output.
-    if (options.database && event.event === 'user_message_chunk' && event.data.content.type === 'image') return
+    if (
+      options.database &&
+      event.event === 'user_message_chunk' &&
+      event.data.content.type === 'image'
+    )
+      return
     const providerToolId =
       event.event === 'tool_call' ||
       event.event === 'tool_call_update' ||
@@ -1110,18 +1150,34 @@ export function createThreadService(
           : 'running',
     })
     if (!projected) return
-    if (projected.name === 'message.delta' && projected.payload.content.type === 'image' && options.artifacts) {
+    if (
+      projected.name === 'message.delta' &&
+      projected.payload.content.type === 'image' &&
+      options.artifacts
+    ) {
       try {
         const content = projected.payload.content
-        const metadata = options.artifacts.generated(record.session.sessionId,
-          record.session.workspaceId, content.mimeType, content.data)
+        const metadata = options.artifacts.generated(
+          record.session.sessionId,
+          record.session.workspaceId,
+          content.mimeType,
+          content.data,
+        )
         projected.payload.content = options.artifacts.reference(metadata)
       } catch (error) {
         options.onPersistenceError?.(error, 'artifact.generated')
         // Never fall back to putting image bytes in the event log.
-        publishTransient({ type: 'event', name: 'turn.notice', eventId: randomUUID(),
-          timestamp: event.timestamp, scope: threadScope(record),
-          payload: { turnId: projected.payload.turnId, message:'A generated image could not be stored.' } })
+        publishTransient({
+          type: 'event',
+          name: 'turn.notice',
+          eventId: randomUUID(),
+          timestamp: event.timestamp,
+          scope: threadScope(record),
+          payload: {
+            turnId: projected.payload.turnId,
+            message: 'A generated image could not be stored.',
+          },
+        })
         return
       }
     }
@@ -1151,7 +1207,8 @@ export function createThreadService(
     else appendRuntimeEvent(projected)
     if (active && projected.name === 'message.reasoning') {
       active.openReasoning ??= new Set()
-      if (projected.payload.phase === 'stop') active.openReasoning.delete(projected.payload.messageId)
+      if (projected.payload.phase === 'stop')
+        active.openReasoning.delete(projected.payload.messageId)
       else active.openReasoning.add(projected.payload.messageId)
     }
     if (active && projected.name === 'interaction.requested') {
@@ -1586,7 +1643,8 @@ export function createThreadService(
 
   const emitStatus = (record: ThreadRecord, status: SessionStatus) => {
     // Mirrors the SQLite projection: running or asking brings a settled session back.
-    const unsettle = record.settledAt !== undefined && (status === 'running' || status === 'waiting')
+    const unsettle =
+      record.settledAt !== undefined && (status === 'running' || status === 'waiting')
     if (unsettle) record.settledAt = undefined
     // A new turn supersedes the last result, as `turn.started` does in SQLite.
     if (status === 'running' || status === 'waiting') record.doneAt = undefined
@@ -1779,8 +1837,11 @@ export function createThreadService(
           return errorResult(command.requestId, 'not_found', 'Artifact not found in this session.')
         }
         artifactContent.push(options.artifacts!.reference(metadata))
-        promptImages.push({ type: 'image', mimeType: metadata.mimeType,
-          data: options.artifacts!.read(metadata).toString('base64') })
+        promptImages.push({
+          type: 'image',
+          mimeType: metadata.mimeType,
+          data: options.artifacts!.read(metadata).toString('base64'),
+        })
       }
     } catch {
       return errorResult(command.requestId, 'unavailable', 'An attachment could not be read.')
@@ -1910,6 +1971,51 @@ export function createThreadService(
     },
 
     /**
+     * Every session's summary, newest first: the rows when persistent, else
+     * memory. Nothing on the wire reads this (the environment snapshot reads
+     * the rows itself); it is how tests and the in-memory mode inspect state.
+     */
+    summaries(): SessionSummary[] {
+      if (options.database) {
+        options.flush?.()
+        return listAllSessionSummaries(options.database)
+      }
+      return [...sessions.values()]
+        .map(summaryOf)
+        .sort((left, right) =>
+          left.updatedAt === right.updatedAt
+            ? right.sessionId.localeCompare(left.sessionId)
+            : (right.updatedAt ?? '').localeCompare(left.updatedAt ?? ''),
+        )
+    },
+
+    /**
+     * A thread as its snapshot states it: the rows when persistent, else
+     * memory (without reasoning, tools or order, which memory does not keep).
+     * For inspection, like `summaries`.
+     */
+    threadState(target: { sessionId: string; threadId: string }): ThreadState | undefined {
+      if (options.database) {
+        options.flush?.()
+        return readThreadState(options.database, target)
+      }
+      const record = threads.get(target.threadId)
+      if (!record || record.session.sessionId !== target.sessionId) return undefined
+      return {
+        thread: record.thread,
+        turns: record.turns,
+        messages: record.messages,
+        reasoning: [],
+        tools: [],
+        order: [],
+        interactions: [...record.interactions.values()]
+          .filter((entry) => !entry.settled && record.activeTurn?.turn.turnId === entry.turnId)
+          .map((entry) => ({ turnId: entry.turnId, interaction: entry.interaction })),
+        listing: {},
+      }
+    },
+
+    /**
      * Forget background work left over from the process that ran before this
      * one. The tasks were children of provider processes that did not survive
      * it, so every session still listing some has none, and one held at
@@ -1994,20 +2100,6 @@ export function createThreadService(
     },
 
     dispatch(command: CommandEnvelope, context?: CommandContext): unknown | undefined {
-      if (command.name === 'session.list') {
-        const parsed = ProofCommandSchemas['session.list'].safeParse(command)
-        if (!parsed.success) {
-          return errorResult(command.requestId, 'validation', 'Invalid session list request.')
-        }
-        return ProofResponseSchemas['session.list'].parse({
-          type: 'response',
-          requestId: command.requestId,
-          payload: options.database
-            ? listSessionSummaries(options.database, parsed.data.payload)
-            : pageSessionSummaries([...sessions.values()].map(summaryOf), parsed.data.payload),
-        })
-      }
-
       if (command.name === 'session.create') {
         const parsed = ProofCommandSchemas['session.create'].safeParse(command)
         if (!parsed.success) {
@@ -2110,7 +2202,11 @@ export function createThreadService(
           (sessions.has(sessionId) ||
             (options.database !== undefined && getSessionSummary(options.database, sessionId)))
         ) {
-          return errorResult(command.requestId, 'conflict', 'A session with this id already exists.')
+          return errorResult(
+            command.requestId,
+            'conflict',
+            'A session with this id already exists.',
+          )
         }
         let draft: { event: ProofEvent; restore: () => void } | undefined
         if (input.draftId !== undefined) {
@@ -2346,9 +2442,7 @@ export function createThreadService(
                   sessionId,
                   workspaceId: session.workspaceId,
                   title: generated.title,
-                  ...(session.parentSessionId
-                    ? { parentSessionId: session.parentSessionId }
-                    : {}),
+                  ...(session.parentSessionId ? { parentSessionId: session.parentSessionId } : {}),
                 },
               },
             })
@@ -2528,9 +2622,7 @@ export function createThreadService(
           return errorResult(command.requestId, 'validation', 'Invalid session request.')
         options.flush?.()
         const { sessionId, taskIds } = parsed.data.payload
-        const records = [...threads.values()].filter(
-          (item) => item.session.sessionId === sessionId,
-        )
+        const records = [...threads.values()].filter((item) => item.session.sessionId === sessionId)
         const known = records.length
           ? true
           : !!options.database && !!getSessionSummary(options.database, sessionId)
@@ -2582,7 +2674,7 @@ export function createThreadService(
           return ProofResponseSchemas['session.open'].parse({
             type: 'response',
             requestId: command.requestId,
-            payload: { session: loaded.session, threads: loaded.threads },
+            payload: { session: loaded.session, threads: loaded.threads, at: loaded.at },
           })
         }
         const record = sessions.get(parsed.data.payload.sessionId)
@@ -2616,56 +2708,7 @@ export function createThreadService(
             threads: options.database
               ? listThreadsForSession(options.database, record.session.sessionId)
               : [record.thread],
-          },
-        })
-      }
-
-      if (command.name === 'session.history') {
-        const parsed = ProofCommandSchemas['session.history'].safeParse(command)
-        if (!parsed.success) {
-          return errorResult(command.requestId, 'validation', 'Invalid session history request.')
-        }
-        if (options.database) {
-          options.flush?.()
-          const page = listSessionHistory(options.database, parsed.data.payload)
-          if (!page) return errorResult(command.requestId, 'not_found', 'Thread not found.')
-          return ProofResponseSchemas['session.history'].parse({
-            type: 'response',
-            requestId: command.requestId,
-            payload: page,
-          })
-        }
-        const record = threads.get(parsed.data.payload.threadId)
-        if (!record || record.session.sessionId !== parsed.data.payload.sessionId) {
-          return errorResult(command.requestId, 'not_found', 'Thread not found.')
-        }
-        const page = pageThreadMessages(record.messages, parsed.data.payload)
-        return ProofResponseSchemas['session.history'].parse({
-          type: 'response',
-          requestId: command.requestId,
-          payload: {
-            messages: page.messages,
-            turns: record.turns,
-            interactions: [...record.interactions.values()]
-              .filter((entry) => !entry.settled && record.activeTurn?.turn.turnId === entry.turnId)
-              .map((entry) => ({
-                threadId: record.thread.threadId,
-                interaction: entry.interaction,
-              })),
-            plans: [...record.interactions.values()]
-              .filter((entry) => entry.interaction.kind === 'plan')
-              .map((entry) => ({
-                threadId: record.thread.threadId,
-                turnId: entry.turnId,
-                plan: entry.interaction,
-                state: entry.resolution
-                  ? (entry.interaction.lifecycle?.state ?? 'resolved')
-                  : entry.settled || record.activeTurn?.turn.turnId !== entry.turnId
-                    ? 'cancelled'
-                    : 'pending',
-                outcome: entry.resolution?.outcome,
-              })),
-            nextCursor: page.nextCursor,
+            at: readPosition(record.session.sessionId),
           },
         })
       }

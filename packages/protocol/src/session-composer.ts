@@ -61,17 +61,27 @@ export const ComposerUsageSchema = z.strictObject({
  *
  * `modelId` and `configValues` are the user's choice, which the environment
  * re-applies before a prompt. `modeId` follows the provider, which may switch
- * modes itself mid-turn. `configOptions` and `availableCommands` are the
- * provider's latest listings. `usage` is the provider's latest reading; a
- * provider that reports none leaves it absent, and the composer shows no meter.
+ * modes itself mid-turn. `usage` is the provider's latest reading; a provider
+ * that reports none leaves it absent, and the composer shows no meter.
+ *
+ * This travels with every session in the sidebar, so it stays small: what the
+ * provider offers is a `ComposerListing`, which travels with the chat.
  */
 export const SessionComposerStateSchema = z.strictObject({
   modelId: id.optional(),
   modeId: id.optional(),
   configValues: ComposerConfigValuesSchema.optional(),
+  usage: ComposerUsageSchema.optional(),
+})
+
+/**
+ * What a provider offers a chat: its settings and its slash commands, as the
+ * provider last listed them. A list of commands can run to tens of kilobytes,
+ * so a browser gets one only for the chat it has open.
+ */
+export const ComposerListingSchema = z.strictObject({
   configOptions: z.array(ComposerConfigOptionSchema).max(256).optional(),
   availableCommands: z.array(ComposerCommandOptionSchema).max(1_024).optional(),
-  usage: ComposerUsageSchema.optional(),
 })
 
 export type ComposerConfigValue = z.infer<typeof ComposerConfigValueSchema>
@@ -79,3 +89,4 @@ export type ComposerConfigOption = z.infer<typeof ComposerConfigOptionSchema>
 export type ComposerCommandOption = z.infer<typeof ComposerCommandOptionSchema>
 export type ComposerUsage = z.infer<typeof ComposerUsageSchema>
 export type SessionComposerState = z.infer<typeof SessionComposerStateSchema>
+export type ComposerListing = z.infer<typeof ComposerListingSchema>

@@ -56,7 +56,6 @@ describe('command access mapping', () => {
       'subscription.subscribe': 'read',
       'subscription.replay': 'read',
       'provider.probe': 'read',
-      'composer.preferences.get': 'read',
       'session.create': 'operate',
       'session.rename': 'operate',
       'session.delete': 'operate',

@@ -125,11 +125,9 @@ describe('workspace lifecycle', () => {
         },
       }),
     ).toMatchObject({ type: 'error', error: { code: 'not_found' } })
-    expect(
-      service.dispatch({ type: 'command', requestId: 'list', name: 'session.list', payload: {} }),
-    ).toMatchObject({
-      payload: { sessions: [expect.objectContaining({ sessionId: created.session.sessionId })] },
-    })
+    expect(service.summaries()).toMatchObject([
+      expect.objectContaining({ sessionId: created.session.sessionId }),
+    ])
     expect(runtime.ensureSession).not.toHaveBeenCalled()
     expect(runtime.prompt).not.toHaveBeenCalled()
     available = true
@@ -424,99 +422,106 @@ describe('thread command provider routing', () => {
     ).toMatchObject({ type: 'error', error: { code: 'not_found' } })
   })
 
-  it.each([true, false])('handles cancellation failure with prompt started=%s', async (promptStarted) => {
-    const runtime = {
-      ensureSession: vi.fn().mockResolvedValue({ sessionId: 'provider-session', state: 'created' }),
-      prompt: vi.fn(() => new Promise(() => undefined)),
-      cancel: vi
-        .fn()
-        .mockRejectedValueOnce(new Error('cancel failed'))
-        .mockResolvedValueOnce(undefined),
-    } as unknown as Pick<AgentRuntime, 'ensureSession' | 'prompt' | 'cancel'>
-    const events: EventEnvelope[] = []
-    const service = createThreadService(
-      runtime,
-      { rejection: () => undefined },
-      (event) => events.push(event),
-      undefined,
-      registered,
-    )
-    service.setEnvironmentId('environment-1')
-    const created = ProofResponseSchemas['session.create'].parse(
-      service.dispatch({
-        type: 'command',
-        requestId: 'create-1',
-        name: 'session.create',
-        payload: {
-          environmentId: 'environment-1',
-          providerId: 'opencode',
-          workspaceId: '/workspace/project',
-        },
-      }),
-    )
-    const sent = ProofResponseSchemas['turn.send'].parse(
-      service.dispatch({
-        type: 'command',
-        requestId: 'send-1',
-        name: 'turn.send',
-        payload: {
-          sessionId: created.payload.session.sessionId,
-          threadId: created.payload.thread.threadId,
-          text: 'Run',
-        },
-      }),
-    )
-    const target = {
-      sessionId: created.payload.session.sessionId,
-      threadId: created.payload.thread.threadId,
-    }
-
-    if (promptStarted) await vi.waitFor(() => expect(runtime.prompt).toHaveBeenCalledTimes(1))
-
-    expect(
-      service.dispatch({
-        type: 'command',
-        requestId: 'interrupt-1',
-        name: 'turn.interrupt',
-        payload: { ...target, turnId: sent.payload.turn.turnId },
-      }),
-    ).toMatchObject({ type: 'response', requestId: 'interrupt-1' })
-    await vi.waitFor(() => expect(runtime.cancel).toHaveBeenCalledTimes(1))
-    await Promise.resolve()
-    expect(events).not.toContainEqual(expect.objectContaining({ name: 'turn.failed' }))
-    if (!promptStarted) {
-      await vi.waitFor(() => expect(events).toContainEqual(expect.objectContaining({ name: 'turn.interrupted' })))
-      expect(runtime.prompt).not.toHaveBeenCalled()
-      return
-    }
-
-    expect(
-      service.dispatch({
-        type: 'command',
-        requestId: 'send-2',
-        name: 'turn.send',
-        payload: { ...target, text: 'Must wait' },
-      }),
-    ).toMatchObject({ type: 'error', error: { code: 'conflict' } })
-
-    expect(
-      service.dispatch({
-        type: 'command',
-        requestId: 'interrupt-2',
-        name: 'turn.interrupt',
-        payload: { ...target, turnId: sent.payload.turn.turnId },
-      }),
-    ).toMatchObject({ type: 'response', requestId: 'interrupt-2' })
-    await vi.waitFor(() =>
-      expect(events).toContainEqual(
-        expect.objectContaining({
-          name: 'turn.interrupted',
-          payload: { turnId: sent.payload.turn.turnId, reason: 'user' },
+  it.each([true, false])(
+    'handles cancellation failure with prompt started=%s',
+    async (promptStarted) => {
+      const runtime = {
+        ensureSession: vi
+          .fn()
+          .mockResolvedValue({ sessionId: 'provider-session', state: 'created' }),
+        prompt: vi.fn(() => new Promise(() => undefined)),
+        cancel: vi
+          .fn()
+          .mockRejectedValueOnce(new Error('cancel failed'))
+          .mockResolvedValueOnce(undefined),
+      } as unknown as Pick<AgentRuntime, 'ensureSession' | 'prompt' | 'cancel'>
+      const events: EventEnvelope[] = []
+      const service = createThreadService(
+        runtime,
+        { rejection: () => undefined },
+        (event) => events.push(event),
+        undefined,
+        registered,
+      )
+      service.setEnvironmentId('environment-1')
+      const created = ProofResponseSchemas['session.create'].parse(
+        service.dispatch({
+          type: 'command',
+          requestId: 'create-1',
+          name: 'session.create',
+          payload: {
+            environmentId: 'environment-1',
+            providerId: 'opencode',
+            workspaceId: '/workspace/project',
+          },
         }),
-      ),
-    )
-    expect(runtime.cancel).toHaveBeenCalledTimes(2)
-  })
+      )
+      const sent = ProofResponseSchemas['turn.send'].parse(
+        service.dispatch({
+          type: 'command',
+          requestId: 'send-1',
+          name: 'turn.send',
+          payload: {
+            sessionId: created.payload.session.sessionId,
+            threadId: created.payload.thread.threadId,
+            text: 'Run',
+          },
+        }),
+      )
+      const target = {
+        sessionId: created.payload.session.sessionId,
+        threadId: created.payload.thread.threadId,
+      }
+
+      if (promptStarted) await vi.waitFor(() => expect(runtime.prompt).toHaveBeenCalledTimes(1))
+
+      expect(
+        service.dispatch({
+          type: 'command',
+          requestId: 'interrupt-1',
+          name: 'turn.interrupt',
+          payload: { ...target, turnId: sent.payload.turn.turnId },
+        }),
+      ).toMatchObject({ type: 'response', requestId: 'interrupt-1' })
+      await vi.waitFor(() => expect(runtime.cancel).toHaveBeenCalledTimes(1))
+      await Promise.resolve()
+      expect(events).not.toContainEqual(expect.objectContaining({ name: 'turn.failed' }))
+      if (!promptStarted) {
+        await vi.waitFor(() =>
+          expect(events).toContainEqual(expect.objectContaining({ name: 'turn.interrupted' })),
+        )
+        expect(runtime.prompt).not.toHaveBeenCalled()
+        return
+      }
+
+      expect(
+        service.dispatch({
+          type: 'command',
+          requestId: 'send-2',
+          name: 'turn.send',
+          payload: { ...target, text: 'Must wait' },
+        }),
+      ).toMatchObject({ type: 'error', error: { code: 'conflict' } })
+
+      expect(
+        service.dispatch({
+          type: 'command',
+          requestId: 'interrupt-2',
+          name: 'turn.interrupt',
+          payload: { ...target, turnId: sent.payload.turn.turnId },
+        }),
+      ).toMatchObject({ type: 'response', requestId: 'interrupt-2' })
+      await vi.waitFor(() =>
+        expect(events).toContainEqual(
+          expect.objectContaining({
+            name: 'turn.interrupted',
+            payload: { turnId: sent.payload.turn.turnId, reason: 'user' },
+          }),
+        ),
+      )
+      expect(runtime.cancel).toHaveBeenCalledTimes(2)
+    },
+  )
 
   it('ignores delayed completion from an interrupted turn after a new turn starts', async () => {
     const runtime = {
@@ -714,7 +719,7 @@ describe('session summaries and paginated history', () => {
     cancel: vi.fn(),
   } as unknown as Pick<AgentRuntime, 'ensureSession' | 'prompt' | 'cancel'>
 
-  it('lists empty, one-page and multi-page summaries without transcripts', () => {
+  it('lists every summary, newest first, without transcripts', () => {
     const service = createThreadService(
       runtime,
       { rejection: () => undefined },
@@ -723,17 +728,7 @@ describe('session summaries and paginated history', () => {
       registered,
     )
     service.setEnvironmentId('environment-1')
-    expect(
-      ProofResponseSchemas['session.list'].parse(
-        service.dispatch({
-          type: 'command',
-          requestId: 'list-empty',
-          name: 'session.list',
-          payload: {},
-        }),
-      ).payload,
-    ).toEqual({ sessions: [], nextCursor: null })
-
+    expect(service.summaries()).toEqual([])
     const created = ['a', 'b', 'c'].map(
       (requestId) =>
         ProofResponseSchemas['session.create'].parse(
@@ -750,40 +745,25 @@ describe('session summaries and paginated history', () => {
           }),
         ).payload,
     )
-    const first = ProofResponseSchemas['session.list'].parse(
-      service.dispatch({
-        type: 'command',
-        requestId: 'list-1',
-        name: 'session.list',
-        payload: { limit: 2 },
-      }),
-    ).payload
-    expect(first.sessions).toHaveLength(2)
-    expect(first.sessions[0]).toMatchObject({
+    const sessions = service.summaries()
+    expect(sessions).toHaveLength(3)
+    expect(sessions[0]).toMatchObject({
       title: expect.any(String),
       status: 'idle',
       workspaceId: '/workspace/project',
       providerId: 'opencode',
     })
-    expect(first.sessions[0]).not.toHaveProperty('messages')
-    expect(first.nextCursor).not.toBeNull()
-
-    const rest = ProofResponseSchemas['session.list'].parse(
-      service.dispatch({
-        type: 'command',
-        requestId: 'list-2',
-        name: 'session.list',
-        payload: { cursor: first.nextCursor!, limit: 2 },
-      }),
-    ).payload
-    expect(rest.sessions).toHaveLength(1)
-    expect(rest.nextCursor).toBeNull()
+    expect(sessions[0]).not.toHaveProperty('messages')
+    expect(sessions.map((session) => session.sessionId).sort()).toEqual(
+      created.map((item) => item.session.sessionId).sort(),
+    )
+    // Nothing on the wire lists them: the environment snapshot is the sidebar.
     expect(
-      [...first.sessions, ...rest.sessions].map((session) => session.sessionId).sort(),
-    ).toEqual(created.map((item) => item.session.sessionId).sort())
+      service.dispatch({ type: 'command', requestId: 'list', name: 'session.list', payload: {} }),
+    ).toBeUndefined()
   })
 
-  it('opens a session as identities and fetches history separately', async () => {
+  it('opens a session as identities; the whole thread comes separately', async () => {
     const completing = {
       ...runtime,
       prompt: vi.fn().mockResolvedValue(undefined),
@@ -823,17 +803,10 @@ describe('session summaries and paginated history', () => {
         }),
       ).toMatchObject({ type: 'response' })
       await vi.waitFor(() => {
-        const page = ProofResponseSchemas['session.history'].parse(
-          service.dispatch({
-            type: 'command',
-            requestId: `wait-${text}`,
-            name: 'session.history',
-            payload: {
-              sessionId: created.session.sessionId,
-              threadId: created.thread.threadId,
-            },
-          }),
-        ).payload
+        const page = service.threadState({
+          sessionId: created.session.sessionId,
+          threadId: created.thread.threadId,
+        })!
         expect(page.turns.every((turn) => turn.state !== 'running')).toBe(true)
         expect(
           page.messages.some(
@@ -860,41 +833,19 @@ describe('session summaries and paginated history', () => {
     expect(opened.threads).toEqual([created.thread])
     expect(opened).not.toHaveProperty('messages')
 
-    const newest = ProofResponseSchemas['session.history'].parse(
-      service.dispatch({
-        type: 'command',
-        requestId: 'history-1',
-        name: 'session.history',
-        payload: {
-          sessionId: created.session.sessionId,
-          threadId: created.thread.threadId,
-          limit: 2,
-        },
-      }),
-    ).payload
-    expect(newest.messages.map((message) => message.content[0])).toEqual([
+    const thread = service.threadState({
+      sessionId: created.session.sessionId,
+      threadId: created.thread.threadId,
+    })!
+    expect(
+      thread.messages
+        .filter((message) => message.role === 'user')
+        .map((message) => message.content[0]),
+    ).toEqual([
+      { type: 'text', text: 'one' },
       { type: 'text', text: 'two' },
       { type: 'text', text: 'three' },
     ])
-    expect(newest.nextCursor).toEqual({ ordinal: 1 })
-
-    const older = ProofResponseSchemas['session.history'].parse(
-      service.dispatch({
-        type: 'command',
-        requestId: 'history-2',
-        name: 'session.history',
-        payload: {
-          sessionId: created.session.sessionId,
-          threadId: created.thread.threadId,
-          cursor: newest.nextCursor!,
-          limit: 2,
-        },
-      }),
-    ).payload
-    expect(older.messages.map((message) => message.content[0])).toEqual([
-      { type: 'text', text: 'one' },
-    ])
-    expect(older.nextCursor).toBeNull()
   })
 })
 
@@ -939,19 +890,12 @@ describe('persistence failures on the provider path', () => {
       }),
     ).payload
     await vi.waitFor(() => expect(failures).toEqual(['turn.completed']))
-    expect(
-      service.dispatch({
-        type: 'command',
-        requestId: 'history',
-        name: 'session.history',
-        payload: target,
-      }),
-    ).toMatchObject({ payload: { turns: [{ turnId: sent.turn.turnId, state: 'completed' }] } })
-    expect(
-      service.dispatch({ type: 'command', requestId: 'list', name: 'session.list', payload: {} }),
-    ).toMatchObject({
-      payload: { sessions: [{ sessionId: created.session.sessionId, status: 'idle' }] },
+    expect(service.threadState(target)).toMatchObject({
+      turns: [{ turnId: sent.turn.turnId, state: 'completed' }],
     })
+    expect(service.summaries()).toMatchObject([
+      { sessionId: created.session.sessionId, status: 'idle' },
+    ])
   })
 })
 
@@ -994,9 +938,7 @@ describe('explicit session creation', () => {
   ])('rejects invalid creation without leaving a session: %j', async (payload, code) => {
     const { service, runtime, events, create } = setup()
     expect(create(payload)).toMatchObject({ type: 'error', error: { code } })
-    expect(
-      service.dispatch({ type: 'command', name: 'session.list', requestId: 'list', payload: {} }),
-    ).toMatchObject({ payload: { sessions: [] } })
+    expect(service.summaries()).toMatchObject([])
     await Promise.resolve()
     expect(runtime.ensureSession).not.toHaveBeenCalled()
     expect(events).toEqual([])
@@ -1032,14 +974,13 @@ describe('explicit session creation', () => {
       expect.objectContaining({ userMessageId: created.firstTurn!.userMessage.messageId }),
     )
     expect(
-      service.dispatch({
-        type: 'command',
-        name: 'session.history',
-        requestId: 'history',
-        payload: { sessionId: created.session.sessionId, threadId: created.thread.threadId },
+      service.threadState({
+        sessionId: created.session.sessionId,
+        threadId: created.thread.threadId,
       }),
     ).toMatchObject({
-      payload: { turns: [created.firstTurn!.turn], messages: [created.firstTurn!.userMessage] },
+      turns: [created.firstTurn!.turn],
+      messages: [created.firstTurn!.userMessage],
     })
     expect(events).toContainEqual(
       expect.objectContaining({
@@ -1399,8 +1340,7 @@ describe('sends deduplicated by command id', () => {
           'SELECT provider_id, provider_session_id, updated_at FROM sessions WHERE session_id = ?',
         )
         .get(sessionId) as
-        | { provider_id: string; provider_session_id: string | null; updated_at: number }
-        | undefined
+        { provider_id: string; provider_session_id: string | null; updated_at: number } | undefined
 
     const created = create('create-1')
     await vi.waitFor(() => expect(runtime.ensureSession).toHaveBeenCalledTimes(1))
@@ -1441,7 +1381,11 @@ describe('sends deduplicated by command id', () => {
         (event) => events.append(event),
         undefined,
         resolve,
-        { database, flush: events.flush, appendAtomic: (batch, options) => events.appendAtomic(batch, options) },
+        {
+          database,
+          flush: events.flush,
+          appendAtomic: (batch, options) => events.appendAtomic(batch, options),
+        },
       )
       service.setEnvironmentId(input.environmentId)
       return service
@@ -1663,9 +1607,7 @@ describe('durable session lifecycle', () => {
     const h = setup()
     try {
       const { sessionId } = h.created.session
-      const summary = () =>
-        ProofResponseSchemas['session.list'].parse(h.dispatch(h.service, 'session.list', {}))
-          .payload.sessions[0]
+      const summary = () => h.service.summaries()[0]
       expect(summary()).toMatchObject({ sessionId, status: 'idle', doneAt: null })
 
       h.dispatch(h.service, 'turn.send', { ...h.created.thread, text: 'Finish this' })
@@ -1768,9 +1710,7 @@ describe('durable session lifecycle', () => {
         .count,
     )
 
-  const listed = (h: Harness, service: Harness['service']) =>
-    ProofResponseSchemas['session.list'].parse(h.dispatch(service, 'session.list', {})).payload
-      .sessions
+  const listed = (_h: Harness, service: Harness['service']) => service.summaries()
 
   it('files a provider child session under its parent exactly once, across a restart', async () => {
     const h = setup()
@@ -2652,9 +2592,7 @@ describe('durable session lifecycle', () => {
       ).payload.settledAt
       expect(settled).toEqual(expect.any(String))
       h.events.flush()
-      const listed = () =>
-        ProofResponseSchemas['session.list'].parse(h.dispatch(h.service, 'session.list', {}))
-          .payload.sessions[0]
+      const listed = () => h.service.summaries()[0]
       expect(listed()).toMatchObject({ sessionId, settledAt: settled })
       expect(h.published.at(-1)).toMatchObject({
         name: 'session.updated',
@@ -2679,9 +2617,7 @@ describe('durable session lifecycle', () => {
     const h = setup()
     try {
       const { sessionId } = h.created.session
-      const summary = () =>
-        ProofResponseSchemas['session.list'].parse(h.dispatch(h.service, 'session.list', {}))
-          .payload.sessions[0]
+      const summary = () => h.service.summaries()[0]
       h.dispatch(h.service, 'turn.send', { ...h.created.thread, text: 'Keep going' })
       expect(summary()).toMatchObject({ sessionId, status: 'running' })
       expect(h.dispatch(h.service, 'session.settle', { sessionId, settled: true })).toMatchObject({
@@ -3203,10 +3139,7 @@ describe('child sessions without a database', () => {
       data: { taskId: 'task-1', title: 'Explore', childSessionId: 'provider-child' },
     })
 
-    const list = () =>
-      ProofResponseSchemas['session.list'].parse(
-        service.dispatch({ type: 'command', requestId: 'list', name: 'session.list', payload: {} }),
-      ).payload.sessions
+    const list = () => service.summaries()
     const child = list().find((item) => item.sessionId !== sessionId)
     expect(child).toMatchObject({
       parentSessionId: sessionId,
@@ -3586,7 +3519,7 @@ describe('session rows on a provider other than the workspace default', () => {
     ).payload
     const { sessionId } = created.session
 
-    const listed = ProofResponseSchemas['session.list'].parse(dispatch('session.list', {})).payload
+    const listed = { sessions: service.summaries() }
     expect(listed.sessions).toMatchObject([{ sessionId, providerId: 'claude' }])
     // X2: what a client hears in `session.created` is the row a listing reads.
     const announced = published.find((record) => record.event.name === 'session.created')!
