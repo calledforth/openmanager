@@ -11,7 +11,7 @@ import type { ComponentProps } from 'react'
 import type { WebApp } from './app'
 import { environmentSocketUrl } from './lib/environment-socket'
 import { ENVIRONMENT_STORAGE_KEY } from './lib/environment-store'
-import { renderWebApp } from './test-utils'
+import { idleUntilDialled, renderWebApp } from './test-utils'
 
 type CreateClient = ComponentProps<typeof WebApp>['createEnvironmentClient']
 
@@ -320,6 +320,53 @@ describe('pairing a browser from a link', () => {
         routes: [expect.objectContaining({ endpoint: LAN })],
       }),
     ])
+  })
+
+  it('waits for the connection before redeeming, even when the cache names the environment', async () => {
+    const user = userEvent.setup()
+    localStorage.setItem(
+      ENVIRONMENT_STORAGE_KEY,
+      JSON.stringify({
+        version: 2,
+        selectedId: 'env-desk',
+        environments: [
+          {
+            environmentId: 'env-desk',
+            label: 'Desk',
+            credential: `omc1.${'s'.repeat(43)}`,
+            routes: [{ type: 'remote', endpoint: LAN, priority: 0 }],
+          },
+        ],
+      }),
+    )
+    // Nothing answers yet, so the socket cannot have been dialled.
+    let answer = (): void => undefined
+    const asked = new Promise<void>((resolve) => {
+      answer = resolve
+    })
+    const fetchMock = mockEnvironment(null)
+    const reply = fetchMock.getMockImplementation()!
+    fetchMock.mockImplementation(async (input, init) => {
+      await asked
+      return reply(input, init)
+    })
+    const clients: MockEnvironmentClient[] = []
+    const create: CreateClient = () => {
+      const client = idleUntilDialled(pairedPhone('env-desk'), undefined, { cached: true })
+      clients.push(client)
+      return client
+    }
+    const { router } = renderWebApp(pairPath(), { createEnvironmentClient: create })
+
+    await user.click(await screen.findByRole('button', { name: 'Update access' }))
+    await waitFor(() => expect(clients).toHaveLength(1))
+    await new Promise((resolve) => setTimeout(resolve, 20))
+    expect(clients[0]!.calls.filter((call) => call.command === 'redeemPairingLink')).toEqual([])
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument()
+
+    answer()
+    await waitFor(() => expect(router.state.location.pathname).toBe('/'))
+    expect(clients[0]!.calls.filter((call) => call.command === 'redeemPairingLink')).toHaveLength(1)
   })
 
   it('selects the saved environment first when another one is in use', async () => {

@@ -10,7 +10,7 @@ import { closeAddEnvironment } from './lib/add-environment-draft'
 import { environmentSocketUrl } from './lib/environment-socket'
 import { ENVIRONMENT_STORAGE_KEY } from './lib/environment-store'
 import { CONNECTION_STORIES } from './stories/connection-states'
-import { renderWebApp } from './test-utils'
+import { idleUntilDialled, renderWebApp } from './test-utils'
 
 type WebAppProps = ComponentProps<typeof WebApp>
 
@@ -77,16 +77,20 @@ function trackSockets() {
   const dialled: Array<{ url: string; credential: string | undefined }> = []
   const live = new Set<ReturnType<typeof createMockEnvironmentClient>>()
   const create: WebAppProps['createEnvironmentClient'] = (options) => {
-    dialled.push({ url: options.url, credential: options.credential })
-    const client = createMockEnvironmentClient({
-      seed: {
-        environment: {
-          environmentId: options.environmentId ?? 'env-local',
-          name: 'Environment',
+    const client = idleUntilDialled(
+      createMockEnvironmentClient({
+        seed: {
+          environment: {
+            environmentId: options.environmentId ?? 'env-local',
+            name: 'Environment',
+          },
         },
+      }),
+      () => {
+        dialled.push({ url: options.url, credential: options.credential })
+        live.add(client)
       },
-    })
-    live.add(client)
+    )
     const dispose = client.dispose.bind(client)
     client.dispose = () => {
       live.delete(client)
@@ -94,7 +98,7 @@ function trackSockets() {
     }
     return client
   }
-  /** `clients` are the ones not yet disposed. */
+  /** `clients` are the ones that dialled and are not yet disposed. */
   return { dialled: () => dialled, clients: () => [...live], create }
 }
 
@@ -1230,6 +1234,30 @@ describe('web routes', () => {
     expect(screen.getByText('Local environment')).toBeInTheDocument()
     expect(storedRegistry().environments).toHaveLength(1)
     expect(storedRegistry().selectedId).toBeNull()
+  })
+
+  it('starts the page over when the environment changes', async () => {
+    const user = userEvent.setup()
+    seedRegistry([
+      { environmentId: 'env-local', endpoints: ['http://127.0.0.1:43120'] },
+      { environmentId: 'env-other', label: 'Other', endpoints: ['http://127.0.0.1:43121'] },
+    ])
+    mockBootstrap({
+      'http://127.0.0.1:43120': { environmentId: 'env-local', label: 'Local environment' },
+      'http://127.0.0.1:43121': { environmentId: 'env-other', label: 'Other' },
+    })
+
+    renderWebApp('/settings')
+    await screen.findByText(/Connected · Local environment/)
+    const page = await screen.findByRole('button', { name: 'New agent' })
+
+    await user.click(
+      await screen.findByRole('button', { name: /^(Use http:\/\/127\.0\.0\.1:43121|Connect to Other)$/ }),
+    )
+
+    await screen.findByText(/Connected · Other/)
+    // What the page held was the other environment's: drafts, launches, picks.
+    expect(page).not.toBeInTheDocument()
   })
 
   it('does not restore a removed environment from an in-flight add', async () => {
