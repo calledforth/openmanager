@@ -240,6 +240,12 @@ export interface EnvironmentState {
   /** Whether `drafts` was listed since the client last caught up with the environment. */
   draftsListed: boolean
   /**
+   * Threads with a catch-up under way: asked for, or the server said the
+   * subscription is lagging. The transport's own state, for the UI alone. Read
+   * it through `selectOpenChatCatchingUp`.
+   */
+  catchingUp: Record<string, true>
+  /**
    * Where the held copy of the environment and of each session stands (a
    * thread keeps its own, on `ThreadState.cursor`). Same promise: the copy
    * holds every record up to the cursor. A session's goes with the session.

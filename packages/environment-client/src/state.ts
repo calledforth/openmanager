@@ -69,6 +69,7 @@ export function createInitialState(): EnvironmentState {
     draftEdits: {},
     draftsListed: false,
     cursors: { environment: null, sessions: {} },
+    catchingUp: {},
     activeSessionId: null,
     activeThreadId: null,
     connection: INITIAL_CONNECTION,
@@ -742,6 +743,19 @@ export function applyNoticesCleared(state: EnvironmentState, threadId: string): 
   return { ...state, threads: { ...state.threads, [threadId]: { ...thread, notices: [] } } }
 }
 
+/** A thread's catch-up started or ended. Nothing else moves, so no chat renders for it. */
+export function applyCatchingUp(
+  state: EnvironmentState,
+  threadId: string,
+  catchingUp: boolean,
+): EnvironmentState {
+  if ((state.catchingUp[threadId] === true) === catchingUp) return state
+  const threads = { ...state.catchingUp }
+  if (catchingUp) threads[threadId] = true
+  else delete threads[threadId]
+  return { ...state, catchingUp: threads }
+}
+
 /**
  * `session.open` loads identities only; the thread's snapshot brings the
  * transcript. The answer is a read with a stated position, on two streams: its
@@ -1394,6 +1408,25 @@ export function selectActiveTurn(state: EnvironmentState): Turn | null {
   const thread = selectActiveThread(state)
   if (!thread) return null
   return thread.turns.find((turn) => turn.state === 'running' || turn.state === 'waiting') ?? null
+}
+
+/**
+ * The chat on screen is a saved copy that is out of date and on its way to
+ * current: being opened (`hydration`), recovering after a reconnect, or
+ * lagging (`catchingUp`). UI state only; server data never depends on it.
+ *
+ * Connected only: with no link nothing is catching up, and the connection's
+ * own status says so. With no messages on screen it is a first open, which has
+ * the empty loading state instead. A copy whose cursor was forgotten is still
+ * a copy on screen, downloading whole.
+ */
+export function selectOpenChatCatchingUp(state: EnvironmentState): boolean {
+  if (state.connection.phase !== 'connected' || !state.activeThreadId) return false
+  // A session being created has its first message from the answer, not a copy.
+  if (state.activeSessionId && state.pending.creates[state.activeSessionId]) return false
+  const thread = state.threads[state.activeThreadId]
+  if (!thread?.messages.length) return false
+  return thread.hydration === 'loading' || state.catchingUp[state.activeThreadId] === true
 }
 
 export function selectPendingInteractions(

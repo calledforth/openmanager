@@ -1810,6 +1810,20 @@ down only on a first open in that browser, or when the server says a snapshot is
 - **Old documents.** A cached document with no `cursors` is dropped by the existing key check, so
   `CACHE_VERSION` (which versions the object stores, not the document) stays.
 
+### 6.6 Catching up, on screen
+
+`selectOpenChatCatchingUp` says the chat on screen is a saved copy on its way to current. It covers
+the open request (`hydration`) and every held catch-up (`state.catchingUp`): the transport's
+`held` list is what a catch-up is, whoever asked for it, so a reconnect's recovery and a lagging
+subscription need no signal of their own. A reconnect marks nothing as loading, which is why
+`hydration` alone was not enough. The signal is off without a connection, and with no messages on
+screen, which is a first open.
+
+It is UI state. It moves no server data, is never cached, and its writer changes nothing a chat
+renders from. Hosts decide what to show: web shows "Syncing…" after a delay (`SyncingPill`). Sending
+stays open while catching up: a send is ordered by the server, its echo sits in the outbox, and its
+`turn.started` either comes in the answer or waits behind it.
+
 ---
 
 ## 7. Rule 5: no artificial limits, liveness and flow control

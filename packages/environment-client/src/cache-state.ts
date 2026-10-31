@@ -12,6 +12,7 @@ export function cacheState(state: EnvironmentState): EnvironmentState {
     ...state,
     connection: createInitialState().connection,
     sessionOpenFailure: null,
+    catchingUp: {},
     // The user's unconfirmed actions belong to the old transport's commands.
     pending: emptyOverlay(),
     // A send cut off by the reload has an outcome this page never learns, and

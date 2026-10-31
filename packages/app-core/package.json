@@ -38,6 +38,8 @@
     "./components/chat/composerDrafts": "./src/components/chat/composerDrafts.ts",
     "./components/chat/composerDraftStore": "./src/components/chat/composerDraftStore.ts",
     "./components/chat/ContextMeter": "./src/components/chat/ContextMeter.tsx",
+    "./components/chat/SessionLaunchPill": "./src/components/chat/SessionLaunchPill.tsx",
+    "./components/chat/SyncingPill": "./src/components/chat/SyncingPill.tsx",
     "./components/chat/favoriteModels": "./src/components/chat/favoriteModels.ts",
     "./components/chat/FloatingChatComposer": "./src/components/chat/FloatingChatComposer.tsx",
     "./components/chat/MessageInput": "./src/components/chat/MessageInput.tsx",

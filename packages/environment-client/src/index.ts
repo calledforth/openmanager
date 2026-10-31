@@ -60,6 +60,7 @@ export {
 } from './errors'
 export {
   applyActiveSession,
+  applyCatchingUp,
   applyActiveThread,
   applyComposerPreference,
   applyConnection,
@@ -92,6 +93,7 @@ export {
   selectSessionListing,
   selectConnection,
   selectPendingInteractions,
+  selectOpenChatCatchingUp,
   selectProviderCatalog,
   selectSessionList,
   selectRecentWorkspaces,

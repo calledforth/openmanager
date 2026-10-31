@@ -6,6 +6,7 @@ import {
 import { useNavigate } from '@tanstack/react-router'
 import { ChatWorkspace } from '@openmanager/app-core/components/chat/ChatWorkspace'
 import { isEnvironmentClientError, type EnvironmentState } from '@openmanager/environment-client'
+import { useConnection } from '../providers/connection-provider'
 
 const selectConnected = (state: EnvironmentState) => state.connection.phase === 'connected'
 
@@ -28,6 +29,7 @@ function ConnectedSessionWorkspace({ sessionId }: { sessionId?: string }) {
   )
   const known = useEnvironmentState(selector)
   const connected = useEnvironmentState(selectConnected)
+  const { ui } = useConnection()
   const navigate = useNavigate()
   const openedSessionRef = useRef<string | null>(null)
   // A session opened before the catalog knew it: the route's own open, on
@@ -88,7 +90,7 @@ function ConnectedSessionWorkspace({ sessionId }: { sessionId?: string }) {
     return () => client.setActiveSession(null)
   }, [client, connected, sessionId, known, navigate])
 
-  return <ChatWorkspace />
+  return <ChatWorkspace connectionProblem={ui.kind !== 'ready'} />
 }
 
 function SessionPlaceholder({ sessionId }: { sessionId?: string }) {

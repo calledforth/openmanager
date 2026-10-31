@@ -47,6 +47,7 @@ import { placeRecord, placeTransient } from './placement'
 import {
   applyActiveSession,
   applyActiveThread,
+  applyCatchingUp,
   applyConnection,
   applyCursor,
   applyEnvironment,
@@ -344,6 +345,10 @@ export function createWebSocketEnvironmentClient(
     },
   }
   if (options.store) {
+    // Catch-ups belonged to the transport this one replaces.
+    store.update((state) =>
+      Object.keys(state.catchingUp).length ? { ...state, catchingUp: {} } : state,
+    )
     // Held drafts stay on screen; the listing replaces them once connected.
     store.update(applyDraftsUnlisted)
   }
@@ -512,7 +517,7 @@ export function createWebSocketEnvironmentClient(
     for (const subscription of subscriptions.values()) {
       subscription.subscriptionId = null
       subscription.inflight = false
-      subscription.held = undefined
+      setHeld(subscription, undefined)
       subscription.recovery = undefined
       subscription.lagging = false
     }
@@ -669,6 +674,19 @@ export function createWebSocketEnvironmentClient(
       entry.reject(EnvironmentClientError.fromProtocol(message.error))
     } else {
       entry.resolve(raw)
+    }
+  }
+
+  /**
+   * Start or end holding a scope's frames. Held is what a catch-up is, whoever
+   * asked for it, so the "catching up" signal for a thread is read here and
+   * has no other writer.
+   */
+  const setHeld = (subscription: Subscription, held: Held[] | undefined) => {
+    subscription.held = held
+    const { scope } = subscription
+    if (scope.type === 'thread') {
+      store.update((state) => applyCatchingUp(state, scope.threadId, held !== undefined))
     }
   }
 
@@ -884,7 +902,7 @@ export function createWebSocketEnvironmentClient(
     }
     applyAnswer(subscription, payload)
     const held = subscription.held ?? []
-    subscription.held = undefined
+    setHeld(subscription, undefined)
     release(subscription, held)
     resnapshot(subscription)
   }
@@ -914,7 +932,7 @@ export function createWebSocketEnvironmentClient(
       const subscription = bySubscriptionId(lagging.data.payload.subscriptionId)
       if (subscription) {
         subscription.lagging = true
-        subscription.held ??= []
+        setHeld(subscription, subscription.held ?? [])
       }
       return
     }
@@ -1134,11 +1152,11 @@ export function createWebSocketEnvironmentClient(
     }
     // Frames already held (a lagging scope that now recovers by itself) stay,
     // behind the frame that asked for this catch-up.
-    subscription.held = [...(first ? [first] : []), ...(subscription.held ?? [])]
+    setHeld(subscription, [...(first ? [first] : []), ...(subscription.held ?? [])])
     const recovery = new Promise<void>((resolve, reject) => {
       const fail = (error: EnvironmentClientError) => {
         subscription.inflight = false
-        subscription.held = undefined
+        setHeld(subscription, undefined)
         if (subscriptions.get(key) === subscription && generation === connectionGeneration) {
           const resumed = command.payload.cursor !== null
           // The environment has no such scope, or the answer to this cursor
@@ -1195,7 +1213,7 @@ export function createWebSocketEnvironmentClient(
           // The catch-up is over: what waited is placed against its cursor,
           // and may start the next one.
           const held = subscription.held ?? []
-          subscription.held = undefined
+          setHeld(subscription, undefined)
           subscription.recovery = undefined
           release(subscription, held)
           resolve()
@@ -1233,6 +1251,7 @@ export function createWebSocketEnvironmentClient(
     const subscription = subscriptions.get(key)
     if (!subscription) return
     subscriptions.delete(key)
+    setHeld(subscription, undefined)
     if (subscription.subscriptionId) sendUnsubscribe(subscription.subscriptionId)
   }
 
