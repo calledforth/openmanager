@@ -18,6 +18,7 @@ import {
   createEnvironmentStore,
   createInitialState,
   createWebSocketEnvironmentClient,
+  type EnvironmentClient,
   type EnvironmentState,
   type EnvironmentStore,
   type WebSocketConstructor,
@@ -340,6 +341,34 @@ const PROFILES = [
   { name: 'slow (320 kbit/s, 150 ms)', shape: { down: 40_000, up: 20_000, latencyMs: 150 } },
 ] as const
 
+/**
+ * Leave the largest chat for another one and come straight back, with nothing
+ * changed meanwhile: what the way back costs, and how long until it is ready.
+ */
+async function measureSwitchBack(client: EnvironmentClient, largest: string, received: Received[]) {
+  const others = Object.keys(client.getState().sessions).filter((id) => id !== largest)
+  let left = false
+  for (const other of others) {
+    // A session on a provider or folder the copy has not got cannot open.
+    left = await client.commands.openSession(other).then(
+      () => true,
+      () => false,
+    )
+    if (left) break
+  }
+  if (!left) return null
+  const from = received.length
+  const started = performance.now()
+  await client.commands.openSession(largest)
+  const ms = round(performance.now() - started)
+  const back = received.slice(from)
+  return {
+    ms,
+    bytes: back.reduce((total, item) => total + item.bytes, 0),
+    answers: back.map(({ tag, bytes }) => ({ tag, bytes })),
+  }
+}
+
 async function endToEnd(
   proxies: LinkProxy[],
   server: ServerProcess,
@@ -392,15 +421,20 @@ async function endToEnd(
         entry.bytes += r.bytes
         entry.listenerMs = round(entry.listenerMs + r.listenerMs)
       }
+      const bytesDown = sum(() => true, 'bytes')
+      const clientListenerMs = sum(() => true, 'listenerMs')
+      // After the totals: those are the load, this is one more step.
+      const switchBack = await measureSwitchBack(client, largest.session_id, received)
       client.dispose()
       return {
         marksMs: marks,
         openLargestMs: round(openMs),
-        bytesDown: sum(() => true, 'bytes'),
-        clientListenerMs: sum(() => true, 'listenerMs'),
+        bytesDown,
+        clientListenerMs,
         clientUpdateOutsideListenerMs: round(log.updateMs),
         byTag,
         messages: state.threads[largest.thread_id]?.messages.length ?? 0,
+        switchBack,
         finalState: state,
       }
     }

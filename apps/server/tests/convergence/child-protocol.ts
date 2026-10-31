@@ -113,6 +113,11 @@ export type ServerOp =
   | { op: 'dropNextRecord'; threadId: string }
   /** The records the seam dropped so far: thread, sequence, event. */
   | { op: 'readDropped' }
+  /**
+   * Hide a thread's stored events from replay, as a boot does for an older
+   * event format: a client below the head catches up by snapshot.
+   */
+  | { op: 'raiseReplayFloor'; threadId: string }
 
 export type ChildRequest = (ProviderOp | ServerOp) & { id: number }
 

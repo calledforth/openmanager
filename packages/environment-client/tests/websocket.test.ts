@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest'
-import { PROTOCOL_VERSION } from '@openmanager/protocol'
+import { PROTOCOL_VERSION, type ProofEvent } from '@openmanager/protocol'
 import {
   DEFAULT_RECONNECT,
   createWebSocketEnvironmentClient,
@@ -8,12 +8,19 @@ import {
   type WebSocketLike,
 } from '../src/websocket'
 import {
+  applyComposerPreference,
+  applyCursor,
+  applyRecord,
+  applySessionOpen,
+  applySessionRemoved,
   selectActiveThread,
   selectComposerPreference,
+  selectCursor,
   selectSessionComposer,
   selectProviderCatalog,
   selectSessionList,
 } from '../src/state'
+import { cacheState } from '../src/cache-state'
 import type { EnvironmentClient } from '../src/types'
 import { createEnvironmentStore } from '../src/store'
 import { createInitialState, createThreadState } from '../src/state'
@@ -263,12 +270,34 @@ async function answerOpen(
   socket.respond('session.open', { session, threads })
   await flush()
   const sessionReplay = lastReplay(socket, 'session', session.sessionId)
-  if (sessionReplay) answerSnapshot(socket, sessionReplay, 'sub-session', { session, threads })
+  if (sessionReplay) {
+    if (!answerKept(socket, sessionReplay, 'sub-session')) {
+      answerSnapshot(socket, sessionReplay, 'sub-session', { session, threads })
+    }
+  }
   for (const thread of threads) {
     const replay = lastReplay(socket, 'thread', thread.threadId)
-    if (replay) answerSnapshot(socket, replay, 'sub-thread', threadState(thread, history))
+    if (replay && !answerKept(socket, replay, 'sub-thread')) {
+      answerSnapshot(socket, replay, 'sub-thread', threadState(thread, history))
+    }
   }
   await flush()
+}
+
+/** A replay that asked from a kept cursor, with nothing new: true if it was one. */
+function answerKept(
+  socket: FakeSocket,
+  request: { requestId: string; payload: unknown },
+  subscriptionId: string,
+) {
+  const { cursor } = request.payload as { cursor: unknown }
+  if (!cursor) return false
+  socket.receive({
+    type: 'response',
+    requestId: request.requestId,
+    payload: { mode: 'replay', subscriptionId, from: cursor, to: cursor, events: [] },
+  })
+  return true
 }
 
 /** The environment's whole snapshot, as the first catch-up after a handshake brings it. */
@@ -2541,8 +2570,8 @@ describe('cursor replay on reconnect', () => {
 
   it('refuses a replay answer that does not match what it asked for', async () => {
     const { client, next } = await dropped()
-    // The answer starts somewhere else: not applied, and the scope is
-    // subscribed plainly instead.
+    // The answer starts somewhere else: not applied, and the chat is asked
+    // for whole, since the cursor can no longer be trusted.
     next.respond('subscription.replay', {
       mode: 'replay',
       subscriptionId: 'sub-thread-2',
@@ -2553,12 +2582,21 @@ describe('cursor replay on reconnect', () => {
     expect(selectActiveThread(client.getState())?.messages[1]?.content).toEqual([
       { type: 'text', text: 'Hi' },
     ])
-    expect(names(next).at(-1)).toBe('replay:thread')
-    expect(selectActiveThread(client.getState())?.hydration).toBe('failed')
     // The subscription that answer granted is released, not left to pile up.
     expect(next.last('subscription.unsubscribe').payload).toEqual({
       subscriptionId: 'sub-thread-2',
     })
+    const retry = next.last('subscription.replay')
+    expect(retry.payload).toEqual({ scope: cursor(1).scope, cursor: null })
+    // A second refusal has no cursor to blame: the chat reads as failed.
+    next.receive({
+      type: 'error',
+      requestId: retry.requestId,
+      error: { code: 'validation', message: 'Refused.' },
+    })
+    await flush()
+    expect(names(next).filter((name) => name === 'replay:thread')).toHaveLength(2)
+    expect(selectActiveThread(client.getState())?.hydration).toBe('failed')
   })
 })
 
@@ -3105,5 +3143,506 @@ describe('composer commands', () => {
     await expect(invalid).rejects.toMatchObject({ code: 'validation' })
     expect(client.getState().composerPreferences).toEqual({})
     client.disconnect()
+  })
+})
+
+describe('kept cursors', () => {
+  const WORKSPACE_PAIR = { workspaceId: WORKSPACE.workspaceId, providerId: PROVIDER.id }
+  const OTHER = { ...SESSION_SUMMARY, sessionId: 'session-2' }
+  const OTHER_THREAD = { threadId: 'thread-2', sessionId: OTHER.sessionId }
+  const sessionScope = {
+    type: 'session',
+    environmentId: ENV,
+    sessionId: SESSION.sessionId,
+  } as const
+  const scopeTypes = (socket: FakeSocket) =>
+    socket.sent
+      .filter((message) => message.name === 'subscription.replay')
+      .map((message) => (message.payload as { scope: { type: string } }).scope.type)
+  const cursorOf = (request: { payload: unknown }) =>
+    (request.payload as { cursor: { sequence: number } | null }).cursor
+
+  /** A connected client on a store of its own, with `SESSION` open and one record in. */
+  async function holding(sessions = [SESSION_SUMMARY, OTHER]) {
+    const store = createEnvironmentStore()
+    const { client, socket, timers } = await connected(
+      FULL_CAPABILITIES,
+      {},
+      {
+        environmentId: ENV,
+        store,
+      },
+    )
+    await answerCatalog(socket, undefined, { sessions })
+    await flush()
+    const open = client.commands.openSession(SESSION.sessionId)
+    await answerOpen(socket)
+    await open
+    socket.publish(turnStarted())
+    return { store, client, socket, timers }
+  }
+
+  const reloaded = async (store: ReturnType<typeof createEnvironmentStore>) => {
+    const next = createEnvironmentStore(structuredClone(cacheState(store.getServerState())))
+    const opened = await connected(FULL_CAPABILITIES, {}, { environmentId: ENV, store: next })
+    return { ...opened, store: next }
+  }
+
+  it('asks from the kept cursor when switching back, so an unchanged chat costs nothing', async () => {
+    const { store, client, socket } = await holding()
+    const before = store.getServerState().threads[THREAD.threadId]!
+    const away = client.commands.openSession(OTHER.sessionId)
+    await answerOpen(socket, OTHER, [OTHER_THREAD])
+    await away
+    const back = client.commands.openSession(SESSION.sessionId)
+    await flush()
+    socket.respond('session.open', { session: SESSION_SUMMARY, threads: [THREAD] })
+    await flush()
+    const replay = lastReplay(socket, 'thread', THREAD.threadId)!
+    expect(cursorOf(replay)?.sequence).toBe(1)
+    expect(cursorOf(lastReplay(socket, 'session', SESSION.sessionId)!)).not.toBeNull()
+    await answerOpen(socket)
+    await back
+    const after = store.getServerState().threads[THREAD.threadId]!
+    expect(after.hydration).toBe('ready')
+    expect(after.messages).toBe(before.messages)
+    expect(after.turns).toBe(before.turns)
+    client.dispose()
+  })
+
+  it('sends every cached cursor after a reload, and a replay leaves the copy as it was', async () => {
+    const { store, client } = await holding()
+    const held = store.getServerState()
+    client.dispose()
+    const next = await reloaded(store)
+    const environment = lastReplay(next.socket, 'environment')!
+    expect(cursorOf(environment)).toEqual(held.cursors.environment)
+    answerKept(next.socket, environment, 'sub-env')
+    await flush()
+    next.socket.respond('session.open', { session: SESSION_SUMMARY, threads: [THREAD] })
+    await flush()
+    expect(cursorOf(lastReplay(next.socket, 'session', SESSION.sessionId)!)).toEqual(
+      held.cursors.sessions[SESSION.sessionId],
+    )
+    expect(cursorOf(lastReplay(next.socket, 'thread', THREAD.threadId)!)).toEqual(
+      held.threads[THREAD.threadId]!.cursor,
+    )
+    next.client.dispose()
+  })
+
+  it('keeps preferences for a sidebar that arrives by replay, and lists drafts again', async () => {
+    const { store, client } = await holding()
+    store.update((state) => applyComposerPreference(state, WORKSPACE_PAIR, { modelId: 'held' }, 3))
+    client.dispose()
+    const next = await reloaded(store)
+    expect(next.store.getServerState().composerRevisions[WORKSPACE_PAIR.workspaceId]).toEqual({
+      [WORKSPACE_PAIR.providerId]: 3,
+    })
+    expect(
+      selectComposerPreference(
+        next.client.getState(),
+        WORKSPACE_PAIR.workspaceId,
+        WORKSPACE_PAIR.providerId,
+      ),
+    ).toEqual({
+      modelId: 'held',
+    })
+    expect(next.client.getState().draftsListed).toBe(false)
+    next.client.dispose()
+  })
+
+  describe('a session.open answer read before what is held', () => {
+    const composer = (modelId: string) => ({
+      type: 'event',
+      name: 'subscription.event',
+      payload: {
+        subscriptionId: 'sub-env',
+        record: {
+          cursor: { scope: environmentScope, epoch: 'live', sequence: 1 },
+          event: event({
+            name: 'session.composer.updated',
+            scope: environmentScope,
+            payload: { sessionId: SESSION.sessionId, composer: { modelId } },
+          }),
+        },
+      },
+    })
+    const position = (environment: number, session: number) => ({
+      environment: { scope: environmentScope, epoch: 'live', sequence: environment },
+      session: { scope: sessionScope, epoch: 'live', sequence: session },
+    })
+    const reopen = async (
+      socket: FakeSocket,
+      client: EnvironmentClient,
+      at: unknown,
+      threads = [THREAD],
+    ) => {
+      const open = client.commands.openSession(SESSION.sessionId)
+      socket.respond('session.open', { session: SESSION_SUMMARY, threads, at })
+      await flush()
+      await answerOpen(socket)
+      await open
+    }
+
+    it('leaves a newer environment event standing', async () => {
+      const { store, socket, client } = await holding()
+      socket.receive(composer('newer'))
+      await reopen(socket, client, position(0, 0))
+      expect(store.getServerState().sessions[SESSION.sessionId]?.composer).toEqual({
+        modelId: 'newer',
+      })
+      client.dispose()
+    })
+
+    it('leaves an event right behind the answer standing, delivered in one read', async () => {
+      const { store, socket, client } = await holding()
+      const open = client.commands.openSession(SESSION.sessionId)
+      // No turn of the event loop between them: the open's continuation, which
+      // applies the answer, runs after the event was folded.
+      socket.respond('session.open', {
+        session: SESSION_SUMMARY,
+        threads: [THREAD],
+        at: position(0, 0),
+      })
+      socket.receive(composer('behind the answer'))
+      await flush()
+      await answerOpen(socket)
+      await open
+      expect(store.getServerState().sessions[SESSION.sessionId]?.composer).toEqual({
+        modelId: 'behind the answer',
+      })
+      client.dispose()
+    })
+
+    it('takes a summary read at or past what is held', async () => {
+      const { store, socket, client } = await holding()
+      socket.receive(composer('held'))
+      await reopen(socket, client, position(1, 0))
+      expect(store.getServerState().sessions[SESSION.sessionId]?.composer).toBeUndefined()
+      client.dispose()
+    })
+
+    it('leaves a newer session event standing, the thread list included', async () => {
+      const { store, socket, client } = await holding()
+      const second = { threadId: 'thread-3', sessionId: SESSION.sessionId }
+      const next = { ...store.getServerState().cursors.sessions[SESSION.sessionId]! }
+      store.update((state) =>
+        applyRecord(state, {
+          cursor: { ...next, sequence: next.sequence + 1 },
+          event: event<Extract<ProofEvent, { name: 'thread.created' }>>({
+            name: 'thread.created',
+            scope: sessionScope,
+            payload: { thread: second },
+          }),
+        }),
+      )
+      const at = {
+        ...position(0, 0),
+        session: { ...next, sequence: next.sequence },
+      }
+      await reopen(socket, client, at)
+      expect(store.getServerState().sessions[SESSION.sessionId]?.threadIds).toContain(
+        second.threadId,
+      )
+      client.dispose()
+    })
+
+    it('never brings back a session the stream has moved past', () => {
+      const state = createInitialState()
+      state.cursors.environment = { scope: environmentScope, epoch: 'live', sequence: 9 }
+      const answered = applySessionOpen(state, {
+        session: SESSION_SUMMARY,
+        threads: [THREAD],
+        at: position(4, 0),
+      })
+      expect(answered).toBe(state)
+    })
+  })
+
+  it('moves a cursor and what it describes in one store update', async () => {
+    const { store, socket, client } = await holding()
+    const seen: Array<[number | undefined, number]> = []
+    store.subscribe(() => {
+      const thread = store.getServerState().threads[THREAD.threadId]!
+      seen.push([thread.cursor?.sequence, thread.messages.length])
+    })
+    socket.publish(delta('turn-1', 'assistant-1', 'Hi'))
+    expect(seen).toEqual([[2, 2]])
+    client.dispose()
+  })
+
+  it('forgets the kept cursor when a record names a turn the thread does not hold', async () => {
+    const { store, socket, client } = await holding()
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined)
+    socket.publish(completed('turn-unknown'))
+    expect(store.getServerState().threads[THREAD.threadId]!.cursor).toBeUndefined()
+    expect(cursorOf(lastReplay(socket, 'thread', THREAD.threadId)!)).toBeNull()
+    warn.mockRestore()
+    client.dispose()
+  })
+
+  it('forgets a thread the environment no longer has, and never asks for it again', async () => {
+    const { store, socket, client, timers } = await holding()
+    socket.drop(1006)
+    timers.advance(2_000)
+    const next = FakeSocket.instances.at(-1)!
+    next.open()
+    next.respond('protocol.handshake', bootstrap(FULL_CAPABILITIES))
+    await flush()
+    next.receive({
+      type: 'error',
+      requestId: lastReplay(next, 'thread', THREAD.threadId)!.requestId,
+      error: { code: 'not_found', message: 'The scope no longer exists.' },
+    })
+    await flush()
+    expect(store.getServerState().threads[THREAD.threadId]!.cursor).toBeUndefined()
+    next.drop(1006)
+    timers.advance(2_000)
+    const third = FakeSocket.instances.at(-1)!
+    third.open()
+    third.respond('protocol.handshake', bootstrap(FULL_CAPABILITIES))
+    await flush()
+    expect(lastReplay(third, 'thread', THREAD.threadId)).toBeUndefined()
+    client.dispose()
+  })
+
+  it('releases the scopes of a session deleted by an event', async () => {
+    const { store, socket, client, timers } = await holding()
+    const deleted = event({
+      name: 'session.deleted',
+      scope: environmentScope,
+      payload: { sessionId: SESSION.sessionId },
+    })
+    socket.receive({
+      type: 'event',
+      name: 'subscription.event',
+      payload: {
+        subscriptionId: 'sub-env',
+        record: { cursor: { scope: environmentScope, epoch: 'live', sequence: 1 }, event: deleted },
+      },
+    })
+    const held = store.getServerState()
+    expect(held.threads[THREAD.threadId]).toBeUndefined()
+    expect(held.cursors.sessions[SESSION.sessionId]).toBeUndefined()
+    socket.drop(1006)
+    timers.advance(2_000)
+    const next = FakeSocket.instances.at(-1)!
+    next.open()
+    next.respond('protocol.handshake', bootstrap(FULL_CAPABILITIES))
+    await flush()
+    expect(scopeTypes(next)).toEqual(['environment'])
+    client.dispose()
+  })
+
+  it('releases the scopes of a session an environment snapshot no longer lists', async () => {
+    const { store, socket, client, timers } = await holding()
+    socket.drop(1006)
+    timers.advance(2_000)
+    const next = FakeSocket.instances.at(-1)!
+    next.open()
+    next.respond('protocol.handshake', bootstrap(FULL_CAPABILITIES))
+    await flush()
+    const replay = lastReplay(next, 'environment')!
+    next.receive({
+      type: 'response',
+      requestId: replay.requestId,
+      payload: {
+        mode: 'snapshot',
+        subscriptionId: 'sub-env',
+        reason: 'stream_reset',
+        snapshot: {
+          cursor: { scope: environmentScope, epoch: 'other', sequence: 4 },
+          state: {
+            environment: { environmentId: ENV, name: 'Local' },
+            workspaces: [WORKSPACE],
+            sessions: [OTHER],
+            preferences: [],
+            providerProfiles: [],
+            listings: { commands: [], configOptions: [], entries: [] },
+          },
+        },
+      },
+    })
+    await flush()
+    const held = store.getServerState()
+    expect(held.threads[THREAD.threadId]).toBeUndefined()
+    expect(held.cursors.sessions[SESSION.sessionId]).toBeUndefined()
+    expect(held.cursors.environment?.epoch).toBe('other')
+    next.drop(1006)
+    timers.advance(2_000)
+    const third = FakeSocket.instances.at(-1)!
+    third.open()
+    third.respond('protocol.handshake', bootstrap(FULL_CAPABILITIES))
+    await flush()
+    expect(scopeTypes(third)).toEqual(['environment'])
+    client.dispose()
+  })
+
+  it('drops a replay whose copy was deleted on the way, rather than building a new one', async () => {
+    const { store, socket, client, timers } = await holding()
+    socket.drop(1006)
+    timers.advance(2_000)
+    const next = FakeSocket.instances.at(-1)!
+    next.open()
+    next.respond('protocol.handshake', bootstrap(FULL_CAPABILITIES))
+    await flush()
+    const replay = lastReplay(next, 'thread', THREAD.threadId)!
+    const from = cursorOf(replay)!
+    store.update((state) => applySessionRemoved(state, SESSION.sessionId))
+    next.receive({
+      type: 'response',
+      requestId: replay.requestId,
+      payload: {
+        mode: 'replay',
+        subscriptionId: 'sub-thread-2',
+        from,
+        to: { ...from, sequence: from.sequence + 1 },
+        events: [
+          {
+            cursor: { ...from, sequence: from.sequence + 1 },
+            event: delta('turn-1', 'assistant-1', 'late'),
+          },
+        ],
+      },
+    })
+    await flush()
+    expect(store.getServerState().threads[THREAD.threadId]).toBeUndefined()
+    client.dispose()
+  })
+
+  it('never keeps a position with no answer behind it', async () => {
+    const store = createEnvironmentStore()
+    const { socket, client } = await connected(
+      FULL_CAPABILITIES,
+      {},
+      {
+        environmentId: ENV,
+        store,
+      },
+    )
+    // The catch-up fails, so the scope is subscribed with nothing behind it.
+    socket.receive({
+      type: 'error',
+      requestId: lastReplay(socket, 'environment')!.requestId,
+      error: { code: 'internal', message: 'No.' },
+    })
+    await flush()
+    socket.respond('subscription.subscribe', { subscriptionId: 'live', scope: environmentScope })
+    socket.publish(
+      event({
+        name: 'workspace.updated',
+        scope: environmentScope,
+        payload: { workspace: WORKSPACE },
+      }),
+    )
+    // Applied, and placed against, but not promised: the copy may have a hole.
+    expect(store.getServerState().workspaces[WORKSPACE.workspaceId]).toBeDefined()
+    expect(store.getServerState().cursors.environment).toBeNull()
+    client.dispose()
+  })
+
+  it.each([
+    ['stream_reset', { epoch: 'another', sequence: 9 }],
+    ['cursor_ahead', { epoch: 'live', sequence: 0 }],
+    ['gap_expired', { epoch: 'live', sequence: 40 }],
+    ['snapshot_smaller', { epoch: 'live', sequence: 40 }],
+  ])('takes a %s snapshot from a cached cursor', async (reason, at) => {
+    const { store, client } = await holding()
+    client.dispose()
+    const next = await reloaded(store)
+    next.socket.respond('session.open', { session: SESSION_SUMMARY, threads: [THREAD] })
+    await flush()
+    const replay = lastReplay(next.socket, 'thread', THREAD.threadId)!
+    next.socket.receive({
+      type: 'response',
+      requestId: replay.requestId,
+      payload: {
+        mode: 'snapshot',
+        subscriptionId: 'sub-thread-2',
+        reason,
+        snapshot: {
+          cursor: { scope: threadScope, ...at },
+          state: threadState(THREAD, EMPTY_HISTORY),
+        },
+      },
+    })
+    await flush()
+    const thread = next.store.getServerState().threads[THREAD.threadId]!
+    expect(thread.hydration).toBe('ready')
+    expect(thread.turns).toEqual([])
+    expect(thread.cursor).toMatchObject(at)
+    next.client.dispose()
+  })
+
+  it('empties notices on a replay, then places what was held', async () => {
+    const { store, socket, client, timers } = await holding()
+    const scope = threadScope
+    const place = (sequence: number, message: string) => ({
+      type: 'event',
+      name: 'subscription.transient',
+      payload: {
+        subscriptionId: 'sub-thread',
+        after: { scope, epoch: 'live', sequence },
+        event: event({
+          name: 'turn.notice',
+          scope,
+          payload: { turnId: 'turn-1', message },
+        }),
+      },
+    })
+    socket.receive(place(1, 'from before'))
+    expect(store.getServerState().threads[THREAD.threadId]!.notices).toHaveLength(1)
+    socket.drop(1006)
+    timers.advance(2_000)
+    const next = FakeSocket.instances.at(-1)!
+    next.open()
+    next.respond('protocol.handshake', bootstrap(FULL_CAPABILITIES))
+    await flush()
+    next.receive(place(1, 'held during the catch-up'))
+    answerKept(next, lastReplay(next, 'thread', THREAD.threadId)!, 'sub-thread')
+    await flush()
+    const notices = store.getServerState().threads[THREAD.threadId]!.notices
+    expect(notices.map((notice) => notice.message)).toEqual(['held during the catch-up'])
+    client.dispose()
+  })
+
+  it('reloads with a kept cursor but no notices', async () => {
+    const { store, client } = await holding()
+    client.dispose()
+    store.update((state) => ({
+      ...state,
+      threads: {
+        ...state.threads,
+        [THREAD.threadId]: {
+          ...state.threads[THREAD.threadId]!,
+          notices: [{ turnId: 'turn-1', message: 'gone on reload' }],
+        },
+      },
+    }))
+    const cached = cacheState(store.getServerState()).threads[THREAD.threadId]!
+    expect(cached.notices).toEqual([])
+    expect(cached.cursor?.sequence).toBe(1)
+  })
+
+  it('refuses a cursor filed under another scope', () => {
+    const state = createInitialState()
+    state.cursors.environment = {
+      scope: { type: 'environment', environmentId: 'another-environment' },
+      epoch: 'e',
+      sequence: 3,
+    }
+    expect(selectCursor(state, environmentScope)).toBeNull()
+  })
+
+  it('keeps a cursor only beside its copy, and an unchanged one changes nothing', () => {
+    const cursor = { scope: sessionScope, epoch: 'e', sequence: 1 }
+    const state = createInitialState()
+    expect(applyCursor(state, cursor.scope, cursor)).toBe(state)
+    const thread = { scope: threadScope, epoch: 'e', sequence: 1 }
+    expect(applyCursor(state, threadScope, thread)).toBe(state)
+    const environment = { scope: environmentScope, epoch: 'e', sequence: 1 }
+    const held = applyCursor(state, environmentScope, environment)
+    expect(applyCursor(held, environmentScope, { ...environment })).toBe(held)
+    expect(applyCursor(held, environmentScope, null).cursors.environment).toBeNull()
   })
 })

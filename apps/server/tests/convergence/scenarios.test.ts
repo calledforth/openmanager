@@ -15,7 +15,14 @@
 import { describe, expect } from 'vitest'
 import { selectDraftListing } from '@openmanager/environment-client'
 import { expectConverges, recordEvidence } from './evidence.ts'
-import { Driver, sleep, until, type Rig, type TestClient } from './harness.ts'
+import {
+  Driver,
+  sleep,
+  until,
+  type EnvironmentState,
+  type Rig,
+  type TestClient,
+} from './harness.ts'
 import type { FrameFields, FrameRecord } from './link-proxy.ts'
 import { serverSessionsView, serverThreadView, type ThreadView } from './normalize.ts'
 import { witnessOf } from './fixtures.ts'
@@ -213,6 +220,17 @@ async function completesOverSlowLink(
  * delayed provider, model.test.ts).
  */
 const QUIET = { quiet: true } as const
+
+/** A copy with nothing to resume from, as a cache written before kept cursors. */
+function withoutCursors(state: EnvironmentState): EnvironmentState {
+  return {
+    ...state,
+    cursors: { environment: null, sessions: {} },
+    threads: Object.fromEntries(
+      Object.entries(state.threads).map(([id, held]) => [id, { ...held, cursor: undefined }]),
+    ),
+  }
+}
 
 /**
  * Tool status at turn end. Main never settled a tool, on either side; F3
@@ -846,10 +864,11 @@ describe('§8.4 scenarios on main', () => {
   })
 
   /**
-   * Guard since F5b (§6.2): a reload with the cache seeded asks for the
-   * thread with no cursor and gets all of it, which replaces the cached copy.
-   * On main the newest-100 snapshot was merged over the cache and the older
-   * turns' thoughts and tools were dropped.
+   * Guard since F5b (§6.2): a reload with the cache seeded and no cursors
+   * asks for the thread whole, which replaces the cached copy. On main the
+   * newest-100 snapshot was merged over the cache and the older turns'
+   * thoughts and tools were dropped. Kept cursors are taken out here, so this
+   * stays the no-cursor path; the KC scenarios cover resuming from them.
    */
   scenario('S10 a long thread, then a reload (guard)', { timeoutMs: 180_000 }, async (rig) => {
     const a = await rig.connect('A')
@@ -859,7 +878,7 @@ describe('§8.4 scenarios on main', () => {
     await expectConverges('S10 baseline', rig, a)
     // Recording is always on; what follows is judged from here.
     const mark = rig.proxy.frames.length
-    const reloaded = await rig.reload(a)
+    const reloaded = await rig.reload(a, 'proxy', true, withoutCursors)
     // The cache already says "ready"; wait for the reload's own initial snapshot.
     await until(
       () =>

@@ -4,6 +4,7 @@ import type {
   AuthorizedClientList,
   BackgroundTask,
   ComposerListing,
+  Cursor,
   Draft,
   DraftContent,
   DraftList,
@@ -137,6 +138,13 @@ export interface ThreadState {
   interactions: PendingInteraction[]
   /** What the provider offers this chat. It arrives with the chat. */
   listing: ComposerListing
+  /**
+   * Where this copy stands in the thread's stream: it holds every record up
+   * to this cursor and no others. Written in the same store update as what
+   * it describes, and gone with the thread, so the two cannot separate.
+   * Absent while the client has nothing it can resume from.
+   */
+  cursor?: Cursor
   notices: TurnNotice[]
   /** Sends still waiting on the environment, oldest first, newest last. */
   outbox: OutboxEntry[]
@@ -231,6 +239,15 @@ export interface EnvironmentState {
   draftEdits: Record<string, DraftEdit>
   /** Whether `drafts` was listed since the client last caught up with the environment. */
   draftsListed: boolean
+  /**
+   * Where the held copy of the environment and of each session stands (a
+   * thread keeps its own, on `ThreadState.cursor`). Same promise: the copy
+   * holds every record up to the cursor. A session's goes with the session.
+   */
+  cursors: {
+    environment: Cursor | null
+    sessions: Record<string, Cursor>
+  }
   activeSessionId: string | null
   activeThreadId: string | null
   /**

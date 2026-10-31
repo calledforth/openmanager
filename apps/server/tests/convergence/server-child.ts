@@ -1039,6 +1039,14 @@ async function handle(request: ChildRequest): Promise<unknown> {
       return null
     case 'readDropped':
       return dropped
+    case 'raiseReplayFloor': {
+      const writer = new DatabaseSync(join(config.dataDir, DATABASE_FILENAME))
+      writer
+        .prepare('UPDATE event_streams SET replay_floor = head_sequence WHERE thread_id = ?')
+        .run(request.threadId)
+      writer.close()
+      return null
+    }
     case 'shutdown':
       await server.close()
       readDatabase?.close()

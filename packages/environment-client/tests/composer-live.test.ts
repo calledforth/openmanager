@@ -2,8 +2,6 @@ import { describe, expect, it } from 'vitest'
 import { packComposerListings, type ComposerListing, type ProofEvent } from '@openmanager/protocol'
 import { createMockEnvironmentClient } from '../src/mock'
 import {
-  applyComposerPreference,
-  applyComposerPreferencesReset,
   applyEvent,
   applyProviderCatalog,
   applySnapshot,
@@ -247,13 +245,6 @@ describe('live preferences and catalog', () => {
   it('does not give a preference back to a workspace this client no longer lists', () => {
     const state = listed()
     expect(applyEvent(state, preferencesUpdated('removed-workspace'))).toBe(state)
-  })
-
-  it('reads every held preference as unloaded once a gap made them untrustworthy', () => {
-    const state = applyComposerPreference(listed(), target, { modelId: 'opus' }, 1)
-    const reset = applyComposerPreferencesReset(state)
-    expect(selectComposerPreference(reset, target.workspaceId, target.providerId)).toBeNull()
-    expect(applyComposerPreferencesReset(reset)).toBe(reset)
   })
 
   it('patches a loaded provider with the catalog the environment just learned', () => {
