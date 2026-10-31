@@ -446,6 +446,86 @@ describe('composer broadcasts', () => {
     expect(named('thread.listing.updated')).toHaveLength(1)
     list([])
     expect(service.threadListing('thread-a').availableCommands).toEqual([])
+    expect(named('thread.listing.updated')).toHaveLength(2)
+    expect(named('thread.listing.updated')[1]).toEqual({
+      sessionId: 'session-a',
+      threadId: 'thread-a',
+      listing: { availableCommands: [] },
+    })
+  })
+
+  it('names only what changed in a chat’s listing, settings values included', async () => {
+    const { service, named } = await harness()
+    const report = (event: string, data: unknown) =>
+      service.onRuntimeEvent({
+        ...runtimeEvent('thread-a'),
+        category: 'session',
+        event,
+        data,
+      } as Parameters<typeof service.onRuntimeEvent>[0])
+    const review = { name: 'review', description: 'Review the diff' }
+    const effort = (currentValue: string) => ({
+      type: 'select' as const,
+      id: 'effort',
+      name: 'Effort',
+      currentValue,
+      options: [
+        { value: 'low', name: 'Low' },
+        { value: 'high', name: 'High' },
+      ],
+    })
+    const target = { sessionId: 'session-a', threadId: 'thread-a' }
+
+    report('available_commands_update', { availableCommands: [review] })
+    report('config_option_update', { configOptions: [effort('low')] })
+    // A value alone is a change to the chat, and it costs the settings only.
+    report('config_option_update', { configOptions: [effort('high')] })
+    expect(named('thread.listing.updated')).toEqual([
+      { ...target, listing: { availableCommands: [review] } },
+      { ...target, listing: { configOptions: [effort('low')] } },
+      { ...target, listing: { configOptions: [effort('high')] } },
+    ])
+    expect(service.threadListing('thread-a')).toEqual({
+      availableCommands: [review],
+      configOptions: [effort('high')],
+    })
+  })
+
+  it('names a field again when the write that first carried it failed', async () => {
+    const stored: Record<string, ComposerListing> = {}
+    const sent: ComposerListing[] = []
+    let failing = true
+    const service = createComposerService(
+      {} as never,
+      { snapshot: () => [provider], rejection: () => undefined },
+      {} as ComposerStore,
+      () => undefined,
+      {
+        publishThreadListing: ({ threadId }, changed) => {
+          if (failing) throw new Error('disk full')
+          sent.push(changed)
+          stored[threadId] = { ...stored[threadId], ...changed }
+        },
+        sessionForThread: () => 'session-a',
+        readThreadListing: (threadId) => stored[threadId],
+      },
+    )
+    const report = (event: string, data: unknown) =>
+      service.onRuntimeEvent({
+        ...runtimeEvent('thread-a'),
+        category: 'session',
+        event,
+        data,
+      } as Parameters<typeof service.onRuntimeEvent>[0])
+    const review = { name: 'review', description: 'Review the diff' }
+    const fast = { type: 'boolean' as const, id: 'fast', name: 'Fast', currentValue: true }
+
+    report('available_commands_update', { availableCommands: [review] })
+    expect(service.threadListing('thread-a')).toEqual({ availableCommands: [review] })
+    failing = false
+    report('config_option_update', { configOptions: [fast] })
+    expect(sent).toEqual([{ configOptions: [fast], availableCommands: [review] }])
+    expect(stored['thread-a']).toEqual(service.threadListing('thread-a'))
   })
 
   it('keeps what a provider listed for the next chat in the workspace', async () => {

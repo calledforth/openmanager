@@ -809,6 +809,19 @@ async function handle(request: ChildRequest): Promise<unknown> {
         sessionUpdate: 'available_commands_update',
         availableCommands: request.names.map((name) => ({ name, description: `Run ${name}` })),
       })
+    case 'emitSetting':
+      return update(await promptOf(request.sessionId), {
+        sessionUpdate: 'config_option_update',
+        configOptions: [
+          {
+            type: 'select',
+            id: request.settingId,
+            name: request.settingId,
+            currentValue: request.currentValue,
+            options: [{ value: request.currentValue, name: request.currentValue }],
+          },
+        ],
+      })
     case 'emitThought':
       return update(await promptOf(request.sessionId), {
         sessionUpdate: 'agent_thought_chunk',

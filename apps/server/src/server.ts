@@ -416,14 +416,14 @@ export async function startServer(config: ServerConfig) {
           scope: { type: 'environment', environmentId: identity.environmentId },
           payload,
         } as ProofEvent),
-      publishThreadListing: ({ sessionId, threadId }, listing) =>
+      publishThreadListing: ({ sessionId, threadId }, changed) =>
         eventService.append({
           type: 'event',
           name: 'thread.listing.updated',
           eventId: randomUUID(),
           timestamp: new Date().toISOString(),
           scope: { type: 'thread', environmentId: identity.environmentId, sessionId, threadId },
-          payload: { listing },
+          payload: changed,
         }),
       sessionForThread: (threadId) => threadService.sessionForThread(threadId),
       readSessionComposer: (sessionId) => getSessionSummary(eventDatabase, sessionId)?.composer,

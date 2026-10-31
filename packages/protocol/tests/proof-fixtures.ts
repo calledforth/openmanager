@@ -357,26 +357,24 @@ export const proofEvents = [
     name: 'thread.listing.updated',
     scope: threadScope,
     payload: {
-      listing: {
-        configOptions: [
-          {
-            type: 'select',
-            id: 'effort',
-            name: 'Effort',
-            category: 'thought_level',
-            currentValue: 'high',
-            options: [
-              { value: 'low', name: 'Low' },
-              { value: 'high', name: 'High' },
-            ],
-          },
-          { type: 'boolean', id: 'fast', name: 'Fast mode', currentValue: true },
-        ],
-        availableCommands: [
-          { name: 'review', description: 'Review the current diff' },
-          { name: 'search', description: 'Search the workspace', placeholder: 'query' },
-        ],
-      },
+      configOptions: [
+        {
+          type: 'select',
+          id: 'effort',
+          name: 'Effort',
+          category: 'thought_level',
+          currentValue: 'high',
+          options: [
+            { value: 'low', name: 'Low' },
+            { value: 'high', name: 'High' },
+          ],
+        },
+        { type: 'boolean', id: 'fast', name: 'Fast mode', currentValue: true },
+      ],
+      availableCommands: [
+        { name: 'review', description: 'Review the current diff' },
+        { name: 'search', description: 'Search the workspace', placeholder: 'query' },
+      ],
     },
   },
   {

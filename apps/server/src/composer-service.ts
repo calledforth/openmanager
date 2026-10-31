@@ -68,12 +68,13 @@ export interface ComposerServiceOptions {
    */
   publish?: <N extends ComposerEventName>(name: N, payload: ComposerEventPayload<N>) => void
   /**
-   * Announce what the provider offers a chat, in that chat's own stream: a
-   * listing is too large to send every browser for every session.
+   * Announce what changed in what the provider offers a chat, in that chat's
+   * own stream: a listing is too large to send every browser for every
+   * session, and too large to store again for a change to one field.
    */
   publishThreadListing?: (
     target: { sessionId: string; threadId: string },
-    listing: ComposerListing,
+    changed: ComposerListing,
   ) => void
   /** The host session that owns a runtime thread; probes and unknown threads have none. */
   sessionForThread?: (threadId: string) => string | undefined
@@ -316,11 +317,17 @@ export function createComposerService(
       memoryListings.delete(threadId)
       return
     }
+    // Against the row rather than memory, so the next write also names a
+    // field whose own write failed.
+    const stored = options.readThreadListing
+      ? options.readThreadListing(threadId)
+      : memoryListings.get(threadId)
+    const changed = changedFields(merged.data, stored)
     // The workspace's is checked whatever the chat's says: a crash between
     // the two writes must not leave it behind for good.
-    if (!isDeepStrictEqual(merged.data, current)) {
+    if (Object.keys(changed).length > 0) {
       try {
-        options.publishThreadListing?.({ sessionId, threadId }, merged.data)
+        options.publishThreadListing?.({ sessionId, threadId }, changed)
         if (options.readThreadListing) memoryListings.delete(threadId)
         else memoryListings.set(threadId, merged.data)
       } catch {
@@ -794,6 +801,19 @@ function configOptionsPatch(
     const parsed = ComposerConfigOptionSchema.safeParse(option)
     return parsed.success ? [parsed.data] : []
   })
+}
+
+/** The fields of `next` that differ from `held`, each whole. */
+function changedFields(next: ComposerListing, held: ComposerListing | undefined): ComposerListing {
+  return {
+    ...(next.configOptions && !isDeepStrictEqual(next.configOptions, held?.configOptions)
+      ? { configOptions: next.configOptions }
+      : {}),
+    ...(next.availableCommands &&
+    !isDeepStrictEqual(next.availableCommands, held?.availableCommands)
+      ? { availableCommands: next.availableCommands }
+      : {}),
+  }
 }
 
 /** Settings as a list of what is on offer, whatever each is set to now. */

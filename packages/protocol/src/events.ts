@@ -165,12 +165,14 @@ export const ProofEventSchemas = {
   'thread.created': event('thread.created', SessionScopeSchema, z.object({ thread: ThreadSchema })),
   /**
    * What the provider offers this chat. Thread scope, so only a browser with
-   * the chat open receives it. The whole listing, so applying one twice is safe.
+   * the chat open receives it. Names only the fields that changed, each whole,
+   * so a model switch does not store the commands again and applying one twice
+   * is safe. An empty list is a change like any other.
    */
   'thread.listing.updated': event(
     'thread.listing.updated',
     ThreadScopeSchema,
-    z.object({ listing: ComposerListingSchema }),
+    ComposerListingSchema,
   ),
   'turn.started': event(
     'turn.started',

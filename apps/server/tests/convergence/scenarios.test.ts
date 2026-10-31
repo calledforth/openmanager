@@ -1447,6 +1447,8 @@ describe('divergences on main that §8.4 does not list', () => {
    * What a provider lists goes to the browser with the chat open and nowhere
    * else as a chat's: the sidebar's stream names only what a new chat borrows,
    * and a second browser in the sidebar, or a fresh load, ends up the same.
+   * A settings change names the settings alone, so a browser that missed one
+   * replays it onto the commands it holds and still matches a fresh load.
    */
   scenario('G3 a listing reaches the open chat, not the sidebar (guard)', {}, async (rig) => {
     const a = await rig.connect('A')
@@ -1473,6 +1475,46 @@ describe('divergences on main that §8.4 does not list', () => {
     expect(b.client.getState().sessions[target.sessionId]?.composer ?? {}).not.toHaveProperty(
       'availableCommands',
     )
+    // Past a replay: a settings change is the only thing A missed. A long
+    // list of commands makes the chat larger than the replay.
+    const many = Array.from({ length: 200 }, (_, index) => `command-${index}`)
+    await rig.provider({ op: 'emitCommands', sessionId: target.sessionId, names: many })
+    await untilThread(a, target, (state) => state.listing.availableCommands?.length === 200, 'A')
+    await rig.waitQuiet()
+    rig.proxy.down()
+    rig.proxy.cut()
+    await until(() => a.client.getState().connection.phase !== 'connected', 'A to notice the cut')
+    await rig.provider({
+      op: 'emitSetting',
+      sessionId: target.sessionId,
+      settingId: 'effort',
+      currentValue: 'high',
+    })
+    await rig.waitQuiet()
+    const mark = rig.proxy.frames.length
+    rig.proxy.up()
+    await untilThread(
+      a,
+      target,
+      (state) => state.listing.configOptions?.[0]?.id === 'effort',
+      'A to replay the settings',
+      20_000,
+    )
+    const replay = threadReplays(rig.proxy.frames.slice(mark), target.threadId)[0]
+    const requestId = field(replay?.json, 'requestId')
+    const answer = downFrames(rig.proxy.frames.slice(mark)).find(
+      (frame) => info(frame).requestId === requestId,
+    )
+    expect(info(answer).mode, 'a replay of the one change').toBe('replay')
+    const records = field(answer?.json, 'payload', 'events') as Array<{
+      event: { name: string; payload: Record<string, unknown> }
+    }>
+    const listing = records.filter((record) => record.event.name === 'thread.listing.updated')
+    expect(Object.keys(listing[0]?.event.payload ?? {})).toEqual(['configOptions'])
+    expect(a.client.getState().threads[target.threadId]?.listing.availableCommands).toHaveLength(
+      200,
+    )
+    await expectConverges('G3 after a replayed settings change', rig, a)
     // None now: the next chat here offers none, and A's chat shows none.
     await rig.provider({ op: 'emitCommands', sessionId: target.sessionId, names: [] })
     await untilThread(

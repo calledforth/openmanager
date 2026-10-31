@@ -42,6 +42,7 @@ export type ScriptStep =
 export type ProviderOp =
   | { op: 'emitText'; sessionId: string; text: string }
   | { op: 'emitCommands'; sessionId: string; names: string[] }
+  | { op: 'emitSetting'; sessionId: string; settingId: string; currentValue: string }
   | { op: 'emitThought'; sessionId: string; text: string }
   | { op: 'openTool'; sessionId: string; toolCallId: string; title?: string }
   | {

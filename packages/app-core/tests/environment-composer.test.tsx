@@ -664,7 +664,7 @@ describe('the composer over the environment client', () => {
         sessionId: SESSION.sessionId,
         threadId: client.getState().sessions[SESSION.sessionId]!.threadIds[0]!,
       },
-      payload: { listing: { availableCommands: commands } },
+      payload: { availableCommands: commands },
     })
     client.emit({
       type: 'event',

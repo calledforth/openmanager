@@ -75,7 +75,7 @@ describe('provider listings', () => {
   const AT = '2026-10-31T10:00:00.000Z'
   const LATER = '2026-10-31T11:00:00.000Z'
 
-  it('files a chat listing on its thread, replacing the last', () => {
+  it('files what a chat listing changed on its thread, field by field', () => {
     const state = listed()
     const opened = applySnapshot(state, {
       cursor: { scope: sessionScope, epoch: 'epoch', sequence: 1 },
@@ -85,14 +85,24 @@ describe('provider listings', () => {
       event<ThreadListingUpdated>({
         name: 'thread.listing.updated',
         scope: threadScope,
-        payload: { listing },
+        payload: listing,
       })
     const first = applyEvent(opened, update({ availableCommands: [review] }))
     expect(selectSessionListing(first, SESSION.sessionId)).toEqual({ availableCommands: [review] })
+    // A field the event does not name stays as held.
     const second = applyEvent(first, update({ configOptions: [fast] }))
-    expect(selectSessionListing(second, SESSION.sessionId)).toEqual({ configOptions: [fast] })
-    // A chat this client has no thread for holds nothing until it opens it.
-    expect(applyEvent(state, update({}))).toBe(state)
+    expect(selectSessionListing(second, SESSION.sessionId)).toEqual({
+      availableCommands: [review],
+      configOptions: [fast],
+    })
+    // An empty list is an answer, and takes the place of the last.
+    const third = applyEvent(second, update({ availableCommands: [] }))
+    expect(selectSessionListing(third, SESSION.sessionId)).toEqual({
+      availableCommands: [],
+      configOptions: [fast],
+    })
+    // A list restated changes nothing, down to its identity.
+    expect(applyEvent(third, update({ configOptions: [fast] }))).toBe(third)
   })
 
   it('gives a new chat its workspace’s listing, or the provider’s newest elsewhere', () => {

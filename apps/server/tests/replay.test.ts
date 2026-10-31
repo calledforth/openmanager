@@ -459,6 +459,42 @@ describe('replay reader', () => {
     expect(at(1).scope).toEqual(threadScope)
   })
 
+  it('states the chat’s listing as its events built it, field by field', async () => {
+    const { database, repository, reader, records, at } = await seeded({ pad: true })
+    const review = [{ name: 'review', description: 'Review the diff' }]
+    const fast = [{ type: 'boolean', id: 'fast', name: 'Fast', currentValue: true }]
+    const listed = (index: number, payload: Record<string, unknown>) =>
+      ProofEventSchemas['thread.listing.updated'].parse({
+        type: 'event',
+        name: 'thread.listing.updated',
+        eventId: `listing-${index}`,
+        timestamp: new Date(T0 + index).toISOString(),
+        scope: threadScope,
+        payload,
+      })
+    repository.appendEvents(threadScope, [
+      listed(1, { availableCommands: review }),
+      listed(2, { configOptions: fast }),
+      listed(3, { availableCommands: [] }),
+    ])
+    const expected = { configOptions: fast, availableCommands: [] }
+    const row = database.prepare('SELECT listing_json FROM threads').get() as {
+      listing_json: string
+    }
+    expect(JSON.parse(row.listing_json)).toEqual(expected)
+    const chat = reader.read(threadScope, null)
+    if (chat.mode !== 'snapshot' || !('thread' in chat.snapshot.state))
+      throw new Error('Expected thread snapshot')
+    expect(chat.snapshot.state.listing).toEqual(expected)
+    // A replay carries what changed, and no more.
+    const held = records.filter((record) => record.cursor.scope.type === 'thread').length
+    expect(eventsOf(reader.read(threadScope, at(held))).map((r) => r.event.payload)).toEqual([
+      { availableCommands: review },
+      { configOptions: fast },
+      { availableCommands: [] },
+    ])
+  })
+
   it('leaves out a stored listing that does not read, and answers with the rest', async () => {
     const log = vi.fn<Logger>()
     const { database, reader } = await seeded({ log })

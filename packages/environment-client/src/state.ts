@@ -400,17 +400,6 @@ export function applyEvent(state: EnvironmentState, event: ProofEvent): Environm
         },
       }
     }
-    case 'thread.listing.updated': {
-      const thread = state.threads[event.scope.threadId]
-      if (!thread) return state
-      return {
-        ...state,
-        threads: {
-          ...state.threads,
-          [event.scope.threadId]: { ...thread, listing: event.payload.listing },
-        },
-      }
-    }
     case 'composer.listing.updated': {
       const { workspaceId, providerId, ...changed } = event.payload
       if (!state.workspaces[workspaceId]) return state
@@ -510,6 +499,12 @@ export function applyEvent(state: EnvironmentState, event: ProofEvent): Environm
           event.payload.turnState,
         ),
       )
+    case 'thread.listing.updated':
+      // A field the event does not name stays as held.
+      return patchThread(state, thread, (current) => {
+        const listing = share(current.listing, { ...current.listing, ...event.payload })
+        return listing === current.listing ? current : { ...current, listing }
+      })
     default:
       return state
   }
