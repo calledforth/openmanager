@@ -342,16 +342,21 @@ export function EnvironmentComposerDraftProvider({
   pageRef.current = page
   const picksRef = useRef(picks)
   picksRef.current = picks
+  // By its drafts, not the client: the same environment's client can be handed
+  // over under a mounted page as it connects, and text not yet in a draft and a
+  // send's successor live only in this store.
+  const clientRef = useRef(client)
+  clientRef.current = client
   const store = useMemo(
     () =>
       sync
-        ? createEnvironmentComposerDraftStore(client, sync, {
+        ? createEnvironmentComposerDraftStore(clientRef.current, sync, {
             target: (draftId) => pageRef.current?.pageTarget(draftId),
             picks: (draftId) => picksRef.current?.(draftId),
             claim: (draftId) => pageRef.current?.claim(draftId),
           })
         : null,
-    [client, sync],
+    [sync],
   )
   const listed = useEnvironmentState((state) => state.draftsListed)
   const sessionCount = useEnvironmentState((state) => state.sessionOrder.length)
