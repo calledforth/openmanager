@@ -36,6 +36,19 @@ import {
 
 type Listener = (event: never) => void
 
+/** A `session.open` position no held stream compares with: another epoch, so it applies. */
+function unplacedRead(payload: unknown) {
+  const { sessionId } = (payload as { session: { sessionId: string } }).session
+  return {
+    environment: { scope: environmentScope, epoch: 'read', sequence: 0 },
+    session: {
+      scope: { type: 'session', environmentId: ENV, sessionId },
+      epoch: 'read',
+      sequence: 0,
+    },
+  }
+}
+
 /** A scriptable server end of a socket; the client sees a WHATWG-shaped object. */
 class FakeSocket implements WebSocketLike {
   static instances: FakeSocket[] = []
@@ -91,7 +104,12 @@ class FakeSocket implements WebSocketLike {
     return [...this.sent].reverse().find((message) => message.name === name)!
   }
   respond(name: string, payload: unknown) {
-    this.receive({ type: 'response', requestId: this.last(name).requestId, payload })
+    this.receive({
+      type: 'response',
+      requestId: this.last(name).requestId,
+      payload:
+        name === 'session.open' ? { at: unplacedRead(payload), ...(payload as object) } : payload,
+    })
   }
   private sequences = new Map<string, number>()
   /**
