@@ -417,7 +417,6 @@ describe('phone connection, live', () => {
       title: client.getState().sessions[sessionId]?.title,
     })
     expect(opened).toContain('session.open')
-    expect(frames.some((frame) => frame.name === 'session.history')).toBe(false)
 
     // ---- background, and back --------------------------------------------
     const socketsBefore = socketCount

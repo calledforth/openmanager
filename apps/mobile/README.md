@@ -163,15 +163,15 @@ day groups, trees ranked by their most urgent member and dated by their newest, 
 
 A row opens `src/app/session/[externalId].tsx`, read-only for now (the composer comes later).
 `src/session/useReadOnlySession.ts` opens it as web's session route does: `session.open` once the
-socket is up, the snapshot and then the live events through the shared active-thread provider, and
-`setActiveSession(null)` when the page goes, which releases its subscriptions. It never asks for
-`session.history`. A `done` session on screen is acknowledged on the environment
+socket is up, the whole chat from its snapshot (or a replay from the cursor the client holds) and
+then the live events through the shared active-thread provider, and `setActiveSession(null)` when
+the page goes, which releases its subscriptions. A `done` session on screen is acknowledged on the environment
 (`acknowledgeSessionDone`), which is what clears it. The rows (`src/components/chat/*`) read each
 message from the shared stores, so a streamed token re-renders only its own row: markdown, reasoning
 collapsed, bare tool rows (name and status), images through `fetchArtifact`.
 `src/session/thread-rows.ts` is the pure mapping; `tests/read-only-thread.test.tsx` mounts the
 shared providers over the mock environment client and checks the snapshot, a live turn, the
-acknowledgement, child sessions and the release, with no history call.
+acknowledgement, child sessions and the release.
 
 ## Theme
 

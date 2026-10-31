@@ -218,7 +218,6 @@ describe('a session opened read-only on the phone', () => {
       { role: 'user', content: 'What changed?', isFinal: true },
       { role: 'assistant', content: 'Two files were edited.', isFinal: true },
     ])
-    expect(commandsOf(client)).not.toContain('loadSessionHistory')
   })
 
   it('streams a turn another device started into the thread as its events arrive', async () => {
@@ -281,7 +280,6 @@ describe('a session opened read-only on the phone', () => {
     expect(seen!.rows).toHaveLength(4)
     // The status is the environment's, passed through: no turn in flight, at rest.
     expect(['ready', 'done']).toContain(seen!.status)
-    expect(commandsOf(client)).not.toContain('loadSessionHistory')
     expect(commandsOf(client)).not.toContain('sendTurn')
   })
 
@@ -370,7 +368,6 @@ describe('a session opened read-only on the phone', () => {
     await mount(client, null)
     await flush()
     expect(client.getState().activeSessionId).toBeNull()
-    expect(commandsOf(client)).not.toContain('loadSessionHistory')
   })
 
   it('lists the environment sessions and its draft cards on the home', async () => {
@@ -422,13 +419,12 @@ describe('a session opened read-only on the phone', () => {
   })
 
   it('does not open a session on an environment that cannot replay its events', async () => {
-    // Without replay the shared client fills a transcript from session.history.
+    // Without replay no transcript reaches the client: it would show an empty chat.
     const client = createMockEnvironmentClient({ seed: SEED, respond: () => null })
     await mount(client, SESSION.sessionId)
     await flush()
     expect(seen!.phase).toBe('unsupported')
     expect(commandsOf(client)).not.toContain('openSession')
-    expect(commandsOf(client)).not.toContain('loadSessionHistory')
   })
 
   it('lets the page in front own the session, and takes it back when it is in front again', async () => {
@@ -556,7 +552,7 @@ describe('a session opened read-only on the phone', () => {
     await flush()
     expect(client.getState().activeSessionId).toBe(SESSION.sessionId)
     // A reconnect to an environment without replay: the client's own
-    // recovery would reopen its active session through session.history.
+    // recovery would reopen its active session with no transcript.
     await act(() =>
       client.setConnection({
         capabilities: client
@@ -567,7 +563,6 @@ describe('a session opened read-only on the phone', () => {
     await flush()
     expect(client.getState().activeSessionId).toBeNull()
     expect(seen!.phase).toBe('unsupported')
-    expect(commandsOf(client)).not.toContain('loadSessionHistory')
   })
 
   it('opens again after the connection drops under the first open', async () => {
@@ -660,7 +655,7 @@ describe('the session page header on a live session', () => {
     const client = createMockEnvironmentClient({
       seed: SEED,
       respond: () => null,
-      capabilities: ['openSession', 'listSessions', 'listWorkspaces', 'getEnvironment'],
+      capabilities: ['openSession', 'listWorkspaces', 'getEnvironment'],
     })
     client.setConnection({
       capabilities: [...client.getState().connection.capabilities, 'subscription.replay'],

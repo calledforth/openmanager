@@ -24,7 +24,7 @@ import { createSource, relaunchedStorage } from '../tests/support'
  * `PhoneEnvironmentProvider` does, read the home through `useHomeSource`,
  * open a session through `useReadOnlySession` (the page's own hook), watch a
  * live provider turn stream into its rows, leave, and check the wire: one
- * `session.open`, never `session.history`.
+ * `session.open`.
  *
  * React renders into a jsdom document (the one vitest's own jsdom runs on);
  * the probes render nothing, so no React Native view is involved. The socket
@@ -289,8 +289,8 @@ describe('sessions list and read-only thread, live', () => {
     cleanups.push(() => root.unmount())
 
     await render(null)
-    // The catalog's older pages follow the first in the background, so on an
-    // environment with a long history wait for the whole list, as the owner holds it.
+    // The environment's snapshot lands after the connection does, so wait for
+    // the whole list, as the owner holds it.
     await until(
       'sidebar sessions and drafts',
       () =>
@@ -462,8 +462,7 @@ describe('sessions list and read-only thread, live', () => {
       .map((frame) => frame.name)
     const counts: Record<string, number> = {}
     for (const name of sentByPhone) counts[name] = (counts[name] ?? 0) + 1
-    note('wire', { phoneCommands: counts, sessionHistory: counts['session.history'] ?? 0 })
-    expect(counts['session.history'] ?? 0).toBe(0)
+    note('wire', { phoneCommands: counts })
     expect(counts['session.open']).toBe(1)
   }, 300_000)
 })

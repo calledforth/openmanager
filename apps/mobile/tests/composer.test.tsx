@@ -204,6 +204,18 @@ function pushComposer(client: MockEnvironmentClient, composer: Record<string, un
   )
 }
 
+/** The chat's listing, which reaches only a client that has the chat open. */
+function pushListing(client: MockEnvironmentClient, listing: Record<string, unknown>) {
+  return act(() =>
+    client.emit({
+      ...base(),
+      name: 'thread.listing.updated',
+      scope: threadScope(client),
+      payload: listing,
+    } as never),
+  )
+}
+
 const EFFORT = {
   type: 'select',
   id: 'effort',
@@ -228,9 +240,11 @@ describe('the composer picks', () => {
     await pushComposer(client, {
       modelId: 'opus',
       modeId: 'default',
+      usage: { used: 38, size: 100 },
+    })
+    await pushListing(client, {
       configOptions: [EFFORT, FAST],
       availableCommands: [{ name: 'review', description: 'Review the diff' }],
-      usage: { used: 38, size: 100 },
     })
     await flush()
 
@@ -377,7 +391,7 @@ describe('the dock folds with the turn', () => {
 describe('slash commands', () => {
   it('pops the session commands for a bare /name and fills the field with the pick', async () => {
     const client = await open({ seed: seed('completed'), respond: () => null })
-    await pushComposer(client, {
+    await pushListing(client, {
       availableCommands: [
         { name: 'review', description: 'Review the diff' },
         { name: 'compact', description: 'Summarise' },
@@ -577,15 +591,14 @@ describe('the composer as the prompt', () => {
       if (prompt?.kind !== 'question') throw new Error('no question')
       return prompt.flow
     }
-    expect(ask()).toMatchObject({ index: 0, canAdvance: false, hasReview: true })
-    await act(async () => ask().pick(ask().question!, 'docs'))
-    await act(async () => ask().advance())
-    expect(ask().question?.questionId).toBe('tiers')
-    await act(async () => ask().pick(ask().question!, 'starter'))
-    await act(async () => ask().pick(ask().question!, 'team'))
+    expect(ask()).toMatchObject({ index: 0, canAdvance: false, willSubmit: false })
+    // A single choice moves straight on; several stay until the button.
+    await act(async () => ask().choose(ask().question, 'docs'))
+    expect(ask().question.questionId).toBe('tiers')
+    await act(async () => ask().choose(ask().question, 'starter'))
+    await act(async () => ask().choose(ask().question, 'team'))
     await act(async () => ask().setText('and enterprise'))
-    await act(async () => ask().advance())
-    expect(ask().onReview).toBe(true)
+    expect(ask().willSubmit).toBe(true)
     await act(async () => ask().advance())
     await flush()
     expect(callsOf(client, 'respondToInteraction')).toEqual([
@@ -864,8 +877,8 @@ describe('question answers that do not land', () => {
     await act(async () => flow().flow.skip())
     await flush()
     expect(flow().error).toBe('Skip refused')
-    await act(async () => flow().flow.pick(flow().flow.question!, 'a'))
-    await act(async () => flow().flow.advance())
+    // The only question, so its choice is the send.
+    await act(async () => flow().flow.choose(flow().flow.question, 'a'))
     await flush()
     expect(flow().error).toBe('Submit refused')
     expect(flow().flow.submitting).toBe(false)
@@ -1184,7 +1197,7 @@ describe('a question answered on another device mid-flow', () => {
     await flush()
     const prompt = current().prompt
     if (prompt?.kind !== 'question') throw new Error('no question')
-    await act(async () => prompt.flow.pick(prompt.flow.question!, 'checkout'))
+    await act(async () => prompt.flow.choose(prompt.flow.question, 'checkout'))
     expect(composerFold(current())).toBe('prompt')
 
     // Answered on the laptop: the environment says so, and the turn goes on to its end.
