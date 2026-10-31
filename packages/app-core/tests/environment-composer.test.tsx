@@ -675,6 +675,7 @@ describe('the composer over the environment client', () => {
       payload: {
         workspaceId: WORKSPACE.workspaceId,
         providerId: 'opencode',
+        sourceSessionId: SESSION.sessionId,
         availableCommands: commands,
       },
     })
@@ -715,7 +716,12 @@ describe('the composer over the environment client', () => {
         timestamp: new Date().toISOString(),
         name: 'composer.listing.updated',
         scope: { type: 'environment', environmentId: 'mock-environment' },
-        payload: { workspaceId: WORKSPACE.workspaceId, providerId: 'opencode', availableCommands },
+        payload: {
+          workspaceId: WORKSPACE.workspaceId,
+          providerId: 'opencode',
+          sourceSessionId: SESSION.sessionId,
+          availableCommands,
+        },
       })
     list('older', [{ name: 'review', description: 'Review the diff' }])
     list('newer', [])

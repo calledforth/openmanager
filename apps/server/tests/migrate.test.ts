@@ -625,8 +625,54 @@ describe('schema migrations', () => {
       provider_id: 'cursor',
       config_options_json: JSON.stringify(fast),
       commands_json: JSON.stringify(newer),
+      source_session_id: 'new',
       updated_at: 9,
     })
+  })
+
+  it('takes a listing’s source from the newest session on each pair, by activity then id', async () => {
+    const directory = await dataDir()
+    const previous = openEnvironmentDatabase(directory, MIGRATIONS.slice(0, 22))
+    const listed = (name: string) =>
+      JSON.stringify({ availableCommands: [{ name, description: '' }] })
+    const insertSession = previous.prepare(`
+      INSERT INTO sessions (session_id, workspace_id, provider_id, status, composer_json,
+        created_at, updated_at) VALUES (?, 'workspace-1', ?, 'idle', ?, 1, ?)`)
+    previous.exec(`
+      INSERT INTO workspaces (workspace_id, name, path, created_at, updated_at)
+        VALUES ('workspace-1', 'one', '/one', 1, 1);
+    `)
+    // Created newest last, so only `updated_at` and the id can decide.
+    insertSession.run('newest', 'cursor', listed('newest'), 20)
+    insertSession.run('older', 'cursor', listed('older'), 10)
+    insertSession.run('tie-b', 'claude', listed('tie-b'), 30)
+    insertSession.run('tie-a', 'claude', listed('tie-a'), 30)
+    previous.close()
+
+    const database = openEnvironmentDatabase(directory)
+    databases.push(database)
+    const rows = database
+      .prepare(
+        `SELECT provider_id, source_session_id, commands_json, updated_at
+         FROM composer_listings ORDER BY provider_id`,
+      )
+      .all() as Array<{
+      provider_id: string
+      source_session_id: string
+      commands_json: string
+      updated_at: number
+    }>
+    expect(
+      rows.map((row) => ({
+        provider: row.provider_id,
+        source: row.source_session_id,
+        command: (JSON.parse(row.commands_json) as Array<{ name: string }>)[0]?.name,
+        at: row.updated_at,
+      })),
+    ).toEqual([
+      { provider: 'claude', source: 'tie-b', command: 'tie-b', at: 30 },
+      { provider: 'cursor', source: 'newest', command: 'newest', at: 20 },
+    ])
   })
 
   it('rejects a catalog that skips versions', () => {

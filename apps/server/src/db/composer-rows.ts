@@ -123,23 +123,34 @@ export function readWorkspaceListings(
   return rows.flatMap((row) => {
     const target = { workspaceId: row.workspace_id, providerId: row.provider_id }
     const listing = listingFromRow(row, target, log)
-    return listing ? [{ ...target, listing, updatedAt: new Date(row.updated_at).toISOString() }] : []
+    return listing
+      ? [{ ...target, listing, updatedAt: new Date(row.updated_at).toISOString() }]
+      : []
   })
 }
 
-/** What the provider last listed in this workspace, if it ever listed anything. */
+/** A workspace's listing and the chat that wrote it. */
+export interface HeldWorkspaceListing {
+  listing: ComposerListing
+  sourceSessionId: string
+}
+
+/** What the provider last listed in this workspace, if it ever listed anything readable. */
 export function readWorkspaceListing(
   database: DatabaseSync,
   target: ComposerPreferenceTarget,
   log?: Logger,
-): ComposerListing | undefined {
+): HeldWorkspaceListing | undefined {
   const row = database
     .prepare(
-      `SELECT config_options_json, commands_json FROM composer_listings
+      `SELECT config_options_json, commands_json, source_session_id FROM composer_listings
        WHERE workspace_id = ? AND provider_id = ?`,
     )
-    .get(target.workspaceId, target.providerId) as ListingRow | undefined
-  return row ? listingFromRow(row, target, log) : undefined
+    .get(target.workspaceId, target.providerId) as
+    (ListingRow & { source_session_id: string }) | undefined
+  if (!row) return undefined
+  const listing = listingFromRow(row, target, log)
+  return listing ? { listing, sourceSessionId: row.source_session_id } : undefined
 }
 
 export function profileFromRow(row: ProfileRow): ProviderComposerProfile {
@@ -187,11 +198,12 @@ export function prepareComposerProjection(database: DatabaseSync) {
   `)
   const writeListing = database.prepare(`
     INSERT INTO composer_listings (
-      workspace_id, provider_id, config_options_json, commands_json, updated_at
-    ) VALUES (?, ?, ?, ?, ?)
+      workspace_id, provider_id, config_options_json, commands_json, source_session_id, updated_at
+    ) VALUES (?, ?, ?, ?, ?, ?)
     ON CONFLICT(workspace_id, provider_id) DO UPDATE SET
       config_options_json = COALESCE(excluded.config_options_json, config_options_json),
       commands_json = COALESCE(excluded.commands_json, commands_json),
+      source_session_id = excluded.source_session_id,
       updated_at = excluded.updated_at
   `)
   const writePreference = database.prepare(`
@@ -219,13 +231,19 @@ export function prepareComposerProjection(database: DatabaseSync) {
         profile.updatedAt,
       )
     },
-    /** The fields a workspace's listing changed in; the others stay as held. */
-    listing(target: ComposerPreferenceTarget, listing: ComposerListing, at: number): void {
+    /** The fields a workspace's listing changed in, and the chat that said so. */
+    listing(
+      target: ComposerPreferenceTarget,
+      sourceSessionId: string,
+      listing: ComposerListing,
+      at: number,
+    ): void {
       writeListing.run(
         target.workspaceId,
         target.providerId,
         json(listing.configOptions),
         json(listing.availableCommands),
+        sourceSessionId,
         at,
       )
     },

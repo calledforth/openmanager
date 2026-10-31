@@ -636,8 +636,8 @@ export function createEventProjector(
         }
         return
       case 'composer.listing.updated': {
-        const { workspaceId, providerId, ...listing } = event.payload
-        composer.listing({ workspaceId, providerId }, listing, at)
+        const { workspaceId, providerId, sourceSessionId, ...listing } = event.payload
+        composer.listing({ workspaceId, providerId }, sourceSessionId, listing, at)
         return
       }
       case 'draft.saved':

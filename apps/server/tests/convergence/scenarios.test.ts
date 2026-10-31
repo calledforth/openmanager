@@ -1527,6 +1527,70 @@ describe('divergences on main that §8.4 does not list', () => {
     await expectConverges('G3 sidebar', rig, b)
   })
 
+  /**
+   * Two chats on one workspace and provider, one with a command the other
+   * lacks. The more recently active one holds what a new chat borrows, and
+   * the sidebar's stream hears of it once, however often both report.
+   */
+  scenario('G4 two chats do not trade the workspace listing (guard)', {}, async (rig) => {
+    const a = await rig.connect('A')
+    const quieter = await createSession(rig, a, QUIET)
+    await startTurn(a, quieter)
+    const active = await createSession(rig, a, QUIET)
+    await startTurn(a, active)
+    const { workspaceId, providerId } = a.client.getState().sessions[active.sessionId]!
+    const offered = () =>
+      selectDraftListing(a.client.getState(), 'availableCommands', workspaceId, providerId!)?.map(
+        (command) => command.name,
+      )
+    const announced = () =>
+      rig.proxy.frames.filter(
+        (frame) =>
+          frame.direction === 'down' &&
+          field(frame.json, 'payload', 'record', 'event', 'name') === 'composer.listing.updated',
+      ).length
+
+    await rig.waitQuiet()
+    const before = announced()
+    await rig.provider({
+      op: 'emitCommands',
+      sessionId: active.sessionId,
+      names: ['review', 'extra-mcp'],
+    })
+    await until(() => offered()?.length === 2 || undefined, 'the active chat to hold the list')
+    for (let round = 0; round < 3; round++) {
+      await rig.provider({ op: 'emitCommands', sessionId: quieter.sessionId, names: ['review'] })
+      await rig.provider({
+        op: 'emitCommands',
+        sessionId: active.sessionId,
+        names: ['review', 'extra-mcp'],
+      })
+      await rig.waitQuiet()
+    }
+    expect(offered()).toEqual(['review', 'extra-mcp'])
+    expect(announced() - before, 'one announcement, however often both report').toBe(1)
+    await expectConverges('G4 sidebar', rig, a)
+
+    // Activity moves the listing, once.
+    await rig.provider({ op: 'completeTurn', sessionId: quieter.sessionId })
+    await until(
+      () => a.client.getState().sessions[quieter.sessionId]?.status === 'idle' || undefined,
+      'the quieter chat to finish',
+    )
+    await startTurn(a, quieter)
+    await rig.provider({ op: 'emitCommands', sessionId: quieter.sessionId, names: ['newer'] })
+    await until(() => offered()?.[0] === 'newer' || undefined, 'the list to follow the activity')
+    await rig.provider({
+      op: 'emitCommands',
+      sessionId: active.sessionId,
+      names: ['review', 'extra-mcp'],
+    })
+    await rig.waitQuiet()
+    expect(offered()).toEqual(['newer'])
+    expect(announced() - before, 'and once more').toBe(2)
+    await expectConverges('G4 after activity', rig, a)
+  })
+
   scenario('G1 waitingOn follows a question over a permission (#219, guard)', {}, async (rig) => {
     const a = await rig.connect('A')
     const b = await rig.connect('B')

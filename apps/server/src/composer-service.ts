@@ -82,8 +82,10 @@ export interface ComposerServiceOptions {
   readSessionComposer?: (sessionId: string) => SessionComposerState | undefined
   /** The chat's persisted listing. Without it listings live in memory. */
   readThreadListing?: (threadId: string) => ComposerListing | undefined
-  /** What the provider last listed in this workspace, for a new chat to borrow. */
-  readWorkspaceListing?: (target: ComposerPreferenceTarget) => ComposerListing | undefined
+  /** What the provider last listed in this workspace, for a new chat to borrow, and who said so. */
+  readWorkspaceListing?: (
+    target: ComposerPreferenceTarget,
+  ) => { listing: ComposerListing; sourceSessionId: string } | undefined
   /** The workspace and provider a session lists for. Without it nothing is kept for new chats. */
   listingTarget?: (sessionId: string) => ComposerPreferenceTarget | undefined
   /**
@@ -92,6 +94,11 @@ export interface ComposerServiceOptions {
    * write (I2). Without it every session is taken to exist.
    */
   hasSession?: (sessionId: string) => boolean
+  /**
+   * When a session was last active, if it still exists: `sessions.updated_at`,
+   * which a title does not move. Without it every report stands.
+   */
+  sessionActivity?: (sessionId: string) => number | undefined
   /**
    * How long to wait before asking again about models the lookup could not
    * answer *right now* (its CLI failed or is held after a failure). Defaults
@@ -275,28 +282,52 @@ export function createComposerService(
   }
 
   /**
+   * Whether a chat's report gives way to the chat that wrote the workspace's
+   * listing. Ties go the way the sidebar and migration 23 order sessions, so
+   * of two chats exactly one ever outranks the other. A writer that no longer
+   * exists holds nothing, and the next report wins.
+   */
+  const givesWayTo = (sessionId: string, writer: string) => {
+    if (writer === sessionId) return false
+    const reporterAt = options.sessionActivity?.(sessionId)
+    const writerAt = options.sessionActivity?.(writer)
+    if (reporterAt === undefined || writerAt === undefined) return false
+    return reporterAt === writerAt ? sessionId < writer : reporterAt < writerAt
+  }
+
+  /**
    * A new chat has no session to list for it, so the workspace keeps what its
-   * provider last listed. An empty command list is the provider offering
-   * none; empty settings are a session that has not reported yet. Settings
-   * are compared without their values: a draft shows its own preference, and
-   * two sessions on one provider would otherwise take turns announcing.
+   * provider last listed, as the most recently active chat listed it: two
+   * chats with different lists, say one with an extra MCP server, would
+   * otherwise take turns overwriting the row for as long as both reported.
+   *
+   * An empty command list is the provider offering none; empty settings are a
+   * session that has not reported yet, so they claim nothing. Settings are
+   * compared without their values: a draft shows its own preference. A chat
+   * that outranks the writer takes over even when it repeats the list, or the
+   * writer's next report would still count as the latest.
    */
   const updateWorkspaceListing = (sessionId: string, patch: ComposerListing) => {
     const target = options.listingTarget?.(sessionId)
     if (!target) return
+    if (!patch.configOptions?.length && !patch.availableCommands) return
     const held = options.readWorkspaceListing?.(target)
+    if (held && givesWayTo(sessionId, held.sourceSessionId)) return
     const changed: ComposerListing = {
       ...(patch.configOptions?.length &&
-      !isDeepStrictEqual(settingsOffered(patch.configOptions), settingsOffered(held?.configOptions))
+      !isDeepStrictEqual(
+        settingsOffered(patch.configOptions),
+        settingsOffered(held?.listing.configOptions),
+      )
         ? { configOptions: patch.configOptions }
         : {}),
       ...(patch.availableCommands &&
-      !isDeepStrictEqual(patch.availableCommands, held?.availableCommands)
+      !isDeepStrictEqual(patch.availableCommands, held?.listing.availableCommands)
         ? { availableCommands: patch.availableCommands }
         : {}),
     }
-    if (Object.keys(changed).length > 0) {
-      publish('composer.listing.updated', { ...target, ...changed })
+    if (Object.keys(changed).length > 0 || (held && held.sourceSessionId !== sessionId)) {
+      publish('composer.listing.updated', { ...target, sourceSessionId: sessionId, ...changed })
     }
   }
 

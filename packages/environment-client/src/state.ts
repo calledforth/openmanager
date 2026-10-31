@@ -401,7 +401,8 @@ export function applyEvent(state: EnvironmentState, event: ProofEvent): Environm
       }
     }
     case 'composer.listing.updated': {
-      const { workspaceId, providerId, ...changed } = event.payload
+      // Which chat said so is the server's, for deciding the next report.
+      const { workspaceId, providerId, sourceSessionId: _source, ...changed } = event.payload
       if (!state.workspaces[workspaceId]) return state
       const held = state.composerListings[workspaceId]
       return {

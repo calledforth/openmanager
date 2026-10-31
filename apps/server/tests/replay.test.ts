@@ -417,10 +417,12 @@ describe('replay reader', () => {
     database.exec(`
       INSERT INTO workspaces (workspace_id, name, path, created_at, updated_at)
         VALUES ('workspace-gone', 'gone', '/gone', 1, 1);
-      INSERT INTO composer_listings (workspace_id, provider_id, commands_json, updated_at) VALUES
-        ('workspace-1', 'opencode', '${commands}', 1000),
-        ('workspace-1', 'cursor', '${commands}', 2000),
-        ('workspace-gone', 'cursor', '${commands}', 3000);
+      INSERT INTO composer_listings
+        (workspace_id, provider_id, commands_json, source_session_id, updated_at)
+      VALUES
+        ('workspace-1', 'opencode', '${commands}', 'session-1', 1000),
+        ('workspace-1', 'cursor', '${commands}', 'session-1', 2000),
+        ('workspace-gone', 'cursor', '${commands}', 'session-1', 3000);
       UPDATE threads SET listing_json = '{"availableCommands":${commands}}';
     `)
     const environmentSnapshot = reader.read(environmentScope, null)
@@ -500,9 +502,11 @@ describe('replay reader', () => {
     const { database, reader } = await seeded({ log })
     const commands = JSON.stringify([{ name: 'review', description: 'Review the diff' }])
     database.exec(`
-      INSERT INTO composer_listings (workspace_id, provider_id, commands_json, updated_at) VALUES
-        ('workspace-1', 'bad', '"not a list"', 1000),
-        ('workspace-1', 'good', '${commands}', 2000);
+      INSERT INTO composer_listings
+        (workspace_id, provider_id, commands_json, source_session_id, updated_at)
+      VALUES
+        ('workspace-1', 'bad', '"not a list"', 'session-1', 1000),
+        ('workspace-1', 'good', '${commands}', 'session-1', 2000);
       UPDATE threads SET listing_json = '{"availableCommands":"not a list"}';
     `)
 

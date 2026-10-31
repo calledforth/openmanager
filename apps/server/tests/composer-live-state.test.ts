@@ -7,6 +7,7 @@ import {
   COMPOSER_MODE_SET_CAPABILITY,
   COMPOSER_PREFERENCES_SET_CAPABILITY,
   type ComposerListing,
+  type ProofEvent,
   type ProviderBootstrap,
 } from '@openmanager/protocol/node'
 import { afterEach, describe, expect, it, vi } from 'vitest'
@@ -49,7 +50,9 @@ async function harness() {
     sessionId: `provider-${threadId}`,
   })
   const threads: Record<string, string> = { 'thread-a': 'session-a', 'thread-b': 'session-b' }
-  let workspace: ComposerListing | undefined
+  // The row `composer.listing.updated` projects to, field by field.
+  let workspace: { listing: ComposerListing; sourceSessionId: string } | undefined
+  const activity: Record<string, number | undefined> = { 'session-a': 1, 'session-b': 2 }
   const service = createComposerService(
     runtime,
     { snapshot: () => [provider], rejection: () => undefined },
@@ -61,20 +64,28 @@ async function harness() {
           ? Promise.resolve(route('thread-b'))
           : undefined,
     {
-      publish: (name, payload) => published.push({ name, payload }),
+      publish: (name, payload) => {
+        published.push({ name, payload })
+        if (name !== 'composer.listing.updated') return
+        const {
+          workspaceId: _workspace,
+          providerId: _provider,
+          sourceSessionId,
+          ...changed
+        } = payload as Extract<ProofEvent, { name: 'composer.listing.updated' }>['payload']
+        workspace = { listing: { ...workspace?.listing, ...changed }, sourceSessionId }
+      },
       publishThreadListing: (target, listing) =>
         published.push({ name: 'thread.listing.updated', payload: { ...target, listing } }),
       sessionForThread: (threadId) => threads[threadId],
       listingTarget: () => ({ workspaceId: 'workspace-1', providerId: 'claude' }),
       readWorkspaceListing: () => workspace,
+      sessionActivity: (sessionId) => activity[sessionId],
     },
   )
   const named = (name: string) =>
     published.filter((event) => event.name === name).map((event) => event.payload)
-  const holdWorkspaceListing = (listing: ComposerListing) => {
-    workspace = listing
-  }
-  return { runtime, service, store, published, named, holdWorkspaceListing }
+  return { runtime, service, store, published, named, activity, workspaceListing: () => workspace }
 }
 
 const runtimeEvent = (threadId: string) => ({
@@ -528,51 +539,195 @@ describe('composer broadcasts', () => {
     expect(stored['thread-a']).toEqual(service.threadListing('thread-a'))
   })
 
-  it('keeps what a provider listed for the next chat in the workspace', async () => {
-    const { service, named, holdWorkspaceListing } = await harness()
-    const report = (threadId: string, event: string, data: unknown) =>
+  describe('the listing a workspace keeps for the next chat', () => {
+    const report = (
+      service: Awaited<ReturnType<typeof harness>>['service'],
+      threadId: string,
+      event: string,
+      data: unknown,
+    ) =>
       service.onRuntimeEvent({
         ...runtimeEvent(threadId),
         category: 'session',
         event,
         data,
       } as Parameters<typeof service.onRuntimeEvent>[0])
+    const commands = (service: Parameters<typeof report>[0], threadId: string, names: string[]) =>
+      report(service, threadId, 'available_commands_update', {
+        availableCommands: names.map((name) => ({ name, description: '' })),
+      })
     const review = { name: 'review', description: 'Review the diff' }
-    const select = (currentValue: string) => ({
+    const select = (currentValue: string, id = 'style') => ({
       type: 'select' as const,
-      id: 'style',
+      id,
       name: 'Style',
       currentValue,
       options: [{ value: 'plain', name: 'Plain' }],
     })
     const target = { workspaceId: 'workspace-1', providerId: 'claude' }
 
-    report('thread-a', 'available_commands_update', { availableCommands: [review] })
-    expect(named('composer.listing.updated')).toEqual([{ ...target, availableCommands: [review] }])
-    holdWorkspaceListing({ availableCommands: [review] })
+    it('keeps what the most recently active chat listed, field by field', async () => {
+      const { service, named } = await harness()
+      const say = (threadId: string, event: string, data: unknown) =>
+        report(service, threadId, event, data)
 
-    // The same commands from a sibling are not news.
-    report('thread-b', 'available_commands_update', { availableCommands: [review] })
-    expect(named('composer.listing.updated')).toHaveLength(1)
+      say('thread-b', 'available_commands_update', { availableCommands: [review] })
+      expect(named('composer.listing.updated')).toEqual([
+        { ...target, sourceSessionId: 'session-b', availableCommands: [review] },
+      ])
 
-    // Settings announce alone, and empty settings are a session yet to report.
-    report('thread-a', 'config_option_update', { configOptions: [] })
-    expect(named('composer.listing.updated')).toHaveLength(1)
-    report('thread-a', 'config_option_update', { configOptions: [select('plain')] })
-    expect(named('composer.listing.updated')[1]).toEqual({
-      ...target,
-      configOptions: [select('plain')],
+      // Settings announce alone, and empty settings are a session yet to report.
+      say('thread-b', 'config_option_update', { configOptions: [] })
+      expect(named('composer.listing.updated')).toHaveLength(1)
+      say('thread-b', 'config_option_update', { configOptions: [select('plain')] })
+      expect(named('composer.listing.updated')[1]).toEqual({
+        ...target,
+        sourceSessionId: 'session-b',
+        configOptions: [select('plain')],
+      })
+
+      // A value alone changes what a chat shows, not what a provider offers.
+      say('thread-b', 'config_option_update', { configOptions: [select('other')] })
+      expect(named('composer.listing.updated')).toHaveLength(2)
+      expect(named('thread.listing.updated')).toHaveLength(3)
+
+      // An empty command list is the provider offering none: the next chat has none.
+      say('thread-b', 'available_commands_update', { availableCommands: [] })
+      expect(named('composer.listing.updated')[2]).toEqual({
+        ...target,
+        sourceSessionId: 'session-b',
+        availableCommands: [],
+      })
     })
-    holdWorkspaceListing({ availableCommands: [review], configOptions: [select('plain')] })
 
-    // A value alone changes what a chat shows, not what a provider offers.
-    report('thread-b', 'config_option_update', { configOptions: [select('other')] })
-    expect(named('composer.listing.updated')).toHaveLength(2)
-    expect(named('thread.listing.updated')).toHaveLength(4)
+    it('does not let two chats with different lists trade the row', async () => {
+      const { service, named, workspaceListing } = await harness()
+      const listed = (...names: string[]) => names.map((name) => ({ name, description: '' }))
 
-    // An empty command list is the provider offering none: the next chat has none.
-    report('thread-b', 'available_commands_update', { availableCommands: [] })
-    expect(named('composer.listing.updated')[2]).toEqual({ ...target, availableCommands: [] })
+      commands(service, 'thread-b', ['review', 'extra-mcp'])
+      expect(named('composer.listing.updated')).toHaveLength(1)
+      for (let round = 0; round < 5; round++) {
+        commands(service, 'thread-a', ['review'])
+        commands(service, 'thread-b', ['review', 'extra-mcp'])
+        report(service, 'thread-a', 'config_option_update', {
+          configOptions: [select('plain', `less-active-${round}`)],
+        })
+      }
+      // Neither the commands nor the settings of the less active chat landed.
+      expect(named('composer.listing.updated')).toHaveLength(1)
+      expect(workspaceListing()).toEqual({
+        listing: { availableCommands: listed('review', 'extra-mcp') },
+        sourceSessionId: 'session-b',
+      })
+      // Each chat still has its own list.
+      expect(service.threadListing('thread-a').availableCommands).toEqual(listed('review'))
+    })
+
+    it('moves to the other chat once it is the more recently active', async () => {
+      const { service, named, activity, workspaceListing } = await harness()
+      commands(service, 'thread-b', ['extra-mcp'])
+      commands(service, 'thread-a', ['review'])
+      expect(named('composer.listing.updated')).toHaveLength(1)
+
+      activity['session-a'] = 3
+      commands(service, 'thread-a', ['review'])
+      expect(named('composer.listing.updated')).toHaveLength(2)
+      expect(workspaceListing()?.sourceSessionId).toBe('session-a')
+
+      // And stays there: the row does not go back for the older chat's report.
+      commands(service, 'thread-b', ['extra-mcp'])
+      expect(named('composer.listing.updated')).toHaveLength(2)
+    })
+
+    it('takes over a list a more active chat repeats, naming no field', async () => {
+      const { service, named, activity, workspaceListing } = await harness()
+      commands(service, 'thread-b', ['review'])
+      activity['session-a'] = 3
+      commands(service, 'thread-a', ['review'])
+      expect(named('composer.listing.updated')[1]).toEqual({
+        ...target,
+        sourceSessionId: 'session-a',
+      })
+      // So the chat that used to hold it cannot come back with something else.
+      commands(service, 'thread-b', ['other'])
+      expect(workspaceListing()?.listing.availableCommands).toEqual([
+        { name: 'review', description: '' },
+      ])
+      // Reporting again is not news.
+      commands(service, 'thread-a', ['review'])
+      expect(named('composer.listing.updated')).toHaveLength(2)
+    })
+
+    it('claims nothing with empty settings, however active the chat', async () => {
+      const { service, named, activity } = await harness()
+      commands(service, 'thread-b', ['review'])
+      activity['session-a'] = 3
+      report(service, 'thread-a', 'config_option_update', { configOptions: [] })
+      expect(named('composer.listing.updated')).toHaveLength(1)
+    })
+
+    it('settles a tie the same way from both sides', async () => {
+      const { service, named, activity, workspaceListing } = await harness()
+      activity['session-a'] = 2
+      commands(service, 'thread-b', ['extra-mcp'])
+      commands(service, 'thread-a', ['review'])
+      commands(service, 'thread-b', ['extra-mcp'])
+      expect(named('composer.listing.updated')).toHaveLength(1)
+      expect(workspaceListing()?.sourceSessionId).toBe('session-b')
+    })
+
+    it('lets the next report win when the writer no longer exists', async () => {
+      const { service, named, activity, workspaceListing } = await harness()
+      commands(service, 'thread-b', ['extra-mcp'])
+      commands(service, 'thread-a', ['review'])
+      expect(named('composer.listing.updated')).toHaveLength(1)
+
+      activity['session-b'] = undefined
+      commands(service, 'thread-a', ['review'])
+      expect(workspaceListing()).toEqual({
+        listing: { availableCommands: [{ name: 'review', description: '' }] },
+        sourceSessionId: 'session-a',
+      })
+    })
+
+    it('heals a workspace left behind by a crash between the two writes', () => {
+      // The chat's row holds the list; the event for the workspace never ran.
+      const threadRow: ComposerListing = { availableCommands: [review] }
+      const published: unknown[] = []
+      let held: { listing: ComposerListing; sourceSessionId: string } | undefined
+      const service = createComposerService(
+        {} as never,
+        { snapshot: () => [provider], rejection: () => undefined },
+        {} as ComposerStore,
+        () => undefined,
+        {
+          publish: (_name, payload) => published.push(payload),
+          publishThreadListing: () => {
+            throw new Error('The chat has not changed')
+          },
+          sessionForThread: () => 'session-b',
+          readThreadListing: () => threadRow,
+          listingTarget: () => target,
+          readWorkspaceListing: () => held,
+          sessionActivity: (sessionId) => (sessionId === 'session-b' ? 2 : 1),
+        },
+      )
+      // The session loads again after the restart and lists the same thing.
+      report(service, 'thread-b', 'available_commands_update', { availableCommands: [review] })
+      expect(published).toEqual([
+        { ...target, sourceSessionId: 'session-b', availableCommands: [review] },
+      ])
+
+      // The same when an older chat's list was what the crash left in place.
+      held = { listing: { availableCommands: [] }, sourceSessionId: 'session-a' }
+      report(service, 'thread-b', 'available_commands_update', { availableCommands: [review] })
+      expect(published).toHaveLength(2)
+      expect(published[1]).toEqual({
+        ...target,
+        sourceSessionId: 'session-b',
+        availableCommands: [review],
+      })
+    })
   })
 
   it('carries the context usage a provider reports, and nothing for one that reports none', async () => {

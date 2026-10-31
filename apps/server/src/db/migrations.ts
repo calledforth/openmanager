@@ -847,7 +847,9 @@ export const MIGRATIONS: readonly Migration[] = [
       // browser in the sidebar: a chat keeps its listing on its thread, and a
       // workspace keeps the last one each provider gave it for a new chat to
       // borrow. A workspace's listings go with it, and `workspace.removed`
-      // says so (docs/sync-foundations.md §6.4).
+      // says so (docs/sync-foundations.md §6.4). `source_session_id` is the
+      // chat that wrote the row; it has no foreign key, because a deletion
+      // changes this row by no event. A writer that is gone holds nothing.
       const threadColumns = database.prepare('PRAGMA table_info(threads)').all() as {
         name: string
       }[]
@@ -862,6 +864,7 @@ export const MIGRATIONS: readonly Migration[] = [
           config_options_json TEXT
             CHECK (config_options_json IS NULL OR json_valid(config_options_json)),
           commands_json TEXT CHECK (commands_json IS NULL OR json_valid(commands_json)),
+          source_session_id TEXT NOT NULL,
           updated_at INTEGER NOT NULL,
           PRIMARY KEY (workspace_id, provider_id)
         ) STRICT;
@@ -884,15 +887,19 @@ export const MIGRATIONS: readonly Migration[] = [
       const writeSession = database.prepare(
         'UPDATE sessions SET composer_json = ? WHERE session_id = ?',
       )
-      // Oldest session first, so the newest report on a pair stands. As live:
-      // an empty command list is an answer, empty settings are not.
+      // Oldest session first, in the order live reports are ranked (activity
+      // time, a title does not move it, then id), so the newest report on a
+      // pair stands and is its source. As live: an empty command list is an
+      // answer, empty settings are not.
       const writeWorkspace = database.prepare(`
         INSERT INTO composer_listings (
-          workspace_id, provider_id, config_options_json, commands_json, updated_at
-        ) VALUES (?, ?, ?, ?, ?)
+          workspace_id, provider_id, config_options_json, commands_json, source_session_id,
+          updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?)
         ON CONFLICT(workspace_id, provider_id) DO UPDATE SET
           config_options_json = COALESCE(excluded.config_options_json, config_options_json),
           commands_json = COALESCE(excluded.commands_json, commands_json),
+          source_session_id = excluded.source_session_id,
           updated_at = excluded.updated_at
       `)
       for (const session of sessions) {
@@ -916,6 +923,7 @@ export const MIGRATIONS: readonly Migration[] = [
           session.provider_id,
           options,
           commands,
+          session.session_id,
           session.updated_at,
         )
       }

@@ -289,6 +289,7 @@ export const proofEvents = [
     payload: {
       workspaceId: 'workspace-1',
       providerId: 'claude-code',
+      sourceSessionId: 'session-1',
       availableCommands: [{ name: 'review', description: 'Review the current diff' }],
     },
   },

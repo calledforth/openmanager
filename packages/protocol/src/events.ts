@@ -124,11 +124,17 @@ export const ProofEventSchemas = {
    * What a provider last listed in this workspace, which a new chat there
    * offers until it has a session of its own. Names only the fields that
    * changed: settings are relisted on a model switch, commands hardly ever.
+   *
+   * `sourceSessionId` is the chat that said so. The most recently active chat
+   * holds the listing, and the row records it so a less active one cannot
+   * overwrite it. A chat that takes over a list it repeats names no field.
    */
   'composer.listing.updated': event(
     'composer.listing.updated',
     EnvironmentScopeSchema,
-    ComposerPreferenceTargetSchema.extend(ComposerListingSchema.shape),
+    ComposerPreferenceTargetSchema.extend(ComposerListingSchema.shape).extend({
+      sourceSessionId: EntityIdSchema,
+    }),
   ),
   /**
    * The remembered selection a new draft in this workspace opens with, and

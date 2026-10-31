@@ -55,7 +55,7 @@ export interface WorkspaceComposerListing {
   workspaceId: string
   providerId: string
   listing: ComposerListing
-  /** When the listing last changed. */
+  /** When a chat last changed the listing or took it over. */
   updatedAt: string
 }
 

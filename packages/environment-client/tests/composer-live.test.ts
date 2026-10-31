@@ -63,7 +63,7 @@ describe('provider listings', () => {
     ...event<WorkspaceListingUpdated>({
       name: 'composer.listing.updated',
       scope: environmentScope,
-      payload: { workspaceId, providerId, ...listing },
+      payload: { workspaceId, providerId, sourceSessionId: SESSION.sessionId, ...listing },
     }),
     timestamp,
   })
@@ -111,6 +111,7 @@ describe('provider listings', () => {
     state = applyEvent(state, listingUpdated(LATER, 'b', 'claude', { configOptions: [fast] }))
     // A field the event does not name stays as held.
     state = applyEvent(state, listingUpdated(LATER, 'a', 'claude', { configOptions: [fast] }))
+    // Which chat said so stays with the server.
     expect(state.composerListings.a?.claude).toEqual({
       listing: { availableCommands: [review], configOptions: [fast] },
       updatedAt: LATER,
