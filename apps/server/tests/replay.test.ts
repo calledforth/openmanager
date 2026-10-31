@@ -300,17 +300,19 @@ describe('replay reader', () => {
   })
 
   it('replays any gap the log holds, however long, while the replay is not larger', async () => {
-    const { repository, reader, at } = await seeded({ pad: true })
-    for (let index = 2; index <= 400; index += 1) {
-      repository.appendEvents(threadScope, [started(index), delta(index, `answer-${index}`)])
-      repository.finalizeTurn(threadScope, [completed(index)])
-    }
-    // Nearly the whole thread since sequence 4: no cap turns it into a snapshot
-    // while it is not larger than the snapshot.
-    const result = reader.read(threadScope, at(1000))
+    const { database, repository, reader, at } = await seeded({ pad: true })
+    // Past the 500 events a replay used to stop at, in one write. The earlier
+    // text keeps the snapshot the larger answer.
+    database
+      .prepare(`UPDATE message_parts SET content_json = ? WHERE part_id = 'earlier-part'`)
+      .run(JSON.stringify({ type: 'text', text: 'e'.repeat(400_000) }))
+    const deltas = Array.from({ length: 600 }, (_, index) =>
+      ProofEventSchemas['message.delta'].parse({ ...delta(2, 'x'), eventId: `long-${index}` }),
+    )
+    repository.appendEvents(threadScope, [started(2), ...deltas])
+    const result = reader.read(threadScope, at(4))
     if (result.mode !== 'replay') throw new Error(`Expected a replay, got ${result.mode}`)
-    expect(result.count).toBe(result.to.sequence - 1000)
-    expect(result.count).toBeGreaterThan(150)
+    expect(result.count).toBe(601)
   })
 
   it('snapshots when the replay would be larger than the snapshot (snapshot_smaller)', async () => {
