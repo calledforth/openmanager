@@ -71,6 +71,7 @@ type TimelineMessage = Pick<
   | 'optimisticJobId'
   | 'isOptimistic'
   | 'sendError'
+  | 'sendWaiting'
   | 'commandId'
 >
 
@@ -810,6 +811,7 @@ function MessageRow({
         optimisticAttachments={message.optimisticAttachments}
         isOptimistic={message.isOptimistic}
         sendError={message.sendError}
+        sendWaiting={message.sendWaiting}
         onRetry={sendError && commandId && onRetrySend ? retry : undefined}
         isDriven={isDriven}
         onReady={onReady}
@@ -827,6 +829,7 @@ const ResolvedMessage = memo(function ResolvedMessage(props: {
   optimisticAttachments?: TimelineMessage['optimisticAttachments']
   isOptimistic?: boolean
   sendError?: string
+  sendWaiting?: boolean
   onRetry?: () => void
   isDriven: boolean
   onReady?: (messageId: string) => void
@@ -905,6 +908,7 @@ const ResolvedMessage = memo(function ResolvedMessage(props: {
         parts={parts}
         optimisticAttachments={props.optimisticAttachments}
         sendError={props.sendError}
+        sendWaiting={props.sendWaiting}
         onRetry={props.onRetry}
       />
     )

@@ -1267,16 +1267,19 @@ describe('divergences on main that §8.4 does not list', () => {
       const target = await createSession(rig, a, QUIET)
       const turnId = await startTurn(a, target)
       await finish(rig, a, target, turnId)
-      const before = a.connects
-      const mark = rig.proxy.frames.length
+      a.dispose()
       await rig.restart()
-      await until(() => a.connects > before, 'A to reconnect after the restart', 20_000, 1)
-      const after = await startTurn(a, target, 'And now?')
-      await finish(rig, a, target, after)
-      await until(() => !a.busy(), 'A to finish its reconnect')
-      await expectConverges('S17', rig, a)
+      // A client with the chat open holds a send until it has caught up, and
+      // its own reopening loads the chat. One with nothing open sends at once.
+      const b = await rig.connect('B')
+      const mark = rig.proxy.frames.length
+      const after = await startTurn(b, target, 'And now?')
+      await b.client.commands.openSession(target.sessionId)
+      await finish(rig, b, target, after)
+      await until(() => !b.busy(), 'B to finish its open')
+      await expectConverges('S17', rig, b)
       // Served by the server's own load: on the new process, the send came
-      // before any session.open (the proxy records A's frames in order).
+      // before any session.open (the proxy records B's frames in order).
       const requests = rig.proxy.frames
         .slice(mark)
         .filter((frame) => frame.direction === 'up')

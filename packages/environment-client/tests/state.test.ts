@@ -7,6 +7,7 @@ import {
   applySessionOpen,
   applySnapshot,
   applyTurnSendFailed,
+  applyTurnSendReleased,
   applyTurnSending,
   createInitialState,
   selectActiveThread,
@@ -943,6 +944,12 @@ describe('optimistic sends', () => {
     expect(retried.threads[THREAD.threadId]?.outbox).toEqual([
       { commandId: 'cmd-1', text: 'hello', status: 'pending' },
     ])
+  })
+
+  it('does not bring back a chat that went while its send was waiting', () => {
+    const state = createInitialState()
+    expect(applyTurnSendFailed(state, THREAD, 'cmd-1', 'gone')).toBe(state)
+    expect(applyTurnSendReleased(state, THREAD, 'cmd-1')).toBe(state)
   })
 
   it('ignores a failure for a send that is already confirmed', () => {

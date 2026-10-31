@@ -1421,6 +1421,19 @@ describe('sends deduplicated by command id', () => {
     expect(replayed).toEqual(first)
     expect(runtime.prompt).toHaveBeenCalledTimes(1)
 
+    // A retry that crosses a restart into a thread already loaded again: its
+    // own map is empty, and the log still answers.
+    const reloaded = build()
+    reloaded.dispatch({
+      type: 'command',
+      name: 'session.open',
+      requestId: 'open',
+      payload: { sessionId: created.session.sessionId },
+    })
+    const again = ProofResponseSchemas['turn.send'].parse(send(reloaded, 'send-4')).payload
+    expect(again).toEqual(first)
+    expect(runtime.prompt).toHaveBeenCalledTimes(1)
+
     // Same retry, but the restarted service cannot reach the workspace: the
     // durable lookup must be refused before it reads the prompt back.
     const denied = build(() => undefined)

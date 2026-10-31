@@ -24,6 +24,8 @@ export interface UIMessage {
   isOptimistic?: boolean
   /** Why the host could not send this optimistic message, once it knows. */
   sendError?: string
+  /** Waiting for the chat to catch up, then for the host to take it. */
+  sendWaiting?: boolean
   /** The id of the send this row echoes; retrying with it reuses the row. */
   commandId?: string
 }

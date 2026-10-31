@@ -64,12 +64,15 @@ export function UserMessage({
   parts,
   optimisticAttachments,
   sendError,
+  sendWaiting = false,
   onRetry,
 }: {
   content: string
   parts?: MessagePart[]
   optimisticAttachments?: OptimisticImage[]
   sendError?: string
+  /** On its way: it goes by itself once the chat has caught up. */
+  sendWaiting?: boolean
   /** Send this message again. Omitted when the host cannot retry it. */
   onRetry?: () => void
 }) {
@@ -130,9 +133,17 @@ export function UserMessage({
         </div>
       </div>
       {/* Under the bubble's right edge, where the eye finishes reading it. */}
-      {content ? (
-        <div className="mt-1 flex justify-end">
-          <CopyMessageButton text={content} row="user" />
+      {content || sendWaiting ? (
+        <div className="mt-1 flex items-center justify-end gap-1.5">
+          {sendWaiting ? (
+            <span
+              className="todo-progress-loader shrink-0 text-[var(--basis-text-muted)]"
+              role="img"
+              aria-label="Waiting to send"
+              title="Sends once this chat has caught up"
+            />
+          ) : null}
+          {content ? <CopyMessageButton text={content} row="user" /> : null}
         </div>
       ) : (
         <div className="h-2" />
