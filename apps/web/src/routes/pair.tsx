@@ -288,7 +288,10 @@ function Redeem({
 }) {
   const { environment } = useConnection()
   const clientEnvironmentId = useEnvironmentState((state) => state.environment?.environmentId)
+  // A client can name the environment from its cache before it has connected.
+  const connected = useEnvironmentState((state) => state.connection.phase === 'connected')
   const ready =
+    connected &&
     environment.status === 'selected' &&
     environment.environmentId === environmentId &&
     clientEnvironmentId === environmentId

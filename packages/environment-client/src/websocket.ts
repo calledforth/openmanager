@@ -1567,6 +1567,13 @@ export function createWebSocketEnvironmentClient(
    */
   async function openSessionAt(sessionId: string, generation: number): Promise<void> {
     const previous = store.getState().activeSessionId
+    // What is already here to read, should the environment not be reachable.
+    // Its messages, not its hydration: an open cut off earlier leaves a chat
+    // that reads perfectly well marked as loading.
+    const before = store.getState()
+    const loadedThreads = (before.sessions[sessionId]?.threadIds ?? []).filter(
+      (threadId) => (before.threads[threadId]?.messages.length ?? 0) > 0,
+    )
     store.update((state) => applySessionOpening(state, sessionId))
     // Selected already, so the session left behind is released now, as
     // `setActiveSession` does. Waiting for the reply would leak it: a later
@@ -1584,6 +1591,19 @@ export function createWebSocketEnvironmentClient(
       if (isEnvironmentClientError(error) && error.code === 'not_found') {
         store.update((state) => applySessionRemoved(state, sessionId))
         releaseRemovedScopes()
+        throw error
+      }
+      // Not connected, with the chat already here: it stays readable, and the
+      // resync that follows the next handshake opens the session for real.
+      if (!ready && loadedThreads.length > 0) {
+        store.update((state) => {
+          let next = state
+          for (const threadId of state.sessions[sessionId]?.threadIds ?? []) {
+            const hydration = loadedThreads.includes(threadId) ? 'ready' : 'idle'
+            next = applyThreadHydration(next, threadId, hydration)
+          }
+          return applyActiveSession(next, sessionId)
+        })
         throw error
       }
       store.update((state) => {
@@ -1974,6 +1994,11 @@ export function createWebSocketEnvironmentClient(
       }
     },
     async fetchArtifact(input, init) {
+      // The token goes in this request, so it goes only where a handshake is
+      // holding now. After a drop nothing says the address still leads here.
+      if (!ready) {
+        throw new EnvironmentClientError('unavailable', 'Not connected to the environment.')
+      }
       const fetchBytes = options.fetch ?? globalThis.fetch
       let response: Response
       try {
