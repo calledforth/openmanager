@@ -1722,7 +1722,8 @@ Decisions the design above left open, or where the code differed:
 - **The environment snapshot also carries provider profiles.** `provider.catalog.updated` is an
   environment-scope event and profiles are client-visible rows; a server-initiated catch-up runs no
   resync, so a missed profile change would otherwise wait for the next reconnect. Drafts stay out:
-  the client marks them unlisted on every environment snapshot and `draft-sync` relists.
+  the client marks them unlisted on every environment snapshot but the first, and `draft-sync`
+  relists.
 - **`session.list`, `session.history` and `composer.preferences.get` are deleted from the server
   too**, with `HistoryCursorSchema`, the session list cursor, `PAGE_LIMIT_*` and the pagers. The
   thread service keeps `summaries()` and `threadState()` as inspection reads for tests.
