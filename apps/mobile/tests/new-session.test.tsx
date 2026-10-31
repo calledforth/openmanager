@@ -377,11 +377,6 @@ describe('a new session from the phone', () => {
     const { client } = await openLanding()
     expect(probe.session.isSessionDraftOpen).toBe(true)
     expect(probe.session.activeWorkspacePath).toBe(ALPHA.workspaceId)
-    expect(probe.model.project).toEqual({
-      name: 'alpha',
-      workspaceId: ALPHA.workspaceId,
-      pickable: true,
-    })
     expect(probe.model.picks).toMatchObject({
       providerId: 'claude',
       modelLabel: 'Sonnet',
@@ -508,7 +503,6 @@ describe('a new session from the phone', () => {
     const gamma = probe.projects.workspaces.find((entry) => entry.name === 'gamma')
     expect(gamma).toBeTruthy()
     expect(probe.session.activeWorkspacePath).toBe(gamma!.path)
-    expect(probe.model.project?.name).toBe('gamma')
   })
 
   it('picks an added project only if nothing was picked while it was added', async () => {

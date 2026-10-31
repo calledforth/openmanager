@@ -38,17 +38,22 @@ export type ComposerFold =
 
 /**
  * The dock's shape. It changes only when the session's state does (a turn
- * starts or ends, a request arrives or is answered), never with a token.
+ * starts or ends, a request arrives or is answered) or the field comes into
+ * use (`focused`, which brings back the picks a running turn folds away),
+ * never with a token.
  */
-export function composerFold({
-  isStreaming,
-  prompt,
-}: {
-  isStreaming: boolean
-  prompt: ComposerPrompt | null
-}): ComposerFold {
+export function composerFold(
+  {
+    isStreaming,
+    prompt,
+  }: {
+    isStreaming: boolean
+    prompt: ComposerPrompt | null
+  },
+  focused = false,
+): ComposerFold {
   if (prompt) return 'prompt'
-  return isStreaming ? 'running' : 'rest'
+  return isStreaming && !focused ? 'running' : 'rest'
 }
 
 /** The one button at the field's end: send, or stop while a turn runs. */
@@ -339,14 +344,6 @@ export interface CapturedPhoto {
   mimeType: string
 }
 
-export interface ComposerProject {
-  name: string
-  /** Its workspace, for the icon it declares; null while none is picked. */
-  workspaceId: string | null
-  /** The project can be changed from here (a new session). */
-  pickable: boolean
-}
-
 /** Everything the composer views draw, and what they can ask. */
 export interface ComposerModel {
   picks: ComposerPicks
@@ -373,7 +370,6 @@ export interface ComposerModel {
    */
   unsynced: string | null
   prompt: ComposerPrompt | null
-  project: ComposerProject | null
   setText: (text: string) => void
   send: () => void
   interrupt: () => void

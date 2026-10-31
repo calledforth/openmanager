@@ -3,7 +3,6 @@ import { View } from 'react-native'
 
 import { usePhoneTheme } from '../theme/ThemeProvider'
 import { ProviderMark } from '../ui/ProviderMark'
-import { ProjectMark } from '../ui/ProjectMark'
 import { CaretGlyph, EffortGlyph, effortLevelOf, ModeIcon } from './icons'
 import { PICK_GAP, roomFor, TRAY_MODEL_MAX, type ComposerModel } from './model'
 import { ContextMeter, Pick } from './Pick'
@@ -17,9 +16,9 @@ export function measure(view: View | null, then: (anchor: PickAnchor) => void) {
 
 /**
  * The picks: provider mark and model ▾, mode, effort, and (in the dock) the
- * context meter at the end; in the pulled-up composer's tray, the project
- * when the session is new. Tapping one opens the same sheet or popover from
- * either place. Picks the session cannot change say why and do not open.
+ * context meter at the end. Tapping one opens the same sheet or popover from
+ * the dock or the new-session page's tray. Picks the session cannot change
+ * say why and do not open.
  */
 export function Picks({
   model,
@@ -49,22 +48,6 @@ export function Picks({
     : -1
   const content = (
     <>
-      {tray && model.project ? (
-        <Pick
-          filled
-          label={model.project.name}
-          accessibilityLabel={`Project: ${model.project.name}`}
-          icon={
-            <ProjectMark
-              workspaceId={model.project.workspaceId}
-              name={model.project.name}
-              size={11}
-            />
-          }
-          disabledReason={model.project.pickable ? null : 'A session stays in its project'}
-          onPress={() => ui.open({ kind: 'project' })}
-        />
-      ) : null}
       <Pick
         strong
         filled={tray}

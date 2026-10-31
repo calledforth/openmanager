@@ -165,6 +165,7 @@ describe('a new session from the phone, live', () => {
     let model: ComposerModel | null = null
     let projects: ProjectSource | null = null
     let draftOpen = false
+    let projectPath: string | null = null
     let path = '/draft/new'
     let replyRows = 0
     const moves: string[] = []
@@ -178,7 +179,9 @@ describe('a new session from the phone, live', () => {
       const composer = useLiveComposerModel(null)
       model = composer.model
       projects = useProjectSource()
-      draftOpen = useSessionState().isSessionDraftOpen
+      const session = useSessionState()
+      draftOpen = session.isSessionDraftOpen
+      projectPath = session.activeWorkspacePath
       return createElement(ThreadBridge, { port: composer.port })
     }
     // The phone's root, over an in-memory address in place of expo-router.
@@ -245,7 +248,7 @@ describe('a new session from the phone, live', () => {
     )
     note('added', { workspace: added, sent: sentSince(since) })
     expect(added).toBeTruthy()
-    await wait('project picked', () => model!.project?.workspaceId === added!.workspaceId)
+    await wait('project picked', () => projectPath === added!.path)
 
     // ---- 2. picks, the first prompt, send ------------------------------
     await wait('picks', () => model!.groups.some((group) => group.models.length > 1), 60_000)

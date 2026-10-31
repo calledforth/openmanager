@@ -306,13 +306,6 @@ export function useLiveComposerModel(sessionId: string | null): {
     notice: draft.error ?? stopError ?? binding.error,
     unsynced: DRAFT_SYNC_EXPLANATION[syncStatus] ?? null,
     prompt,
-    project: isDraft
-      ? {
-          name: workspace?.name ?? 'Pick a project',
-          workspaceId: workspace?.path ?? null,
-          pickable: true,
-        }
-      : null,
     setText: draft.setText,
     send: () => void draft.send(),
     interrupt,

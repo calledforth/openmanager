@@ -1,6 +1,6 @@
 import { CloudSlashIcon } from 'phosphor-react-native'
-import { View, type LayoutChangeEvent } from 'react-native'
-import { useCallback, useLayoutEffect, useRef, useState } from 'react'
+import { Keyboard, TextInput, View, type LayoutChangeEvent } from 'react-native'
+import { useCallback, useLayoutEffect, useRef, useState, type RefObject } from 'react'
 import Animated, {
   cancelAnimation,
   Easing,
@@ -141,16 +141,35 @@ export function AttachButton({ model, ui }: { model: ComposerModel; ui: Composer
   )
 }
 
+/** The field's one line: the buttons beside it are this tall. */
+const FIELD_LINE = 21
+const FIELD_MIN = 36
+/** Six lines, then the field scrolls: the page stays in view however long the message. */
+const FIELD_MAX = FIELD_LINE * 6 + (FIELD_MIN - FIELD_LINE)
+
 /**
- * The docked composer, in the session page's dock: at rest (B) the field
- * with the picks row under it; while a turn runs (C) one summary chip inside
- * the field, so the controls never sit beside the stop button; while the
- * session waits on the reader, the prompt. Tapping the field pulls the
- * composer up to write.
+ * The composer, in the session page's dock, written in where it stands: the
+ * keyboard lifts the dock, and the page stays in view above it. At rest (B)
+ * the field with the picks row under it; while a turn runs (C) one summary
+ * chip inside the field, so the controls never sit beside the stop button,
+ * until the field is in use and they are wanted again; while the session
+ * waits on the reader, the prompt, and what was typed stays in the draft.
  */
-export function ComposerDock({ model, ui }: { model: ComposerModel; ui: ComposerUi }) {
+export function ComposerDock({
+  model,
+  ui,
+  input,
+  focused,
+  onFocusChange,
+}: {
+  model: ComposerModel
+  ui: ComposerUi
+  input: RefObject<TextInput | null>
+  focused: boolean
+  onFocusChange: (focused: boolean) => void
+}) {
   const theme = usePhoneTheme()
-  const fold = composerFold(model)
+  const fold = composerFold(model, focused)
   const prompt = model.prompt
   const replaced = prompt && prompt.kind !== 'plan'
   const radius = replaced ? 22 : 26
@@ -194,22 +213,27 @@ export function ComposerDock({ model, ui }: { model: ComposerModel; ui: Composer
               <View
                 style={{
                   flexDirection: 'row',
-                  alignItems: 'center',
+                  // A long message grows up from the buttons, which stay at its last line.
+                  alignItems: 'flex-end',
                   gap: 8,
-                  minHeight: 36,
+                  minHeight: FIELD_MIN,
                   paddingVertical: 4,
                   paddingLeft: fold === 'running' ? 0 : 8,
                   paddingRight: 4,
                 }}
               >
                 {fold === 'running' ? (
-                  <Animated.View entering={FOLD_IN} exiting={FOLD_OUT}>
+                  <Animated.View
+                    entering={FOLD_IN}
+                    exiting={FOLD_OUT}
+                    style={{ minHeight: FIELD_MIN, justifyContent: 'center' }}
+                  >
                     <Press
                       accessibilityRole="button"
-                      accessibilityLabel={`Model: ${model.picks.modelLabel}. Pull up the composer`}
+                      accessibilityLabel={`Model: ${model.picks.modelLabel}. Show the picks`}
                       onPress={() => {
                         tap()
-                        ui.expand()
+                        input.current?.focus()
                       }}
                       style={({ pressed }) => ({
                         flexDirection: 'row',
@@ -233,31 +257,41 @@ export function ComposerDock({ model, ui }: { model: ComposerModel; ui: Composer
                     </Press>
                   </Animated.View>
                 ) : null}
-                <Press
-                  accessibilityRole="button"
-                  accessibilityLabel={model.text ? `Message: ${model.text}` : 'Write a message'}
-                  onPress={() => {
-                    tap()
-                    ui.expand()
+                <TextInput
+                  ref={input}
+                  accessibilityLabel="Message"
+                  multiline
+                  value={model.text}
+                  onChangeText={model.setText}
+                  onFocus={() => onFocusChange(true)}
+                  onBlur={() => onFocusChange(false)}
+                  placeholder={model.placeholder}
+                  placeholderTextColor={theme.faint}
+                  underlineColorAndroid="transparent"
+                  cursorColor={theme.fg}
+                  selectionColor={theme.active}
+                  textAlignVertical="center"
+                  style={{
+                    flex: 1,
+                    minWidth: 0,
+                    minHeight: FIELD_MIN,
+                    maxHeight: FIELD_MAX,
+                    paddingVertical: (FIELD_MIN - FIELD_LINE) / 2,
+                    paddingHorizontal: 0,
+                    color: theme.fg,
+                    fontFamily: 'Geist-Regular',
+                    fontSize: 15,
+                    lineHeight: FIELD_LINE,
                   }}
-                  style={{ flex: 1, minHeight: 28, justifyContent: 'center' }}
-                >
-                  <AppText
-                    variant="text-14-regular"
-                    numberOfLines={3}
-                    style={{
-                      color: model.text ? theme.fg : theme.faint,
-                      fontSize: 15,
-                      lineHeight: 21,
-                    }}
-                  >
-                    {model.text || model.placeholder}
-                  </AppText>
-                </Press>
+                />
                 <AttachButton model={model} ui={ui} />
                 <PrimaryButton
                   action={model.primary}
-                  onSend={model.send}
+                  onSend={() => {
+                    // The reply is what comes next: the page takes the room back.
+                    Keyboard.dismiss()
+                    model.send()
+                  }}
                   onStop={model.interrupt}
                 />
               </View>

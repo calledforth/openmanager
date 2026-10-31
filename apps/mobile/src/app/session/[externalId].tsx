@@ -72,12 +72,8 @@ function LiveSession({ sessionId }: { sessionId: string }) {
   const [ui] = useState(() => createComposerUi())
   const openSettings = useCallback(() => ui.open({ kind: 'settings' }), [ui])
   const actions = useSessionActions(sessionId, session, openSettings)
-  const projectName = workspace?.name ?? null
   // One element for the page's life: the thread re-rendering leaves it be.
-  const composer = useMemo(
-    () => <LiveComposer sessionId={sessionId} ui={ui} contextName={projectName} />,
-    [projectName, sessionId, ui],
-  )
+  const composer = useMemo(() => <LiveComposer sessionId={sessionId} ui={ui} />, [sessionId, ui])
   return (
     <TurnNoticesProvider source={notices}>
       <SessionThread
@@ -113,11 +109,7 @@ function FixtureSession({ sessionId, opened }: { sessionId: string; opened?: str
     () => unavailableSessionActions(session, 'A sample session: pair an environment to change it'),
     [session],
   )
-  const projectName = workspace?.name ?? null
-  const composer = useMemo(
-    () => <FixtureComposer session={session} ui={ui} contextName={projectName} />,
-    [projectName, session, ui],
-  )
+  const composer = useMemo(() => <FixtureComposer session={session} ui={ui} />, [session, ui])
   return (
     <FixtureThreadStores stores={fixture.stores}>
       <TurnNoticesProvider source={fixture.notices}>

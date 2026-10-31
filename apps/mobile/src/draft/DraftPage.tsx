@@ -1,5 +1,7 @@
+import { useNavigation } from 'expo-router'
 import { TrashIcon } from 'phosphor-react-native'
-import { useCallback, useContext, useMemo, useState } from 'react'
+import { useCallback, useContext, useEffect, useRef, useState } from 'react'
+import type { TextInput } from 'react-native'
 import {
   SidebarDataContext,
   useActiveThreadState,
@@ -10,18 +12,44 @@ import {
 import { useSidebarDrafts } from '@openmanager/app-core/providers/sidebar-provider'
 import type { EnvironmentState } from '@openmanager/environment-client'
 
-import { LiveComposer } from '../composer/LiveComposer'
+import { ComposerPage } from '../composer/ComposerPage'
+import { ComposerSurface } from '../composer/ComposerSurface'
+import { ThreadBridge } from '../composer/thread-port'
 import { createComposerUi } from '../composer/ui-state'
-import { draftSendBlocked } from '../composer/useLiveComposerModel'
+import { draftSendBlocked, useLiveComposerModel } from '../composer/useLiveComposerModel'
 import { SessionThread } from '../session/SessionThread'
 import { usePhoneTheme } from '../theme/ThemeProvider'
 import { useGoBack } from '../ui/goBack'
 import { IconButton } from '../ui/IconButton'
 import { discardHandoff, draftDiscardable } from './discard-handoff'
-import { NewSessionLanding } from './NewSessionLanding'
+import { NewSessionHead, StartWithProject } from './NewSessionLanding'
 import { useProjectSource } from './useProjectSource'
 
 const NO_WORKSPACES: WorkspaceEntry[] = []
+
+/** Longer than the stack's slide, for a page that opened without one (a link, a relaunch). */
+const ARRIVAL_FALLBACK_MS = 600
+
+/**
+ * The page has finished sliding in. Android refuses the keyboard to a field
+ * focused mid-transition, leaving it focused with nothing to type on.
+ */
+function useScreenArrived(): boolean {
+  const navigation = useNavigation()
+  const [arrived, setArrived] = useState(false)
+  useEffect(() => {
+    const arrive = () => setArrived(true)
+    const timer = setTimeout(arrive, ARRIVAL_FALLBACK_MS)
+    const unsubscribe = (
+      navigation as unknown as { addListener(event: string, run: () => void): () => void }
+    ).addListener('transitionEnd', arrive)
+    return () => {
+      clearTimeout(timer)
+      unsubscribe()
+    }
+  }, [navigation])
+  return arrived
+}
 
 /**
  * Discard, in the header's corner: back to the sessions home, where the
@@ -46,11 +74,11 @@ function DiscardButton({ draftId }: { draftId: string }) {
 /**
  * A new session's page: the draft the shared session state holds for the
  * new-session page in front (blank at `/draft/new`, a draft's own at
- * `/draft/<id>`), written in the composer, its project picked from the
- * landing or the composer's tray. Sending creates the session
+ * `/draft/<id>`), written on the page itself under the project it goes to,
+ * the keyboard up from the start. Sending creates the session
  * (`session.create`) with the draft's project and picks; its first message
- * shows here from the send, as web's landing shows it, and the page then
- * gives way to the session's own.
+ * shows here from the send over the dock, as web's landing shows it, and the
+ * page then gives way to the session's own.
  */
 export function DraftPage() {
   const session = useSessionState()
@@ -61,7 +89,11 @@ export function DraftPage() {
   // The launch row while the session is created, then the session's own
   // first message for the moment before its page takes this one's place.
   const { messages } = useActiveThreadState()
+  const { model, port } = useLiveComposerModel(null)
   const projects = useProjectSource()
+  const input = useRef<TextInput>(null)
+  const [trayHeight, setTrayHeight] = useState(0)
+  const arrived = useScreenArrived()
   const [ui] = useState(() => createComposerUi())
   const openPicker = useCallback(() => ui.open({ kind: 'project' }), [ui])
   const openAdd = useCallback(() => ui.open({ kind: 'project', browse: true }), [ui])
@@ -72,22 +104,45 @@ export function DraftPage() {
   )
   const discardable = !!useSidebarDrafts() && canDiscard && !pendingDraftSessionStart
 
-  // The pulled-up composer names no project in its bar: the tray's project
-  // pick does, and picks another from there.
-  const composer = useMemo(
-    () => <LiveComposer sessionId={null} ui={ui} contextName={null} projects={projects} />,
-    [projects, ui],
-  )
-  const empty = (
-    <NewSessionLanding
-      environmentLabel={sidebar?.environment?.label ?? null}
-      workspace={workspace}
-      hasProjects={workspaces.length > 0}
-      loading={!!sidebar?.isWorkspacesLoading || !!isDraftLoading}
-      note={pendingDraftSessionStart ? 'Starting session…' : draftSendBlocked(session, workspace)}
-      onPick={openPicker}
-      {...(projects.add && projects.browse ? { onAdd: openAdd } : {})}
-    />
+  const environmentLabel = sidebar?.environment?.label ?? null
+  const loading = !!sidebar?.isWorkspacesLoading || !!isDraftLoading
+  const empty =
+    loading || workspaces.length > 0 ? (
+      <ComposerPage
+        model={model}
+        ui={ui}
+        input={input}
+        ready={arrived && !!workspace && !loading && model.text.length === 0}
+        onTrayHeight={setTrayHeight}
+        head={
+          <NewSessionHead
+            environmentLabel={environmentLabel}
+            workspace={workspace}
+            loading={loading}
+            note={
+              pendingDraftSessionStart ? 'Starting session…' : draftSendBlocked(session, workspace)
+            }
+            onPick={openPicker}
+          />
+        }
+      />
+    ) : (
+      <StartWithProject
+        environmentLabel={environmentLabel}
+        {...(projects.add && projects.browse ? { onAdd: openAdd } : {})}
+      />
+    )
+  // Once the first message shows, the page is a session's: the dock takes over.
+  const composer = (
+    <>
+      <ThreadBridge port={port} />
+      <ComposerSurface
+        model={model}
+        ui={ui}
+        projects={projects}
+        page={messages.length === 0 ? { input, trayHeight } : null}
+      />
+    </>
   )
 
   return (

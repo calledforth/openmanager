@@ -100,9 +100,9 @@ export const useDockHold = () => useContext(DockHoldContext)
 
 /**
  * Where the page's dock goes, for a composer drawn over the whole page (its
- * sheets and its pulled-up state cover the header too): the status line, the
- * room under the dock, and where to say how tall it is. The composer renders
- * the `SessionDock` itself with these.
+ * sheets cover the header too): the status line, the room under the dock, and
+ * where to say how tall it is. The composer renders the `SessionDock` itself
+ * with these.
  */
 export interface DockSlot {
   status: StatusLineView | null
