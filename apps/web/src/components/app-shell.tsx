@@ -400,7 +400,10 @@ export function AppShell() {
   return (
     <SidebarProvider className="h-svh min-h-0 overflow-hidden bg-background text-foreground">
       {client ? (
-        <ConnectedShell client={client} pathname={pathname}>
+        // By environment, not by client: its drafts and page state are that
+        // environment's, while a client replaced on the same environment keeps
+        // the page as it is.
+        <ConnectedShell key={selectedId} client={client} pathname={pathname}>
           {main}
         </ConnectedShell>
       ) : (
