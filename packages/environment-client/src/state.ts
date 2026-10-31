@@ -943,6 +943,7 @@ export function applyTurnSendReleased(
   thread: Thread,
   commandId: string,
 ): EnvironmentState {
+  if (!state.threads[thread.threadId]) return state
   return patchThread(state, thread, (current) => {
     const entry = current.outbox.find((item) => item.commandId === commandId)
     if (entry?.status !== 'held') return current
@@ -963,6 +964,8 @@ export function applyTurnSendFailed(
   commandId: string,
   message: string,
 ): EnvironmentState {
+  // A chat deleted meanwhile took its sends with it; a failure names no thread to bring back.
+  if (!state.threads[thread.threadId]) return state
   return patchThread(state, thread, (current) => {
     const entry = current.outbox.find((item) => item.commandId === commandId)
     if (!entry) return current
