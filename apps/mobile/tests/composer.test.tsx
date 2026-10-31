@@ -39,7 +39,7 @@ const {
   METER_WIDTH,
   MODEL_MIN_WIDTH,
 } = await import('../src/composer/model')
-const { coveredLayers, createComposerUi } = await import('../src/composer/ui-state')
+const { createComposerUi } = await import('../src/composer/ui-state')
 
 const WORKSPACE = {
   workspaceId: 'C:/repo',
@@ -310,6 +310,8 @@ describe('the dock folds with the turn', () => {
   it('is B at rest, C while a turn runs, and the prompt while a request waits', () => {
     expect(composerFold({ isStreaming: false, prompt: null })).toBe('rest')
     expect(composerFold({ isStreaming: true, prompt: null })).toBe('running')
+    // The field in use brings back the picks a running turn folds away.
+    expect(composerFold({ isStreaming: true, prompt: null }, true)).toBe('rest')
     expect(
       composerFold({
         isStreaming: true,
@@ -673,16 +675,14 @@ describe('the composer as the prompt', () => {
 })
 
 describe('the composer UI state', () => {
-  it('opens one sheet at a time, and Back closes the sheet before the pulled-up composer', () => {
+  it('opens one sheet at a time', () => {
     const ui = createComposerUi()
-    ui.expand()
     ui.open({ kind: 'model' })
-    expect(ui.get()).toEqual({ expanded: true, overlay: { kind: 'model' } })
-    expect(ui.back()).toBe(true)
-    expect(ui.get()).toEqual({ expanded: true, overlay: null })
-    expect(ui.back()).toBe(true)
-    expect(ui.get().expanded).toBe(false)
-    expect(ui.back()).toBe(false)
+    expect(ui.get()).toEqual({ overlay: { kind: 'model' } })
+    ui.open({ kind: 'settings' })
+    expect(ui.get()).toEqual({ overlay: { kind: 'settings' } })
+    ui.close()
+    expect(ui.get()).toEqual({ overlay: null })
   })
 })
 
@@ -874,23 +874,6 @@ describe('question answers that do not land', () => {
     await flush()
     expect(spy).toHaveBeenCalledTimes(3)
     expect(current().prompt).toBeNull()
-  })
-})
-
-describe('a request arriving while the composer is pulled up', () => {
-  it('drops the editor back to the dock, which is the request, and keeps the draft', () => {
-    const ui = createComposerUi()
-    ui.followPrompt(null)
-    ui.expand()
-    ui.open({ kind: 'model' })
-    ui.followPrompt('perm-1')
-    expect(ui.get()).toEqual({ expanded: false, overlay: null })
-    // The same request again (a re-render) leaves a reopened editor alone.
-    ui.expand()
-    ui.followPrompt('perm-1')
-    expect(ui.get().expanded).toBe(true)
-    ui.followPrompt(null)
-    expect(ui.get().expanded).toBe(true)
   })
 })
 
@@ -1114,24 +1097,6 @@ describe('the fold, measured as the box it sizes', () => {
     now += 50
     fold.onContentHeight(boxHeightOf(56))
     expect(calls.slice(3)).toEqual([`set ${56 + padding}`, 'release'])
-  })
-})
-
-describe('screen readers under the composer layers', () => {
-  it('hide the page under anything open, and the editor under what opens from it', () => {
-    expect(coveredLayers({ expanded: false, overlay: null })).toEqual({
-      page: false,
-      editor: false,
-    })
-    expect(coveredLayers({ expanded: true, overlay: null })).toEqual({ page: true, editor: false })
-    expect(coveredLayers({ expanded: true, overlay: { kind: 'model' } })).toEqual({
-      page: true,
-      editor: true,
-    })
-    expect(coveredLayers({ expanded: false, overlay: { kind: 'camera' } })).toEqual({
-      page: true,
-      editor: false,
-    })
   })
 })
 

@@ -46,9 +46,15 @@ Reactions recorded from the owner's review, 2026-10-20/21.
   text field: provider icon, model ▾, mode, effort, context meter), **folding
   to C while a turn runs** (one summary chip inside the field so the row of
   controls doesn't sit beside a stop button). Tapping a pick opens the same
-  bottom sheet (model, project) or popover (mode, effort) whether the composer
-  is docked or expanded. Rarer settings (config options, titles) go under the
+  bottom sheet (model, project) or popover (mode, effort) from the dock or the
+  new-session page. Rarer settings (config options, titles) go under the
   session's ⋯ menu.
+- **No full-screen composer** (2026-10-31; supersedes frame D and the
+  full-screen frame in file 02). In a chat you write in the dock: the keyboard
+  lifts it, the field grows to six lines, and the transcript stays in view. A
+  new session's page _is_ the composer: header, "Let's build in" project picker
+  and environment on top, the text filling the page, the picks and send as a
+  tray above the keyboard.
 - **Pill nav is Sessions · Inbox · Settings**, with search as a detached
   button beside it and _compose_ top-right in the header, after Linear iOS.
   The project issue said "sessions, new, settings"; Inbox (everything waiting

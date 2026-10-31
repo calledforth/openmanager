@@ -145,11 +145,9 @@ function promptKindOf(session: HomeSession | undefined): 'permission' | 'questio
 export function FixtureComposer({
   session,
   ui,
-  contextName,
 }: {
   session: HomeSession | undefined
   ui: ComposerUi
-  contextName: string | null
 }) {
   const providerId = (session?.providerId ?? 'claude') as ProviderId
   const group = GROUPS.find((entry) => entry.providerId === providerId) ?? GROUPS[0]!
@@ -243,7 +241,6 @@ export function FixtureComposer({
     notice: null,
     unsynced: null,
     prompt,
-    project: null,
     setText,
     send: () => setNote(SAMPLE_REASON),
     interrupt: () => setNote(SAMPLE_REASON),
@@ -263,5 +260,5 @@ export function FixtureComposer({
     toggleFavorite: (key) => setFavorites((current) => toggleFavoriteModel(current, key)),
   }
 
-  return <ComposerSurface model={model} ui={ui} contextName={contextName} />
+  return <ComposerSurface model={model} ui={ui} />
 }

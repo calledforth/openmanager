@@ -258,7 +258,7 @@ export const SessionThread = memo(function SessionThread({
 
   const problem = problemOf(phase, failure)
   const bottomInset = Math.max(insets.bottom, 12) + 8
-  // A composer sheet, popover, camera or the pulled-up editor over the page.
+  // A composer sheet, popover or the camera over the page.
   const [covered, setCovered] = useState(false)
   const dockSlot = useMemo<DockSlot>(
     () => ({ status, above, bottomInset, onHeight: onDockHeight, onCovered: setCovered }),
@@ -340,17 +340,22 @@ export const SessionThread = memo(function SessionThread({
                   updateCellsBatchingPeriod={40}
                   windowSize={9}
                   keyboardShouldPersistTaps="handled"
+                  keyboardDismissMode={Platform.OS === 'ios' ? 'interactive' : 'on-drag'}
                   showsVerticalScrollIndicator={false}
                 />
               )}
 
               {/* The transcript's top edge eases under the header rather than cutting off. */}
-              <LinearGradient
-                pointerEvents="none"
-                colors={[theme.bg, withAlpha(theme.bg, 0)]}
-                style={{ position: 'absolute', left: 0, right: 0, top: 0, height: 22 }}
-              />
-              <BottomFade height={dockHeight + 48} />
+              {messages.length > 0 ? (
+                <>
+                  <LinearGradient
+                    pointerEvents="none"
+                    colors={[theme.bg, withAlpha(theme.bg, 0)]}
+                    style={{ position: 'absolute', left: 0, right: 0, top: 0, height: 22 }}
+                  />
+                  <BottomFade height={dockHeight + 48} />
+                </>
+              ) : null}
 
               {messages.length > 0 && problem ? (
                 <View
@@ -394,7 +399,7 @@ export const SessionThread = memo(function SessionThread({
           )}
         </View>
 
-        {/* Over the whole page, header included: its sheets and pulled-up state cover it all. */}
+        {/* Over the whole page, header included: its sheets cover it all. */}
         {composer ? (
           <DockSlotContext.Provider value={dockSlot}>{composer}</DockSlotContext.Provider>
         ) : null}

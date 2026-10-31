@@ -2,7 +2,7 @@ import { CameraView, useCameraPermissions } from 'expo-camera'
 import { ArrowsClockwiseIcon, CameraIcon, XIcon } from 'phosphor-react-native'
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { BackHandler, Linking, Platform, View } from 'react-native'
-import Animated from 'react-native-reanimated'
+import Animated, { Easing, SlideInDown, SlideOutDown } from 'react-native-reanimated'
 import { useSafeAreaInsets } from 'react-native-safe-area-context'
 
 import { AppText } from '../components/ui/AppText'
@@ -12,8 +12,11 @@ import { tap } from '../ui/haptics'
 import { IconButton } from '../ui/IconButton'
 import { Press } from '../ui/Press'
 import { useCapture } from './capture'
-import { EXPAND_IN, EXPAND_OUT } from './ExpandedComposer'
 import type { CapturedPhoto } from './model'
+
+/** The camera rises from the bottom edge and drops back to it; eased, no bounce. */
+const CAMERA_IN = SlideInDown.duration(220).easing(Easing.out(Easing.cubic))
+const CAMERA_OUT = SlideOutDown.duration(180).easing(Easing.in(Easing.cubic))
 
 /**
  * A photo for the composer, from the camera: the feed full screen, a
@@ -59,8 +62,8 @@ export function CameraCapture({
   const web = Platform.OS === 'web'
   return (
     <Animated.View
-      entering={EXPAND_IN}
-      exiting={EXPAND_OUT}
+      entering={CAMERA_IN}
+      exiting={CAMERA_OUT}
       accessibilityViewIsModal
       style={{ position: 'absolute', inset: 0, backgroundColor: theme.bg }}
     >
