@@ -8,6 +8,7 @@ import {
   applySlashCommand,
 } from '@openmanager/app-core/logic'
 import {
+  applyTurnSending,
   createMockEnvironmentClient,
   type MockEnvironmentClient,
   type MockSeed,
@@ -407,6 +408,27 @@ describe('slash commands', () => {
     expect(slashPopupOf('/re', commands, true).matches).toEqual([])
     await act(async () => current().setText(applySlashCommand(commands[0]!)))
     expect(current().text).toBe('/review ')
+  })
+})
+
+describe('a send waiting for a catch-up when its transport goes', () => {
+  it('leaves the composer empty, as the next client sends it', async () => {
+    const client = await open({ seed: seed('completed'), respond: () => null })
+    const held = applyTurnSending(client.getState(), THREAD, {
+      commandId: 'held-1',
+      text: 'Deploy it',
+      held: true,
+    })
+    vi.spyOn(client.commands, 'sendTurn').mockImplementation(async () => {
+      // As a disposed client leaves it: refused, and still held in the store.
+      vi.spyOn(client, 'getState').mockReturnValue(held)
+      throw new Error('Client is disposed.')
+    })
+    await act(async () => current().setText('Deploy it'))
+    await press()
+    await flush()
+    expect(current().text).toBe('')
+    expect(current().notice).toBeNull()
   })
 })
 

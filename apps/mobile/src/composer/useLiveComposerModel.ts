@@ -70,6 +70,18 @@ export function draftSendBlocked(
 }
 
 /**
+ * Whether a refused send is still in the store, waiting for a catch-up. A
+ * transport replaced under a held send refuses it, but leaves it for the next
+ * client to send, so the refusal does not mean it stayed unsent.
+ */
+export function sendHandedOver(state: EnvironmentState, sessionId: string, text: string): boolean {
+  const sent = text.trim()
+  return (state.sessions[sessionId]?.threadIds ?? []).some((threadId) =>
+    state.threads[threadId]?.outbox.some((entry) => entry.status === 'held' && entry.text === sent),
+  )
+}
+
+/**
  * The live composer's model, for `LiveComposer` and the tests. `port` must be
  * kept current by a `ThreadBridge` rendered beside whatever reads this.
  *
@@ -167,7 +179,13 @@ export function useLiveComposerModel(sessionId: string | null): {
         return
       }
       if (!launching) {
-        await port.send(text, attachments)
+        try {
+          await port.send(text, attachments)
+        } catch (error) {
+          // Putting the draft back would send it twice: the next client has it.
+          if (activeSessionId && sendHandedOver(client.getState(), activeSessionId, text)) return
+          throw error
+        }
         return
       }
       beginDraftTurn({
@@ -186,7 +204,7 @@ export function useLiveComposerModel(sessionId: string | null): {
         throw error
       }
     },
-    [beginDraftTurn, failTurn, launching, pendingPlan, planState, port],
+    [activeSessionId, beginDraftTurn, client, failTurn, launching, pendingPlan, planState, port],
   )
   // The page's own session, whatever the client has open: text typed while
   // it opens (or after the page lets it go) stays in its draft. A new
