@@ -1734,6 +1734,22 @@ Decisions the design above left open, or where the code differed:
 - **Small scopes now often catch up by snapshot.** For a short chat a snapshot is frequently smaller
   than even a short replay; that is the rule working, not a fallback.
 - **Desktop** files its whole Convex transcript through its own `legacy-history.ts`.
+- **What a provider lists is not sidebar state.** A session's commands and settings came to about
+  1.3 MB of a 1.5 MB environment answer, and a whole environment made a phone reload slower than
+  the paged list did. `SessionSummary.composer` keeps `modelId`, `modeId`, `configValues` and
+  `usage`. A chat's listing lives on `threads.listing_json`: it arrives in the thread snapshot and
+  as thread-scope `thread.listing.updated`, so only a browser with that chat open gets it.
+- **A new chat borrows from the server, not from other sessions.** `composer_listings` holds what
+  each provider last listed in each workspace, announced by `composer.listing.updated`, which names
+  only the fields that changed. Settings compare without their current values: a draft shows its
+  own preference, and two sessions on one provider would otherwise take turns announcing. The
+  environment snapshot carries every pair, each distinct command and setting once
+  (`ComposerListingsSnapshotSchema`): 84 KB where whole lists would be 303 KB on the same data.
+  A subscription scope per pair would cost the snapshot nothing, at the price of a fourth kind of
+  scope; that is the next step if 84 KB ever matters.
+- **Event format 3.** `session.composer.updated` lost two fields and its schema is strict, so a
+  stored one is not a valid event any more. Replay answers are stored JSON, so the bump is what keeps
+  them away from clients: boot raises every floor, and a client below one catches up by snapshot.
 
 ---
 
