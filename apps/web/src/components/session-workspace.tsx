@@ -6,6 +6,7 @@ import {
 import { useNavigate } from '@tanstack/react-router'
 import { ChatWorkspace } from '@openmanager/app-core/components/chat/ChatWorkspace'
 import { isEnvironmentClientError, type EnvironmentState } from '@openmanager/environment-client'
+import { useAddressLookup, type AddressLookup } from '../providers/address-environment'
 
 const selectConnected = (state: EnvironmentState) => state.connection.phase === 'connected'
 
@@ -16,7 +17,8 @@ const selectConnected = (state: EnvironmentState) => state.connection.phase === 
  */
 export function SessionWorkspace({ sessionId }: { sessionId?: string }) {
   const client = useEnvironmentClientOptional()
-  if (!client) return <SessionPlaceholder sessionId={sessionId} />
+  const lookup = useAddressLookup()
+  if (!client) return <SessionPlaceholder sessionId={sessionId} lookup={lookup} />
   return <ConnectedSessionWorkspace sessionId={sessionId} />
 }
 
@@ -30,6 +32,8 @@ function ConnectedSessionWorkspace({ sessionId }: { sessionId?: string }) {
   )
   const known = useEnvironmentState(selector)
   const connected = useEnvironmentState(selectConnected)
+  const lookup = useAddressLookup()
+  const { reportAbsent, status } = lookup
   const navigate = useNavigate()
   const openedSessionRef = useRef<string | null>(null)
   // A session opened before the catalog knew it: the route's own open, on
@@ -65,17 +69,19 @@ function ConnectedSessionWorkspace({ sessionId }: { sessionId?: string }) {
         void navigate({ to: '/', replace: true })
         return
       }
-      // Not loaded: past the catalog's first page, or gone. Asking for it
-      // opens one that exists without waiting for the rest of the catalog;
-      // one the environment does not have leaves its address for `/`.
+      // Not loaded: past the catalog's first page, gone, or another
+      // environment's. Asking for it opens one that exists without waiting for
+      // the rest of the catalog; one this environment does not have is looked
+      // for in the others.
       if (!connected || probedSessionRef.current === sessionId) return
       probedSessionRef.current = sessionId
       void commands.openSession(sessionId).catch((error: unknown) => {
         if (!mountedRef.current || probedSessionRef.current !== sessionId) return
-        probedSessionRef.current = null
         if (isEnvironmentClientError(error) && error.code === 'not_found') {
-          void navigate({ to: '/', replace: true })
+          reportAbsent(sessionId)
+          return
         }
+        probedSessionRef.current = null
       })
       return
     }
@@ -88,15 +94,34 @@ function ConnectedSessionWorkspace({ sessionId }: { sessionId?: string }) {
     }
     // Invalidate an in-flight open when leaving for another session or draft.
     return () => setActiveSession(null)
-  }, [commands, setActiveSession, connected, sessionId, known, navigate])
+  }, [commands, setActiveSession, connected, sessionId, known, navigate, reportAbsent])
+
+  // Nobody has it, so it leaves its address.
+  useEffect(() => {
+    if (sessionId && !known && status === 'absent') void navigate({ to: '/', replace: true })
+  }, [known, navigate, sessionId, status])
 
   // Nothing kept of it here and nothing to ask yet: an empty chat would read as
   // a new session with no messages.
-  if (sessionId && !known && !connected) return <SessionPlaceholder sessionId={sessionId} />
+  if (sessionId && !known && (!connected || status === 'offline')) {
+    return <SessionPlaceholder sessionId={sessionId} lookup={lookup} />
+  }
   return <ChatWorkspace />
 }
 
-function SessionPlaceholder({ sessionId }: { sessionId?: string }) {
+/** Names who cannot be asked: one of them may have what the address names. */
+function mayBeOn(offline: readonly string[]) {
+  const names = new Intl.ListFormat('en', { type: 'disjunction' }).format(offline)
+  return `This session may be on ${names}, which ${offline.length > 1 ? 'are' : 'is'} offline.`
+}
+
+function SessionPlaceholder({
+  sessionId,
+  lookup,
+}: {
+  sessionId?: string
+  lookup: AddressLookup
+}) {
   return (
     <div className="flex min-h-0 flex-1 flex-col">
       {sessionId ? (
@@ -107,7 +132,9 @@ function SessionPlaceholder({ sessionId }: { sessionId?: string }) {
       ) : null}
       <div className="flex min-h-0 flex-1 items-center justify-center px-6">
         <p className="max-w-md text-center text-ui-sm leading-ui-normal text-[var(--basis-text-muted)]">
-          Connect to an environment to see your sessions here.
+          {lookup.status === 'offline'
+            ? mayBeOn(lookup.offline)
+            : 'Connect to an environment to see your sessions here.'}
         </p>
       </div>
     </div>

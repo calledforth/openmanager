@@ -1,6 +1,7 @@
 import { useCallback, useMemo, useState, type ReactNode } from 'react'
 import { Outlet, useNavigate, useRouterState } from '@tanstack/react-router'
 import {
+  EnvironmentClientProvider,
   useEnvironmentClientOptional,
   useEnvironmentState,
 } from '@openmanager/app-core/providers/environment-client'
@@ -40,6 +41,12 @@ import {
 } from '@openmanager/app-core/components/fluid/sidebar-app/workspace-header'
 import type { EnvironmentClient, EnvironmentState } from '@openmanager/environment-client'
 import { useConnection } from '../providers/connection-provider'
+import { useEnvironmentClients } from '../providers/environment-client-provider'
+import {
+  addressOf,
+  AddressLookupProvider,
+  useFindAddress,
+} from '../providers/address-environment'
 import { AddWorkspaceDialog } from './add-workspace-dialog'
 import { ConnectionBanner, ConnectionScreen, ConnectionStatusChip } from './connection-surfaces'
 import { SessionNotifications } from './session-notifications'
@@ -48,22 +55,8 @@ const NewAgentIcon = phosphorIcon(NotePencilIcon)
 const AddProjectIcon = phosphorIcon(FolderPlusIcon)
 const RegenerateTitleIcon = phosphorIcon(ArrowsClockwiseIcon)
 
-const DRAFT_PATH = '/drafts/'
-
 function isSessionPath(pathname: string) {
-  return pathname === '/' || pathname.startsWith('/sessions/') || pathname.startsWith(DRAFT_PATH)
-}
-
-/** The draft a `/drafts/<id>` address names. */
-function draftIdOf(pathname: string): string | null {
-  if (!pathname.startsWith(DRAFT_PATH)) return null
-  const id = pathname.slice(DRAFT_PATH.length)
-  if (!id || id.includes('/')) return null
-  try {
-    return decodeURIComponent(id)
-  } catch {
-    return null
-  }
+  return pathname === '/' || pathname.startsWith('/sessions/') || pathname.startsWith('/drafts/')
 }
 
 /** The shell's own pages as sidebar rows; Sessions only when the project list isn't there. */
@@ -273,10 +266,14 @@ function SessionTrail() {
 function ConnectedShell({
   client,
   pathname,
+  landingDraftId,
+  holdLandingDraft,
   children,
 }: {
   client: EnvironmentClient
   pathname: string
+  landingDraftId: string | null
+  holdLandingDraft: boolean
   children: ReactNode
 }) {
   const navigate = useNavigate()
@@ -292,7 +289,6 @@ function ConnectedShell({
       navigate({ to: '/drafts/$draftId', params: { draftId }, replace: options?.replace }),
     [navigate],
   )
-  const landingDraftId = draftIdOf(pathname)
   const openSession = useCallback(
     (sessionId: string) => void navigateSession(sessionId),
     [navigateSession],
@@ -315,6 +311,7 @@ function ConnectedShell({
       // a draft's own page, which it gets with its first text or image.
       onLanding={pathname === '/' || landingDraftId !== null}
       landingDraftId={landingDraftId}
+      holdLandingDraft={holdLandingDraft}
     >
       {/* A healthy connection says nothing; trouble shows as the banner. */}
       <WorkspaceSidebar footer={<NavMenu pathname={pathname} includeSessions={false} />} />
@@ -334,7 +331,11 @@ function ConnectedShell({
 
 export function AppShell() {
   const pathname = useRouterState({ select: (state) => state.location.pathname })
-  const client = useEnvironmentClientOptional()
+  const selectedClient = useEnvironmentClientOptional()
+  const { clients } = useEnvironmentClients()
+  const address = useMemo(() => addressOf(pathname), [pathname])
+  const lookup = useFindAddress(address)
+  const client = (lookup.owner ? clients[lookup.owner] : null) || selectedClient
   const {
     ui,
     connect,
@@ -399,30 +400,40 @@ export function AppShell() {
   // split by a hairline.
   return (
     <SidebarProvider className="h-svh min-h-0 overflow-hidden bg-background text-foreground">
-      {client ? (
-        // By environment, not by client: its drafts and page state are that
-        // environment's, while a client replaced on the same environment keeps
-        // the page as it is.
-        <ConnectedShell key={selectedId} client={client} pathname={pathname}>
-          {main}
-        </ConnectedShell>
-      ) : (
-        <>
-          <Sidebar className="text-[15px]">
-            <SidebarHeader>
-              <SidebarWorkspaceHeader name="OpenManager" tile={<WorkspaceTile>O</WorkspaceTile>} />
-            </SidebarHeader>
-            <SidebarContent>
-              <NavMenu pathname={pathname} includeSessions />
-            </SidebarContent>
-            <SidebarFooter>
-              <ConnectionStatusChip state={ui} />
-            </SidebarFooter>
-          </Sidebar>
-          {main}
-          <ShellCommandPalette />
-        </>
-      )}
+      <EnvironmentClientProvider client={client}>
+        <AddressLookupProvider value={lookup}>
+          {client ? (
+            // By environment, not by client: its drafts and page state are that
+            // environment's, while a client replaced on the same environment keeps
+            // the page as it is.
+            <ConnectedShell
+              key={lookup.owner ?? selectedId}
+              client={client}
+              pathname={pathname}
+              landingDraftId={address?.kind === 'draft' ? address.id : null}
+              holdLandingDraft={address?.kind === 'draft' && lookup.status === 'searching'}
+            >
+              {main}
+            </ConnectedShell>
+          ) : (
+            <>
+              <Sidebar className="text-[15px]">
+                <SidebarHeader>
+                  <SidebarWorkspaceHeader name="OpenManager" tile={<WorkspaceTile>O</WorkspaceTile>} />
+                </SidebarHeader>
+                <SidebarContent>
+                  <NavMenu pathname={pathname} includeSessions />
+                </SidebarContent>
+                <SidebarFooter>
+                  <ConnectionStatusChip state={ui} />
+                </SidebarFooter>
+              </Sidebar>
+              {main}
+              <ShellCommandPalette />
+            </>
+          )}
+        </AddressLookupProvider>
+      </EnvironmentClientProvider>
     </SidebarProvider>
   )
 }

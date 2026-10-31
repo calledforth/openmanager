@@ -146,6 +146,9 @@ export interface EnvironmentApplicationOptions {
   /** On a host with draft pages, the draft the address names; null or
    * absent on the blank page. */
   landingDraftId?: string | null
+  /** The host has yet to learn where that draft is, so not having it here says
+   * nothing: its page waits rather than giving up the address. */
+  holdLandingDraft?: boolean
   /** Where folded sidebar rows are remembered. Defaults to `localStorage`. */
   collapsedWorkspaceStorage?: Pick<Storage, 'getItem' | 'setItem'> | null
   /** Host actions for views (child sessions, icons, uploads). */
@@ -170,6 +173,7 @@ export function EnvironmentApplicationProviders({
         navigateDraft={options.navigateDraft}
         onLanding={options.onLanding ?? false}
         landingDraftId={options.landingDraftId ?? null}
+        holdLandingDraft={options.holdLandingDraft ?? false}
       >
         <EnvironmentComposerStateProvider>
           <EnvironmentComposerDraftProvider>
@@ -440,6 +444,7 @@ function EnvironmentSessionStateProvider({
   navigateDraft,
   onLanding,
   landingDraftId,
+  holdLandingDraft,
   children,
 }: {
   addWorkspace?: () => Promise<void>
@@ -447,6 +452,7 @@ function EnvironmentSessionStateProvider({
   navigateDraft?: EnvironmentApplicationOptions['navigateDraft']
   onLanding: boolean
   landingDraftId: string | null
+  holdLandingDraft: boolean
   children: ReactNode
 }) {
   const client = useEnvironmentClient()
@@ -647,7 +653,7 @@ function EnvironmentSessionStateProvider({
         ? sessionDraftOf
         : sentSessionId && sentSessionKnown
           ? sentSessionId
-          : draftsListed || !canList
+          : (draftsListed || !canList) && !holdLandingDraft
             ? (sentSessionId ?? null)
             : undefined
     if (redirect === undefined || redirectedRef.current === pageDraftId) return
@@ -662,6 +668,7 @@ function EnvironmentSessionStateProvider({
     canList,
     consumedSessionId,
     draftsListed,
+    holdLandingDraft,
     navigateSession,
     pageConsumed,
     pageDraftId,
