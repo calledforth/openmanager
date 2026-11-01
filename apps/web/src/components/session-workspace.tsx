@@ -6,6 +6,7 @@ import {
 import { useNavigate } from '@tanstack/react-router'
 import { ChatWorkspace } from '@openmanager/app-core/components/chat/ChatWorkspace'
 import { isEnvironmentClientError, type EnvironmentState } from '@openmanager/environment-client'
+import { useConnection } from '../providers/connection-provider'
 
 const selectConnected = (state: EnvironmentState) => state.connection.phase === 'connected'
 
@@ -21,13 +22,16 @@ export function SessionWorkspace({ sessionId }: { sessionId?: string }) {
 }
 
 function ConnectedSessionWorkspace({ sessionId }: { sessionId?: string }) {
-  const client = useEnvironmentClientOptional()!
+  // Its commands, not the client: the same environment's client is handed over
+  // under this page as it connects, and that is no reason to open the chat again.
+  const { commands, setActiveSession } = useEnvironmentClientOptional()!
   const selector = useCallback(
     (state: EnvironmentState) => Boolean(sessionId && state.sessions[sessionId]),
     [sessionId],
   )
   const known = useEnvironmentState(selector)
   const connected = useEnvironmentState(selectConnected)
+  const { ui } = useConnection()
   const navigate = useNavigate()
   const openedSessionRef = useRef<string | null>(null)
   // A session opened before the catalog knew it: the route's own open, on
@@ -44,16 +48,16 @@ function ConnectedSessionWorkspace({ sessionId }: { sessionId?: string }) {
       mountedRef.current = false
       if (probedSessionRef.current === null) return
       probedSessionRef.current = null
-      client.setActiveSession(null)
+      setActiveSession(null)
     }
-  }, [client])
+  }, [setActiveSession])
 
   useEffect(() => {
     if (probedSessionRef.current !== sessionId) probedSessionRef.current = null
     // Only the route selects a session. Active-session updates must never
     // retrigger an open for a route we are in the process of leaving.
     if (!sessionId) {
-      client.setActiveSession(null)
+      setActiveSession(null)
       return
     }
     if (!known) {
@@ -68,7 +72,7 @@ function ConnectedSessionWorkspace({ sessionId }: { sessionId?: string }) {
       // one the environment does not have leaves its address for `/`.
       if (!connected || probedSessionRef.current === sessionId) return
       probedSessionRef.current = sessionId
-      void client.commands.openSession(sessionId).catch((error: unknown) => {
+      void commands.openSession(sessionId).catch((error: unknown) => {
         if (!mountedRef.current || probedSessionRef.current !== sessionId) return
         probedSessionRef.current = null
         if (isEnvironmentClientError(error) && error.code === 'not_found') {
@@ -82,13 +86,16 @@ function ConnectedSessionWorkspace({ sessionId }: { sessionId?: string }) {
       // The route's earlier open brought it in.
       probedSessionRef.current = null
     } else {
-      void client.commands.openSession(sessionId).catch(() => undefined)
+      void commands.openSession(sessionId).catch(() => undefined)
     }
     // Invalidate an in-flight open when leaving for another session or draft.
-    return () => client.setActiveSession(null)
-  }, [client, connected, sessionId, known, navigate])
+    return () => setActiveSession(null)
+  }, [commands, setActiveSession, connected, sessionId, known, navigate])
 
-  return <ChatWorkspace />
+  // Nothing kept of it here and nothing to ask yet: an empty chat would read as
+  // a new session with no messages.
+  if (sessionId && !known && !connected) return <SessionPlaceholder sessionId={sessionId} />
+  return <ChatWorkspace connectionProblem={ui.kind !== 'ready'} />
 }
 
 function SessionPlaceholder({ sessionId }: { sessionId?: string }) {

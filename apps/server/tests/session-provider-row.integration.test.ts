@@ -5,6 +5,7 @@ import {
   connectProtocol,
   handshake,
   startProtocolHost,
+  listedSessions,
 } from './helpers/protocol-client.js'
 import { expectCommand } from './helpers/proof-slice.js'
 
@@ -70,8 +71,9 @@ describe('a session created on a provider other than the workspace default', () 
       // its handshake while the reads below are answered.
       await vi.waitFor(() => expect(claude.queries).toHaveLength(1))
 
-      const listed = await expectCommand(client, 'session.list', {}, 'list')
-      expect(listed.payload.sessions).toMatchObject([{ sessionId, providerId: 'claude' }])
+      expect(await listedSessions(client, host.server.identity.environmentId)).toMatchObject([
+        { sessionId, providerId: 'claude' },
+      ])
       const opened = await expectCommand(client, 'session.open', { sessionId }, 'open')
       expect(opened.payload.session).toMatchObject({ sessionId, providerId: 'claude' })
     } finally {

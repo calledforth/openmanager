@@ -7,6 +7,7 @@ import {
   firstUnansweredIndex,
   indexForKey,
   isAnswered,
+  nextStep,
   optionKey,
   summarizeAnswer,
   toggleOption,
@@ -39,9 +40,11 @@ describe('toggleOption', () => {
     expect(toggleOption(single, first, 'b').selectedOptionIds).toEqual(['b'])
   })
 
-  it('clears a single-select choice when it is picked again', () => {
+  it('keeps a single-select choice when it is picked again', () => {
+    // Picking a single choice moves the flow on, so a re-pick must not clear
+    // the answer it is about to move on with.
     const picked = toggleOption(single, emptyDraft, 'a')
-    expect(toggleOption(single, picked, 'a').selectedOptionIds).toEqual([])
+    expect(toggleOption(single, picked, 'a').selectedOptionIds).toEqual(['a'])
   })
 
   it('accumulates and removes for multi-select questions', () => {
@@ -75,6 +78,31 @@ describe('answered state', () => {
     const full = { ...drafts, q1: { selectedOptionIds: ['a'], text: '' } }
     expect(allAnswered([single, multi], full)).toBe(true)
     expect(firstUnansweredIndex([single, multi], full)).toBe(-1)
+  })
+})
+
+describe('nextStep', () => {
+  const tests: Question = { ...single, questionId: 'q3' }
+  const set = [single, multi, tests]
+  const pickedAll = {
+    q1: { selectedOptionIds: ['a'], text: '' },
+    q2: { selectedOptionIds: ['x'], text: '' },
+    q3: { selectedOptionIds: ['b'], text: '' },
+  }
+
+  it('walks forward through the set', () => {
+    expect(nextStep(set, {}, 0)).toEqual({ kind: 'goto', index: 1 })
+    expect(nextStep(set, pickedAll, 1)).toEqual({ kind: 'goto', index: 2 })
+  })
+
+  it('submits from the last question once everything is answered — no review step', () => {
+    expect(nextStep(set, pickedAll, 2)).toEqual({ kind: 'submit' })
+    expect(nextStep([single], { q1: pickedAll.q1 }, 0)).toEqual({ kind: 'submit' })
+  })
+
+  it('sends the user back to the first gap instead of submitting with holes', () => {
+    const missingFirst = { q2: pickedAll.q2, q3: pickedAll.q3 }
+    expect(nextStep(set, missingFirst, 2)).toEqual({ kind: 'goto', index: 0 })
   })
 })
 

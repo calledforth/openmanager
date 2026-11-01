@@ -37,7 +37,7 @@ class ThreadBuilder {
       notices: [],
       outbox: [],
       hydration: 'ready',
-      historyCursor: null,
+      listing: {},
     }
   }
 

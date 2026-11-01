@@ -1,13 +1,13 @@
 /**
  * A session on screen, read-only: opened with `session.open` as web's
- * session route opens it, its transcript from the snapshot and the live
- * events through the shared active-thread provider, and released when the
- * page goes (`setActiveSession(null)` unsubscribes its scopes). Older pages
- * of the transcript (`session.history`) are never asked for here: the phone
- * shows what the snapshot and the events bring. An environment that cannot
- * replay a session's events (`subscription.replay`) is not opened at all,
- * since the shared client would fill the transcript from `session.history`
- * there instead.
+ * session route opens it, its whole transcript from the thread's snapshot (or
+ * a replay from the cursor the client holds, for a chat it already has) and
+ * the live events through the shared active-thread provider, and released when
+ * the page goes (`setActiveSession(null)` unsubscribes its scopes, and the
+ * client keeps the chat and its cursor). An environment that cannot replay a
+ * session's events (`subscription.replay`) is not opened at all: that answer
+ * is the only way a transcript reaches the client, which would otherwise show
+ * the chat as loaded and empty.
  *
  * The page owns the client's one active session while it is the page in
  * front: it opens it on focus, and releases it on blur and on leaving, but
@@ -35,8 +35,8 @@ import type { HomeSession } from '../home/rows'
 import { useHomeSource } from '../home/source'
 
 /**
- * - `opening`: asked for, the snapshot is on its way (or the socket is).
- * - `ready`: the snapshot is in; live events follow.
+ * - `opening`: asked for, the transcript is on its way (or the socket is).
+ * - `ready`: the transcript is in; live events follow.
  * - `failed`: the environment could not open it; `retry` asks again.
  * - `gone`: the environment has no such session (deleted, here or elsewhere).
  * - `unsupported`: the environment cannot replay events, so the phone does
@@ -44,7 +44,7 @@ import { useHomeSource } from '../home/source'
  */
 export type ReadOnlySessionPhase = 'opening' | 'ready' | 'failed' | 'gone' | 'unsupported'
 
-/** What the phone needs to open a session without asking for its history. */
+/** What brings a session's transcript, as a snapshot or a replay. */
 export const REPLAY_CAPABILITY = 'subscription.replay'
 
 export interface ReadOnlySession {
@@ -104,7 +104,7 @@ export function useReadOnlySession(
   // This page's own open has landed, and it has not let the session go since.
   // Another hand making it active (a new session's launch selects the session
   // it created before this page exists) holds no subscription for it: only
-  // `session.open` brings the snapshot and the live events, as on web, whose
+  // `session.open` brings the transcript and the live events, as on web, whose
   // session route opens whatever it shows.
   const heldRef = useRef(false)
   const knownRef = useRef(false)
@@ -146,7 +146,7 @@ export function useReadOnlySession(
 
   // So does another page coming in front of it, and an environment that
   // stops replaying events: the client opens its active session again
-  // after a reconnect, through session.history where there is no replay,
+  // after a reconnect, which brings no transcript where there is no replay,
   // so none is left selected there.
   useEffect(() => {
     if (!focused || (connected && !replays)) release()

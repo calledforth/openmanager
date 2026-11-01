@@ -142,5 +142,5 @@ export const RECORDED_THREAD: ThreadState = {
   notices: [],
   outbox: [],
   hydration: 'ready',
-  historyCursor: null,
+  listing: {},
 }

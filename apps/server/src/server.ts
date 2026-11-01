@@ -9,7 +9,6 @@ import {
   COMPOSER_EVENTS_CAPABILITY,
   COMPOSER_MODEL_SET_CAPABILITY,
   COMPOSER_MODE_SET_CAPABILITY,
-  COMPOSER_PREFERENCES_GET_CAPABILITY,
   COMPOSER_PREFERENCES_SET_CAPABILITY,
   ENVIRONMENT_SETTINGS_GET_CAPABILITY,
   ENVIRONMENT_SETTINGS_SET_CAPABILITY,
@@ -74,7 +73,8 @@ import { raiseReplayFloors } from './db/replay-floor.ts'
 import { reconcileAfterRestart } from './db/boot-reconcile.ts'
 import { createEventRetention } from './db/event-retention.ts'
 import { createReplayReader } from './db/replay.ts'
-import { getSessionSummary } from './db/session-store.ts'
+import { readWorkspaceListing } from './db/composer-rows.ts'
+import { getSessionSummary, readThreadListing } from './db/session-store.ts'
 import { createLogger, resolveLogSink } from './logger.ts'
 import { createProviderService } from './provider-service.ts'
 import { createRateLimiter } from './rate-limit.ts'
@@ -100,13 +100,11 @@ export const SERVER_CAPABILITIES = [
   PROVIDER_HEALTH_CAPABILITY,
   PROVIDER_PROBE_CAPABILITY,
   PROVIDER_CATALOG_CAPABILITY,
-  COMPOSER_PREFERENCES_GET_CAPABILITY,
   COMPOSER_PREFERENCES_SET_CAPABILITY,
   COMPOSER_MODEL_SET_CAPABILITY,
   COMPOSER_MODE_SET_CAPABILITY,
   COMPOSER_CONFIG_OPTION_SET_CAPABILITY,
   COMPOSER_EVENTS_CAPABILITY,
-  'session.list',
   'session.create',
   SESSION_CREATE_EXPLICIT_CAPABILITY,
   'session.open',
@@ -116,7 +114,6 @@ export const SERVER_CAPABILITIES = [
   'session.settle',
   'session.acknowledge',
   'session.background.stop',
-  'session.history',
   'turn.send',
   'turn.interrupt',
   'interaction.respond',
@@ -184,6 +181,9 @@ export async function startServer(config: ServerConfig) {
   let followWorkspaceRecord: (record: DurableEvent) => void = () => undefined
   const eventDatabase = openEnvironmentDatabase(config.dataDir)
   const sessionRowExists = eventDatabase.prepare('SELECT 1 FROM sessions WHERE session_id = ?')
+  const sessionActivityRow = eventDatabase.prepare(
+    'SELECT updated_at FROM sessions WHERE session_id = ?',
+  )
   // Before anything is appended: events stored in an older format are no
   // longer replayed (docs/sync-foundations.md §4.7.7).
   const floorsRaised = raiseReplayFloors(eventDatabase)
@@ -319,6 +319,7 @@ export async function startServer(config: ServerConfig) {
     epoch: eventEpoch,
     environment: () => ({ environmentId: identity.environmentId, name: identity.label }),
     workspaces: () => workspaces.list(),
+    log,
   })
   const stopRetention = createEventRetention(eventDatabase).schedule({
     onError: (error) => log('error', 'event retention failed', { reason: String(error) }),
@@ -380,6 +381,7 @@ export async function startServer(config: ServerConfig) {
       database: eventDatabase,
       artifacts,
       flush: eventService.flush,
+      head: (scope) => eventService.repository.head(scope),
       appendAtomic: (events, options) => eventService.appendAtomic(events, options),
       finalizeNow: (event) => eventService.finalizeNow(event),
       onPersistenceError: (error, eventName) =>
@@ -407,7 +409,8 @@ export async function startServer(config: ServerConfig) {
     (sessionId, context) => threadService.resolveRuntimeSession(sessionId, context),
     {
       // Composer changes ride the environment stream, so every client sees
-      // them live and a reconnect replays whatever it missed.
+      // them live and a reconnect replays whatever it missed. A chat's listing
+      // rides its thread: only a browser with that chat open wants it.
       publish: (name, payload) =>
         eventService.append({
           type: 'event',
@@ -417,9 +420,28 @@ export async function startServer(config: ServerConfig) {
           scope: { type: 'environment', environmentId: identity.environmentId },
           payload,
         } as ProofEvent),
+      publishThreadListing: ({ sessionId, threadId }, changed) =>
+        eventService.append({
+          type: 'event',
+          name: 'thread.listing.updated',
+          eventId: randomUUID(),
+          timestamp: new Date().toISOString(),
+          scope: { type: 'thread', environmentId: identity.environmentId, sessionId, threadId },
+          payload: changed,
+        }),
       sessionForThread: (threadId) => threadService.sessionForThread(threadId),
       readSessionComposer: (sessionId) => getSessionSummary(eventDatabase, sessionId)?.composer,
+      readThreadListing: (threadId) => readThreadListing(eventDatabase, threadId, log),
+      readWorkspaceListing: (target) => readWorkspaceListing(eventDatabase, target, log),
+      listingTarget: (sessionId) => {
+        const session = getSessionSummary(eventDatabase, sessionId)
+        return session?.providerId
+          ? { workspaceId: session.workspaceId, providerId: session.providerId }
+          : undefined
+      },
       hasSession: (sessionId) => sessionRowExists.get(sessionId) !== undefined,
+      sessionActivity: (sessionId) =>
+        (sessionActivityRow.get(sessionId) as { updated_at: number } | undefined)?.updated_at,
     },
   )
   desiredConfigFor = (args) => composerService.desiredFor(args)

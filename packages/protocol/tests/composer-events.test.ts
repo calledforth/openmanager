@@ -2,12 +2,16 @@ import { describe, expect, it } from 'vitest'
 import {
   ComposerCommandOptionSchema,
   ComposerConfigOptionSchema,
+  ComposerListingSchema,
+  ComposerListingsSnapshotSchema,
   ComposerModelOptionSchema,
   ComposerUsageSchema,
   ProofEventSchemas,
   ProviderComposerProfileSchema,
   SessionComposerStateSchema,
   SessionSummarySchema,
+  packComposerListings,
+  unpackComposerListings,
 } from '@openmanager/protocol'
 
 describe('live composer state wire contract', () => {
@@ -57,15 +61,50 @@ describe('live composer state wire contract', () => {
     ).toBe(false)
   })
 
+  it('sends a listing shared between workspaces once, and gets every one back whole', () => {
+    const review = { name: 'review', description: 'Review the diff' }
+    const own = { name: 'deploy', description: 'This project only' }
+    const fast = { type: 'boolean' as const, id: 'fast', name: 'Fast', currentValue: true }
+    const at = '2026-10-31T10:00:00.000Z'
+    const listings = [
+      {
+        workspaceId: 'a',
+        providerId: 'claude',
+        listing: { configOptions: [fast], availableCommands: [review] },
+        updatedAt: at,
+      },
+      {
+        workspaceId: 'b',
+        providerId: 'claude',
+        listing: { configOptions: [fast], availableCommands: [review, own] },
+        updatedAt: at,
+      },
+      // An empty list stays an answer, and a field never reported stays absent.
+      { workspaceId: 'c', providerId: 'claude', listing: { availableCommands: [] }, updatedAt: at },
+    ]
+    const packed = ComposerListingsSnapshotSchema.parse(packComposerListings(listings))
+    expect(packed.commands).toEqual([review, own])
+    expect(packed.configOptions).toEqual([fast])
+    expect(unpackComposerListings(packed)).toEqual(listings)
+    expect(
+      ComposerListingsSnapshotSchema.safeParse({
+        ...packed,
+        entries: [{ ...packed.entries[0]!, commands: [2] }],
+      }).success,
+    ).toBe(false)
+  })
+
   it('lists slash commands by name, with the hint for what follows one', () => {
     const availableCommands = [
       { name: 'review', description: '' },
       { name: 'search', description: 'Search the workspace', placeholder: 'query' },
     ]
-    expect(SessionComposerStateSchema.parse({ availableCommands })).toEqual({ availableCommands })
-    expect(SessionComposerStateSchema.parse({ availableCommands: [] })).toEqual({
+    expect(ComposerListingSchema.parse({ availableCommands })).toEqual({ availableCommands })
+    expect(ComposerListingSchema.parse({ availableCommands: [] })).toEqual({
       availableCommands: [],
     })
+    // What a provider lists never rides the sidebar's session summary.
+    expect(SessionComposerStateSchema.safeParse({ availableCommands }).success).toBe(false)
     expect(ComposerCommandOptionSchema.safeParse({ name: '', description: '' }).success).toBe(false)
     // The ACP input spec stays host-side; only its hint crosses.
     expect(

@@ -1,47 +1,54 @@
+import { Buffer } from 'node:buffer'
 import type { DatabaseSync } from 'node:sqlite'
+import type { Logger } from '../logger.ts'
 import {
-  DurableEventSchema,
-  PAGE_LIMIT_MAX,
   ScopeSnapshotSchema,
   decideReplay,
+  packComposerListings,
   type Cursor,
-  type DurableEvent,
   type Environment,
   type ScopeSnapshot,
   type SnapshotReason,
   type SubscriptionScope,
   type Workspace,
 } from '@openmanager/protocol/node'
+import {
+  preferenceFromRow,
+  profileFromRow,
+  readPreferenceRows,
+  readProfileRows,
+  readWorkspaceListings,
+} from './composer-rows.ts'
 import { scopeKey } from './event-repository.ts'
-import { EVENTS_AFTER_CURSOR_SQL, STREAM_BOUNDS_SQL } from './queries.ts'
+import {
+  EVENTS_AFTER_CURSOR_SQL,
+  REPLAY_SIZE_SQL,
+  STREAM_BOUNDS_SQL,
+  THREAD_STATE_BYTES_SQL,
+} from './queries.ts'
 import {
   getSessionSummary,
-  listSessionHistory,
-  listSessionSummaries,
+  listAllSessionSummaries,
   listThreadsForSession,
+  readThreadState,
 } from './session-store.ts'
 
 /**
- * A replay is one socket frame, so it is bounded twice: by event count and by
- * serialized bytes. A gap that does not fit is answered with a snapshot, the
- * same as a gap that retention has already pruned. Both limits stay well
- * under the socket's slow-consumer budget.
+ * The answer to a catch-up (docs/sync-foundations.md §6.1), already
+ * serialized: a replay's records are the stored event JSON, verbatim, inside
+ * a fixed wrapper, so the size the decision compared is exactly what is sent.
  */
-export const REPLAY_LIMITS: { readonly maxEvents: number; readonly maxBytes: number } =
-  Object.freeze({
-    maxEvents: 500,
-    maxBytes: 256 * 1024,
-  })
-/**
- * Bytes each record adds around its event on the wire: the cursor (scope ids,
- * epoch, sequence) and its share of the response envelope. Counted against
- * `maxBytes` so the frame, not just the events, stays inside the budget.
- */
-const RECORD_OVERHEAD_BYTES = 512
-
 export type ReplayResult =
-  | { mode: 'replay'; from: Cursor; to: Cursor; events: DurableEvent[] }
-  | { mode: 'snapshot'; reason: SnapshotReason; snapshot: ScopeSnapshot }
+  | {
+      mode: 'replay'
+      from: Cursor
+      to: Cursor
+      /** Number of records. */
+      count: number
+      /** The records, comma-separated, without the brackets. */
+      eventsJson: string
+    }
+  | { mode: 'snapshot'; reason: SnapshotReason; snapshot: ScopeSnapshot; snapshotJson: string }
   /** The scope's session or thread no longer exists; there is nothing to replay or snapshot. */
   | { mode: 'missing' }
 
@@ -50,7 +57,7 @@ export interface ReplayReaderOptions {
   epoch: string
   environment: () => Environment
   workspaces: () => Workspace[]
-  limits?: Partial<typeof REPLAY_LIMITS>
+  log?: Logger
 }
 
 interface StreamBoundsRow {
@@ -79,34 +86,125 @@ interface EventRow {
   event_json: string
 }
 
+const utf8 = (text: string) => Buffer.byteLength(text, 'utf8')
+
+/** Σ of the decimal digit counts of the integers in [from, to]. */
+export function digitsBetween(from: number, to: number): number {
+  let total = 0
+  for (let digits = 1, low = 1; low <= to; digits++, low *= 10) {
+    const high = low * 10 - 1
+    const start = Math.max(from, low)
+    const end = Math.min(to, high)
+    if (end >= start) total += (end - start + 1) * digits
+  }
+  return total
+}
+
 /**
- * Answer `subscription.replay` from the SQLite event log.
+ * The payload of a `subscription.replay` answer or a `subscription.catchup`,
+ * as JSON text. Key order is the protocol schema's, so it parses to exactly
+ * what `ReplayResponseSchema` would have produced.
+ */
+export function answerPayloadJson(
+  result: Exclude<ReplayResult, { mode: 'missing' }>,
+  subscriptionId: string,
+): string {
+  const id = JSON.stringify(subscriptionId)
+  if (result.mode === 'replay') {
+    return `{"mode":"replay","subscriptionId":${id},"from":${JSON.stringify(result.from)},"to":${JSON.stringify(result.to)},"events":[${result.eventsJson}]}`
+  }
+  return `{"mode":"snapshot","subscriptionId":${id},"reason":${JSON.stringify(result.reason)},"snapshot":${result.snapshotJson}}`
+}
+
+/** A subscription id the size of a real one (a UUID), for comparing sizes. */
+const SIZE_PROBE_ID = '00000000-0000-0000-0000-000000000000'
+
+/**
+ * The exact UTF-8 length of a replay answer's payload (`answerPayloadJson`)
+ * for the records after `from` up to `to`, given their stored event bytes,
+ * without building it (docs/sync-foundations.md §6.1 point 2).
+ */
+export function replayPayloadBytes(
+  scope: SubscriptionScope,
+  from: Cursor,
+  to: Cursor,
+  eventBytes: number,
+  count: number,
+): number {
+  const scopeJson = JSON.stringify(scope)
+  // `{"cursor":{"scope":S,"epoch":E,"sequence":N},"event":X}` per record.
+  const wrapper = utf8(
+    `{"cursor":{"scope":${scopeJson},"epoch":${JSON.stringify(to.epoch)},"sequence":},"event":}`,
+  )
+  const records =
+    count === 0
+      ? 0
+      : eventBytes + count * wrapper + digitsBetween(from.sequence + 1, to.sequence) + (count - 1)
+  const envelope = utf8(
+    answerPayloadJson({ mode: 'replay', from, to, count: 0, eventsJson: '' }, SIZE_PROBE_ID),
+  )
+  return envelope + records
+}
+
+/**
+ * Answer `subscription.replay` (and the server's own catch-ups) from the
+ * SQLite event log, by the rule of docs/sync-foundations.md §6.1:
  *
- * `decideReplay` is the protocol's rule; this reader supplies its inputs
- * (head and retention boundary, read together from the stream row) and
- * builds the answer: the exact contiguous tail after the cursor, or a
- * snapshot of the scope at head. The caller registers the live subscription
- * in the same tick, so nothing commits between the read and the registration.
+ * | condition                     | answer                       |
+ * | ----------------------------- | ---------------------------- |
+ * | no cursor                     | `initial` snapshot           |
+ * | another epoch                 | `stream_reset` snapshot      |
+ * | cursor ahead of head          | `cursor_ahead` snapshot      |
+ * | events not retained           | `gap_expired` snapshot       |
+ * | replay bytes > snapshot bytes | `snapshot_smaller` snapshot  |
+ * | anything else                 | replay (ties go to replay)   |
+ *
+ * Sizes are exact: the replay's from `SUM(octet_length(event_json))` plus
+ * its fixed wrapper, the snapshot's from its serialized text. A thread's
+ * snapshot is built only when it could win: it embeds every message part and
+ * activity row byte for byte, so their stored size is a lower bound on it.
+ * Everything runs in one synchronous tick, with the caller registering the
+ * live subscription in that same tick, so nothing commits in between.
  */
 export function createReplayReader(database: DatabaseSync, options: ReplayReaderOptions) {
-  const limits = { ...REPLAY_LIMITS, ...options.limits }
   const statements = {
     bounds: database.prepare(STREAM_BOUNDS_SQL),
     after: database.prepare(EVENTS_AFTER_CURSOR_SQL),
+    size: database.prepare(REPLAY_SIZE_SQL),
+    threadBytes: database.prepare(THREAD_STATE_BYTES_SQL),
   }
 
   const snapshotOf = (scope: SubscriptionScope, head: Cursor): ScopeSnapshot | undefined => {
     if (scope.type === 'environment') {
       const workspaces = options.workspaces()
       const known = new Set(workspaces.map((workspace) => workspace.workspaceId))
-      // Newest sessions only: the snapshot is the sidebar's first page, and
-      // the rest pages exactly as `session.list` does.
-      const sessions = listSessionSummaries(database, { limit: PAGE_LIMIT_MAX }).sessions.filter(
-        (session) => known.has(session.workspaceId),
+      // Every session, preference, provider profile and workspace listing:
+      // the client replaces its whole sidebar with this (§6.2).
+      const sessions = listAllSessionSummaries(database).filter((session) =>
+        known.has(session.workspaceId),
       )
+      const preferences = readPreferenceRows(database)
+        .filter((row) => known.has(row.workspace_id))
+        .map((row) => ({
+          workspaceId: row.workspace_id,
+          providerId: row.provider_id,
+          preference: preferenceFromRow(row),
+          revision: row.revision,
+        }))
       return ScopeSnapshotSchema.parse({
         cursor: head,
-        state: { environment: options.environment(), workspaces, sessions },
+        state: {
+          environment: options.environment(),
+          workspaces,
+          sessions,
+          preferences,
+          providerProfiles: readProfileRows(database).map(profileFromRow),
+          listings: packComposerListings(
+            readWorkspaceListings(database, options.log).filter((entry) =>
+              known.has(entry.workspaceId),
+            ),
+          ),
+        },
       })
     }
     if (scope.type === 'session') {
@@ -120,38 +218,30 @@ export function createReplayReader(database: DatabaseSync, options: ReplayReader
         },
       })
     }
-    const page = listSessionHistory(database, {
-      sessionId: scope.sessionId,
-      threadId: scope.threadId,
-      limit: PAGE_LIMIT_MAX,
-    })
-    if (!page) return undefined
-    return ScopeSnapshotSchema.parse({
-      cursor: head,
-      state: {
-        thread: { threadId: scope.threadId, sessionId: scope.sessionId },
-        turns: page.turns,
-        // The newest history page, as `session.open` then `session.history`
-        // would load it: its messages, the reasoning and tool calls of the
-        // turns on it, and the order all of them happened in.
-        messages: page.messages,
-        nextCursor: page.nextCursor,
-        reasoning: page.reasoning,
-        tools: page.tools,
-        order: page.order,
-        interactions: page.interactions.map(({ turnId, interaction }) => ({ turnId, interaction })),
-      },
-    })
+    const state = readThreadState(
+      database,
+      { sessionId: scope.sessionId, threadId: scope.threadId },
+      options.log,
+    )
+    if (!state) return undefined
+    return ScopeSnapshotSchema.parse({ cursor: head, state })
   }
 
   const snapshot = (
     scope: SubscriptionScope,
     head: Cursor,
     reason: SnapshotReason,
-  ): ReplayResult => {
+  ): Extract<ReplayResult, { mode: 'snapshot' | 'missing' }> => {
     const state = snapshotOf(scope, head)
-    return state ? { mode: 'snapshot', reason, snapshot: state } : { mode: 'missing' }
+    return state
+      ? { mode: 'snapshot', reason, snapshot: state, snapshotJson: JSON.stringify(state) }
+      : { mode: 'missing' }
   }
+
+  const replayBytes = replayPayloadBytes
+
+  const snapshotBytes = (result: Extract<ReplayResult, { mode: 'snapshot' }>) =>
+    utf8(answerPayloadJson({ ...result, reason: 'snapshot_smaller' }, SIZE_PROBE_ID))
 
   return {
     /** Throws `ReplayCursorError` for a cursor that cannot belong to the scope. */
@@ -165,29 +255,35 @@ export function createReplayReader(database: DatabaseSync, options: ReplayReader
       if (decision.mode === 'snapshot' || !cursor) {
         return snapshot(scope, head, decision.mode === 'snapshot' ? decision.reason : 'initial')
       }
-      const rows = statements.after.all(
-        key,
-        cursor.sequence,
-        limits.maxEvents + 1,
-      ) as unknown as EventRow[]
       const missing = head.sequence - cursor.sequence
-      let bytes = 0
-      const fits =
-        rows.length === missing &&
-        rows.every((row, index) => {
-          bytes += Buffer.byteLength(row.event_json) + RECORD_OVERHEAD_BYTES
-          return row.sequence === cursor.sequence + index + 1 && bytes <= limits.maxBytes
-        })
-      // Too large to carry, or (defensively) not the contiguous tail the
-      // stream row promised: a snapshot replaces the scope either way.
-      if (!fits) return snapshot(scope, head, 'gap_expired')
-      const events = rows.map((row) =>
-        DurableEventSchema.parse({
-          cursor: { scope, epoch: head.epoch, sequence: row.sequence },
-          event: JSON.parse(row.event_json),
-        }),
-      )
-      return { mode: 'replay', from: cursor, to: head, events }
+      const size = statements.size.get(key, cursor.sequence) as { bytes: number; count: number }
+      // Defensive: the stream row promised a contiguous tail the log lacks.
+      if (size.count !== missing) return snapshot(scope, head, 'gap_expired')
+      const from = cursor
+      const bytes = replayBytes(scope, from, head, size.bytes, size.count)
+      if (missing > 0) {
+        // A thread's snapshot embeds every stored part and activity row byte
+        // for byte, so their size bounds it from below: a replay no larger
+        // than that cannot lose, and the snapshot is not built.
+        const couldWin =
+          scope.type !== 'thread' ||
+          bytes >
+            (statements.threadBytes.get(scope.threadId, scope.threadId) as { bytes: number }).bytes
+        if (couldWin) {
+          const result = snapshot(scope, head, 'snapshot_smaller')
+          if (result.mode === 'missing' || bytes > snapshotBytes(result)) return result
+        }
+      }
+      const rows = statements.after.all(key, cursor.sequence, -1) as unknown as EventRow[]
+      const scopeJson = JSON.stringify(scope)
+      const epochJson = JSON.stringify(head.epoch)
+      const eventsJson = rows
+        .map(
+          (row) =>
+            `{"cursor":{"scope":${scopeJson},"epoch":${epochJson},"sequence":${row.sequence}},"event":${row.event_json}}`,
+        )
+        .join(',')
+      return { mode: 'replay', from, to: head, count: rows.length, eventsJson }
     },
   }
 }

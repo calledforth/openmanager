@@ -365,6 +365,5 @@ describe('the phone composer, live', () => {
     })
     expect(sentSince(since)).toContain('turn.interrupt')
     expect(interrupted?.state).toBe('interrupted')
-    expect(sentSince(0)).not.toContain('session.history')
   })
 })

@@ -328,7 +328,16 @@ function importLocalDrafts(
  * Gives the composer the environment's drafts when the client keeps them;
  * otherwise the composer falls back to this browser's storage.
  */
-export function EnvironmentComposerDraftProvider({ children }: { children: ReactNode }) {
+export function EnvironmentComposerDraftProvider({
+  importLocal = true,
+  children,
+}: {
+  /** Bring this browser's old localStorage drafts in. Only the page's own
+   *  store does; a scope with a draft of its own (the quick New agent
+   *  palette) leaves it to that one. @default true */
+  importLocal?: boolean
+  children: ReactNode
+}) {
   const client = useEnvironmentClient()
   const sync = client.drafts
   const storage = useDeviceStorage()
@@ -339,25 +348,30 @@ export function EnvironmentComposerDraftProvider({ children }: { children: React
   pageRef.current = page
   const picksRef = useRef(picks)
   picksRef.current = picks
+  // By its drafts, not the client: the same environment's client can be handed
+  // over under a mounted page as it connects, and text not yet in a draft and a
+  // send's successor live only in this store.
+  const clientRef = useRef(client)
+  clientRef.current = client
   const store = useMemo(
     () =>
       sync
-        ? createEnvironmentComposerDraftStore(client, sync, {
+        ? createEnvironmentComposerDraftStore(clientRef.current, sync, {
             target: (draftId) => pageRef.current?.pageTarget(draftId),
             picks: (draftId) => picksRef.current?.(draftId),
             claim: (draftId) => pageRef.current?.claim(draftId),
           })
         : null,
-    [client, sync],
+    [sync],
   )
   const listed = useEnvironmentState((state) => state.draftsListed)
   const sessionCount = useEnvironmentState((state) => state.sessionOrder.length)
   const workspaceCount = useEnvironmentState((state) => state.workspaceOrder.length)
   useEffect(() => {
     // After the listing, so an import never overwrites a draft made elsewhere.
-    if (!sync || !listed) return
+    if (!importLocal || !sync || !listed) return
     importLocalDrafts(client.getState(), sync, storage)
-  }, [client, listed, sessionCount, storage, sync, workspaceCount])
+  }, [client, importLocal, listed, sessionCount, storage, sync, workspaceCount])
   return (
     <ComposerDraftStoreContext.Provider value={store}>
       {children}

@@ -41,6 +41,8 @@ export type ScriptStep =
 
 export type ProviderOp =
   | { op: 'emitText'; sessionId: string; text: string }
+  | { op: 'emitCommands'; sessionId: string; names: string[] }
+  | { op: 'emitSetting'; sessionId: string; settingId: string; currentValue: string }
   | { op: 'emitThought'; sessionId: string; text: string }
   | { op: 'openTool'; sessionId: string; toolCallId: string; title?: string }
   | {
@@ -84,7 +86,7 @@ export type ProviderOp =
 export type ServerOp =
   /** Resolves once nothing was published, provided or dispatched for `quietMs`. */
   | { op: 'waitQuiet'; quietMs: number; timeoutMs: number }
-  /** The server's own read of a thread: `listSessionHistory` walked to the start. */
+  /** The server's own read of a thread: `readThreadState`, the whole thread. */
   | { op: 'readThread'; sessionId: string; threadId: string }
   /** The threads the server holds for a session (`listThreadsForSession`), whatever any client knows. */
   | { op: 'readSessionThreads'; sessionId: string }
@@ -111,6 +113,11 @@ export type ServerOp =
   | { op: 'dropNextRecord'; threadId: string }
   /** The records the seam dropped so far: thread, sequence, event. */
   | { op: 'readDropped' }
+  /**
+   * Hide a thread's stored events from replay, as a boot does for an older
+   * event format: a client below the head catches up by snapshot.
+   */
+  | { op: 'raiseReplayFloor'; threadId: string }
 
 export type ChildRequest = (ProviderOp | ServerOp) & { id: number }
 
@@ -248,4 +255,5 @@ export interface ServerThreadRead {
   tools: unknown[]
   order: unknown[]
   interactions: Array<{ turnId: string; interaction: unknown }>
+  listing: unknown
 }

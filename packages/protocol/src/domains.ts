@@ -157,25 +157,6 @@ export const SessionSummarySchema = SessionSchema.extend({
 })
 export const ThreadSchema = z.object({ threadId: EntityIdSchema, sessionId: EntityIdSchema })
 
-/** Default and ceiling for `session.list` / `session.history` pages. */
-export const PAGE_LIMIT_DEFAULT = 50
-export const PAGE_LIMIT_MAX = 100
-export const PageLimitSchema = z.number().int().min(1).max(PAGE_LIMIT_MAX)
-/**
- * Keyset for newest-first session lists. The next page starts strictly after
- * this `(updatedAt, sessionId)` pair; omit it for the first page.
- */
-export const SessionListCursorSchema = z.object({
-  updatedAt: TimestampSchema,
-  sessionId: EntityIdSchema,
-})
-/**
- * Exclusive upper bound on a thread's message ordinal. Omit for the newest
- * page; walk backwards by sending the oldest ordinal from the previous page.
- */
-export const HistoryCursorSchema = z.object({
-  ordinal: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER),
-})
 /** Why a turn failed: the host's classification, never a provider's own words. */
 export const TurnFailureReasonSchema = z.enum([
   'provider_process_exited',
@@ -456,16 +437,6 @@ export const InteractionSchema = z.discriminatedUnion('kind', [
   }),
 ])
 
-/** Separate from pending interactions so historical plans never reopen review UI. */
-export const PlanHistoryEntrySchema = z.object({
-  threadId: EntityIdSchema,
-  turnId: EntityIdSchema,
-  plan: InteractionSchema.options[2],
-  state: z.enum(['pending', 'resolved', 'expired', 'cancelled']),
-  outcome: PlanReviewOutcomeSchema.optional(),
-})
-export type PlanHistoryEntry = z.infer<typeof PlanHistoryEntrySchema>
-
 export type EntityId = z.infer<typeof EntityIdSchema>
 export type SubscriptionScope = z.infer<typeof SubscriptionScopeSchema>
 export type Environment = z.infer<typeof EnvironmentSchema>
@@ -476,8 +447,6 @@ export type Session = z.infer<typeof SessionSchema>
 export type SessionStatus = z.infer<typeof SessionStatusSchema>
 export type SessionSummary = z.infer<typeof SessionSummarySchema>
 export type InteractionKind = z.infer<typeof InteractionKindSchema>
-export type SessionListCursor = z.infer<typeof SessionListCursorSchema>
-export type HistoryCursor = z.infer<typeof HistoryCursorSchema>
 export type Thread = z.infer<typeof ThreadSchema>
 export type Turn = z.infer<typeof TurnSchema>
 export type Message = z.infer<typeof MessageSchema>

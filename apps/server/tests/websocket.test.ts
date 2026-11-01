@@ -1498,22 +1498,32 @@ describe('subscription replay', () => {
       },
     })
 
-    // A client that held sequence 0 across a drop receives exactly the tail.
+    // A client that held sequence 0 across a drop catches up to sequence 1:
+    // the tail, or the snapshot when that is smaller (§6.1).
     const second = await connect(host)
     await handshake(second)
     second.command('subscription.replay', { scope, cursor: cursor(0) })
     const replayed = ReplayResponseSchema.parse(await second.next())
-    expect(replayed.payload).toMatchObject({
-      mode: 'replay',
-      from: cursor(0),
-      to: cursor(1),
-      events: [
-        {
-          cursor: cursor(1),
-          event: { name: 'turn.started', payload: { turn: { turnId: sent.payload.turn.turnId } } },
-        },
-      ],
-    })
+    if (replayed.payload.mode === 'replay') {
+      expect(replayed.payload).toMatchObject({
+        from: cursor(0),
+        to: cursor(1),
+        events: [
+          {
+            cursor: cursor(1),
+            event: {
+              name: 'turn.started',
+              payload: { turn: { turnId: sent.payload.turn.turnId } },
+            },
+          },
+        ],
+      })
+    } else {
+      expect(replayed.payload).toMatchObject({
+        reason: 'snapshot_smaller',
+        snapshot: { cursor: cursor(1), state: { turns: [{ turnId: sent.payload.turn.turnId }] } },
+      })
+    }
     // One that is already current receives an empty range, not a snapshot.
     const third = await connect(host)
     await handshake(third)

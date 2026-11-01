@@ -3,6 +3,8 @@ import type {
   AuthorizedClient,
   AuthorizedClientList,
   BackgroundTask,
+  ComposerListing,
+  Cursor,
   Draft,
   DraftContent,
   DraftList,
@@ -15,19 +17,15 @@ import type {
   EnvironmentSettingsPatch,
   ErrorCode,
   FilesystemListing,
-  HistoryCursor,
-  Interaction,
   InteractionKind,
   InteractionResponse,
   Message,
   PairingLink,
   PairingRedeemResponse,
-  PlanHistoryEntry,
   ProviderBootstrap,
   ProviderCatalogEntry,
   Session,
   SessionComposerState,
-  SessionListCursor,
   SessionStatus,
   SessionTitleSource,
   Thread,
@@ -96,32 +94,6 @@ export interface SessionSummary extends Session {
   threadIds: string[]
 }
 
-export interface SessionListPage {
-  sessions: SessionSummary[]
-  nextCursor: SessionListCursor | null
-}
-
-export interface SessionHistoryPage {
-  messages: Message[]
-  turns: Turn[]
-  interactions: Array<{ threadId: string; interaction: Interaction }>
-  plans?: PlanHistoryEntry[]
-  nextCursor: HistoryCursor | null
-}
-
-export interface ListSessionsInput {
-  workspaceId?: string
-  cursor?: SessionListCursor
-  limit?: number
-}
-
-export interface LoadSessionHistoryInput {
-  sessionId: string
-  threadId: string
-  cursor?: HistoryCursor
-  limit?: number
-}
-
 /**
  * A user message echoed locally the moment it was sent, before the
  * environment confirmed it. Keyed by the command id the send carries, so the
@@ -132,9 +104,22 @@ export interface OutboxEntry {
   text: string
   /** Uploaded artifacts the send names, so a retry carries them again. */
   artifactIds?: string[]
-  status: 'pending' | 'failed'
+  /** `held`: on this device only, waiting for the chat to catch up (`waited`). */
+  status: 'held' | 'pending' | 'failed'
   /** Why the send failed. Set only while `status` is `failed`. */
   error?: string
+  /**
+   * It was held for a catch-up. The row shows it is waiting until the
+   * environment takes it, and a reload keeps it: the user has seen this
+   * message go, and the composer has let it go.
+   */
+  waited?: true
+}
+
+export interface HeldComposerListing {
+  listing: ComposerListing
+  /** When it last changed, so a workspace with none can borrow the newest. */
+  updatedAt: string
 }
 
 export interface TurnNotice {
@@ -158,6 +143,15 @@ export interface ThreadState {
   /** Messages, reasoning and tools in arrival order; see `ProtocolThreadView.order`. */
   order: ActivityRef[]
   interactions: PendingInteraction[]
+  /** What the provider offers this chat. It arrives with the chat. */
+  listing: ComposerListing
+  /**
+   * Where this copy stands in the thread's stream: it holds every record up
+   * to this cursor and no others. Written in the same store update as what
+   * it describes, and gone with the thread, so the two cannot separate.
+   * Absent while the client has nothing it can resume from.
+   */
+  cursor?: Cursor
   notices: TurnNotice[]
   /** Sends still waiting on the environment, oldest first, newest last. */
   outbox: OutboxEntry[]
@@ -170,8 +164,6 @@ export interface ThreadState {
    */
   confirmedEchoes?: Readonly<Record<string, string>>
   hydration: HydrationState
-  /** Exclusive boundary for the next older persisted page. */
-  historyCursor?: HistoryCursor | null
 }
 
 export type ConnectionPhase = 'idle' | 'connecting' | 'connected' | 'reconnecting' | 'closed'
@@ -250,6 +242,11 @@ export interface EnvironmentState {
    */
   composerRevisions: Record<string, Record<string, number>>
   /**
+   * What each provider last listed in each workspace, by workspace ID and then
+   * provider ID. A new chat has no session of its own, so it offers these.
+   */
+  composerListings: Record<string, Record<string, HeldComposerListing>>
+  /**
    * Composer drafts as the environment last reported them, by draft id.
    * Displayed through `draftEdits` first: an edit not saved yet is newer.
    */
@@ -266,6 +263,21 @@ export interface EnvironmentState {
   draftEdits: Record<string, DraftEdit>
   /** Whether `drafts` was listed since the client last caught up with the environment. */
   draftsListed: boolean
+  /**
+   * Threads with a catch-up under way: asked for, or the server said the
+   * subscription is lagging. The transport's own state, for the UI alone. Read
+   * it through `selectOpenChatCatchingUp`.
+   */
+  catchingUp: Record<string, true>
+  /**
+   * Where the held copy of the environment and of each session stands (a
+   * thread keeps its own, on `ThreadState.cursor`). Same promise: the copy
+   * holds every record up to the cursor. A session's goes with the session.
+   */
+  cursors: {
+    environment: Cursor | null
+    sessions: Record<string, Cursor>
+  }
   activeSessionId: string | null
   activeThreadId: string | null
   /**
@@ -478,13 +490,14 @@ export interface EnvironmentCommands {
   removeWorkspace(workspaceId: string): Promise<void>
   /** The workspace's icon as a data URL, or null when the folder has none. Not stored. */
   resolveWorkspaceIcon(workspaceId: string): Promise<string | null>
-  listSessions(input?: ListSessionsInput | string): Promise<SessionListPage>
   createSession(
     input: CreateSessionInput,
   ): Promise<{ session: Session; thread: Thread; firstTurn?: { turn: Turn; userMessage: Message } }>
-  /** Loads thread identities, then the newest history page for each thread. */
+  /**
+   * Loads thread identities, then each whole thread (its snapshot, or a
+   * replay from the cursor the client holds).
+   */
   openSession(sessionId: string): Promise<void>
-  loadSessionHistory(input: LoadSessionHistoryInput): Promise<SessionHistoryPage>
   renameSession(sessionId: string, title: string | null): Promise<void>
   /**
    * Name the session again from its conversation with the environment's
@@ -513,7 +526,6 @@ export interface EnvironmentCommands {
   getProviderCatalog(): Promise<ProviderCatalogEntry[]>
   /** Re-checks one provider now; resolves with its entry once the probe settles. */
   probeProvider(input: ProbeProviderInput): Promise<ProviderBootstrap>
-  getComposerPreference(input: ComposerPreferenceTarget): Promise<WorkspaceComposerPreference>
   setComposerPreference(input: SetComposerPreferenceInput): Promise<WorkspaceComposerPreference>
   /**
    * The session setters change the live session and remember the choice for

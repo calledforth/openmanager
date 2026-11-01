@@ -15,6 +15,7 @@ import {
   parseReplayResult,
   ReplayCursorError,
   type Cursor,
+  type ScopeSnapshot,
   type SubscriptionScope,
 } from '@openmanager/protocol'
 import { environmentScope, sessionScope, threadScope, proofEvents } from './proof-fixtures.js'
@@ -376,5 +377,45 @@ describe('lagging and catch-up', () => {
       payload: { ...(replayResponse.payload as object), events: [] },
     }
     expect(SubscriptionCatchupSchema.safeParse(broken).success).toBe(false)
+  })
+})
+
+describe('whole snapshots (F5b)', () => {
+  it('accepts snapshot_smaller only as a justified catch-up from an older cursor', () => {
+    const command = {
+      ...replayCommand,
+      payload: { ...replayCommand.payload, cursor: replayCursor },
+    }
+    const answer = (sequence: number) => ({
+      ...snapshotResponse,
+      requestId: command.requestId,
+      payload: {
+        ...(snapshotResponse.payload as object),
+        reason: 'snapshot_smaller',
+        snapshot: { ...scopeSnapshots[2]!, cursor: { ...replayCursor, sequence } },
+      },
+    })
+    expect(parseReplayResult(command, answer(5)).type).toBe('response')
+    expect(() => parseReplayResult(command, answer(3))).toThrow(ReplayCursorError)
+  })
+
+  it('requires the order of a thread snapshot and every preference workspace', () => {
+    const [environment, , thread] = scopeSnapshots as [
+      Extract<ScopeSnapshot, { cursor: { scope: { type: 'environment' } } }>,
+      ScopeSnapshot,
+      Extract<ScopeSnapshot, { cursor: { scope: { type: 'thread' } } }>,
+    ]
+    const withoutOrder: Partial<typeof thread.state> = { ...thread.state }
+    delete withoutOrder.order
+    expect(ScopeSnapshotSchema.safeParse({ ...thread, state: withoutOrder }).success).toBe(false)
+    const stray = {
+      ...environment,
+      state: {
+        ...environment.state,
+        preferences: [{ workspaceId: 'gone', providerId: 'opencode', preference: {}, revision: 1 }],
+      },
+    }
+    expect(ScopeSnapshotSchema.safeParse(stray).success).toBe(false)
+    expect(ScopeSnapshotSchema.parse(environment)).toEqual(environment)
   })
 })

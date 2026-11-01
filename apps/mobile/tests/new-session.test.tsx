@@ -390,6 +390,34 @@ describe('a new session from the phone', () => {
     expect(callsOf(client, 'createSession')).toEqual([])
   })
 
+  it('offers the settings and commands the project last listed, as a draft has no chat of its own', async () => {
+    const { client } = await openLanding()
+    expect(probe.model.settings).toEqual([])
+    expect(probe.model.slashCommands).toEqual([])
+    await act(() =>
+      client.emit({
+        type: 'event',
+        eventId: 'listing-1',
+        timestamp: new Date().toISOString(),
+        name: 'composer.listing.updated',
+        scope: {
+          type: 'environment',
+          environmentId: client.getState().environment!.environmentId,
+        },
+        payload: {
+          workspaceId: ALPHA.workspaceId,
+          providerId: 'claude',
+          sourceSessionId: 'an-earlier-chat',
+          configOptions: [{ type: 'boolean', id: 'fast', name: 'Fast mode', currentValue: false }],
+          availableCommands: [{ name: 'review', description: 'Review the diff' }],
+        },
+      } as never),
+    )
+    await settle(client)
+    expect(probe.model.settings.map((option) => option.id)).toEqual(['fast'])
+    expect(probe.model.slashCommands.map((command) => command.name)).toEqual(['review'])
+  })
+
   it('creates the session with the draft, echoes the first message, and lands on its page', async () => {
     const { client, moves } = await openLanding({ latencyMs: 30 })
     await act(async () => probe.model.setText('Fix the flaky test'))
@@ -577,7 +605,6 @@ describe('a new session from the phone', () => {
       capabilities: [
         'getEnvironment',
         'listWorkspaces',
-        'listSessions',
         'getProviderCatalog',
         'createSession',
         'openSession',

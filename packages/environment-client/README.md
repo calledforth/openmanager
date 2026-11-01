@@ -52,18 +52,20 @@ The interface deliberately covers more than the server implements today.
 rejects a command with `capability_missing` before sending anything when the
 handshake did not advertise it. Provisional names (`workspace.add`,
 `workspace.remove`, `session.rename`, `session.delete`) become real when the
-protocol adds them (CAL-50, CAL-58); replay-based hydration replaces
-`session.open` + `session.history` when CAL-71 lands. The mock advertises everything by default and
+protocol adds them (CAL-50, CAL-58). Every scope, the environment included,
+loads through `subscription.replay`: a replay from the cursor, or the whole
+scope, which replaces the client's copy. The mock advertises everything by default and
 can be narrowed with `capabilities` to exercise the gated paths.
 
 ## Composer
 
-Six commands back the composer pickers, each gated on its own capability:
+Five commands back the composer pickers, each gated on its own capability
+(preferences themselves arrive with the environment snapshot):
 
 | Command                                           | Wire name                                  |
 | ------------------------------------------------- | ------------------------------------------ |
 | `getProviderCatalog`                              | `provider.catalog.get`                     |
-| `getComposerPreference` / `setComposerPreference` | `composer.preferences.get` / `.set`        |
+| `setComposerPreference`                           | `composer.preferences.set`                 |
 | `setSessionModel` / `setSessionMode`              | `composer.model.set` / `composer.mode.set` |
 | `setSessionConfigOption`                          | `composer.config_option.set`               |
 

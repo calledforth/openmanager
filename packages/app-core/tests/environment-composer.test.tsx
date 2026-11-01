@@ -217,11 +217,10 @@ describe('the composer over the environment client', () => {
       modes: { currentModeId: 'build' },
     })
     expect(probe.composer.draftSessionState?.models?.availableModels).toHaveLength(2)
-    // The workspace's last-used preference is read for the draft it seeds.
-    expect(inputOf(client, 'getComposerPreference')).toEqual({
-      workspaceId: WORKSPACE.workspaceId,
-      providerId: 'opencode',
-    })
+    // The workspace's last-used preference came with the environment; nothing reads it.
+    expect(client.calls.some((call) => call.command === ('getComposerPreference' as never))).toBe(
+      false,
+    )
   })
 
   it('opens a draft on what the workspace last used', async () => {
@@ -290,7 +289,7 @@ describe('the composer over the environment client', () => {
     })
     expect(probe.composer.composerConfigValues).toEqual({ effort: 'high', fast: true })
     expect(commandsOf(client)).not.toContain('setComposerPreference')
-    expect(client.getState().composerPreferences[WORKSPACE.workspaceId]?.opencode).toEqual({})
+    expect(client.getState().composerPreferences[WORKSPACE.workspaceId]?.opencode).toBeUndefined()
     // Picks alone are no draft: nothing is saved for them.
     expect(client.getState().draftEdits).toEqual({})
     expect(client.getState().drafts).toEqual({})
@@ -650,21 +649,34 @@ describe('the composer over the environment client', () => {
     await settle(client)
     expect(probe.composer.acpSessionState?.availableCommands).toBeUndefined()
 
+    const commands = [
+      { name: 'review', description: 'Review the diff' },
+      { name: 'search', description: 'Search', placeholder: 'query' },
+    ]
     client.emit({
       type: 'event',
       eventId: 'session-commands',
       timestamp: new Date().toISOString(),
-      name: 'session.composer.updated',
+      name: 'thread.listing.updated',
+      scope: {
+        type: 'thread',
+        environmentId: 'mock-environment',
+        sessionId: SESSION.sessionId,
+        threadId: client.getState().sessions[SESSION.sessionId]!.threadIds[0]!,
+      },
+      payload: { availableCommands: commands },
+    })
+    client.emit({
+      type: 'event',
+      eventId: 'workspace-commands',
+      timestamp: new Date().toISOString(),
+      name: 'composer.listing.updated',
       scope: { type: 'environment', environmentId: 'mock-environment' },
       payload: {
-        sessionId: SESSION.sessionId,
-        composer: {
-          modelId: 'opus',
-          availableCommands: [
-            { name: 'review', description: 'Review the diff' },
-            { name: 'search', description: 'Search', placeholder: 'query' },
-          ],
-        },
+        workspaceId: WORKSPACE.workspaceId,
+        providerId: 'opencode',
+        sourceSessionId: SESSION.sessionId,
+        availableCommands: commands,
       },
     })
     await settle(client)
@@ -695,22 +707,25 @@ describe('the composer over the environment client', () => {
     const client = createMockEnvironmentClient({ seed: SEED })
     await mount(client)
     const list = (
-      sessionId: string,
+      eventId: string,
       availableCommands: Array<{ name: string; description: string }>,
     ) =>
       client.emit({
         type: 'event',
-        eventId: `commands-${sessionId}`,
+        eventId,
         timestamp: new Date().toISOString(),
-        name: 'session.composer.updated',
+        name: 'composer.listing.updated',
         scope: { type: 'environment', environmentId: 'mock-environment' },
-        payload: { sessionId, composer: { availableCommands } },
+        payload: {
+          workspaceId: WORKSPACE.workspaceId,
+          providerId: 'opencode',
+          sourceSessionId: SESSION.sessionId,
+          availableCommands,
+        },
       })
-    list(SESSION.sessionId, [{ name: 'review', description: 'Review the diff' }])
-    list(SIBLING.sessionId, [])
-    // The draft is opened from the sibling, whose empty listing is the answer.
-    await act(() => probe.session.selectSession(WORKSPACE.workspaceId, SIBLING.sessionId))
-    await settle(client)
+    list('older', [{ name: 'review', description: 'Review the diff' }])
+    list('newer', [])
+    // The last listing is the answer, empty or not.
     await openDraft(client)
     expect(probe.composer.draftSessionState?.availableCommands).toEqual([])
   })

@@ -25,13 +25,9 @@ export type {
   FilesystemListing,
   HydrationState,
   InterruptTurnInput,
-  ListSessionsInput,
-  LoadSessionHistoryInput,
   OutboxEntry,
   PairingLink,
   PairingRedeemResponse,
-  SessionHistoryPage,
-  SessionListPage,
   ActivityRef,
   PendingInteraction,
   ProbeProviderInput,
@@ -65,6 +61,7 @@ export {
 } from './errors'
 export {
   applyActiveSession,
+  applyCatchingUp,
   applyActiveThread,
   applyComposerPreference,
   applyConnection,
@@ -75,12 +72,11 @@ export {
   applyProviderHealth,
   applyProviderProbe,
   applySessionCreated,
-  applySessionHistory,
-  applySessionList,
   applySessionOpen,
   applySessionRemoved,
   applySessionTitle,
   applySnapshot,
+  withSessionUpserted,
   applyThreadHydration,
   applyTurnSendFailed,
   applyTurnSending,
@@ -93,9 +89,13 @@ export {
   selectActiveThread,
   selectActiveTurn,
   selectComposerPreference,
+  selectDraftListing,
   selectSessionComposer,
+  selectSessionListing,
   selectConnection,
   selectPendingInteractions,
+  selectChatCatchingUp,
+  selectOpenChatCatchingUp,
   selectProviderCatalog,
   selectSessionList,
   selectRecentWorkspaces,
@@ -121,12 +121,6 @@ export {
   selectNewSessionDraftIds,
 } from './draft-state'
 export { createDraftSync, DRAFT_SAVE_DEBOUNCE_MS, type DraftSyncOptions } from './draft-sync'
-export {
-  pageSessionSummaries,
-  pageThreadMessages,
-  resolvePageLimit,
-  sessionListCursorOf,
-} from './pagination'
 export { UPLOAD_TICKET_COMMAND, WIRE_COMMANDS, type WireCommandName } from './wire'
 export {
   createMockEnvironmentClient,

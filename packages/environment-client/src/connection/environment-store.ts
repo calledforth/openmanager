@@ -77,6 +77,11 @@ export type StoredEnvironment = {
    * origin and never sets it. Absent for a record saved without one.
    */
   appOrigin?: string
+  /**
+   * The environment's socket refused this credential, and nothing has answered
+   * that yet. Absent otherwise. It keeps the refusal across a reload.
+   */
+  tokenRefused?: true
 }
 
 export type EnvironmentRegistry = {
@@ -193,6 +198,9 @@ function parseEnvironmentId(raw: unknown): string | null {
   if (typeof raw !== 'string') return null
   const environmentId = raw.trim()
   if (!environmentId || environmentId.length > 256 || /\s/.test(environmentId)) return null
+  // Connection state is kept in plain objects by this ID, and `/bootstrap` is
+  // unauthenticated: a name every object inherits would read as an entry.
+  if (environmentId in Object.prototype) return null
   return environmentId
 }
 
@@ -308,6 +316,7 @@ export function parseStoredEnvironment(input: unknown): StoredEnvironment | null
     routes,
     credential,
     ...(appOrigin ? { appOrigin } : {}),
+    ...(record.tokenRefused === true && credential ? { tokenRefused: true as const } : {}),
   }
 }
 
@@ -413,8 +422,14 @@ export function upsertStoredEnvironment(
   const existing = registry.environments.find((item) => item.environmentId === environmentId)
   const known = existing?.routes.find((item) => item.endpoint === endpoint)
   const appOrigin = parseAppOrigin(input.appOrigin) ?? existing?.appOrigin
+  // A refusal was of the token it was given to.
+  const keptRefusal =
+    existing?.tokenRefused && (!credential || credential === existing.credential)
+      ? { tokenRefused: true as const }
+      : {}
   const fields: StoredEnvironment = existing
     ? {
+        ...keptRefusal,
         environmentId,
         label: input.label !== undefined ? parseLabel(input.label) : existing.label,
         routes:
@@ -570,6 +585,12 @@ export function setStoredRouteHealth(
   return { ...registry, environments: replaceEnvironment(registry, record) }
 }
 
+function withoutTokenRefusal(environment: StoredEnvironment): StoredEnvironment {
+  const record = { ...environment }
+  delete record.tokenRefused
+  return record
+}
+
 /**
  * Replace a saved environment's client token, as after the environment
  * rotated it. Routes, label and selection are untouched. Returns the registry
@@ -585,8 +606,25 @@ export function setStoredCredential(
   if (!existing || !parsed || parsed === existing.credential) return registry
   return {
     ...registry,
-    environments: replaceEnvironment(registry, { ...existing, credential: parsed }),
+    environments: replaceEnvironment(registry, {
+      ...withoutTokenRefusal(existing),
+      credential: parsed,
+    }),
   }
+}
+
+/** Note whether the socket refused the environment's token. */
+export function setStoredTokenRefused(
+  registry: EnvironmentRegistry,
+  environmentId: string,
+  refused: boolean,
+): EnvironmentRegistry {
+  const existing = findStoredEnvironment(registry.environments, environmentId)
+  if (!existing || Boolean(existing.tokenRefused) === refused) return registry
+  const record: StoredEnvironment = refused
+    ? { ...existing, tokenRefused: true }
+    : withoutTokenRefusal(existing)
+  return { ...registry, environments: replaceEnvironment(registry, record) }
 }
 
 /**
@@ -607,9 +645,41 @@ export function adoptPersistedCredentials(
     const known = findStoredEnvironment(base.environments, id)?.credential
     if (!saved || saved === known || environment.credential !== known) return environment
     changed = true
-    return { ...environment, credential: saved }
+    // A refusal was of the token it was given to.
+    return { ...withoutTokenRefusal(environment), credential: saved }
   })
   return changed ? { ...next, environments } : next
+}
+
+/**
+ * Keep the saved list as other tabs left it since this tab last read or wrote
+ * the registry (`base`). Each tab writes all of it, so an environment removed
+ * elsewhere would otherwise come back with its token, and one added elsewhere
+ * would be lost. Nothing readable in storage says nothing about either.
+ */
+export function adoptPersistedEnvironments(
+  next: EnvironmentRegistry,
+  base: EnvironmentRegistry,
+  persisted: EnvironmentRegistry,
+): EnvironmentRegistry {
+  if (persisted === EMPTY_REGISTRY) return next
+  const has = (registry: EnvironmentRegistry, environmentId: string) =>
+    Boolean(findStoredEnvironment(registry.environments, environmentId))
+  const kept = next.environments.filter(
+    ({ environmentId }) => !has(base, environmentId) || has(persisted, environmentId),
+  )
+  const added = persisted.environments.filter(
+    ({ environmentId }) => !has(base, environmentId) && !has(next, environmentId),
+  )
+  if (kept.length === next.environments.length && added.length === 0) return next
+  const environments = [...kept, ...added]
+  return {
+    ...next,
+    environments,
+    selectedId: environments.some((item) => item.environmentId === next.selectedId)
+      ? next.selectedId
+      : null,
+  }
 }
 
 export function removeStoredEnvironment(

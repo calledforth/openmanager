@@ -7,7 +7,7 @@ import { AppText } from '../components/ui/AppText'
 import { usePhoneTheme } from '../theme/ThemeProvider'
 import { tap } from '../ui/haptics'
 import { Press } from '../ui/Press'
-import { draftFor, summarizeAnswer } from '@openmanager/app-core/logic'
+import { draftFor } from '@openmanager/app-core/logic'
 import { promptBodyMax, PromptRoomContext } from './prompt-room'
 import type { ComposerPrompt, ChoiceTone } from './model'
 
@@ -229,15 +229,16 @@ function FlowButton({
 /**
  * A question, through the shared question flow: one slide per question
  * (its options as fills, more than one where it allows that, a line of your
- * own where it allows that), a review slide when there are several, and
- * Skip until something is answered.
+ * own where it allows that), and Skip until something is answered. A single
+ * choice moves straight on, and sends from the last question; moving on from
+ * the last with a gap left goes back to the gap.
  */
 export function QuestionPrompt({ prompt }: { prompt: QuestionPromptModel }) {
   const theme = usePhoneTheme()
   const { flow } = prompt
-  const { question, questions, index, onReview, lastIndex } = flow
-  const draft = question ? draftFor(flow.drafts, question.questionId) : null
-  const freeText = !!question && question.allowFreeText !== false
+  const { question, questions, index } = flow
+  const draft = draftFor(flow.drafts, question.questionId)
+  const freeText = question.allowFreeText !== false
   // The heading and the first two rows, as measured: what always shows before scrolling.
   const [sizes, setSizes] = useState({ heading: 0, first: 0, second: 0 })
   const measure = (part: keyof typeof sizes) => (event: LayoutChangeEvent) => {
@@ -256,145 +257,97 @@ export function QuestionPrompt({ prompt }: { prompt: QuestionPromptModel }) {
         <>
           <View style={{ gap: 2 }} onLayout={measure('heading')}>
             <AppText variant="text-11-medium" style={{ color: theme.status.question }}>
-              {onReview
-                ? 'Review answers'
-                : questions.length > 1
-                  ? `Question ${index + 1} of ${questions.length}`
-                  : (prompt.title ?? 'Question')}
+              {questions.length > 1
+                ? `Question ${index + 1} of ${questions.length}`
+                : (prompt.title ?? 'Question')}
             </AppText>
-            {question ? (
-              <AppText variant="text-14-medium" style={{ color: theme.fg }}>
-                {question.prompt}
-              </AppText>
-            ) : null}
+            <AppText variant="text-14-medium" style={{ color: theme.fg }}>
+              {question.prompt}
+            </AppText>
           </View>
 
-          {onReview ? (
-            <View style={{ gap: 4 }}>
-              {questions.map((item, position) => {
-                const summary = summarizeAnswer(item, draftFor(flow.drafts, item.questionId))
-                return (
-                  <Press
-                    key={item.questionId}
-                    onLayout={
-                      position === 0
-                        ? measure('first')
-                        : position === 1
-                          ? measure('second')
-                          : undefined
-                    }
-                    accessibilityRole="button"
-                    accessibilityLabel={`${item.prompt}: ${summary ?? 'not answered yet'}`}
-                    onPress={() => flow.goTo(position)}
-                    style={({ pressed }) => ({
-                      paddingVertical: 8,
-                      paddingHorizontal: 12,
-                      borderRadius: 12,
-                      backgroundColor: pressed ? theme.active : theme.hover,
-                    })}
-                  >
-                    <AppText
-                      variant="text-12-regular"
-                      numberOfLines={1}
-                      style={{ color: theme.muted }}
-                    >
-                      {item.prompt}
-                    </AppText>
-                    <AppText
-                      variant="text-14-regular"
-                      numberOfLines={2}
-                      style={{ color: summary ? theme.fg : theme.faint }}
-                    >
-                      {summary ?? 'Not answered yet'}
-                    </AppText>
-                  </Press>
-                )
-              })}
-            </View>
-          ) : question && draft ? (
-            <View style={{ gap: 6 }}>
-              {question.options.map((option, position) => {
-                const selected = draft.selectedOptionIds.includes(option.optionId)
-                return (
-                  <Press
-                    key={option.optionId}
-                    onLayout={
-                      position === 0
-                        ? measure('first')
-                        : position === 1
-                          ? measure('second')
-                          : undefined
-                    }
-                    accessibilityRole={question.allowMultiple ? 'checkbox' : 'radio'}
-                    accessibilityLabel={option.label || option.optionId}
-                    accessibilityState={{ checked: selected }}
-                    onPress={() => {
-                      tap()
-                      flow.pick(question, option.optionId)
-                    }}
-                    style={({ pressed }) => ({
-                      flexDirection: 'row',
-                      alignItems: 'center',
-                      gap: 10,
-                      minHeight: 40,
-                      paddingVertical: 8,
-                      paddingHorizontal: 12,
-                      borderRadius: 14,
-                      backgroundColor: selected || pressed ? theme.active : theme.hover,
-                    })}
-                  >
-                    <View style={{ flex: 1, minWidth: 0 }}>
-                      <AppText variant="text-14-regular" style={{ color: theme.fg }}>
-                        {option.label || option.optionId}
-                      </AppText>
-                      {option.description ? (
-                        <AppText variant="text-12-regular" style={{ color: theme.muted }}>
-                          {option.description}
-                        </AppText>
-                      ) : null}
-                    </View>
-                    {question.allowMultiple ? (
-                      <View
-                        style={{
-                          width: 18,
-                          height: 18,
-                          borderRadius: 5,
-                          alignItems: 'center',
-                          justifyContent: 'center',
-                          backgroundColor: selected ? theme.fg : theme.active,
-                        }}
-                      >
-                        {selected ? <CheckIcon size={12} color={theme.bg} weight="bold" /> : null}
-                      </View>
-                    ) : selected ? (
-                      <CheckIcon size={16} color={theme.fg} weight="bold" />
-                    ) : null}
-                  </Press>
-                )
-              })}
-              {freeText ? (
-                <TextInput
-                  accessibilityLabel="Another answer"
-                  value={flow.text}
-                  onChangeText={flow.setText}
-                  placeholder="Another answer…"
-                  placeholderTextColor={theme.faint}
-                  multiline
-                  style={{
+          <View style={{ gap: 6 }}>
+            {question.options.map((option, position) => {
+              const selected = draft.selectedOptionIds.includes(option.optionId)
+              return (
+                <Press
+                  key={option.optionId}
+                  onLayout={
+                    position === 0
+                      ? measure('first')
+                      : position === 1
+                        ? measure('second')
+                        : undefined
+                  }
+                  accessibilityRole={question.allowMultiple ? 'checkbox' : 'radio'}
+                  accessibilityLabel={option.label || option.optionId}
+                  accessibilityState={{ checked: selected }}
+                  onPress={() => {
+                    tap()
+                    flow.choose(question, option.optionId)
+                  }}
+                  style={({ pressed }) => ({
+                    flexDirection: 'row',
+                    alignItems: 'center',
+                    gap: 10,
                     minHeight: 40,
-                    maxHeight: 110,
-                    paddingVertical: 9,
+                    paddingVertical: 8,
                     paddingHorizontal: 12,
                     borderRadius: 14,
-                    backgroundColor: theme.hover,
-                    color: theme.fg,
-                    fontFamily: 'Geist-Regular',
-                    fontSize: 14,
-                  }}
-                />
-              ) : null}
-            </View>
-          ) : null}
+                    backgroundColor: selected || pressed ? theme.active : theme.hover,
+                  })}
+                >
+                  <View style={{ flex: 1, minWidth: 0 }}>
+                    <AppText variant="text-14-regular" style={{ color: theme.fg }}>
+                      {option.label || option.optionId}
+                    </AppText>
+                    {option.description ? (
+                      <AppText variant="text-12-regular" style={{ color: theme.muted }}>
+                        {option.description}
+                      </AppText>
+                    ) : null}
+                  </View>
+                  {question.allowMultiple ? (
+                    <View
+                      style={{
+                        width: 18,
+                        height: 18,
+                        borderRadius: 5,
+                        alignItems: 'center',
+                        justifyContent: 'center',
+                        backgroundColor: selected ? theme.fg : theme.active,
+                      }}
+                    >
+                      {selected ? <CheckIcon size={12} color={theme.bg} weight="bold" /> : null}
+                    </View>
+                  ) : selected ? (
+                    <CheckIcon size={16} color={theme.fg} weight="bold" />
+                  ) : null}
+                </Press>
+              )
+            })}
+            {freeText ? (
+              <TextInput
+                accessibilityLabel="Another answer"
+                value={flow.text}
+                onChangeText={flow.setText}
+                placeholder="Another answer…"
+                placeholderTextColor={theme.faint}
+                multiline
+                style={{
+                  minHeight: 40,
+                  maxHeight: 110,
+                  paddingVertical: 9,
+                  paddingHorizontal: 12,
+                  borderRadius: 14,
+                  backgroundColor: theme.hover,
+                  color: theme.fg,
+                  fontFamily: 'Geist-Regular',
+                  fontSize: 14,
+                }}
+              />
+            ) : null}
+          </View>
         </>
       }
       footer={
@@ -410,8 +363,8 @@ export function QuestionPrompt({ prompt }: { prompt: QuestionPromptModel }) {
             {flow.canAdvance ? (
               <FlowButton
                 strong
-                label={index === lastIndex ? (flow.submitting ? 'Sending…' : 'Submit') : 'Next'}
-                icon={index === lastIndex ? 'done' : 'forward'}
+                label={flow.willSubmit ? (flow.submitting ? 'Sending…' : 'Submit') : 'Next'}
+                icon={flow.willSubmit ? 'done' : 'forward'}
                 disabled={flow.submitting}
                 onPress={flow.advance}
               />

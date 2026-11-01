@@ -14,15 +14,16 @@ import type {
   ProviderComposerProfiles,
   WorkspaceComposerPreference,
 } from '@openmanager/shared/contracts/composer-profile'
-import type { DraftContent } from '@openmanager/protocol'
+import type { ComposerListing, DraftContent } from '@openmanager/protocol'
 import {
   selectComposerPreference,
   selectDraftContent,
+  selectDraftListing,
   selectDraftTarget,
   selectProviderCatalog,
+  selectSessionListing,
   shallowEqualArray,
   type EnvironmentState,
-  type SessionComposerState,
 } from '@openmanager/environment-client'
 import type { SessionConfigValue } from '../components/chat/modelConfig'
 import {
@@ -41,7 +42,7 @@ import {
 } from './composer-provider'
 import { DraftPageContext, DraftPicksContext, type DraftPagePicks } from './draft-pages'
 import { resolveDraftProvider } from './draft-provider'
-import { latestSendingDraft } from './environment-drafts'
+import { latestSendingDraft, sendingNewSessionDraft } from './environment-drafts'
 import { PlatformCapabilitiesContext, providerBlocksComposer } from './platform-provider'
 import { SessionStateContext } from './session-provider'
 
@@ -118,38 +119,9 @@ export const DraftLaunchContext = createContext<DraftLaunchInternals | null>(nul
 const UNSUPPORTED_PICK = 'This environment cannot change that for a new chat.'
 const message = (err: unknown) => (err instanceof Error ? err.message : String(err))
 
-/**
- * A draft has no session to list its settings or commands, so it borrows the
- * listing of the newest session on the same provider: the one it was opened
- * from, then one in its workspace, then any. An empty command listing is the
- * provider saying it offers none, so it is an answer; an empty settings
- * listing is only a session that has not reported yet.
- */
-function draftListing<K extends 'configOptions' | 'availableCommands'>(
-  state: EnvironmentState,
-  listing: K,
-  workspaceId: string,
-  providerId: ProviderId,
-  previousSessionId: string | null,
-): NonNullable<SessionComposerState[K]> | undefined {
-  let best: { rank: number; at: string; listed: NonNullable<SessionComposerState[K]> } | undefined
-  for (const session of Object.values(state.sessions)) {
-    const listed = session?.composer?.[listing]
-    const reported = listing === 'availableCommands' ? listed !== undefined : !!listed?.length
-    if (!session || !listed || !reported || session.providerId !== providerId) continue
-    const rank =
-      session.sessionId === previousSessionId ? 2 : session.workspaceId === workspaceId ? 1 : 0
-    const at = session.updatedAt ?? ''
-    if (!best || rank > best.rank || (rank === best.rank && at > best.at)) {
-      best = { rank, at, listed }
-    }
-  }
-  return best?.listed
-}
-
 /** The wire keeps only a command's hint; the composer reads it as ACP input. */
 const toAcpCommands = (
-  commands: NonNullable<SessionComposerState['availableCommands']>,
+  commands: NonNullable<ComposerListing['availableCommands']>,
 ): AcpCommandOption[] =>
   commands.map((command) => ({
     name: command.name,
@@ -204,13 +176,11 @@ export function EnvironmentComposerStateProvider({ children }: { children: React
     isSessionDraftOpen,
     defaultProviderId,
     setDefaultProviderId,
-    draftRequest,
   } = useContext(SessionStateContext)!
   const draftPage = useContext(DraftPageContext)
   const { agentUiStatusByProvider, providerDisplayName } = useContext(PlatformCapabilitiesContext)!
   const catalog = useEnvironmentState(selectProviderCatalog, shallowEqualArray)
   const connection = useConnectionState()
-  const connectionPhase = connection.phase
   // Each composer command is negotiated on its own, so a catalog can be
   // listed by an environment that cannot act on a pick. Advertised
   // capabilities arrive with the handshake; this re-reads them on connect.
@@ -225,7 +195,11 @@ export function EnvironmentComposerStateProvider({ children }: { children: React
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [client, connection.capabilities],
   )
-  const activeSession = useActiveSession()
+  // The session this composer serves: the one on screen, and only while
+  // session state says one is open. A scope with a draft of its own (the
+  // quick New agent palette) has none, whatever the page behind it shows.
+  const listedSession = useActiveSession()
+  const activeSession = activeSessionId ? listedSession : undefined
   const sync = client.drafts
   // Picks made on a draft the environment does not have yet, by draft id.
   // Its first save takes them along.
@@ -300,41 +274,26 @@ export function EnvironmentComposerStateProvider({ children }: { children: React
       ? selectComposerPreference(state, preferenceWorkspaceId, preferenceProviderId)
       : null,
   )
-  const providerListed = catalog.some((entry) => entry.id === preferenceProviderId)
-  useEffect(() => {
-    // Not loaded is distinct from empty, and a reconnect without a cursor
-    // returns a held preference to not loaded, so this reads it again then.
-    if (!preferenceWorkspaceId || preference || !providerListed) return
-    if (connectionPhase !== 'connected' || !client.supports('getComposerPreference')) return
-    void commands
-      .getComposerPreference({
-        workspaceId: preferenceWorkspaceId,
-        providerId: preferenceProviderId,
-      })
-      .catch(noop)
-  }, [
-    client,
-    commands,
-    connectionPhase,
-    preference,
-    preferenceProviderId,
-    preferenceWorkspaceId,
-    providerListed,
-  ])
+  // Every preference arrives with the environment's snapshot; there is no
+  // read of one (docs/sync-foundations.md §6.2).
 
   const sessionComposer = activeSession?.composer
+  // What the provider offers arrives with the chat, not with the sidebar.
+  const sessionListing = useEnvironmentState((state) =>
+    activeSessionId ? selectSessionListing(state, activeSessionId) : null,
+  )
   const acpSessionState = useMemo<AcpSessionRuntimeState | null>(() => {
     if (!activeSessionId) return null
     const runtime: AcpSessionRuntimeState = {
       sessionId: activeSessionId,
       providerId: sessionProviderId,
-      ...(sessionComposer?.configOptions
-        ? { configOptions: sessionComposer.configOptions as SessionConfigOption[] }
+      ...(sessionListing?.configOptions
+        ? { configOptions: sessionListing.configOptions as SessionConfigOption[] }
         : {}),
       ...(sessionComposer?.modelId ? { models: { currentModelId: sessionComposer.modelId } } : {}),
       ...(sessionComposer?.modeId ? { modes: { currentModeId: sessionComposer.modeId } } : {}),
-      ...(sessionComposer?.availableCommands
-        ? { availableCommands: toAcpCommands(sessionComposer.availableCommands) }
+      ...(sessionListing?.availableCommands
+        ? { availableCommands: toAcpCommands(sessionListing.availableCommands) }
         : {}),
       ...(sessionComposer?.usage ? { usage: sessionComposer.usage } : {}),
     }
@@ -346,32 +305,24 @@ export function EnvironmentComposerStateProvider({ children }: { children: React
       providerComposerProfiles[sessionProviderId],
       { modelOwner: 'session' },
     )
-  }, [activeSessionId, preference, providerComposerProfiles, sessionComposer, sessionProviderId])
+  }, [
+    activeSessionId,
+    preference,
+    providerComposerProfiles,
+    sessionComposer,
+    sessionListing,
+    sessionProviderId,
+  ])
 
-  const previousSessionId =
-    draftRequest && draftRequest.workspacePath === draftWorkspaceId
-      ? draftRequest.previousSessionId
-      : null
   const borrowedConfigOptions = useEnvironmentState((state) =>
     draftWorkspaceId
-      ? (draftListing(
-          state,
-          'configOptions',
-          draftWorkspaceId,
-          draftProviderId,
-          previousSessionId,
-        ) as SessionConfigOption[] | undefined)
+      ? (selectDraftListing(state, 'configOptions', draftWorkspaceId, draftProviderId) as
+          SessionConfigOption[] | undefined)
       : undefined,
   )
   const borrowedCommands = useEnvironmentState((state) =>
     draftWorkspaceId
-      ? draftListing(
-          state,
-          'availableCommands',
-          draftWorkspaceId,
-          draftProviderId,
-          previousSessionId,
-        )
+      ? selectDraftListing(state, 'availableCommands', draftWorkspaceId, draftProviderId)
       : undefined,
   )
   const draftPreference = useMemo(
@@ -543,7 +494,12 @@ export function EnvironmentComposerStateProvider({ children }: { children: React
     (workspaceId: string): DraftLaunch => {
       // The draft the composer set aside when send was pressed. It launches
       // from its own project even if the page moved on while images uploaded.
-      const sending = sync ? latestSendingDraft(sync) : undefined
+      // Its own draft first: another composer (the quick New agent palette)
+      // may be sending one of its own at the same time.
+      const own = liveRef.current.draftId
+      const sending = sync
+        ? ((own ? sendingNewSessionDraft(sync, own) : undefined) ?? latestSendingDraft(sync))
+        : undefined
       const id = sending?.draftId ?? liveRef.current.draftId
       let kept = sending ? { draftId: sending.draftId, sessionId: sending.sessionId } : undefined
       if (sync && !sending && id) {

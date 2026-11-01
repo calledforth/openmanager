@@ -129,9 +129,9 @@ describe('streamed provider through the server', () => {
         .filter((record) => record.event.name === 'session.updated')
         .map((record) => ProofEventSchemas['session.updated'].parse(record.event).payload)
       expect(sidebarCompleted.map((record) => record.event.name)).toContain('workspace.updated')
-      expect(
-        sidebarUpdates.flatMap((payload) => (payload.status ? [payload.status] : [])),
-      ).toEqual(['running', 'idle'])
+      expect(sidebarUpdates.flatMap((payload) => (payload.status ? [payload.status] : []))).toEqual(
+        ['running', 'idle'],
+      )
       // The sidebar never opened this session, so its name has to arrive here.
       expect(sidebarUpdates.filter((payload) => payload.title !== undefined)).toMatchObject([
         { title: 'complete me', titleSource: 'fallback' },
@@ -201,24 +201,20 @@ describe('streamed provider through the server', () => {
       })
       try {
         expect(
-          restarted.threadService.dispatch({
-            type: 'command',
-            requestId: 'history-after-restart',
-            name: 'session.history',
-            payload: { sessionId: session.sessionId, threadId: thread.threadId },
+          restarted.threadService.threadState({
+            sessionId: session.sessionId,
+            threadId: thread.threadId,
           }),
         ).toMatchObject({
-          payload: {
-            turns: [
-              { turnId: firstTurnId, state: 'completed' },
-              { turnId: secondTurnId, state: 'interrupted' },
-            ],
-            messages: [
-              { role: 'user', content: [{ type: 'text', text: 'complete me' }] },
-              { role: 'assistant', content: [{ type: 'text', text: 'Hello' }] },
-              { role: 'user', content: [{ type: 'text', text: 'interrupt me' }] },
-            ],
-          },
+          turns: [
+            { turnId: firstTurnId, state: 'completed' },
+            { turnId: secondTurnId, state: 'interrupted' },
+          ],
+          messages: [
+            { role: 'user', content: [{ type: 'text', text: 'complete me' }] },
+            { role: 'assistant', content: [{ type: 'text', text: 'Hello' }] },
+            { role: 'user', content: [{ type: 'text', text: 'interrupt me' }] },
+          ],
         })
       } finally {
         await restarted.close()

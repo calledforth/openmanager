@@ -46,22 +46,20 @@ import {
   applyProviderCatalog,
   applyProviderProbe,
   applySessionCreated,
-  applySessionHistory,
   applySessionOpen,
   applySessionOpening,
+  applyThreadHydration,
   applyTurnSendFailed,
   applyTurnSending,
   applyWorkspaceList,
   createInitialState,
   createThreadState,
   deriveSessionStatus,
-  selectSessionList,
 } from './state'
 import { dropOverlayEntry, settleAnswered, updateOverlay } from './overlay'
 import { applyDraftList } from './draft-state'
 import { createDraftSync } from './draft-sync'
 import { createEnvironmentStore } from './store'
-import { pageSessionSummaries, pageThreadMessages } from './pagination'
 import type {
   ComposerPreferenceTarget,
   SessionComposerState,
@@ -209,6 +207,16 @@ const wireCapabilities = (capabilities: ReadonlySet<EnvironmentCommandName>, upl
 const defaultIds = () => {
   let counter = 0
   return () => `mock-${++counter}`
+}
+
+/** A held session as the environment states it: the summary without the client's thread list. */
+function withoutThreadIds<T extends { threadIds: readonly string[] }>(
+  session: T,
+): Omit<T, 'threadIds'> {
+  return Object.fromEntries(Object.entries(session).filter(([key]) => key !== 'threadIds')) as Omit<
+    T,
+    'threadIds'
+  >
 }
 
 export function createMockEnvironmentClient(
@@ -744,6 +752,16 @@ export function createMockEnvironmentClient(
     if (known) store.update((state) => applyComposerPreference(state, target, next, revision))
     return next
   }
+  // The environment snapshot carries every preference (docs/sync-foundations.md
+  // §6.2): the mock's store holds the seeded ones from the start, as a
+  // connected client does.
+  for (const [key, preference] of preferences) {
+    const [workspaceId, providerId] = JSON.parse(key) as [string, string]
+    preferenceRevisions.set(key, 1)
+    store.update((state) =>
+      applyComposerPreference(state, { workspaceId, providerId }, preference, 1),
+    )
+  }
 
   /**
    * The environment always knows a session's provider; the client only does
@@ -969,11 +987,6 @@ export function createMockEnvironmentClient(
         }
         emit({ ...base(), name: 'workspace.removed', scope: envScope(), payload: { workspaceId } })
       }),
-    listSessions: (input = {}) =>
-      run('listSessions', input, () => {
-        const query = typeof input === 'string' ? { workspaceId: input } : input
-        return pageSessionSummaries(selectSessionList(store.getState()), query)
-      }),
     createSession: (input) =>
       run('createSession', input, () => {
         if (
@@ -1125,15 +1138,9 @@ export function createMockEnvironmentClient(
           throw new EnvironmentClientError('session_unrecoverable', message)
         }
         store.update((state) => {
+          // The whole summary, as the environment states it.
           let next = applySessionOpen(state, {
-            session: {
-              sessionId: session.sessionId,
-              workspaceId: session.workspaceId,
-              title: session.title,
-              status: session.status,
-              providerId: session.providerId,
-              updatedAt: session.updatedAt,
-            },
+            session: withoutThreadIds(session),
             threads: session.threadIds
               .map((threadId) => state.threads[threadId]?.thread)
               .filter((thread): thread is Thread => thread !== undefined),
@@ -1141,15 +1148,8 @@ export function createMockEnvironmentClient(
           for (const threadId of session.threadIds) {
             const thread = next.threads[threadId]
             if (!thread) continue
-            next = applySessionHistory(next, thread.thread, {
-              messages: thread.messages,
-              turns: thread.turns,
-              interactions: thread.interactions.map((item) => ({
-                threadId: item.threadId,
-                interaction: item.interaction,
-              })),
-              nextCursor: null,
-            })
+            // The mock's store already holds the whole thread.
+            next = applyThreadHydration(next, threadId, 'ready')
           }
           return applyActiveSession(next, sessionId)
         })
@@ -1157,24 +1157,6 @@ export function createMockEnvironmentClient(
       overtaker = { sessionId, done }
       return done
     },
-    loadSessionHistory: (input) =>
-      run('loadSessionHistory', input, () => {
-        const thread = requireThread(input)
-        const page = pageThreadMessages(thread.messages, input)
-        const payload = {
-          messages: page.messages,
-          turns: thread.turns,
-          interactions: thread.interactions.map((item) => ({
-            threadId: item.threadId,
-            interaction: item.interaction,
-          })),
-          nextCursor: page.nextCursor,
-        }
-        store.update((state) =>
-          applySessionHistory(state, thread.thread, payload, input.cursor !== undefined),
-        )
-        return payload
-      }),
     renameSession: (sessionId, title) =>
       run('renameSession', { sessionId, title }, () => {
         if (!store.getState().sessions[sessionId]) {
@@ -1361,12 +1343,6 @@ export function createMockEnvironmentClient(
         }
         store.update((state) => applyProviderProbe(state, provider))
         return provider
-      }),
-    getComposerPreference: (input) =>
-      run('getComposerPreference', input, () => {
-        parseComposerPayload('composer.preferences.get', input)
-        requireProvider(input.providerId)
-        return writePreference(input, {})
       }),
     setComposerPreference: (input) =>
       run('setComposerPreference', input, () => {
@@ -1769,27 +1745,13 @@ export function createMockEnvironmentClient(
           .map((id) => state.threads[id])
           .filter((thread): thread is NonNullable<typeof thread> => thread !== undefined)
         store.update((current) => {
+          // The whole summary, as the environment states it.
           let next = applySessionOpen(current, {
-            session: {
-              sessionId: summary.sessionId,
-              workspaceId: summary.workspaceId,
-              title: summary.title,
-              status: summary.status,
-              providerId: summary.providerId,
-              updatedAt: summary.updatedAt,
-            },
+            session: withoutThreadIds(summary),
             threads: threadStates.map((item) => item.thread),
           })
           for (const item of threadStates) {
-            next = applySessionHistory(next, item.thread, {
-              messages: item.messages,
-              turns: item.turns,
-              interactions: item.interactions.map((pending) => ({
-                threadId: pending.threadId,
-                interaction: pending.interaction,
-              })),
-              nextCursor: null,
-            })
+            next = applyThreadHydration(next, item.thread.threadId, 'ready')
           }
           return applyActiveSession(next, sessionId)
         })

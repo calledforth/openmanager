@@ -1,27 +1,21 @@
 import type { DatabaseSync } from 'node:sqlite'
-import { budgetSessionPage } from '../session-pagination.ts'
+import type { Logger } from '../logger.ts'
+import { storedListing } from './composer-rows.ts'
 import { readSessionActivity } from './session-activity.ts'
 import {
   ContentBlockSchema,
-  HistoryCursorSchema,
   InteractionSchema,
-  InteractionResponseSchema,
-  PlanHistoryEntrySchema,
   ReasoningBlockSchema,
-  SessionListCursorSchema,
   SessionSummarySchema,
   ToolCallStateSchema,
   TurnSchema,
   TURN_FAILURE_MESSAGES,
-  resolvePageLimit,
   type ActivityRef,
-  type HistoryCursor,
+  type ComposerListing,
   type Interaction,
   type Message,
-  type PlanHistoryEntry,
   type ReasoningBlock,
   type ToolCallState,
-  type SessionListCursor,
   type SessionStatus,
   type SessionSummary,
   type Thread,
@@ -30,30 +24,20 @@ import {
   type TurnStart,
 } from '@openmanager/protocol/node'
 import {
-  INTERACTIONS_FOR_TURN_SQL,
+  ALL_SESSIONS_SQL,
   INTERACTION_IN_THREAD_SQL,
-  MESSAGE_HISTORY_PAGE_SQL,
+  MESSAGE_PARTS_FOR_THREAD_SQL,
   MESSAGE_PARTS_SQL,
-  SESSION_LIST_FOR_ENVIRONMENT_SQL,
-  SESSION_LIST_FOR_WORKSPACE_SQL,
+  MESSAGES_FOR_THREAD_SQL,
+  PENDING_INTERACTIONS_FOR_THREAD_SQL,
   THREAD_IN_SESSION_SQL,
+  THREAD_LISTING_SQL,
   THREADS_FOR_SESSION_SQL,
-  TURN_ACTIVITY_PAGE_SQL,
+  TURN_ACTIVITY_FOR_THREAD_SQL,
   TURN_FOR_COMMAND_ID_SQL,
   TURNS_FOR_THREAD_SQL,
   USER_MESSAGE_FOR_TURN_SQL,
 } from './queries.ts'
-
-export interface SessionListQuery {
-  workspaceId?: string
-  cursor?: SessionListCursor
-  limit?: number
-}
-
-export interface SessionListPage {
-  sessions: SessionSummary[]
-  nextCursor: SessionListCursor | null
-}
 
 export interface CommandTurnQuery {
   sessionId: string
@@ -61,25 +45,19 @@ export interface CommandTurnQuery {
   commandId: string
 }
 
-export interface SessionHistoryQuery {
-  sessionId: string
-  threadId: string
-  cursor?: HistoryCursor
-  limit?: number
-}
-
-export interface SessionHistoryPage {
-  messages: Message[]
+/** A thread as its snapshot states it (docs/sync-foundations.md §6.2): all of it. */
+export interface ThreadState {
+  thread: Thread
   turns: Turn[]
-  /** `turnId` is server-side detail for snapshots; the history response schema drops it. */
-  interactions: Array<{ threadId: string; turnId: string; interaction: Interaction }>
-  plans: PlanHistoryEntry[]
-  /** Reasoning blocks and tool calls of the turns whose messages are on the page. */
+  messages: Message[]
   reasoning: ReasoningBlock[]
   tools: ToolCallState[]
-  /** The page's messages, reasoning and tools in the order they happened. */
+  /** Every message, reasoning block and tool call, in the order they happened. */
   order: ActivityRef[]
-  nextCursor: HistoryCursor | null
+  /** Pending requests, each with the turn it belongs to. */
+  interactions: Array<{ turnId: string; interaction: Interaction }>
+  /** What the provider offers this chat. */
+  listing: ComposerListing
 }
 
 type SessionRow = {
@@ -156,6 +134,7 @@ type MessageRow = {
   ordinal: number
 }
 type PartRow = { content_json: string }
+type ThreadPartRow = { message_id: string; content_json: string }
 type InteractionRow = {
   turn_id: string
   request_json: string
@@ -176,12 +155,6 @@ function interactionFromRow(row: InteractionRow): Interaction {
     },
   })
 }
-
-const FIRST_LIST_CURSOR = {
-  updatedAtMs: Number.MAX_SAFE_INTEGER,
-  sessionId: '\uffff',
-} as const
-const FIRST_HISTORY_ORDINAL = Number.MAX_SAFE_INTEGER
 
 export function sessionRowToSummary(database: DatabaseSync, row: SessionRow): SessionSummary {
   return SessionSummarySchema.parse({
@@ -205,32 +178,11 @@ export function sessionRowToSummary(database: DatabaseSync, row: SessionRow): Se
   })
 }
 
-/**
- * Newest-first keyset page over the environment or one workspace. Fetches
- * `limit + 1` so `nextCursor` is exact without counting the table.
- */
-export function listSessionSummaries(
-  database: DatabaseSync,
-  query: SessionListQuery = {},
-): SessionListPage {
-  const limit = resolvePageLimit(query.limit)
-  const cursor = query.cursor ? SessionListCursorSchema.parse(query.cursor) : undefined
-  const updatedAtMs = cursor ? Date.parse(cursor.updatedAt) : FIRST_LIST_CURSOR.updatedAtMs
-  const sessionId = cursor?.sessionId ?? FIRST_LIST_CURSOR.sessionId
-  const rows = (
-    query.workspaceId
-      ? database
-          .prepare(SESSION_LIST_FOR_WORKSPACE_SQL)
-          .all(query.workspaceId, updatedAtMs, sessionId, limit + 1)
-      : database.prepare(SESSION_LIST_FOR_ENVIRONMENT_SQL).all(updatedAtMs, sessionId, limit + 1)
-  ) as SessionRow[]
-  const page = rows.slice(0, limit).map((row) => sessionRowToSummary(database, row))
-  const last = page.at(-1)
-  return budgetSessionPage({
-    sessions: page,
-    nextCursor:
-      rows.length > limit && last ? { updatedAt: last.updatedAt, sessionId: last.sessionId } : null,
-  })
+/** Every session, newest first: the environment snapshot's sidebar (§6.2). */
+export function listAllSessionSummaries(database: DatabaseSync): SessionSummary[] {
+  return (database.prepare(ALL_SESSIONS_SQL).all() as SessionRow[]).map((row) =>
+    sessionRowToSummary(database, row),
+  )
 }
 
 export function listThreadsForSession(database: DatabaseSync, sessionId: string): Thread[] {
@@ -287,42 +239,41 @@ export function getProviderSessionId(
 }
 
 /**
- * One newest-first page of a thread's messages, with parts, turns, and
- * pending interactions hydrated. `nextCursor.ordinal` is the oldest ordinal
- * on this page — the exclusive bound for the next older page.
+ * The whole thread, as its snapshot carries it: every turn, message,
+ * reasoning block (uncapped) and tool call, their order by the thread-wide
+ * ordinal both tables draw from, and the pending requests with their turn.
+ * One query per table, whatever the thread's length.
  */
-export function listSessionHistory(
+export function readThreadState(
   database: DatabaseSync,
-  query: SessionHistoryQuery,
-): SessionHistoryPage | undefined {
+  query: { sessionId: string; threadId: string },
+  log?: Logger,
+): ThreadState | undefined {
   const thread = database.prepare(THREAD_IN_SESSION_SQL).get(query.threadId, query.sessionId) as
     ThreadRow | undefined
   if (!thread) return undefined
-
-  const limit = resolvePageLimit(query.limit)
-  const ordinal = query.cursor
-    ? HistoryCursorSchema.parse(query.cursor).ordinal
-    : FIRST_HISTORY_ORDINAL
-  const rows = database
-    .prepare(MESSAGE_HISTORY_PAGE_SQL)
-    .all(query.threadId, ordinal, limit + 1) as MessageRow[]
-  const pageRows = rows.slice(0, limit)
-  const messages = pageRows.map((row) => messageFromRow(database, row)).reverse()
   const turns = (database.prepare(TURNS_FOR_THREAD_SQL).all(query.threadId) as TurnRow[]).map(
     turnFromRow,
   )
-  // The reasoning and tool calls that belong to this page: everything after
-  // the newest message the next older page will carry, up to this page's own
-  // newest message. Activity goes with the message that followed it, and what
-  // followed nothing yet (a turn that ended in a tool call) goes with the
-  // newest page. Both tables draw their ordinal from the same thread-wide
-  // counter, so the window partitions activity across pages exactly and one
-  // sort interleaves it with the page's messages.
-  const olderBound = rows[limit]?.ordinal ?? -1
-  const newerBound = query.cursor ? (pageRows[0]?.ordinal ?? olderBound) : ordinal
+  const messageRows = database.prepare(MESSAGES_FOR_THREAD_SQL).all(query.threadId) as MessageRow[]
+  const parts = new Map<string, Message['content']>()
+  for (const row of database
+    .prepare(MESSAGE_PARTS_FOR_THREAD_SQL)
+    .all(query.threadId) as ThreadPartRow[]) {
+    let content = parts.get(row.message_id)
+    if (!content) parts.set(row.message_id, (content = []))
+    content.push(ContentBlockSchema.parse(JSON.parse(row.content_json)))
+  }
+  const messages = messageRows.map((row) => ({
+    messageId: row.message_id,
+    threadId: row.thread_id,
+    turnId: row.turn_id,
+    role: row.role,
+    content: parts.get(row.message_id) ?? [],
+  }))
   const activityRows = database
-    .prepare(TURN_ACTIVITY_PAGE_SQL)
-    .all(query.threadId, olderBound, newerBound) as TurnActivityRow[]
+    .prepare(TURN_ACTIVITY_FOR_THREAD_SQL)
+    .all(query.threadId) as TurnActivityRow[]
   const reasoning: ReasoningBlock[] = []
   const tools: ToolCallState[] = []
   for (const row of activityRows) {
@@ -330,66 +281,51 @@ export function listSessionHistory(
     if (row.kind === 'reasoning') reasoning.push(ReasoningBlockSchema.parse(state))
     else tools.push(ToolCallStateSchema.parse(state))
   }
-  capReasoningText(reasoning)
-  const order: ActivityRef[] = [
-    ...pageRows.map((row) => ({
-      ordinal: row.ordinal,
-      ref: { kind: 'message' as const, id: row.message_id, turnId: row.turn_id },
-    })),
-    ...activityRows.map((row) => ({
-      ordinal: row.ordinal,
-      ref: { kind: row.kind, id: row.activity_id, turnId: row.turn_id },
-    })),
-  ]
-    .sort((left, right) => left.ordinal - right.ordinal)
-    .map((item) => item.ref)
-  const interactions = turns.flatMap((turn) =>
-    (database.prepare(INTERACTIONS_FOR_TURN_SQL).all(turn.turnId) as InteractionRow[]).map(
-      (row) => ({
-        threadId: query.threadId,
-        turnId: turn.turnId,
-        interaction: interactionFromRow(row),
-      }),
-    ),
-  )
-  const oldest = pageRows.at(-1)
-  const plans = (
-    database
-      .prepare(
-        `
-    SELECT interactions.turn_id, request_json, response_json, interactions.state,
-           interactions.created_at, resolved_at, resolved_by_client_id
-    FROM interactions JOIN turns ON turns.turn_id = interactions.turn_id
-    WHERE turns.thread_id = ? AND kind = 'plan'
-    ORDER BY interactions.created_at, interaction_id
-  `,
-      )
-      .all(query.threadId) as Array<
-      InteractionRow & {
-        response_json: string | null
-      }
-    >
-  ).map((row) =>
-    PlanHistoryEntrySchema.parse({
-      threadId: query.threadId,
-      turnId: row.turn_id,
-      plan: interactionFromRow(row),
-      state: row.state,
-      outcome: row.response_json
-        ? InteractionResponseSchema.parse(JSON.parse(row.response_json)).outcome
-        : undefined,
-    }),
-  )
+  // Both lists are in ordinal order already: merge them.
+  const order: ActivityRef[] = []
+  let message = 0
+  let activity = 0
+  while (message < messageRows.length || activity < activityRows.length) {
+    const nextMessage = messageRows[message]
+    const nextActivity = activityRows[activity]
+    if (nextMessage && (!nextActivity || nextMessage.ordinal < nextActivity.ordinal)) {
+      order.push({ kind: 'message', id: nextMessage.message_id, turnId: nextMessage.turn_id })
+      message += 1
+    } else if (nextActivity) {
+      order.push({
+        kind: nextActivity.kind,
+        id: nextActivity.activity_id,
+        turnId: nextActivity.turn_id,
+      })
+      activity += 1
+    }
+  }
+  const interactions = (
+    database.prepare(PENDING_INTERACTIONS_FOR_THREAD_SQL).all(query.threadId) as InteractionRow[]
+  ).map((row) => ({ turnId: row.turn_id, interaction: interactionFromRow(row) }))
   return {
-    messages,
+    thread: { threadId: thread.thread_id, sessionId: thread.session_id },
     turns,
-    interactions,
-    plans,
+    messages,
     reasoning,
     tools,
     order,
-    nextCursor: rows.length > limit && oldest !== undefined ? { ordinal: oldest.ordinal } : null,
+    interactions,
+    listing: readThreadListing(database, query.threadId, log) ?? {},
   }
+}
+
+/** What the provider last listed for this chat, if the thread exists and it has. */
+export function readThreadListing(
+  database: DatabaseSync,
+  threadId: string,
+  log?: Logger,
+): ComposerListing | undefined {
+  const row = database.prepare(THREAD_LISTING_SQL).get(threadId) as
+    { listing_json: string | null } | undefined
+  return row?.listing_json
+    ? storedListing(JSON.parse(row.listing_json), { threadId }, log)
+    : undefined
 }
 
 function messageFromRow(database: DatabaseSync, row: MessageRow): Message {
@@ -400,47 +336,6 @@ function messageFromRow(database: DatabaseSync, row: MessageRow): Message {
     turnId: row.turn_id,
     role: row.role,
     content: parts.map((part) => ContentBlockSchema.parse(JSON.parse(part.content_json))),
-  }
-}
-
-/**
- * Reasoning text a page may carry before the oldest blocks are elided. A
- * history page or a snapshot is one socket frame under a 1 MiB budget shared
- * with the messages; a long session's thoughts alone could exceed it and cost
- * the client its connection instead of its transcript.
- */
-export const REASONING_TEXT_BUDGET_BYTES = 384 * 1024
-
-/**
- * Spend the budget on the newest reasoning first. A block that does not fit
- * keeps as much of its tail as the budget still allows, behind a note of how
- * much was left out, so the most recent thinking is always what survives;
- * blocks past the budget keep the note alone. Tokens and phase stay, so every
- * row still reads as a finished thought of a known size.
- */
-function capReasoningText(reasoning: ReasoningBlock[]): void {
-  const encodedBytes = (value: unknown) => Buffer.byteLength(JSON.stringify(value), 'utf8')
-  let remaining = REASONING_TEXT_BUDGET_BYTES
-  for (let index = reasoning.length - 1; index >= 0; index -= 1) {
-    const block = reasoning[index]!
-    const bytes = encodedBytes(block.content)
-    if (bytes <= remaining) {
-      remaining -= bytes
-      continue
-    }
-    const text = block.content.map((item) => (item.type === 'text' ? item.text : '')).join('')
-    // The budget is spent on the encoded frame, so the tail is measured as
-    // JSON: a newline or quote costs two bytes there, a control character six.
-    let kept = text.slice(Math.max(0, text.length - remaining))
-    while (kept.length > 0 && encodedBytes(kept) > remaining) {
-      kept = kept.slice(Math.ceil(kept.length / 8))
-    }
-    remaining -= encodedBytes(kept)
-    const note = `[${text.length - kept.length} characters of thinking not loaded]`
-    reasoning[index] = {
-      ...block,
-      content: [{ type: 'text', text: kept ? `${note}\n${kept}` : note }],
-    }
   }
 }
 

@@ -130,6 +130,39 @@ export async function replay(
   return ReplayResponseSchema.parse(await nextResponse(client, requestId))
 }
 
+/**
+ * A scope's whole state, as its initial snapshot states it. The subscription
+ * the read opens is released again, so live frames keep going to the one a
+ * test already holds (a connection gets each frame once, on its newest).
+ */
+export async function snapshotState(client: ProtocolClient, scope: SubscriptionScope) {
+  const answer = await replay(client, scope, null)
+  if (answer.payload.mode !== 'snapshot') throw new Error('Expected a snapshot.')
+  const released = client.command('subscription.unsubscribe', {
+    subscriptionId: answer.payload.subscriptionId,
+  })
+  await nextResponse(client, released)
+  return answer.payload.snapshot.state
+}
+
+/** Every session summary, as the environment snapshot states them. */
+export async function listedSessions(client: ProtocolClient, environmentId: string) {
+  const state = await snapshotState(client, { type: 'environment', environmentId })
+  if (!('sessions' in state)) throw new Error('Expected an environment snapshot.')
+  return state.sessions
+}
+
+/** A thread's whole state, as its snapshot states it. */
+export async function threadState(
+  client: ProtocolClient,
+  environmentId: string,
+  target: { sessionId: string; threadId: string },
+) {
+  const state = await snapshotState(client, { type: 'thread', environmentId, ...target })
+  if (!('turns' in state)) throw new Error('Expected a thread snapshot.')
+  return state
+}
+
 export async function nextNonPing(client: ProtocolClient): Promise<ServerMessage> {
   for (;;) {
     const message = await client.next()

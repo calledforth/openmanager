@@ -7,7 +7,7 @@ import { ProofEventSchemas, type ProofEvent } from '@openmanager/protocol/node'
 import { openEnvironmentDatabase } from '../src/db/database.js'
 import { createEventProjector } from '../src/db/event-projection.js'
 import { createEventRepository, type DurableProofEvent } from '../src/db/event-repository.js'
-import { listSessionHistory } from '../src/db/session-store.js'
+import { readThreadState } from '../src/db/session-store.js'
 
 /**
  * The end of a turn closes every child it left open, with its own event,
@@ -159,7 +159,7 @@ describe('turn closure', () => {
       { workspace: expect.objectContaining({ workspaceId: 'workspace-1' }) },
     ])
 
-    const page = listSessionHistory(database, { sessionId: 'session-1', threadId: 'thread-1' })!
+    const page = readThreadState(database, { sessionId: 'session-1', threadId: 'thread-1' })!
     expect(page.tools.map((tool) => [tool.toolCallId, tool.status])).toEqual([
       ['tool-1', 'cancelled'],
       ['tool-2', 'completed'],

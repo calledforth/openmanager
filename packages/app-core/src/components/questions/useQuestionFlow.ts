@@ -1,35 +1,37 @@
-import { useCallback, useMemo, useState } from 'react'
+import { useCallback, useMemo, useRef, useState } from 'react'
 import type { Question, QuestionOutcome } from '@agentpack/contract'
 import type { PendingQuestion } from '../../providers/question-provider'
 import {
   allAnswered,
   buildAnswers,
   draftFor,
-  firstUnansweredIndex,
   isAnswered,
+  nextStep,
   toggleOption,
   type QuestionDraft,
 } from './questionFlow'
 
 export interface QuestionFlow {
   questions: Question[]
-  /** Current slide; equals `questions.length` on the review slide. */
+  /** Question on screen. */
   index: number
   /** +1 forward, -1 back — drives which way the slide animates in. */
   direction: number
   drafts: Record<string, QuestionDraft>
-  question: Question | undefined
-  onReview: boolean
-  hasReview: boolean
+  question: Question
   lastIndex: number
   /** Free text for the current question — the composer is bound to this. */
   text: string
   submitting: boolean
   complete: boolean
-  /** Whether the primary action (Next/Submit) is available right now. */
+  /** Whether the primary action is available right now. */
   canAdvance: boolean
+  /** Whether the primary action sends the answers rather than moving on. */
+  willSubmit: boolean
   setText: (next: string) => void
-  pick: (question: Question, optionId: string) => void
+  /** Pick an option. Multi-select toggles it and stays; single-select takes it
+   * and moves on (or sends, from the last question). */
+  choose: (question: Question, optionId: string) => void
   goTo: (index: number) => void
   advance: () => void
   skip: () => void
@@ -62,6 +64,7 @@ export function useQuestionFlow(
 ): QuestionFlow | null {
   const [state, setState] = useState<FlowState>(() => initial(pending?.requestId ?? ''))
   const [submitting, setSubmitting] = useState(false)
+  const submittingRef = useRef(false)
 
   // A new request resets the flow during render, so the first paint of a new
   // question set can never show the previous one's answers.
@@ -73,11 +76,9 @@ export function useQuestionFlow(
   // Stable identity: the empty fallback would otherwise be a fresh array every
   // render and invalidate every callback below it.
   const questions = useMemo(() => pending?.questions ?? [], [pending])
-  const hasReview = questions.length > 1
-  const lastIndex = hasReview ? questions.length : Math.max(0, questions.length - 1)
+  const lastIndex = Math.max(0, questions.length - 1)
   const index = Math.min(state.index, lastIndex)
-  const onReview = hasReview && index === questions.length
-  const question = onReview ? undefined : questions[index]
+  const question = questions[index]
   const draft = question ? draftFor(state.drafts, question.questionId) : undefined
   const complete = questions.length > 0 && allAnswered(questions, state.drafts)
 
@@ -85,7 +86,8 @@ export function useQuestionFlow(
     (next: number) => {
       setState((current) => {
         const clamped = Math.max(0, Math.min(lastIndex, next))
-        return { ...current, index: clamped, direction: clamped >= current.index ? 1 : -1 }
+        if (clamped === current.index) return current
+        return { ...current, index: clamped, direction: clamped > current.index ? 1 : -1 }
       })
     },
     [lastIndex],
@@ -105,50 +107,60 @@ export function useQuestionFlow(
     [question],
   )
 
-  const pick = useCallback((target: Question, optionId: string) => {
-    setState((current) => ({
-      ...current,
-      drafts: {
-        ...current.drafts,
+  const submit = useCallback(
+    async (drafts: Record<string, QuestionDraft>) => {
+      if (!onResolve || submittingRef.current) return
+      submittingRef.current = true
+      setSubmitting(true)
+      try {
+        await onResolve({ outcome: 'answered', answers: buildAnswers(questions, drafts) })
+      } finally {
+        submittingRef.current = false
+        setSubmitting(false)
+      }
+    },
+    [onResolve, questions],
+  )
+
+  /** Move on from the current question against `drafts` — passed in so an
+   * action that has just written a draft never moves on against the old one. */
+  const moveOn = useCallback(
+    (drafts: Record<string, QuestionDraft>) => {
+      const step = nextStep(questions, drafts, index)
+      if (step.kind === 'submit') void submit(drafts)
+      else goTo(step.index)
+    },
+    [goTo, index, questions, submit],
+  )
+
+  const choose = useCallback(
+    (target: Question, optionId: string) => {
+      const drafts = {
+        ...state.drafts,
         [target.questionId]: toggleOption(
           target,
-          draftFor(current.drafts, target.questionId),
+          draftFor(state.drafts, target.questionId),
           optionId,
         ),
-      },
-    }))
-  }, [])
+      }
+      setState((current) => ({ ...current, drafts }))
+      if (!target.allowMultiple) moveOn(drafts)
+    },
+    [moveOn, state.drafts],
+  )
 
-  const submit = useCallback(async () => {
-    if (!onResolve || !complete || submitting) return
-    setSubmitting(true)
-    try {
-      await onResolve({ outcome: 'answered', answers: buildAnswers(questions, state.drafts) })
-    } finally {
-      setSubmitting(false)
-    }
-  }, [complete, onResolve, questions, state.drafts, submitting])
+  const canAdvance = !!question && !!draft && isAnswered(question, draft) && !submitting
 
   const advance = useCallback(() => {
-    if (index >= lastIndex) {
-      void submit()
-      return
-    }
-    // Leaving the last question jumps to the first gap rather than walking the
-    // user forward through slides they already filled in.
-    if (hasReview && index === questions.length - 1) {
-      const gap = firstUnansweredIndex(questions, state.drafts)
-      goTo(gap === -1 ? questions.length : gap)
-      return
-    }
-    goTo(index + 1)
-  }, [goTo, hasReview, index, lastIndex, questions, state.drafts, submit])
+    if (!canAdvance) return
+    moveOn(state.drafts)
+  }, [canAdvance, moveOn, state.drafts])
 
   const skip = useCallback(() => {
     void onResolve?.({ outcome: 'cancelled', reason: 'user' })
   }, [onResolve])
 
-  if (!pending || questions.length === 0) return null
+  if (!pending || !question) return null
 
   return {
     questions,
@@ -156,19 +168,14 @@ export function useQuestionFlow(
     direction: state.direction,
     drafts: state.drafts,
     question,
-    onReview,
-    hasReview,
     lastIndex,
     text: draft?.text ?? '',
     submitting,
     complete,
-    canAdvance: onReview
-      ? complete && !submitting
-      : question
-        ? isAnswered(question, draft!) && !submitting
-        : false,
+    canAdvance,
+    willSubmit: nextStep(questions, state.drafts, index).kind === 'submit',
     setText,
-    pick,
+    choose,
     goTo,
     advance,
     skip,
