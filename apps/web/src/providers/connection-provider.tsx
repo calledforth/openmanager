@@ -133,6 +133,12 @@ type ConnectionValue = {
   inUseEndpoint: string | null
   connect: (endpoint: string, credential?: string) => void
   selectEnvironment: (environmentId: string) => void
+  /**
+   * Move the selection to the environment what is open belongs to. Unlike
+   * `selectEnvironment` this is nobody asking for that environment, so a token
+   * it refused stays refused and a connection on its way is left to it.
+   */
+  followEnvironment: (environmentId: string) => void
   removeEnvironment: (environmentId: string) => void
   /**
    * Make this route the person's first choice and reach the environment
@@ -1004,6 +1010,13 @@ export function ConnectionProvider({
     [abandonPendingConnect, startOver, update],
   )
 
+  const followEnvironment = useCallback(
+    (environmentId: string) => {
+      update((current) => selectStoredEnvironment(current, environmentId))
+    },
+    [update],
+  )
+
   const removeEnvironment = useCallback(
     (environmentId: string) => {
       abandonPendingConnect()
@@ -1344,6 +1357,7 @@ export function ConnectionProvider({
       inUseEndpoint,
       connect,
       selectEnvironment,
+      followEnvironment,
       removeEnvironment,
       chooseRoute,
       removeRoute,
@@ -1367,6 +1381,7 @@ export function ConnectionProvider({
       inUseEndpoint,
       connect,
       selectEnvironment,
+      followEnvironment,
       removeEnvironment,
       chooseRoute,
       removeRoute,

@@ -340,6 +340,37 @@ ms. A save copies the whole state on the main thread, and with several busy
 environments those would add up. Nobody is typing there, and what a reload loses
 comes back from the environment.
 
+## Which environment an address belongs to
+
+`/sessions/<id>` and `/drafts/<id>` say nothing about the environment, so the app
+finds it. Opening an address moves the selection to the environment that has it,
+which is what makes the page that environment's: the shell is keyed by
+environment, so nothing on the page carries over. Everything that opens a session
+or draft goes through the address, so this is the only place that decides.
+
+Environments are checked in the order that costs least:
+
+1. What is already loaded is checked, cached environments included, the selected
+   environment first. This covers cards, notifications, reloads and most pasted
+   links, with no request. Nothing counts as missing until every saved
+   environment's cache has been read.
+2. A session none of them has, say one past the first page of a list, is asked
+   for. The selected environment is asked first, because a session it is creating
+   this moment has no row yet, and the others only once it says no or cannot say.
+   Opening is the only way to ask, so an environment that has it selects it there;
+   if nobody is looking by the time it answers, that selection is dropped.
+3. Drafts need no question, because every draft is listed. Their page waits until
+   every environment on its way has listed them.
+
+If nobody who can say has a session and an environment is offline, the page says
+it may be there instead of leaving for `/`. It keeps looking, so the session opens
+when that environment comes back. A token that was refused counts as offline
+here, since that environment's cache is hidden and it cannot be asked.
+
+Following an address is not a person asking for that environment, so it does not
+lift a refusal or restart the route search as selecting one does. It happens once
+per address: choosing another environment on the address is left alone.
+
 ## Health
 
 Health is the last thing this client learned about a route, persisted so it

@@ -1,4 +1,13 @@
-import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react'
+import {
+  createContext,
+  useCallback,
+  useContext,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type ReactNode,
+} from 'react'
 import {
   createWebSocketEnvironmentClient,
   type EnvironmentClient,
@@ -32,6 +41,25 @@ const BACKGROUND_CACHE_SAVE_DELAY_MS = 2000
 type EnvironmentCache = ReturnType<typeof createEnvironmentCache>
 type Connection = ReturnType<typeof useConnection>
 
+type EnvironmentClients = {
+  /** Every environment's client that may be shown, by environment ID. */
+  clients: Readonly<Record<string, EnvironmentClient>>
+  /**
+   * What this browser kept of every saved environment has been read, at least
+   * once. Before that, not finding something in them means nothing.
+   */
+  everyCacheRead: boolean
+}
+
+const EnvironmentClientsContext = createContext<EnvironmentClients>({
+  clients: {},
+  everyCacheRead: true,
+})
+
+export function useEnvironmentClients() {
+  return useContext(EnvironmentClientsContext)
+}
+
 /**
  * A client that has not got through yet, as the page may see it: the same
  * cached state and drafts, and nothing that reaches the route. The artifact
@@ -59,6 +87,7 @@ function EnvironmentHost({
   reportRouteHealth,
   forgetSocket,
   publish,
+  noteCacheRead,
 }: {
   link: EnvironmentLink
   onScreen: boolean
@@ -67,6 +96,7 @@ function EnvironmentHost({
   reportRouteHealth: Connection['reportRouteHealth']
   forgetSocket: Connection['forgetSocket']
   publish: (environmentId: string, client: EnvironmentClient | null) => void
+  noteCacheRead: (environmentId: string) => void
 }) {
   const { environmentId, endpoint, routeVerified, wrongEnvironment, attempt } = link
   const credential = link.credential || undefined
@@ -92,7 +122,11 @@ function EnvironmentHost({
     tokenRefusedRef.current = link.tokenRefused
   }, [link.tokenRefused, onScreen])
   useEffect(() => {
-    if (needsPerson) return
+    if (needsPerson) {
+      // Hidden, so there is nothing of it to read.
+      noteCacheRead(environmentId)
+      return
+    }
     let cancelled = false
     let release: (() => void) | undefined
     void cache.getStore(environmentId).then((store) => {
@@ -150,6 +184,7 @@ function EnvironmentHost({
         if (report) reportRouteHealth(environmentId, endpoint, report, credential ?? '')
       })
       show()
+      noteCacheRead(environmentId)
       setClient(next)
       release = () => {
         unsubscribe()
@@ -177,6 +212,7 @@ function EnvironmentHost({
     environmentId,
     forgetSocket,
     needsPerson,
+    noteCacheRead,
     publish,
     reportRouteHealth,
     wrongEnvironment,
@@ -227,6 +263,18 @@ export function WebEnvironmentClientProvider({
       return next
     })
   }, [])
+  const [cachesRead, setCachesRead] = useState<ReadonlySet<string>>(() => new Set())
+  const noteCacheRead = useCallback((environmentId: string) => {
+    setCachesRead((current) =>
+      current.has(environmentId) ? current : new Set(current).add(environmentId),
+    )
+  }, [])
+  // Once. An environment added later must not put what is open on hold.
+  const [everyCacheRead, setEveryCacheRead] = useState(false)
+  if (!everyCacheRead && links.every((link) => cachesRead.has(link.environmentId))) {
+    setEveryCacheRead(true)
+  }
+  const allClients = useMemo(() => ({ clients, everyCacheRead }), [clients, everyCacheRead])
   // Identity comes only from the selection's environment ID, which a connect
   // has none of until the address has answered.
   const shownId = environment.status === 'selected' ? environment.environmentId : undefined
@@ -242,11 +290,14 @@ export function WebEnvironmentClientProvider({
           reportRouteHealth={reportRouteHealth}
           forgetSocket={forgetSocket}
           publish={publish}
+          noteCacheRead={noteCacheRead}
         />
       ))}
-      <EnvironmentClientProvider client={(shownId && clients[shownId]) || null}>
-        {children}
-      </EnvironmentClientProvider>
+      <EnvironmentClientsContext.Provider value={allClients}>
+        <EnvironmentClientProvider client={(shownId && clients[shownId]) || null}>
+          {children}
+        </EnvironmentClientProvider>
+      </EnvironmentClientsContext.Provider>
     </>
   )
 }
