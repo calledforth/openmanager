@@ -2,10 +2,22 @@ import type { AgentEvent } from '@agentpack/contract'
 import {
   TURN_FAILURE_MESSAGES,
   ProofEventSchema,
+  isSettledToolStatus,
   type ProofEvent,
   type SubscriptionScope,
+  type ToolCallUpdate,
   type TurnFailureReason,
 } from '@openmanager/protocol'
+
+import {
+  contentText,
+  isPathOnly,
+  ToolCallTracker,
+  toolFields,
+  toolOutputText,
+} from './toolCallProjection.js'
+
+export { ToolCallTracker } from './toolCallProjection.js'
 
 /** Host identities: never copy provider session/thread/request IDs onto the wire. */
 export interface ProtocolEventContext {
@@ -30,6 +42,14 @@ export interface ProtocolEventContext {
    * requests; a request always leaves its turn `waiting`.
    */
   turnState?: 'running' | 'waiting'
+  /**
+   * The turn's tool calls so far: running text streams as deltas, a declined
+   * permission reads as such, and the text a call settles with is left here
+   * for the host to store. Without one, the text of a settled call is lost.
+   */
+  toolCalls?: ToolCallTracker
+  /** The user asked to stop the turn: a tool failing from here on was cancelled. */
+  interruptRequested?: boolean
 }
 
 /** Map provider events into the provider-neutral proof protocol. */
@@ -201,14 +221,58 @@ export function projectAgentEvent(
         tokens: source.data.tokens,
       })
     case 'tool_call':
-    case 'tool_call_update':
-      return emit('tool.updated', threadScope, {
-        toolCallId: required('toolCallId'),
-        turnId: required('turnId'),
-        title: source.data.title,
-        kind: source.data.kind,
-        status: source.data.status,
+    case 'tool_call_update': {
+      const toolCallId = required('toolCallId')
+      const tracker = context.toolCalls ?? new ToolCallTracker()
+      const held = tracker.known(toolCallId)
+      const kind = source.data.kind ?? held.kind
+      const fields = toolFields(source.data, {
+        kind,
+        toolName: held.toolName,
+        // The first event of a call opens it, whichever kind of event it is.
+        opens: source.event === 'tool_call' || !tracker.has(toolCallId),
+        timestamp: source.timestamp,
       })
+      if (fields.status === 'failed') {
+        if (tracker.isDeclined(toolCallId)) fields.status = 'declined'
+        else if (context.interruptRequested) fields.status = 'cancelled'
+      }
+      const settled = isSettledToolStatus(fields.status)
+      const text = toolOutputText(source.data, {
+        pathOnly: isPathOnly(kind, fields.toolName ?? held.toolName, held.title ?? fields.title),
+        failed: fields.status === 'failed' || fields.status === 'declined',
+      })
+      let output: Pick<ToolCallUpdate, 'output' | 'outputDelta'> = {}
+      if (text !== undefined) {
+        if (settled) tracker.settleWith(toolCallId, text)
+        else output = tracker.replace(toolCallId, text)
+      }
+      tracker.observe(toolCallId, fields)
+      const outputBytes = settled ? tracker.outputBytes(toolCallId) : 0
+      return emit('tool.updated', threadScope, {
+        toolCallId,
+        turnId: required('turnId'),
+        ...fields,
+        ...output,
+        ...(outputBytes > 0 ? { outputBytes } : {}),
+      })
+    }
+    case 'tool_call_content': {
+      // Appended text. Anything else (an image, a diff, a terminal handle) has
+      // no place in a tool's output.
+      const text = contentText(source.data.item)
+      if (!text) return null
+      const toolCallId = required('toolCallId')
+      const tracker = context.toolCalls ?? new ToolCallTracker()
+      const held = tracker.known(toolCallId)
+      // A file's content is never output.
+      if (isPathOnly(held.kind, held.toolName, held.title)) return null
+      return emit('tool.updated', threadScope, {
+        toolCallId,
+        turnId: required('turnId'),
+        ...tracker.append(toolCallId, text),
+      })
+    }
     case 'permission_request':
       return requested('permission', {
         toolCall: {
@@ -252,7 +316,6 @@ export function projectAgentEvent(
     case 'capability_missing':
       if (!context.turnId) return null
       return failed('capability_missing')
-    case 'tool_call_content':
     case 'plan_update':
     case 'subtask_update':
     case 'current_model_update':

@@ -135,6 +135,51 @@ export function claudeToolContentFromInput(
   return undefined
 }
 
+/** Tools whose structured result is a file patch. */
+const PATCH_TOOLS = new Set(['Edit', 'Write', 'MultiEdit'])
+
+/** What Claude Code's structured tool result (`tool_use_result`, the tool's
+ * own Output object) says that the model-visible text does not.
+ *
+ * - Lines changed, for the edit tools only, and only as Claude Code reported
+ *   them: `gitDiff.additions`/`deletions` when it computed a git diff, else the
+ *   `+`/`-` lines of its `structuredPatch`. Nothing is diffed here; a result
+ *   without either reports nothing.
+ * - `interrupted` on a `Bash` result: the command was stopped, not failed. */
+export function claudeToolResultExtras(
+  toolName: string | undefined,
+  result: unknown,
+): Pick<ToolCallUpdate, 'lineChanges' | 'outcome'> {
+  const value = object(result)
+  const extras: Pick<ToolCallUpdate, 'lineChanges' | 'outcome'> = {}
+  if (toolName === 'Bash' && value.interrupted === true) extras.outcome = 'cancelled'
+  if (!toolName || !PATCH_TOOLS.has(toolName)) return extras
+  const gitDiff = object(value.gitDiff)
+  const additions = gitDiff.additions
+  const deletions = gitDiff.deletions
+  if (isCount(additions) && isCount(deletions)) {
+    extras.lineChanges = { added: additions, removed: deletions }
+    return extras
+  }
+  if (!Array.isArray(value.structuredPatch)) return extras
+  let added = 0
+  let removed = 0
+  for (const hunk of value.structuredPatch) {
+    const lines = object(hunk).lines
+    if (!Array.isArray(lines)) continue
+    for (const line of lines) {
+      if (typeof line !== 'string') continue
+      if (line.startsWith('+')) added += 1
+      else if (line.startsWith('-')) removed += 1
+    }
+  }
+  extras.lineChanges = { added, removed }
+  return extras
+}
+
+const isCount = (value: unknown): value is number =>
+  typeof value === 'number' && Number.isSafeInteger(value) && value >= 0
+
 const PLAN_STATUSES = new Set(['pending', 'in_progress', 'completed'])
 
 /** `TodoWrite`'s input is the whole todo list, re-sent in full on every call, so
