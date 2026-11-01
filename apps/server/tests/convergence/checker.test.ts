@@ -148,6 +148,7 @@ function result(entries: DiffEntry[]) {
     sessions: [],
     drafts: {},
     composerPreferences: {},
+    composerListings: {},
     active: null,
   }
   return {

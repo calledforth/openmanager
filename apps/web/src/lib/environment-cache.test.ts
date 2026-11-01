@@ -1,6 +1,10 @@
 import { IDBFactory } from 'fake-indexeddb'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { createInitialState, createThreadState } from '@openmanager/environment-client'
+import {
+  createInitialState,
+  createThreadState,
+  type EnvironmentState,
+} from '@openmanager/environment-client'
 import { PROTOCOL_VERSION } from '@openmanager/protocol'
 import {
   createEnvironmentCache,
@@ -111,6 +115,59 @@ describe('environment identity cache', () => {
       open: () => {
         throw new Error('Denied')
       },
+    })
+    expect(await readEnvironmentCache('env-one')).toBeNull()
+  })
+
+  it('keeps each cursor with the state it describes', async () => {
+    const state = seed()
+    const threadScope = {
+      type: 'thread',
+      environmentId: 'env-one',
+      sessionId: 'session',
+      threadId: 'thread',
+    } as const
+    const sessionScope = {
+      type: 'session',
+      environmentId: 'env-one',
+      sessionId: 'session',
+    } as const
+    const environmentScope = { type: 'environment', environmentId: 'env-one' } as const
+    state.threads.thread!.cursor = { scope: threadScope, epoch: 'e', sequence: 7 }
+    state.cursors = {
+      environment: { scope: environmentScope, epoch: 'e', sequence: 3 },
+      sessions: { session: { scope: sessionScope, epoch: 'e', sequence: 1 } },
+    }
+    await writeEnvironmentCache('env-one', state)
+    const restored = await readEnvironmentCache('env-one')
+    expect(restored!.threads.thread!.cursor?.sequence).toBe(7)
+    expect(restored!.cursors).toEqual(state.cursors)
+  })
+
+  it('never reads one environment under another', async () => {
+    const state = seed('env-two')
+    await writeEnvironmentCache('env-two', state)
+    expect(await readEnvironmentCache('env-one')).toBeNull()
+  })
+
+  it('drops a state cached before kept cursors, so the first load is a fresh one', async () => {
+    const state: Partial<EnvironmentState> = seed()
+    delete state.cursors
+    await new Promise<void>((resolve, reject) => {
+      const request = indexedDB.open(environmentCacheName('env-one'), 1)
+      request.onupgradeneeded = () => request.result.createObjectStore('state')
+      request.onerror = () => reject(request.error)
+      request.onsuccess = () => {
+        const database = request.result
+        const transaction = database.transaction('state', 'readwrite')
+        transaction
+          .objectStore('state')
+          .put({ protocolVersion: PROTOCOL_VERSION, state }, 'snapshot')
+        transaction.oncomplete = () => {
+          database.close()
+          resolve()
+        }
+      }
     })
     expect(await readEnvironmentCache('env-one')).toBeNull()
   })

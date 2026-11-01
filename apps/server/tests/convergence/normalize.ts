@@ -37,6 +37,7 @@ export interface NormalizedView {
   sessions: unknown[]
   drafts: Record<string, unknown>
   composerPreferences: Record<string, unknown>
+  composerListings: unknown
   active: { sessionId: string; present: boolean; threads: Record<string, ThreadView> } | null
 }
 
@@ -49,6 +50,7 @@ export interface ThreadView {
   /** Reasoning and tools `order` does not place, as the transcript appends them: in array order. */
   unplaced: { reasoning: string[]; tools: string[] }
   interactions: Record<string, unknown>
+  listing: unknown
 }
 
 /** JSON semantics: `undefined` members vanish, keys sort, so equal state prints equal. */
@@ -116,7 +118,7 @@ function sessionView(session: SessionSummary, onScreen: boolean): unknown {
 export function threadView(
   thread: Pick<
     ThreadState,
-    'turns' | 'messages' | 'reasoning' | 'tools' | 'order' | 'interactions'
+    'turns' | 'messages' | 'reasoning' | 'tools' | 'order' | 'interactions' | 'listing'
   >,
 ): ThreadView {
   return canonical({
@@ -140,6 +142,7 @@ export function threadView(
       thread.interactions.map((item) => ({ turnId: item.turnId, interaction: item.interaction })),
       (item) => item.interaction.interactionId,
     ),
+    listing: thread.listing,
   }) as ThreadView
 }
 
@@ -152,6 +155,7 @@ export function serverThreadView(read: ServerThreadRead): ThreadView {
     tools: read.tools,
     order: read.order,
     interactions: read.interactions,
+    listing: read.listing,
   } as unknown as ThreadState)
 }
 
@@ -175,25 +179,24 @@ export function sessionsWithoutThreads(view: NormalizedView): unknown[] {
 
 /**
  * `activeSessionId` is the client under test's selection; a fresh load opens
- * the same one. `preferencePairs` are compared as held (`null`: not loaded).
+ * the same one. Every composer preference held is compared.
  */
-export function normalize(
-  state: EnvironmentState,
-  activeSessionId: string | null,
-  preferencePairs: readonly PreferencePair[] = [],
-): NormalizedView {
+export function normalize(state: EnvironmentState, activeSessionId: string | null): NormalizedView {
   const session = activeSessionId ? state.sessions[activeSessionId] : undefined
   return canonical({
     environment: state.environment,
     workspaces: state.workspaces,
     workspaceOrder: state.workspaceOrder.filter((id) => state.workspaces[id] !== undefined),
     drafts: state.drafts,
+    // Every preference: the environment snapshot carries all of them (§6.2).
     composerPreferences: Object.fromEntries(
-      preferencePairs.map((pair) => [
+      heldPreferencePairs(state).map((pair) => [
         preferenceKey(pair),
         state.composerPreferences[pair.workspaceId]?.[pair.providerId] ?? null,
       ]),
     ),
+    // Every workspace listing: the environment snapshot carries all of them.
+    composerListings: state.composerListings,
     sessions: selectSessionList(state).map((summary) =>
       sessionView(summary, summary.sessionId === activeSessionId),
     ),

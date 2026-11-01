@@ -13,7 +13,6 @@ import {
   ProofCommandSchemas,
   ReplayCommandSchema,
   ReplayCursorError,
-  ReplayResponseSchema,
   RequestIdSchema,
   accessDenied,
   CLIENT_LIST_CAPABILITY,
@@ -24,7 +23,6 @@ import {
   sameScope,
   SERVER_SHUTDOWN_CLOSE_CODE,
   SERVER_SHUTDOWN_CLOSE_REASON,
-  SubscriptionCatchupSchema,
   SubscriptionScopeSchema,
   TransientEventSchema,
   type BootstrapResponse,
@@ -43,7 +41,7 @@ import {
   type LaggingScope,
   type WriterStats,
 } from './connection-writer.ts'
-import type { ReplayResult } from './db/replay.ts'
+import { answerPayloadJson, type ReplayResult } from './db/replay.ts'
 import type { Delivery } from './event-delivery.ts'
 import type { Logger } from './logger.ts'
 import { remoteAddressKey, type BudgetKey } from './budget-key.ts'
@@ -98,6 +96,14 @@ const UNBUDGETED_READS: ReadonlySet<string> = new Set([CLIENT_LIST_CAPABILITY])
  */
 export const DELIVERY_FAILED_CLOSE_CODE = 1011
 export const DELIVERY_FAILED_CLOSE_REASON = 'delivery_failed'
+
+/** An answer already serialized (a replay answer built from stored JSON). */
+class PreserializedAnswer {
+  readonly text: string
+  constructor(text: string) {
+    this.text = text
+  }
+}
 
 /**
  * A reading's key: a newer reading of the same key replaces a queued older
@@ -354,27 +360,7 @@ export function attachWebSocket(
               writer.release(subscriptionId)
               continue
             }
-            text = JSON.stringify(
-              SubscriptionCatchupSchema.parse({
-                type: 'event',
-                name: 'subscription.catchup',
-                payload:
-                  result.mode === 'replay'
-                    ? {
-                        mode: 'replay',
-                        subscriptionId,
-                        from: result.from,
-                        to: result.to,
-                        events: result.events,
-                      }
-                    : {
-                        mode: 'snapshot',
-                        subscriptionId,
-                        reason: result.reason,
-                        snapshot: result.snapshot,
-                      },
-              }),
-            )
+            text = `{"type":"event","name":"subscription.catchup","payload":${answerPayloadJson(result, subscriptionId)}}`
           } catch (error) {
             options.log?.('error', 'a catch-up could not be built; closing its connection', {
               clientId: client.clientId,
@@ -485,7 +471,10 @@ export function attachWebSocket(
         const answer = (result: unknown) => {
           options.drainDeliveries?.()
           if (!active || ws.readyState !== WebSocket.OPEN) return
-          writer.enqueueResponse(JSON.stringify(result), advances)
+          writer.enqueueResponse(
+            result instanceof PreserializedAnswer ? result.text : JSON.stringify(result),
+            advances,
+          )
           advances = undefined
         }
         const previous = results.get(message.requestId)
@@ -665,26 +654,12 @@ export function attachWebSocket(
             subscriptionId,
             cursor: result.mode === 'replay' ? result.to : result.snapshot.cursor,
           }
+          // Built from the stored event JSON and the serialized snapshot: the
+          // answer is exactly the size the replay rule compared (§6.1).
           reply(
-            ReplayResponseSchema.parse({
-              type: 'response',
-              requestId: message.requestId,
-              payload:
-                result.mode === 'replay'
-                  ? {
-                      mode: 'replay',
-                      subscriptionId,
-                      from: result.from,
-                      to: result.to,
-                      events: result.events,
-                    }
-                  : {
-                      mode: 'snapshot',
-                      subscriptionId,
-                      reason: result.reason,
-                      snapshot: result.snapshot,
-                    },
-            }),
+            new PreserializedAnswer(
+              `{"type":"response","requestId":${JSON.stringify(message.requestId)},"payload":${answerPayloadJson(result, subscriptionId)}}`,
+            ),
           )
           return
         }

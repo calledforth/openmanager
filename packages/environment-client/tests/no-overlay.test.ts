@@ -15,14 +15,18 @@ function walk(dir: string): string[] {
 
 describe('environment client has no driven IPC overlay', () => {
   it('does not import Electron, Convex, IPC overlay channels, or stream_chunks', () => {
-    const files = walk(srcRoot).filter((path) => /\.(ts|tsx)$/.test(path) && !path.endsWith('.test.ts'))
+    const files = walk(srcRoot).filter(
+      (path) => /\.(ts|tsx)$/.test(path) && !path.endsWith('.test.ts'),
+    )
 
     for (const file of files) {
       const source = readFileSync(file, 'utf8')
       expect(source, file).not.toMatch(/window\.electronAPI/)
       expect(source, file).not.toMatch(/from ['"]convex/)
       expect(source, file).not.toMatch(/['"]stream:token['"]|['"]acp:event['"]/)
-      expect(source, file).not.toMatch(/['"]stream_chunks['"]|\bapi\.streamChunks\b|\bstreamChunks\./)
+      expect(source, file).not.toMatch(
+        /['"]stream_chunks['"]|\bapi\.streamChunks\b|\bstreamChunks\./,
+      )
     }
   })
 })

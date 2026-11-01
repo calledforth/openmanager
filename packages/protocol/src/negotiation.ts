@@ -75,7 +75,17 @@ import {
 // bytes, and a scope whose live frames outrun the link is told it is
 // lagging and then caught up (`subscription.lagging`, `subscription.catchup`).
 // There is no size-based close any more. A v18 client would answer no beat.
-export const PROTOCOL_VERSION = 19 as const
+// Version 20 makes catch-up whole (docs/sync-foundations.md §6, F5b): a
+// snapshot is the whole chat or the whole environment (every session, every
+// composer preference and provider profile) and replaces the client's copy;
+// a replay is uncapped and is chosen only when not larger than the snapshot
+// (`snapshot_smaller`). `session.list`, `session.history` and
+// `composer.preferences.get` are gone. A session summary no longer carries
+// what the provider lists: a chat gets its listing in the thread snapshot and
+// by `thread.listing.updated`, and a new chat borrows the one the environment
+// keeps per provider and workspace (`composer.listing.updated`). A v19 client
+// would page a chat it already holds whole.
+export const PROTOCOL_VERSION = 20 as const
 
 export const ProtocolVersionSchema = z.number().int().positive().max(Number.MAX_SAFE_INTEGER)
 export const CapabilitySchema = MessageNameSchema

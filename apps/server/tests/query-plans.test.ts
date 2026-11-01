@@ -6,6 +6,12 @@ import { afterEach, describe, expect, it } from 'vitest'
 import { openEnvironmentDatabase } from '../src/db/database.js'
 import {
   ACTIVE_OWNER_CLIENT_SQL,
+  ALL_SESSIONS_SQL,
+  MESSAGE_PARTS_FOR_THREAD_SQL,
+  MESSAGES_FOR_THREAD_SQL,
+  PENDING_INTERACTIONS_FOR_THREAD_SQL,
+  REPLAY_SIZE_SQL,
+  TURN_ACTIVITY_FOR_THREAD_SQL,
   AUDIT_EVENTS_FOR_CLIENT_SQL,
   AUDIT_EVENTS_FOR_TYPE_SQL,
   AUDIT_EVENTS_RECENT_SQL,
@@ -15,17 +21,12 @@ import {
   EVENTS_TO_PRUNE_SQL,
   EXPIRED_EVENTS_BY_SCOPE_SQL,
   FIRST_UNEXPIRED_SEQUENCE_SQL,
-  INTERACTIONS_FOR_TURN_SQL,
-  MESSAGE_HISTORY_PAGE_SQL,
   MESSAGE_PARTS_SQL,
   OPEN_TURN_FOR_SESSION_SQL,
   PENDING_INTERACTIONS_FOR_SESSION_SQL,
-  SESSION_LIST_FOR_ENVIRONMENT_SQL,
-  SESSION_LIST_FOR_WORKSPACE_SQL,
   STREAM_BOUNDS_SQL,
   THREAD_IN_SESSION_SQL,
   THREADS_FOR_SESSION_SQL,
-  TURN_ACTIVITY_PAGE_SQL,
   TURN_FOR_COMMAND_ID_SQL,
   TURNS_FOR_THREAD_SQL,
   USER_MESSAGE_FOR_TURN_SQL,
@@ -62,11 +63,11 @@ afterEach(async () => {
 })
 
 describe('bounded query plans', () => {
-  it('lists sessions for the environment as one range of the updated_at index', async () => {
+  it('lists every session in index order, with no sort of its own', async () => {
     const database = await createDatabase()
-    expect(plan(database, SESSION_LIST_FOR_ENVIRONMENT_SQL)).toEqual([
-      'SEARCH sessions USING INDEX sessions_updated_at_idx ((updated_at,session_id)<(?,?))',
-    ])
+    const steps = plan(database, ALL_SESSIONS_SQL)
+    expect(steps.some((step) => step.includes('INDEX sessions_updated_at_idx'))).toBe(true)
+    expect(steps.some((step) => step.includes('TEMP B-TREE'))).toBe(false)
   })
 
   it('reads what a session waits on, and whether a turn is open, through indexes', async () => {
@@ -87,29 +88,31 @@ describe('bounded query plans', () => {
     expectIndexed(plan(database, USER_MESSAGE_FOR_TURN_SQL), 'messages_turn_id_idx')
   })
 
-  it('lists sessions for a workspace as one range of the composite index', async () => {
-    const database = await createDatabase()
-    expect(plan(database, SESSION_LIST_FOR_WORKSPACE_SQL)).toEqual([
-      'SEARCH sessions USING INDEX sessions_workspace_updated_at_idx (workspace_id=? AND (updated_at,session_id)<(?,?))',
-    ])
-  })
-
-  it('walks session history through indexed threads, turns, messages, and parts', async () => {
+  it('reads a whole thread through indexed threads, turns, messages, parts and activity', async () => {
     const database = await createDatabase()
     expectIndexed(plan(database, THREADS_FOR_SESSION_SQL), 'threads_session_created_at_idx')
     expectIndexed(plan(database, TURNS_FOR_THREAD_SQL), 'turns_thread_started_at_idx')
-    expectIndexed(plan(database, MESSAGE_HISTORY_PAGE_SQL), 'sqlite_autoindex_messages_')
+    expectIndexed(plan(database, MESSAGES_FOR_THREAD_SQL), 'sqlite_autoindex_messages_')
     expectIndexed(plan(database, MESSAGE_PARTS_SQL), 'sqlite_autoindex_message_parts_')
-    expectIndexed(plan(database, INTERACTIONS_FOR_TURN_SQL), 'interactions_turn_id_idx')
-    expectIndexed(plan(database, TURN_ACTIVITY_PAGE_SQL), 'sqlite_autoindex_turn_activity_')
+    const parts = plan(database, MESSAGE_PARTS_FOR_THREAD_SQL)
+    expect(parts.some((step) => step.includes('INDEX sqlite_autoindex_messages_'))).toBe(true)
+    expect(parts.some((step) => step.includes('INDEX sqlite_autoindex_message_parts_'))).toBe(true)
+    expectIndexed(plan(database, TURN_ACTIVITY_FOR_THREAD_SQL), 'sqlite_autoindex_turn_activity_')
+    const pending = plan(database, PENDING_INTERACTIONS_FOR_THREAD_SQL)
+    expect(pending.some((step) => step.includes('INDEX interactions_turn_id_idx'))).toBe(true)
+  })
+
+  it('sizes a replay from the (scope_key, sequence) primary key', async () => {
+    const database = await createDatabase()
+    const steps = plan(database, REPLAY_SIZE_SQL)
+    expect(steps.some((step) => step.startsWith('SEARCH event_log'))).toBe(true)
+    expect(steps.some((step) => step.startsWith('SCAN'))).toBe(false)
   })
 
   it('reads events after a cursor straight from the (scope_key, sequence) primary key', async () => {
     const database = await createDatabase()
     const steps = plan(database, EVENTS_AFTER_CURSOR_SQL)
-    expect(steps).toEqual([
-      'SEARCH event_log USING PRIMARY KEY (scope_key=? AND sequence>?)',
-    ])
+    expect(steps).toEqual(['SEARCH event_log USING PRIMARY KEY (scope_key=? AND sequence>?)'])
     expect(plan(database, STREAM_BOUNDS_SQL)).toEqual([
       'SEARCH event_streams USING INDEX sqlite_autoindex_event_streams_1 (scope_key=?)',
     ])

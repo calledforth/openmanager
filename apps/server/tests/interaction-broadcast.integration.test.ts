@@ -11,6 +11,8 @@ import {
   replay,
   startProtocolHost,
   subscribe,
+  listedSessions,
+  threadState,
 } from './helpers/protocol-client.js'
 import { expectCommand, gatedFirstPrompt } from './helpers/proof-slice.js'
 
@@ -108,12 +110,13 @@ describe.each(['permission', 'question', 'plan'] as const)('%s settlement broadc
         expect.objectContaining({ turnId, threadId: target.threadId, state: 'waiting' }),
       )
 
-      const history = await expectCommand(second, 'session.history', target, 'refresh history')
-      expect(history.payload.interactions).toEqual([{ threadId: target.threadId, interaction }])
-      const listed = await expectCommand(second, 'session.list', {}, 'waiting session')
-      expect(
-        listed.payload.sessions.find((session) => session.sessionId === target.sessionId)?.status,
-      ).toBe('waiting')
+      const environmentId = host.server.identity.environmentId
+      const refreshed = await threadState(second, environmentId, target)
+      expect(refreshed.interactions).toEqual([{ turnId, interaction }])
+      const sessions = await listedSessions(second, environmentId)
+      expect(sessions.find((session) => session.sessionId === target.sessionId)?.status).toBe(
+        'waiting',
+      )
 
       if (settlement === 'answered') {
         const outcome =

@@ -1,6 +1,5 @@
 import {
   PLAN_BUILD_CAPABILITY,
-  PAGE_LIMIT_MAX,
   CLIENT_REVOKED_CLOSE_CODE,
   CLIENT_REVOKED_CLOSE_REASON,
   ClientListChangedEventSchema,
@@ -28,7 +27,6 @@ import {
   type ClientLivenessState,
   type ReplayResponse,
   type Cursor,
-  type SessionListCursor,
   type DurableEvent,
   type ErrorCode,
   type ProofEvent,
@@ -49,26 +47,29 @@ import { placeRecord, placeTransient } from './placement'
 import {
   applyActiveSession,
   applyActiveThread,
-  applyComposerPreference,
-  applyComposerPreferencesReset,
+  applyCatchingUp,
   applyConnection,
+  applyCursor,
   applyEnvironment,
   applyEvent,
   applyProviderBootstrap,
   applyProviderCatalog,
   applyProviderHealth,
   applyProviderProbe,
-  applySessionHistory,
-  applySessionList,
+  applyNoticesCleared,
+  applyRecord as applyRecordToState,
   applySessionOpen,
   applySessionOpening,
   applySessionRemoved,
   applySnapshot,
   applyThreadHydration,
   applyTurnSendFailed,
+  applyTurnSendReleased,
   applyTurnSending,
   applyWorkspaceList,
   applyWorkspaceRemoved,
+  selectChatCatchingUp,
+  selectCursor,
   selectSessionList,
 } from './state'
 import {
@@ -85,7 +86,6 @@ import type {
   EnvironmentClient,
   EnvironmentCommandName,
   EnvironmentCommands,
-  EnvironmentState,
   WorkspaceComposerPreference,
 } from './types'
 import {
@@ -186,9 +186,6 @@ const HANDSHAKE_NAME = 'protocol.handshake'
 const SUBSCRIBE_NAME = 'subscription.subscribe'
 const UNSUBSCRIBE_NAME = 'subscription.unsubscribe'
 const REPLAY_NAME = 'subscription.replay'
-/** Catalog re-reads before a refresh gives up on dropping omitted sessions. */
-const RECONCILE_PASSES = 3
-
 const SubscribeResponseSchema = z.object({
   payload: z.object({ subscriptionId: z.string(), scope: z.any() }),
 })
@@ -217,8 +214,14 @@ type Subscription = {
   subscriptionId: string | null
   /** A `subscription.subscribe` or `subscription.replay` is on the wire and unanswered. */
   inflight: boolean
-  /** Last applied durable event of the scope; what a reconnect resumes from. */
-  cursor: Cursor | null
+  /**
+   * The last record of a scope subscribed with no answer behind it (nothing
+   * says the copy holds what came before), for placing the next one. It stays
+   * here, out of the kept cursor: resuming from it would skip that gap. The
+   * next answer replaces it. What a reconnect or a reload resumes from is the
+   * scope's cursor in the store (`selectCursor`).
+   */
+  unanchored?: Cursor
   recovery?: Promise<void>
   /**
    * Set from the moment a catch-up (`subscription.replay`) is sent until its
@@ -344,7 +347,10 @@ export function createWebSocketEnvironmentClient(
     },
   }
   if (options.store) {
-    store.update(applyComposerPreferencesReset)
+    // Catch-ups belonged to the transport this one replaces.
+    store.update((state) =>
+      Object.keys(state.catchingUp).length ? { ...state, catchingUp: {} } : state,
+    )
     // Held drafts stay on screen; the listing replaces them once connected.
     store.update(applyDraftsUnlisted)
   }
@@ -513,7 +519,7 @@ export function createWebSocketEnvironmentClient(
     for (const subscription of subscriptions.values()) {
       subscription.subscriptionId = null
       subscription.inflight = false
-      subscription.held = undefined
+      setHeld(subscription, undefined)
       subscription.recovery = undefined
       subscription.lagging = false
     }
@@ -634,7 +640,13 @@ export function createWebSocketEnvironmentClient(
       retriesExhausted: false,
     })
     for (const flush of queued.splice(0)) flush()
-    void resync()
+    const generation = connectionGeneration
+    resyncing = true
+    void resync().finally(() => {
+      if (generation !== connectionGeneration) return
+      resyncing = false
+      scheduleHeldSends()
+    })
   }
 
   const handleMessage = (data: unknown) => {
@@ -674,10 +686,39 @@ export function createWebSocketEnvironmentClient(
   }
 
   /**
+   * Start or end holding a scope's frames. Held is what a catch-up is, whoever
+   * asked for it, so the "catching up" signal for a thread is read here and
+   * has no other writer.
+   */
+  const setHeld = (subscription: Subscription, held: Held[] | undefined) => {
+    subscription.held = held
+    const { scope } = subscription
+    if (scope.type === 'thread') {
+      store.update((state) => applyCatchingUp(state, scope.threadId, held !== undefined))
+    }
+  }
+
+  /** The scope's cursor as kept beside its copy: what a catch-up resumes from. */
+  const keptCursor = (subscription: Subscription) =>
+    selectCursor(store.getServerState(), subscription.scope)
+
+  /** Where the next frame of the scope is placed against. */
+  const position = (subscription: Subscription) =>
+    keptCursor(subscription) ?? subscription.unanchored ?? null
+
+  /** The copy stopped being resumable from its cursor: the next catch-up is whole. */
+  const forgetCursor = (subscription: Subscription) => {
+    subscription.unanchored = undefined
+    store.update((state) => applyCursor(state, subscription.scope, null))
+  }
+
+  /**
    * Fold one durable record the placement table said to apply, and advance
-   * the scope's cursor to it. Cursors belong to scopes, not sockets or
-   * subscription IDs, so the scope is the stable key even while an
-   * acknowledgement is in flight.
+   * the scope's cursor to it in the same update. Cursors belong to scopes,
+   * not sockets or subscription IDs, so the scope is the stable key even
+   * while an acknowledgement is in flight. A scope with no kept cursor has no
+   * answer behind it, so its record advances nothing a catch-up may resume
+   * from.
    */
   const applyRecord = (subscription: Subscription, record: DurableEvent) => {
     const scope = record.cursor.scope
@@ -686,8 +727,12 @@ export function createWebSocketEnvironmentClient(
       subscription.needsSnapshot = true
       return
     }
-    subscription.cursor = record.cursor
-    foldEvent(record.event)
+    if (keptCursor(subscription)) store.update((state) => applyRecordToState(state, record))
+    else {
+      subscription.unanchored = record.cursor
+      foldEvent(record.event)
+    }
+    if (record.event.name === 'session.deleted') releaseRemovedScopes()
   }
 
   /**
@@ -700,8 +745,8 @@ export function createWebSocketEnvironmentClient(
   const route = (subscription: Subscription, frame: Frame, mode: 'live' | 'held' | 'retry') => {
     const placement =
       frame.kind === 'record'
-        ? placeRecord(subscription.cursor, frame.record.cursor)
-        : placeTransient(subscription.cursor, frame.after, mode !== 'live')
+        ? placeRecord(position(subscription), frame.record.cursor)
+        : placeTransient(position(subscription), frame.after, mode !== 'live')
     if (placement === 'apply') {
       if (frame.kind === 'record') applyRecord(subscription, frame.record)
       else foldEvent(frame.event)
@@ -776,7 +821,7 @@ export function createWebSocketEnvironmentClient(
     if (subscription.subscriptionId) sendUnsubscribe(subscription.subscriptionId)
     subscription.subscriptionId = null
     subscription.inflight = false
-    subscription.cursor = null
+    forgetCursor(subscription)
     void recover(subscription).catch(() => undefined)
   }
 
@@ -791,32 +836,49 @@ export function createWebSocketEnvironmentClient(
 
   /**
    * Apply an answer for a scope, from its own `subscription.replay` or from a
-   * server catch-up: the tail after the cursor, or a snapshot.
+   * server catch-up: the tail after the cursor, or a snapshot. The answer and
+   * the cursor it leaves land in one store update.
    */
   const applyAnswer = (subscription: Subscription, payload: AnswerPayload) => {
+    const scope = subscription.scope
+    subscription.unanchored = undefined
     if (payload.mode === 'replay') {
-      // The exact tail after the cursor; one already held is a repeat.
-      for (const record of payload.events) {
-        if (placeRecord(subscription.cursor, record.cursor) !== 'drop') {
-          applyRecord(subscription, record)
+      // The exact tail after the cursor, folded in one store update however
+      // long it is; one already held is a repeat. A record that names a turn
+      // the thread does not hold stops the fold: the scope is replaced from a
+      // snapshot instead (docs/sync-foundations.md §3.5).
+      let cursor = keptCursor(subscription)
+      // The copy went while the answer was on its way (a deletion): it has
+      // nowhere to land, and a tail alone must not build a new copy.
+      if (!cursor) return
+      let unknownTurn = false
+      store.update((state) => {
+        let next = scope.type === 'thread' ? applyNoticesCleared(state, scope.threadId) : state
+        for (const record of payload.events) {
+          if (placeRecord(cursor, record.cursor) === 'drop') continue
+          const thread = scope.type === 'thread' ? next.threads[scope.threadId] : undefined
+          if (thread && namesUnknownTurn(thread, record.event)) {
+            unknownTurn = true
+            break
+          }
+          next = applyEvent(next, record.event)
+          cursor = record.cursor
         }
-      }
-      subscription.cursor = payload.to
-      if (subscription.scope.type === 'thread') {
-        const threadId = subscription.scope.threadId
-        store.update((state) => applyThreadHydration(state, threadId, 'ready'))
-      }
+        if (unknownTurn) return applyCursor(next, scope, cursor)
+        next = applyCursor(next, scope, payload.to)
+        return scope.type === 'thread' ? applyThreadHydration(next, scope.threadId, 'ready') : next
+      })
+      if (unknownTurn) subscription.needsSnapshot = true
+      if (scope.type === 'environment') releaseRemovedScopes()
       return
     }
     store.update((state) => applySnapshot(state, payload.snapshot))
-    subscription.cursor = payload.snapshot.cursor
-    // Preference events were missed along with the rest of the gap and
-    // the snapshot does not carry them, so held ones read as unloaded.
-    if (subscription.scope.type === 'environment' && payload.reason !== 'initial') {
-      store.update(applyComposerPreferencesReset)
+    // Drafts are not in the snapshot; after a gap they are listed again. A
+    // first snapshot needs no second listing: the draft sync lists on connect.
+    if (scope.type === 'environment' && payload.reason !== 'initial') {
+      store.update(applyDraftsUnlisted)
     }
-    // Drafts are not in the snapshot either; they are listed again.
-    if (subscription.scope.type === 'environment') store.update(applyDraftsUnlisted)
+    if (scope.type === 'environment') releaseRemovedScopes()
   }
 
   /**
@@ -828,7 +890,7 @@ export function createWebSocketEnvironmentClient(
    */
   const applyCatchup = (subscription: Subscription, payload: AnswerPayload) => {
     subscription.lagging = false
-    const cursor = subscription.cursor
+    const cursor = keptCursor(subscription)
     const fits =
       payload.mode === 'replay'
         ? cursor !== null &&
@@ -848,7 +910,7 @@ export function createWebSocketEnvironmentClient(
     }
     applyAnswer(subscription, payload)
     const held = subscription.held ?? []
-    subscription.held = undefined
+    setHeld(subscription, undefined)
     release(subscription, held)
     resnapshot(subscription)
   }
@@ -878,7 +940,7 @@ export function createWebSocketEnvironmentClient(
       const subscription = bySubscriptionId(lagging.data.payload.subscriptionId)
       if (subscription) {
         subscription.lagging = true
-        subscription.held ??= []
+        setHeld(subscription, subscription.held ?? [])
       }
       return
     }
@@ -1048,7 +1110,6 @@ export function createWebSocketEnvironmentClient(
       scope,
       subscriptionId: null,
       inflight: false,
-      cursor: null,
     }
     subscriptions.set(key, subscription)
     if (!capabilities.has(SUBSCRIBE_NAME)) return
@@ -1085,10 +1146,7 @@ export function createWebSocketEnvironmentClient(
   const recover = (subscription: Subscription, first?: Held): Promise<void> => {
     if (subscription.recovery) return subscription.recovery
     if (subscription.subscriptionId || subscription.inflight) return Promise.resolve()
-    if (
-      !capabilities.has(REPLAY_NAME) ||
-      (!subscription.cursor && subscription.scope.type !== 'thread')
-    ) {
+    if (!capabilities.has(REPLAY_NAME)) {
       subscribe(subscription.scope)
       return Promise.resolve()
     }
@@ -1098,21 +1156,35 @@ export function createWebSocketEnvironmentClient(
       type: 'command',
       requestId: nextRequestId(),
       name: REPLAY_NAME,
-      payload: { scope: subscription.scope, cursor: subscription.cursor },
+      payload: { scope: subscription.scope, cursor: keptCursor(subscription) },
     }
     // Frames already held (a lagging scope that now recovers by itself) stay,
     // behind the frame that asked for this catch-up.
-    subscription.held = [...(first ? [first] : []), ...(subscription.held ?? [])]
+    setHeld(subscription, [...(first ? [first] : []), ...(subscription.held ?? [])])
     const recovery = new Promise<void>((resolve, reject) => {
       const fail = (error: EnvironmentClientError) => {
         subscription.inflight = false
-        subscription.held = undefined
+        setHeld(subscription, undefined)
         if (subscriptions.get(key) === subscription && generation === connectionGeneration) {
+          const resumed = command.payload.cursor !== null
+          // The environment has no such scope, or the answer to this cursor
+          // cannot be trusted: either way the cursor promises nothing now.
+          if (resumed && (error.code === 'not_found' || error.code === 'validation')) {
+            forgetCursor(subscription)
+          }
+          // A cursor it refused must not leave the chat unloadable: once more
+          // without it. That attempt carries no cursor, so it ends here.
+          if (resumed && error.code === 'validation') {
+            subscription.recovery = undefined
+            resolve(recover(subscription))
+            return
+          }
+          // A scope the environment no longer has is never recovered again.
+          if (error.code === 'not_found') subscriptions.delete(key)
           if (subscription.scope.type === 'thread') {
             const threadId = subscription.scope.threadId
             store.update((state) => applyThreadHydration(state, threadId, 'failed'))
-          } else if (error.code === 'not_found') subscriptions.delete(key)
-          else if (ready) subscribe(subscription.scope)
+          } else if (error.code !== 'not_found' && ready) subscribe(subscription.scope)
         }
         reject(error)
       }
@@ -1149,7 +1221,7 @@ export function createWebSocketEnvironmentClient(
           // The catch-up is over: what waited is placed against its cursor,
           // and may start the next one.
           const held = subscription.held ?? []
-          subscription.held = undefined
+          setHeld(subscription, undefined)
           subscription.recovery = undefined
           release(subscription, held)
           resolve()
@@ -1170,22 +1242,37 @@ export function createWebSocketEnvironmentClient(
     return tracked
   }
 
-  const hydrateThread = (scope: SubscriptionScope) => {
+  /** Recover a scope from its cursor (or whole, without one): every scope catches up by replay. */
+  const hydrateScope = (scope: SubscriptionScope) => {
     const key = scopeKey(scope)
     let subscription = subscriptions.get(key)
     if (!subscription) {
-      subscription = { scope, subscriptionId: null, inflight: false, cursor: null }
+      subscription = { scope, subscriptionId: null, inflight: false }
       subscriptions.set(key, subscription)
     }
     return recover(subscription)
   }
 
+  /** Stops the live frames. The scope's copy and its cursor stay for the next open. */
   const unsubscribe = (scope: SubscriptionScope) => {
     const key = scopeKey(scope)
     const subscription = subscriptions.get(key)
     if (!subscription) return
     subscriptions.delete(key)
+    setHeld(subscription, undefined)
     if (subscription.subscriptionId) sendUnsubscribe(subscription.subscriptionId)
+  }
+
+  /**
+   * A session the store no longer holds has nothing left to catch up: its
+   * copy and cursors went with it, and a scope left here would be recovered on
+   * every reconnect.
+   */
+  const releaseRemovedScopes = () => {
+    const { sessions } = store.getServerState()
+    for (const { scope } of [...subscriptions.values()]) {
+      if (scope.type !== 'environment' && !sessions[scope.sessionId]) unsubscribe(scope)
+    }
   }
 
   const sessionScopes = (sessionId: string): SubscriptionScope[] => {
@@ -1199,81 +1286,6 @@ export function createWebSocketEnvironmentClient(
   }
 
   /**
-   * Drops cached sessions a full catalog walk did not return, e.g. sessions
-   * deleted while this client was offline, whose deletion event is gone.
-   *
-   * Keyset pages are not one snapshot: an update during a multi-page read
-   * moves a session ahead of the cursor, so it is absent without being
-   * deleted. Such a session's `updatedAt` is now at least the newest one that
-   * read started from, so the newest pages are read again down to that point.
-   * A re-read that spans pages can miss a session the same way, so it repeats
-   * from its own newest until one pass fits in a single page, which the
-   * environment answers from one query; a walk that was one page needs no
-   * re-read. Nothing is dropped if no pass settles. A session live data
-   * touched since the walk began, the active session (its `session.open` is
-   * authoritative), and an ancestor of a listed session are always kept.
-   */
-  const reconcileCachedSessions = async (
-    generation: number,
-    cached: EnvironmentState['sessions'],
-    listed: Set<string>,
-    newestUpdatedAt: string | undefined,
-    /** The walk was one page, so one query: it already proves absence. */
-    atomic: boolean,
-  ) => {
-    const missing = () => {
-      const state = store.getState()
-      // Removal cascades to descendants, so every ancestor of a listed session stays.
-      const parents = new Set<string>()
-      for (const id of listed) {
-        let parent = state.sessions[id]?.parentSessionId
-        while (parent && !parents.has(parent)) {
-          parents.add(parent)
-          parent = state.sessions[parent]?.parentSessionId
-        }
-      }
-      return Object.keys(cached).filter(
-        (id) =>
-          !listed.has(id) &&
-          state.sessions[id] === cached[id] &&
-          state.activeSessionId !== id &&
-          !parents.has(id),
-      )
-    }
-    const floorOf = (updatedAt: string | undefined) =>
-      updatedAt ? Date.parse(updatedAt) : Number.NEGATIVE_INFINITY
-    let floor = floorOf(newestUpdatedAt)
-    let settled = atomic
-    for (let pass = 0; pass < RECONCILE_PASSES && !settled; pass++) {
-      if (missing().length === 0) return
-      let cursor: SessionListCursor | null | undefined
-      let pages = 0
-      let nextFloor = floor
-      do {
-        if (generation !== connectionGeneration || !ready) return
-        const page = await commands.listSessions({
-          limit: PAGE_LIMIT_MAX,
-          ...(cursor ? { cursor } : {}),
-        })
-        if (pages++ === 0) nextFloor = floorOf(page.sessions[0]?.updatedAt)
-        for (const session of page.sessions) listed.add(session.sessionId)
-        const oldest = page.sessions.at(-1)?.updatedAt
-        cursor = oldest !== undefined && Date.parse(oldest) < floor ? null : page.nextCursor
-      } while (cursor)
-      settled = pages === 1
-      floor = nextFloor
-    }
-    if (!settled || generation !== connectionGeneration || !ready) return
-    const removed = missing()
-    if (removed.length === 0) return
-    store.update((state) => {
-      let next = state
-      for (const id of removed) next = applySessionRemoved(next, id)
-      return next
-    })
-  }
-
-  /**
    * After every handshake: environment scope, catalog reads, and the active
    * session. If the connection drops or re-handshakes while the catalog reads
    * are in flight, this run stops so it cannot queue a second `session.open`
@@ -1284,65 +1296,27 @@ export function createWebSocketEnvironmentClient(
     const generation = connectionGeneration
     const restarted = serverRestarted
     serverRestarted = false
+    // The chat that was on screen when the connection came up: an open the
+    // user makes meanwhile is theirs, and this does not repeat it.
+    const activeAtStart = store.getState().activeSessionId
     const environment = { type: 'environment', environmentId } as const
-    if (!subscriptions.has(scopeKey(environment))) subscribe(environment)
-    // Every scope the previous socket held is recovered now rather than after
-    // the catalog reads: a server subscription is per-socket, so until it
-    // lands the open session's events are not sent at all. Recovery is
-    // idempotent, so the session.open below is free to ask for the same
-    // scopes again.
+    const key = scopeKey(environment)
+    if (!subscriptions.has(key)) {
+      subscriptions.set(key, { scope: environment, subscriptionId: null, inflight: false })
+    }
+    // Every scope recovers now, the environment first: its catch-up (a
+    // replay from the cursor, or the whole environment) is the sidebar, the
+    // workspaces and the composer preferences. A server subscription is
+    // per-socket, so until it lands nothing of the scope is sent at all.
     for (const subscription of [...subscriptions.values()])
       void recover(subscription).catch(() => undefined)
-    const reads: Promise<unknown>[] = []
-    if (supports('getEnvironment')) reads.push(commands.getEnvironment().catch(() => undefined))
-    if (supports('listWorkspaces')) reads.push(commands.listWorkspaces().catch(() => undefined))
-    if (supports('listSessions'))
-      reads.push(
-        (async () => {
-          if (!options.store) {
-            // Pages are cut by size as well as count, so one page is not the
-            // whole catalog: the rest follow in the background, as below.
-            const first = await commands.listSessions()
-            if (generation !== connectionGeneration || !ready) return
-            void (async () => {
-              let cursor: SessionListCursor | null = first.nextCursor
-              while (cursor) {
-                if (generation !== connectionGeneration || !ready) return
-                cursor = (await commands.listSessions({ cursor })).nextCursor
-              }
-            })().catch(() => undefined)
-            return
-          }
-          const cached = store.getState().sessions
-          // Recover the active session after the first page; older catalog
-          // pages continue in the background and never open inactive runtimes.
-          const first = await commands.listSessions({ limit: PAGE_LIMIT_MAX })
-          if (generation !== connectionGeneration || !ready) return
-          void (async () => {
-            const listed = new Set(first.sessions.map((session) => session.sessionId))
-            let cursor: SessionListCursor | null = first.nextCursor
-            while (cursor) {
-              if (generation !== connectionGeneration || !ready) return
-              const page = await commands.listSessions({ limit: PAGE_LIMIT_MAX, cursor })
-              for (const session of page.sessions) listed.add(session.sessionId)
-              cursor = page.nextCursor
-            }
-            if (generation !== connectionGeneration || !ready) return
-            await reconcileCachedSessions(
-              generation,
-              cached,
-              listed,
-              first.sessions[0]?.updatedAt,
-              first.nextCursor === null,
-            )
-          })().catch(() => undefined)
-        })().catch(() => undefined),
-      )
-    if (supports('getProviderCatalog'))
-      reads.push(commands.getProviderCatalog().catch(() => undefined))
-    await Promise.all(reads)
+    // The provider catalog is a current reading (models, health), not synced state.
+    if (supports('getProviderCatalog')) {
+      await commands.getProviderCatalog().catch(() => undefined)
+    }
     if (generation !== connectionGeneration || !ready) return
-    const activeSessionId = store.getState().activeSessionId
+    const activeSessionId =
+      store.getState().activeSessionId === activeAtStart ? activeAtStart : null
     if (
       activeSessionId &&
       supports('openSession') &&
@@ -1360,6 +1334,98 @@ export function createWebSocketEnvironmentClient(
   }
 
   /**
+   * Sends made while the open chat catches up wait for it, on this device, in
+   * the order they were made (docs/sync-foundations.md §6.6). This orders the
+   * client's own commands and decides nothing about server state: when the
+   * catch-up ends the send goes, and the environment answers as it would any
+   * send. What keeps the text safe is the outbox: a held entry stays on screen,
+   * and in the cache, until the environment takes it.
+   *
+   * A connection that drops only extends the wait. Leaving the chat ends it,
+   * since nothing is catching up for a chat that is not open; so does a
+   * catch-up that fails. A connection given up on fails the send, with its text
+   * and a retry on its row. A transport replaced leaves its held sends in the
+   * store for the next client, as a reload does.
+   */
+  type HeldSend = {
+    thread: Thread
+    commandId: string
+    release: () => void
+    fail: (error: EnvironmentClientError) => void
+  }
+  const heldSends: HeldSend[] = []
+  /** A handshake's resync is running: the catch-up it starts is not visible yet. */
+  let resyncing = false
+  let heldSendsScheduled = false
+  let stopWatchingHeldSends: (() => void) | null = null
+
+  const scheduleHeldSends = () => {
+    if (heldSendsScheduled || heldSends.length === 0) return
+    // A microtask, so a selection that moves in two steps (a route leaving one
+    // chat and opening the next) is read once it has landed.
+    heldSendsScheduled = true
+    queueMicrotask(() => {
+      heldSendsScheduled = false
+      releaseHeldSends()
+    })
+  }
+
+  const takeHeldSend = (held: HeldSend) => {
+    heldSends.splice(heldSends.indexOf(held), 1)
+    if (heldSends.length === 0) {
+      stopWatchingHeldSends?.()
+      stopWatchingHeldSends = null
+    }
+  }
+
+  const releaseHeldSends = () => {
+    if (disposed) return
+    const state = store.getState()
+    if (state.connection.phase === 'closed') {
+      for (const held of [...heldSends]) {
+        takeHeldSend(held)
+        held.fail(
+          new EnvironmentClientError('unavailable', 'Connection closed before the send went out.'),
+        )
+      }
+      return
+    }
+    if (!ready || resyncing) return
+    // A send waits behind the sends of its chat, never another chat's.
+    const waiting = new Set<string>()
+    for (const held of [...heldSends]) {
+      const { threadId } = held.thread
+      if (waiting.has(threadId)) continue
+      const entry = store
+        .getServerState()
+        .threads[threadId]?.outbox.find((item) => item.commandId === held.commandId)
+      if (entry?.status !== 'held') {
+        // Its turn came with the catch-up, or its chat is gone: nothing to send.
+        takeHeldSend(held)
+        held.fail(new EnvironmentClientError('superseded', 'This send has already landed.'))
+      } else if (selectChatCatchingUp(state, threadId)) {
+        waiting.add(threadId)
+      } else {
+        takeHeldSend(held)
+        store.update((current) => applyTurnSendReleased(current, held.thread, held.commandId))
+        held.release()
+      }
+    }
+  }
+
+  const holdSend = (thread: Thread, commandId: string) =>
+    new Promise<void>((release, fail) => {
+      heldSends.push({ thread, commandId, release, fail })
+      stopWatchingHeldSends ??= store.subscribe(scheduleHeldSends)
+      scheduleHeldSends()
+    })
+
+  /** Whether a send for this chat waits: behind its catch-up, or behind a send that does. */
+  const mustHold = (threadId: string) =>
+    heldSends.some((held) => held.thread.threadId === threadId) ||
+    selectChatCatchingUp(store.getState(), threadId)
+
+  /**
    * Every command that shows its own effect before the environment confirms
    * it takes a ticket, so only the newest request for a thing may clear its
    * overlay entry (overlay.ts).
@@ -1368,26 +1434,6 @@ export function createWebSocketEnvironmentClient(
   const nextTicket = () => ++overlayTickets
 
   type PreferenceAnswer = { preference: WorkspaceComposerPreference; revision: number }
-
-  /**
-   * A read: the server's preference at its revision, applied only when newer
-   * than the one held, so an answer and an event are ordered by the server's
-   * number, never by arrival. The pair is resolved when the answer arrives: a
-   * workspace removed meanwhile must not get its preference back.
-   */
-  const composerRead = async (
-    payload: ComposerPreferenceTarget,
-    resolveTarget: () => ComposerPreferenceTarget | null,
-  ): Promise<WorkspaceComposerPreference> => {
-    const answer = await request('composer.preferences.get', payload)
-    const target = resolveTarget()
-    if (target) {
-      store.update((state) =>
-        applyComposerPreference(state, target, answer.preference, answer.revision),
-      )
-    }
-    return answer.preference
-  }
 
   /**
    * A write: the requested pick shows at once as an overlay entry. Its
@@ -1544,6 +1590,7 @@ export function createWebSocketEnvironmentClient(
       if (generation !== openGeneration) return overtaken(sessionId)
       if (isEnvironmentClientError(error) && error.code === 'not_found') {
         store.update((state) => applySessionRemoved(state, sessionId))
+        releaseRemovedScopes()
         throw error
       }
       // Not connected, with the chat already here: it stays readable, and the
@@ -1595,10 +1642,12 @@ export function createWebSocketEnvironmentClient(
     // A thread that fails to load fails the open; the store still marks it.
     let hydrationFailure: unknown
     if (capabilities.has(REPLAY_NAME) && environmentId) {
-      subscribe({ type: 'session', environmentId, sessionId })
+      // The session's own scope (its summary and thread list) recovers like
+      // any other; the open waits only for its threads.
+      void hydrateScope({ type: 'session', environmentId, sessionId }).catch(() => undefined)
       await Promise.all(
         payload.threads.map((thread) =>
-          hydrateThread({ type: 'thread', environmentId: environmentId!, ...thread })
+          hydrateScope({ type: 'thread', environmentId: environmentId!, ...thread })
             .then(() => {
               if (generation === openGeneration)
                 store.update((state) => applyThreadHydration(state, thread.threadId, 'ready'))
@@ -1616,27 +1665,13 @@ export function createWebSocketEnvironmentClient(
       if (hydrationFailure) throw hydrationFailure
       return
     }
-    if (supports('loadSessionHistory')) {
-      await Promise.all(
-        payload.threads.map((thread) =>
-          commands
-            .loadSessionHistory({ sessionId, threadId: thread.threadId })
-            .catch((error: unknown) => {
-              hydrationFailure ??= error
-              if (generation !== openGeneration) return
-              store.update((state) => applyThreadHydration(state, thread.threadId, 'failed'))
-            }),
-        ),
-      )
-    } else {
-      store.update((state) => {
-        let next = state
-        for (const thread of payload.threads) {
-          next = applyThreadHydration(next, thread.threadId, 'ready')
-        }
-        return next
-      })
-    }
+    store.update((state) => {
+      let next = state
+      for (const thread of payload.threads) {
+        next = applyThreadHydration(next, thread.threadId, 'ready')
+      }
+      return next
+    })
     if (generation !== openGeneration) return overtaken(sessionId)
     if (hydrationFailure) throw hydrationFailure
     for (const scope of sessionScopes(sessionId)) subscribe(scope)
@@ -1677,20 +1712,6 @@ export function createWebSocketEnvironmentClient(
       const payload = await request('workspace.icon', { workspaceId })
       return payload.iconDataUrl
     },
-    async listSessions(input = {}) {
-      const query = typeof input === 'string' ? { workspaceId: input } : input
-      const payload = await request('session.list', query)
-      store.update((state) => applySessionList(state, payload.sessions))
-      const listed = store.getState().sessions
-      return {
-        sessions: payload.sessions
-          .map((session) => listed[session.sessionId])
-          .filter(
-            (session): session is NonNullable<(typeof listed)[string]> => session !== undefined,
-          ),
-        nextCursor: payload.nextCursor,
-      }
-    },
     async createSession(input) {
       if (!store.getState().connection.capabilities.includes(SESSION_CREATE_EXPLICIT_CAPABILITY)) {
         throw new EnvironmentClientError(
@@ -1730,21 +1751,6 @@ export function createWebSocketEnvironmentClient(
       const done = openSessionAt(sessionId, openGeneration)
       overtaker = { kind: 'open', sessionId, done }
       return done
-    },
-    async loadSessionHistory(input) {
-      const generation = connectionGeneration
-      const selection = openGeneration
-      const payload = await request('session.history', input)
-      if (generation !== connectionGeneration || selection !== openGeneration) return payload
-      store.update((state) =>
-        applySessionHistory(
-          state,
-          { threadId: input.threadId, sessionId: input.sessionId },
-          payload,
-          input.cursor !== undefined,
-        ),
-      )
-      return payload
     },
     async renameSession(sessionId, title) {
       // The requested title shows until server state has it, or a newer one.
@@ -1810,10 +1816,12 @@ export function createWebSocketEnvironmentClient(
       // Echoed first, so the message is on screen before the round trip. The
       // id makes every later signal about this send resolve the same row.
       const artifactIds = input.artifactIds?.length ? input.artifactIds : undefined
+      const held = mustHold(thread.threadId)
       store.update((state) =>
-        applyTurnSending(state, thread, { commandId, text: input.text, artifactIds }),
+        applyTurnSending(state, thread, { commandId, text: input.text, artifactIds, held }),
       )
       try {
+        if (held) await holdSend(thread, commandId)
         // The turn comes with its `turn.started`, which settles this echo by
         // its command id; the answer only says the send was taken (§3.5).
         return await request('turn.send', { ...input, artifactIds, commandId })
@@ -1871,11 +1879,6 @@ export function createWebSocketEnvironmentClient(
       store.update((state) => applyProviderProbe(state, payload.provider))
       return payload.provider
     },
-    getComposerPreference: (input) =>
-      composerRead(
-        { workspaceId: input.workspaceId, providerId: input.providerId },
-        workspacePreferenceTarget(input),
-      ),
     setComposerPreference: (input) =>
       composerWrite(
         'composer.preferences.set',
@@ -1960,6 +1963,23 @@ export function createWebSocketEnvironmentClient(
     commands,
     supported: () => capabilities.has(WIRE_COMMANDS.saveDraft),
   })
+
+  // Sends a reload, or the transport this one replaces, left held. They wait
+  // like any other, and go under their own command ids.
+  if (options.store) {
+    for (const { thread, outbox } of Object.values(store.getServerState().threads)) {
+      for (const entry of outbox) {
+        if (entry.status !== 'held') continue
+        const { commandId, text, artifactIds } = entry
+        void holdSend(thread, commandId)
+          .then(() => request('turn.send', { ...thread, text, artifactIds, commandId }))
+          .catch((error: unknown) => {
+            const message = error instanceof Error ? error.message : String(error)
+            store.update((state) => applyTurnSendFailed(state, thread, commandId, message))
+          })
+      }
+    }
+  }
 
   return {
     commands,
@@ -2089,6 +2109,12 @@ export function createWebSocketEnvironmentClient(
         kind: 'closed',
         error: new EnvironmentClientError('unavailable', 'Client is disposed.'),
       })
+      // Held sends stay in the store for the client that takes it over; a
+      // disposed transport cannot mark them failed.
+      for (const held of [...heldSends]) {
+        takeHeldSend(held)
+        held.fail(new EnvironmentClientError('unavailable', 'Client is disposed.'))
+      }
       clearReconnect()
       stopHeartbeat()
       const current = socket

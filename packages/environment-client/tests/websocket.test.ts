@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest'
-import { PROTOCOL_VERSION, ProofCommandSchemas } from '@openmanager/protocol'
+import { PROTOCOL_VERSION, type ProofEvent } from '@openmanager/protocol'
 import {
   DEFAULT_RECONNECT,
   createWebSocketEnvironmentClient,
@@ -8,12 +8,20 @@ import {
   type WebSocketLike,
 } from '../src/websocket'
 import {
+  applyComposerPreference,
+  applyCursor,
+  applyRecord,
+  applySessionOpen,
+  applySessionRemoved,
   selectActiveThread,
   selectComposerPreference,
+  selectCursor,
+  selectOpenChatCatchingUp,
   selectSessionComposer,
   selectProviderCatalog,
   selectSessionList,
 } from '../src/state'
+import { cacheState } from '../src/cache-state'
 import type { EnvironmentClient } from '../src/types'
 import { createEnvironmentStore } from '../src/store'
 import { createInitialState, createThreadState } from '../src/state'
@@ -35,6 +43,19 @@ import {
 } from './fixtures'
 
 type Listener = (event: never) => void
+
+/** A `session.open` position no held stream compares with: another epoch, so it applies. */
+function unplacedRead(payload: unknown) {
+  const { sessionId } = (payload as { session: { sessionId: string } }).session
+  return {
+    environment: { scope: environmentScope, epoch: 'read', sequence: 0 },
+    session: {
+      scope: { type: 'session', environmentId: ENV, sessionId },
+      epoch: 'read',
+      sequence: 0,
+    },
+  }
+}
 
 /** A scriptable server end of a socket; the client sees a WHATWG-shaped object. */
 class FakeSocket implements WebSocketLike {
@@ -91,7 +112,12 @@ class FakeSocket implements WebSocketLike {
     return [...this.sent].reverse().find((message) => message.name === name)!
   }
   respond(name: string, payload: unknown) {
-    this.receive({ type: 'response', requestId: this.last(name).requestId, payload })
+    this.receive({
+      type: 'response',
+      requestId: this.last(name).requestId,
+      payload:
+        name === 'session.open' ? { at: unplacedRead(payload), ...(payload as object) } : payload,
+    })
   }
   private sequences = new Map<string, number>()
   /**
@@ -133,11 +159,10 @@ const FULL_CAPABILITIES = [
   'environment.get',
   'workspace.list',
   'workspace.icon',
-  'session.list',
+  'subscription.replay',
   'session.create',
   'session.create.explicit',
   'session.open',
-  'session.history',
   'turn.send',
   'turn.interrupt',
   'interaction.respond',
@@ -178,9 +203,64 @@ const flush = () => new Promise((resolve) => setTimeout(resolve, 0))
 const EMPTY_HISTORY: {
   messages: unknown[]
   turns: unknown[]
-  interactions: unknown[]
-  nextCursor: { ordinal: number } | null
-} = { messages: [], turns: [], interactions: [], nextCursor: null }
+  interactions: Array<{ turnId?: string; interaction: unknown }>
+} = { messages: [], turns: [], interactions: [] }
+
+/** The newest `subscription.replay` this socket sent for a scope. */
+function lastReplay(socket: FakeSocket, type: string, id?: string) {
+  return [...socket.sent].reverse().find((message) => {
+    if (message.name !== 'subscription.replay') return false
+    const scope = (message.payload as { scope: Record<string, string> }).scope
+    return scope.type === type && (!id || scope.threadId === id || scope.sessionId === id)
+  })
+}
+
+/** Answer a replay of a scope with its whole snapshot. */
+function answerSnapshot(
+  socket: FakeSocket,
+  request: { requestId: string; payload: unknown },
+  subscriptionId: string,
+  state: unknown,
+  // Zero: records a test publishes (numbered from 1) follow the snapshot.
+  sequence = 0,
+) {
+  const scope = (request.payload as { scope: unknown }).scope
+  socket.receive({
+    type: 'response',
+    requestId: request.requestId,
+    payload: {
+      mode: 'snapshot',
+      subscriptionId,
+      reason: 'initial',
+      // The epoch `FakeSocket.publish` numbers its records in.
+      snapshot: { cursor: { scope, epoch: 'live', sequence }, state },
+    },
+  })
+}
+
+/** A thread's whole state, as its snapshot carries it. */
+function threadState(thread: typeof THREAD, history: typeof EMPTY_HISTORY) {
+  const turns = history.turns as Array<{ turnId: string; state: string }>
+  const open = turns.find((turn) => turn.state === 'running' || turn.state === 'waiting')
+  const messages = history.messages as Array<{ messageId: string; turnId: string }>
+  return {
+    thread,
+    turns,
+    messages,
+    reasoning: [],
+    tools: [],
+    order: messages.map((message) => ({
+      kind: 'message',
+      id: message.messageId,
+      turnId: message.turnId,
+    })),
+    listing: {},
+    interactions: history.interactions.map((item) => ({
+      turnId: item.turnId ?? open?.turnId ?? turns.at(-1)?.turnId ?? '',
+      interaction: item.interaction,
+    })),
+  }
+}
 
 async function answerOpen(
   socket: FakeSocket,
@@ -190,16 +270,56 @@ async function answerOpen(
 ) {
   socket.respond('session.open', { session, threads })
   await flush()
-  if (threads.length > 0) socket.respond('session.history', history)
+  const sessionReplay = lastReplay(socket, 'session', session.sessionId)
+  if (sessionReplay) {
+    if (!answerKept(socket, sessionReplay, 'sub-session')) {
+      answerSnapshot(socket, sessionReplay, 'sub-session', { session, threads })
+    }
+  }
+  for (const thread of threads) {
+    const replay = lastReplay(socket, 'thread', thread.threadId)
+    if (replay && !answerKept(socket, replay, 'sub-thread')) {
+      answerSnapshot(socket, replay, 'sub-thread', threadState(thread, history))
+    }
+  }
+  await flush()
 }
 
+/** A replay that asked from a kept cursor, with nothing new: true if it was one. */
+function answerKept(
+  socket: FakeSocket,
+  request: { requestId: string; payload: unknown },
+  subscriptionId: string,
+) {
+  const { cursor } = request.payload as { cursor: unknown }
+  if (!cursor) return false
+  socket.receive({
+    type: 'response',
+    requestId: request.requestId,
+    payload: { mode: 'replay', subscriptionId, from: cursor, to: cursor, events: [] },
+  })
+  return true
+}
+
+/** The environment's whole snapshot, as the first catch-up after a handshake brings it. */
 async function answerCatalog(
   socket: FakeSocket,
   environment = { environmentId: ENV, name: 'Local' },
+  state: Record<string, unknown> = {},
 ) {
-  socket.respond('environment.get', { environment })
-  socket.respond('workspace.list', { workspaces: [WORKSPACE] })
-  socket.respond('session.list', { sessions: [], nextCursor: null })
+  const replay = lastReplay(socket, 'environment')
+  if (replay) {
+    answerSnapshot(socket, replay, 'sub-env', {
+      environment,
+      workspaces: [WORKSPACE],
+      sessions: [],
+      preferences: [],
+      providerProfiles: [],
+      listings: { commands: [], configOptions: [], entries: [] },
+      ...state,
+    })
+  }
+  await flush()
 }
 
 async function connected(
@@ -311,317 +431,46 @@ describe('websocket environment client', () => {
     client.dispose()
   })
 
-  it('refreshes sidebar membership and preferences without dropping cached transcripts', async () => {
+  it('replaces the sidebar and preferences from the environment snapshot, keeping cached transcripts', async () => {
     const state = createInitialState()
     state.environment = { environmentId: ENV, name: 'Local' }
     state.workspaces = { [WORKSPACE.workspaceId]: WORKSPACE }
     state.workspaceOrder = [WORKSPACE.workspaceId]
-    state.sessions = { [SESSION.sessionId]: { ...SESSION_SUMMARY, threadIds: [THREAD.threadId] } }
-    state.sessionOrder = [SESSION.sessionId]
+    const gone = { ...SESSION_SUMMARY, sessionId: 'session-gone' }
+    state.sessions = {
+      [SESSION.sessionId]: { ...SESSION_SUMMARY, threadIds: [THREAD.threadId] },
+      [gone.sessionId]: { ...gone, threadIds: [] },
+    }
+    state.sessionOrder = [SESSION.sessionId, gone.sessionId]
     state.threads = { [THREAD.threadId]: createThreadState(THREAD, 'ready') }
     state.composerPreferences = { [WORKSPACE.workspaceId]: { opencode: { modelId: 'old-model' } } }
     const store = createEnvironmentStore(state)
-    const { client, socket } = await connected(
-      ['workspace.list', 'session.list'],
-      {},
-      { environmentId: ENV, store },
-    )
-    expect(client.getState().composerPreferences).toEqual({})
-    socket.respond('workspace.list', { workspaces: [WORKSPACE] })
-    socket.respond('session.list', { sessions: [SESSION_SUMMARY], nextCursor: null })
-    await flush()
-    expect(selectSessionList(client.getState()).map((session) => session.sessionId)).toEqual([
-      SESSION.sessionId,
-    ])
-    expect(client.getState().threads[THREAD.threadId]).toBe(state.threads[THREAD.threadId])
-    const refresh = client.commands.listWorkspaces()
-    socket.respond('workspace.list', { workspaces: [] })
-    await refresh
-    expect(client.getState().workspaces).toEqual({})
-    // The workspace listing answers for workspaces only: each session is
-    // dropped by its own announcement or by the session catalog's answer.
-    expect(Object.keys(client.getState().sessions)).toEqual([SESSION.sessionId])
-    expect(client.getState().threads[THREAD.threadId]).toBe(state.threads[THREAD.threadId])
-    client.dispose()
-  })
-
-  it('reads every session page without a cache store, since a page can be cut short by size', async () => {
-    const older = { ...SESSION_SUMMARY, sessionId: 'older', updatedAt: '2026-09-09T00:00:00.000Z' }
-    const { client, socket } = await connected(['session.list'], {}, { environmentId: ENV })
-    const cursor = { updatedAt: SESSION_SUMMARY.updatedAt, sessionId: SESSION.sessionId }
-    socket.respond('session.list', { sessions: [SESSION_SUMMARY], nextCursor: cursor })
-    await flush()
-    expect(socket.last('session.list').payload).toMatchObject({ cursor })
-    socket.respond('session.list', { sessions: [older], nextCursor: null })
-    await flush()
-    expect(socket.sent.filter((message) => message.name === 'session.list')).toHaveLength(2)
-    expect(selectSessionList(client.getState()).map((session) => session.sessionId)).toEqual([
-      SESSION.sessionId,
-      'older',
-    ])
-    client.dispose()
-  })
-
-  it('keeps unchanged cached sessions listed and adding a workspace keeps existing data', async () => {
-    const state = createInitialState()
-    state.workspaces = { [WORKSPACE.workspaceId]: WORKSPACE }
-    state.workspaceOrder = [WORKSPACE.workspaceId]
-    state.sessions = { [SESSION.sessionId]: { ...SESSION_SUMMARY, threadIds: [THREAD.threadId] } }
-    state.sessionOrder = [SESSION.sessionId]
-    state.threads = { [THREAD.threadId]: createThreadState(THREAD, 'ready') }
-    const store = createEnvironmentStore(state)
-    const { client, socket } = await connected(
-      ['session.list', 'workspace.add'],
-      {},
-      { environmentId: ENV, store },
-    )
-    socket.respond('session.list', { sessions: [SESSION_SUMMARY], nextCursor: null })
-    await flush()
-    expect(client.getState().sessionOrder).toEqual([SESSION.sessionId])
-    const added = client.commands.addWorkspace({ path: '/other' })
-    const other = { ...WORKSPACE, workspaceId: '/other', path: '/other' }
-    // The registration's event reaches the socket before its answer.
-    socket.publish(
-      event({ name: 'workspace.updated', scope: environmentScope, payload: { workspace: other } }),
-    )
-    socket.respond('workspace.add', { workspace: other })
-    await added
-    expect(client.getState().workspaceOrder).toEqual([WORKSPACE.workspaceId, '/other'])
-    expect(client.getState().threads[THREAD.threadId]).toBe(state.threads[THREAD.threadId])
-    client.dispose()
-  })
-
-  it('drops cached sessions that the full catalog and a head re-read both omit', async () => {
-    const older = { ...SESSION_SUMMARY, sessionId: 'older', updatedAt: '2026-09-09T00:00:00.000Z' }
-    const state = createInitialState()
-    state.sessions = {
-      [SESSION.sessionId]: { ...SESSION_SUMMARY, threadIds: [] },
-      older: { ...older, threadIds: [] },
-      deleted: { ...older, sessionId: 'deleted', threadIds: [] },
-    }
-    state.sessionOrder = [SESSION.sessionId, 'older', 'deleted']
-    const store = createEnvironmentStore(state)
-    const { client, socket } = await connected(
-      ['session.list', 'session.open'],
-      {},
-      { environmentId: ENV, store },
-    )
-    const cursor = { updatedAt: SESSION_SUMMARY.updatedAt, sessionId: SESSION.sessionId }
-    expect(ProofCommandSchemas['session.list'].safeParse(socket.last('session.list')).success).toBe(
-      true,
-    )
-    socket.respond('session.list', { sessions: [SESSION_SUMMARY], nextCursor: cursor })
-    await flush()
-    expect(client.getState().sessionOrder).toContain('older')
-    expect(socket.last('session.list').payload).toMatchObject({ cursor })
-    socket.respond('session.list', { sessions: [older], nextCursor: null })
-    await flush()
-    // Absence from the walk alone is not proof: the newest pages are re-read.
-    expect(client.getState().sessions.deleted).toBeDefined()
-    expect(socket.last('session.list').payload).not.toHaveProperty('cursor')
-    const olderCursor = { updatedAt: older.updatedAt, sessionId: older.sessionId }
-    socket.respond('session.list', { sessions: [SESSION_SUMMARY, older], nextCursor: olderCursor })
-    await flush()
-    // The re-read stops once it is older than the walk's newest session.
-    expect(socket.sent.filter((message) => message.name === 'session.list')).toHaveLength(3)
-    expect(socket.sent.some((message) => message.name === 'session.open')).toBe(false)
-    expect(client.getState().sessionOrder).toEqual([SESSION.sessionId, 'older'])
-    expect(client.getState().sessions.deleted).toBeUndefined()
-    client.dispose()
-  })
-
-  it('drops omitted cached sessions at once when the catalog answers in one page', async () => {
-    const state = createInitialState()
-    state.sessions = {
-      [SESSION.sessionId]: { ...SESSION_SUMMARY, threadIds: [] },
-      deleted: { ...SESSION_SUMMARY, sessionId: 'deleted', threadIds: [] },
-    }
-    state.sessionOrder = [SESSION.sessionId, 'deleted']
-    const store = createEnvironmentStore(state)
-    const { client, socket } = await connected(['session.list'], {}, { environmentId: ENV, store })
-    socket.respond('session.list', { sessions: [SESSION_SUMMARY], nextCursor: null })
-    await flush()
-    expect(socket.sent.filter((message) => message.name === 'session.list')).toHaveLength(1)
-    expect(client.getState().sessionOrder).toEqual([SESSION.sessionId])
-    client.dispose()
-  })
-
-  describe('when the head re-read spans pages', () => {
-    const cursor = { updatedAt: SESSION_SUMMARY.updatedAt, sessionId: SESSION.sessionId }
-    const start = async () => {
-      const state = createInitialState()
-      state.sessions = {
-        [SESSION.sessionId]: { ...SESSION_SUMMARY, threadIds: [] },
-        deleted: { ...SESSION_SUMMARY, sessionId: 'deleted', threadIds: [] },
-      }
-      state.sessionOrder = [SESSION.sessionId, 'deleted']
-      const store = createEnvironmentStore(state)
-      const connection = await connected(['session.list'], {}, { environmentId: ENV, store })
-      // A two-page walk, then a two-page re-read: neither is one query.
-      for (let page = 0; page < 2; page++) {
-        connection.socket.respond('session.list', {
-          sessions: [SESSION_SUMMARY],
-          nextCursor: cursor,
-        })
-        await flush()
-        connection.socket.respond('session.list', { sessions: [], nextCursor: null })
-        await flush()
-      }
-      return connection
-    }
-    const lists = (socket: FakeSocket) =>
-      socket.sent.filter((message) => message.name === 'session.list').length
-
-    it('reads again until one page answers, then drops what is still missing', async () => {
-      const { client, socket } = await start()
-      expect(client.getState().sessions.deleted).toBeDefined()
-      expect(socket.last('session.list').payload).not.toHaveProperty('cursor')
-      socket.respond('session.list', { sessions: [SESSION_SUMMARY], nextCursor: null })
-      await flush()
-      expect(lists(socket)).toBe(5)
-      expect(client.getState().sessionOrder).toEqual([SESSION.sessionId])
-      client.dispose()
-    })
-
-    it('keeps a session that moved during a re-read and turns up in the next', async () => {
-      const { client, socket } = await start()
-      const moved = {
-        ...SESSION_SUMMARY,
-        sessionId: 'deleted',
-        updatedAt: '2026-09-12T00:00:00.000Z',
-      }
-      socket.respond('session.list', { sessions: [moved, SESSION_SUMMARY], nextCursor: null })
-      await flush()
-      expect(lists(socket)).toBe(5)
-      expect(client.getState().sessions.deleted).toBeDefined()
-      client.dispose()
-    })
-
-    it('keeps everything when no re-read settles in one page', async () => {
-      const { client, socket } = await start()
-      for (let pass = 0; pass < 2; pass++) {
-        socket.respond('session.list', { sessions: [SESSION_SUMMARY], nextCursor: cursor })
-        await flush()
-        socket.respond('session.list', { sessions: [], nextCursor: null })
-        await flush()
-      }
-      expect(lists(socket)).toBe(8)
-      expect(client.getState().sessions.deleted).toBeDefined()
-      client.dispose()
-    })
-  })
-
-  it('keeps the active session and parents of listed sessions during catalog reconciliation', async () => {
-    const child = { ...SESSION_SUMMARY, sessionId: 'child', parentSessionId: 'parent' }
-    const state = createInitialState()
-    state.sessions = {
-      active: { ...SESSION_SUMMARY, sessionId: 'active', threadIds: [] },
-      parent: { ...SESSION_SUMMARY, sessionId: 'parent', threadIds: [] },
-      child: { ...child, threadIds: [] },
-      gone: { ...SESSION_SUMMARY, sessionId: 'gone', threadIds: [] },
-    }
-    state.sessionOrder = ['active', 'parent', 'child', 'gone']
-    state.activeSessionId = 'active'
-    const store = createEnvironmentStore(state)
-    const { client, socket } = await connected(['session.list'], {}, { environmentId: ENV, store })
-    socket.respond('session.list', { sessions: [child], nextCursor: null })
-    await flush()
-    expect(Object.keys(client.getState().sessions).sort()).toEqual(['active', 'child', 'parent'])
-    client.dispose()
-  })
-
-  it('keeps an omitted cached session that live events touched during the refresh', async () => {
-    const state = createInitialState()
-    state.sessions = { touched: { ...SESSION_SUMMARY, sessionId: 'touched', threadIds: [] } }
-    state.sessionOrder = ['touched']
-    const store = createEnvironmentStore(state)
-    const { client, socket } = await connected(
-      ['session.list', 'subscription.subscribe'],
-      {},
-      { environmentId: ENV, store },
-    )
-    socket.respond('subscription.subscribe', {
-      subscriptionId: 'sub-env',
+    const { client, socket } = await connected(FULL_CAPABILITIES, {}, { environmentId: ENV, store })
+    // The cache holds no cursor: the environment answers with all of it.
+    expect(lastReplay(socket, 'environment')?.payload).toEqual({
       scope: { type: 'environment', environmentId: ENV },
+      cursor: null,
     })
-    const cursor = { updatedAt: SESSION_SUMMARY.updatedAt, sessionId: SESSION.sessionId }
-    socket.respond('session.list', { sessions: [SESSION_SUMMARY], nextCursor: cursor })
-    await flush()
-    socket.receive({
-      type: 'event',
-      name: 'subscription.event',
-      payload: {
-        subscriptionId: 'sub-env',
-        record: {
-          cursor: { scope: { type: 'environment', environmentId: ENV }, epoch: 'e', sequence: 1 },
-          event: event({
-            name: 'session.updated',
-            scope: environmentScope,
-            payload: { sessionId: 'touched', settledAt: '2026-09-12T00:00:00.000Z' },
-          }),
+    await answerCatalog(socket, undefined, {
+      sessions: [SESSION_SUMMARY],
+      preferences: [
+        {
+          workspaceId: WORKSPACE.workspaceId,
+          providerId: 'opencode',
+          preference: { modelId: 'new-model' },
+          revision: 2,
         },
-      },
+      ],
     })
-    socket.respond('session.list', { sessions: [], nextCursor: null })
-    await flush()
-    // Its only candidate was touched, so there is nothing to re-read or drop.
-    expect(socket.sent.filter((message) => message.name === 'session.list')).toHaveLength(2)
-    expect(client.getState().sessions.touched).toBeDefined()
-    client.dispose()
-  })
-
-  it('recovers only the active runtime while older catalog pages are still loading', async () => {
-    const state = createInitialState()
-    state.sessions = { [SESSION.sessionId]: { ...SESSION_SUMMARY, threadIds: [] } }
-    state.sessionOrder = [SESSION.sessionId]
-    state.activeSessionId = SESSION.sessionId
-    const store = createEnvironmentStore(state)
-    const { client, socket } = await connected(
-      ['session.list', 'session.open'],
-      {},
-      { environmentId: ENV, store },
-    )
-    const cursor = { updatedAt: SESSION_SUMMARY.updatedAt, sessionId: SESSION.sessionId }
-    socket.respond('session.list', { sessions: [SESSION_SUMMARY], nextCursor: cursor })
-    await flush()
-    expect(socket.last('session.list').payload).toMatchObject({ cursor })
-    expect(
-      socket.sent
-        .filter((message) => message.name === 'session.open')
-        .map((message) => message.payload),
-    ).toEqual([{ sessionId: SESSION.sessionId }])
-    client.dispose()
-  })
-
-  it('keeps a cached session that moves ahead of a catalog cursor during pagination', async () => {
-    const moved = { ...SESSION_SUMMARY, sessionId: 'moved' }
-    const thread = { ...THREAD, sessionId: moved.sessionId }
-    const state = createInitialState()
-    state.sessions = { moved: { ...moved, threadIds: [THREAD.threadId] } }
-    state.sessionOrder = ['moved']
-    state.threads = { [THREAD.threadId]: createThreadState(thread, 'ready') }
-    const store = createEnvironmentStore(state)
-    const { client, socket } = await connected(
-      ['session.list', 'session.open'],
-      {},
-      { environmentId: ENV, store },
-    )
-    const cursor = { updatedAt: SESSION_SUMMARY.updatedAt, sessionId: SESSION.sessionId }
-    socket.respond('session.list', { sessions: [SESSION_SUMMARY], nextCursor: cursor })
-    await flush()
-    // The moved session was updated into the already-read first page, so
-    // neither page names it even though it still exists on the server.
-    socket.respond('session.list', { sessions: [], nextCursor: null })
-    await flush()
-    expect(client.getState().sessions.moved).toBeDefined()
-    // The head re-read finds it at the top of the catalog.
-    const updated = { ...moved, updatedAt: '2026-09-11T00:00:00.000Z' }
-    socket.respond('session.list', { sessions: [updated, SESSION_SUMMARY], nextCursor: null })
-    await flush()
-    expect(client.getState().sessions.moved).toBeDefined()
-    expect(socket.sent.some((message) => message.name === 'session.open')).toBe(false)
-    expect(client.getState().sessionOrder).toContain('moved')
+    expect(selectSessionList(client.getState()).map((session) => session.sessionId)).toEqual([
+      SESSION.sessionId,
+    ])
+    expect(client.getState().composerPreferences[WORKSPACE.workspaceId]?.opencode).toEqual({
+      modelId: 'new-model',
+    })
     expect(client.getState().threads[THREAD.threadId]).toBe(state.threads[THREAD.threadId])
+    // No catalog walk.
+    expect(socket.sent.some((message) => message.name === 'session.list')).toBe(false)
     client.dispose()
   })
 
@@ -677,7 +526,7 @@ describe('websocket environment client', () => {
     const { client, socket } = await connected()
     const OTHER = { ...SESSION_SUMMARY, sessionId: 'session-2' }
     const OTHER_THREAD = { threadId: 'thread-2', sessionId: OTHER.sessionId }
-    socket.respond('session.list', { sessions: [SESSION_SUMMARY, OTHER], nextCursor: null })
+    await answerCatalog(socket, undefined, { sessions: [SESSION_SUMMARY, OTHER] })
     await flush()
     const first = client.commands.openSession(SESSION.sessionId)
     await answerOpen(socket)
@@ -715,29 +564,11 @@ describe('websocket environment client', () => {
       ...SESSION_SUMMARY,
       sessionId,
     }))
-    socket.respond('session.list', { sessions: [SESSION_SUMMARY, ...listed], nextCursor: null })
+    await answerCatalog(socket, undefined, { sessions: [SESSION_SUMMARY, ...listed] })
     await flush()
     const first = client.commands.openSession(SESSION.sessionId)
     await answerOpen(socket)
     await first
-    const subscribes = socket.sent.filter((message) => message.name === 'subscription.subscribe')
-    const sessionScoped = subscribes.filter(
-      (message) =>
-        (message.payload as { scope: { sessionId?: string } }).scope.sessionId ===
-        SESSION.sessionId,
-    )
-    expect(sessionScoped.length).toBeGreaterThan(0)
-    sessionScoped.forEach((message, index) =>
-      socket.receive({
-        type: 'response',
-        requestId: message.requestId,
-        payload: {
-          subscriptionId: `sub-a-${index}`,
-          scope: (message.payload as { scope: unknown }).scope,
-        },
-      }),
-    )
-
     // B's open is overtaken before it is answered.
     void client.commands.openSession('session-2').catch(() => undefined)
     const toC = client.commands.openSession('session-3')
@@ -746,23 +577,8 @@ describe('websocket environment client', () => {
     const released = socket.sent
       .filter((message) => message.name === 'subscription.unsubscribe')
       .map((message) => (message.payload as { subscriptionId: string }).subscriptionId)
-    expect(released).toEqual(sessionScoped.map((_, index) => `sub-a-${index}`))
+    expect(released).toEqual(['sub-session', 'sub-thread'])
     expect(client.getState().activeSessionId).toBe('session-3')
-    client.disconnect()
-  })
-
-  it('keeps the persisted status while opening and hydrating an empty transcript', async () => {
-    const { client, socket } = await connected()
-    const opened = client.commands.openSession(SESSION.sessionId)
-    socket.respond('session.open', {
-      session: { ...SESSION_SUMMARY, status: 'error' },
-      threads: [THREAD],
-    })
-    await flush()
-    expect(client.getState().sessions[SESSION.sessionId]?.status).toBe('error')
-    socket.respond('session.history', EMPTY_HISTORY)
-    await opened
-    expect(client.getState().sessions[SESSION.sessionId]?.status).toBe('error')
     client.disconnect()
   })
 
@@ -772,7 +588,7 @@ describe('websocket environment client', () => {
       'session.rename',
       'session.delete',
     ])
-    socket.respond('session.list', { sessions: [SESSION_SUMMARY], nextCursor: null })
+    await answerCatalog(socket, undefined, { sessions: [SESSION_SUMMARY] })
     await flush()
     const rename = client.commands.renameSession(SESSION.sessionId, 'Renamed')
     expect(socket.last('session.rename').payload).toEqual({
@@ -792,11 +608,7 @@ describe('websocket environment client', () => {
 
   it('settles at once, and neither the echo nor the answer moves it again', async () => {
     const { client, socket } = await connected([...FULL_CAPABILITIES, 'session.settle'])
-    socket.respond('subscription.subscribe', {
-      subscriptionId: 'sub-env',
-      scope: { type: 'environment', environmentId: ENV },
-    })
-    socket.respond('session.list', { sessions: [SESSION_SUMMARY], nextCursor: null })
+    await answerCatalog(socket, undefined, { sessions: [SESSION_SUMMARY] })
     await flush()
     // Settled or not, as shown, through every step.
     const placements: boolean[] = []
@@ -821,7 +633,11 @@ describe('websocket environment client', () => {
       payload: {
         subscriptionId: 'sub-env',
         record: {
-          cursor: { scope: { type: 'environment', environmentId: ENV }, epoch: 'e', sequence: 1 },
+          cursor: {
+            scope: { type: 'environment', environmentId: ENV },
+            epoch: 'live',
+            sequence: 1,
+          },
           event: event({
             name: 'session.updated',
             scope: environmentScope,
@@ -840,7 +656,7 @@ describe('websocket environment client', () => {
 
   it('regenerates a title: the event, not the answer, brings it and its source', async () => {
     const { client, socket } = await connected([...FULL_CAPABILITIES, 'session.title.regenerate'])
-    socket.respond('session.list', { sessions: [SESSION_SUMMARY], nextCursor: null })
+    await answerCatalog(socket, undefined, { sessions: [SESSION_SUMMARY] })
     await flush()
     expect(client.supports('regenerateSessionTitle')).toBe(true)
     const regenerate = client.commands.regenerateSessionTitle(SESSION.sessionId)
@@ -965,7 +781,7 @@ describe('websocket environment client', () => {
     await flush()
     socket.receive({
       type: 'error',
-      requestId: socket.last('session.history').requestId,
+      requestId: lastReplay(socket, 'thread')!.requestId,
       error: { code: 'internal', message: 'History is unreadable.' },
     })
     await expect(opened).rejects.toMatchObject({ message: 'History is unreadable.' })
@@ -1000,7 +816,7 @@ describe('websocket environment client', () => {
 
   it('retains an open failure before threads load and clears it after a successful retry', async () => {
     const { client, socket } = await connected()
-    socket.respond('session.list', { sessions: [SESSION_SUMMARY], nextCursor: null })
+    await answerCatalog(socket, undefined, { sessions: [SESSION_SUMMARY] })
     await flush()
     const opened = client.commands.openSession(SESSION.sessionId)
     const rejected = expect(opened).rejects.toThrow('Folder unavailable')
@@ -1094,18 +910,14 @@ describe('websocket environment client', () => {
     expect(client.supports('deleteSession')).toBe(false)
   })
 
-  it('subscribes to the environment scope and hydrates catalog reads after handshake', async () => {
+  it('catches the environment scope up after the handshake: the whole environment, once', async () => {
     const { client, socket } = await connected()
-    expect(socket.last('subscription.subscribe').payload).toEqual({
+    expect(lastReplay(socket, 'environment')?.payload).toEqual({
       scope: { type: 'environment', environmentId: ENV },
+      cursor: null,
     })
-    socket.respond('subscription.subscribe', {
-      subscriptionId: 'sub-env',
-      scope: { type: 'environment', environmentId: ENV },
-    })
-    await flush()
+    expect(socket.sent.some((message) => message.name === 'subscription.subscribe')).toBe(false)
     await answerCatalog(socket)
-    await flush()
     expect(client.getState().environment?.name).toBe('Local')
     expect(client.getState().workspaces[WORKSPACE.workspaceId]).toEqual(WORKSPACE)
   })
@@ -1375,18 +1187,9 @@ describe('websocket environment client', () => {
     await answerOpen(socket)
     await flush()
     const scopes = socket.sent
-      .filter((message) => message.name === 'subscription.subscribe')
+      .filter((message) => message.name === 'subscription.replay')
       .map((message) => (message.payload as { scope: { type: string } }).scope.type)
     expect(scopes).toEqual(['environment', 'session', 'thread'])
-    socket.respond('subscription.subscribe', {
-      subscriptionId: 'sub-session',
-      scope: { type: 'session', environmentId: ENV, sessionId: SESSION.sessionId },
-    })
-    await flush()
-    socket.respond('subscription.subscribe', {
-      subscriptionId: 'sub-thread',
-      scope: { ...THREAD, type: 'thread', environmentId: ENV },
-    })
     await open
     expect(client.getState().activeThreadId).toBe(THREAD.threadId)
     expect(selectActiveThread(client.getState())?.hydration).toBe('ready')
@@ -1399,7 +1202,7 @@ describe('websocket environment client', () => {
         record: {
           cursor: {
             scope: { ...THREAD, type: 'thread', environmentId: ENV },
-            epoch: 'e',
+            epoch: 'live',
             sequence,
           },
           event,
@@ -1413,63 +1216,6 @@ describe('websocket environment client', () => {
     const thread = selectActiveThread(client.getState())!
     expect(thread.messages[1]?.content).toEqual([{ type: 'text', text: 'Hi!' }])
     expect(selectSessionList(client.getState())[0]?.status).toBe('idle')
-  })
-
-  it('lists session summaries with a cursor and hydrates history after open', async () => {
-    const { client, socket } = await connected()
-    const listing = client.commands.listSessions({ limit: 1 })
-    expect(socket.last('session.list').payload).toEqual({ limit: 1 })
-    socket.respond('session.list', {
-      sessions: [SESSION_SUMMARY],
-      nextCursor: { updatedAt: SESSION_SUMMARY.updatedAt, sessionId: SESSION.sessionId },
-    })
-    const page = await listing
-    expect(page.sessions).toHaveLength(1)
-    expect(page.sessions[0]).toMatchObject({
-      sessionId: SESSION.sessionId,
-      status: 'idle',
-      providerId: 'opencode',
-    })
-    expect(page.nextCursor?.sessionId).toBe(SESSION.sessionId)
-    expect(client.getState().sessions[SESSION.sessionId]?.threadIds).toEqual([])
-
-    const older = {
-      sessionId: 'session-0',
-      workspaceId: SESSION.workspaceId,
-      title: 'Older',
-      status: 'idle' as const,
-      providerId: 'opencode',
-      updatedAt: '2026-09-09T00:00:00.000Z',
-    }
-    const rest = client.commands.listSessions({ cursor: page.nextCursor!, limit: 1 })
-    socket.respond('session.list', { sessions: [older], nextCursor: null })
-    const second = await rest
-    expect(second.sessions.map((session) => session.sessionId)).toEqual(['session-0'])
-    expect(second.nextCursor).toBeNull()
-    expect(
-      selectSessionList(client.getState())
-        .map((session) => session.sessionId)
-        .sort(),
-    ).toEqual([SESSION.sessionId, 'session-0'].sort())
-
-    const opened = client.commands.openSession(SESSION.sessionId)
-    await answerOpen(socket, SESSION_SUMMARY, [THREAD], {
-      messages: [
-        {
-          messageId: 'message-1',
-          threadId: THREAD.threadId,
-          turnId: 'turn-1',
-          role: 'user',
-          content: [{ type: 'text', text: 'Hello' }],
-        },
-      ],
-      turns: [{ turnId: 'turn-1', threadId: THREAD.threadId, state: 'completed' }],
-      interactions: [],
-      nextCursor: null,
-    })
-    await opened
-    expect(selectActiveThread(client.getState())?.messages).toHaveLength(1)
-    expect(selectActiveThread(client.getState())?.hydration).toBe('ready')
   })
 
   it('sends a turn; the answer changes nothing, and its event brings the turn', async () => {
@@ -1896,7 +1642,7 @@ describe('websocket environment client', () => {
     })
   })
 
-  it('sends plan build intent and returns plan history without reopening review', async () => {
+  it('sends plan build intent', async () => {
     const { client, socket } = await connected([...FULL_CAPABILITIES, 'plan.build'])
     const response = {
       kind: 'plan' as const,
@@ -1912,30 +1658,6 @@ describe('websocket environment client', () => {
     })
     socket.respond('interaction.respond', null)
     await pending
-    const plans = [
-      {
-        threadId: THREAD.threadId,
-        turnId: 'turn-1',
-        state: 'resolved',
-        outcome: response.outcome,
-        plan: {
-          kind: 'plan',
-          interactionId: 'plan-1',
-          markdown: '# Plan',
-          todos: [],
-          continuation: 'follow_up_turn',
-        },
-      },
-    ]
-    const history = client.commands.loadSessionHistory(THREAD)
-    socket.respond('session.history', {
-      messages: [],
-      turns: [],
-      interactions: [],
-      plans,
-      nextCursor: null,
-    })
-    await expect(history).resolves.toMatchObject({ plans, interactions: [] })
   })
 
   it('refuses plan builds on an older environment instead of silently only accepting', async () => {
@@ -1956,8 +1678,7 @@ describe('websocket environment client', () => {
     await answerOpen(socket, SESSION_SUMMARY, [THREAD], {
       messages: [],
       turns: [{ turnId: 'turn-1', threadId: THREAD.threadId, state: 'waiting' }],
-      interactions: [{ threadId: THREAD.threadId, interaction: permission }],
-      nextCursor: null,
+      interactions: [{ interaction: permission }],
     })
     await flush()
     await flush()
@@ -1985,8 +1706,7 @@ describe('websocket environment client', () => {
     await answerOpen(socket, SESSION_SUMMARY, [THREAD], {
       messages: [],
       turns: [{ turnId: 'turn-1', threadId: THREAD.threadId, state: 'waiting' }],
-      interactions: [{ threadId: THREAD.threadId, interaction: permission }],
-      nextCursor: null,
+      interactions: [{ interaction: permission }],
     })
     await flush()
     await flush()
@@ -2015,8 +1735,7 @@ describe('websocket environment client', () => {
     await answerOpen(socket, SESSION_SUMMARY, [THREAD], {
       messages: [],
       turns: [{ turnId: 'turn-1', threadId: THREAD.threadId, state: 'waiting' }],
-      interactions: [{ threadId: THREAD.threadId, interaction: permission }],
-      nextCursor: null,
+      interactions: [{ interaction: permission }],
     })
     await flush()
     await flush()
@@ -2047,15 +1766,15 @@ describe('websocket environment client', () => {
     expect(await fail(respond('deny'))).not.toBe(first)
   })
 
-  it('releases a subscription that was dropped before its acknowledgement arrived', async () => {
+  it('releases a subscription whose catch-up arrives after the scope was dropped', async () => {
     const { client, socket } = await connected()
-    const opened = client.commands.openSession(SESSION.sessionId)
-    await answerOpen(socket)
-    await opened
-    const subscribeRequest = socket.last('subscription.subscribe')
-    expect(subscribeRequest.payload).toMatchObject({ scope: { type: 'thread' } })
+    void client.commands.openSession(SESSION.sessionId).catch(() => undefined)
+    socket.respond('session.open', { session: SESSION_SUMMARY, threads: [THREAD] })
+    await flush()
+    const threadReplay = lastReplay(socket, 'thread', THREAD.threadId)!
+    expect(threadReplay.payload).toMatchObject({ scope: { type: 'thread' } })
 
-    // Leave the session before the server acknowledges the thread subscription.
+    // Leave the session before the server answers the thread's catch-up.
     const second = {
       sessionId: 'session-2',
       workspaceId: WORKSPACE.workspaceId,
@@ -2069,20 +1788,13 @@ describe('websocket environment client', () => {
     await switched
     expect(socket.sent.some((message) => message.name === 'subscription.unsubscribe')).toBe(false)
 
-    socket.receive({
-      type: 'response',
-      requestId: subscribeRequest.requestId,
-      payload: {
-        subscriptionId: 'sub-thread-1',
-        scope: (subscribeRequest.payload as { scope: unknown }).scope,
-      },
-    })
+    answerSnapshot(socket, threadReplay, 'sub-thread-1', threadState(THREAD, EMPTY_HISTORY))
     expect(socket.last('subscription.unsubscribe').payload).toEqual({
       subscriptionId: 'sub-thread-1',
     })
   })
 
-  it('sends one subscribe per scope while an earlier subscribe is unacknowledged', async () => {
+  it('sends one catch-up per scope while it holds the scope', async () => {
     const { client, socket } = await connected()
     const first = client.commands.openSession(SESSION.sessionId)
     await answerOpen(socket)
@@ -2092,7 +1804,7 @@ describe('websocket environment client', () => {
     await again
     const threadSubscribes = socket.sent.filter(
       (message) =>
-        message.name === 'subscription.subscribe' &&
+        message.name === 'subscription.replay' &&
         (message.payload as { scope: { type: string } }).scope.type === 'thread',
     )
     expect(threadSubscribes).toHaveLength(1)
@@ -2117,7 +1829,10 @@ describe('websocket environment client', () => {
     await answerCatalog(next, { environmentId: ENV, name: 'Local' })
     await flush()
     await flush()
-    expect(next.sent.filter((message) => message.name === 'session.open')).toHaveLength(1)
+    // The held scopes catch up from their cursors; the same process needs no
+    // second open of the chat.
+    expect(next.sent.filter((message) => message.name === 'session.open')).toHaveLength(0)
+    expect(lastReplay(next, 'thread', THREAD.threadId)).toBeDefined()
   })
 
   it('asks for binary frames as ArrayBuffer', async () => {
@@ -2151,9 +1866,28 @@ describe('websocket environment client', () => {
     const { client, socket, timers } = await connected()
     const environment = { environmentId: ENV, name: 'Fragmented '.repeat(500) }
     socket.control.length = 0
-    const request = socket.last('environment.get')
+    const request = lastReplay(socket, 'environment')!
     socket.receiveFragments(
-      { type: 'response', requestId: request.requestId, payload: { environment } },
+      {
+        type: 'response',
+        requestId: request.requestId,
+        payload: {
+          mode: 'snapshot',
+          subscriptionId: 'sub-env',
+          reason: 'initial',
+          snapshot: {
+            cursor: { scope: environmentScope, epoch: 'live', sequence: 0 },
+            state: {
+              environment,
+              workspaces: [WORKSPACE],
+              sessions: [],
+              preferences: [],
+              providerProfiles: [],
+              listings: { commands: [], configOptions: [], entries: [] },
+            },
+          },
+        },
+      },
       512,
     )
     await flush()
@@ -2168,7 +1902,7 @@ describe('websocket environment client', () => {
     )
   })
 
-  it('reconnects with backoff, re-handshakes and re-opens the active session', async () => {
+  it('reconnects with backoff, re-handshakes and catches the open chat up', async () => {
     const { client, socket, timers } = await connected()
     const opened = client.commands.openSession(SESSION.sessionId)
     await answerOpen(socket)
@@ -2189,15 +1923,13 @@ describe('websocket environment client', () => {
     next.respond('protocol.handshake', bootstrap(FULL_CAPABILITIES))
     await flush()
     expect(client.getState().connection.phase).toBe('connected')
-    next.respond('subscription.subscribe', {
-      subscriptionId: 'sub-env-2',
-      scope: { type: 'environment', environmentId: ENV },
-    })
-    await flush()
     await answerCatalog(next, { environmentId: ENV, name: 'Local' })
     await flush()
     await flush()
-    expect(next.last('session.open').payload).toEqual({ sessionId: SESSION.sessionId })
+    // The same process: the held scopes catch up from their cursors.
+    expect(lastReplay(next, 'thread', THREAD.threadId)?.payload).toMatchObject({
+      cursor: { sequence: 0 },
+    })
   })
 
   it('rejects in-flight commands when the connection drops', async () => {
@@ -2395,78 +2127,11 @@ describe('websocket environment client', () => {
     expect(client.getState().connection).toMatchObject({ attempt: 0, retriesExhausted: false })
   })
 
-  it('resumes every subscription after a drop and keeps events flowing', async () => {
-    const { client, socket, timers } = await connected()
-    const opened = client.commands.openSession(SESSION.sessionId)
-    await answerOpen(socket)
-    await flush()
-    await opened.catch(() => undefined)
-
-    const scopes = (target: FakeSocket) =>
-      target.sent
-        .filter((message) => message.name === 'subscription.subscribe')
-        .map((message) => (message.payload as { scope: { type: string } }).scope.type)
-    expect(scopes(socket)).toEqual(['environment', 'session', 'thread'])
-
-    const record = (sequence: number, event: unknown) => ({
-      type: 'event',
-      name: 'subscription.event',
-      payload: {
-        subscriptionId: 'sub-thread',
-        record: {
-          cursor: {
-            scope: { ...THREAD, type: 'thread', environmentId: ENV },
-            epoch: 'e',
-            sequence,
-          },
-          event,
-        },
-      },
-    })
-    socket.receive(record(2, turnStarted()))
-    socket.receive(record(3, delta('turn-1', 'assistant-1', 'Hi')))
-
-    socket.drop(1006)
-    await flush()
-    timers.advance(100)
-    const next = FakeSocket.instances[1]!
-    next.open()
-    next.respond('protocol.handshake', bootstrap(FULL_CAPABILITIES))
-    await flush()
-
-    // Re-subscribed from the handshake alone: no catalog read, no session.open
-    // and no user action have happened yet.
-    expect(scopes(next)).toEqual(['environment', 'session', 'thread'])
-
-    // The cursor survived the drop, so a replayed record is still ignored and a
-    // newer one still lands in the store.
-    next.receive(record(3, delta('turn-1', 'assistant-1', 'Hi')))
-    next.receive(record(4, delta('turn-1', 'assistant-1', '!')))
-    expect(selectActiveThread(client.getState())?.messages[1]?.content).toEqual([
-      { type: 'text', text: 'Hi!' },
-    ])
-  })
-
   it('releases the previous session scopes when the active session is cleared', async () => {
     const { client, socket, timers } = await connected()
     const opened = client.commands.openSession(SESSION.sessionId)
     await answerOpen(socket)
     await opened
-
-    const subscribes = socket.sent.filter((message) => message.name === 'subscription.subscribe')
-    expect(
-      subscribes.map((message) => (message.payload as { scope: { type: string } }).scope.type),
-    ).toEqual(['environment', 'session', 'thread'])
-    for (const [index, request] of subscribes.entries()) {
-      socket.receive({
-        type: 'response',
-        requestId: request.requestId,
-        payload: {
-          subscriptionId: `sub-${index}`,
-          scope: (request.payload as { scope: unknown }).scope,
-        },
-      })
-    }
 
     // Opening a draft clears the active session; its scopes must go with it.
     client.setActiveSession(null)
@@ -2474,7 +2139,7 @@ describe('websocket environment client', () => {
       socket.sent
         .filter((message) => message.name === 'subscription.unsubscribe')
         .map((message) => message.payload),
-    ).toEqual([{ subscriptionId: 'sub-1' }, { subscriptionId: 'sub-2' }])
+    ).toEqual([{ subscriptionId: 'sub-session' }, { subscriptionId: 'sub-thread' }])
 
     socket.drop(1006)
     await flush()
@@ -2485,14 +2150,14 @@ describe('websocket environment client', () => {
     await flush()
     expect(
       next.sent
-        .filter((message) => message.name === 'subscription.subscribe')
+        .filter((message) => message.name === 'subscription.replay')
         .map((message) => (message.payload as { scope: { type: string } }).scope.type),
     ).toEqual(['environment'])
   })
 })
 
 describe('cursor replay on reconnect', () => {
-  const REPLAY_CAPABILITIES = [...FULL_CAPABILITIES, 'subscription.replay']
+  const REPLAY_CAPABILITIES = FULL_CAPABILITIES
   const cursor = (sequence: number, epoch = 'e') => ({
     scope: { ...THREAD, type: 'thread' as const, environmentId: ENV },
     epoch,
@@ -2533,14 +2198,15 @@ describe('cursor replay on reconnect', () => {
           messages: [],
           reasoning: [],
           tools: [],
+          order: [],
           interactions: [],
-          nextCursor: null,
+          listing: {},
         },
       },
     })
     await opened
     // A first thread open uses the atomic snapshot/live boundary.
-    expect(names(socket)).toEqual(['subscribe:environment', 'subscribe:session', 'replay:thread'])
+    expect(names(socket)).toEqual(['replay:environment', 'replay:session', 'replay:thread'])
     socket.receive(live(2, turnStarted()))
     socket.receive(live(3, delta('turn-1', 'assistant-1', 'Hi')))
     socket.drop(1006)
@@ -2650,8 +2316,9 @@ describe('cursor replay on reconnect', () => {
           messages: [],
           reasoning: [],
           tools: [],
+          order: [],
           interactions: [],
-          nextCursor: null,
+          listing: {},
         },
       },
     })
@@ -2688,7 +2355,13 @@ describe('cursor replay on reconnect', () => {
       { type: 'text', text: 'Hi there!' },
     ])
     // No replay of its own was needed.
-    expect(socket.sent.filter((message) => message.name === 'subscription.replay')).toHaveLength(1)
+    expect(
+      socket.sent.filter(
+        (message) =>
+          message.name === 'subscription.replay' &&
+          (message.payload as { scope: { type: string } }).scope.type === 'thread',
+      ),
+    ).toHaveLength(1)
     client.dispose()
   })
 
@@ -2710,7 +2383,11 @@ describe('cursor replay on reconnect', () => {
         events: [],
       },
     })
-    const replays = socket.sent.filter((message) => message.name === 'subscription.replay')
+    const replays = socket.sent.filter(
+      (message) =>
+        message.name === 'subscription.replay' &&
+        (message.payload as { scope: { type: string } }).scope.type === 'thread',
+    )
     expect(replays).toHaveLength(2)
     expect(replays[1]!.payload).toEqual({ scope: cursor(1).scope, cursor: cursor(1) })
     expect(socket.last('subscription.unsubscribe').payload).toEqual({
@@ -2762,15 +2439,15 @@ describe('cursor replay on reconnect', () => {
           ],
           reasoning: [],
           tools: [],
+          order: [],
           interactions: [],
-          nextCursor: { ordinal: 12 },
+          listing: {},
         },
       },
     })
     socket.receive(live(3, delta('turn-1', 'assistant-1', 'Hi')))
     socket.receive(live(4, delta('turn-1', 'assistant-1', '!')))
     await opened
-    expect(selectActiveThread(client.getState())?.historyCursor).toEqual({ ordinal: 12 })
     expect(selectActiveThread(client.getState())?.messages[1]?.content).toEqual([
       { type: 'text', text: 'Hi!' },
     ])
@@ -2778,44 +2455,10 @@ describe('cursor replay on reconnect', () => {
     client.dispose()
   })
 
-  it('does not let an older page roll back live turn state or replace streamed text', async () => {
-    const { client, next } = await dropped()
-    next.respond('subscription.replay', {
-      mode: 'replay',
-      subscriptionId: 'sub-thread-2',
-      from: cursor(3),
-      to: cursor(3),
-      events: [],
-    })
-    const page = client.commands.loadSessionHistory({ ...THREAD, cursor: { ordinal: 12 } })
-    next.receive(live(4, delta('turn-1', 'assistant-1', '!')))
-    next.receive(live(5, completed()))
-    next.respond('session.history', {
-      messages: [
-        {
-          messageId: 'assistant-1',
-          threadId: THREAD.threadId,
-          turnId: 'turn-1',
-          role: 'assistant',
-          content: [{ type: 'text', text: 'stale' }],
-        },
-      ],
-      turns: [turnStarted().payload.turn],
-      interactions: [],
-      nextCursor: null,
-    })
-    await page
-    expect(selectActiveThread(client.getState())?.turns[0]?.state).toBe('completed')
-    expect(selectActiveThread(client.getState())?.messages[1]?.content).toEqual([
-      { type: 'text', text: 'Hi!' },
-    ])
-    client.dispose()
-  })
-
   it('resumes a held cursor through subscription.replay and folds the missed tail in once', async () => {
     const { client, next } = await dropped()
     // Only the thread has a cursor; the other scopes never produced an event.
-    expect(names(next)).toEqual(['subscribe:environment', 'subscribe:session', 'replay:thread'])
+    expect(names(next)).toEqual(['replay:environment', 'replay:session', 'replay:thread'])
     const replay = next.last('subscription.replay')
     expect(replay.payload).toEqual({ scope: cursor(3).scope, cursor: cursor(3) })
 
@@ -2847,8 +2490,8 @@ describe('cursor replay on reconnect', () => {
         .filter((message) => message.name === 'subscription.unsubscribe')
         .map((message) => message.payload),
     ).toEqual([{ subscriptionId: 'sub-thread-2' }])
-    // The catalog reads and the re-open still follow, as before.
-    expect(next.last('session.list')).toBeDefined()
+    // No catalog walk follows: the environment catches up like any scope.
+    expect(next.sent.some((message) => message.name === 'session.list')).toBe(false)
   })
 
   it('replaces the scope from a snapshot when the gap can no longer be replayed', async () => {
@@ -2880,7 +2523,9 @@ describe('cursor replay on reconnect', () => {
           ],
           reasoning: [],
           tools: [],
+          order: [],
           interactions: [],
+          listing: {},
         },
       },
     })
@@ -2909,7 +2554,7 @@ describe('cursor replay on reconnect', () => {
       error: { code: 'unavailable', message: 'Replay is not available.' },
     })
     await flush()
-    expect(names(next)).toEqual(['subscribe:environment', 'subscribe:session', 'replay:thread'])
+    expect(names(next)).toEqual(['replay:environment', 'replay:session', 'replay:thread'])
     expect(selectActiveThread(client.getState())?.hydration).toBe('failed')
   })
 
@@ -2921,13 +2566,13 @@ describe('cursor replay on reconnect', () => {
       requestId: replay.requestId,
       error: { code: 'not_found', message: 'The scope no longer exists.' },
     })
-    expect(names(next)).toEqual(['subscribe:environment', 'subscribe:session', 'replay:thread'])
+    expect(names(next)).toEqual(['replay:environment', 'replay:session', 'replay:thread'])
   })
 
   it('refuses a replay answer that does not match what it asked for', async () => {
     const { client, next } = await dropped()
-    // The answer starts somewhere else: not applied, and the scope is
-    // subscribed plainly instead.
+    // The answer starts somewhere else: not applied, and the chat is asked
+    // for whole, since the cursor can no longer be trusted.
     next.respond('subscription.replay', {
       mode: 'replay',
       subscriptionId: 'sub-thread-2',
@@ -2938,17 +2583,26 @@ describe('cursor replay on reconnect', () => {
     expect(selectActiveThread(client.getState())?.messages[1]?.content).toEqual([
       { type: 'text', text: 'Hi' },
     ])
-    expect(names(next).at(-1)).toBe('replay:thread')
-    expect(selectActiveThread(client.getState())?.hydration).toBe('failed')
     // The subscription that answer granted is released, not left to pile up.
     expect(next.last('subscription.unsubscribe').payload).toEqual({
       subscriptionId: 'sub-thread-2',
     })
+    const retry = next.last('subscription.replay')
+    expect(retry.payload).toEqual({ scope: cursor(1).scope, cursor: null })
+    // A second refusal has no cursor to blame: the chat reads as failed.
+    next.receive({
+      type: 'error',
+      requestId: retry.requestId,
+      error: { code: 'validation', message: 'Refused.' },
+    })
+    await flush()
+    expect(names(next).filter((name) => name === 'replay:thread')).toHaveLength(2)
+    expect(selectActiveThread(client.getState())?.hydration).toBe('failed')
   })
 })
 
 describe('one ordered queue on the client (§5.2)', () => {
-  const REPLAY_CAPABILITIES = [...FULL_CAPABILITIES, 'subscription.replay']
+  const REPLAY_CAPABILITIES = FULL_CAPABILITIES
   const cursor = (sequence: number, epoch = 'e') => ({ scope: threadScope, epoch, sequence })
   const live = (sequence: number, event: unknown, epoch = 'e') => ({
     type: 'event',
@@ -2980,8 +2634,9 @@ describe('one ordered queue on the client (§5.2)', () => {
         messages: [],
         reasoning: [],
         tools: [],
+        order: [],
         interactions: [],
-        nextCursor: null,
+        listing: {},
       },
     },
   })
@@ -3001,7 +2656,11 @@ describe('one ordered queue on the client (§5.2)', () => {
         message.content.map((block) => (block.type === 'text' ? block.text : '')).join(''),
       )
   const replays = (socket: FakeSocket) =>
-    socket.sent.filter((message) => message.name === 'subscription.replay')
+    socket.sent.filter(
+      (message) =>
+        message.name === 'subscription.replay' &&
+        (message.payload as { scope: { type: string } }).scope.type === 'thread',
+    )
 
   /** Open the session; its thread's first catch-up is sent and not yet answered. */
   async function opening() {
@@ -3240,7 +2899,7 @@ it('folds the first turn from creation without a second turn.send round trip', a
 
 it('hides a session while it is deleted and shows it again when the delete fails', async () => {
   const { client, socket } = await connected([...FULL_CAPABILITIES, 'session.delete'])
-  socket.respond('session.list', { sessions: [SESSION_SUMMARY], nextCursor: null })
+  await answerCatalog(socket, undefined, { sessions: [SESSION_SUMMARY] })
   await flush()
   const deleting = client.commands.deleteSession(SESSION.sessionId)
   expect(client.getState().sessions[SESSION.sessionId]).toBeUndefined()
@@ -3257,7 +2916,6 @@ it('hides a session while it is deleted and shows it again when the delete fails
 describe('composer commands', () => {
   const COMPOSER_CAPABILITIES = [
     'provider.catalog.get',
-    'composer.preferences.get',
     'composer.preferences.set',
     'composer.model.set',
     'composer.mode.set',
@@ -3270,7 +2928,7 @@ describe('composer commands', () => {
   /** Connected, with the session and its provider already listed. */
   async function composing() {
     const context = await connected([...FULL_CAPABILITIES, ...COMPOSER_CAPABILITIES])
-    context.socket.respond('session.list', { sessions: [SESSION_SUMMARY], nextCursor: null })
+    await answerCatalog(context.socket, undefined, { sessions: [SESSION_SUMMARY] })
     await flush()
     return context
   }
@@ -3280,7 +2938,6 @@ describe('composer commands', () => {
     const sessionId = SESSION.sessionId
     const attempts = [
       client.commands.getProviderCatalog(),
-      client.commands.getComposerPreference(TARGET),
       client.commands.setComposerPreference({ ...TARGET, preference: { modelId: 'opus' } }),
       client.commands.setSessionModel({ sessionId, modelId: 'opus' }),
       client.commands.setSessionMode({ sessionId, modeId: 'plan' }),
@@ -3295,8 +2952,8 @@ describe('composer commands', () => {
   })
 
   it('gates each composer command on its own capability', async () => {
-    const { client, socket } = await connected([...FULL_CAPABILITIES, 'composer.preferences.get'])
-    expect(client.supports('getComposerPreference')).toBe(true)
+    const { client, socket } = await connected([...FULL_CAPABILITIES, 'composer.model.set'])
+    expect(client.supports('setSessionModel')).toBe(true)
     expect(client.supports('setComposerPreference')).toBe(false)
     await expect(
       client.commands.setComposerPreference({ ...TARGET, preference: {} }),
@@ -3319,12 +2976,13 @@ describe('composer commands', () => {
     client.disconnect()
   })
 
-  it('reads and writes workspace preferences with strict payloads', async () => {
-    const { client, socket } = await composing()
-    const read = client.commands.getComposerPreference({ ...TARGET, stray: true } as never)
-    expect(socket.last('composer.preferences.get').payload).toEqual(TARGET)
-    socket.respond('composer.preferences.get', { preference: { modelId: 'sonnet' }, revision: 1 })
-    expect(await read).toEqual({ modelId: 'sonnet' })
+  it('holds preferences from the environment snapshot and writes them with strict payloads', async () => {
+    const context = await connected([...FULL_CAPABILITIES, ...COMPOSER_CAPABILITIES])
+    const { client, socket } = context
+    await answerCatalog(socket, undefined, {
+      sessions: [SESSION_SUMMARY],
+      preferences: [{ ...TARGET, preference: { modelId: 'sonnet' }, revision: 1 }],
+    })
     expect(preferenceOf(client)).toEqual({ modelId: 'sonnet' })
 
     const written = client.commands.setComposerPreference({
@@ -3407,87 +3065,16 @@ describe('composer commands', () => {
     client.disconnect()
   })
 
-  it('shows a pending setter over a read answered first', async () => {
-    const { client, socket } = await composing()
-    const sessionId = SESSION.sessionId
-    const write = client.commands.setSessionModel({ sessionId, modelId: 'opus' })
-    const read = client.commands.getComposerPreference(TARGET)
-    // The synchronous read overtakes the setter and still sees the old value.
-    socket.respond('composer.preferences.get', { preference: { modelId: 'sonnet' }, revision: 1 })
-    expect(await read).toEqual({ modelId: 'sonnet' })
-    expect(preferenceOf(client)).toEqual({ modelId: 'opus' })
-    socket.respond('composer.model.set', { preference: { modelId: 'opus' }, revision: 2 })
-    await write
-    expect(preferenceOf(client)).toEqual({ modelId: 'opus' })
-    client.disconnect()
-  })
-
-  it('drops a read that was issued before a write which has since landed', async () => {
-    const { client, socket } = await composing()
-    const read = client.commands.getComposerPreference(TARGET)
-    const readId = socket.last('composer.preferences.get').requestId
-    const write = client.commands.setComposerPreference({
-      ...TARGET,
-      preference: { modelId: 'opus' },
-    })
-    socket.respond('composer.preferences.set', { preference: { modelId: 'opus' }, revision: 1 })
-    await write
-    socket.receive({
-      type: 'response',
-      requestId: readId,
-      payload: { preference: {}, revision: 0 },
-    })
-    // The older read is the server's state at revision 0; the write's revision 1 shows over it.
-    expect(await read).toEqual({})
-    expect(preferenceOf(client)).toEqual({ modelId: 'opus' })
-
-    // A failed write stops shadowing reads.
-    const failed = client.commands.setSessionMode({ sessionId: SESSION.sessionId, modeId: 'x' })
-    socket.receive({
-      type: 'error',
-      requestId: socket.last('composer.mode.set').requestId,
-      error: { code: 'internal', message: 'Provider refused.' },
-    })
-    await expect(failed).rejects.toMatchObject({ code: 'internal' })
-    expect(preferenceOf(client)).toEqual({ modelId: 'opus' })
-    // A later change (revision 2) supersedes the acknowledged write.
-    const later = client.commands.getComposerPreference(TARGET)
-    socket.respond('composer.preferences.get', { preference: { modelId: 'sonnet' }, revision: 2 })
-    await later
-    expect(preferenceOf(client)).toEqual({ modelId: 'sonnet' })
-    client.disconnect()
-  })
-
   it('files a setter answer under a provider learned while it was in flight', async () => {
     const { client, socket } = await connected([...FULL_CAPABILITIES, ...COMPOSER_CAPABILITIES])
     const pending = client.commands.setSessionModel({
       sessionId: SESSION.sessionId,
       modelId: 'opus',
     })
-    socket.respond('session.list', { sessions: [SESSION_SUMMARY], nextCursor: null })
+    await answerCatalog(socket, undefined, { sessions: [SESSION_SUMMARY] })
     await flush()
     socket.respond('composer.model.set', { preference: { modelId: 'opus' }, revision: 1 })
     await pending
-    expect(preferenceOf(client)).toEqual({ modelId: 'opus' })
-    client.disconnect()
-  })
-
-  it('keeps a pushed preference over the answer to a read issued before it', async () => {
-    const { client, socket } = await composing()
-    socket.respond('workspace.list', { workspaces: [WORKSPACE] })
-    await flush()
-    const read = client.commands.getComposerPreference(TARGET)
-    // Another client changed the model while this read was in flight.
-    socket.publish(
-      event({
-        name: 'composer.preferences.updated',
-        scope: { type: 'environment', environmentId: ENV },
-        payload: { ...TARGET, preference: { modelId: 'opus' }, revision: 2 },
-      }),
-    )
-    expect(preferenceOf(client)).toEqual({ modelId: 'opus' })
-    socket.respond('composer.preferences.get', { preference: { modelId: 'sonnet' }, revision: 1 })
-    expect(await read).toEqual({ modelId: 'sonnet' })
     expect(preferenceOf(client)).toEqual({ modelId: 'opus' })
     client.disconnect()
   })
@@ -3510,8 +3097,6 @@ describe('composer commands', () => {
 
   it('does not bring back a preference whose session or workspace went away in flight', async () => {
     const { client, socket } = await composing()
-    socket.respond('workspace.list', { workspaces: [WORKSPACE] })
-    await flush()
     const setter = client.commands.setSessionModel({
       sessionId: SESSION.sessionId,
       modelId: 'opus',
@@ -3554,10 +3139,925 @@ describe('composer commands', () => {
     })
     await expect(rejected).rejects.toMatchObject({ code: 'not_found' })
 
-    const invalid = client.commands.getComposerPreference(TARGET)
-    socket.respond('composer.preferences.get', { preference: { modelId: 7 }, revision: 1 })
+    const invalid = client.commands.setComposerPreference({ ...TARGET, preference: {} })
+    socket.respond('composer.preferences.set', { preference: { modelId: 7 }, revision: 1 })
     await expect(invalid).rejects.toMatchObject({ code: 'validation' })
     expect(client.getState().composerPreferences).toEqual({})
     client.disconnect()
+  })
+})
+
+describe('kept cursors', () => {
+  const WORKSPACE_PAIR = { workspaceId: WORKSPACE.workspaceId, providerId: PROVIDER.id }
+  const OTHER = { ...SESSION_SUMMARY, sessionId: 'session-2' }
+  const OTHER_THREAD = { threadId: 'thread-2', sessionId: OTHER.sessionId }
+  const sessionScope = {
+    type: 'session',
+    environmentId: ENV,
+    sessionId: SESSION.sessionId,
+  } as const
+  const scopeTypes = (socket: FakeSocket) =>
+    socket.sent
+      .filter((message) => message.name === 'subscription.replay')
+      .map((message) => (message.payload as { scope: { type: string } }).scope.type)
+  const cursorOf = (request: { payload: unknown }) =>
+    (request.payload as { cursor: { sequence: number } | null }).cursor
+
+  /** A connected client on a store of its own, with `SESSION` open and one record in. */
+  async function holding(sessions = [SESSION_SUMMARY, OTHER]) {
+    const store = createEnvironmentStore()
+    const { client, socket, timers } = await connected(
+      FULL_CAPABILITIES,
+      {},
+      {
+        environmentId: ENV,
+        store,
+      },
+    )
+    await answerCatalog(socket, undefined, { sessions })
+    await flush()
+    const open = client.commands.openSession(SESSION.sessionId)
+    await answerOpen(socket)
+    await open
+    socket.publish(turnStarted())
+    return { store, client, socket, timers }
+  }
+
+  const reloaded = async (store: ReturnType<typeof createEnvironmentStore>) => {
+    const next = createEnvironmentStore(structuredClone(cacheState(store.getServerState())))
+    const opened = await connected(FULL_CAPABILITIES, {}, { environmentId: ENV, store: next })
+    return { ...opened, store: next }
+  }
+
+  it('asks from the kept cursor when switching back, so an unchanged chat costs nothing', async () => {
+    const { store, client, socket } = await holding()
+    const before = store.getServerState().threads[THREAD.threadId]!
+    const away = client.commands.openSession(OTHER.sessionId)
+    await answerOpen(socket, OTHER, [OTHER_THREAD])
+    await away
+    const back = client.commands.openSession(SESSION.sessionId)
+    await flush()
+    socket.respond('session.open', { session: SESSION_SUMMARY, threads: [THREAD] })
+    await flush()
+    const replay = lastReplay(socket, 'thread', THREAD.threadId)!
+    expect(cursorOf(replay)?.sequence).toBe(1)
+    expect(cursorOf(lastReplay(socket, 'session', SESSION.sessionId)!)).not.toBeNull()
+    await answerOpen(socket)
+    await back
+    const after = store.getServerState().threads[THREAD.threadId]!
+    expect(after.hydration).toBe('ready')
+    expect(after.messages).toBe(before.messages)
+    expect(after.turns).toBe(before.turns)
+    client.dispose()
+  })
+
+  it('sends every cached cursor after a reload, and a replay leaves the copy as it was', async () => {
+    const { store, client } = await holding()
+    const held = store.getServerState()
+    client.dispose()
+    const next = await reloaded(store)
+    const environment = lastReplay(next.socket, 'environment')!
+    expect(cursorOf(environment)).toEqual(held.cursors.environment)
+    answerKept(next.socket, environment, 'sub-env')
+    await flush()
+    next.socket.respond('session.open', { session: SESSION_SUMMARY, threads: [THREAD] })
+    await flush()
+    expect(cursorOf(lastReplay(next.socket, 'session', SESSION.sessionId)!)).toEqual(
+      held.cursors.sessions[SESSION.sessionId],
+    )
+    expect(cursorOf(lastReplay(next.socket, 'thread', THREAD.threadId)!)).toEqual(
+      held.threads[THREAD.threadId]!.cursor,
+    )
+    next.client.dispose()
+  })
+
+  it('keeps preferences for a sidebar that arrives by replay, and lists drafts again', async () => {
+    const { store, client } = await holding()
+    store.update((state) => applyComposerPreference(state, WORKSPACE_PAIR, { modelId: 'held' }, 3))
+    client.dispose()
+    const next = await reloaded(store)
+    expect(next.store.getServerState().composerRevisions[WORKSPACE_PAIR.workspaceId]).toEqual({
+      [WORKSPACE_PAIR.providerId]: 3,
+    })
+    expect(
+      selectComposerPreference(
+        next.client.getState(),
+        WORKSPACE_PAIR.workspaceId,
+        WORKSPACE_PAIR.providerId,
+      ),
+    ).toEqual({
+      modelId: 'held',
+    })
+    expect(next.client.getState().draftsListed).toBe(false)
+    next.client.dispose()
+  })
+
+  describe('a session.open answer read before what is held', () => {
+    const composer = (modelId: string) => ({
+      type: 'event',
+      name: 'subscription.event',
+      payload: {
+        subscriptionId: 'sub-env',
+        record: {
+          cursor: { scope: environmentScope, epoch: 'live', sequence: 1 },
+          event: event({
+            name: 'session.composer.updated',
+            scope: environmentScope,
+            payload: { sessionId: SESSION.sessionId, composer: { modelId } },
+          }),
+        },
+      },
+    })
+    const position = (environment: number, session: number) => ({
+      environment: { scope: environmentScope, epoch: 'live', sequence: environment },
+      session: { scope: sessionScope, epoch: 'live', sequence: session },
+    })
+    const reopen = async (
+      socket: FakeSocket,
+      client: EnvironmentClient,
+      at: unknown,
+      threads = [THREAD],
+    ) => {
+      const open = client.commands.openSession(SESSION.sessionId)
+      socket.respond('session.open', { session: SESSION_SUMMARY, threads, at })
+      await flush()
+      await answerOpen(socket)
+      await open
+    }
+
+    it('leaves a newer environment event standing', async () => {
+      const { store, socket, client } = await holding()
+      socket.receive(composer('newer'))
+      await reopen(socket, client, position(0, 0))
+      expect(store.getServerState().sessions[SESSION.sessionId]?.composer).toEqual({
+        modelId: 'newer',
+      })
+      client.dispose()
+    })
+
+    it('leaves an event right behind the answer standing, delivered in one read', async () => {
+      const { store, socket, client } = await holding()
+      const open = client.commands.openSession(SESSION.sessionId)
+      // No turn of the event loop between them: the open's continuation, which
+      // applies the answer, runs after the event was folded.
+      socket.respond('session.open', {
+        session: SESSION_SUMMARY,
+        threads: [THREAD],
+        at: position(0, 0),
+      })
+      socket.receive(composer('behind the answer'))
+      await flush()
+      await answerOpen(socket)
+      await open
+      expect(store.getServerState().sessions[SESSION.sessionId]?.composer).toEqual({
+        modelId: 'behind the answer',
+      })
+      client.dispose()
+    })
+
+    it('takes a summary read at or past what is held', async () => {
+      const { store, socket, client } = await holding()
+      socket.receive(composer('held'))
+      await reopen(socket, client, position(1, 0))
+      expect(store.getServerState().sessions[SESSION.sessionId]?.composer).toBeUndefined()
+      client.dispose()
+    })
+
+    it('leaves a newer session event standing, the thread list included', async () => {
+      const { store, socket, client } = await holding()
+      const second = { threadId: 'thread-3', sessionId: SESSION.sessionId }
+      const next = { ...store.getServerState().cursors.sessions[SESSION.sessionId]! }
+      store.update((state) =>
+        applyRecord(state, {
+          cursor: { ...next, sequence: next.sequence + 1 },
+          event: event<Extract<ProofEvent, { name: 'thread.created' }>>({
+            name: 'thread.created',
+            scope: sessionScope,
+            payload: { thread: second },
+          }),
+        }),
+      )
+      const at = {
+        ...position(0, 0),
+        session: { ...next, sequence: next.sequence },
+      }
+      await reopen(socket, client, at)
+      expect(store.getServerState().sessions[SESSION.sessionId]?.threadIds).toContain(
+        second.threadId,
+      )
+      client.dispose()
+    })
+
+    it('never brings back a session the stream has moved past', () => {
+      const state = createInitialState()
+      state.cursors.environment = { scope: environmentScope, epoch: 'live', sequence: 9 }
+      const answered = applySessionOpen(state, {
+        session: SESSION_SUMMARY,
+        threads: [THREAD],
+        at: position(4, 0),
+      })
+      expect(answered).toBe(state)
+    })
+  })
+
+  it('moves a cursor and what it describes in one store update', async () => {
+    const { store, socket, client } = await holding()
+    const seen: Array<[number | undefined, number]> = []
+    store.subscribe(() => {
+      const thread = store.getServerState().threads[THREAD.threadId]!
+      seen.push([thread.cursor?.sequence, thread.messages.length])
+    })
+    socket.publish(delta('turn-1', 'assistant-1', 'Hi'))
+    expect(seen).toEqual([[2, 2]])
+    client.dispose()
+  })
+
+  it('forgets the kept cursor when a record names a turn the thread does not hold', async () => {
+    const { store, socket, client } = await holding()
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined)
+    socket.publish(completed('turn-unknown'))
+    expect(store.getServerState().threads[THREAD.threadId]!.cursor).toBeUndefined()
+    expect(cursorOf(lastReplay(socket, 'thread', THREAD.threadId)!)).toBeNull()
+    warn.mockRestore()
+    client.dispose()
+  })
+
+  it('forgets a thread the environment no longer has, and never asks for it again', async () => {
+    const { store, socket, client, timers } = await holding()
+    socket.drop(1006)
+    timers.advance(2_000)
+    const next = FakeSocket.instances.at(-1)!
+    next.open()
+    next.respond('protocol.handshake', bootstrap(FULL_CAPABILITIES))
+    await flush()
+    next.receive({
+      type: 'error',
+      requestId: lastReplay(next, 'thread', THREAD.threadId)!.requestId,
+      error: { code: 'not_found', message: 'The scope no longer exists.' },
+    })
+    await flush()
+    expect(store.getServerState().threads[THREAD.threadId]!.cursor).toBeUndefined()
+    next.drop(1006)
+    timers.advance(2_000)
+    const third = FakeSocket.instances.at(-1)!
+    third.open()
+    third.respond('protocol.handshake', bootstrap(FULL_CAPABILITIES))
+    await flush()
+    expect(lastReplay(third, 'thread', THREAD.threadId)).toBeUndefined()
+    client.dispose()
+  })
+
+  it('releases the scopes of a session deleted by an event', async () => {
+    const { store, socket, client, timers } = await holding()
+    const deleted = event({
+      name: 'session.deleted',
+      scope: environmentScope,
+      payload: { sessionId: SESSION.sessionId },
+    })
+    socket.receive({
+      type: 'event',
+      name: 'subscription.event',
+      payload: {
+        subscriptionId: 'sub-env',
+        record: { cursor: { scope: environmentScope, epoch: 'live', sequence: 1 }, event: deleted },
+      },
+    })
+    const held = store.getServerState()
+    expect(held.threads[THREAD.threadId]).toBeUndefined()
+    expect(held.cursors.sessions[SESSION.sessionId]).toBeUndefined()
+    socket.drop(1006)
+    timers.advance(2_000)
+    const next = FakeSocket.instances.at(-1)!
+    next.open()
+    next.respond('protocol.handshake', bootstrap(FULL_CAPABILITIES))
+    await flush()
+    expect(scopeTypes(next)).toEqual(['environment'])
+    client.dispose()
+  })
+
+  it('releases the scopes of a session an environment snapshot no longer lists', async () => {
+    const { store, socket, client, timers } = await holding()
+    socket.drop(1006)
+    timers.advance(2_000)
+    const next = FakeSocket.instances.at(-1)!
+    next.open()
+    next.respond('protocol.handshake', bootstrap(FULL_CAPABILITIES))
+    await flush()
+    const replay = lastReplay(next, 'environment')!
+    next.receive({
+      type: 'response',
+      requestId: replay.requestId,
+      payload: {
+        mode: 'snapshot',
+        subscriptionId: 'sub-env',
+        reason: 'stream_reset',
+        snapshot: {
+          cursor: { scope: environmentScope, epoch: 'other', sequence: 4 },
+          state: {
+            environment: { environmentId: ENV, name: 'Local' },
+            workspaces: [WORKSPACE],
+            sessions: [OTHER],
+            preferences: [],
+            providerProfiles: [],
+            listings: { commands: [], configOptions: [], entries: [] },
+          },
+        },
+      },
+    })
+    await flush()
+    const held = store.getServerState()
+    expect(held.threads[THREAD.threadId]).toBeUndefined()
+    expect(held.cursors.sessions[SESSION.sessionId]).toBeUndefined()
+    expect(held.cursors.environment?.epoch).toBe('other')
+    next.drop(1006)
+    timers.advance(2_000)
+    const third = FakeSocket.instances.at(-1)!
+    third.open()
+    third.respond('protocol.handshake', bootstrap(FULL_CAPABILITIES))
+    await flush()
+    expect(scopeTypes(third)).toEqual(['environment'])
+    client.dispose()
+  })
+
+  it('drops a replay whose copy was deleted on the way, rather than building a new one', async () => {
+    const { store, socket, client, timers } = await holding()
+    socket.drop(1006)
+    timers.advance(2_000)
+    const next = FakeSocket.instances.at(-1)!
+    next.open()
+    next.respond('protocol.handshake', bootstrap(FULL_CAPABILITIES))
+    await flush()
+    const replay = lastReplay(next, 'thread', THREAD.threadId)!
+    const from = cursorOf(replay)!
+    store.update((state) => applySessionRemoved(state, SESSION.sessionId))
+    next.receive({
+      type: 'response',
+      requestId: replay.requestId,
+      payload: {
+        mode: 'replay',
+        subscriptionId: 'sub-thread-2',
+        from,
+        to: { ...from, sequence: from.sequence + 1 },
+        events: [
+          {
+            cursor: { ...from, sequence: from.sequence + 1 },
+            event: delta('turn-1', 'assistant-1', 'late'),
+          },
+        ],
+      },
+    })
+    await flush()
+    expect(store.getServerState().threads[THREAD.threadId]).toBeUndefined()
+    client.dispose()
+  })
+
+  it('never keeps a position with no answer behind it', async () => {
+    const store = createEnvironmentStore()
+    const { socket, client } = await connected(
+      FULL_CAPABILITIES,
+      {},
+      {
+        environmentId: ENV,
+        store,
+      },
+    )
+    // The catch-up fails, so the scope is subscribed with nothing behind it.
+    socket.receive({
+      type: 'error',
+      requestId: lastReplay(socket, 'environment')!.requestId,
+      error: { code: 'internal', message: 'No.' },
+    })
+    await flush()
+    socket.respond('subscription.subscribe', { subscriptionId: 'live', scope: environmentScope })
+    socket.publish(
+      event({
+        name: 'workspace.updated',
+        scope: environmentScope,
+        payload: { workspace: WORKSPACE },
+      }),
+    )
+    // Applied, and placed against, but not promised: the copy may have a hole.
+    expect(store.getServerState().workspaces[WORKSPACE.workspaceId]).toBeDefined()
+    expect(store.getServerState().cursors.environment).toBeNull()
+    client.dispose()
+  })
+
+  it.each([
+    ['stream_reset', { epoch: 'another', sequence: 9 }],
+    ['cursor_ahead', { epoch: 'live', sequence: 0 }],
+    ['gap_expired', { epoch: 'live', sequence: 40 }],
+    ['snapshot_smaller', { epoch: 'live', sequence: 40 }],
+  ])('takes a %s snapshot from a cached cursor', async (reason, at) => {
+    const { store, client } = await holding()
+    client.dispose()
+    const next = await reloaded(store)
+    next.socket.respond('session.open', { session: SESSION_SUMMARY, threads: [THREAD] })
+    await flush()
+    const replay = lastReplay(next.socket, 'thread', THREAD.threadId)!
+    next.socket.receive({
+      type: 'response',
+      requestId: replay.requestId,
+      payload: {
+        mode: 'snapshot',
+        subscriptionId: 'sub-thread-2',
+        reason,
+        snapshot: {
+          cursor: { scope: threadScope, ...at },
+          state: threadState(THREAD, EMPTY_HISTORY),
+        },
+      },
+    })
+    await flush()
+    const thread = next.store.getServerState().threads[THREAD.threadId]!
+    expect(thread.hydration).toBe('ready')
+    expect(thread.turns).toEqual([])
+    expect(thread.cursor).toMatchObject(at)
+    next.client.dispose()
+  })
+
+  it('empties notices on a replay, then places what was held', async () => {
+    const { store, socket, client, timers } = await holding()
+    const scope = threadScope
+    const place = (sequence: number, message: string) => ({
+      type: 'event',
+      name: 'subscription.transient',
+      payload: {
+        subscriptionId: 'sub-thread',
+        after: { scope, epoch: 'live', sequence },
+        event: event({
+          name: 'turn.notice',
+          scope,
+          payload: { turnId: 'turn-1', message },
+        }),
+      },
+    })
+    socket.receive(place(1, 'from before'))
+    expect(store.getServerState().threads[THREAD.threadId]!.notices).toHaveLength(1)
+    socket.drop(1006)
+    timers.advance(2_000)
+    const next = FakeSocket.instances.at(-1)!
+    next.open()
+    next.respond('protocol.handshake', bootstrap(FULL_CAPABILITIES))
+    await flush()
+    next.receive(place(1, 'held during the catch-up'))
+    answerKept(next, lastReplay(next, 'thread', THREAD.threadId)!, 'sub-thread')
+    await flush()
+    const notices = store.getServerState().threads[THREAD.threadId]!.notices
+    expect(notices.map((notice) => notice.message)).toEqual(['held during the catch-up'])
+    client.dispose()
+  })
+
+  it('reloads with a kept cursor but no notices', async () => {
+    const { store, client } = await holding()
+    client.dispose()
+    store.update((state) => ({
+      ...state,
+      threads: {
+        ...state.threads,
+        [THREAD.threadId]: {
+          ...state.threads[THREAD.threadId]!,
+          notices: [{ turnId: 'turn-1', message: 'gone on reload' }],
+        },
+      },
+    }))
+    const cached = cacheState(store.getServerState()).threads[THREAD.threadId]!
+    expect(cached.notices).toEqual([])
+    expect(cached.cursor?.sequence).toBe(1)
+  })
+
+  it('refuses a cursor filed under another scope', () => {
+    const state = createInitialState()
+    state.cursors.environment = {
+      scope: { type: 'environment', environmentId: 'another-environment' },
+      epoch: 'e',
+      sequence: 3,
+    }
+    expect(selectCursor(state, environmentScope)).toBeNull()
+  })
+
+  it('keeps a cursor only beside its copy, and an unchanged one changes nothing', () => {
+    const cursor = { scope: sessionScope, epoch: 'e', sequence: 1 }
+    const state = createInitialState()
+    expect(applyCursor(state, cursor.scope, cursor)).toBe(state)
+    const thread = { scope: threadScope, epoch: 'e', sequence: 1 }
+    expect(applyCursor(state, threadScope, thread)).toBe(state)
+    const environment = { scope: environmentScope, epoch: 'e', sequence: 1 }
+    const held = applyCursor(state, environmentScope, environment)
+    expect(applyCursor(held, environmentScope, { ...environment })).toBe(held)
+    expect(applyCursor(held, environmentScope, null).cursors.environment).toBeNull()
+  })
+})
+
+describe('the open chat is catching up', () => {
+  const OTHER = { ...SESSION_SUMMARY, sessionId: 'session-2' }
+  const OTHER_THREAD = { threadId: 'thread-2', sessionId: OTHER.sessionId }
+
+  /** A chat with a saved copy on screen: one turn and its message, and a cursor. */
+  async function onScreen() {
+    const store = createEnvironmentStore()
+    const opened = await connected(FULL_CAPABILITIES, {}, { environmentId: ENV, store })
+    await answerCatalog(opened.socket, undefined, { sessions: [SESSION_SUMMARY, OTHER] })
+    await flush()
+    const open = opened.client.commands.openSession(SESSION.sessionId)
+    await answerOpen(opened.socket)
+    await open
+    opened.socket.publish(turnStarted())
+    return { ...opened, store }
+  }
+  const signal = (client: EnvironmentClient) => selectOpenChatCatchingUp(client.getState())
+
+  it('is off on a first open, which has the empty loading state instead', async () => {
+    const { client, socket } = await connected()
+    await answerCatalog(socket, undefined, { sessions: [SESSION_SUMMARY] })
+    await flush()
+    const open = client.commands.openSession(SESSION.sessionId)
+    expect(signal(client)).toBe(false)
+    socket.respond('session.open', { session: SESSION_SUMMARY, threads: [THREAD] })
+    await flush()
+    expect(client.getState().threads[THREAD.threadId]?.hydration).toBe('loading')
+    expect(signal(client)).toBe(false)
+    await answerOpen(socket)
+    await open
+    expect(signal(client)).toBe(false)
+    client.dispose()
+  })
+
+  it('is off for a session being created, whose message comes from its answer', () => {
+    const state = createInitialState()
+    const thread = createThreadState(THREAD, 'ready')
+    thread.messages = [
+      {
+        messageId: 'first',
+        threadId: THREAD.threadId,
+        turnId: 'turn-1',
+        role: 'user',
+        content: [{ type: 'text', text: 'hello' }],
+      },
+    ]
+    state.threads = { [THREAD.threadId]: thread }
+    state.catchingUp = { [THREAD.threadId]: true }
+    state.activeSessionId = SESSION.sessionId
+    state.activeThreadId = THREAD.threadId
+    state.connection = { ...state.connection, phase: 'connected' }
+    expect(selectOpenChatCatchingUp(state)).toBe(true)
+    state.pending = {
+      ...state.pending,
+      creates: { [SESSION.sessionId]: { session: SESSION_SUMMARY, thread: THREAD } },
+    }
+    expect(selectOpenChatCatchingUp(state)).toBe(false)
+  })
+
+  it('is on while a saved chat is opened, until its answer lands', async () => {
+    const { client, socket } = await onScreen()
+    expect(signal(client)).toBe(false)
+    const away = client.commands.openSession(OTHER.sessionId)
+    await answerOpen(socket, OTHER, [OTHER_THREAD])
+    await away
+    const back = client.commands.openSession(SESSION.sessionId)
+    expect(signal(client)).toBe(true)
+    await answerOpen(socket)
+    await back
+    expect(signal(client)).toBe(false)
+    client.dispose()
+  })
+
+  it('covers a reconnect, which marks nothing as loading, once the link is back', async () => {
+    const { client, socket, timers } = await onScreen()
+    socket.drop(1006)
+    expect(signal(client)).toBe(false)
+    timers.advance(2_000)
+    const next = FakeSocket.instances.at(-1)!
+    next.open()
+    expect(signal(client)).toBe(false)
+    next.respond('protocol.handshake', bootstrap(FULL_CAPABILITIES))
+    await flush()
+    expect(client.getState().threads[THREAD.threadId]?.hydration).toBe('ready')
+    expect(signal(client)).toBe(true)
+    answerKept(next, lastReplay(next, 'thread', THREAD.threadId)!, 'sub-thread')
+    await flush()
+    expect(signal(client)).toBe(false)
+    client.dispose()
+  })
+
+  it('covers a lagging subscription, until its catch-up', async () => {
+    const { client, socket, store } = await onScreen()
+    const cursor = store.getServerState().threads[THREAD.threadId]!.cursor!
+    socket.receive({
+      type: 'event',
+      name: 'subscription.lagging',
+      payload: { subscriptionId: 'sub-thread', cursor },
+    })
+    expect(signal(client)).toBe(true)
+    socket.receive({
+      type: 'event',
+      name: 'subscription.catchup',
+      payload: {
+        mode: 'replay',
+        subscriptionId: 'sub-thread',
+        from: cursor,
+        to: cursor,
+        events: [],
+      },
+    })
+    expect(signal(client)).toBe(false)
+    client.dispose()
+  })
+
+  it('goes with the connection, and never touches the chat', async () => {
+    const { client, socket, store } = await onScreen()
+    const cursor = store.getServerState().threads[THREAD.threadId]!.cursor!
+    const before = store.getServerState().threads
+    socket.receive({
+      type: 'event',
+      name: 'subscription.lagging',
+      payload: { subscriptionId: 'sub-thread', cursor },
+    })
+    expect(store.getServerState().threads).toBe(before)
+    expect(signal(client)).toBe(true)
+    socket.drop(1006)
+    expect(signal(client)).toBe(false)
+    expect(store.getServerState().catchingUp).toEqual({})
+    client.dispose()
+  })
+
+  it('is about the open chat only', async () => {
+    const { client, socket, store } = await onScreen()
+    const cursor = store.getServerState().threads[THREAD.threadId]!.cursor!
+    socket.receive({
+      type: 'event',
+      name: 'subscription.lagging',
+      payload: { subscriptionId: 'sub-thread', cursor },
+    })
+    // Leaving releases the scope: nothing is held for it any more.
+    client.setActiveSession(null)
+    expect(store.getServerState().catchingUp).toEqual({})
+    expect(signal(client)).toBe(false)
+    client.dispose()
+  })
+
+  it('does not survive a reload', async () => {
+    const { client, socket, store } = await onScreen()
+    const cursor = store.getServerState().threads[THREAD.threadId]!.cursor!
+    socket.receive({
+      type: 'event',
+      name: 'subscription.lagging',
+      payload: { subscriptionId: 'sub-thread', cursor },
+    })
+    expect(cacheState(store.getServerState()).catchingUp).toEqual({})
+    client.dispose()
+  })
+})
+
+describe('sends made while the open chat catches up', () => {
+  /** A saved chat being reopened: the replay is unanswered, so it is catching up. */
+  async function catchingUp() {
+    const store = createEnvironmentStore()
+    const first = await connected(FULL_CAPABILITIES, {}, { environmentId: ENV, store })
+    await answerCatalog(first.socket, undefined, { sessions: [SESSION_SUMMARY, OTHER] })
+    await flush()
+    const open = first.client.commands.openSession(SESSION.sessionId)
+    await answerOpen(first.socket)
+    await open
+    first.socket.publish(turnStarted())
+    first.socket.publish(completed())
+    const client = first.client
+    const socket = first.socket
+    const away = client.commands.openSession(OTHER.sessionId)
+    await answerOpen(socket, OTHER, [OTHER_THREAD])
+    await away
+    const back = client.commands.openSession(SESSION.sessionId).catch(() => undefined)
+    await flush()
+    socket.respond('session.open', { session: SESSION_SUMMARY, threads: [THREAD] })
+    await flush()
+    return { ...first, store, back }
+  }
+  const OTHER = { ...SESSION_SUMMARY, sessionId: 'session-2' }
+  const OTHER_THREAD = { threadId: 'thread-2', sessionId: OTHER.sessionId }
+  const sendsOn = (socket: FakeSocket) =>
+    socket.sent
+      .filter((message) => message.name === 'turn.send')
+      .map((message) => (message.payload as { text: string }).text)
+  const outbox = (client: EnvironmentClient) =>
+    client.getState().threads[THREAD.threadId]!.outbox.map(({ text, status, waited }) => ({
+      text,
+      status,
+      waited,
+    }))
+  const answerThread = async (socket: FakeSocket) => {
+    answerKept(socket, lastReplay(socket, 'thread', THREAD.threadId)!, 'sub-thread')
+    const session = lastReplay(socket, 'session', SESSION.sessionId)
+    if (session) answerKept(socket, session, 'sub-session')
+    await flush()
+  }
+
+  it('shows the message at once, holds it, and sends it by itself when the catch-up ends', async () => {
+    const { client, socket, back } = await catchingUp()
+    const sending = client.commands.sendTurn({ ...THREAD, text: 'go', commandId: 'cmd-1' })
+    await flush()
+    expect(outbox(client)).toEqual([{ text: 'go', status: 'held', waited: true }])
+    expect(sendsOn(socket)).toEqual([])
+    await answerThread(socket)
+    await back
+    expect(sendsOn(socket)).toEqual(['go'])
+    expect(outbox(client)).toEqual([{ text: 'go', status: 'pending', waited: true }])
+    socket.respond('turn.send', turnStarted('turn-9', 'go', 'cmd-1').payload)
+    await sending
+    client.dispose()
+  })
+
+  it('sends straight away when nothing is catching up, with no waiting symbol', async () => {
+    const { client, socket, back } = await catchingUp()
+    await answerThread(socket)
+    await back
+    void client.commands.sendTurn({ ...THREAD, text: 'go', commandId: 'cmd-1' }).catch(() => null)
+    await flush()
+    expect(sendsOn(socket)).toEqual(['go'])
+    expect(outbox(client)).toEqual([{ text: 'go', status: 'pending', waited: undefined }])
+    client.dispose()
+  })
+
+  it('keeps the order of several held sends', async () => {
+    const { client, socket, back } = await catchingUp()
+    for (const text of ['one', 'two', 'three']) {
+      void client.commands.sendTurn({ ...THREAD, text }).catch(() => null)
+    }
+    await flush()
+    expect(sendsOn(socket)).toEqual([])
+    await answerThread(socket)
+    await back
+    expect(sendsOn(socket)).toEqual(['one', 'two', 'three'])
+    client.dispose()
+  })
+
+  it('refuses like any send if a turn turned out to be running, and keeps the text', async () => {
+    const { client, socket, back } = await catchingUp()
+    const sending = client.commands.sendTurn({ ...THREAD, text: 'go', commandId: 'cmd-1' })
+    await answerThread(socket)
+    await back
+    socket.receive({
+      type: 'error',
+      requestId: socket.last('turn.send').requestId,
+      error: { code: 'conflict', message: 'A turn is already in progress.' },
+    })
+    await expect(sending).rejects.toMatchObject({ code: 'conflict' })
+    expect(client.getState().threads[THREAD.threadId]!.outbox[0]).toMatchObject({
+      text: 'go',
+      status: 'failed',
+      error: 'A turn is already in progress.',
+    })
+    client.dispose()
+  })
+
+  it('keeps holding through a dropped connection, and sends after the next catch-up', async () => {
+    const { client, socket, timers } = await catchingUp()
+    const sending = client.commands.sendTurn({ ...THREAD, text: 'go', commandId: 'cmd-1' })
+    await flush()
+    socket.drop(1006)
+    await flush()
+    expect(outbox(client)).toEqual([{ text: 'go', status: 'held', waited: true }])
+    timers.advance(2_000)
+    const next = FakeSocket.instances.at(-1)!
+    next.open()
+    next.respond('protocol.handshake', bootstrap(FULL_CAPABILITIES))
+    await flush()
+    expect(sendsOn(next)).toEqual([])
+    await answerThread(next)
+    await flush()
+    expect(sendsOn(next)).toEqual(['go'])
+    next.respond('turn.send', turnStarted('turn-9', 'go', 'cmd-1').payload)
+    await sending
+    client.dispose()
+  })
+
+  it('fails with its text and a retry when the connection is given up on', async () => {
+    const { client, back } = await catchingUp()
+    const sending = client.commands.sendTurn({ ...THREAD, text: 'go', commandId: 'cmd-1' })
+    await flush()
+    client.disconnect()
+    await back
+    await expect(sending).rejects.toMatchObject({ code: 'unavailable' })
+    expect(client.getState().threads[THREAD.threadId]!.outbox[0]).toMatchObject({
+      text: 'go',
+      status: 'failed',
+    })
+    client.dispose()
+  })
+
+  it('sends when the user leaves the chat: nothing is catching up for it now', async () => {
+    const { client, socket } = await catchingUp()
+    void client.commands.sendTurn({ ...THREAD, text: 'go', commandId: 'cmd-1' }).catch(() => null)
+    await flush()
+    expect(sendsOn(socket)).toEqual([])
+    client.setActiveSession(null)
+    await flush()
+    expect(sendsOn(socket)).toEqual(['go'])
+    client.dispose()
+  })
+
+  it('sends after a catch-up that fails, and the environment answers', async () => {
+    const { client, socket, back } = await catchingUp()
+    void client.commands.sendTurn({ ...THREAD, text: 'go', commandId: 'cmd-1' }).catch(() => null)
+    await flush()
+    socket.receive({
+      type: 'error',
+      requestId: lastReplay(socket, 'thread', THREAD.threadId)!.requestId,
+      error: { code: 'internal', message: 'No.' },
+    })
+    await back
+    await flush()
+    expect(client.getState().threads[THREAD.threadId]!.hydration).toBe('failed')
+    expect(sendsOn(socket)).toEqual(['go'])
+    client.dispose()
+  })
+
+  it('keeps a held send across a reload, and the next client sends it under its id', async () => {
+    const { client, store } = await catchingUp()
+    void client.commands.sendTurn({ ...THREAD, text: 'go', commandId: 'cmd-1' }).catch(() => null)
+    await flush()
+    const cached = structuredClone(cacheState(store.getServerState()))
+    client.dispose()
+    const nextStore = createEnvironmentStore(cached)
+    const next = await connected(FULL_CAPABILITIES, {}, { environmentId: ENV, store: nextStore })
+    expect(selectActiveThread(next.client.getState())?.outbox).toHaveLength(1)
+    await flush()
+    expect(sendsOn(next.socket)).toEqual([])
+    next.socket.respond('session.open', { session: SESSION_SUMMARY, threads: [THREAD] })
+    await flush()
+    expect(sendsOn(next.socket)).toEqual([])
+    await answerThread(next.socket)
+    await flush()
+    expect(sendsOn(next.socket)).toEqual(['go'])
+    expect(next.socket.last('turn.send').payload).toMatchObject({ commandId: 'cmd-1' })
+    next.client.dispose()
+  })
+
+  it('sends nothing if the catch-up shows its turn already started', async () => {
+    const { client, store } = await catchingUp()
+    void client.commands.sendTurn({ ...THREAD, text: 'go', commandId: 'cmd-1' }).catch(() => null)
+    await flush()
+    const cached = structuredClone(cacheState(store.getServerState()))
+    client.dispose()
+    const nextStore = createEnvironmentStore(cached)
+    const next = await connected(FULL_CAPABILITIES, {}, { environmentId: ENV, store: nextStore })
+    next.socket.respond('session.open', { session: SESSION_SUMMARY, threads: [THREAD] })
+    await flush()
+    const replay = lastReplay(next.socket, 'thread', THREAD.threadId)!
+    const from = (replay.payload as { cursor: { sequence: number } }).cursor
+    const to = { ...from, sequence: from.sequence + 1 }
+    next.socket.receive({
+      type: 'response',
+      requestId: replay.requestId,
+      payload: {
+        mode: 'replay',
+        subscriptionId: 'sub-thread-2',
+        from,
+        to,
+        events: [{ cursor: to, event: turnStarted('turn-9', 'go', 'cmd-1') }],
+      },
+    })
+    await flush()
+    await answerThread(next.socket).catch(() => undefined)
+    await flush()
+    expect(sendsOn(next.socket)).toEqual([])
+    const thread = selectActiveThread(next.client.getState())!
+    expect(thread.outbox).toEqual([])
+    expect(thread.messages.filter((message) => message.turnId === 'turn-9')).toHaveLength(1)
+    next.client.dispose()
+  })
+
+  it('keeps a send that left but was never answered across a reload', async () => {
+    const { client, socket, store, back } = await catchingUp()
+    void client.commands.sendTurn({ ...THREAD, text: 'go', commandId: 'cmd-1' }).catch(() => null)
+    await answerThread(socket)
+    await back
+    expect(sendsOn(socket)).toEqual(['go'])
+    const cached = cacheState(store.getServerState()).threads[THREAD.threadId]!
+    expect(cached.outbox).toMatchObject([{ text: 'go', status: 'held', waited: true }])
+    client.dispose()
+  })
+
+  it('never keeps a normal unanswered send across a reload', async () => {
+    const { client, socket, store, back } = await catchingUp()
+    await answerThread(socket)
+    await back
+    void client.commands.sendTurn({ ...THREAD, text: 'go' }).catch(() => null)
+    expect(cacheState(store.getServerState()).threads[THREAD.threadId]!.outbox).toEqual([])
+    client.dispose()
+  })
+
+  it('hands held sends to the transport that takes the store over', async () => {
+    const { client, store } = await catchingUp()
+    const sending = client.commands.sendTurn({ ...THREAD, text: 'go', commandId: 'cmd-1' })
+    await flush()
+    client.dispose()
+    await expect(sending).rejects.toMatchObject({ code: 'unavailable' })
+    expect(store.getServerState().threads[THREAD.threadId]!.outbox[0]?.status).toBe('held')
+    const next = await connected(FULL_CAPABILITIES, {}, { environmentId: ENV, store })
+    next.socket.respond('session.open', { session: SESSION_SUMMARY, threads: [THREAD] })
+    await flush()
+    await answerThread(next.socket)
+    await flush()
+    expect(sendsOn(next.socket)).toEqual(['go'])
+    next.client.dispose()
   })
 })

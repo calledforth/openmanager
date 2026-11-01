@@ -7,6 +7,7 @@ import { useNavigate } from '@tanstack/react-router'
 import { ChatWorkspace } from '@openmanager/app-core/components/chat/ChatWorkspace'
 import { isEnvironmentClientError, type EnvironmentState } from '@openmanager/environment-client'
 import { useAddressLookup, type AddressLookup } from '../providers/address-environment'
+import { useConnection } from '../providers/connection-provider'
 
 const selectConnected = (state: EnvironmentState) => state.connection.phase === 'connected'
 
@@ -34,6 +35,7 @@ function ConnectedSessionWorkspace({ sessionId }: { sessionId?: string }) {
   const connected = useEnvironmentState(selectConnected)
   const lookup = useAddressLookup()
   const { reportAbsent, status } = lookup
+  const { ui } = useConnection()
   const navigate = useNavigate()
   const openedSessionRef = useRef<string | null>(null)
   // A session opened before the catalog knew it: the route's own open, on
@@ -106,7 +108,7 @@ function ConnectedSessionWorkspace({ sessionId }: { sessionId?: string }) {
   if (sessionId && !known && (!connected || status === 'offline')) {
     return <SessionPlaceholder sessionId={sessionId} lookup={lookup} />
   }
-  return <ChatWorkspace />
+  return <ChatWorkspace connectionProblem={ui.kind !== 'ready'} />
 }
 
 /** Names who cannot be asked: one of them may have what the address names. */
