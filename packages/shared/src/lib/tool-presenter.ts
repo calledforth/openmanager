@@ -278,13 +278,17 @@ export function presentToolPart(part: ToolPartData): ToolPresenterModel {
     ...(time?.end !== undefined ? { durationMs: Math.max(0, time.end - time.start) } : {}),
   }
   const path = extractPath(state.input) || subject || files[0] || ''
+  // "Ran rm -rf build" would be false of a call that was refused: a call that
+  // did not complete says what it set out to do, beside how that went.
+  const said = (running: string, done: string, attempt: string) =>
+    isRunning ? running : outcome ? attempt : done
 
   if (canonical === 'Read') {
     const target = basename(path)
     return {
       ...base,
       uiKind: 'read',
-      verb: isRunning ? 'Reading' : 'Read',
+      verb: said('Reading', 'Read', 'Read'),
       detail: `${target || title.replace(/^Read\s+/, '')}${range ? ` (${range})` : ''}`,
       readTarget: target,
       fullDetail: path || undefined,
@@ -296,7 +300,7 @@ export function presentToolPart(part: ToolPartData): ToolPresenterModel {
     return {
       ...base,
       uiKind: 'terminal',
-      verb: isRunning ? 'Running' : 'Ran',
+      verb: said('Running', 'Ran', 'Run'),
       detail: firstLine(command) || subtitle,
       detailIsCode: true,
       fullDetail: command || undefined,
@@ -311,15 +315,15 @@ export function presentToolPart(part: ToolPartData): ToolPresenterModel {
   ) {
     const stats = lineCounts(part, output)
     const verbs = {
-      Delete: ['Deleting', 'Deleted'],
-      Write: ['Writing', 'Wrote'],
-      Edit: ['Editing', 'Edited'],
-      MultiEdit: ['Editing', 'Edited'],
+      Delete: ['Deleting', 'Deleted', 'Delete'],
+      Write: ['Writing', 'Wrote', 'Write'],
+      Edit: ['Editing', 'Edited', 'Edit'],
+      MultiEdit: ['Editing', 'Edited', 'Edit'],
     }[canonical]
     return {
       ...base,
       uiKind: 'edit',
-      verb: isRunning ? verbs[0] : verbs[1],
+      verb: said(verbs[0], verbs[1], verbs[2]),
       detail: basename(path) || 'file',
       fullDetail: path || undefined,
       ...(stats.added > 0 || stats.removed > 0
@@ -333,7 +337,7 @@ export function presentToolPart(part: ToolPartData): ToolPresenterModel {
     return {
       ...base,
       uiKind: 'search',
-      verb: isRunning ? 'Searching for' : 'Searched for',
+      verb: said('Searching for', 'Searched for', 'Search for'),
       detail: `${quoted(pattern)}${searchScope(state.input)}`.trim() || 'code',
       fullDetail: pattern || undefined,
     }
@@ -346,7 +350,7 @@ export function presentToolPart(part: ToolPartData): ToolPresenterModel {
       ...base,
       uiKind: 'search',
       verb:
-        canonical === 'List' ? (isRunning ? 'Listing' : 'Listed') : isRunning ? 'Finding' : 'Found',
+        canonical === 'List' ? said('Listing', 'Listed', 'List') : said('Finding', 'Found', 'Find'),
       detail: target || 'files',
       detailIsCode: true,
     }
@@ -357,7 +361,7 @@ export function presentToolPart(part: ToolPartData): ToolPresenterModel {
     return {
       ...base,
       uiKind: 'web',
-      verb: isRunning ? 'Searching the web for' : 'Searched the web for',
+      verb: said('Searching the web for', 'Searched the web for', 'Search the web for'),
       detail: quoted(query) || 'an answer',
     }
   }
@@ -367,19 +371,28 @@ export function presentToolPart(part: ToolPartData): ToolPresenterModel {
     return {
       ...base,
       uiKind: 'web',
-      verb: isRunning ? 'Fetching' : 'Fetched',
+      verb: said('Fetching', 'Fetched', 'Fetch'),
       detail: url || 'a page',
       fullDetail: url || undefined,
     }
   }
 
   if (canonical === 'Task') {
-    const description = subtitle || subject || ''
+    const description = subtitle || subject || (part.title ?? '').replace(/^Task: /, '')
     return {
       ...base,
       uiKind: 'agent',
-      verb: isRunning ? 'Running subagent' : 'Ran subagent',
+      verb: said('Running subagent', 'Ran subagent', 'Run subagent'),
       detail: description,
+    }
+  }
+
+  if (canonical === 'TodoWrite') {
+    return {
+      ...base,
+      uiKind: 'generic',
+      verb: said('Updating', 'Updated', 'Update'),
+      detail: 'tasks',
     }
   }
 

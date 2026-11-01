@@ -62,6 +62,12 @@ describe('every row reads from its input alone', () => {
     expect(title('Web Search: "acp"', 'search')).toBe('Searched the web for "acp"')
     expect(title('Web Fetch: https://a.example', 'fetch')).toBe('Fetched https://a.example')
     expect(title('Task: Summarize', 'other')).toBe('Ran subagent Summarize')
+    expect(line(done({ toolName: 'task', title: 'Task: Summarize', kind: 'other' }))).toBe(
+      'Ran subagent Summarize',
+    )
+    expect(line(done({ toolName: 'updateTodos', title: 'Update TODOs: Fix', kind: 'other' }))).toBe(
+      'Updated tasks',
+    )
   })
 
   it("Cursor's generic titles, when a fast model sent nothing else", () => {
@@ -134,6 +140,18 @@ describe('what a row adds to the line', () => {
     expect(ended('declined')).toBe('declined')
     expect(ended('cancelled')).toBe('cancelled')
     expect(ended('completed')).toBeUndefined()
+  })
+
+  it('never claims what a call did not do', () => {
+    const ended = (status: string, toolName: string, input: unknown) => {
+      const model = presentToolPart({ toolName, state: { status, input } })
+      return `${model.verb} ${model.detail}`
+    }
+    expect(ended('declined', 'Bash', { command: 'rm -rf build' })).toBe('Run rm -rf build')
+    expect(ended('cancelled', 'Bash', { command: 'pnpm dev' })).toBe('Run pnpm dev')
+    expect(ended('error', 'Edit', { file_path: 'src/a.ts' })).toBe('Edit a.ts')
+    expect(ended('error', 'Read', { file_path: 'src/a.ts' })).toBe('Read a.ts')
+    expect(ended('declined', 'Write', { file_path: 'src/a.ts' })).toBe('Write a.ts')
   })
 
   it('says how long a call ran, and lists every file', () => {

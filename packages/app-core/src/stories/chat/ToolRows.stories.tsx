@@ -185,6 +185,7 @@ const Outcomes = () => (
       row({ toolName: 'Bash' }, 'declined', { command: 'rm -rf build' }),
       row({ toolName: 'Bash', outputBytes: 400 }, 'cancelled', { command: 'pnpm dev' }),
       row({ toolName: 'Edit', outputBytes: 42 }, 'error', { file_path: 'src/missing.ts' }),
+      row({ toolName: 'Read', outputBytes: 21 }, 'error', { file_path: 'src/gone.ts' }),
       row({ toolName: 'Read' }, 'pending', { file_path: 'src/index.ts' }),
     ]}
   />

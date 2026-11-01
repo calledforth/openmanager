@@ -1,4 +1,4 @@
-import { useRef, useState, type ReactNode } from 'react'
+import { useState, type ReactNode } from 'react'
 import {
   CaretRightIcon,
   DownloadSimpleIcon,
@@ -148,29 +148,24 @@ function RowLine({
         {!model.outcome && model.durationMs !== undefined && model.durationMs >= 1_000 ? (
           <span className="text-[var(--basis-text-faint)]">{formatDuration(model.durationMs)}</span>
         ) : null}
-        {open !== undefined ? (
-          <CaretRightIcon
-            size={10}
-            aria-hidden
-            className={cn(
-              'relative top-px text-[var(--basis-text-faint)] opacity-0 transition-[transform,opacity] duration-150',
-              'group-hover/row:opacity-100',
-              open && 'rotate-90 opacity-100',
-            )}
-          />
-        ) : null}
+        {/* Reserved on every row, so the column lines up whether a row opens or not. */}
+        <CaretRightIcon
+          size={10}
+          aria-hidden
+          className={cn(
+            'relative top-px text-[var(--basis-text-faint)] opacity-0 transition-[transform,opacity] duration-150',
+            open !== undefined && 'group-hover/row:opacity-100',
+            open && 'rotate-90 opacity-100',
+          )}
+        />
       </span>
     </span>
   )
 }
 
 function Scroller({ children }: { children: ReactNode }) {
-  const ref = useRef<HTMLPreElement>(null)
   return (
-    <pre
-      ref={ref}
-      className="custom-scrollbar m-0 max-h-[300px] overflow-y-auto break-words whitespace-pre-wrap"
-    >
+    <pre className="custom-scrollbar m-0 max-h-[300px] overflow-y-auto bg-transparent !p-0 break-words whitespace-pre-wrap">
       {children}
     </pre>
   )
