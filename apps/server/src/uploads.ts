@@ -6,6 +6,7 @@ import type { DatabaseSync } from 'node:sqlite'
 import {
   ARTIFACT_PATH_PREFIX,
   DRAFT_ARTIFACT_PATH_PREFIX,
+  TOOL_OUTPUT_PATH_PREFIX,
   UPLOAD_PATH_PREFIX,
   UPLOAD_TICKET_CAPABILITY,
   UploadCommandSchemas,
@@ -60,6 +61,15 @@ const scopeOf = (ticket: Pick<Ticket, 'sessionId' | 'workspaceId'>): Record<stri
     ? { workspaceId: ticket.workspaceId }
     : { sessionId: ticket.sessionId }
 
+/** Both path segments, or undefined when one is not valid percent-encoding. */
+function decodePair(first: string, second: string): [string, string] | undefined {
+  try {
+    return [decodeURIComponent(first), decodeURIComponent(second)]
+  } catch {
+    return undefined
+  }
+}
+
 const hashTicket = (ticket: string) => createHash('sha256').update(ticket, 'utf8').digest('hex')
 
 /**
@@ -86,6 +96,8 @@ export function createUploadService(options: {
   authenticate: (credential: string | undefined) => AuthenticatedClient | undefined
   /** The workspace that owns a session, or `undefined` when the session does not exist. */
   sessionWorkspace: (sessionId: string) => string | undefined
+  /** A settled tool's text, by the session and call a client names; undefined when it has none. */
+  toolOutput?: (sessionId: string, toolCallId: string) => string | undefined
   /** Whether the caller may reach the workspace; a refusal is audited by the resolver. */
   resolveWorkspace: (workspaceId: string, context?: CommandContext) => unknown | undefined
   clock?: () => number
@@ -392,7 +404,8 @@ export function createUploadService(options: {
     handle(request: IncomingMessage, response: ServerResponse): boolean {
       const path = request.url?.split('?')[0] ?? ''
       const draftDownload = path.startsWith(DRAFT_ARTIFACT_PATH_PREFIX)
-      const download = draftDownload || path.startsWith(ARTIFACT_PATH_PREFIX)
+      const toolOutputRead = path.startsWith(TOOL_OUTPUT_PATH_PREFIX)
+      const download = draftDownload || toolOutputRead || path.startsWith(ARTIFACT_PATH_PREFIX)
       if (!download && !path.startsWith(UPLOAD_PATH_PREFIX)) return false
       if (request.method === 'OPTIONS') {
         response.writeHead(204, {
@@ -418,9 +431,11 @@ export function createUploadService(options: {
       const remoteAddress = request.socket.remoteAddress ?? 'unknown'
       const command = draftDownload
         ? `GET ${DRAFT_ARTIFACT_PATH_PREFIX}`
-        : download
-          ? `GET ${ARTIFACT_PATH_PREFIX}`
-          : `PUT ${UPLOAD_PATH_PREFIX}`
+        : toolOutputRead
+          ? `GET ${TOOL_OUTPUT_PATH_PREFIX}`
+          : download
+            ? `GET ${ARTIFACT_PATH_PREFIX}`
+            : `PUT ${UPLOAD_PATH_PREFIX}`
       const budget = (options.budgetKey ?? remoteAddressKey)(request)
       const lockout = options.rateLimiter.blocked('auth_failure', budget)
       if (!lockout.allowed) {
@@ -453,6 +468,36 @@ export function createUploadService(options: {
           },
         })
         refuse(request, response, 401, 'auth', 'A valid client credential is required.')
+        return true
+      }
+      if (toolOutputRead) {
+        // /tool-output/<session-id>/<tool-call-id>. Whoever may read the
+        // session may read its tools. The answer is text, so it is compressed
+        // on the way by any proxy that compresses text, which the socket's
+        // frames are not; and it does not wait in that connection's queue.
+        const match = /^\/tool-output\/([^/]+)\/([^/]+)$/.exec(path)
+        const decoded = match ? decodePair(match[1]!, match[2]!) : undefined
+        const workspaceId = decoded && options.sessionWorkspace(decoded[0])
+        const text =
+          decoded &&
+          workspaceId !== undefined &&
+          client.capabilities.includes('read') &&
+          options.resolveWorkspace(workspaceId, { clientId: client.clientId, command })
+            ? options.toolOutput?.(decoded[0], decoded[1])
+            : undefined
+        if (text === undefined) {
+          respond(response, 404, errorResult(null, 'not_found', 'Tool output not found.'))
+          return true
+        }
+        const bytes = Buffer.from(text, 'utf8')
+        // Never cached, like an artifact, for the same reason.
+        response.writeHead(200, {
+          'content-type': 'text/plain; charset=utf-8',
+          'content-length': bytes.length,
+          'cache-control': 'no-store',
+          'x-content-type-options': 'nosniff',
+        })
+        response.end(bytes)
         return true
       }
       if (download) {

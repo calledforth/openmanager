@@ -35,6 +35,7 @@ import {
 import {
   projectAgentEvent,
   providers,
+  ToolCallTracker,
   SessionUnknownError,
   type AgentRuntime,
   type HostDeps,
@@ -55,6 +56,7 @@ import {
   type ThreadState,
 } from './db/session-store.ts'
 import type { ArtifactStore } from './artifacts.ts'
+import { withSettledText } from './db/tool-output.ts'
 import { waitingKind } from './db/session-activity.ts'
 import type { WriteOptions } from './db/event-repository.ts'
 import { sessionDeletionEvents } from './db/deletions.ts'
@@ -133,6 +135,8 @@ type ActiveTurn = {
   /** The mode the host is starting this turn in (a plan build), if it chose one. */
   modeId?: string
   generatedImages?: Set<string>
+  /** What this turn's tool calls have sent so far. */
+  toolCalls?: ToolCallTracker
   toolIds: Map<string, string>
   interactionIds: Map<string, string>
   /** Each open request's kind and when it was raised, by host id. */
@@ -284,8 +288,7 @@ export type LoadRefusal = { code: ErrorCode; message: string; details?: unknown 
 type SessionOpenPosition = { environment: Cursor; session: Cursor }
 
 type Loaded =
-  | { refused: LoadRefusal }
-  | { session: SessionSummary; threads: Thread[]; at: SessionOpenPosition }
+  { refused: LoadRefusal } | { session: SessionSummary; threads: Thread[]; at: SessionOpenPosition }
 
 const errorResult = (requestId: string, code: ErrorCode, message: string, details?: unknown) => ({
   type: 'error' as const,
@@ -1061,6 +1064,9 @@ export function createThreadService(
           record,
           { ...event, category: 'stream', event: 'agent_message_chunk', data: { content: image } },
           active,
+          undefined,
+          undefined,
+          stableId(active.toolIds, event.data.toolCallId),
         )
       }
     }
@@ -1084,12 +1090,26 @@ export function createThreadService(
     active.openReasoning.clear()
   }
 
+  const toolCallsFor = (active: ActiveTurn) => (active.toolCalls ??= new ToolCallTracker())
+
+  /** The tool call a permission answer refused, if it refused one. */
+  const declinedToolCall = (interaction: Interaction, response: InteractionResponse) => {
+    if (interaction.kind !== 'permission' || response.outcome.outcome !== 'selected') return
+    const { optionId } = response.outcome
+    const option = interaction.options.find((item) => item.optionId === optionId)
+    return option?.kind === 'reject_once' || option?.kind === 'reject_always'
+      ? interaction.toolCall.toolCallId
+      : undefined
+  }
+
   const projectOwnEvent = (
     record: ThreadRecord,
     event: RuntimeEvent,
     active: ActiveTurn | undefined,
     completionState?: ProtocolEventContext['completionState'],
     failureReason?: TurnFailureReason,
+    /** The host id of the tool call a promoted image came from. */
+    imageToolCallId?: string,
   ): void => {
     // The durable prompt already names its uploaded images. Provider echoes must
     // neither duplicate them nor relabel them as generated output.
@@ -1122,6 +1142,11 @@ export function createThreadService(
         : active
           ? runMessageId(active, event)
           : undefined
+    const toolCalls = active
+      ? providerToolId !== undefined
+        ? toolCallsFor(active)
+        : active.toolCalls
+      : undefined
     const projected = projectAgentEvent(event, {
       eventId: randomUUID(),
       environmentId,
@@ -1148,8 +1173,14 @@ export function createThreadService(
         )
           ? 'waiting'
           : 'running',
+      toolCalls,
+      interruptRequested: active?.interruptRequested,
     })
     if (!projected) return
+    if (projected.name === 'tool.updated') {
+      const text = toolCalls?.takeBody(projected.payload.toolCallId)
+      if (text !== undefined) withSettledText(projected, text)
+    }
     if (
       projected.name === 'message.delta' &&
       projected.payload.content.type === 'image' &&
@@ -1163,7 +1194,10 @@ export function createThreadService(
           content.mimeType,
           content.data,
         )
-        projected.payload.content = options.artifacts.reference(metadata)
+        projected.payload.content = {
+          ...options.artifacts.reference(metadata),
+          ...(imageToolCallId ? { toolCallId: imageToolCallId } : {}),
+        }
       } catch (error) {
         options.onPersistenceError?.(error, 'artifact.generated')
         // Never fall back to putting image bytes in the event log.
@@ -1234,6 +1268,26 @@ export function createThreadService(
       if (entry) {
         entry.settled = true
         entry.resolution = projected.payload.response
+        // A refusal is the call's outcome from this moment: an event, so it
+        // does not depend on what the provider does next or on this process.
+        const refused = declinedToolCall(entry.interaction, projected.payload.response)
+        if (refused && toolCallsFor(active).decline(refused)) {
+          appendRuntimeEvent(
+            ProofEventSchemas['tool.updated'].parse({
+              type: 'event',
+              name: 'tool.updated',
+              eventId: randomUUID(),
+              timestamp: projected.timestamp,
+              scope: threadScope(record),
+              payload: {
+                toolCallId: refused,
+                turnId: active.turn.turnId,
+                status: 'declined',
+                finishedAt: projected.timestamp,
+              },
+            }),
+          )
+        }
         if (entry.interaction.lifecycle) {
           entry.interaction = {
             ...entry.interaction,

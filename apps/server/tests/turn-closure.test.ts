@@ -128,7 +128,7 @@ describe('turn closure', () => {
       'stop',
     ])
     expect(thread.map((record) => record.event.payload)).toEqual([
-      { toolCallId: 'tool-1', turnId: 'turn-1', status: 'cancelled' },
+      expect.objectContaining({ toolCallId: 'tool-1', turnId: 'turn-1', status: 'cancelled' }),
       { messageId: 'thought-1', turnId: 'turn-1', phase: 'stop' },
       {
         turnId: 'turn-1',

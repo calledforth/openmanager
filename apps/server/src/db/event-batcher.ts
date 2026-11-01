@@ -157,7 +157,8 @@ export function createStreamingEventBatcher<E extends ProofEvent = ProofEvent>(
    * goes first; if that write throws, the event stays queued.
    */
   const take = (event: E) => {
-    const streamEvent = event.name === 'message.delta' || event.name === 'message.reasoning'
+    const streamEvent =
+      event.name === 'message.delta' || event.name === 'message.reasoning' || isToolDelta(event)
     const otherScope = buffered.length > 0 && !sameScope(buffered[0]!.scope, event.scope)
     if (isTerminal(event) ? otherScope : !streamEvent || otherScope) flushBuffered()
     queued.shift()
@@ -222,11 +223,34 @@ export function createStreamingEventBatcher<E extends ProofEvent = ProofEvent>(
   }
 }
 
+/** A `tool.updated` that only appends running text, and so changes nothing else. */
+function isToolDelta(event: ProofEvent): event is Extract<ProofEvent, { name: 'tool.updated' }> {
+  if (event.name !== 'tool.updated' || event.payload.outputDelta === undefined) return false
+  return Object.keys(event.payload).every(
+    (key) => key === 'toolCallId' || key === 'turnId' || key === 'outputDelta',
+  )
+}
+
 function coalesceDeltas<E extends ProofEvent>(events: readonly E[]): E[] {
   const result: E[] = []
   for (const event of events) {
     const previous = result.at(-1)
     if (
+      previous &&
+      isToolDelta(previous) &&
+      isToolDelta(event) &&
+      previous.payload.toolCallId === event.payload.toolCallId &&
+      previous.payload.turnId === event.payload.turnId
+    ) {
+      result[result.length - 1] = {
+        ...previous,
+        timestamp: event.timestamp,
+        payload: {
+          ...previous.payload,
+          outputDelta: previous.payload.outputDelta! + event.payload.outputDelta!,
+        },
+      } as E
+    } else if (
       previous?.name === 'message.delta' &&
       event.name === 'message.delta' &&
       previous.payload.messageId === event.payload.messageId &&

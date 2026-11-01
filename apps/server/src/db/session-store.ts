@@ -2,6 +2,8 @@ import type { DatabaseSync } from 'node:sqlite'
 import type { Logger } from '../logger.ts'
 import { storedListing } from './composer-rows.ts'
 import { readSessionActivity } from './session-activity.ts'
+import { createToolOutputStore } from './tool-output.ts'
+import { toolIsOpen } from './turn-closure.ts'
 import {
   ContentBlockSchema,
   InteractionSchema,
@@ -276,10 +278,17 @@ export function readThreadState(
     .all(query.threadId) as TurnActivityRow[]
   const reasoning: ReasoningBlock[] = []
   const tools: ToolCallState[] = []
+  const toolOutput = createToolOutputStore(database)
   for (const row of activityRows) {
     const state: unknown = JSON.parse(row.state_json)
     if (row.kind === 'reasoning') reasoning.push(ReasoningBlockSchema.parse(state))
-    else tools.push(ToolCallStateSchema.parse(state))
+    else {
+      const tool = ToolCallStateSchema.parse(state)
+      // Only a running tool's text is part of the chat; a settled one's waits
+      // to be asked for, and `outputBytes` says so.
+      const output = toolIsOpen(tool) ? toolOutput.read(row.activity_id) : undefined
+      tools.push(output === undefined ? tool : { ...tool, output })
+    }
   }
   // Both lists are in ordinal order already: merge them.
   const order: ActivityRef[] = []
