@@ -832,7 +832,7 @@ async function handle(request: ChildRequest): Promise<unknown> {
         sessionUpdate: 'tool_call',
         toolCallId: request.toolCallId,
         title: request.title ?? 'Run tests',
-        kind: 'execute',
+        kind: (request.kind ?? 'execute') as 'execute',
         status: 'in_progress',
       })
     case 'updateTool':
@@ -840,7 +840,25 @@ async function handle(request: ChildRequest): Promise<unknown> {
         sessionUpdate: 'tool_call_update',
         toolCallId: request.toolCallId,
         status: request.status,
+        ...(request.rawInput !== undefined ? { rawInput: request.rawInput } : {}),
+        ...(request.rawOutput !== undefined ? { rawOutput: request.rawOutput } : {}),
+        ...(request.content !== undefined ? { content: request.content as never } : {}),
+        ...(request.locations !== undefined ? { locations: request.locations as never } : {}),
       })
+    case 'streamToolLines': {
+      const active = await promptOf(request.sessionId)
+      let text = ''
+      for (let line = 0; line < request.lines; line++) {
+        text += `line ${line}\n`
+        await update(active, {
+          sessionUpdate: 'tool_call_update',
+          toolCallId: request.toolCallId,
+          status: 'in_progress',
+          content: [{ type: 'content', content: { type: 'text', text } }],
+        })
+      }
+      return null
+    }
     case 'askPermission': {
       const active = await promptOf(request.sessionId)
       touch()

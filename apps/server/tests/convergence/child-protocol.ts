@@ -44,13 +44,19 @@ export type ProviderOp =
   | { op: 'emitCommands'; sessionId: string; names: string[] }
   | { op: 'emitSetting'; sessionId: string; settingId: string; currentValue: string }
   | { op: 'emitThought'; sessionId: string; text: string }
-  | { op: 'openTool'; sessionId: string; toolCallId: string; title?: string }
+  | { op: 'openTool'; sessionId: string; toolCallId: string; title?: string; kind?: string }
   | {
       op: 'updateTool'
       sessionId: string
       toolCallId: string
       status: 'pending' | 'in_progress' | 'completed' | 'failed'
+      rawInput?: unknown
+      rawOutput?: unknown
+      content?: unknown[]
+      locations?: unknown[]
     }
+  /** Many one-line updates at once, each resending the text so far, as ACP does. */
+  | { op: 'streamToolLines'; sessionId: string; toolCallId: string; lines: number }
   | { op: 'askPermission'; sessionId: string; toolCallId: string; title?: string }
   /** Cursor's own question request (`cursor/ask_question`); the session must run on Cursor. */
   | { op: 'askQuestion'; sessionId: string; questionId: string }
