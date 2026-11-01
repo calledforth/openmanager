@@ -3,6 +3,7 @@ export type {
   AuthorizedClient,
   AuthorizedClientList,
   ArtifactTarget,
+  ToolOutputTarget,
   BackgroundTask,
   ComposerPreferenceTarget,
   ConnectionFailure,

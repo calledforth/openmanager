@@ -143,16 +143,42 @@ function toolStatus(status: ToolState['status']): string {
   return status ?? 'pending'
 }
 
-function toolPart(tool: ToolState): MessagePart {
+/**
+ * A tool call as a message part. The provider's name is what a row looks a
+ * tool up by, with the title for the providers that send none. `state.input`
+ * and `state.output` are where the presenters read a call, and `output` is only
+ * ever a running tool's text: a settled one's is read when its row is opened.
+ */
+function toolPart(tool: ToolState, sessionId: string): MessagePart {
   let part = toolParts.get(tool)
   if (!part) {
+    const startedAt = tool.startedAt ? Date.parse(tool.startedAt) : Number.NaN
+    const finishedAt = tool.finishedAt ? Date.parse(tool.finishedAt) : Number.NaN
     part = {
       type: 'tool',
       id: tool.toolCallId,
       callID: tool.toolCallId,
-      tool: tool.title ?? tool.kind ?? 'tool',
+      sessionId,
+      tool: tool.toolName ?? tool.title ?? tool.kind ?? 'tool',
+      ...(tool.toolName ? { toolName: tool.toolName } : {}),
+      ...(tool.title !== undefined ? { title: tool.title } : {}),
       ...(tool.kind ? { kind: tool.kind } : {}),
-      state: { status: toolStatus(tool.status) },
+      state: {
+        status: toolStatus(tool.status),
+        ...(tool.input !== undefined ? { input: tool.input } : {}),
+        ...(tool.output !== undefined ? { output: tool.output } : {}),
+      },
+      ...(tool.outputBytes ? { outputBytes: tool.outputBytes } : {}),
+      ...(tool.locations ? { locations: tool.locations } : {}),
+      ...(tool.lineChanges ? { lineChanges: tool.lineChanges } : {}),
+      ...(Number.isFinite(startedAt)
+        ? {
+            time: {
+              start: startedAt,
+              ...(Number.isFinite(finishedAt) ? { end: finishedAt } : {}),
+            },
+          }
+        : {}),
     }
     toolParts.set(tool, part)
   }
@@ -309,7 +335,7 @@ function projectTurn(
       placedParts = entry ? [reasoningPart(entry, settled)] : undefined
     } else if (ref.kind === 'tool') {
       const tool = toolsById.get(ref.id)
-      placedParts = tool ? [toolPart(tool)] : undefined
+      placedParts = tool ? [toolPart(tool, sessionId)] : undefined
     } else {
       const message = assistantById.get(ref.id)
       placedParts = message ? textParts(message, sessionId) : undefined
@@ -322,7 +348,9 @@ function projectTurn(
     ...reasoning
       .filter((entry) => !placed.has(`reasoning:${entry.messageId}`))
       .map((entry) => reasoningPart(entry, settled)),
-    ...tools.filter((tool) => !placed.has(`tool:${tool.toolCallId}`)).map(toolPart),
+    ...tools
+      .filter((tool) => !placed.has(`tool:${tool.toolCallId}`))
+      .map((tool) => toolPart(tool, sessionId)),
     ...assistantMessages
       .filter((message) => !placed.has(`message:${message.messageId}`))
       .flatMap((message) => textParts(message, sessionId)),

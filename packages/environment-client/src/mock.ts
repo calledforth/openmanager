@@ -1628,6 +1628,7 @@ export function createMockEnvironmentClient(
         clientListListeners.delete(listener)
       }
     },
+    fetchToolOutput: async () => 'Output of the mock tool.',
     fetchArtifact: async (input) => {
       await new Promise<void>((resolve) => schedule(resolve, latencyMs))
       const blob = artifacts[input.artifactId]

@@ -20,6 +20,7 @@ import {
   artifactPath,
   createClientLivenessState,
   draftArtifactPath,
+  toolOutputPath,
   parseProtocolHandshakeResult,
   parseReplayResult,
   utf8Length,
@@ -2022,6 +2023,30 @@ export function createWebSocketEnvironmentClient(
         throw await artifactTransferError(response, 'The artifact could not be read.')
       }
       return response.blob()
+    },
+    async fetchToolOutput(input, init) {
+      // As with an artifact, the token goes only where a handshake is holding.
+      if (!ready) {
+        throw new EnvironmentClientError('unavailable', 'Not connected to the environment.')
+      }
+      const fetchText = options.fetch ?? globalThis.fetch
+      let response: Response
+      try {
+        response = await fetchText(
+          environmentHttpUrl(options.url, toolOutputPath(input.sessionId, input.toolCallId)),
+          {
+            headers: options.credential ? { authorization: `Bearer ${options.credential}` } : {},
+            signal: init?.signal,
+          },
+        )
+      } catch (error) {
+        if (init?.signal?.aborted) throw error
+        throw new EnvironmentClientError('unavailable', 'The environment could not be reached.')
+      }
+      if (!response.ok) {
+        throw await artifactTransferError(response, 'The tool output could not be read.')
+      }
+      return response.text()
     },
     async uploadArtifact(input, init) {
       // The ticket is single use and bound to this credential and session;
