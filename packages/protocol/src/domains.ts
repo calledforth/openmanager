@@ -213,6 +213,12 @@ export const ArtifactReferenceSchema = z.object({
   mimeType: z.string().min(1),
   name: z.string().min(1),
   sizeBytes: z.number().int().positive(),
+  /**
+   * The tool call whose result produced this image, when the agent's tool made
+   * it rather than the user attaching it. The image is shown in the reply; the
+   * id lets a client show it under that tool's row as well.
+   */
+  toolCallId: EntityIdSchema.optional(),
 })
 export const ContentBlockSchema = z.discriminatedUnion('type', [
   ArtifactReferenceSchema,
@@ -251,6 +257,12 @@ export const ReasoningBlockSchema = z.object({
   content: z.array(ContentBlockSchema),
   tokens: z.number().int().nonnegative().optional(),
 })
+/** A status a tool call does not leave again. */
+export function isSettledToolStatus(status: string | undefined): boolean {
+  return (
+    status === 'completed' || status === 'failed' || status === 'declined' || status === 'cancelled'
+  )
+}
 export const ToolKindSchema = z.enum([
   'read',
   'edit',
@@ -266,22 +278,72 @@ export const ToolKindSchema = z.enum([
 /**
  * `cancelled`: the turn ended, or the server restarted, while the tool was
  * still open; the server closes it with an explicit `tool.updated`.
+ * `declined`: the user, or a rule acting for them, refused to let it run.
+ * Both are outcomes of their own, not failures.
  */
 export const ToolCallStatusSchema = z.enum([
   'pending',
   'in_progress',
   'completed',
   'failed',
+  'declined',
   'cancelled',
 ])
-/** What a `tool.updated` event carries, and what the environment keeps of a tool call. */
+/** A file a tool call touched or was pointed at. */
+export const ToolLocationSchema = z.object({
+  path: z.string().min(1),
+  line: z.number().int().nonnegative().optional(),
+})
+/** Lines an edit added and removed, only ever as the provider reported them. */
+export const ToolLineChangesSchema = z.object({
+  added: z.number().int().nonnegative(),
+  removed: z.number().int().nonnegative(),
+})
+/**
+ * What a client holds of a tool call. A row reads from these alone.
+ *
+ * `output` is present only while the tool runs: what it has written so far.
+ * Once it settles the text stays on the environment, and `outputBytes` says how
+ * much there is to fetch from `toolOutputPath`. Chat never carries file
+ * contents or diffs, so a read or an edit has only its paths and line counts.
+ */
 export const ToolCallStateSchema = z.object({
   toolCallId: EntityIdSchema,
   turnId: EntityIdSchema,
+  /** The provider's own name for the tool, unchanged: `Bash`, `mcp__github__search`. */
+  toolName: z.string().min(1).optional(),
+  /** A human title, when the provider gives one; separate from the name. */
   title: z.string().optional(),
   kind: ToolKindSchema.optional(),
   status: ToolCallStatusSchema.optional(),
+  input: z.json().optional(),
+  output: z.string().optional(),
+  outputBytes: z.number().int().nonnegative().optional(),
+  locations: z.array(ToolLocationSchema).optional(),
+  lineChanges: ToolLineChangesSchema.optional(),
+  /** When the call opened, and when it reached a final status. */
+  startedAt: TimestampSchema.optional(),
+  finishedAt: TimestampSchema.optional(),
 })
+/**
+ * What a `tool.updated` event carries: any of the fields above, which replace
+ * what was held (`output` included), or `outputDelta`, text appended to it.
+ * Never both, since their order would be ambiguous, and neither on the update
+ * that settles the call: a settled tool's text does not travel in events.
+ */
+export const ToolCallUpdateSchema = ToolCallStateSchema.extend({
+  outputDelta: z.string().min(1).optional(),
+})
+  .refine((update) => update.output === undefined || update.outputDelta === undefined, {
+    message: 'A tool update replaces its output or appends to it, not both.',
+    path: ['outputDelta'],
+  })
+  .refine(
+    (update) =>
+      !isSettledToolStatus(update.status) ||
+      (update.output === undefined && update.outputDelta === undefined),
+    { message: 'A settled tool carries no output text.', path: ['output'] },
+  )
 /**
  * One thing that took its place in a turn's transcript, named by the id it is
  * stored under. A list of these is the order messages, reasoning blocks and
@@ -452,6 +514,10 @@ export type Turn = z.infer<typeof TurnSchema>
 export type Message = z.infer<typeof MessageSchema>
 export type ReasoningBlock = z.infer<typeof ReasoningBlockSchema>
 export type ToolCallState = z.infer<typeof ToolCallStateSchema>
+export type ToolCallUpdate = z.infer<typeof ToolCallUpdateSchema>
+export type ToolCallStatus = z.infer<typeof ToolCallStatusSchema>
+export type ToolLocation = z.infer<typeof ToolLocationSchema>
+export type ToolLineChanges = z.infer<typeof ToolLineChangesSchema>
 export type ActivityRef = z.infer<typeof ActivityRefSchema>
 export type TurnStart = z.infer<typeof TurnStartSchema>
 export type TurnStarted = z.infer<typeof TurnStartedSchema>

@@ -17,7 +17,7 @@ import {
   TurnInterruptionSchema,
   BackgroundTaskListSchema,
   ContentBlockSchema,
-  ToolCallStateSchema,
+  ToolCallUpdateSchema,
   InteractionSchema,
   InteractionResponseSchema,
 } from './domains.js'
@@ -51,7 +51,7 @@ const event = <N extends string, S extends z.ZodType, P extends z.ZodType>(
  * replay floor at boot, so no stored event is replayed in a form this
  * version cannot state (docs/sync-foundations.md §4.7.7).
  */
-export const EVENT_FORMAT_VERSION = 3 as const
+export const EVENT_FORMAT_VERSION = 4 as const
 
 /** A turn's state once an interaction event is applied: still asking, or running again. */
 export const InteractionTurnStateSchema = z.enum(['running', 'waiting'])
@@ -233,7 +233,7 @@ export const ProofEventSchemas = {
       tokens: z.number().int().nonnegative().optional(),
     }),
   ),
-  'tool.updated': event('tool.updated', ThreadScopeSchema, ToolCallStateSchema),
+  'tool.updated': event('tool.updated', ThreadScopeSchema, ToolCallUpdateSchema),
   'interaction.requested': event(
     'interaction.requested',
     ThreadScopeSchema,
