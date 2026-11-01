@@ -66,8 +66,6 @@
     "./components/fluid/sidebar-app/workspace-header": "./src/components/fluid/sidebar-app/workspace-header.tsx",
     "./components/markdown/Markdown": "./src/components/markdown/Markdown.tsx",
     "./components/parts/ActivityGroup": "./src/components/parts/ActivityGroup.tsx",
-    "./components/parts/BashToolPart": "./src/components/parts/BashToolPart.tsx",
-    "./components/parts/CommandPill": "./src/components/parts/CommandPill.tsx",
     "./components/parts/EditToolPart": "./src/components/parts/EditToolPart.tsx",
     "./components/parts/GeneratedImagePart": "./src/components/parts/GeneratedImagePart.tsx",
     "./components/parts/ImageGenerationToolPart": "./src/components/parts/ImageGenerationToolPart.tsx",

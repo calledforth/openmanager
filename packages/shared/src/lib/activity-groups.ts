@@ -9,7 +9,14 @@
 // and split the surrounding tools into separate groups.
 
 import { canonicalizeToolName } from './tool-meta'
-import { countDiffStats, formatToolOutput, getToolStateType, isToolRunning } from './tool-presenter'
+import {
+  countDiffStats,
+  formatToolOutput,
+  getToolStateType,
+  isToolRunning,
+  resolveTool,
+  type ToolPartData,
+} from './tool-presenter'
 
 export type ActivityCategory = 'edit' | 'read' | 'search' | 'shell' | 'other'
 
@@ -44,6 +51,8 @@ interface ToolPartShape {
   tool?: unknown
   /** ACP tool kind, carried alongside the provider's human-readable title. */
   kind?: unknown
+  /** Lines changed, as the provider reported them. */
+  lineChanges?: { added: number; removed: number }
   callID?: unknown
   state?: {
     type?: string
@@ -54,8 +63,8 @@ interface ToolPartShape {
   }
 }
 
-const EDIT_TOOLS = new Set(['Edit', 'Write', 'MultiEdit'])
-const SEARCH_TOOLS = new Set(['Grep', 'Glob', 'WebSearch', 'WebFetch'])
+const EDIT_TOOLS = new Set(['Edit', 'Write', 'MultiEdit', 'Delete'])
+const SEARCH_TOOLS = new Set(['Grep', 'Glob', 'List', 'Search', 'WebSearch', 'WebFetch'])
 
 /** Tools that carry standalone meaning and never fold into a count. */
 const BARRIER_TOOLS = new Set(['TodoWrite', 'Task', 'AskUserQuestion', 'GenerateImage'])
@@ -82,7 +91,7 @@ function isToolError(stateType: string): boolean {
 }
 
 function toolCategory(part: ToolPartShape): ActivityCategory {
-  const canonical = canonicalizeToolName(typeof part.tool === 'string' ? part.tool : '')
+  const canonical = resolveTool(part as ToolPartData).canonical
   if (EDIT_TOOLS.has(canonical)) return 'edit'
   if (canonical === 'Read') return 'read'
   if (SEARCH_TOOLS.has(canonical)) return 'search'
@@ -99,6 +108,7 @@ function isGroupable(part: ToolPartShape, pendingPermissionCallId?: string | nul
   if (part.type !== 'tool') return false
   const toolName = typeof part.tool === 'string' ? part.tool : ''
   if (BARRIER_TOOLS.has(canonicalizeToolName(toolName))) return false
+  if (BARRIER_TOOLS.has(resolveTool(part as ToolPartData).canonical)) return false
   if (isToolError(getToolStateType(part.state))) return false
   const callId = typeof part.callID === 'string' ? part.callID : undefined
   if (pendingPermissionCallId && callId && callId === pendingPermissionCallId) return false
@@ -117,7 +127,9 @@ function summarise(items: readonly ToolPartShape[]): ActivitySummary {
     const running = isToolRunning(getToolStateType(item.state))
     if (running) isRunning = true
     if (category === 'edit' && !running) {
-      const stats = countDiffStats(formatToolOutput(item.state?.output ?? item.state?.error))
+      const stats =
+        item.lineChanges ??
+        countDiffStats(formatToolOutput(item.state?.output ?? item.state?.error))
       diffAdded += stats.added
       diffRemoved += stats.removed
     }

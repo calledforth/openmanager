@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { renderToStaticMarkup } from 'react-dom/server'
+import { presentToolPart } from '@openmanager/shared/lib/tool-presenter'
 import { MessageParts } from './MessageParts'
 
 describe('MessageParts', () => {
@@ -146,29 +147,17 @@ describe('MessageParts', () => {
     expect(html).not.toContain('Thought')
   })
 
-  it('renders Cursor structured tool output without passing objects to React', () => {
-    const html = renderToStaticMarkup(
-      <MessageParts
-        parts={[
-          {
-            type: 'tool',
-            id: 'tool-1',
-            tool: 'Shell',
-            state: {
-              status: 'completed',
-              input: { command: 'git status --short' },
-              output: {
-                output: 'working tree clean',
-                metadata: { exitCode: 0 },
-              },
-            },
-          },
-        ]}
-      />,
-    )
+  it('reads Cursor structured tool output as text, never as an object', () => {
+    const model = presentToolPart({
+      tool: 'Shell',
+      state: {
+        status: 'completed',
+        input: { command: 'git status --short' },
+        output: { output: 'working tree clean', metadata: { exitCode: 0 } },
+      },
+    })
 
-    expect(html).toContain('working tree clean')
-    expect(html).not.toContain('exitCode')
+    expect(model.expandedText).toBe('working tree clean')
   })
 
   it('keeps a visible label for a Bash call without command input', () => {
@@ -181,7 +170,7 @@ describe('MessageParts', () => {
       />,
     )
 
-    expect(html).toContain('bash')
+    expect(html).toContain('Running')
   })
 
   it('summarises a run of consecutive tool calls on one row', () => {
@@ -234,23 +223,12 @@ describe('MessageParts', () => {
   })
 
   it('renders non-envelope structured OpenCode output as readable JSON', () => {
-    const html = renderToStaticMarkup(
-      <MessageParts
-        parts={[
-          {
-            type: 'tool',
-            id: 'tool-2',
-            tool: 'custom-tool',
-            state: {
-              status: 'completed',
-              output: { files: ['one.ts', 'two.ts'], count: 2 },
-            },
-          },
-        ]}
-      />,
-    )
+    const model = presentToolPart({
+      tool: 'custom-tool',
+      state: { status: 'completed', output: { files: ['one.ts', 'two.ts'], count: 2 } },
+    })
 
-    expect(html).toContain('&quot;files&quot;')
-    expect(html).toContain('one.ts')
+    expect(model.expandedText).toContain('"files"')
+    expect(model.expandedText).toContain('one.ts')
   })
 })
