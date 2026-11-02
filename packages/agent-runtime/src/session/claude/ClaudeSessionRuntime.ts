@@ -935,6 +935,7 @@ export class ClaudeSessionRuntime implements ManagedSessionRuntime {
       done,
     }
     this.turn = turn
+    this.translator.beginTurn()
     return turn
   }
 
@@ -1073,10 +1074,19 @@ export class ClaudeSessionRuntime implements ManagedSessionRuntime {
     // the second time against a turn that no longer exists.
     if (completed.isError && !completed.interrupted) {
       const message = completed.errorText ?? 'Claude Code ended the turn with an error'
+      // The typed reason is the headline a client shows. The host keeps Claude
+      // Code's own words in its log as well.
+      this.host.log({
+        scope: 'claude',
+        level: 'warn',
+        message: 'Claude Code ended the turn with an error',
+        data: { error: message, ...(completed.problem ? { code: completed.problem.code } : {}) },
+      })
       this.emit(
         routeEvent(this.route(), completed.sessionId, 'error', 'runtime_error', {
           kind: 'provider',
           message,
+          ...(completed.problem ? { problem: completed.problem } : {}),
           // The counts still happened, and this is the only frame left to carry
           // them; `prompt_completed`'s `usage` field has no failure counterpart.
           details: {

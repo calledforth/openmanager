@@ -1,3 +1,4 @@
+import type { SDKMessage } from '@anthropic-ai/claude-agent-sdk'
 import { describe, expect, it, vi } from 'vitest'
 import { SessionUnknownError } from '../../core/errors.js'
 import type { BackendEvent } from '../../backends/Backend.js'
@@ -7,6 +8,7 @@ import { claude } from '../../providers/claude.js'
 import type { RuntimeTimeouts } from '../constants.js'
 import type { SessionRuntimeExit } from '../lifecycle.js'
 import type { SessionRuntimeSpec } from '../SessionRuntime.js'
+import { ClaudeMessageTranslator } from './ClaudeMessageTranslator.js'
 import { ClaudeSessionRuntime } from './ClaudeSessionRuntime.js'
 import { FakeClaudeSdk } from './test-sdk.js'
 
@@ -326,6 +328,61 @@ describe('ClaudeSessionRuntime turn failure', () => {
     expect(names(events)).not.toContain('prompt_completed')
     // And the runtime is still usable — a failed turn is not a dead process.
     expect(runtime.phase).toBe('ready')
+  })
+
+  it('carries a typed problem on the terminal error, never the synthetic text', async () => {
+    const { runtime, events, sdk } = build()
+    await runtime.start()
+    const turn = runtime.prompt({ prompt: { text: 'hi', blocks: [] } })
+    void turn.catch(() => undefined)
+    await vi.waitFor(() => expect(sdk.last.prompts).toHaveLength(1))
+
+    sdk.last.emit({
+      type: 'assistant',
+      message: {
+        id: 'msg-error',
+        model: '<synthetic>',
+        content: [{ type: 'text', text: 'Prompt is too long' }],
+      },
+      parent_tool_use_id: null,
+      error: 'invalid_request',
+      uuid: crypto.randomUUID(),
+      session_id: runtime.sessionId ?? '',
+    } as unknown as SDKMessage)
+    sdk.last.emitResult({
+      subtype: 'error_during_execution',
+      stopReason: null,
+      terminalReason: 'prompt_too_long',
+    })
+
+    await expect(turn).rejects.toThrow()
+    expect(names(events)).not.toContain('agent_message_chunk')
+    expect(events.find((event) => event.event === 'runtime_error')?.data).toMatchObject({
+      problem: { code: 'context_window_exceeded', action: 'compact' },
+    })
+  })
+
+  it("logs Claude Code's own words for a failure and starts each turn clean", async () => {
+    const beginTurn = vi.spyOn(ClaudeMessageTranslator.prototype, 'beginTurn')
+    const { runtime, sdk, log } = build()
+    await runtime.start()
+    const turn = runtime.prompt({ prompt: { text: 'hi', blocks: [] } })
+    void turn.catch(() => undefined)
+    await vi.waitFor(() => expect(sdk.last.prompts).toHaveLength(1))
+    // Dispatching the turn is what clears the last turn's flags, since a
+    // result nobody waited for is dropped before the translator sees it.
+    expect(beginTurn).toHaveBeenCalledTimes(1)
+
+    sdk.last.emitResult({ subtype: 'error_during_execution', stopReason: null, errors: ['boom'] })
+    await expect(turn).rejects.toThrow('boom')
+    expect(
+      log.mock.calls.some(
+        ([entry]) =>
+          String(entry?.message).includes('ended the turn with an error') &&
+          (entry?.data as { error?: string } | undefined)?.error === 'boom',
+      ),
+    ).toBe(true)
+    beginTurn.mockRestore()
   })
 
   it('reports max-turns exhaustion under its subtype when there is no message', async () => {

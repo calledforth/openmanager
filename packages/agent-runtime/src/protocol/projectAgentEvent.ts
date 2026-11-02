@@ -1,12 +1,19 @@
-import type { AgentEvent } from '@agentpack/contract'
+import type {
+  AgentEvent,
+  ProviderNotice,
+  ProviderProblem,
+  ProviderProblemCode,
+} from '@agentpack/contract'
 import {
   TURN_FAILURE_MESSAGES,
   ProofEventSchema,
+  TimestampSchema,
   isSettledToolStatus,
   type ProofEvent,
   type SubscriptionScope,
   type ToolCallUpdate,
   type TurnFailureReason,
+  type TurnRecoveryAction,
 } from '@openmanager/protocol'
 
 import {
@@ -116,12 +123,62 @@ export function projectAgentEvent(
     if (!context.turnState) throw new Error('Protocol projection requires host turnState')
     return context.turnState
   }
-  const failed = (reason: TurnFailureReason = context.failureReason ?? 'provider_error') =>
+  const failed = (
+    reason: TurnFailureReason = context.failureReason ?? 'provider_error',
+    recovery: { action?: TurnRecoveryAction; resetsAt?: string; detail?: string } = {},
+  ) =>
     emit('turn.failed', threadScope, {
       turnId: required('turnId'),
       reason,
       message: failureMessage(reason),
+      ...recovery,
     })
+  /** A failure the provider typed: its reason, and what can be done about it. */
+  const failedWith = (problem: ProviderProblem) => {
+    const action = problem.action ?? defaultAction(problem.code)
+    const resetsAt = timestamp(problem.resetsAt)
+    const detail = problem.detail?.trim()
+    return failed(reasonOf(problem.code), {
+      ...(action ? { action } : {}),
+      ...(resetsAt ? { resetsAt } : {}),
+      ...(detail ? { detail } : {}),
+    })
+  }
+  const notice = (data: ProviderNotice) => {
+    const { resetsAt: reset, ...fields } = data
+    const resetsAt = timestamp(reset)
+    return emit(data.kind === 'compacting' ? 'turn.notice' : 'turn.notice.recorded', threadScope, {
+      noticeId: context.eventId,
+      turnId: required('turnId'),
+      ...fields,
+      ...(resetsAt ? { resetsAt } : {}),
+    })
+  }
+  /** The provider is retrying; say so, and how far it has got. */
+  const retrying = (problem: ProviderProblem | undefined) => {
+    const retry = problem?.retry
+    const cause = problem ? retryCause(problem.code) : undefined
+    const delay = retry?.delayMs
+    const due = delay === undefined ? Number.NaN : Date.parse(source.timestamp) + delay
+    return emit('turn.notice', threadScope, {
+      noticeId: context.eventId,
+      turnId: required('turnId'),
+      kind: 'retrying',
+      message: retryMessage(problem),
+      ...(retry && retry.attempt > 0
+        ? {
+            retry: {
+              attempt: Math.floor(retry.attempt),
+              ...(retry.maxAttempts && retry.maxAttempts > 0
+                ? { maxAttempts: Math.floor(retry.maxAttempts) }
+                : {}),
+              ...(cause ? { cause } : {}),
+              ...(Number.isFinite(due) ? { retryAt: new Date(due).toISOString() } : {}),
+            },
+          }
+        : {}),
+    })
+  }
 
   switch (source.event) {
     case 'process_spawned':
@@ -302,17 +359,19 @@ export function projectAgentEvent(
       return resolved('plan', source.data.outcome)
     case 'rpc_error':
     case 'runtime_error':
-      // Provider diagnostics stay host-side. A recoverable error must not end a turn.
+      // Provider diagnostics stay host-side: only the typed problem crosses.
+      // A recoverable error must not end a turn.
       if (!context.turnId) return null
-      return source.data.recoverable
-        ? emit('turn.notice', threadScope, {
-            turnId: required('turnId'),
-            message: 'The turn is recovering from a temporary error.',
-          })
+      if (source.data.recoverable) return retrying(source.data.problem)
+      return source.data.problem && !context.failureReason
+        ? failedWith(source.data.problem)
         : failed()
     case 'auth_required':
       if (!context.turnId) return null
-      return failed('authentication_required')
+      return failed('authentication_required', { action: 'sign_in' })
+    case 'provider_notice':
+      if (!context.turnId) return null
+      return notice(source.data)
     case 'capability_missing':
       if (!context.turnId) return null
       return failed('capability_missing')
@@ -334,4 +393,73 @@ export function projectAgentEvent(
 
 function failureMessage(reason: TurnFailureReason): string {
   return TURN_FAILURE_MESSAGES[reason]
+}
+
+function reasonOf(code: ProviderProblemCode): TurnFailureReason {
+  switch (code) {
+    case 'unauthorized':
+      return 'authentication_required'
+    case 'context_window_exceeded':
+    case 'usage_limit':
+    case 'rate_limited':
+    case 'overloaded':
+    case 'refused':
+      return code
+    case 'server_error':
+    case 'network':
+    case 'unknown':
+      return 'provider_error'
+  }
+}
+
+/** What helps, when the provider did not say: a passing condition is worth
+ * another try, and a signed-out provider needs signing in. Compacting is the
+ * provider's own call, since not every provider can. */
+function defaultAction(code: ProviderProblemCode): TurnRecoveryAction | undefined {
+  switch (code) {
+    case 'unauthorized':
+      return 'sign_in'
+    case 'rate_limited':
+    case 'overloaded':
+    case 'server_error':
+    case 'network':
+      return 'retry'
+    default:
+      return undefined
+  }
+}
+
+function retryCause(code: ProviderProblemCode): TurnFailureReason | undefined {
+  switch (code) {
+    case 'rate_limited':
+    case 'overloaded':
+      return code
+    case 'server_error':
+    case 'network':
+      return 'provider_error'
+    default:
+      return undefined
+  }
+}
+
+function retryMessage(problem: ProviderProblem | undefined): string {
+  const retry = problem?.retry
+  if (!problem || !retry) return 'The turn is recovering from a temporary error.'
+  const why =
+    problem.code === 'overloaded'
+      ? 'the provider was overloaded'
+      : problem.code === 'rate_limited'
+        ? 'a rate limit'
+        : problem.code === 'network'
+          ? 'a connection error'
+          : problem.code === 'server_error'
+            ? 'a server error'
+            : 'a temporary error'
+  const of = retry.maxAttempts ? ` of ${retry.maxAttempts}` : ''
+  return `Retrying after ${why} (attempt ${retry.attempt}${of})`
+}
+
+/** A provider's time, only if it is one the protocol accepts. */
+function timestamp(value: string | undefined): string | undefined {
+  return value !== undefined && TimestampSchema.safeParse(value).success ? value : undefined
 }
