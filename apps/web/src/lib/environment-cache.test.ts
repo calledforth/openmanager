@@ -1,11 +1,12 @@
 import { IDBFactory } from 'fake-indexeddb'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import {
+  cacheState,
   createInitialState,
   createThreadState,
   type EnvironmentState,
 } from '@openmanager/environment-client'
-import { PROTOCOL_VERSION } from '@openmanager/protocol'
+import { EVENT_FORMAT_VERSION, PROTOCOL_VERSION } from '@openmanager/protocol'
 import {
   createEnvironmentCache,
   environmentCacheName,
@@ -156,6 +157,38 @@ describe('environment identity cache', () => {
     await new Promise<void>((resolve, reject) => {
       const request = indexedDB.open(environmentCacheName('env-one'), 1)
       request.onupgradeneeded = () => request.result.createObjectStore('state')
+      request.onerror = () => reject(request.error)
+      request.onsuccess = () => {
+        const database = request.result
+        const transaction = database.transaction('state', 'readwrite')
+        transaction
+          .objectStore('state')
+          .put(
+            { protocolVersion: PROTOCOL_VERSION, eventFormat: EVENT_FORMAT_VERSION, state },
+            'snapshot',
+          )
+        transaction.oncomplete = () => {
+          database.close()
+          resolve()
+        }
+      }
+    })
+    expect(await readEnvironmentCache('env-one')).toBeNull()
+  })
+
+  it('drops a state cached under another event format, or before one was recorded', async () => {
+    await writeEnvironmentCache('env-one', seed())
+    expect(await readEnvironmentCache('env-one')).not.toBeNull()
+    // An additive field keeps the protocol, and a build that ignored it moved
+    // its cursor past the event: resuming that cursor would never bring it.
+    expect(
+      await readEnvironmentCache('env-one', PROTOCOL_VERSION, EVENT_FORMAT_VERSION + 1),
+    ).toBeNull()
+
+    // What an older build wrote: its protocol matches, and no format is named.
+    const state = cacheState(seed())
+    await new Promise<void>((resolve, reject) => {
+      const request = indexedDB.open(environmentCacheName('env-one'), 1)
       request.onerror = () => reject(request.error)
       request.onsuccess = () => {
         const database = request.result

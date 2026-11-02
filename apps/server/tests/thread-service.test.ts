@@ -2664,6 +2664,8 @@ describe('durable session lifecycle', () => {
       expect(
         h.dispatch(h.service, 'session.pin', { sessionId: 'missing', pinned: true }),
       ).toMatchObject({ type: 'error', error: { code: 'not_found' } })
+      // The turn ends before the database closes, or its last write has nowhere to go.
+      await vi.waitFor(() => expect(listed()).toMatchObject({ status: 'idle' }))
     } finally {
       h.close()
     }

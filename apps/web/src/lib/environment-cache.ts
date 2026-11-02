@@ -5,18 +5,22 @@ import {
   type EnvironmentState,
   type EnvironmentStore,
 } from '@openmanager/environment-client'
-import { PROTOCOL_VERSION } from '@openmanager/protocol'
+import { EVENT_FORMAT_VERSION, PROTOCOL_VERSION } from '@openmanager/protocol'
 
 const CACHE_VERSION = 1
 
 /**
- * What the cache stores: the state, and the protocol it was written under. A
- * state from another protocol was folded by other rules (an older build's
- * reducers, events it no longer receives), so it is never resumed: the first
- * load after an upgrade is a fresh one (docs/sync-foundations.md §4.7.7).
+ * What the cache stores: the state, and the protocol and event format it was
+ * written under. A state from another protocol was folded by other rules (an
+ * older build's reducers, events it no longer receives), so it is never
+ * resumed: the first load after an upgrade is a fresh one
+ * (docs/sync-foundations.md §4.7.7). The event format counts too: an additive
+ * field leaves the protocol alone, and a build that ignored it still moved its
+ * cursor past the event, so resuming that cursor would never bring the field.
  */
 interface CachedDocument {
   protocolVersion: number
+  eventFormat: number
   state: EnvironmentState
 }
 const STATE_STORE = 'state'
@@ -54,6 +58,7 @@ function openCache(environmentId: string): Promise<IDBDatabase | null> {
 export async function readEnvironmentCache(
   environmentId: string,
   protocolVersion: number = PROTOCOL_VERSION,
+  eventFormat: number = EVENT_FORMAT_VERSION,
 ): Promise<EnvironmentState | null> {
   await writes.get(environmentId)
   const database = await openCache(environmentId)
@@ -64,9 +69,13 @@ export async function readEnvironmentCache(
       const request = transaction.objectStore(STATE_STORE).get('snapshot')
       request.onsuccess = () => {
         const document = request.result as Partial<CachedDocument> | undefined
-        // A document from another protocol, or from before the cache said
-        // which, is dropped rather than merged into this build's state.
-        const state = document?.protocolVersion === protocolVersion ? document.state : undefined
+        // A document from another protocol or event format, or from before
+        // the cache said which, is dropped rather than merged into this
+        // build's state.
+        const state =
+          document?.protocolVersion === protocolVersion && document.eventFormat === eventFormat
+            ? document.state
+            : undefined
         const initial = createInitialState()
         // Reject incompatible/corrupt documents rather than leaking another identity.
         if (
@@ -114,6 +123,7 @@ async function persistEnvironmentCache(
       transaction.onabort = () => resolve()
       const document: CachedDocument = {
         protocolVersion: PROTOCOL_VERSION,
+        eventFormat: EVENT_FORMAT_VERSION,
         state: cacheState(state),
       }
       transaction.objectStore(STATE_STORE).put(document, 'snapshot')

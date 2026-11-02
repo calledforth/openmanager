@@ -293,6 +293,38 @@ describe('applyEvent', () => {
     expect(announced.workspaces).toBe(created.workspaces)
   })
 
+  it('keeps a pin that arrived before the answer that created its session', () => {
+    const pinnedAt = '2026-09-12T00:00:01.000Z'
+    const pinned = applyEvent(
+      seeded(),
+      event({
+        name: 'session.updated',
+        scope: environmentScope,
+        payload: { sessionId: SESSION.sessionId, pinnedAt },
+      }),
+    )
+    const answered = applySessionCreated(
+      pinned,
+      {
+        session: SESSION,
+        thread: THREAD,
+        announcedAt: '2026-09-12T00:00:00.000Z',
+      },
+      'opencode',
+    )
+    expect(answered.sessions[SESSION.sessionId]?.pinnedAt).toBe(pinnedAt)
+
+    const unpinned = applyEvent(
+      pinned,
+      event({
+        name: 'session.updated',
+        scope: environmentScope,
+        payload: { sessionId: SESSION.sessionId, pinnedAt: null },
+      }),
+    )
+    expect(unpinned.sessions[SESSION.sessionId]?.pinnedAt).toBeNull()
+  })
+
   it('reads the session list once per change to the sessions', () => {
     const state = seeded()
     const listed = selectSessionList(state)

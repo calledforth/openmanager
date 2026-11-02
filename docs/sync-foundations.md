@@ -1188,6 +1188,12 @@ code:
 The floor stays as the server's guarantee for any client that might keep bookmarks in future, and
 in case a format ever changes without a protocol bump. For today's clients it is unreachable.
 
+**Since then:** both of those have happened. Clients keep cursors (#264), and an additive event
+field changes the format without a protocol bump (`pinnedAt`, #270). So a client can reach a floor:
+a transport that reconnects after the upgrade takes the existing `gap_expired` snapshot, with no
+client change. The cache is keyed on the event format as well as the protocol, so a document whose
+build ignored a new field is dropped rather than resumed from a cursor already past the event.
+
 **The cached state is a separate case.** The upgrade reload starts from the IndexedDB cache, a
 v16-shaped state. It has no cursors, but it has:
 
@@ -1329,6 +1335,7 @@ Every response writer in `packages/environment-client/src/websocket.ts`:
 | `session.create`                                         | `applySessionCreated` plus an invented status (`:1216-1239`)         | mutation | kept through B, filled from `input.providerId` and `announcedAt`; then `pending.creates` (C1)                                                                                                |
 | `session.rename`, `session.title.regenerate`             | `applySessionTitle` with an invented source (`:1348`, `:1352`)       | mutation | rename: `pending.renames` (shows the requested title until server state has it or a newer title, or the command fails). Regenerate: no overlay; the event brings the title (C1)              |
 | `session.settle`                                         | the settle tracker's masking (`settle.ts`)                           | mutation | `pending.settles` (C1)                                                                                                                                                                       |
+| `session.pin`                                            | none, new with `session.pin`                                         | mutation | `pending.pins`                                                                                                                                                                               |
 | `session.acknowledge`                                    | `applySessionAcknowledged` (`:1364`)                                 | mutation | `pending.acks` (C1)                                                                                                                                                                          |
 | `session.delete`                                         | `applySessionRemoved` (`:1372`)                                      | mutation | `pending.removals` (C1)                                                                                                                                                                      |
 | `turn.send`                                              | `applyTurnStarted` (`:1387`)                                         | mutation | `pending.sends` by `commandId` (C1, C2)                                                                                                                                                      |

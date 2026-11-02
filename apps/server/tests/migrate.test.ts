@@ -630,6 +630,26 @@ describe('schema migrations', () => {
     })
   })
 
+  it('adds the pin column to existing sessions, leaving them unpinned', async () => {
+    const directory = await dataDir()
+    const previous = openEnvironmentDatabase(directory, MIGRATIONS.slice(0, 23))
+    previous.exec(`
+      INSERT INTO workspaces (workspace_id, name, path, created_at, updated_at)
+        VALUES ('workspace-1', 'one', '/one', 1, 1);
+      INSERT INTO sessions (session_id, workspace_id, provider_id, status, title, settled_at,
+        created_at, updated_at)
+        VALUES ('session-1', 'workspace-1', 'cursor', 'idle', 'Kept', 7, 1, 2);
+    `)
+    previous.close()
+
+    const database = openEnvironmentDatabase(directory)
+    databases.push(database)
+    expect(readSchemaVersion(database)).toBe(24)
+    expect(
+      database.prepare('SELECT title, settled_at, pinned_at, updated_at FROM sessions').all(),
+    ).toEqual([{ title: 'Kept', settled_at: 7, pinned_at: null, updated_at: 2 }])
+  })
+
   it('takes a listing’s source from the newest session on each pair, by activity then id', async () => {
     const directory = await dataDir()
     const previous = openEnvironmentDatabase(directory, MIGRATIONS.slice(0, 22))
