@@ -111,6 +111,7 @@ describe('schema migrations', () => {
       'sessions',
       'stash_items',
       'threads',
+      'tool_output',
       'turn_activity',
       'turns',
       'workspace_composer_preferences',
