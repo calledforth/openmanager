@@ -231,7 +231,7 @@ function isToolDelta(event: ProofEvent): event is Extract<ProofEvent, { name: 't
   )
 }
 
-function coalesceDeltas<E extends ProofEvent>(events: readonly E[]): E[] {
+export function coalesceDeltas<E extends ProofEvent>(events: readonly E[]): E[] {
   const result: E[] = []
   for (const event of events) {
     const previous = result.at(-1)

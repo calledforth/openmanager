@@ -1057,6 +1057,18 @@ async function handle(request: ChildRequest): Promise<unknown> {
       return null
     case 'readDropped':
       return dropped
+    case 'countEvents': {
+      const reader = new DatabaseSync(join(config.dataDir, DATABASE_FILENAME), { readOnly: true })
+      const row = reader
+        .prepare(
+          `SELECT COUNT(*) AS count FROM event_log e
+           JOIN event_streams s ON s.scope_key = e.scope_key
+           WHERE s.thread_id = ? AND e.event_name = ?`,
+        )
+        .get(request.threadId, request.name) as { count: number }
+      reader.close()
+      return row.count
+    }
     case 'raiseReplayFloor': {
       const writer = new DatabaseSync(join(config.dataDir, DATABASE_FILENAME))
       writer

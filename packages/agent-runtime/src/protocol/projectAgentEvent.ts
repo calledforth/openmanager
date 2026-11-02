@@ -247,12 +247,14 @@ export function projectAgentEvent(
         if (settled) tracker.settleWith(toolCallId, text)
         else output = tracker.replace(toolCallId, text)
       }
+      // A resend repeats everything it said before. Text alone is a bare delta.
+      const news = output.outputDelta === undefined ? fields : tracker.changed(toolCallId, fields)
       tracker.observe(toolCallId, fields)
       const outputBytes = settled ? tracker.outputBytes(toolCallId) : 0
       return emit('tool.updated', threadScope, {
         toolCallId,
         turnId: required('turnId'),
-        ...fields,
+        ...news,
         ...output,
         ...(outputBytes > 0 ? { outputBytes } : {}),
       })
@@ -267,10 +269,12 @@ export function projectAgentEvent(
       const held = tracker.known(toolCallId)
       // A file's content is never output.
       if (isPathOnly(held.kind, held.toolName, held.title)) return null
+      const output = tracker.append(toolCallId, text)
+      if (output.outputDelta === undefined) return null
       return emit('tool.updated', threadScope, {
         toolCallId,
         turnId: required('turnId'),
-        ...tracker.append(toolCallId, text),
+        ...output,
       })
     }
     case 'permission_request':

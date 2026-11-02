@@ -161,7 +161,9 @@ describe('tool output', () => {
     await startTurn(a, target)
     await open(rig, target, 'tool-t6')
     const lines = 2_000
-    const mark = rig.proxy.frames.length
+    const count = () =>
+      rig.server.call({ op: 'countEvents', threadId: target.threadId, name: 'tool.updated' })
+    const before = (await count()) as number
     await rig.provider({
       op: 'streamToolLines',
       sessionId: target.sessionId,
@@ -175,11 +177,28 @@ describe('tool output', () => {
       'every line',
       30_000,
     )
-    const updates = rig.proxy.frames
-      .slice(mark)
-      .filter((frame) => JSON.stringify(frame.json ?? '').includes('tool.updated')).length
-    expect(updates).toBeLessThan(lines / 2)
+    const records = ((await count()) as number) - before
+    expect(records).toBeGreaterThan(0)
+    expect(records).toBeLessThan(lines / 2)
     await expectConverges('T6', rig, a)
+  })
+
+  scenario('T12 text after a tool settled changes nothing, anywhere', {}, async (rig) => {
+    const a = await rig.connect('A')
+    const target = await createSession(rig, a, QUIET)
+    await startTurn(a, target)
+    await open(rig, target, 'tool-t12')
+    await update(rig, target, 'tool-t12', { status: 'completed', rawOutput: 'final' })
+    await untilThread(a, target, (state) => state.tools[0]?.status === 'completed', 'the settle')
+    await update(rig, target, 'tool-t12', {
+      status: 'in_progress',
+      content: text('final and more'),
+    })
+    await rig.waitQuiet()
+    expect(toolOf(a, target)).toMatchObject({ status: 'completed', outputBytes: 5 })
+    expect(toolOf(a, target)?.output).toBeUndefined()
+    await expectConverges('T12', rig, a)
+    expect(await readOutput(rig, target, toolOf(a, target)!.toolCallId)).toBe('final')
   })
 
   scenario(

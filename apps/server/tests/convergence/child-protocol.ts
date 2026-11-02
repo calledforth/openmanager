@@ -124,6 +124,8 @@ export type ServerOp =
    * event format: a client below the head catches up by snapshot.
    */
   | { op: 'raiseReplayFloor'; threadId: string }
+  /** How many durable records of one event a thread's stream holds. */
+  | { op: 'countEvents'; threadId: string; name: string }
 
 export type ChildRequest = (ProviderOp | ServerOp) & { id: number }
 

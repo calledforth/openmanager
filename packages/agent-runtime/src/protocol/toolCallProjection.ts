@@ -306,6 +306,8 @@ type TrackedCall = {
   title?: string
   status?: ToolCallStatus
   declined: boolean
+  /** What was last sent for each field, to leave out what would only repeat it. */
+  sent: Map<string, string>
   /** The running text sent so far, as a length, a running digest and its UTF-8 size. */
   raw?: { length: number; digest: Hash; bytes: number }
   /** The whole text of a call that settled with one, until the environment takes it. */
@@ -321,7 +323,8 @@ const utf8Bytes = (text: string) => Buffer.byteLength(text, 'utf8')
  *
  * - Running text. Providers report it by appending, or by sending the whole
  *   text again with every update (ACP's `content` replaces). A resend that
- *   extends what came before goes out as an `outputDelta` of the new part;
+ *   extends what came before goes out as an `outputDelta` of the new part,
+ *   with only the fields that changed, so the batcher can coalesce it;
  *   anything else replaces. Only a length and a digest are held for that.
  * - The text a call settles with, which goes to the environment's store and
  *   not into the event (`takeBody`).
@@ -335,7 +338,7 @@ export class ToolCallTracker {
   private call(toolCallId: string): TrackedCall {
     let call = this.calls.get(toolCallId)
     if (!call) {
-      call = { seen: false, declined: false }
+      call = { seen: false, declined: false, sent: new Map() }
       this.calls.set(toolCallId, call)
     }
     return call
@@ -358,7 +361,18 @@ export class ToolCallTracker {
   decline(toolCallId: string): boolean {
     const call = this.call(toolCallId)
     call.declined = true
-    return call.seen && !isSettledToolStatus(call.status)
+    const open = call.seen && !isSettledToolStatus(call.status)
+    // Settled here, by the event this answer leads to: text after it has nowhere to go.
+    if (open) call.status = 'declined'
+    return open
+  }
+
+  /** The fields that say something new, for an update whose point is its text. */
+  changed<T extends Record<string, unknown>>(toolCallId: string, fields: T): Partial<T> {
+    const sent = this.calls.get(toolCallId)?.sent
+    return Object.fromEntries(
+      Object.entries(fields).filter(([key, value]) => sent?.get(key) !== JSON.stringify(value)),
+    ) as Partial<T>
   }
 
   /** Record what was sent for a call. */
@@ -368,6 +382,9 @@ export class ToolCallTracker {
   ): void {
     const call = this.call(toolCallId)
     call.seen = true
+    for (const [key, value] of Object.entries(fields)) {
+      if (value !== undefined) call.sent.set(key, JSON.stringify(value))
+    }
     if (fields.kind) call.kind = fields.kind
     if (fields.toolName) call.toolName = fields.toolName
     if (fields.title !== undefined) call.title ??= fields.title
@@ -377,6 +394,8 @@ export class ToolCallTracker {
   /** The whole text as the provider now reports it, on a call still running. */
   replace(toolCallId: string, text: string): OutputFields {
     const call = this.call(toolCallId)
+    // Running text ends with the call: a client would drop it, so nothing sends it.
+    if (isSettledToolStatus(call.status)) return {}
     const raw = call.raw
     if (
       raw &&
@@ -402,6 +421,7 @@ export class ToolCallTracker {
   append(toolCallId: string, delta: string): OutputFields {
     if (!delta) return {}
     const call = this.call(toolCallId)
+    if (isSettledToolStatus(call.status)) return {}
     call.raw ??= { length: 0, digest: createHash('sha1'), bytes: 0 }
     call.raw.digest.update(delta)
     call.raw.length += delta.length
