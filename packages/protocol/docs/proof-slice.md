@@ -184,8 +184,8 @@ provider value. Every non-null result is validated by `ProofEventSchema`.
 | `user_message_chunk` | `message.delta` | Host user-message ID |
 | `agent_message_chunk` | `message.delta` | Host assistant-message ID |
 | `agent_thought_chunk` | `message.reasoning` | Host assistant-message ID |
-| `tool_call` | `tool.updated` | Host tool-call ID; raw input/output omitted |
-| `tool_call_update` | `tool.updated` | Host tool-call ID; raw input/output omitted |
+| `tool_call` | `tool.updated` | Host tool-call ID; provider name, input without bodies, paths, times |
+| `tool_call_update` | `tool.updated` | As above; text only while the call runs. Settling states `outputBytes`; the text is read at `toolOutputPath` |
 | `tool_call_content` | — | Deferred protocol family |
 | `plan_update` | — | Deferred protocol family |
 | `subtask_update` | — | Deferred protocol family |
