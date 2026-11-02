@@ -51,7 +51,7 @@ const event = <N extends string, S extends z.ZodType, P extends z.ZodType>(
  * replay floor at boot, so no stored event is replayed in a form this
  * version cannot state (docs/sync-foundations.md §4.7.7).
  */
-export const EVENT_FORMAT_VERSION = 3 as const
+export const EVENT_FORMAT_VERSION = 4 as const
 
 /** A turn's state once an interaction event is applied: still asking, or running again. */
 export const InteractionTurnStateSchema = z.enum(['running', 'waiting'])
@@ -93,6 +93,8 @@ export const ProofEventSchemas = {
       updatedAt: TimestampSchema.optional(),
       /** Present only when the session was settled (a time) or brought back (null). */
       settledAt: TimestampSchema.nullable().optional(),
+      /** Present only when the session was pinned (a time) or unpinned (null). */
+      pinnedAt: TimestampSchema.nullable().optional(),
       /** Present only when a turn completed (a time) or the user acknowledged it (null). */
       doneAt: TimestampSchema.nullable().optional(),
       /** Present only when the session's background work changed: every task still running. */

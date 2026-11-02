@@ -103,11 +103,12 @@ export function heldPreferencePairs(state: EnvironmentState): PreferencePair[] {
  * summary (a fresh load's listing, or `listSessionSummaries`), never re-derived.
  */
 function sessionView(session: SessionSummary, onScreen: boolean): unknown {
-  const { threadIds, settledAt, doneAt, backgroundTasks, ...rest } = session
+  const { threadIds, settledAt, pinnedAt, doneAt, backgroundTasks, ...rest } = session
   return {
     ...rest,
     // "Null or absent while it is active" (types.ts): one meaning, one form.
     settledAt: settledAt ?? null,
+    pinnedAt: pinnedAt ?? null,
     doneAt: doneAt ?? null,
     // No work is no key at all on the client; a listing may say [].
     ...(backgroundTasks?.length ? { backgroundTasks } : {}),

@@ -1,6 +1,12 @@
 import { describe, expect, it } from 'vitest'
 import { cacheState } from '../src/cache-state'
-import { dropOverlayEntry, preferenceKey, settleAnswered, updateOverlay } from '../src/overlay'
+import {
+  dropOverlayEntry,
+  pinAnswered,
+  preferenceKey,
+  settleAnswered,
+  updateOverlay,
+} from '../src/overlay'
 import {
   applyActiveSession,
   applyComposerPreference,
@@ -98,6 +104,30 @@ describe('the pending overlay', () => {
     expect(store.getState().sessions[SESSION.sessionId]?.title).toBe('Mine')
     store.update((state) => dropOverlayEntry(state, 'renames', SESSION.sessionId, 2))
     expect(store.getState().sessions[SESSION.sessionId]?.title).toBe('Agent title')
+  })
+
+  it('keeps the latest pin click until its answer and server state agree', () => {
+    const store = createEnvironmentStore(listed())
+    const click = (ticket: number, pinned: boolean) =>
+      store.update((state) =>
+        updateOverlay(state, 'pins', (entries) => ({
+          ...entries,
+          [SESSION.sessionId]: { ticket, pinned, inFlight: true, at: '2026-10-23T10:00:00.000Z' },
+        })),
+      )
+    click(1, true)
+    click(2, false)
+    // The first click's echo arrives: the latest click still owns the card.
+    store.update((state) =>
+      applyEvent(state, sessionUpdated({ pinnedAt: '2026-10-23T10:00:00.100Z' })),
+    )
+    expect(store.getState().sessions[SESSION.sessionId]?.pinnedAt).toBeNull()
+    store.update((state) => pinAnswered(state, SESSION.sessionId, 1))
+    expect(store.getState().pending.pins[SESSION.sessionId]).toMatchObject({ inFlight: true })
+    store.update((state) => pinAnswered(state, SESSION.sessionId, 2))
+    store.update((state) => applyEvent(state, sessionUpdated({ pinnedAt: null })))
+    expect(store.getState().pending.pins).toEqual({})
+    expect(store.getState().sessions[SESSION.sessionId]?.pinnedAt).toBeNull()
   })
 
   it('keeps the latest settle click until its answer and server state agree', () => {

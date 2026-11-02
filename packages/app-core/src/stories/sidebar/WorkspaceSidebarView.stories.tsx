@@ -330,6 +330,9 @@ function Demo({
               patch(id, { settledAt: settled ? new Date().toISOString() : null }),
             )
           }
+          onPinSession={(_, id, pinned) =>
+            patch(id, { pinnedAt: pinned ? new Date().toISOString() : null })
+          }
           onDeleteSession={(_, id) =>
             setWorkspaces((current) =>
               current.map((workspace) => ({

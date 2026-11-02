@@ -251,6 +251,8 @@ type ThreadRecord = {
   updatedAt: number
   /** In-memory mode only; with SQLite the row is the single source. */
   settledAt?: number
+  /** In-memory mode only; with SQLite the row is the single source. */
+  pinnedAt?: number
   /** In-memory mode only: when the last turn completed, until acknowledged. */
   doneAt?: number
   activeTurn?: ActiveTurn
@@ -1766,6 +1768,7 @@ export function createThreadService(
     providerId: record.providerId,
     updatedAt: new Date(record.updatedAt).toISOString(),
     settledAt: record.settledAt === undefined ? null : new Date(record.settledAt).toISOString(),
+    ...(record.pinnedAt === undefined ? {} : { pinnedAt: new Date(record.pinnedAt).toISOString() }),
     doneAt: record.doneAt === undefined ? null : new Date(record.doneAt).toISOString(),
     ...(record.backgroundTasks?.length ? { backgroundTasks: record.backgroundTasks } : {}),
     ...summaryActivity(activityOf(record, record.status)),
@@ -2566,6 +2569,47 @@ export function createThreadService(
           type: 'response',
           requestId: command.requestId,
           payload: { settledAt },
+        })
+      }
+
+      if (command.name === 'session.pin') {
+        const parsed = ProofCommandSchemas['session.pin'].safeParse(command)
+        if (!parsed.success)
+          return errorResult(command.requestId, 'validation', 'Invalid session request.')
+        options.flush?.()
+        const { sessionId, pinned } = parsed.data.payload
+        const session =
+          sessions.get(sessionId)?.session ??
+          (options.database ? getSessionSummary(options.database, sessionId) : undefined)
+        if (!session) return errorResult(command.requestId, 'not_found', 'Session not found.')
+        const timestamp = new Date().toISOString()
+        const pinnedAt = pinned ? timestamp : null
+        const event = ProofEventSchemas['session.updated'].parse({
+          type: 'event',
+          name: 'session.updated',
+          eventId: randomUUID(),
+          timestamp,
+          scope: { type: 'environment', environmentId },
+          payload: { sessionId, pinnedAt },
+        })
+        try {
+          appendEvent(event)
+        } catch (error) {
+          options.onPersistenceError?.(error, event.name)
+          return errorResult(
+            command.requestId,
+            'unavailable',
+            'The session change could not be saved. Try again.',
+          )
+        }
+        for (const item of threads.values()) {
+          if (item.session.sessionId !== sessionId) continue
+          item.pinnedAt = pinned ? Date.parse(timestamp) : undefined
+        }
+        return ProofResponseSchemas['session.pin'].parse({
+          type: 'response',
+          requestId: command.requestId,
+          payload: { pinnedAt },
         })
       }
 

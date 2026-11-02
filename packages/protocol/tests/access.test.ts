@@ -60,6 +60,7 @@ describe('command access mapping', () => {
       'session.rename': 'operate',
       'session.delete': 'operate',
       'session.settle': 'operate',
+      'session.pin': 'operate',
       'session.acknowledge': 'operate',
       'workspace.add': 'operate',
       'workspace.remove': 'operate',

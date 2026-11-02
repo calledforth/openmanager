@@ -27,6 +27,8 @@ export interface PendingOverlay {
   answers: Record<string, PendingAnswer>
   /** A requested settled or active placement; the latest click wins. */
   settles: Record<string, PendingSettle>
+  /** A requested pinned or unpinned placement; the latest click wins. */
+  pins: Record<string, PendingPin>
   /** An acknowledged result, shown as not done until server state agrees. */
   acks: Record<string, PendingTicket>
   /** A session or workspace being removed, hidden until server state no longer has it. */
@@ -70,6 +72,18 @@ export interface PendingSettle extends PendingTicket {
   at: string
 }
 
+export interface PendingPin extends PendingTicket {
+  pinned: boolean
+  /**
+   * Its command is unanswered. The entry stays even where server state
+   * already agrees: an earlier click's echo may still arrive and must not
+   * move the session under the pointer.
+   */
+  inFlight?: true
+  /** Shown as the pinning time until the server's own arrives. */
+  at: string
+}
+
 export interface PendingRemoval extends PendingTicket {
   kind: 'session' | 'workspace'
 }
@@ -91,6 +105,7 @@ export function emptyOverlay(): PendingOverlay {
     renames: {},
     answers: {},
     settles: {},
+    pins: {},
     acks: {},
     removals: {},
     preferences: {},
@@ -132,6 +147,17 @@ export function dropOverlayEntry<K extends Exclude<keyof PendingOverlay, 'prefer
   })
 }
 
+/** A pin's command was answered: from now on server state agreeing ends it. */
+export function pinAnswered(state: EnvironmentState, sessionId: string, ticket: number) {
+  return updateOverlay(state, 'pins', (entries) => {
+    const entry = entries[sessionId]
+    if (!entry || entry.ticket !== ticket || !entry.inFlight) return entries
+    const answered = { ...entry }
+    delete answered.inFlight
+    return { ...entries, [sessionId]: answered }
+  })
+}
+
 /** A settle's command was answered: from now on server state agreeing ends it. */
 export function settleAnswered(state: EnvironmentState, sessionId: string, ticket: number) {
   return updateOverlay(state, 'settles', (entries) => {
@@ -160,6 +186,9 @@ const revisionOf = (state: EnvironmentState, target: { workspaceId: string; prov
 
 const settledMatches = (settledAt: string | null | undefined, settled: boolean) =>
   settled === (settledAt !== null && settledAt !== undefined)
+
+const pinnedMatches = (pinnedAt: string | null | undefined, pinned: boolean) =>
+  pinned === (pinnedAt !== null && pinnedAt !== undefined)
 
 /**
  * Forget what server state now shows. Run after every update (store.ts), so
@@ -201,6 +230,12 @@ export function pruneOverlay(state: EnvironmentState): EnvironmentState {
     const session = state.sessions[sessionId]
     if (!session || (!entry.inFlight && settledMatches(session.settledAt, entry.settled))) {
       next = dropOverlayEntry(next, 'settles', sessionId)
+    }
+  }
+  for (const [sessionId, entry] of Object.entries(overlay!.pins)) {
+    const session = state.sessions[sessionId]
+    if (!session || (!entry.inFlight && pinnedMatches(session.pinnedAt, entry.pinned))) {
+      next = dropOverlayEntry(next, 'pins', sessionId)
     }
   }
   for (const sessionId of Object.keys(overlay!.acks)) {
@@ -275,6 +310,13 @@ export function composeView(state: EnvironmentState): EnvironmentState {
       settledMatches(session.settledAt, entry.settled)
         ? session
         : { ...session, settledAt: entry.settled ? entry.at : null },
+    )
+  }
+  for (const [sessionId, entry] of Object.entries(overlay!.pins)) {
+    patchSession(sessionId, (session) =>
+      pinnedMatches(session.pinnedAt, entry.pinned)
+        ? session
+        : { ...session, pinnedAt: entry.pinned ? entry.at : null },
     )
   }
   for (const sessionId of Object.keys(overlay!.acks)) {
