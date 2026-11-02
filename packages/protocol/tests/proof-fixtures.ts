@@ -416,7 +416,19 @@ export const proofEvents = [
     ...base,
     name: 'turn.notice',
     scope: threadScope,
-    payload: { turnId: 'turn-1', message: 'Retrying' },
+    payload: { noticeId: 'notice-1', turnId: 'turn-1', kind: 'retrying', message: 'Retrying' },
+  },
+  {
+    ...base,
+    name: 'turn.notice.cleared',
+    scope: threadScope,
+    payload: { turnId: 'turn-1' },
+  },
+  {
+    ...base,
+    name: 'turn.notice.recorded',
+    scope: threadScope,
+    payload: { noticeId: 'notice-2', turnId: 'turn-1', kind: 'compacted', message: 'Compacted' },
   },
   {
     ...base,

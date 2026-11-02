@@ -106,6 +106,7 @@ export const scopeSnapshots: ScopeSnapshot[] = [
         { messageId: 'message-2', turnId: 'turn-1', phase: 'stop', content: [], tokens: 0 },
       ],
       tools: [{ toolCallId: 'tool-1', turnId: 'turn-1', status: 'completed' }],
+      notices: [],
       order: [
         { kind: 'reasoning', id: 'message-2', turnId: 'turn-1' },
         { kind: 'tool', id: 'tool-1', turnId: 'turn-1' },
