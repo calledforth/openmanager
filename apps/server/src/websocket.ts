@@ -118,6 +118,13 @@ export const REVOKED_CLOSE_CODE = CLIENT_REVOKED_CLOSE_CODE
 export const REVOKED_CLOSE_REASON = CLIENT_REVOKED_CLOSE_REASON
 
 /** Transport owns only live connection state. Durable event records come from the host. */
+/**
+ * Offered in the handshake: a client that can't, or a proxy that drops the offer,
+ * gets the same frames uncompressed. Level 1 keeps the cost near 230 KB per socket
+ * and shrinks chat text about three times; frames under 1 KiB aren't worth it.
+ */
+const SOCKET_COMPRESSION = { threshold: 1024, zlibDeflateOptions: { level: 1 } }
+
 export function attachWebSocket(
   server: Server,
   options: {
@@ -158,7 +165,7 @@ export function attachWebSocket(
   const wss = new WebSocketServer({
     noServer: true,
     maxPayload: SOCKET_LIMITS.maxPayloadBytes,
-    perMessageDeflate: false,
+    perMessageDeflate: SOCKET_COMPRESSION,
     handleProtocols: (protocols) => (protocols.has('openmanager.v1') ? 'openmanager.v1' : false),
   })
   type Connection = {

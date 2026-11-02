@@ -259,6 +259,17 @@ describe('authenticated upgrade', () => {
     expect(await owner.next()).toMatchObject({ type: 'error', error: { code: 'validation' } })
   })
 
+  it('compresses when the client offers to, and sends plainly when it does not', async () => {
+    const host = await setup()
+    const headers = { authorization: `Bearer ${host.token}` }
+    const offering = new WebSocket(host.url, { headers })
+    const plain = new WebSocket(host.url, { headers, perMessageDeflate: false })
+    clients.push(offering, plain)
+    await Promise.all([once(offering, 'open'), once(plain, 'open')])
+    expect(offering.extensions).toContain('permessage-deflate')
+    expect(plain.extensions).toBe('')
+  })
+
   it('rejects untrusted and opaque origins even with a valid credential', async () => {
     const host = await setup()
     for (const origin of [
