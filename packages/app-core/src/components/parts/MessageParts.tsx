@@ -12,6 +12,8 @@ import { AskedQuestionPart } from '../questions/AskedQuestionPart'
 import { readAskedQuestions } from '../questions/askedQuestion'
 import { ImageGenerationToolPart } from './ImageGenerationToolPart'
 import { GeneratedImages } from './GeneratedImagePart'
+import { TurnFailurePart, TurnNoticePart } from './TurnNoticePart'
+import type { FailurePart, NoticePart } from '../../lib/turn-notice-parts'
 
 interface Part {
   type: string
@@ -120,6 +122,12 @@ function renderPart(part: Part, index: number, isStreaming?: boolean): ReactNode
           Session compacted
         </div>
       )
+    case 'notice': {
+      const notice = part as unknown as NoticePart
+      return <TurnNoticePart key={key} notice={notice.notice} live={notice.live === true} />
+    }
+    case 'failure':
+      return <TurnFailurePart key={key} part={part as unknown as FailurePart} />
     case 'plan':
       // Live checklist lives on the composer (`ComposerTodos`), not in the transcript.
       return null

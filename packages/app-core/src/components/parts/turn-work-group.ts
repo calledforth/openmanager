@@ -27,7 +27,12 @@ export interface TurnPartPartition {
  * part and only derives a presentation boundary.
  */
 export function partitionSettledTurnParts(parts: readonly StreamMessagePart[]): TurnPartPartition {
-  let finalStart = parts.length
+  // What the turn ended on (its failure, a notice the provider sent after the
+  // answer) closes the turn rather than being its work, and must not hide the
+  // answer before it by ending the text run.
+  let answerEnd = parts.length
+  while (answerEnd > 0 && isTrailer(parts[answerEnd - 1])) answerEnd -= 1
+  let finalStart = answerEnd
 
   while (finalStart > 0) {
     const part = parts[finalStart - 1]
@@ -38,14 +43,30 @@ export function partitionSettledTurnParts(parts: readonly StreamMessagePart[]): 
   const beforeAnswer = parts.slice(0, finalStart)
   // Generated artifacts are answer content even though Cursor emits their
   // callback before it streams its closing text. Keep the tool trace folded,
-  // but never hide the result the user asked for inside "Worked".
-  const generatedImages = beforeAnswer.filter(
-    (part) => part.type === 'image' && part.generated === true,
+  // but never hide the result the user asked for inside "Worked". Notices
+  // that change how to read the answer (the conversation before it was
+  // compacted, another model wrote it, the model declined, a limit is close)
+  // stay out with it.
+  const lifted = beforeAnswer.filter(
+    (part) =>
+      (part.type === 'image' && part.generated === true) ||
+      (part.type === 'notice' && LIFTED_NOTICE_KINDS.has(noticeKind(part))),
   )
   return {
-    workParts: beforeAnswer.filter((part) => !generatedImages.includes(part)),
-    finalParts: [...generatedImages, ...parts.slice(finalStart)],
+    workParts: beforeAnswer.filter((part) => !lifted.includes(part)),
+    finalParts: [...lifted, ...parts.slice(finalStart)],
   }
+}
+
+const LIFTED_NOTICE_KINDS = new Set(['compacted', 'model_fallback', 'refusal', 'usage_warning'])
+
+function noticeKind(part: StreamMessagePart): string {
+  const notice = part.notice as { kind?: unknown } | undefined
+  return typeof notice?.kind === 'string' ? notice.kind : ''
+}
+
+function isTrailer(part: StreamMessagePart | undefined): boolean {
+  return part?.type === 'failure' || part?.type === 'notice'
 }
 
 function formatDuration(durationMs: number): string {

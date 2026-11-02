@@ -439,7 +439,10 @@ describe('projectThread', () => {
     const row = projectThread(state).byId.get('turn:t1:assistant')!
     expect(row.message.isFinal).toBe(true)
     expect(row.content.content).toBe('')
-    expect(row.content.parts?.[0]).toMatchObject({ type: 'text', text: 'Turn failed: boom' })
+    expect(row.content.parts?.[0]).toMatchObject({
+      type: 'failure',
+      failure: { message: 'boom' },
+    })
   })
 
   it('keeps URI-only resource blocks in the projected text', () => {

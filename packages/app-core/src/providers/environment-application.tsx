@@ -27,8 +27,11 @@ import {
   UPLOAD_TICKET_COMMAND,
   hasDraftContent,
   isSuperseded,
+  selectActiveSendPending,
   selectActiveSession,
   selectActiveThread,
+  selectActiveTurn,
+  selectChatCatchingUp,
   selectDraftContent,
   selectDraftTarget,
   selectProviderCatalog,
@@ -64,6 +67,8 @@ import {
   type PlatformCapabilitiesValue,
   type ProviderUiStatus,
 } from './platform-provider'
+import { TurnRecoveryContext, type TurnRecoveryValue } from './turn-recovery'
+import { resendablePrompt } from '../lib/turn-notice-parts'
 import {
   SessionStateContext,
   type DraftRequest,
@@ -476,7 +481,6 @@ function EnvironmentSessionStateProvider({
   const retiredFellBackRef = useRef(false)
   const [pendingDraftSessionStart, setPendingDraftSessionStart] = useState(false)
   const [launchingMessage, setLaunchingMessage] = useState<LaunchingMessage | null>(null)
-  const [turnPending, setTurnPending] = useState(false)
   const [adoptedDraftSessionId, setAdoptedDraftSessionId] = useState<string | null>(null)
   const [defaultProviderId, setDefaultProviderIdState] = useState<ProviderId>(DEFAULT_PROVIDER_ID)
   const [draftRequest, setDraftRequest] = useState<DraftRequest | null>(null)
@@ -738,14 +742,12 @@ function EnvironmentSessionStateProvider({
     })
   }, [])
 
-  // A submitted prompt reads as running until the environment reports the
-  // turn itself; from then on the turn is the truth.
-  useEffect(() => {
-    if (activeTurn) setTurnPending(false)
-  }, [activeTurn])
+  // A submitted prompt reads as running while its send is on its way; the turn
+  // that settles the send takes over in the same update.
+  const sendPending = useEnvironmentState(selectActiveSendPending)
   const localSessionStatus: LocalSessionStatus | null = pendingDraftSessionStart
     ? 'starting'
-    : turnPending || activeTurn
+    : sendPending || activeTurn
       ? 'running'
       : null
 
@@ -854,7 +856,6 @@ function EnvironmentSessionStateProvider({
       setRetired(null)
       setPendingDraftSessionStart(false)
       setLaunchingMessage(null)
-      setTurnPending(false)
       setAdoptedDraftSessionId(null)
       const generation = draftGenerationRef.current
       if (navigateSession) {
@@ -901,7 +902,6 @@ function EnvironmentSessionStateProvider({
       dropEmptiedPage()
       setPendingDraftSessionStart(false)
       setLaunchingMessage(null)
-      setTurnPending(false)
       setAdoptedDraftSessionId(null)
       void navigateDraft(draftId).catch(noop)
     },
@@ -943,7 +943,6 @@ function EnvironmentSessionStateProvider({
       // holds this composer.
       setPendingDraftSessionStart(false)
       setLaunchingMessage(null)
-      setTurnPending(false)
       setAdoptedDraftSessionId(null)
       void openSessionLatest(externalId).catch(fail)
     },
@@ -1017,8 +1016,6 @@ function EnvironmentSessionStateProvider({
       setPage(null)
       aheadRef.current = null
       setAhead(null)
-      // Creation already returned the first turn; its state now drives the composer.
-      setTurnPending(false)
       // A sent draft's address leads nowhere now, so the session takes its
       // place in the history rather than following it.
       const navigation = routed ? { replace: true } : undefined
@@ -1132,16 +1129,12 @@ function EnvironmentSessionStateProvider({
         setPendingDraftSessionStart(true)
         if (message) setLaunchingMessage(message)
       },
-      beginSessionTurn: () => {
-        setError(null)
-        setTurnPending(true)
-      },
+      beginSessionTurn: () => setError(null),
       attachTurnJob: () => undefined,
       failTurn: (message) => {
         setPendingDraftSessionStart(false)
         // The composer puts the text back; the transcript lets it go.
         setLaunchingMessage(null)
-        setTurnPending(false)
         if (message) setError(message)
       },
     }),
@@ -1670,6 +1663,63 @@ function EnvironmentActiveThreadProvider({ children }: { children: ReactNode }) 
     [beginSessionTurn, client, commands, failTurn],
   )
 
+  // What a failed turn's row offers. A retry is a new turn with the failed
+  // turn's prompt and images; compacting is the provider's own `/compact`,
+  // sent as the composer sends any command. Both wait for a running turn, a
+  // send on its way and a catch-up: the failure on screen may be out of date
+  // until then, and a retry held behind it could not be taken back.
+  const recoveryBusy = useEnvironmentState(
+    (state) =>
+      !!selectActiveTurn(state) ||
+      selectActiveSendPending(state) ||
+      (state.activeThreadId !== null && selectChatCatchingUp(state, state.activeThreadId)),
+  )
+  const resend = useCallback(
+    async (text: string, artifactIds: string[] = []) => {
+      const current = targetRef.current
+      const state = client.getState()
+      if (
+        !current ||
+        selectActiveTurn(state) ||
+        selectActiveSendPending(state) ||
+        selectChatCatchingUp(state, current.threadId)
+      )
+        return
+      setError(null)
+      beginSessionTurn()
+      // A rejected send keeps its own row on screen, as the composer's does.
+      await commands
+        .sendTurn({ ...current, text, ...(artifactIds.length ? { artifactIds } : {}) })
+        .catch(() => failTurn())
+    },
+    [beginSessionTurn, client, commands, failTurn],
+  )
+  const retryTurn = useCallback(
+    async (turnId: string) => {
+      const current = targetRef.current
+      if (!current) return
+      const prompt = resendablePrompt(
+        client.getState().threads[current.threadId]?.messages ?? [],
+        turnId,
+      )
+      if (prompt) await resend(prompt.text, prompt.artifactIds)
+    },
+    [client, resend],
+  )
+  const compactSession = useCallback(() => resend('/compact'), [resend])
+  const activeProviderId = activeSession?.providerId
+  const recovery = useMemo<TurnRecoveryValue>(
+    () => ({
+      retry: retryTurn,
+      compact: compactSession,
+      ...(activeProviderId && isProviderId(activeProviderId)
+        ? { providerName: providerDisplayName(activeProviderId) }
+        : {}),
+      busy: recoveryBusy,
+    }),
+    [activeProviderId, compactSession, providerDisplayName, recoveryBusy, retryTurn],
+  )
+
   const respond = useCallback(
     async (threadId: string, response: InteractionResponse) => {
       const state = client.getState()
@@ -1792,7 +1842,7 @@ function EnvironmentActiveThreadProvider({ children }: { children: ReactNode }) 
   return (
     <ActiveThreadStoresContext.Provider value={threadStores}>
       <ActiveThreadStateContext.Provider value={value}>
-        {children}
+        <TurnRecoveryContext.Provider value={recovery}>{children}</TurnRecoveryContext.Provider>
       </ActiveThreadStateContext.Provider>
     </ActiveThreadStoresContext.Provider>
   )
