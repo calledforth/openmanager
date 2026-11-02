@@ -3,6 +3,8 @@ import { ArrowClockwiseIcon, ArrowDownIcon, WarningCircleIcon } from 'phosphor-r
 import {
   memo,
   useCallback,
+  useContext,
+  useLayoutEffect,
   useMemo,
   useRef,
   useState,
@@ -22,7 +24,7 @@ import {
 import Animated, { Easing, FadeIn, FadeOut } from 'react-native-reanimated'
 import { useSafeAreaInsets } from 'react-native-safe-area-context'
 import { withAlpha } from '@openmanager/app-core/lib/theme-tokens'
-import type { UIMessage } from '@openmanager/app-core/logic'
+import { ActiveThreadStoresContext, type UIMessage } from '@openmanager/app-core/logic'
 
 import { ResolvedMessage } from '../components/chat/ResolvedMessage'
 import { ShimmerText } from '../components/chat/ShimmerText'
@@ -36,19 +38,22 @@ import { IconButton } from '../ui/IconButton'
 import { Screen } from '../ui/Screen'
 import { ChildSessionCards } from './ChildSessionCards'
 import { countRender } from './render-probe'
-import { createScrollFollower, flingsUp, INITIAL_ROWS, MAINTAIN_POSITION } from './scroll-anchor'
+import { createScrollFollower, flingsDown, flingsUp, MAINTAIN_POSITION } from './scroll-anchor'
 import { DockSlotContext, ReadOnlyBar, SessionDock, type DockSlot } from './SessionDock'
 import { HEADER_ROW, SessionHeader, SessionHeaderBar } from './SessionHeader'
 import { SessionMenu } from './SessionMenu'
 import type { StatusLineView } from './status-line'
+import { TAIL_ROWS, useTailWindow } from './tail-window'
+import { rowTextLength } from './thread-rows'
 import type { ReadOnlySessionPhase } from './useReadOnlySession'
 import type { SessionActions } from './useSessionActions'
-import { useOpeningIndex } from './useOpeningIndex'
 import { useSessionChrome } from './useSessionChrome'
 
 /** The dock's height before it has measured itself: the status line and a one-line slot. */
 const DOCK_ESTIMATE = 96
 const ROW_GAP_BOTTOM = 18
+/** A page shows by this long after its first rows even if it never reported its end. */
+const LANDING_LIMIT_MS = 400
 
 /**
  * The scroll view's own scroll to the end, which lands on the content's true
@@ -168,6 +173,7 @@ export interface SessionThreadProps {
 }
 
 const NO_CHILDREN: readonly HomeSession[] = []
+const HIDDEN = { opacity: 0 }
 
 /**
  * A session's page: back, project and title; the transcript, newest at the
@@ -201,6 +207,9 @@ export const SessionThread = memo(function SessionThread({
   const theme = usePhoneTheme()
   const listRef = useRef<FlatList<UIMessage>>(null)
   const [away] = useState(createFlag)
+  // Hidden until it reaches its end: the list draws from the top of its rows,
+  // and a page that opens at the bottom should not show that first.
+  const [landed, setLanded] = useState(false)
   const [dockHeight, setDockHeight] = useState(DOCK_ESTIMATE)
   const chrome = useSessionChrome(actions, title)
 
@@ -210,22 +219,47 @@ export const SessionThread = memo(function SessionThread({
       scrollToEnd: (animated) => nativeScrollToEnd(listRef.current, animated),
       schedule: (run) => requestAnimationFrame(run),
       onAway: (next) => away.set(next),
+      onLanded: () => setLanded(true),
     }),
   )
-  // The page opens at its newest row: a long thread starts drawing there,
-  // read when the transcript first has rows (the snapshot), not at mount.
-  const initialIndex = useOpeningIndex(messages.length)
+  // The newest rows, with older ones joining as the reader nears them.
+  const stores = useContext(ActiveThreadStoresContext)
+  const textOf = useCallback((row: UIMessage) => rowTextLength(row, stores), [stores])
+  const { rows, opening, onReaderAt } = useTailWindow(messages, keyOf, textOf, follower.following)
 
+  // Every list starts over: the page unmounts it while another is in front,
+  // and a burst of rows opens a new one.
+  const hasRows = messages.length > 0
+  useLayoutEffect(() => {
+    follower.reset()
+    setLanded(false)
+    if (!hasRows) return
+    const limit = setTimeout(() => setLanded(true), LANDING_LIMIT_MS)
+    return () => clearTimeout(limit)
+  }, [follower, hasRows, opening])
+
+  const reach = useCallback(() => {
+    if (follower.landed()) onReaderAt(follower.reading())
+  }, [follower, onReaderAt])
   const onScroll = useCallback(
-    (event: ScrollEvent) => follower.onScroll(metricsOf(event)),
-    [follower],
+    (event: ScrollEvent) => {
+      follower.onScroll(metricsOf(event))
+      reach()
+    },
+    [follower, reach],
   )
   const onDragStart = useCallback(() => follower.onDragStart(), [follower])
   // The drag-end event's own place and speed: scroll events are throttled,
   // so the last one may not have seen how far the finger took the list.
   const onDragEnd = useCallback(
-    (event: ScrollEvent) =>
-      follower.onDragEnd(metricsOf(event), flingsUp(event.nativeEvent.velocity?.y, Platform.OS)),
+    (event: ScrollEvent) => {
+      const velocity = event.nativeEvent.velocity?.y
+      follower.onDragEnd(
+        metricsOf(event),
+        flingsUp(velocity, Platform.OS),
+        flingsDown(velocity, Platform.OS),
+      )
+    },
     [follower],
   )
   const onMomentumEnd = useCallback(
@@ -233,14 +267,16 @@ export const SessionThread = memo(function SessionThread({
     [follower],
   )
   const onContentSize = useCallback(
-    (_width: number, height: number) => follower.onContentHeight(height),
-    [follower],
+    (_width: number, height: number) => {
+      follower.onContentHeight(height)
+      reach()
+    },
+    [follower, reach],
   )
   const onListLayout = useCallback(
     (event: LayoutChangeEvent) => follower.onViewportHeight(event.nativeEvent.layout.height),
     [follower],
   )
-  const onIndexFailed = useCallback(() => nativeScrollToEnd(listRef.current, false), [])
   const toLatest = useCallback(() => follower.toLatest(), [follower])
   const onDockHeight = useCallback((height: number) => {
     setDockHeight((previous) => (Math.abs(previous - height) < 1 ? previous : Math.round(height)))
@@ -319,14 +355,14 @@ export const SessionThread = memo(function SessionThread({
                 </View>
               ) : (
                 <FlatList
+                  key={opening}
                   ref={listRef}
-                  data={messages}
+                  data={rows}
+                  style={landed ? undefined : HIDDEN}
                   keyExtractor={keyOf}
                   renderItem={renderRow}
                   ListFooterComponent={footer}
                   maintainVisibleContentPosition={MAINTAIN_POSITION}
-                  initialScrollIndex={initialIndex}
-                  onScrollToIndexFailed={onIndexFailed}
                   onScroll={onScroll}
                   onScrollBeginDrag={onDragStart}
                   onScrollEndDrag={onDragEnd}
@@ -335,10 +371,11 @@ export const SessionThread = memo(function SessionThread({
                   onLayout={onListLayout}
                   scrollEventThrottle={32}
                   contentContainerStyle={contentStyle}
-                  initialNumToRender={INITIAL_ROWS}
-                  maxToRenderPerBatch={6}
-                  updateCellsBatchingPeriod={40}
-                  windowSize={9}
+                  initialNumToRender={TAIL_ROWS}
+                  maxToRenderPerBatch={4}
+                  updateCellsBatchingPeriod={50}
+                  windowSize={7}
+                  scrollsToTop={false}
                   keyboardShouldPersistTaps="handled"
                   keyboardDismissMode={Platform.OS === 'ios' ? 'interactive' : 'on-drag'}
                   showsVerticalScrollIndicator={false}
