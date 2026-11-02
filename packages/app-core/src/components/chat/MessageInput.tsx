@@ -3,6 +3,7 @@ import type { ProviderId } from '@agentpack/contract'
 import { deriveSessionChrome } from '@agentpack/view'
 import { providerBlocksComposer, usePlatformCapabilities } from '../../providers/platform-provider'
 import { useSessionState } from '../../providers/session-provider'
+import { cloudSessionUrl } from '../../lib/cloud-session'
 import { useComposerState } from '../../providers/composer-provider'
 import { useActiveThreadState } from '../../providers/active-thread-provider'
 import { useQuestionStateOptional } from '../../providers/question-provider'
@@ -494,6 +495,10 @@ export function useMessageInputBinding() {
     imageSupportMessage,
     settingsError: composerError,
     sendBlockedReason,
+    // Only a new Claude Code draft: a running session cannot move to the cloud.
+    ...(isSessionDraftOpen && !activeSessionId && currentProviderId === 'claude'
+      ? { cloudUrlFor: cloudSessionUrl }
+      : {}),
     slashCommands,
     usage,
     onModeChange: (id) => {

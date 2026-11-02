@@ -12,6 +12,7 @@ import {
 import {
   ArrowUpIcon,
   ArrowsOutIcon,
+  CloudArrowUpIcon,
   PlusIcon,
   CaretDownIcon,
   SquareIcon,
@@ -379,6 +380,9 @@ export interface MessageInputViewProps {
   /** Why this draft cannot be sent as it stands (its provider or project is
    * unavailable). Send is held, and the reason shown, until it clears. */
   sendBlockedReason?: string | null
+  /** The cloud session link for a prompt, null when it will not fit. Given only
+   * where a draft can go to the cloud, which is what shows the button. */
+  cloudUrlFor?: (prompt: string) => string | null
   slashCommands?: SlashCommandItem[]
   usage?: ComposerUsage | null
   onModeChange: (id: string) => void
@@ -427,6 +431,7 @@ export function useMessageInputController({
   imageUploadEnabled,
   imageSupportMessage,
   sendBlockedReason = null,
+  cloudUrlFor,
   slashCommands = [],
   onConfigOptionChange,
   onSend,
@@ -1011,6 +1016,21 @@ export function useMessageInputController({
       !sendBlockedReason &&
       !uploadingImages &&
       (images.length === 0 || imageUploadEnabled)
+  const cloud = useMemo(() => {
+    if (!cloudUrlFor || textOverride) return null
+    const prompt = text.trim()
+    const url = cloudUrlFor(prompt)
+    const held = !prompt || images.length > 0 || disabled || sending || pendingDraftSessionStart
+    return {
+      url: held ? null : url,
+      hint:
+        images.length > 0
+          ? 'Images can’t go to a cloud session'
+          : url
+            ? 'Open in a Claude Code cloud session'
+            : 'Too long for a cloud session',
+    }
+  }, [cloudUrlFor, textOverride, text, images.length, disabled, sending, pendingDraftSessionStart])
   const effortChoices = effortOptions ?? effortLevels.map((level) => ({ id: level, name: level }))
   // Blank until the session says otherwise: the CLI picks its own depth when
   // nothing asked, and inventing "high" here would claim a setting never sent.
@@ -1024,6 +1044,7 @@ export function useMessageInputController({
       : undefined
 
   return {
+    cloud,
     slashOpen,
     shellRef,
     slashMatches,
@@ -1125,6 +1146,7 @@ export function MessageInputView(props: MessageInputViewProps) {
     buildModeId,
     draftStore,
     sendActive,
+    cloud,
     send,
   } = useMessageInputController(props)
 
@@ -1309,6 +1331,23 @@ export function MessageInputView(props: MessageInputViewProps) {
           <div className="flex shrink-0 items-center gap-1">
             {/* A borrowed composer's text is the caller's, not the draft's. */}
             {!textOverride && <DraftSyncIndicator store={draftStore} draftKey={draftKey} />}
+            {cloud && (
+              <Tooltip content={cloud.hint}>
+                <button
+                  type="button"
+                  onClick={() => {
+                    // The draft stays: this only opens the prefilled form, and
+                    // the session starts when it is sent from there.
+                    if (cloud.url) window.open(cloud.url, '_blank', 'noopener')
+                  }}
+                  disabled={!cloud.url}
+                  aria-label="Open in a Claude Code cloud session"
+                  className="flex h-6 w-6 items-center justify-center rounded-full text-[var(--basis-text-muted)] transition-colors hover:bg-hover hover:text-[var(--basis-text)] disabled:cursor-default disabled:text-[var(--basis-text-faint)] disabled:hover:bg-transparent"
+                >
+                  <CloudArrowUpIcon size={15} />
+                </button>
+              </Tooltip>
+            )}
             {isAwaitingPlanReview ? (
               <>
                 <Tooltip content="Cancel planning">

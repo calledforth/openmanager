@@ -86,6 +86,7 @@ async function mount(
     onSend?: (sent: Sent) => Promise<void>
     uploadImage?: (image: DraftImageAttachment) => Promise<UploadedImageAttachment>
     draftKey?: string
+    cloudUrlFor?: (prompt: string) => string | null
   } = {},
 ) {
   const sent: Sent[] = []
@@ -136,6 +137,7 @@ async function mount(
                 showModelControl={false}
                 isStreaming={false}
                 draftKey={options.draftKey ?? PAGE_KEY}
+                {...(options.cloudUrlFor ? { cloudUrlFor: options.cloudUrlFor } : {})}
                 imageUploadEnabled
                 imageSupportMessage={null}
                 onModeChange={() => undefined}
@@ -600,5 +602,48 @@ describe('images kept with the composer draft', () => {
     expect(container.textContent).toContain(
       'screenshot.png was not attached. The environment could not be reached.',
     )
+  })
+})
+
+describe('the cloud button', () => {
+  const button = () =>
+    container.querySelector<HTMLButtonElement>(
+      'button[aria-label="Open in a Claude Code cloud session"]',
+    )
+  const link = (prompt: string) => `https://claude.ai/code?prompt=${prompt}`
+
+  it('is absent unless the draft can go to the cloud', async () => {
+    await mount(createMockEnvironmentClient({ seed: SEED }))
+    expect(button()).toBeNull()
+  })
+
+  it('opens the prefilled link and leaves the draft in place', async () => {
+    const open = vi.fn()
+    vi.stubGlobal('open', open)
+    const { sent } = await mount(createMockEnvironmentClient({ seed: SEED }), {
+      cloudUrlFor: link,
+    })
+    expect(button()!.disabled).toBe(true)
+
+    await type('  fix the bug  ')
+    await act(async () => button()!.click())
+
+    expect(open).toHaveBeenCalledWith(link('fix the bug'), '_blank', 'noopener')
+    expect(sent).toEqual([])
+    expect(textarea().value).toBe('  fix the bug  ')
+  })
+
+  it('holds back a prompt too long for the link, and any draft with images', async () => {
+    await mount(createMockEnvironmentClient({ seed: SEED }), {
+      cloudUrlFor: (prompt) => (prompt.length > 5 ? null : link(prompt)),
+    })
+    await type('way too long')
+    expect(button()!.disabled).toBe(true)
+
+    await type('ok')
+    expect(button()!.disabled).toBe(false)
+
+    await attach('screenshot.png')
+    expect(button()!.disabled).toBe(true)
   })
 })
