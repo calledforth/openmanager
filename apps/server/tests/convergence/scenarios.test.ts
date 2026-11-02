@@ -242,6 +242,22 @@ const TOOL_STATUS_AFTER_TURN_END = 'cancelled'
 // Scenarios
 // ---------------------------------------------------------------------------
 
+/** Claude Code's stream frame for some text. */
+const textFrame = (text: string) => ({
+  type: 'stream_event',
+  event: { type: 'content_block_delta', index: 0, delta: { type: 'text_delta', text } },
+})
+/** Claude Code retrying a request: the server's transient `turn.notice`. */
+const RETRY_FRAME = {
+  type: 'system',
+  subtype: 'api_retry',
+  attempt: 1,
+  max_retries: 10,
+  retry_delay_ms: 1000,
+  error_status: 529,
+  error: 'overloaded',
+}
+
 describe('§8.4 scenarios on main', () => {
   /**
    * Guard since F3 (§4.1): the restarted server ends the turn with events on
@@ -444,22 +460,19 @@ describe('§8.4 scenarios on main', () => {
 
   scenario('S5 a notice published while text waits in the batcher (W3)', {}, async (rig) => {
     const a = await rig.connect('A')
-    const target = await createSession(rig, a, QUIET)
-    const turnId = await startTurn(a, target)
+    const target = await createSession(rig, a, { providerId: 'claude', quiet: true })
+    await startTurn(a, target)
+    await rig.provider({ op: 'claudeWaitPrompt', prompts: 1 })
     // Recording is always on; what follows is judged from here.
     const mark = rig.proxy.frames.length
-    // One child step: the text enters the batcher and the image is refused
-    // before any timer runs, so the order does not depend on how fast the
-    // host schedules two separate requests against the 100 ms window. The
-    // artifact store refuses the image and the server says so with a
-    // transient `turn.notice`.
-    await rig.provider({
-      op: 'emitTextThenUnstorableImage',
-      sessionId: target.sessionId,
-      text: 'first words',
-    })
-    await rig.provider({ op: 'emitText', sessionId: target.sessionId, text: ' then more' })
-    await finish(rig, a, target, turnId)
+    // One child step: the text enters the batcher and the provider's retry
+    // arrives before any timer runs, so the order does not depend on how
+    // fast the host schedules two separate requests against the 100 ms
+    // window. The server says so with a transient `turn.notice`.
+    await rig.provider({ op: 'claudeEmit', messages: [textFrame('first words'), RETRY_FRAME] })
+    await untilThread(a, target, (state) => state.liveNotices.length > 0, 'A to apply the notice')
+    await rig.provider({ op: 'claudeEmit', messages: [textFrame(' then more')] })
+    await rig.provider({ op: 'claudeComplete' })
     await rig.waitQuiet()
     const frames = downFrames(rig.proxy.frames.slice(mark))
     const notice = frames.findIndex(
@@ -482,11 +495,9 @@ describe('§8.4 scenarios on main', () => {
       field(frames[notice]?.json, 'payload', 'after', 'sequence'),
       'placed after the text record',
     ).toBe(field(frames[firstText]?.json, 'payload', 'record', 'cursor', 'sequence'))
-    expect(
-      thread(a, target)?.notices.map((item) => item.message),
-      'A applied the notice',
-    ).toEqual(['A generated image could not be stored.'])
-    // The comparison leaves notices out; the state itself converges.
+    // The text after it ended it, and the server said so.
+    expect(thread(a, target)?.liveNotices, 'the notice ended').toEqual([])
+    // The comparison leaves live notices out; the state itself converges.
     await expectConverges('S5 (state, notices excluded)', rig, a)
   })
 
@@ -968,24 +979,21 @@ describe('§8.4 scenarios on main', () => {
 
   scenario('S13 a lost durable record, then a notice for the same scope', {}, async (rig) => {
     const a = await rig.connect('A')
-    const target = await createSession(rig, a, QUIET)
+    const target = await createSession(rig, a, { providerId: 'claude', quiet: true })
     const turnId = await startTurn(a, target)
+    await rig.provider({ op: 'claudeWaitPrompt', prompts: 1 })
     await rig.waitQuiet()
     const mark = rig.proxy.frames.length
     // The seam (§5.5): the text record leaves the queue and reaches no
     // socket. A is the only connection on this thread, so only A loses it.
     await rig.server.call({ op: 'dropNextRecord', threadId: target.threadId })
-    // The text, then the notice for the refused image: the notice is placed
-    // after the text, which A never received.
-    await rig.provider({
-      op: 'emitTextThenUnstorableImage',
-      sessionId: target.sessionId,
-      text: 'lost words',
-    })
+    // The text, then the provider's retry: the notice is placed after the
+    // text, which A never received.
+    await rig.provider({ op: 'claudeEmit', messages: [textFrame('lost words'), RETRY_FRAME] })
     await untilThread(
       a,
       target,
-      (state) => state.notices.length > 0,
+      (state) => state.liveNotices.length > 0,
       'A to catch up and apply the notice',
       20_000,
     )
@@ -1008,9 +1016,7 @@ describe('§8.4 scenarios on main', () => {
     const replay = threadReplays(frames, target.threadId)[0]
     expect(replay, 'A recovered from its cursor').toBeDefined()
     expect(field(replay?.json, 'payload', 'cursor', 'sequence')).toBe(dropped[0]!.sequence - 1)
-    expect(thread(a, target)?.notices.map((item) => item.message)).toEqual([
-      'A generated image could not be stored.',
-    ])
+    expect(thread(a, target)?.liveNotices.map((item) => item.kind)).toEqual(['retrying'])
     expect(
       thread(a, target)
         ?.messages.filter((message) => message.role === 'assistant')

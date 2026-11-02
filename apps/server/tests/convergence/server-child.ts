@@ -788,6 +788,7 @@ function readThread(sessionId: string, threadId: string): ServerThreadRead {
     messages: thread.messages,
     reasoning: thread.reasoning,
     tools: thread.tools,
+    notices: thread.notices,
     order: thread.order,
     interactions: thread.interactions,
     listing: thread.listing,
@@ -953,27 +954,6 @@ async function handle(request: ChildRequest): Promise<unknown> {
       }
       return { bytes }
     }
-    case 'emitTextThenUnstorableImage': {
-      const active = await promptOf(request.sessionId)
-      // Both before anything yields to a timer: the text's batch (100 ms) is
-      // still open when the image's notice goes out.
-      touch()
-      await Promise.all([
-        active.connection.sessionUpdate({
-          sessionId: active.providerSessionId,
-          update: { sessionUpdate: 'agent_message_chunk', content: text(request.text) },
-        }),
-        active.connection.sessionUpdate({
-          sessionId: active.providerSessionId,
-          update: {
-            sessionUpdate: 'agent_message_chunk',
-            content: { type: 'image', mimeType: 'image/png', data: 'not base64!' },
-          },
-        }),
-      ])
-      touch()
-      return null
-    }
     case 'claudeWaitPrompt': {
       const deadline = performance.now() + 10_000
       while ((claudeSdk.queries.at(-1)?.prompts.length ?? 0) < request.prompts) {
@@ -990,7 +970,23 @@ async function handle(request: ChildRequest): Promise<unknown> {
       touch()
       const query = claudeSdk.last
       const prompt = query.prompts.at(-1) as { uuid?: string } | undefined
-      query.emitResult({ ...(prompt?.uuid ? { userMessageUuid: prompt.uuid } : {}) })
+      query.emitResult({
+        ...(prompt?.uuid ? { userMessageUuid: prompt.uuid } : {}),
+        ...request.failure,
+      })
+      return null
+    }
+    case 'claudeEmit': {
+      touch()
+      const query = claudeSdk.last
+      for (const message of request.messages) {
+        query.emit({
+          parent_tool_use_id: null,
+          uuid: randomUUID(),
+          session_id: query.sessionId,
+          ...message,
+        } as unknown as Parameters<typeof query.emit>[0])
+      }
       return null
     }
     case 'setNewSessionDelay':
