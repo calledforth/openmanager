@@ -78,6 +78,13 @@ describe('applyToolUpdate', () => {
   })
 })
 
+describe('settled text', () => {
+  it('keeps the size it settled with', () => {
+    const settled: ToolCallState = { ...base, status: 'completed', outputBytes: 5 }
+    expect(applyToolUpdate(settled, { ...base, status: 'failed', outputBytes: 9 })).toEqual(settled)
+  })
+})
+
 describe('tool.updated', () => {
   it('refuses text on the update that settles a call', () => {
     expect(

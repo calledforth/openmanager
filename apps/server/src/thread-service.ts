@@ -137,6 +137,8 @@ type ActiveTurn = {
   generatedImages?: Set<string>
   /** What this turn's tool calls have sent so far. */
   toolCalls?: ToolCallTracker
+  /** The tool call behind each open question, by host interaction id, when the provider says. */
+  questionTools?: Map<string, string>
   toolIds: Map<string, string>
   interactionIds: Map<string, string>
   /** Each open request's kind and when it was raised, by host id. */
@@ -1102,6 +1104,29 @@ export function createThreadService(
       : undefined
   }
 
+  /**
+   * What a question's answer leaves on its tool: Cursor's answers exist only in
+   * the interaction, so the server states them, keyed by prompt as a row reads them.
+   */
+  const answeredInput = (interaction: Interaction, response: InteractionResponse) => {
+    if (interaction.kind !== 'question' || response.kind !== 'question') return undefined
+    if (response.outcome.outcome !== 'answered') return undefined
+    const given = new Map(response.outcome.answers.map((answer) => [answer.questionId, answer]))
+    const answers: Record<string, string> = {}
+    for (const question of interaction.questions) {
+      const answer = given.get(question.questionId)
+      const labels = (answer?.selectedOptionIds ?? []).map(
+        (id) => question.options.find((option) => option.optionId === id)?.label ?? id,
+      )
+      const parts = [...labels, ...(answer?.text?.trim() ? [answer.text.trim()] : [])]
+      if (parts.length > 0) answers[question.prompt] = parts.join(', ')
+    }
+    return {
+      questions: interaction.questions.map(({ prompt }) => ({ prompt })),
+      answers,
+    }
+  }
+
   const projectOwnEvent = (
     record: ThreadRecord,
     event: RuntimeEvent,
@@ -1247,6 +1272,13 @@ export function createThreadService(
     }
     if (active && projected.name === 'interaction.requested') {
       const { interaction } = projected.payload
+      if (event.event === 'question_request' && event.data.toolCallId) {
+        active.questionTools ??= new Map()
+        active.questionTools.set(
+          interaction.interactionId,
+          stableId(active.toolIds, event.data.toolCallId)!,
+        )
+      }
       active.pendingInteractions.set(interaction.interactionId, {
         kind: interaction.kind,
         createdAt: Date.now(),
@@ -1271,7 +1303,22 @@ export function createThreadService(
         // A refusal is the call's outcome from this moment: an event, so it
         // does not depend on what the provider does next or on this process.
         const refused = declinedToolCall(entry.interaction, projected.payload.response)
+        const asked = active.questionTools?.get(projected.payload.response.interactionId)
+        const input = answeredInput(entry.interaction, projected.payload.response)
+        if (asked && input && toolCallsFor(active).isSeen(asked)) {
+          appendRuntimeEvent(
+            ProofEventSchemas['tool.updated'].parse({
+              type: 'event',
+              name: 'tool.updated',
+              eventId: randomUUID(),
+              timestamp: projected.timestamp,
+              scope: threadScope(record),
+              payload: { toolCallId: asked, turnId: active.turn.turnId, input },
+            }),
+          )
+        }
         if (refused && toolCallsFor(active).decline(refused)) {
+          const outputBytes = toolCallsFor(active).outputBytes(refused)
           appendRuntimeEvent(
             ProofEventSchemas['tool.updated'].parse({
               type: 'event',
@@ -1284,6 +1331,7 @@ export function createThreadService(
                 turnId: active.turn.turnId,
                 status: 'declined',
                 finishedAt: projected.timestamp,
+                ...(outputBytes > 0 ? { outputBytes } : {}),
               },
             }),
           )

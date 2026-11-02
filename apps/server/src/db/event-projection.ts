@@ -449,13 +449,22 @@ export function createEventProjector(
     const { output, outputDelta, ...update } = event.payload
     const { toolCallId } = update
     let open = true
+    let settledBefore = false
     upsertActivity(event, toolCallId, 'tool', at, (existing) => {
-      const next = applyToolUpdate(existing as ToolCallState | undefined, update)
+      const previous = existing as ToolCallState | undefined
+      const next = applyToolUpdate(previous, update)
       open = !isSettledToolStatus(next.status)
+      settledBefore = isSettledToolStatus(previous?.status)
       return next
     })
     const settled = settledTextOf(event)
-    if (settled !== undefined) toolOutput.replace(toolCallId, settled)
+    if (settled !== undefined) {
+      // Settled text does not change. A refused call with nothing stored can
+      // still take the failure that follows.
+      if (!settledBefore || toolOutput.bytes(toolCallId) === 0) {
+        toolOutput.replace(toolCallId, settled)
+      }
+    }
     // Every client drops running text once a call has settled; the store does too.
     else if (!open) return
     else if (output !== undefined) toolOutput.replace(toolCallId, output)

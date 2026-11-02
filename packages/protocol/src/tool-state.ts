@@ -22,6 +22,7 @@ export const toolOutputPath = (sessionId: string, toolCallId: string) =>
  * - The update that settles a call drops the running text: it stays on the
  *   environment from then on, and a snapshot of a settled call has none.
  * - A final status is kept: a late progress update cannot reopen the call.
+ * - `outputBytes` is kept once a settled call has it: settled text does not change.
  * - `startedAt` and `finishedAt` are kept once set.
  */
 export function applyToolUpdate(
@@ -29,12 +30,15 @@ export function applyToolUpdate(
   update: ToolCallUpdate,
 ): ToolCallState {
   const settled = isSettledToolStatus(previous?.status)
-  const { outputDelta, output, status, startedAt, finishedAt, ...fields } = update
+  const { outputDelta, output, outputBytes, status, startedAt, finishedAt, ...fields } = update
   const next: ToolCallState = { ...previous, ...definedOnly(fields) }
   if (status !== undefined && !settled) next.status = status
   if (startedAt !== undefined && next.startedAt === undefined) next.startedAt = startedAt
   if (finishedAt !== undefined && next.finishedAt === undefined && !settled) {
     next.finishedAt = finishedAt
+  }
+  if (outputBytes !== undefined && !(settled && previous?.outputBytes)) {
+    next.outputBytes = outputBytes
   }
   if (output !== undefined) next.output = output
   else if (outputDelta !== undefined) next.output = (next.output ?? '') + outputDelta
