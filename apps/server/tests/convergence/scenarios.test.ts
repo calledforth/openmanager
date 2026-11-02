@@ -1025,7 +1025,13 @@ describe('§8.4 scenarios on main', () => {
         ),
       'the replay brought the lost text',
     ).toEqual(['lost words'])
-    await finish(rig, a, target, turnId)
+    await rig.provider({ op: 'claudeComplete' })
+    await untilThread(
+      a,
+      target,
+      (state) => state.turns.some((turn) => turn.turnId === turnId && turn.state === 'completed'),
+      'the turn to end',
+    )
     await rig.waitQuiet()
     await expectConverges('S13', rig, a)
   })

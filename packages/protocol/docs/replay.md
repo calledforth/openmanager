@@ -10,7 +10,8 @@ stream. A cursor is `{ scope, epoch, sequence }`:
   subscriptions, so a client keeps one cursor per scope it follows.
 - `epoch` changes whenever the host cannot preserve a scope's sequence history
   (for example a rebuilt store). Sequences are only comparable within an epoch.
-- `turn.notice` is transient and never receives a cursor.
+- `turn.notice` and `turn.notice.cleared` are transient and never receive a cursor;
+  `turn.notice.recorded` is the durable kind and is sequenced like any other event.
 
 Provider sequence numbers and event timestamps are never cursors.
 

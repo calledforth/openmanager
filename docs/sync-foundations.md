@@ -2402,6 +2402,16 @@ user merges; every agent summarizes only what it did.
   B17's capability sniffing (`#213: packages/app-core/src/components/chat/MessageInput.tsx:365`)
   must not break desktop.
 - Migration 23.
+- As built: migration 25, protocol v21 and event format 4, shared with F6.
+  - **Live notices** last until `turn.notice.cleared`, which the server publishes on the turn's next
+    durable event or its end. A client also drops them at every catch-up, since a fresh load has none.
+    They stay out of snapshots and the comparison.
+  - **Durable notices** are `turn_notices` rows on the thread's one ordinal, so a snapshot's `order`
+    places them. A failure keeps `action`, `resetsAt` and `detail` on its turn. No text limits.
+  - **A refused generated image** is now a durable `warning`, not a live notice.
+  - **B13:** `turnPending` is gone; the web reads a pending send from the outbox.
+  - **B3:** recovery also waits for a catch-up, because a held Retry could answer a stale failure.
+  - **B11 and B17** no longer apply: on the web a session's images upload as they are attached.
 
 ### 10.2 Where #219 touches the same code
 
