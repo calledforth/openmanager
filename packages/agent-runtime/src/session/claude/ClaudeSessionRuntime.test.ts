@@ -685,15 +685,22 @@ describe('ClaudeSessionRuntime permissions', () => {
       'reject_once',
     ])
 
-    expect(runtime.respondPermission(request.requestId, { outcome: 'selected', optionId: 'allow_once' })).toBe(true)
+    expect(
+      runtime.respondPermission(request.requestId, { outcome: 'selected', optionId: 'allow_once' }),
+    ).toBe(true)
     // No `updatedInput`: the input is unchanged and the SDK reads an omitted
     // one as "run what you asked to run".
     expect(await result).toEqual({ behavior: 'allow' })
   })
 
-  it('carries the SDK\'s own suggestions on always-allow, and never synthesizes any', async () => {
+  it("carries the SDK's own suggestions on always-allow, and never synthesizes any", async () => {
     const suggestions = [
-      { type: 'addRules', rules: [{ toolName: 'Bash' }], behavior: 'allow', destination: 'session' },
+      {
+        type: 'addRules',
+        rules: [{ toolName: 'Bash' }],
+        behavior: 'allow',
+        destination: 'session',
+      },
     ]
     const { runtime, events, sdk } = build()
     await runtime.start()
@@ -704,11 +711,14 @@ describe('ClaudeSessionRuntime permissions', () => {
       outcome: 'selected',
       optionId: 'allow_always',
     })
-    expect(await withSuggestions.result).toEqual({ behavior: 'allow', updatedPermissions: suggestions })
+    expect(await withSuggestions.result).toEqual({
+      behavior: 'allow',
+      updatedPermissions: suggestions,
+    })
 
     const withoutSuggestions = sdk.last.useTool('Read', { file_path: 'C:/a.ts' })
-    await vi.waitFor(
-      () => expect(names(events).filter((name) => name === 'permission_request')).toHaveLength(2),
+    await vi.waitFor(() =>
+      expect(names(events).filter((name) => name === 'permission_request')).toHaveLength(2),
     )
     runtime.respondPermission(requestIdOf(events, 'permission_request'), {
       outcome: 'selected',
@@ -732,8 +742,8 @@ describe('ClaudeSessionRuntime permissions', () => {
     expect(await rejected.result).toMatchObject({ behavior: 'deny' })
 
     const cancelled = sdk.last.useTool('Bash', { command: 'ls' })
-    await vi.waitFor(
-      () => expect(names(events).filter((name) => name === 'permission_request')).toHaveLength(2),
+    await vi.waitFor(() =>
+      expect(names(events).filter((name) => name === 'permission_request')).toHaveLength(2),
     )
     runtime.respondPermission(requestIdOf(events, 'permission_request'), {
       outcome: 'cancelled',
@@ -772,7 +782,12 @@ describe('ClaudeSessionRuntime permissions', () => {
     const permission = sdk.last.useTool('Bash', { command: 'ls' })
     const question = sdk.last.useTool('AskUserQuestion', {
       questions: [
-        { question: 'Which?', header: 'Pick', multiSelect: false, options: [{ label: 'a', description: '' }] },
+        {
+          question: 'Which?',
+          header: 'Pick',
+          multiSelect: false,
+          options: [{ label: 'a', description: '' }],
+        },
       ],
     })
     await vi.waitFor(() => expect(names(events)).toContain('question_request'))
@@ -895,9 +910,11 @@ describe('ClaudeSessionRuntime questions', () => {
         { questionId: `${request.requestId}:1`, selectedOptionIds: ['o1'] },
       ],
     })
-    expect((await result as { updatedInput: { answers: unknown } }).updatedInput.answers).toEqual({
-      'Same?': 'a, d',
-    })
+    expect(((await result) as { updatedInput: { answers: unknown } }).updatedInput.answers).toEqual(
+      {
+        'Same?': 'a, d',
+      },
+    )
   })
 
   it('denies when the user dismisses the question', async () => {
@@ -968,7 +985,7 @@ describe('ClaudeSessionRuntime plan review', () => {
     expect(await result).toEqual({ behavior: 'allow' })
   })
 
-  it('denies with the reviewer\'s reason on rejection', async () => {
+  it("denies with the reviewer's reason on rejection", async () => {
     const { runtime, events, sdk } = build()
     await runtime.start()
 
@@ -1093,7 +1110,12 @@ describe('ClaudeSessionRuntime mode reported by the CLI', () => {
 describe('ClaudeSessionRuntime interaction atomicity', () => {
   const question = {
     questions: [
-      { question: 'A?', header: 'Pick', multiSelect: false, options: [{ label: 'x', description: '' }] },
+      {
+        question: 'A?',
+        header: 'Pick',
+        multiSelect: false,
+        options: [{ label: 'x', description: '' }],
+      },
     ],
   }
 
@@ -1108,9 +1130,9 @@ describe('ClaudeSessionRuntime interaction atomicity', () => {
     expect(await sdk.last.useTool('AskUserQuestion', question, { signal }).result).toMatchObject({
       behavior: 'deny',
     })
-    expect(await sdk.last.useTool('ExitPlanMode', { plan: '# Plan' }, { signal }).result).toMatchObject(
-      { behavior: 'deny' },
-    )
+    expect(
+      await sdk.last.useTool('ExitPlanMode', { plan: '# Plan' }, { signal }).result,
+    ).toMatchObject({ behavior: 'deny' })
 
     // No request and no resolution for any of the three. A request that is
     // never emitted cannot be emitted after its settlement.
@@ -1193,9 +1215,11 @@ describe('ClaudeSessionRuntime result correlation', () => {
     sdk.last.emitResult({ userMessageUuid: uuid })
     await turn
     expect(
-      (events.find((event) => event.event === 'prompt_completed')?.data as {
-        usage?: { inputTokens: number }
-      }).usage,
+      (
+        events.find((event) => event.event === 'prompt_completed')?.data as {
+          usage?: { inputTokens: number }
+        }
+      ).usage,
     ).toMatchObject({ inputTokens: 100 })
   })
 
@@ -1227,9 +1251,11 @@ describe('ClaudeSessionRuntime result correlation', () => {
     await turn
 
     expect(
-      (events.find((event) => event.event === 'prompt_completed')?.data as {
-        usage?: { inputTokens: number; outputTokens: number }
-      }).usage,
+      (
+        events.find((event) => event.event === 'prompt_completed')?.data as {
+          usage?: { inputTokens: number; outputTokens: number }
+        }
+      ).usage,
     ).toMatchObject({ inputTokens: 42, outputTokens: 7 })
   })
 })
@@ -1389,9 +1415,11 @@ describe('ClaudeSessionRuntime background work', () => {
     // The unprompted turn's tokens closed with it rather than being billed to
     // the user's turn.
     expect(
-      (events.find((event) => event.event === 'prompt_completed')?.data as {
-        usage?: { inputTokens: number }
-      }).usage,
+      (
+        events.find((event) => event.event === 'prompt_completed')?.data as {
+          usage?: { inputTokens: number }
+        }
+      ).usage,
     ).toMatchObject({ inputTokens: 10 })
   })
 
@@ -1501,9 +1529,11 @@ describe('ClaudeSessionRuntime prompt content', () => {
     await runtime.start()
 
     expect(
-      (events.find((event) => event.event === 'initialized')?.data as {
-        promptCapabilities?: { image?: boolean }
-      }).promptCapabilities,
+      (
+        events.find((event) => event.event === 'initialized')?.data as {
+          promptCapabilities?: { image?: boolean }
+        }
+      ).promptCapabilities,
     ).toMatchObject({ image: true })
   })
 
@@ -1580,7 +1610,10 @@ describe('ClaudeSessionRuntime catalogs', () => {
   ]
   const withModels = (spec: Partial<SessionRuntimeSpec> = {}) => {
     const built = build(spec)
-    built.sdk.initialize = { ...built.sdk.initialize, models: MODELS } as typeof built.sdk.initialize
+    built.sdk.initialize = {
+      ...built.sdk.initialize,
+      models: MODELS,
+    } as typeof built.sdk.initialize
     return built
   }
   /** The *latest* matching event: a model change now republishes the mode
@@ -1682,8 +1715,9 @@ describe('ClaudeSessionRuntime settings', () => {
     } as typeof built.sdk.initialize
     return built
   }
-  const optionIds = (runtime: { applied?: { options: ReadonlyMap<string, unknown> } }) =>
-    [...(runtime.applied?.options.keys() ?? [])]
+  const optionIds = (runtime: { applied?: { options: ReadonlyMap<string, unknown> } }) => [
+    ...(runtime.applied?.options.keys() ?? []),
+  ]
 
   it('writes effort through the flag-settings layer', async () => {
     const { runtime, sdk } = withModels({ desiredConfig: { modelId: 'opus' } })

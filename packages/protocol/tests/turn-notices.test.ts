@@ -179,5 +179,4 @@ describe('notices in a snapshot', () => {
   it('rejects a snapshot notice for a turn it does not carry', () => {
     expect(ScopeSnapshotSchema.safeParse(withNotice('turn-9')).success).toBe(false)
   })
-
 })

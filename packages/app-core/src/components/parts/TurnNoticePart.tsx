@@ -11,7 +11,6 @@ import {
   WarningIcon,
 } from '@phosphor-icons/react'
 import type { DurableTurnNotice, TransientTurnNotice } from '@openmanager/protocol'
-import { typographyMonoCaption } from '../../lib/typography'
 import { cn } from '../../lib/utils'
 import {
   describeFailure,
@@ -40,10 +39,8 @@ const NOTICE_ICONS: Record<Notice['kind'], IconComponent> = {
   warning: WarningIcon,
 }
 
-const providerWords = cn(
-  'custom-scrollbar max-h-[300px] overflow-y-auto break-words whitespace-pre-wrap',
-  typographyMonoCaption,
-)
+const providerWords =
+  'custom-scrollbar max-h-[300px] overflow-y-auto text-ui-sm break-words whitespace-pre-wrap'
 
 /** The one line a notice is, laid out as a tool row is. */
 function NoticeLine({

@@ -388,13 +388,7 @@ export type ProviderProblem = {
 
 export type ProviderNoticeKind =
   /** Transient: the conversation is being compacted right now. */
-  | 'compacting'
-  | 'compacted'
-  | 'model_fallback'
-  | 'refusal'
-  | 'usage_warning'
-  | 'info'
-  | 'warning'
+  'compacting' | 'compacted' | 'model_fallback' | 'refusal' | 'usage_warning' | 'info' | 'warning'
 
 /** A `provider_notice`. `message` is complete on its own; the structured
  * fields let a client say it better. Only `info`, `warning` and a refusal's

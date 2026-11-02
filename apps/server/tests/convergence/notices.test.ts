@@ -215,7 +215,12 @@ describe('notices and failures', () => {
     await emit(rig, words(' and after'))
     await rig.waitQuiet()
     rig.proxy.up()
-    await untilThread(a, target, (state) => JSON.stringify(state.messages).includes('and after'), 'the replay')
+    await untilThread(
+      a,
+      target,
+      (state) => JSON.stringify(state.messages).includes('and after'),
+      'the replay',
+    )
     expect(live(a, target), 'a fresh load shows none').toEqual([])
     await expectConverges('N7', rig, a)
   })
@@ -244,7 +249,12 @@ describe('notices and failures', () => {
     await untilThread(reloaded, target, (state) => state.turns.length === 1, 'the reload')
     await claudeTurn(rig, reloaded, 2, target)
     await rig.provider({ op: 'claudeComplete' })
-    await untilThread(reloaded, target, (state) => state.turns.at(-1)?.state === 'completed', 'done')
+    await untilThread(
+      reloaded,
+      target,
+      (state) => state.turns.at(-1)?.state === 'completed',
+      'done',
+    )
     const turns = thread(reloaded, target)!.turns
     expect(turns.map((turn) => turn.state)).toEqual(['failed', 'completed'])
     expect(turns[0]?.failure?.reason).toBe('context_window_exceeded')

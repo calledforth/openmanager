@@ -717,9 +717,7 @@ export class ClaudeMessageTranslator {
     // `is_error`, so the result's text counts there too. Logged by the host as
     // the error text, and shown to the user under the typed reason.
     const resultText =
-      message.subtype === 'success'
-        ? (string(raw.result) ?? '')
-        : (message.errors ?? []).join('\n')
+      message.subtype === 'success' ? (string(raw.result) ?? '') : (message.errors ?? []).join('\n')
     const providerText = apiError?.text || resultText
     const detail = providerDetail(providerText)
     const classified =
