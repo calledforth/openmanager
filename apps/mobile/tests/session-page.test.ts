@@ -25,10 +25,9 @@ import {
   AWAY_SHOW_PX,
   awayFromLatest,
   createScrollFollower,
+  flingsDown,
   flingsUp,
   FOLLOW_SLOP_PX,
-  INITIAL_ROWS,
-  openingIndex,
 } from '../src/session/scroll-anchor'
 import { sessionMenuItems, type SessionMenuInput } from '../src/session/session-menu'
 import {
@@ -393,7 +392,7 @@ function transcript(heights: number[], viewport = 600) {
     drag(dy: number, fling = 0) {
       follower.onDragStart()
       moveTo(offset + dy)
-      follower.onDragEnd(metrics(), fling < 0)
+      follower.onDragEnd(metrics(), fling < 0, fling > 0)
       if (fling) {
         moveTo(offset + fling)
         follower.onMomentumEnd(metrics())
@@ -558,12 +557,147 @@ describe('scroll anchoring', () => {
     expect(flingsUp(0.01, 'android')).toBe(false)
     expect(flingsUp(undefined, 'android')).toBe(false)
     expect(flingsUp(-3, 'web')).toBe(false)
+    expect(flingsDown(-1.2, 'android')).toBe(true)
+    expect(flingsDown(1.2, 'ios')).toBe(true)
+    expect(flingsDown(undefined, 'android')).toBe(false)
   })
 
-  it('opens a long thread at its newest row and a short one from the top', () => {
-    expect(openingIndex(0)).toBeUndefined()
-    expect(openingIndex(INITIAL_ROWS)).toBeUndefined()
-    expect(openingIndex(200)).toBe(199)
+  it('keeps following through a move no finger made', () => {
+    // The list anchoring its rows, or clamping, moves the offset up by itself.
+    const scrolls: boolean[] = []
+    const follower = createScrollFollower({
+      scrollToEnd: (animated) => scrolls.push(animated),
+      schedule: (run) => run(),
+    })
+    follower.onViewportHeight(800)
+    follower.onContentHeight(5000)
+    follower.onScroll({ offset: 4200, contentHeight: 5000, viewportHeight: 800 })
+    follower.onScroll({ offset: 3000, contentHeight: 6000, viewportHeight: 800 })
+    expect(follower.following()).toBe(true)
+    follower.onContentHeight(6100)
+    expect(scrolls.at(-1)).toBe(false)
+  })
+
+  it('stays with a reader the list carried to its end by itself', () => {
+    // Older rows join above the reader: the list keeps their row in place, and
+    // a scroll event with the height from before the rows measured reads as
+    // the end. The next growth must not throw them to the bottom.
+    const scrolls: boolean[] = []
+    const follower = createScrollFollower({
+      scrollToEnd: (animated) => scrolls.push(animated),
+      schedule: (run) => run(),
+    })
+    follower.onViewportHeight(800)
+    follower.onContentHeight(5500)
+    follower.onScroll({ offset: 4700, contentHeight: 5500, viewportHeight: 800 })
+    follower.onDragStart()
+    follower.onScroll({ offset: 1400, contentHeight: 5500, viewportHeight: 800 })
+    follower.onDragEnd({ offset: 1400, contentHeight: 5500, viewportHeight: 800 }, false)
+    follower.onScroll({ offset: 5510, contentHeight: 6310, viewportHeight: 800 })
+    follower.onContentHeight(9860)
+    expect(follower.following()).toBe(false)
+    expect(scrolls.filter((animated) => !animated)).toHaveLength(1)
+  })
+
+  it('goes to the end of a new list, even one the same height as the last', () => {
+    // A page left under another unmounts its list; back in front, the new one
+    // is at the top, however alike the two are.
+    const scrolls: boolean[] = []
+    let landed = 0
+    const follower = createScrollFollower({
+      scrollToEnd: (animated) => scrolls.push(animated),
+      schedule: (run) => run(),
+      onLanded: () => {
+        landed += 1
+      },
+    })
+    follower.onViewportHeight(800)
+    follower.onContentHeight(5000)
+    follower.onScroll({ offset: 4200, contentHeight: 5000, viewportHeight: 800 })
+    expect(follower.landed()).toBe(true)
+    scrolls.length = 0
+
+    follower.reset()
+    expect(follower.landed()).toBe(false)
+    follower.onViewportHeight(800)
+    follower.onContentHeight(5000)
+    expect(scrolls).toEqual([false])
+    follower.onScroll({ offset: 4200, contentHeight: 5000, viewportHeight: 800 })
+    expect(landed).toBe(2)
+  })
+
+  it('tells where the list is', () => {
+    const follower = createScrollFollower({
+      scrollToEnd: () => undefined,
+      schedule: (run) => run(),
+    })
+    follower.onViewportHeight(800)
+    follower.onContentHeight(5000)
+    follower.onScroll({ offset: 4200, contentHeight: 5000, viewportHeight: 800 })
+    expect(follower.reading()).toEqual({ offset: 4200, contentHeight: 5000, viewportHeight: 800 })
+  })
+
+  it('comes back to the end with a downward throw that reaches it', () => {
+    const list = transcript([400, 300, 1500])
+    list.drag(-900)
+    expect(list.following()).toBe(false)
+    list.drag(100, 900)
+    expect(list.following()).toBe(true)
+    list.grow(40)
+    expect(list.fromEnd()).toBe(0)
+  })
+
+  it('leaves the end when a finger takes it up, however the list moved before', () => {
+    const follower = createScrollFollower({
+      scrollToEnd: () => undefined,
+      schedule: (run) => run(),
+    })
+    follower.onViewportHeight(800)
+    follower.onContentHeight(5000)
+    follower.onScroll({ offset: 4200, contentHeight: 5000, viewportHeight: 800 })
+    follower.onDragStart()
+    follower.onScroll({ offset: 3900, contentHeight: 5000, viewportHeight: 800 })
+    expect(follower.following()).toBe(false)
+    follower.onDragEnd({ offset: 3900, contentHeight: 5000, viewportHeight: 800 }, false)
+    expect(follower.following()).toBe(false)
+  })
+
+  it('lands once, at the end or when the content fits the page', () => {
+    let landed = 0
+    const opening = () =>
+      createScrollFollower({
+        scrollToEnd: () => undefined,
+        schedule: (run) => run(),
+        onLanded: () => {
+          landed += 1
+        },
+      })
+    const long = opening()
+    long.onViewportHeight(800)
+    long.onContentHeight(5000)
+    expect(long.landed()).toBe(false)
+    long.onScroll({ offset: 4200, contentHeight: 5000, viewportHeight: 800 })
+    long.onScroll({ offset: 4210, contentHeight: 5010, viewportHeight: 800 })
+    expect(long.landed()).toBe(true)
+    expect(landed).toBe(1)
+
+    const short = opening()
+    short.onContentHeight(300)
+    short.onViewportHeight(800)
+    expect(short.landed()).toBe(true)
+    expect(landed).toBe(2)
+  })
+
+  it('jumps rather than animates a long way back to the newest row', () => {
+    const scrolls: boolean[] = []
+    const follower = createScrollFollower({
+      scrollToEnd: (animated) => scrolls.push(animated),
+      schedule: (run) => run(),
+    })
+    follower.onViewportHeight(800)
+    follower.onScroll({ offset: 0, contentHeight: 20000, viewportHeight: 800 })
+    follower.toLatest()
+    expect(scrolls).toEqual([false])
   })
 
   it('takes the reader back with the button, animated, and follows again', () => {

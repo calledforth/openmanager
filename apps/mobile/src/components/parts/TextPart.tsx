@@ -1,5 +1,5 @@
-import { memo, useMemo } from 'react'
-import { StyleSheet, Text } from 'react-native'
+import { memo, useMemo, useState } from 'react'
+import { StyleSheet, Text, View } from 'react-native'
 import * as MarkdownLibrary from 'react-native-markdown-display'
 import Markdown, {
   AstRenderer,
@@ -14,12 +14,20 @@ import { countRender } from '../../session/render-probe'
 import type { PhoneTheme } from '../../theme/tokens'
 import { usePhoneTheme } from '../../theme/ThemeProvider'
 import { CodeBlock } from './CodeBlock'
+import { createMarkdownScanner, keyByPlace } from './markdown-blocks'
 import { buildMarkdownStyles } from './markdownStyles'
 
 /** The library's blocks end with the newline the parser leaves on them. */
 const trimEnd = (content: string) => (content.endsWith('\n') ? content.slice(0, -1) : content)
 
 const RULES: RenderRules = {
+  // The library's root takes a new key on every render, which would remount
+  // the whole block however little changed.
+  body: (_node, children, _parent, styles) => (
+    <View key="body" style={styles._VIEW_SAFE_body}>
+      {children}
+    </View>
+  ),
   // Every run of text is selectable, so a reader can copy from a reply: the
   // library's own rule draws a plain Text.
   textgroup: (node, children, _parent, styles) => (
@@ -108,16 +116,17 @@ const parseTree = parser as unknown as (
 ) => ASTNode[]
 
 /**
- * Parsed text, kept for the texts seen last: a row scrolled out and back, or
- * a settled reply whose text did not change, is drawn without parsing again.
+ * Parsed blocks, kept for the ones seen last: a row scrolled out and back is
+ * drawn without parsing again. Sized for blocks, not replies: a few long
+ * chats' worth.
  */
 const AST_CACHE = new Map<string, ASTNode[]>()
-const AST_CACHE_SIZE = 400
+const AST_CACHE_SIZE = 2000
 
 function astOf(text: string, live: boolean): ASTNode[] {
-  // A streaming text is a new prefix per token, never drawn again: parsed,
-  // not kept, so it does not push settled rows out of the cache.
-  if (live) return parseTree(text, (nodes) => nodes, MARKDOWN_IT)
+  // A block still being written is a new prefix per token, never drawn again:
+  // parsed, not kept, so it does not push settled blocks out of the cache.
+  if (live) return parseTree(text, keyByPlace, MARKDOWN_IT)
   const hit = AST_CACHE.get(text)
   if (hit) {
     // Most recently used last, so the oldest is the one dropped.
@@ -125,7 +134,7 @@ function astOf(text: string, live: boolean): ASTNode[] {
     AST_CACHE.set(text, hit)
     return hit
   }
-  const ast = parseTree(text, (nodes) => nodes, MARKDOWN_IT)
+  const ast = parseTree(text, keyByPlace, MARKDOWN_IT)
   AST_CACHE.set(text, ast)
   if (AST_CACHE.size > AST_CACHE_SIZE) {
     const oldest = AST_CACHE.keys().next().value
@@ -134,28 +143,44 @@ function astOf(text: string, live: boolean): ASTNode[] {
   return ast
 }
 
+/** One top-level block of markdown, left alone once it is finished. */
+const MarkdownBlock = memo(function MarkdownBlock({ text, live }: { text: string; live: boolean }) {
+  countRender('MarkdownBlock')
+  const theme = usePhoneTheme()
+  const ast = useMemo(() => astOf(text, live), [text, live])
+  return (
+    <Markdown renderer={rendererFor(theme)} {...STABLE_PROPS}>
+      {/* A parsed tree is drawn as it is (the library's own path for an array). */}
+      {ast as unknown as string}
+    </Markdown>
+  )
+})
+
 /**
- * Assistant markdown with the theme's styles and highlighted code fences.
- * One part's text: a streamed token re-renders only the part it lands in.
+ * Assistant markdown with the theme's styles and highlighted code fences,
+ * block by block (`markdown-blocks.ts`): a streamed token re-renders only the
+ * block it lands in, and a reply settling re-renders only its last.
  */
 export const TextPart = memo(function TextPart({
   text,
   live = false,
 }: {
   text: string
-  /** Still streaming: parsed for this render only. */
+  /** Still streaming: its last block is parsed for this render only. */
   live?: boolean
 }) {
   countRender('TextPart')
-  const theme = usePhoneTheme()
-  const ast = useMemo(() => (text ? astOf(text, live) : null), [text, live])
+  const [scanner] = useState(createMarkdownScanner)
+  const { closed, tail } = useMemo(() => scanner.read(text), [scanner, text])
 
-  if (!ast) return null
+  if (!text) return null
 
   return (
-    <Markdown renderer={rendererFor(theme)} {...STABLE_PROPS}>
-      {/* A parsed tree is drawn as it is (the library's own path for an array). */}
-      {ast as unknown as string}
-    </Markdown>
+    <View>
+      {closed.map((block, index) => (
+        <MarkdownBlock key={index} text={block} live={false} />
+      ))}
+      <MarkdownBlock key={closed.length} text={tail} live={live} />
+    </View>
   )
 })

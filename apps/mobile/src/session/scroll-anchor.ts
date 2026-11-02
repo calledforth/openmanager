@@ -16,10 +16,17 @@
  * gesture always wins: while a finger is on the list nothing follows, and
  * the moment they leave the end it stops.
  *
+ * Only that gesture takes the list off the end, or back to it. The list moves
+ * itself all the time (the visible-content anchoring below, a clamp when the
+ * content gets shorter), and scroll events can carry a content height a layout
+ * behind: a move nobody's finger made must never read as a reader leaving (a
+ * page would stop following by itself) or arriving (older rows joining above
+ * a reader would throw them to the bottom).
+ *
  * The platform's visible-content anchoring (`maintainVisibleContentPosition`)
- * covers the other direction: a row above the reader that measures again
- * (virtualised back in, a fold settling) keeps the row they are reading in
- * place.
+ * covers the other direction: older rows joining the list (`tail-window.ts`)
+ * and a row above the reader that measures again (virtualised back in, a fold
+ * settling) keep the row they are reading in place.
  */
 
 /** Within this of the end, the reader is at the end and the list follows it. */
@@ -58,9 +65,9 @@ export interface ScrollFollower {
   /**
    * The finger came off: where the list was at that moment (the drag-end
    * event's own metrics, which no throttled scroll event may have reported
-   * yet), and whether it was thrown upward (see `flingsUp`).
+   * yet), and whether it was thrown upward or downward (see `flingsUp`).
    */
-  onDragEnd(metrics: ScrollMetrics, flungUp: boolean): void
+  onDragEnd(metrics: ScrollMetrics, flungUp: boolean, flungDown?: boolean): void
   /** The fling after a drag came to rest. */
   onMomentumEnd(metrics: ScrollMetrics): void
   /** The content's height changed. */
@@ -75,6 +82,12 @@ export interface ScrollFollower {
   toLatest(): void
   /** Whether the list is following the end right now. */
   following(): boolean
+  /** Whether the page has reached the end it opens at. */
+  landed(): boolean
+  /** The list's place as the follower last heard it. */
+  reading(): ScrollMetrics
+  /** A new list mounted: nothing it heard about the last one holds, and it opens at the end. */
+  reset(): void
 }
 
 export interface ScrollFollowerPorts {
@@ -84,7 +97,12 @@ export interface ScrollFollowerPorts {
   schedule(run: () => void): void
   /** The reader is away from the end, or back: the scroll-to-latest button. */
   onAway?(away: boolean): void
+  /** The page reached the end it opens at: once, so it can show. */
+  onLanded?(): void
 }
+
+/** Further than this many screens from the end, the button jumps rather than animates. */
+export const ANIMATE_WITHIN_SCREENS = 3
 
 /** Below this speed (px/ms) a release is a release, not a throw. */
 export const FLING_MIN_VELOCITY = 0.05
@@ -104,6 +122,11 @@ export function flingsUp(velocityY: number | undefined, platform: string): boole
       : false
 }
 
+/** Whether a drag-end's vertical velocity throws the list downward, toward the newest rows. */
+export function flingsDown(velocityY: number | undefined, platform: string): boolean {
+  return velocityY === undefined ? false : flingsUp(-velocityY, platform)
+}
+
 /**
  * The follow-the-end state machine. It starts following (a page opens at its
  * newest row) and only the reader's own scrolling takes it off the end. A
@@ -117,12 +140,16 @@ export function createScrollFollower(ports: ScrollFollowerPorts): ScrollFollower
   let dragging = false
   /** Thrown upward and still moving: the reader's, until the fling rests. */
   let flingingUp = false
+  /** Thrown downward and still moving: it may carry the reader back to the end. */
+  let gliding = false
   let away = false
   let lastHeight = -1
   let lastViewport = -1
   let lastOffset = 0
+  let lastFromEnd = 0
   let dragStartOffset = 0
   let scheduled = false
+  let landed = false
 
   const setAway = (next: boolean) => {
     if (next === away) return
@@ -130,6 +157,15 @@ export function createScrollFollower(ports: ScrollFollowerPorts): ScrollFollower
     ports.onAway?.(next)
   }
   const held = () => dragging || flingingUp
+  const land = () => {
+    if (landed) return
+    landed = true
+    ports.onLanded?.()
+  }
+  /** Content that fits the page never scrolls: it is at its end from the start. */
+  const landIfItFits = () => {
+    if (lastHeight >= 0 && lastViewport >= 0 && lastHeight <= lastViewport) land()
+  }
 
   const follow = () => {
     if (scheduled) return
@@ -146,13 +182,16 @@ export function createScrollFollower(ports: ScrollFollowerPorts): ScrollFollower
     const fromEnd = distanceFromEnd(metrics)
     const movedUp = metrics.offset < lastOffset - 1
     lastOffset = metrics.offset
-    // Growth below the reader makes the end farther without moving them,
-    // and the list's own scroll to the end only moves down: the reader
-    // leaves the end only by moving up (a drag or its fling). Coming back
-    // within the slop is being at the end again, unless an upward fling is
-    // still carrying them away.
-    if (fromEnd <= FOLLOW_SLOP_PX && !flingingUp) atEnd = true
-    else if (movedUp) atEnd = false
+    lastFromEnd = fromEnd
+    // Growth below the reader makes the end farther without moving them, and
+    // the list moves itself as it anchors and clamps: the reader leaves the
+    // end only by moving up with their own gesture (a drag or its fling), and
+    // comes back to it only with one, unless an upward fling is still
+    // carrying them away.
+    if (fromEnd <= FOLLOW_SLOP_PX && !flingingUp) {
+      if (dragging || gliding) atEnd = true
+      if (atEnd) land()
+    } else if (movedUp && held()) atEnd = false
     setAway(awayFromLatest(fromEnd, away))
     return fromEnd
   }
@@ -164,11 +203,13 @@ export function createScrollFollower(ports: ScrollFollowerPorts): ScrollFollower
     onDragStart() {
       dragging = true
       flingingUp = false
+      gliding = false
       dragStartOffset = lastOffset
     },
-    onDragEnd(metrics, flungUp) {
+    onDragEnd(metrics, flungUp, flungDown = false) {
       const fromEnd = read(metrics)
       dragging = false
+      gliding = flungDown
       if (flungUp) {
         // Thrown toward older rows: away from the end until the fling rests.
         flingingUp = true
@@ -180,38 +221,51 @@ export function createScrollFollower(ports: ScrollFollowerPorts): ScrollFollower
       }
     },
     onMomentumEnd(metrics) {
+      // The fling was the reader's, whichever way it went: where it rests is theirs.
       flingingUp = false
+      gliding = true
       read(metrics)
+      gliding = false
     },
     onContentHeight(height) {
       if (height === lastHeight) return
       lastHeight = height
+      landIfItFits()
       if (atEnd && !held()) follow()
     },
     onViewportHeight(height) {
       if (height === lastViewport) return
       const first = lastViewport === -1
       lastViewport = height
+      landIfItFits()
       if (!first && atEnd && !held()) follow()
     },
     toLatest() {
       flingingUp = false
+      gliding = false
       atEnd = true
       setAway(false)
-      ports.scrollToEnd(true)
+      // A long way back is a jump: animating it would mount every row between.
+      ports.scrollToEnd(lastFromEnd <= lastViewport * ANIMATE_WITHIN_SCREENS)
     },
     following: () => atEnd && !held(),
+    landed: () => landed,
+    reading: () => ({
+      offset: lastOffset,
+      contentHeight: lastHeight,
+      viewportHeight: lastViewport,
+    }),
+    reset() {
+      atEnd = true
+      dragging = false
+      flingingUp = false
+      gliding = false
+      lastHeight = -1
+      lastViewport = -1
+      lastOffset = 0
+      lastFromEnd = 0
+      landed = false
+      setAway(false)
+    },
   }
-}
-
-/** Rows drawn before the first layout; a longer thread starts drawing at its end. */
-export const INITIAL_ROWS = 10
-
-/**
- * Where a transcript of `count` rows starts drawing: at its newest row when
- * it is longer than the first batch, so a long thread opens at its end
- * without walking up through its history; from the top otherwise.
- */
-export function openingIndex(count: number): number | undefined {
-  return count > INITIAL_ROWS ? count - 1 : undefined
 }

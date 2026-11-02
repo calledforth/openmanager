@@ -74,6 +74,22 @@ export function resolveThreadRow(
   }
 }
 
+/** How much text a row holds, for sizing what the list mounts; the stores may be absent. */
+export function rowTextLength(
+  message: UIMessage,
+  stores:
+    | { streamingStore: StreamingMessageSource; messageContentStore: MessageContentStore }
+    | null
+    | undefined,
+): number {
+  const id = message.externalId
+  const body =
+    stores?.messageContentStore.get(id)?.content ??
+    stores?.streamingStore.get(id)?.content ??
+    message.optimisticContent
+  return body?.length ?? 0
+}
+
 /**
  * The turn an assistant row answers, from the row key the shared projection
  * gives a turn's reply (`turn:<turnId>:assistant`); null for any other row.
