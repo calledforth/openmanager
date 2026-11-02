@@ -135,6 +135,19 @@ export function claudeToolContentFromInput(
   return undefined
 }
 
+/** What an answered `AskUserQuestion` was asked and answered. The answers reach
+ * the SDK in `updatedInput`, never the wire's input, and come back only here, in
+ * the structured result (`{questions, answers}`, read from real session logs). */
+export function claudeAnsweredInput(
+  toolName: string | undefined,
+  result: unknown,
+): { questions: unknown; answers: unknown } | undefined {
+  if (toolName !== 'AskUserQuestion') return undefined
+  const { questions, answers } = object(result)
+  if (!Array.isArray(questions) || !answers || typeof answers !== 'object') return undefined
+  return { questions, answers }
+}
+
 /** Tools whose structured result is a file patch. */
 const PATCH_TOOLS = new Set(['Edit', 'Write', 'MultiEdit'])
 

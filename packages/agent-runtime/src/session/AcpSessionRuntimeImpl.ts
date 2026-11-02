@@ -23,7 +23,10 @@ import type {
   BackendRoute,
   SessionResult,
 } from '../backends/Backend.js'
-import { parseAcpFormElicitation, type AcpFormQuestionAdapter } from '../backends/acp/elicitation.js'
+import {
+  parseAcpFormElicitation,
+  type AcpFormQuestionAdapter,
+} from '../backends/acp/elicitation.js'
 import {
   ExtensionRegistry,
   subtaskStatusFromTool,
@@ -39,10 +42,7 @@ import type {
 } from '../core/InteractionBroker.js'
 import type { PermissionBroker } from '../core/PermissionBroker.js'
 import type { HostDeps } from '../host.js'
-import {
-  OpenCodeQuestions,
-  type OpenCodeQuestionRequest,
-} from '../providers/opencode-questions.js'
+import { OpenCodeQuestions, type OpenCodeQuestionRequest } from '../providers/opencode-questions.js'
 import {
   acpCommandBin,
   requireAcpConfig,
@@ -50,11 +50,7 @@ import {
   type ProviderConfig,
 } from '../providers/index.js'
 import type { AcpConnection, AcpConnectionFactory } from './AcpConnection.js'
-import type {
-  SessionRuntime,
-  SessionRuntimeFactory,
-  SessionRuntimeSpec,
-} from './SessionRuntime.js'
+import type { SessionRuntime, SessionRuntimeFactory, SessionRuntimeSpec } from './SessionRuntime.js'
 import {
   AppliedConfigCache,
   configValueMatches,
@@ -376,7 +372,10 @@ export class AcpSessionRuntimeImpl implements ManagedSessionRuntime {
     const sessionId = this.sessionIdValue
     if (!sessionId) return
     const available = this.currentModes()?.availableModes
-    this.reportedModes = { ...(available ? { availableModes: available } : {}), currentModeId: modeId }
+    this.reportedModes = {
+      ...(available ? { availableModes: available } : {}),
+      currentModeId: modeId,
+    }
     this.emit(
       routeEvent(this.route(), sessionId, 'session', 'current_mode_update', this.reportedModes),
     )
@@ -1084,7 +1083,8 @@ export class AcpSessionRuntimeImpl implements ManagedSessionRuntime {
   ): Promise<acp.RequestPermissionResponse> {
     this.logInbound('session/request_permission', params)
     const sessionId = sessionIdOf(params)
-    if (!sessionId || sessionId !== this.sessionIdValue) return { outcome: { outcome: 'cancelled' } }
+    if (!sessionId || sessionId !== this.sessionIdValue)
+      return { outcome: { outcome: 'cancelled' } }
     const p = object(params)
     const requestId = crypto.randomUUID()
     const tool = object(p.toolCall)
@@ -1435,6 +1435,7 @@ export class AcpSessionRuntimeImpl implements ManagedSessionRuntime {
           sessionId,
           title: parsed.title,
           questions: parsed.questions,
+          ...(parsed.toolCallId ? { toolCallId: parsed.toolCallId } : {}),
         }),
       )
       const outcome = await outcomePromise

@@ -37,15 +37,33 @@ const toolInput = (index: number, partial_json: string) =>
   stream({ type: 'content_block_delta', index, delta: { type: 'input_json_delta', partial_json } })
 
 const named = (events: BackendEvent[]) => events.map((event) => event.event)
-const dataOf = <T,>(events: BackendEvent[], name: string): T[] =>
+const dataOf = <T>(events: BackendEvent[], name: string): T[] =>
   events.filter((event) => event.event === name).map((event) => event.data as T)
 
 describe('ClaudeMessageTranslator thinking', () => {
   it('frames a thinking run without ever emitting its empty text', () => {
     const { events, feed } = build()
-    feed(stream({ type: 'content_block_start', index: 0, content_block: { type: 'thinking', thinking: '', signature: 'AAA' } }))
-    feed(stream({ type: 'content_block_delta', index: 0, delta: { type: 'thinking_delta', thinking: '', estimated_tokens: 50 } }))
-    feed(stream({ type: 'content_block_delta', index: 0, delta: { type: 'signature_delta', signature: 'BBB' } }))
+    feed(
+      stream({
+        type: 'content_block_start',
+        index: 0,
+        content_block: { type: 'thinking', thinking: '', signature: 'AAA' },
+      }),
+    )
+    feed(
+      stream({
+        type: 'content_block_delta',
+        index: 0,
+        delta: { type: 'thinking_delta', thinking: '', estimated_tokens: 50 },
+      }),
+    )
+    feed(
+      stream({
+        type: 'content_block_delta',
+        index: 0,
+        delta: { type: 'signature_delta', signature: 'BBB' },
+      }),
+    )
     feed(stream({ type: 'content_block_stop', index: 0 }))
 
     const chunks = dataOf<{ phase: string; tokens?: number; content?: unknown }>(
@@ -63,7 +81,13 @@ describe('ClaudeMessageTranslator thinking', () => {
     const { events, feed } = build()
     feed(stream({ type: 'content_block_start', index: 0, content_block: { type: 'thinking' } }))
     for (const estimated_tokens of [50, 100, 60])
-      feed(stream({ type: 'content_block_delta', index: 0, delta: { type: 'thinking_delta', thinking: '', estimated_tokens } }))
+      feed(
+        stream({
+          type: 'content_block_delta',
+          index: 0,
+          delta: { type: 'thinking_delta', thinking: '', estimated_tokens },
+        }),
+      )
 
     const tokens = dataOf<{ tokens?: number }>(events, 'agent_thought_chunk')
       .map((chunk) => chunk.tokens)
@@ -76,7 +100,13 @@ describe('ClaudeMessageTranslator thinking', () => {
   it('reports a first reading of zero rather than swallowing it', () => {
     const { events, feed } = build()
     feed(stream({ type: 'content_block_start', index: 0, content_block: { type: 'thinking' } }))
-    feed(stream({ type: 'content_block_delta', index: 0, delta: { type: 'thinking_delta', thinking: '', estimated_tokens: 0 } }))
+    feed(
+      stream({
+        type: 'content_block_delta',
+        index: 0,
+        delta: { type: 'thinking_delta', thinking: '', estimated_tokens: 0 },
+      }),
+    )
 
     expect(dataOf<{ tokens?: number }>(events, 'agent_thought_chunk')[1]?.tokens).toBe(0)
   })
@@ -94,7 +124,9 @@ describe('ClaudeMessageTranslator tools', () => {
     feed(stream({ type: 'content_block_stop', index: 0 }))
     // The stop means the ARGUMENTS are complete, never the tool.
     expect(named(events)).toEqual(['tool_call', 'tool_call_update'])
-    expect(dataOf<{ status: string; rawInput: unknown }>(events, 'tool_call_update')[0]).toMatchObject({
+    expect(
+      dataOf<{ status: string; rawInput: unknown }>(events, 'tool_call_update')[0],
+    ).toMatchObject({
       status: 'in_progress',
       rawInput: { file_path: 'C:/a.ts' },
     })
@@ -109,6 +141,28 @@ describe('ClaudeMessageTranslator tools', () => {
       session_id: 'session-1',
     })
     expect(dataOf<{ status: string }>(events, 'tool_call_update').at(-1)?.status).toBe('completed')
+  })
+
+  it('states an answered question on the tool, from the structured result', () => {
+    const { events, feed } = build()
+    feed(toolStart(0, 'toolu_ask', 'AskUserQuestion'))
+    const asked = { questions: [{ question: 'Which?' }] }
+    feed(toolInput(0, JSON.stringify(asked)))
+    feed(stream({ type: 'content_block_stop', index: 0 }))
+    feed({
+      type: 'user',
+      message: {
+        role: 'user',
+        content: [{ type: 'tool_result', tool_use_id: 'toolu_ask', content: 'User answered' }],
+      },
+      tool_use_result: { ...asked, answers: { 'Which?': 'A' } },
+      parent_tool_use_id: null,
+      session_id: 'session-1',
+    })
+    expect(dataOf<{ rawInput: unknown }>(events, 'tool_call_update').at(-1)?.rawInput).toEqual({
+      ...asked,
+      answers: { 'Which?': 'A' },
+    })
   })
 
   it('does not re-emit an input that has not changed', () => {
@@ -133,7 +187,9 @@ describe('ClaudeMessageTranslator tools', () => {
       type: 'user',
       message: {
         role: 'user',
-        content: [{ type: 'tool_result', tool_use_id: 'toolu_bash', content: 'done', is_error: true }],
+        content: [
+          { type: 'tool_result', tool_use_id: 'toolu_bash', content: 'done', is_error: true },
+        ],
       },
       parent_tool_use_id: null,
       session_id: 'session-1',
@@ -239,9 +295,19 @@ describe('ClaudeMessageTranslator assistant snapshots', () => {
   it('backfills only the text blocks that never streamed', () => {
     const { events, feed } = build()
     feed(stream({ type: 'message_start', message: { role: 'assistant', content: [] } }))
-    feed(stream({ type: 'content_block_start', index: 0, content_block: { type: 'text', text: '' } }))
-    feed(stream({ type: 'content_block_delta', index: 0, delta: { type: 'text_delta', text: 'streamed' } }))
-    feed(stream({ type: 'content_block_start', index: 1, content_block: { type: 'text', text: '' } }))
+    feed(
+      stream({ type: 'content_block_start', index: 0, content_block: { type: 'text', text: '' } }),
+    )
+    feed(
+      stream({
+        type: 'content_block_delta',
+        index: 0,
+        delta: { type: 'text_delta', text: 'streamed' },
+      }),
+    )
+    feed(
+      stream({ type: 'content_block_start', index: 1, content_block: { type: 'text', text: '' } }),
+    )
     feed({
       type: 'assistant',
       message: {
@@ -278,18 +344,48 @@ describe('ClaudeMessageTranslator assistant snapshots', () => {
       session_id: 'session-1',
     })
     feed(stream({ type: 'message_start', message: { role: 'assistant', content: [] } }))
-    feed(stream({ type: 'content_block_start', index: 0, content_block: { type: 'thinking', thinking: '' } }))
-    feed(stream({ type: 'content_block_delta', index: 0, delta: { type: 'thinking_delta', thinking: '', estimated_tokens: 50 } }))
+    feed(
+      stream({
+        type: 'content_block_start',
+        index: 0,
+        content_block: { type: 'thinking', thinking: '' },
+      }),
+    )
+    feed(
+      stream({
+        type: 'content_block_delta',
+        index: 0,
+        delta: { type: 'thinking_delta', thinking: '', estimated_tokens: 50 },
+      }),
+    )
     feed(snapshot('uuid-thinking', [{ type: 'thinking', thinking: '', signature: 'AAA' }]))
     feed(stream({ type: 'content_block_stop', index: 0 }))
-    feed(stream({ type: 'content_block_start', index: 1, content_block: { type: 'text', text: '' } }))
-    feed(stream({ type: 'content_block_delta', index: 1, delta: { type: 'text_delta', text: 'Hello ' } }))
-    feed(stream({ type: 'content_block_delta', index: 1, delta: { type: 'text_delta', text: 'there.' } }))
+    feed(
+      stream({ type: 'content_block_start', index: 1, content_block: { type: 'text', text: '' } }),
+    )
+    feed(
+      stream({
+        type: 'content_block_delta',
+        index: 1,
+        delta: { type: 'text_delta', text: 'Hello ' },
+      }),
+    )
+    feed(
+      stream({
+        type: 'content_block_delta',
+        index: 1,
+        delta: { type: 'text_delta', text: 'there.' },
+      }),
+    )
     feed(snapshot('uuid-text', [{ type: 'text', text: 'Hello there.' }]))
     feed(stream({ type: 'content_block_stop', index: 1 }))
     feed(toolStart(2, 'toolu_1', 'Read'))
     feed(toolInput(2, '{"file_path":"a.ts"}'))
-    feed(snapshot('uuid-tool', [{ type: 'tool_use', id: 'toolu_1', name: 'Read', input: { file_path: 'a.ts' } }]))
+    feed(
+      snapshot('uuid-tool', [
+        { type: 'tool_use', id: 'toolu_1', name: 'Read', input: { file_path: 'a.ts' } },
+      ]),
+    )
     feed(stream({ type: 'content_block_stop', index: 2 }))
 
     const text = dataOf<{ content: { text: string } }>(events, 'agent_message_chunk')
@@ -306,8 +402,16 @@ describe('ClaudeMessageTranslator assistant snapshots', () => {
   it('still backfills a block that never streamed, once, whatever its index', () => {
     const { events, feed } = build()
     feed(stream({ type: 'message_start', message: { role: 'assistant', content: [] } }))
-    feed(stream({ type: 'content_block_start', index: 0, content_block: { type: 'text', text: '' } }))
-    feed(stream({ type: 'content_block_delta', index: 0, delta: { type: 'text_delta', text: 'Done.' } }))
+    feed(
+      stream({ type: 'content_block_start', index: 0, content_block: { type: 'text', text: '' } }),
+    )
+    feed(
+      stream({
+        type: 'content_block_delta',
+        index: 0,
+        delta: { type: 'text_delta', text: 'Done.' },
+      }),
+    )
     // Two identical paragraphs: the streamed one is claimed exactly once, so
     // the second is genuinely new and must show.
     for (const uuid of ['uuid-a', 'uuid-b']) {
@@ -336,8 +440,12 @@ describe('ClaudeMessageTranslator assistant snapshots', () => {
     // A second message restarts at index 0 with a text block. Carrying the map
     // over would feed its deltas into the previous message's tool buffer.
     feed(stream({ type: 'message_start', message: { role: 'assistant', content: [] } }))
-    feed(stream({ type: 'content_block_start', index: 0, content_block: { type: 'text', text: '' } }))
-    feed(stream({ type: 'content_block_delta', index: 0, delta: { type: 'text_delta', text: 'hi' } }))
+    feed(
+      stream({ type: 'content_block_start', index: 0, content_block: { type: 'text', text: '' } }),
+    )
+    feed(
+      stream({ type: 'content_block_delta', index: 0, delta: { type: 'text_delta', text: 'hi' } }),
+    )
 
     expect(named(events)).toEqual(['tool_call', 'agent_message_chunk'])
   })
@@ -392,7 +500,9 @@ describe('ClaudeMessageTranslator usage', () => {
     const { feed } = build()
     // Double counting is the failure mode this guards: a streamed turn already
     // reported its tokens through message_delta.
-    expect(feed(result({ usage: { input_tokens: 40, output_tokens: 2 } })).completed?.usage).toEqual({
+    expect(
+      feed(result({ usage: { input_tokens: 40, output_tokens: 2 } })).completed?.usage,
+    ).toEqual({
       inputTokens: 40,
       outputTokens: 2,
       totalTokens: 42,
@@ -414,7 +524,12 @@ describe('ClaudeMessageTranslator usage', () => {
 describe('ClaudeMessageTranslator subagents', () => {
   it('drops subagent traffic and counts the loss', () => {
     const { events, feed, log } = build()
-    feed(stream({ type: 'content_block_delta', index: 0, delta: { type: 'text_delta', text: 'inner' } }, 'toolu_task'))
+    feed(
+      stream(
+        { type: 'content_block_delta', index: 0, delta: { type: 'text_delta', text: 'inner' } },
+        'toolu_task',
+      ),
+    )
     feed({
       type: 'result',
       subtype: 'success',
@@ -477,7 +592,9 @@ describe('ClaudeMessageTranslator system frames', () => {
       }),
     )
 
-    expect(dataOf<{ availableCommands: unknown[] }>(events, 'available_commands_update')[0]).toEqual({
+    expect(
+      dataOf<{ availableCommands: unknown[] }>(events, 'available_commands_update')[0],
+    ).toEqual({
       availableCommands: [
         {
           name: 'compact',
@@ -490,7 +607,9 @@ describe('ClaudeMessageTranslator system frames', () => {
 
   it('reports an API retry as recoverable', () => {
     const { events, feed } = build()
-    feed(system('api_retry', { attempt: 1, max_retries: 3, error: 'overloaded', error_status: 529 }))
+    feed(
+      system('api_retry', { attempt: 1, max_retries: 3, error: 'overloaded', error_status: 529 }),
+    )
 
     expect(dataOf<{ recoverable: boolean; code?: number }>(events, 'rpc_error')[0]).toMatchObject({
       recoverable: true,
@@ -505,16 +624,18 @@ describe('ClaudeMessageTranslator system frames', () => {
     // `SessionUsage` needs a denominator a compaction does not carry; a meter
     // drawn against a guessed one is worse than no meter.
     expect(named(events)).not.toContain('usage_update')
-    expect(log.mock.calls.some(([entry]) => String(entry?.message).includes('compacted'))).toBe(true)
+    expect(log.mock.calls.some(([entry]) => String(entry?.message).includes('compacted'))).toBe(
+      true,
+    )
   })
 
   it('fails the tool row an auto-deny short-circuited', () => {
     const { events, feed } = build()
     feed(system('permission_denied', { tool_name: 'Bash', tool_use_id: 'toolu_denied' }))
 
-    expect(dataOf<{ toolCallId: string; status: string }>(events, 'tool_call_update')[0]).toMatchObject(
-      { toolCallId: 'toolu_denied', status: 'failed' },
-    )
+    expect(
+      dataOf<{ toolCallId: string; status: string }>(events, 'tool_call_update')[0],
+    ).toMatchObject({ toolCallId: 'toolu_denied', status: 'failed' })
   })
 })
 

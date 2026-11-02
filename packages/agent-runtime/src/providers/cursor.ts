@@ -75,7 +75,9 @@ function parseUpdateTodos(params: unknown): { todos: PlanTodo[]; merge: boolean 
 
 /** Wire shape (cursor-agent 2026.07.01): {toolCallId, title, questions:[{id, prompt,
  * options:[{id,label}], allowMultiple}]}. Params carry no sessionId. */
-function parseAskQuestion(params: unknown): { title?: string; questions: Question[] } | undefined {
+function parseAskQuestion(
+  params: unknown,
+): { title?: string; questions: Question[]; toolCallId?: string } | undefined {
   const p = (params ?? {}) as Record<string, unknown>
   if (!Array.isArray(p.questions)) return undefined
   const questions: Question[] = p.questions.map((raw, index) => {
@@ -92,7 +94,8 @@ function parseAskQuestion(params: unknown): { title?: string; questions: Questio
     }
   })
   if (questions.length === 0) return undefined
-  return { title: str(p.title) || undefined, questions }
+  const toolCallId = str(p.toolCallId)
+  return { title: str(p.title) || undefined, questions, ...(toolCallId ? { toolCallId } : {}) }
 }
 
 /** Wire shape (cursor-agent 2026.07.01): subagentType is a nested tagged enum,

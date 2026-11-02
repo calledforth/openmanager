@@ -13,6 +13,7 @@ import type { BackendEvent, BackendRoute } from '../../backends/Backend.js'
 import type { HostDeps } from '../../host.js'
 import { number, object, routeEvent, string } from '../wire.js'
 import {
+  claudeAnsweredInput,
   claudeToolContentFromInput,
   claudeToolKind,
   claudeToolLocations,
@@ -488,6 +489,7 @@ export class ClaudeMessageTranslator {
       const failed = block.is_error === true
       const toolName = this.toolNames.get(toolUseId)
       const extras = claudeToolResultExtras(toolName, structured)
+      const answered = claudeAnsweredInput(toolName, structured)
       const resultContent = this.contentFromInput.has(toolUseId)
         ? undefined
         : toolResultContent(block.content)
@@ -496,6 +498,7 @@ export class ClaudeMessageTranslator {
         ...(toolName ? { toolName } : {}),
         status: failed || extras.outcome ? 'failed' : 'completed',
         ...extras,
+        ...(answered ? { rawInput: answered } : {}),
         rawOutput: block.content,
         // Content is supplied only when the input produced none. `content` is
         // replaced wholesale downstream, so publishing result text for an Edit
