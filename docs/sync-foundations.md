@@ -1858,9 +1858,15 @@ that. The cost was the text, not the cap.
   a tool settles with never enters the event: it travels beside it (`withSettledText`) and is written
   in the event's transaction, the way an artifact's bytes are stored with a reference in the event.
   Rule 2 holds for everything a client's state holds; the store is what `outputBytes` refers to.
-- **`GET /tool-output/<session>/<tool>`** answers it, with the artifact route's credential, audit and
-  rate limit. Text once a tool has settled cannot change, so a read needs no invalidation, and nothing
-  merges or compares it: the view shows what came back and keeps it only while the row is open.
+- **`GET /tool-output/<session>/<tool>`** answers it, with the artifact route's credential check:
+  a failed credential is audited and counts toward the lockout, and a refused workspace is audited by
+  its resolver. A successful read is not audited, and only failed credentials are rate limited. It
+  reads committed rows and flushes nothing, because a client learns of a settled tool only after its
+  write commits, and a read that fails answers 503. Settled text does not change, and that is
+  enforced: the tracker, the projection and `applyToolUpdate` each keep what a call settled with, so
+  a read needs no invalidation, and nothing merges or compares it. The view shows what came back and
+  keeps it only while the row is open. The one exception is a call refused with nothing stored, which
+  can still take the failure that follows: that is its first text, not a change.
   An HTTP route rather than a socket command, for three reasons. It stays out of the connection's one
   ordered queue, where a body would wait behind a whole chat and delay what comes after it. Text
   over HTTP is compressed by the edge (3.40 to 1.13 MB measured through a quick tunnel), which socket
@@ -1876,6 +1882,11 @@ that. The cost was the text, not the cap.
   `tool.updated {declined}` as it records the answer, so a restart cannot lose it and a later failure
   cannot replace it. A permission for a call with no row (Cursor's `web_search_0`) has nothing to say
   it on, and the tracker keeps it for the failure that may follow.
+- **An answered question states its answers.** A row reads them from the tool's input, and on neither
+  provider did they arrive there. Claude Code's come from the structured result, which holds
+  `{questions, answers}`. Cursor's exist only in the interaction, so the server writes them onto the
+  tool when the question resolves, found by the `toolCallId` its request carries. A question with no
+  answers is a plain row, and reads "Skipped" only when the call's status says it ended that way.
 - **Closes state how much is left.** `turn-closure.ts` and the boot repair add `finishedAt` and
   `outputBytes` from the rows.
 - **Deltas coalesce** like text in the batcher, by call. Only a bare delta can: ACP repeats a call's
