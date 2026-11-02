@@ -269,7 +269,7 @@ describe('tool output', () => {
     await open(rig, target, 'read-t10', 'Read src/a.ts', 'read')
     await update(rig, target, 'read-t10', {
       status: 'completed',
-      rawOutput: { content: 'READ BODY' },
+      rawOutput: 'READ BODY',
       locations: [{ path: 'src/a.ts' }],
     })
     await open(rig, target, 'edit-t10', 'Edit File', 'edit')
@@ -297,6 +297,9 @@ describe('tool output', () => {
     ])
     expect(seen).not.toMatch(/READ BODY|OLD BODY|NEW BODY|PATCH BODY|METADATA BODY/)
     expect(toolOf(a, target)?.locations).toEqual([{ path: 'src/a.ts' }])
+    // Stored nowhere: a read has no output to fetch.
+    expect(toolOf(a, target)?.outputBytes).toBeUndefined()
+    await expect(readOutput(rig, target, toolOf(a, target)!.toolCallId)).rejects.toThrow()
     expect(toolOf(a, target, 1)?.locations).toEqual([{ path: 'src/b.ts' }])
     await expectConverges('T10', rig, a)
   })
@@ -310,9 +313,8 @@ describe('tool output', () => {
     await untilThread(a, target, (state) => state.tools[0]?.status === 'completed', 'the settle')
     const { toolCallId } = toolOf(a, target)!
     expect(await readOutput(rig, target, toolCallId)).toBe('kept')
-    await expect(
-      readOutput(rig, { ...target, sessionId: 'another-session' }, toolCallId),
-    ).rejects.toThrow()
+    const other = await createSession(rig, a, QUIET)
+    await expect(readOutput(rig, other, toolCallId)).rejects.toThrow()
     const anonymous = await fetch(
       `http://127.0.0.1:${rig.server.port}/tool-output/${target.sessionId}/${toolCallId}`,
     )
