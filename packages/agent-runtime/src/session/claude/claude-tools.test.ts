@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import { canonicalizeToolName, getToolLabels } from '@openmanager/shared/lib/tool-meta'
 import {
+  claudeAnsweredInput,
   claudeToolContentFromInput,
   claudeToolKind,
   claudeToolLocations,
@@ -12,9 +13,20 @@ import {
 describe('claudeToolKind', () => {
   it('classifies the built-ins the UI has affordances for', () => {
     expect(
-      ['Read', 'Glob', 'Grep', 'Bash', 'Edit', 'Write', 'MultiEdit', 'NotebookEdit', 'WebFetch', 'WebSearch', 'TodoWrite', 'Task'].map(
-        claudeToolKind,
-      ),
+      [
+        'Read',
+        'Glob',
+        'Grep',
+        'Bash',
+        'Edit',
+        'Write',
+        'MultiEdit',
+        'NotebookEdit',
+        'WebFetch',
+        'WebSearch',
+        'TodoWrite',
+        'Task',
+      ].map(claudeToolKind),
     ).toEqual([
       'read',
       'search',
@@ -182,5 +194,18 @@ describe('subtaskFromClaudeTool', () => {
         { phase: 'call', tracked: false },
       ),
     ).toBeUndefined()
+  })
+})
+
+describe('claudeAnsweredInput', () => {
+  it('reads what was asked and answered from the structured result', () => {
+    const result = { questions: [{ question: 'Which?' }], answers: { 'Which?': 'A' } }
+    expect(claudeAnsweredInput('AskUserQuestion', result)).toEqual(result)
+  })
+
+  it('says nothing for a result without answers, or for another tool', () => {
+    expect(claudeAnsweredInput('AskUserQuestion', 'User declined')).toBeUndefined()
+    expect(claudeAnsweredInput('AskUserQuestion', undefined)).toBeUndefined()
+    expect(claudeAnsweredInput('Bash', { questions: [], answers: {} })).toBeUndefined()
   })
 })

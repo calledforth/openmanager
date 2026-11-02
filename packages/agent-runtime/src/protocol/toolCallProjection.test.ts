@@ -333,6 +333,24 @@ describe('text after a call settled', () => {
     expect(wire(updates)).not.toContain('and more')
   })
 
+  it('keeps the text a call settled with when a second settle brings another', () => {
+    const { feed, tracker } = harness()
+    feed('tool_call', { title: 'bash', kind: 'execute' })
+    feed('tool_call_update', { status: 'completed', rawOutput: 'first' })
+    tracker.takeBody('tool-1')
+    const second = feed('tool_call_update', { status: 'completed', rawOutput: 'a different one' })
+    expect(second.outputBytes).toBe(5)
+    expect(tracker.takeBody('tool-1')).toBeUndefined()
+  })
+
+  it('still takes the failure that follows a refusal with nothing stored', () => {
+    const { feed, tracker } = harness()
+    feed('tool_call', { title: 'Bash', toolName: 'Bash', kind: 'execute' })
+    tracker.decline('tool-1')
+    feed('tool_call_update', { status: 'failed', rawOutput: 'User refused.' })
+    expect(tracker.takeBody('tool-1')).toBe('User refused.')
+  })
+
   it('sends none after a refusal either', () => {
     const { feed, tracker } = harness()
     feed('tool_call', { title: 'Bash', toolName: 'Bash', kind: 'execute' })

@@ -1436,6 +1436,7 @@ export class AcpSessionRuntimeImpl implements ManagedSessionRuntime {
           sessionId,
           title: parsed.title,
           questions: parsed.questions,
+          ...(parsed.toolCallId ? { toolCallId: parsed.toolCallId } : {}),
         }),
       )
       const outcome = await outcomePromise

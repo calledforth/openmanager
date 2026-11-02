@@ -19,6 +19,8 @@ export type QuestionRequest = {
   sessionId: string
   title?: string
   questions: Question[]
+  /** The tool call this request belongs to, when the provider says. */
+  toolCallId?: string
 }
 
 export type QuestionAnswer = {

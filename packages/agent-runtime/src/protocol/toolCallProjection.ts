@@ -367,6 +367,11 @@ export class ToolCallTracker {
     return open
   }
 
+  /** Whether a tool event went out for this call, so a row exists to update. */
+  isSeen(toolCallId: string): boolean {
+    return this.calls.get(toolCallId)?.seen ?? false
+  }
+
   /** The fields that say something new, for an update whose point is its text. */
   changed<T extends Record<string, unknown>>(toolCallId: string, fields: T): Partial<T> {
     const sent = this.calls.get(toolCallId)?.sent
@@ -429,9 +434,12 @@ export class ToolCallTracker {
     return { outputDelta: delta }
   }
 
-  /** The text a call settles with: it replaces whatever ran before it. */
+  /** The text a call settles with: it replaces whatever ran before it, once. */
   settleWith(toolCallId: string, text: string): void {
     const call = this.call(toolCallId)
+    // Settled text does not change. A call refused before it said anything can
+    // still take the failure that follows, which is the first text it has.
+    if (isSettledToolStatus(call.status) && call.raw?.bytes) return
     call.body = text
     call.raw = {
       length: text.length,

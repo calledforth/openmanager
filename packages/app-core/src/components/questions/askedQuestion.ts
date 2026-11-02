@@ -1,10 +1,10 @@
 /** Reading an answered `AskUserQuestion` back out of a transcript tool part.
  *
- * The runtime replaces the tool input with `{questions, answers}` when the user
- * answers (see `ClaudeSessionRuntime.askUserQuestion`), but a part can reach the
- * transcript in three states: original input only (still open, or skipped),
- * input carrying the answers, or answers stranded in the tool output. All three
- * have to render, so nothing here assumes a field exists.
+ * The environment states the answers on the tool's input once they exist: from
+ * Claude Code's structured result, or from the question's own answer on Cursor.
+ * A call with no answers may simply not have any yet, so it is not a skipped
+ * question unless its status says it ended that way. A running tool's text can
+ * also carry them, on the providers that put them there.
  */
 
 export interface AskedQuestion {
@@ -51,9 +51,12 @@ function readAnswers(input: Record<string, unknown>, output: unknown): Record<st
   return {}
 }
 
-/** Returns null for anything that is not a recognisable question set, which
- * keeps the caller on the ordinary tool row rather than rendering an empty
- * card. */
+/** How a call ends when nobody answered it. */
+const UNANSWERED = new Set(['error', 'failed', 'declined', 'cancelled'])
+
+/** Returns null for anything that is not a recognisable question set, and for a
+ * call with no answers whose status does not say they were skipped. Both keep
+ * the caller on the ordinary tool row rather than a card of "Skipped". */
 export function readAskedQuestions(state: unknown): AskedQuestion[] | null {
   const toolState = record(state)
   const input = record(toolState.input)
@@ -76,5 +79,7 @@ export function readAskedQuestions(state: unknown): AskedQuestion[] | null {
     ]
   })
 
-  return questions.length ? questions : null
+  if (questions.length === 0) return null
+  const answered = questions.some((question) => question.answer !== null)
+  return answered || UNANSWERED.has(text(toolState.status)) ? questions : null
 }
