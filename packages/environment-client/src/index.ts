@@ -87,6 +87,7 @@ export {
   deriveSessionStatus,
   selectActiveSession,
   selectActiveThread,
+  resendablePrompt,
   selectActiveSendPending,
   selectActiveTurn,
   selectComposerPreference,

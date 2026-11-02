@@ -131,6 +131,8 @@ export interface MockTurnContext extends ThreadTarget {
 
 export interface MockEnvironmentClientOptions {
   seed?: MockSeed
+  /** Start from this state instead of the seed's, as a reload starts from its cache. */
+  restored?: EnvironmentState
   /** Commands the mock advertises. Defaults to all of them. */
   capabilities?: readonly EnvironmentCommandName[]
   /**
@@ -261,7 +263,9 @@ export function createMockEnvironmentClient(
     environmentId: 'mock-environment',
     name: 'Mock environment',
   }
-  const store = createEnvironmentStore(seedState(environment, options.seed, capabilities, uploads))
+  const store = createEnvironmentStore(
+    options.restored ?? seedState(environment, options.seed, capabilities, uploads),
+  )
   let settleTickets = 0
   const calls: MockCommandCall[] = []
   let openGeneration = 0

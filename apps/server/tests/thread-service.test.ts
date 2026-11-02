@@ -701,6 +701,7 @@ describe('thread command provider routing', () => {
         payload: {
           turnId: sent.payload.turn.turnId,
           reason: 'provider_process_crashed',
+          action: 'retry',
           message: 'The provider process crashed before the turn completed.',
         },
       }),

@@ -294,6 +294,7 @@ export class ClaudeSessionRuntime implements ManagedSessionRuntime {
     this.translator = new ClaudeMessageTranslator({
       route: () => this.route(),
       log: this.host.log,
+      turnOpen: () => this.turn !== undefined,
       ...(this.config.subtasks ? { subtasks: this.config.subtasks } : {}),
     })
     this.exited = new Promise<SessionRuntimeExit>((resolve) => {

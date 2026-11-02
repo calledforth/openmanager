@@ -2,6 +2,7 @@ import { isTurnSettled } from '@agentpack/view'
 export { isTurnSettled } from '@agentpack/view'
 import type { ContentBlock, Message, Turn } from '@openmanager/protocol'
 import {
+  resendablePrompt,
   selectActiveThread,
   shallowEqualArray,
   type EnvironmentClient,
@@ -12,7 +13,7 @@ import {
   type ToolState,
 } from '@openmanager/environment-client'
 import type { LocalStreamingMessage, MessagePart } from './streaming-messages-store'
-import { failurePart, noticePart, resendablePrompt } from './turn-notice-parts'
+import { failurePart, noticePart } from './turn-notice-parts'
 import type { TurnRuntimeMetadata } from '../components/parts/turn-work-group'
 import type {
   MessageContentSnapshot,
@@ -269,8 +270,9 @@ function projectTurn(
   // Whether the failure offers its action. Kept to this rather than `latest`,
   // so a new turn does not rebuild the settled turn before it.
   const actionable = latest && failure !== undefined
-  // A background turn has no prompt to send again.
-  const resendable = actionable && resendablePrompt(messages, turn.turnId) !== undefined
+  // A background turn has no prompt to send again. An older failure says so
+  // truthfully too; `actionable` is what keeps its button off.
+  const resendable = failure !== undefined && resendablePrompt(messages, turn.turnId) !== undefined
   const userRowKeys = new Map<string, string | undefined>()
   for (const message of messages) {
     if (message.role === 'user') {

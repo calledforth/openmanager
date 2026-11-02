@@ -632,6 +632,7 @@ export function createWebSocketEnvironmentClient(
     connectionGeneration += 1
     liveness = createClientLivenessState(now())
     scheduleHeartbeat()
+    markResync(store.getState().activeThreadId)
     patchConnection({
       phase: 'connected',
       hasConnected: true,
@@ -645,6 +646,7 @@ export function createWebSocketEnvironmentClient(
     resyncing = true
     void resync().finally(() => {
       if (generation !== connectionGeneration) return
+      markResync(null)
       resyncing = false
       scheduleHeldSends()
     })
@@ -688,8 +690,8 @@ export function createWebSocketEnvironmentClient(
 
   /**
    * Start or end holding a scope's frames. Held is what a catch-up is, whoever
-   * asked for it, so the "catching up" signal for a thread is read here and
-   * has no other writer.
+   * asked for it, so the "catching up" signal for a thread is read here. Its
+   * one other writer is `markResync`, for the moment before a catch-up starts.
    */
   const setHeld = (subscription: Subscription, held: Held[] | undefined) => {
     subscription.held = held
@@ -697,6 +699,33 @@ export function createWebSocketEnvironmentClient(
     if (scope.type === 'thread') {
       store.update((state) => applyCatchingUp(state, scope.threadId, held !== undefined))
     }
+  }
+
+  /** The chat `markResync` said was catching up. */
+  let resyncThreadId: string | null = null
+
+  /**
+   * From the handshake until its resync ends, the open chat is catching up,
+   * whether or not its own catch-up has started: a chat with no subscription
+   * yet (its open ran before the socket was ready) starts one only after the
+   * catalog read, and until then what is on screen may be out of date. Written
+   * in the same tick as `connected`, so nothing reads the gap. A catch-up that
+   * is still running when the resync ends keeps the signal, and `setHeld` ends it.
+   */
+  const markResync = (threadId: string | null) => {
+    const previous = resyncThreadId
+    resyncThreadId = threadId
+    const held = (id: string) =>
+      [...subscriptions.values()].some(
+        (item) => item.scope.type === 'thread' && item.scope.threadId === id && item.held,
+      )
+    store.update((state) => {
+      const left =
+        previous && previous !== threadId && !held(previous)
+          ? applyCatchingUp(state, previous, false)
+          : state
+      return threadId ? applyCatchingUp(left, threadId, true) : left
+    })
   }
 
   /** The scope's cursor as kept beside its copy: what a catch-up resumes from. */

@@ -1450,6 +1450,20 @@ export function selectActiveThread(state: EnvironmentState): ThreadState | null 
   return state.activeThreadId ? (state.threads[state.activeThreadId] ?? null) : null
 }
 
+/** The prompt a turn was sent with, as a retry would send it again. */
+export function resendablePrompt(
+  messages: readonly Message[],
+  turnId: string,
+): { text: string; artifactIds: string[] } | undefined {
+  const prompt = messages.find((message) => message.turnId === turnId && message.role === 'user')
+  if (!prompt) return undefined
+  const text = prompt.content.map((block) => (block.type === 'text' ? block.text : '')).join('')
+  const artifactIds = prompt.content.flatMap((block) =>
+    block.type === 'artifact' ? [block.artifactId] : [],
+  )
+  return text || artifactIds.length > 0 ? { text, artifactIds } : undefined
+}
+
 /**
  * A send of the chat on screen is on its way: echoed and not yet started,
  * waiting behind a catch-up included. The turn that settles it arrives in the

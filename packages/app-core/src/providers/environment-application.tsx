@@ -32,6 +32,7 @@ import {
   selectActiveThread,
   selectActiveTurn,
   selectChatCatchingUp,
+  resendablePrompt,
   selectDraftContent,
   selectDraftTarget,
   selectProviderCatalog,
@@ -68,7 +69,6 @@ import {
   type ProviderUiStatus,
 } from './platform-provider'
 import { TurnRecoveryContext, type TurnRecoveryValue } from './turn-recovery'
-import { resendablePrompt } from '../lib/turn-notice-parts'
 import {
   SessionStateContext,
   type DraftRequest,
@@ -1666,10 +1666,11 @@ function EnvironmentActiveThreadProvider({ children }: { children: ReactNode }) 
   // What a failed turn's row offers. A retry is a new turn with the failed
   // turn's prompt and images; compacting is the provider's own `/compact`,
   // sent as the composer sends any command. Both wait for a running turn, a
-  // send on its way and a catch-up: the failure on screen may be out of date
-  // until then, and a retry held behind it could not be taken back.
+  // send on its way, a catch-up and a connection: the failure on screen may be
+  // out of date until then, and a retry sent against it could not be taken back.
   const recoveryBusy = useEnvironmentState(
     (state) =>
+      state.connection.phase !== 'connected' ||
       !!selectActiveTurn(state) ||
       selectActiveSendPending(state) ||
       (state.activeThreadId !== null && selectChatCatchingUp(state, state.activeThreadId)),
@@ -1680,6 +1681,7 @@ function EnvironmentActiveThreadProvider({ children }: { children: ReactNode }) 
       const state = client.getState()
       if (
         !current ||
+        state.connection.phase !== 'connected' ||
         selectActiveTurn(state) ||
         selectActiveSendPending(state) ||
         selectChatCatchingUp(state, current.threadId)

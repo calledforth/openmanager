@@ -5,6 +5,7 @@
  * (§8.1), so those about them read the client and the wire directly.
  */
 import { describe, expect } from 'vitest'
+import { resendablePrompt } from '@openmanager/environment-client'
 import { expectConverges } from './evidence.ts'
 import { until, type Rig, type TestClient } from './harness.ts'
 import type { FrameRecord } from './link-proxy.ts'
@@ -274,14 +275,18 @@ describe('notices and failures', () => {
     await expectConverges('N10', rig, a)
   })
 
-  scenario('N9 a retry after a reload is a new turn beside the failed one', {}, async (rig) => {
+  scenario('N9 a retry after a reload resends the failed prompt as a new turn', {}, async (rig) => {
     const a = await rig.connect('A')
-    const { target } = await claudeTurn(rig, a)
+    const { target, turnId } = await claudeTurn(rig, a)
     await rig.provider({ op: 'claudeComplete', failure: tooLong })
     await untilThread(a, target, (state) => state.turns.at(-1)?.state === 'failed', 'the failure')
     const reloaded = await rig.reload(a)
     await untilThread(reloaded, target, (state) => state.turns.length === 1, 'the reload')
-    await claudeTurn(rig, reloaded, 2, target)
+    // What the row's button sends: the failed turn's own prompt.
+    const prompt = resendablePrompt(thread(reloaded, target)!.messages, turnId)!
+    expect(prompt).toEqual({ text: 'Prompt 1', artifactIds: [] })
+    await reloaded.client.commands.sendTurn({ ...target, text: prompt.text })
+    await rig.provider({ op: 'claudeWaitPrompt', prompts: 2 })
     await rig.provider({ op: 'claudeComplete' })
     await untilThread(
       reloaded,
@@ -291,6 +296,9 @@ describe('notices and failures', () => {
     )
     const turns = thread(reloaded, target)!.turns
     expect(turns.map((turn) => turn.state)).toEqual(['failed', 'completed'])
+    expect(thread(reloaded, target)!.messages.filter((item) => item.role === 'user')).toHaveLength(
+      2,
+    )
     expect(turns[0]?.failure?.reason).toBe('context_window_exceeded')
     await expectConverges('N9', rig, reloaded)
   })

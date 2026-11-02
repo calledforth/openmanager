@@ -1,6 +1,5 @@
 import type {
   DurableTurnNotice,
-  Message,
   TransientTurnNotice,
   TurnFailure,
   TurnFailureReason,
@@ -35,20 +34,6 @@ export interface FailurePart {
   /** Whether the turn has a prompt to send again: a background turn has none. */
   resendable: boolean
   [key: string]: unknown
-}
-
-/** The prompt a turn was sent with, as a retry would send it again. */
-export function resendablePrompt(
-  messages: readonly Message[],
-  turnId: string,
-): { text: string; artifactIds: string[] } | undefined {
-  const prompt = messages.find((message) => message.turnId === turnId && message.role === 'user')
-  if (!prompt) return undefined
-  const text = prompt.content.map((block) => (block.type === 'text' ? block.text : '')).join('')
-  const artifactIds = prompt.content.flatMap((block) =>
-    block.type === 'artifact' ? [block.artifactId] : [],
-  )
-  return text || artifactIds.length > 0 ? { text, artifactIds } : undefined
 }
 
 const noticeParts = new WeakMap<object, NoticePart>()

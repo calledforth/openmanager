@@ -128,6 +128,8 @@ export type ClaudeMessageTranslatorDeps = {
    * `AcpSessionRuntimeImpl.subtaskFromTool` invokes it. Absent for a provider
    * that does not classify subtasks. */
   subtasks?: SubtaskAdapter
+  /** Whether a turn is open. Absent means one always is. */
+  turnOpen?: () => boolean
 }
 
 /** SDK messages in, `BackendEvent`s out.
@@ -162,6 +164,7 @@ export class ClaudeMessageTranslator {
   private readonly route: () => BackendRoute
   private readonly log: Pick<HostDeps, 'log'>['log']
   private readonly subtasks: SubtaskAdapter | undefined
+  private readonly turnOpen: () => boolean
 
   // -- message-scoped ------------------------------------------------------
   private blocks = new Map<number, BlockState>()
@@ -206,6 +209,7 @@ export class ClaudeMessageTranslator {
     this.route = deps.route
     this.log = deps.log
     this.subtasks = deps.subtasks
+    this.turnOpen = deps.turnOpen ?? (() => true)
   }
 
   /** A new turn was dispatched. What the last one flagged, refused, showed or
@@ -765,6 +769,9 @@ export class ClaudeMessageTranslator {
     const info = object(message.rate_limit_info)
     this.rateLimit = info
     if (string(info.status) !== 'allowed_warning') return []
+    // A notice belongs to a turn: with none open it would be dropped, and
+    // remembering it here would lose the warning for its whole window.
+    if (!this.turnOpen()) return []
     // Keyed by the allowance window too: the same threshold in the next window
     // is a new warning, not a repeat.
     const key = [info.rateLimitType, info.surpassedThreshold, info.resetsAt]

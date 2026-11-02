@@ -343,6 +343,22 @@ describe('typed problems and notices', () => {
     ).toMatchObject({ reason: 'provider_process_crashed' })
   })
 
+  it.each(['provider_process_crashed', 'provider_process_exited'] as const)(
+    'offers a retry when the turn ended on %s',
+    (failureReason) => {
+      const source = {
+        ...base,
+        category: 'lifecycle',
+        event: 'process_exited',
+        data: { exitCode: 1, expected: false },
+      } as AgentEvent
+      expect(projectAgentEvent(source, { ...context, failureReason })?.payload).toMatchObject({
+        reason: failureReason,
+        action: 'retry',
+      })
+    },
+  )
+
   it('offers sign-in for a provider that needs it', () => {
     const source = {
       ...base,

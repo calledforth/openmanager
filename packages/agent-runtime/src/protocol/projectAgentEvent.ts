@@ -131,6 +131,7 @@ export function projectAgentEvent(
       turnId: required('turnId'),
       reason,
       message: failureMessage(reason),
+      ...exitRecovery(reason),
       ...recovery,
     })
   /** A failure the provider typed: its reason, and what can be done about it. */
@@ -256,6 +257,7 @@ export function projectAgentEvent(
             ? {
                 reason: context.failureReason ?? 'provider_error',
                 message: failureMessage(context.failureReason ?? 'provider_error'),
+                ...exitRecovery(context.failureReason ?? 'provider_error'),
               }
             : {}),
         },
@@ -397,6 +399,13 @@ export function projectAgentEvent(
 
 function failureMessage(reason: TurnFailureReason): string {
   return TURN_FAILURE_MESSAGES[reason]
+}
+
+/** A provider process that went away comes back for the next prompt. */
+function exitRecovery(reason: TurnFailureReason): { action?: TurnRecoveryAction } {
+  return reason === 'provider_process_crashed' || reason === 'provider_process_exited'
+    ? { action: 'retry' }
+    : {}
 }
 
 function reasonOf(code: ProviderProblemCode): TurnFailureReason {

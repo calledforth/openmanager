@@ -7,10 +7,11 @@ import { classifyClaudeFailure, retryProblem } from './claude-problems.js'
 
 /** How Claude Code's problem and notice frames map, driven through the
  * translator the way the runtime drives it. */
-function build() {
+function build(turnOpen?: () => boolean) {
   const translator = new ClaudeMessageTranslator({
     route: () => ({ threadId: 'thread-1', workspaceId: 'workspace-1' }),
     log: vi.fn(),
+    ...(turnOpen ? { turnOpen } : {}),
   })
   const events: BackendEvent[] = []
   const feed = (message: unknown) => {
@@ -270,6 +271,27 @@ describe('Claude usage and rate limits', () => {
         resetsAt: new Date(1_791_000_000 * 1000).toISOString(),
       },
     ])
+  })
+
+  it('keeps a warning that arrives between turns for the next frame in a turn', () => {
+    let open = false
+    const { events, feed } = build(() => open)
+    const warning = {
+      type: 'rate_limit_event',
+      rate_limit_info: {
+        status: 'allowed_warning',
+        rateLimitType: 'five_hour',
+        surpassedThreshold: 0.9,
+        resetsAt: 1_800_000_000,
+      },
+      session_id: 'session-1',
+    }
+    feed(warning)
+    expect(notices(events)).toEqual([])
+    open = true
+    feed(warning)
+    feed(warning)
+    expect(notices(events).map((notice) => notice.kind)).toEqual(['usage_warning'])
   })
 
   it('warns again at the same threshold once the allowance has reset', () => {

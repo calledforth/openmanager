@@ -4,6 +4,7 @@ import { act, type ReactNode } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 import { renderToStaticMarkup } from 'react-dom/server'
 import {
+  cacheState,
   createMockEnvironmentClient,
   createThreadState,
   type MockEnvironmentClient,
@@ -256,6 +257,8 @@ describe('projecting notices and failures', () => {
     expect(projection.byId.get('turn:t1:assistant')!.content.parts?.at(-1)).toMatchObject({
       type: 'failure',
       actionable: false,
+      // Its prompt is there: it says to retry, not to send the message again.
+      resendable: true,
     })
     expect(projection.byId.get('turn:t2:assistant')!.content.parts?.at(-1)).toMatchObject({
       type: 'failure',
@@ -538,6 +541,55 @@ describe('recovering from a failed turn in the app', () => {
       .filter((call) => call.command === 'sendTurn')
       .map((call) => (call.input as { text: string }).text)
     expect(texts).toEqual(['something else'])
+  })
+
+  it('holds recovery until the environment can be reached', async () => {
+    const client = createMockEnvironmentClient({ seed: failedSeed, respond: () => null })
+    await render(<MockEnvironmentApp client={client} />)
+    await settle(client)
+    await act(() => client.setConnection({ phase: 'reconnecting' }))
+    expect(buttonWithText('Retry')?.disabled).toBe(true)
+    await act(() => client.setConnection({ phase: 'connected' }))
+    expect(buttonWithText('Retry')?.disabled).toBe(false)
+  })
+
+  it('retries a prompt with its image after a reload from the cache', async () => {
+    const artifact = {
+      type: 'artifact' as const,
+      artifactId: 'artifact-1',
+      mimeType: 'image/png',
+      name: 'screenshot.png',
+      sizeBytes: 3,
+    }
+    const session = failedSeed.sessions![0]!
+    const seed: MockSeed = {
+      ...failedSeed,
+      sessions: [
+        {
+          ...session,
+          messages: session.messages!.map((message) => ({
+            ...message,
+            content: [...message.content, artifact],
+          })),
+        },
+      ],
+    }
+    const before = createMockEnvironmentClient({ seed, respond: () => null })
+    const restored = cacheState(before.getState())
+    before.dispose()
+    const client = createMockEnvironmentClient({ seed, restored, respond: () => null })
+    await render(<MockEnvironmentApp client={client} />)
+    await settle(client)
+    // A restored page has no connection yet, and offers nothing until it does.
+    expect(buttonWithText('Retry')?.disabled).toBe(true)
+    await act(() => client.setConnection({ phase: 'connected' }))
+    await act(() => buttonWithText('Retry')!.click())
+    await settle(client)
+    expect(client.calls.filter((call) => call.command === 'sendTurn').at(-1)?.input).toMatchObject({
+      ...THREAD,
+      text: 'first try',
+      artifactIds: ['artifact-1'],
+    })
   })
 
   it('holds recovery while the chat is catching up: the failure may be out of date', async () => {

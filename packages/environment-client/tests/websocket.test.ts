@@ -16,6 +16,7 @@ import {
   selectActiveThread,
   selectComposerPreference,
   selectCursor,
+  selectChatCatchingUp,
   selectOpenChatCatchingUp,
   selectSessionComposer,
   selectProviderCatalog,
@@ -3892,6 +3893,12 @@ describe('sends made while the open chat catches up', () => {
   }
   const OTHER = { ...SESSION_SUMMARY, sessionId: 'session-2' }
   const OTHER_THREAD = { threadId: 'thread-2', sessionId: OTHER.sessionId }
+  const replays = (socket: FakeSocket) =>
+    socket.sent.filter(
+      (message) =>
+        message.name === 'subscription.replay' &&
+        (message.payload as { scope: { type: string } }).scope.type === 'thread',
+    )
   const sendsOn = (socket: FakeSocket) =>
     socket.sent
       .filter((message) => message.name === 'turn.send')
@@ -4102,6 +4109,34 @@ describe('sends made while the open chat catches up', () => {
     void client.commands.sendTurn({ ...THREAD, text: 'go' }).catch(() => null)
     expect(cacheState(store.getServerState()).threads[THREAD.threadId]!.outbox).toEqual([])
     client.dispose()
+  })
+
+  it('counts the open chat as catching up from the handshake, before its open', async () => {
+    const { client, socket, store } = await catchingUp()
+    await answerThread(socket)
+    await flush()
+    client.dispose()
+    // A reload whose route could not open the chat before the socket was ready.
+    const next = await connected(
+      [...FULL_CAPABILITIES, 'provider.catalog.get'],
+      {},
+      { environmentId: ENV, store },
+    )
+    expect(replays(next.socket)).toEqual([])
+    expect(selectChatCatchingUp(next.client.getState(), THREAD.threadId)).toBe(true)
+    const sending = next.client.commands.sendTurn({ ...THREAD, text: 'go', commandId: 'cmd-1' })
+    await flush()
+    expect(sendsOn(next.socket)).toEqual([])
+    expect(outbox(next.client)).toEqual([{ text: 'go', status: 'held', waited: true }])
+    next.socket.respond('provider.catalog.get', { providers: [] })
+    await flush()
+    await answerOpen(next.socket)
+    await flush()
+    expect(selectChatCatchingUp(next.client.getState(), THREAD.threadId)).toBe(false)
+    expect(sendsOn(next.socket)).toEqual(['go'])
+    next.socket.respond('turn.send', turnStarted('turn-9', 'go', 'cmd-1').payload)
+    await sending
+    next.client.dispose()
   })
 
   it('hands held sends to the transport that takes the store over', async () => {
