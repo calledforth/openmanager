@@ -1,14 +1,20 @@
 import { mkdtemp, rm } from 'node:fs/promises'
+import { createServer, type Server } from 'node:http'
+import type { AddressInfo } from 'node:net'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import type { DatabaseSync } from 'node:sqlite'
-import { afterEach, describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import { ProofEventSchemas, applyToolUpdate, type ProofEvent } from '@openmanager/protocol/node'
 import { openEnvironmentDatabase } from '../src/db/database.js'
 import { coalesceDeltas, createStreamingEventBatcher } from '../src/db/event-batcher.js'
 import { createEventRepository, type DurableProofEvent } from '../src/db/event-repository.js'
 import { readThreadState } from '../src/db/session-store.js'
 import { createToolOutputStore, withSettledText } from '../src/db/tool-output.js'
+import { createAuditLog } from '../src/audit.js'
+import type { AuthenticatedClient } from '../src/authorized-clients.js'
+import { createRateLimiter } from '../src/rate-limit.js'
+import { createUploadService } from '../src/uploads.js'
 
 const scope = {
   type: 'thread',
@@ -151,6 +157,15 @@ describe('text after a call settled', () => {
     expect(held?.output).toBeUndefined()
   })
 
+  it('keeps the text a call settled with, whatever settles it again', async () => {
+    const { write, store } = await repository()
+    write.appendEvents(scope, [
+      withSettledText(tool({ status: 'completed', outputBytes: 5 }), 'first'),
+      withSettledText(tool({ status: 'failed', outputBytes: 7 }), 'another'),
+    ])
+    expect(store.read('tool-1')).toBe('first')
+  })
+
   it('still takes the text a later failure brings to a refused call', async () => {
     const { write, store } = await repository()
     write.appendEvents(scope, [
@@ -159,5 +174,96 @@ describe('text after a call settled', () => {
       withSettledText(tool({ status: 'failed', outputBytes: 7 }), 'refused'),
     ])
     expect(store.read('tool-1')).toBe('refused')
+  })
+})
+
+describe('GET /tool-output', () => {
+  const servers: Server[] = []
+  const directories: string[] = []
+  const databases: DatabaseSync[] = []
+  afterEach(async () => {
+    await Promise.all(servers.splice(0).map((server) => new Promise((r) => server.close(r))))
+    for (const database of databases.splice(0)) database.close()
+    await Promise.all(
+      directories.splice(0).map((path) => rm(path, { recursive: true, force: true })),
+    )
+  })
+
+  const clients: Record<string, Partial<AuthenticatedClient>> = {
+    reader: { clientId: 'reader', capabilities: ['read'] },
+    blind: { clientId: 'blind', capabilities: [] },
+  }
+
+  async function route(
+    toolOutput: () => { text: string; workspaceId: string } | undefined,
+    sessionWorkspace = vi.fn(() => 'workspace-1'),
+  ) {
+    const dataDir = await mkdtemp(join(tmpdir(), 'openmanager-tool-route-test-'))
+    directories.push(dataDir)
+    const database = openEnvironmentDatabase(dataDir)
+    databases.push(database)
+    const log = () => undefined
+    const uploads = createUploadService({
+      dataDir,
+      database,
+      audit: createAuditLog(log),
+      log,
+      rateLimiter: createRateLimiter(),
+      authenticate: (credential) => clients[credential ?? ''] as AuthenticatedClient | undefined,
+      sessionWorkspace,
+      toolOutput,
+      resolveWorkspace: () => ({}),
+    })
+    const server = createServer((request, response) => {
+      uploads.handle(request, response)
+    })
+    servers.push(server)
+    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve))
+    const { port } = server.address() as AddressInfo
+    return (credential?: string) =>
+      fetch(`http://127.0.0.1:${port}/tool-output/session-1/tool-1`, {
+        headers: credential ? { authorization: `Bearer ${credential}` } : {},
+      })
+  }
+
+  const found = () => ({ text: 'héllo', workspaceId: 'workspace-1' })
+
+  it('answers the text, uncached, without flushing the write batch', async () => {
+    const sessionWorkspace = vi.fn(() => 'workspace-1')
+    const read = await route(found, sessionWorkspace)
+    const response = await read('reader')
+    expect(response.status).toBe(200)
+    expect(response.headers.get('cache-control')).toBe('no-store')
+    expect(await response.text()).toBe('héllo')
+    expect(sessionWorkspace).not.toHaveBeenCalled()
+  })
+
+  it('refuses a revoked credential and none at all', async () => {
+    const read = await route(found)
+    expect((await read('revoked')).status).toBe(401)
+    expect((await read()).status).toBe(401)
+  })
+
+  it('finds nothing for a client without read', async () => {
+    const read = await route(found)
+    expect((await read('blind')).status).toBe(404)
+  })
+
+  it('finds nothing for a tool with no text', async () => {
+    const read = await route(() => undefined)
+    expect((await read('reader')).status).toBe(404)
+  })
+
+  it('answers 503 when the store fails, and keeps serving', async () => {
+    let broken = true
+    const read = await route(() => {
+      if (broken) throw new Error('database is locked')
+      return found()
+    })
+    const failed = await read('reader')
+    expect(failed.status).toBe(503)
+    expect(await failed.json()).toMatchObject({ error: { code: 'unavailable' } })
+    broken = false
+    expect((await read('reader')).status).toBe(200)
   })
 })

@@ -885,6 +885,7 @@ async function handle(request: ChildRequest): Promise<unknown> {
       touch()
       void active.connection
         .extMethod('cursor/ask_question', {
+          ...(request.toolCallId ? { toolCallId: request.toolCallId } : {}),
           questions: [
             {
               id: request.questionId,
@@ -1057,6 +1058,14 @@ async function handle(request: ChildRequest): Promise<unknown> {
       return null
     case 'readDropped':
       return dropped
+    case 'toolOutputRows': {
+      const reader = new DatabaseSync(join(config.dataDir, DATABASE_FILENAME), { readOnly: true })
+      const row = reader
+        .prepare('SELECT COUNT(*) AS count FROM tool_output WHERE activity_id = ?')
+        .get(request.toolCallId) as { count: number }
+      reader.close()
+      return row.count
+    }
     case 'countEvents': {
       const reader = new DatabaseSync(join(config.dataDir, DATABASE_FILENAME), { readOnly: true })
       const row = reader

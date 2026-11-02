@@ -59,7 +59,7 @@ export type ProviderOp =
   | { op: 'streamToolLines'; sessionId: string; toolCallId: string; lines: number }
   | { op: 'askPermission'; sessionId: string; toolCallId: string; title?: string }
   /** Cursor's own question request (`cursor/ask_question`); the session must run on Cursor. */
-  | { op: 'askQuestion'; sessionId: string; questionId: string }
+  | { op: 'askQuestion'; sessionId: string; questionId: string; toolCallId?: string }
   | { op: 'completeTurn'; sessionId: string; stopReason?: string }
   | { op: 'crashProvider'; sessionId: string }
   /** An image the artifact store refuses, so the server publishes a transient `turn.notice`. */
@@ -126,6 +126,8 @@ export type ServerOp =
   | { op: 'raiseReplayFloor'; threadId: string }
   /** How many durable records of one event a thread's stream holds. */
   | { op: 'countEvents'; threadId: string; name: string }
+  /** How many `tool_output` rows a call holds. */
+  | { op: 'toolOutputRows'; toolCallId: string }
 
 export type ChildRequest = (ProviderOp | ServerOp) & { id: number }
 

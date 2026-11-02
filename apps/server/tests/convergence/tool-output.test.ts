@@ -11,6 +11,7 @@ import { scenario } from './scenario.ts'
 import { createSession, startTurn, thread, untilThread, type Target } from './steps.ts'
 
 const QUIET = { quiet: true } as const
+const NOT_FOUND = { code: 'not_found' }
 const text = (value: string) => [{ type: 'content', content: { type: 'text', text: value } }]
 const PNG =
   'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg=='
@@ -199,7 +200,81 @@ describe('tool output', () => {
     expect(toolOf(a, target)?.output).toBeUndefined()
     await expectConverges('T12', rig, a)
     expect(await readOutput(rig, target, toolOf(a, target)!.toolCallId)).toBe('final')
+
+    // A second settle with other text changes nothing either.
+    await update(rig, target, 'tool-t12', { status: 'completed', rawOutput: 'a different result' })
+    await rig.waitQuiet()
+    expect(toolOf(a, target)).toMatchObject({ status: 'completed', outputBytes: 5 })
+    await expectConverges('T12 after a second settle', rig, a)
+    expect(await readOutput(rig, target, toolOf(a, target)!.toolCallId)).toBe('final')
   })
+
+  scenario('T13 a refusal after running text keeps the row openable', {}, async (rig) => {
+    const a = await rig.connect('A')
+    const target = await createSession(rig, a, QUIET)
+    await startTurn(a, target)
+    await open(rig, target, 'tool-t13')
+    await update(rig, target, 'tool-t13', { status: 'in_progress', content: text('so far') })
+    await untilThread(a, target, (state) => state.tools[0]?.output === 'so far', 'running')
+    await rig.provider({ op: 'askPermission', sessionId: target.sessionId, toolCallId: 'tool-t13' })
+    const permission = await until(() => thread(a, target)?.interactions[0], 'the permission')
+    await a.client.commands.respondToInteraction({
+      ...target,
+      response: {
+        kind: 'permission',
+        interactionId: permission.interaction.interactionId,
+        outcome: { outcome: 'selected', optionId: 'reject' },
+      },
+    })
+    await untilThread(a, target, (state) => state.tools[0]?.status === 'declined', 'the refusal')
+    expect(toolOf(a, target)).toMatchObject({ outputBytes: 6 })
+    await expectConverges('T13', rig, a)
+    expect(await readOutput(rig, target, toolOf(a, target)!.toolCallId)).toBe('so far')
+  })
+
+  scenario(
+    'T14 an answered question says what was answered, after a reload too',
+    {},
+    async (rig) => {
+      const a = await rig.connect('A')
+      const target = await createSession(rig, a, { providerId: 'cursor', quiet: true })
+      await startTurn(a, target)
+      await open(rig, target, 'ask-t14', 'Ask Question', 'think')
+      await rig.provider({
+        op: 'askQuestion',
+        sessionId: target.sessionId,
+        questionId: 'q1',
+        toolCallId: 'ask-t14',
+      })
+      const question = await until(() => thread(a, target)?.interactions[0], 'the question')
+      await a.client.commands.respondToInteraction({
+        ...target,
+        response: {
+          kind: 'question',
+          interactionId: question.interaction.interactionId,
+          outcome: {
+            outcome: 'answered',
+            answers: [{ questionId: 'q1', selectedOptionIds: ['a'] }],
+          },
+        },
+      })
+      const answers = { 'Which one?': 'A' }
+      await untilThread(
+        a,
+        target,
+        (state) => (state.tools[0]?.input as { answers?: unknown })?.answers !== undefined,
+        'the stated answer',
+      )
+      expect(toolOf(a, target)?.input).toEqual({ questions: [{ prompt: 'Which one?' }], answers })
+      await expectConverges('T14', rig, a)
+      const reloaded = await rig.reload(a, 'proxy', true)
+      await until(() => toolOf(reloaded, target), 'the reloaded chat')
+      expect(toolOf(reloaded, target)?.input).toEqual({
+        questions: [{ prompt: 'Which one?' }],
+        answers,
+      })
+    },
+  )
 
   scenario(
     "T7 a refusal is the tool's outcome at once, and survives a restart",
@@ -318,7 +393,9 @@ describe('tool output', () => {
     expect(toolOf(a, target)?.locations).toEqual([{ path: 'src/a.ts' }])
     // Stored nowhere: a read has no output to fetch.
     expect(toolOf(a, target)?.outputBytes).toBeUndefined()
-    await expect(readOutput(rig, target, toolOf(a, target)!.toolCallId)).rejects.toThrow()
+    await expect(readOutput(rig, target, toolOf(a, target)!.toolCallId)).rejects.toMatchObject(
+      NOT_FOUND,
+    )
     expect(toolOf(a, target, 1)?.locations).toEqual([{ path: 'src/b.ts' }])
     await expectConverges('T10', rig, a)
   })
@@ -332,14 +409,16 @@ describe('tool output', () => {
     await untilThread(a, target, (state) => state.tools[0]?.status === 'completed', 'the settle')
     const { toolCallId } = toolOf(a, target)!
     expect(await readOutput(rig, target, toolCallId)).toBe('kept')
+    expect(await rig.server.call({ op: 'toolOutputRows', toolCallId })).toBe(1)
     const other = await createSession(rig, a, QUIET)
-    await expect(readOutput(rig, other, toolCallId)).rejects.toThrow()
+    await expect(readOutput(rig, other, toolCallId)).rejects.toMatchObject(NOT_FOUND)
     const anonymous = await fetch(
       `http://127.0.0.1:${rig.server.port}/tool-output/${target.sessionId}/${toolCallId}`,
     )
     expect(anonymous.status).toBe(401)
     await a.client.commands.deleteSession(target.sessionId)
     await until(() => !a.client.getState().sessions[target.sessionId] || undefined, 'the delete')
-    await expect(readOutput(rig, target, toolCallId)).rejects.toThrow()
+    await expect(readOutput(rig, target, toolCallId)).rejects.toMatchObject(NOT_FOUND)
+    expect(await rig.server.call({ op: 'toolOutputRows', toolCallId })).toBe(0)
   })
 })
