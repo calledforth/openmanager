@@ -193,6 +193,33 @@ const KNOWN_TOOLS = new Set([
   'GenerateImage',
 ])
 
+/** Titles that only say which tool it was, on Cursor's fast path. */
+const GENERIC_TITLES = new Set([
+  'read file',
+  'edit file',
+  'delete file',
+  'terminal',
+  'find',
+  'grep',
+  'web search',
+  'web fetch',
+  'codebase search',
+  'ask question',
+])
+
+/**
+ * A title that says more than the tool's name. A call with no input has only
+ * this: every call recorded before input was kept, and any call whose input
+ * has not parsed yet. OpenCode's prose title is worth showing; a bare `Read` is
+ * not, because the verb already says it.
+ */
+function proseTitle(part: ToolPartData, canonical: string): string {
+  const title = (part.title ?? part.tool ?? '').trim()
+  if (!title || title === part.toolName || GENERIC_TITLES.has(title.toLowerCase())) return ''
+  const named = canonicalizeToolName(title)
+  return named === canonical || KNOWN_TOOLS.has(named) ? '' : title
+}
+
 function outcomeOf(stateType: string): ToolOutcome | undefined {
   if (stateType === 'error' || stateType === 'failed') return 'failed'
   return stateType === 'declined' || stateType === 'cancelled' ? stateType : undefined
@@ -278,6 +305,7 @@ export function presentToolPart(part: ToolPartData): ToolPresenterModel {
     ...(time?.end !== undefined ? { durationMs: Math.max(0, time.end - time.start) } : {}),
   }
   const path = extractPath(state.input) || subject || files[0] || ''
+  const prose = proseTitle(part, canonical)
   // "Ran rm -rf build" would be false of a call that was refused: a call that
   // did not complete says what it set out to do, beside how that went.
   const said = (running: string, done: string, attempt: string) =>
@@ -289,7 +317,7 @@ export function presentToolPart(part: ToolPartData): ToolPresenterModel {
       ...base,
       uiKind: 'read',
       verb: said('Reading', 'Read', 'Read'),
-      detail: `${target || title.replace(/^Read\s+/, '')}${range ? ` (${range})` : ''}`,
+      detail: `${target || prose.replace(/^Read\s+/, '') || 'file'}${range ? ` (${range})` : ''}`,
       readTarget: target,
       fullDetail: path || undefined,
     }
@@ -301,8 +329,8 @@ export function presentToolPart(part: ToolPartData): ToolPresenterModel {
       ...base,
       uiKind: 'terminal',
       verb: said('Running', 'Ran', 'Run'),
-      detail: firstLine(command) || subtitle,
-      detailIsCode: true,
+      detail: firstLine(command) || subtitle || prose || 'a command',
+      detailIsCode: Boolean(command),
       fullDetail: command || undefined,
     }
   }
@@ -324,7 +352,7 @@ export function presentToolPart(part: ToolPartData): ToolPresenterModel {
       ...base,
       uiKind: 'edit',
       verb: said(verbs[0], verbs[1], verbs[2]),
-      detail: basename(path) || 'file',
+      detail: basename(path) || prose || 'file',
       fullDetail: path || undefined,
       ...(stats.added > 0 || stats.removed > 0
         ? { diffAdds: stats.added, diffDels: stats.removed }
@@ -338,7 +366,7 @@ export function presentToolPart(part: ToolPartData): ToolPresenterModel {
       ...base,
       uiKind: 'search',
       verb: said('Searching for', 'Searched for', 'Search for'),
-      detail: `${quoted(pattern)}${searchScope(state.input)}`.trim() || 'code',
+      detail: `${quoted(pattern)}${searchScope(state.input)}`.trim() || prose || 'code',
       fullDetail: pattern || undefined,
     }
   }
@@ -351,8 +379,8 @@ export function presentToolPart(part: ToolPartData): ToolPresenterModel {
       uiKind: 'search',
       verb:
         canonical === 'List' ? said('Listing', 'Listed', 'List') : said('Finding', 'Found', 'Find'),
-      detail: target || 'files',
-      detailIsCode: true,
+      detail: target || prose || 'files',
+      detailIsCode: Boolean(target),
     }
   }
 
@@ -362,7 +390,7 @@ export function presentToolPart(part: ToolPartData): ToolPresenterModel {
       ...base,
       uiKind: 'web',
       verb: said('Searching the web for', 'Searched the web for', 'Search the web for'),
-      detail: quoted(query) || 'an answer',
+      detail: quoted(query) || prose || 'an answer',
     }
   }
 
@@ -372,18 +400,27 @@ export function presentToolPart(part: ToolPartData): ToolPresenterModel {
       ...base,
       uiKind: 'web',
       verb: said('Fetching', 'Fetched', 'Fetch'),
-      detail: url || 'a page',
+      detail: url || prose || 'a page',
       fullDetail: url || undefined,
     }
   }
 
   if (canonical === 'Task') {
-    const description = subtitle || subject || (part.title ?? '').replace(/^Task: /, '')
+    const description = subtitle || subject || prose.replace(/^Task: /, '')
     return {
       ...base,
       uiKind: 'agent',
       verb: said('Running subagent', 'Ran subagent', 'Run subagent'),
       detail: description,
+    }
+  }
+
+  if (canonical === 'AskUserQuestion') {
+    return {
+      ...base,
+      uiKind: 'generic',
+      verb: said('Asking', 'Asked', 'Ask'),
+      detail: 'a question',
     }
   }
 

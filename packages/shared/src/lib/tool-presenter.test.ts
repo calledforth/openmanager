@@ -71,7 +71,7 @@ describe('every row reads from its input alone', () => {
   })
 
   it("Cursor's generic titles, when a fast model sent nothing else", () => {
-    expect(line(done({ title: 'Read File', kind: 'read' }))).toBe('Read File')
+    expect(line(done({ title: 'Read File', kind: 'read' }))).toBe('Read file')
     expect(
       line(done({ title: 'Edit File', kind: 'edit', locations: [{ path: 'C:/a/notes.md' }] })),
     ).toBe('Edited notes.md')
@@ -80,7 +80,7 @@ describe('every row reads from its input alone', () => {
       'Searched for code',
     )
     expect(line(done({ title: 'Find', kind: 'search' }))).toBe('Found files')
-    expect(line(done({ title: 'Terminal', kind: 'execute' }))).toContain('Ran')
+    expect(line(done({ title: 'Terminal', kind: 'execute' }))).toBe('Ran a command')
     expect(
       line(
         done(
@@ -122,6 +122,45 @@ describe('every row reads from its input alone', () => {
         }),
       ),
     ).toBe('Edited a.ts')
+  })
+})
+
+describe('a row with no input', () => {
+  const titled = (title: string, kind?: string, toolName?: string, status = 'completed') => {
+    const part: ToolPartData = {
+      tool: toolName ?? title,
+      title,
+      ...(kind ? { kind } : {}),
+      ...(toolName ? { toolName } : {}),
+      state: { status },
+    }
+    return line(part)
+  }
+
+  it('reads as a sentence for Claude, old or still parsing', () => {
+    expect(titled('Read', 'read', 'Read')).toBe('Read file')
+    expect(titled('Read', 'read', 'Read', 'running')).toBe('Reading file')
+    expect(titled('Bash', 'execute', 'Bash')).toBe('Ran a command')
+    expect(titled('Bash', 'execute')).toBe('Ran a command')
+    expect(titled('Edit', 'edit')).toBe('Edited file')
+    expect(titled('Write', 'edit')).toBe('Wrote file')
+    expect(titled('Grep', 'search')).toBe('Searched for code')
+    expect(titled('Glob', 'search')).toBe('Found files')
+    expect(titled('WebFetch', 'fetch')).toBe('Fetched a page')
+    expect(titled('WebSearch', 'fetch')).toBe('Searched the web for an answer')
+    expect(titled('AskUserQuestion', 'other', 'AskUserQuestion')).toBe('Asked a question')
+    expect(titled('Agent', 'other').trim()).toBe('Ran subagent')
+  })
+
+  it('keeps an older OpenCode row its prose title', () => {
+    expect(titled('Runs the unit tests', 'execute')).toBe('Ran Runs the unit tests')
+    expect(titled('src/index.ts', 'read')).toBe('Read src/index.ts')
+    expect(titled('src/index.ts', 'edit')).toBe('Edited src/index.ts')
+    expect(titled('TODO', 'search')).toBe('Searched for TODO')
+  })
+
+  it('says what a call set out to do when it ended without input', () => {
+    expect(titled('Bash', 'execute', 'Bash', 'declined')).toBe('Run a command')
   })
 })
 

@@ -147,6 +147,45 @@ describe('MessageParts', () => {
     expect(html).not.toContain('Thought')
   })
 
+  it.each([
+    ['cancelled', 'Image generation cancelled'],
+    ['declined', 'Image generation declined'],
+    ['error', 'Image generation failed'],
+  ])('never claims an image when the call ended %s', (status, line) => {
+    const html = renderToStaticMarkup(
+      <MessageParts
+        parts={[
+          {
+            type: 'tool',
+            id: 'image-tool',
+            tool: 'Generate Image',
+            state: { status },
+            time: { start: 1_000, end: 8_400 },
+          },
+        ]}
+      />,
+    )
+    expect(html).toContain(line)
+    expect(html).not.toContain('Generated image')
+  })
+
+  it('keeps a waiting question on the plain row, never as skipped', () => {
+    const html = renderToStaticMarkup(
+      <MessageParts
+        parts={[
+          {
+            type: 'tool',
+            id: 'question',
+            tool: 'AskUserQuestion',
+            state: { status: 'running', input: { questions: [{ question: 'Which?' }] } },
+          },
+        ]}
+      />,
+    )
+    expect(html).toContain('Asking')
+    expect(html).not.toContain('Skipped')
+  })
+
   it('reads Cursor structured tool output as text, never as an object', () => {
     const model = presentToolPart({
       tool: 'Shell',
