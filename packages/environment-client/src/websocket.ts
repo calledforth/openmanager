@@ -57,7 +57,7 @@ import {
   applyProviderCatalog,
   applyProviderHealth,
   applyProviderProbe,
-  applyNoticesCleared,
+  applyLiveNoticesCleared,
   applyRecord as applyRecordToState,
   applySessionOpen,
   applySessionOpening,
@@ -854,7 +854,7 @@ export function createWebSocketEnvironmentClient(
       if (!cursor) return
       let unknownTurn = false
       store.update((state) => {
-        let next = scope.type === 'thread' ? applyNoticesCleared(state, scope.threadId) : state
+        let next = scope.type === 'thread' ? applyLiveNoticesCleared(state, scope.threadId) : state
         for (const record of payload.events) {
           if (placeRecord(cursor, record.cursor) === 'drop') continue
           const thread = scope.type === 'thread' ? next.threads[scope.threadId] : undefined

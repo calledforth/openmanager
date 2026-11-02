@@ -249,6 +249,7 @@ function threadState(thread: typeof THREAD, history: typeof EMPTY_HISTORY) {
     messages,
     reasoning: [],
     tools: [],
+    notices: [],
     order: messages.map((message) => ({
       kind: 'message',
       id: message.messageId,
@@ -2245,6 +2246,7 @@ describe('cursor replay on reconnect', () => {
           messages: [],
           reasoning: [],
           tools: [],
+          notices: [],
           order: [],
           interactions: [],
           listing: {},
@@ -2363,6 +2365,7 @@ describe('cursor replay on reconnect', () => {
           messages: [],
           reasoning: [],
           tools: [],
+          notices: [],
           order: [],
           interactions: [],
           listing: {},
@@ -2486,6 +2489,7 @@ describe('cursor replay on reconnect', () => {
           ],
           reasoning: [],
           tools: [],
+          notices: [],
           order: [],
           interactions: [],
           listing: {},
@@ -2570,6 +2574,7 @@ describe('cursor replay on reconnect', () => {
           ],
           reasoning: [],
           tools: [],
+          notices: [],
           order: [],
           interactions: [],
           listing: {},
@@ -2665,7 +2670,7 @@ describe('one ordered queue on the client (§5.2)', () => {
       event: event({
         name: 'turn.notice',
         scope: threadScope,
-        payload: { turnId: 'turn-1', message },
+        payload: { noticeId: 'notice-1', turnId: 'turn-1', kind: 'retrying', message },
       }),
     },
   })
@@ -2681,6 +2686,7 @@ describe('one ordered queue on the client (§5.2)', () => {
         messages: [],
         reasoning: [],
         tools: [],
+        notices: [],
         order: [],
         interactions: [],
         listing: {},
@@ -2694,7 +2700,7 @@ describe('one ordered queue on the client (§5.2)', () => {
     startedAt: '2026-09-10T00:00:00.000Z',
   }
   const notices = (client: EnvironmentClient) =>
-    client.getState().threads[THREAD.threadId]?.notices.map((item) => item.message)
+    client.getState().threads[THREAD.threadId]?.liveNotices.map((item) => item.message)
   const text = (client: EnvironmentClient) =>
     client
       .getState()
@@ -2844,7 +2850,11 @@ describe('one ordered queue on the client (§5.2)', () => {
       payload: {
         subscriptionId: 'sub-other',
         after: { scope: other, epoch: 'e', sequence: 0 },
-        event: event({ name: 'turn.notice', scope: other, payload: { turnId: 't', message: 'x' } }),
+        event: event({
+          name: 'turn.notice',
+          scope: other,
+          payload: { noticeId: 'x', turnId: 't', kind: 'retrying', message: 'x' },
+        }),
       },
     })
     // Nothing durable or transient arrives outside a subscription any more.
@@ -2852,7 +2862,7 @@ describe('one ordered queue on the client (§5.2)', () => {
       event({
         name: 'turn.notice',
         scope: threadScope,
-        payload: { turnId: 'turn-1', message: 'y' },
+        payload: { noticeId: 'y', turnId: 'turn-1', kind: 'retrying', message: 'y' },
       }),
     )
     expect(notices(client)).toEqual([])
@@ -3634,12 +3644,12 @@ describe('kept cursors', () => {
         event: event({
           name: 'turn.notice',
           scope,
-          payload: { turnId: 'turn-1', message },
+          payload: { noticeId: 'notice-1', turnId: 'turn-1', kind: 'retrying', message },
         }),
       },
     })
     socket.receive(place(1, 'from before'))
-    expect(store.getServerState().threads[THREAD.threadId]!.notices).toHaveLength(1)
+    expect(store.getServerState().threads[THREAD.threadId]!.liveNotices).toHaveLength(1)
     socket.drop(1006)
     timers.advance(2_000)
     const next = FakeSocket.instances.at(-1)!
@@ -3649,7 +3659,7 @@ describe('kept cursors', () => {
     next.receive(place(1, 'held during the catch-up'))
     answerKept(next, lastReplay(next, 'thread', THREAD.threadId)!, 'sub-thread')
     await flush()
-    const notices = store.getServerState().threads[THREAD.threadId]!.notices
+    const notices = store.getServerState().threads[THREAD.threadId]!.liveNotices
     expect(notices.map((notice) => notice.message)).toEqual(['held during the catch-up'])
     client.dispose()
   })
@@ -3663,12 +3673,14 @@ describe('kept cursors', () => {
         ...state.threads,
         [THREAD.threadId]: {
           ...state.threads[THREAD.threadId]!,
-          notices: [{ turnId: 'turn-1', message: 'gone on reload' }],
+          liveNotices: [
+            { noticeId: 'n', turnId: 'turn-1', kind: 'retrying', message: 'gone on reload' },
+          ],
         },
       },
     }))
     const cached = cacheState(store.getServerState()).threads[THREAD.threadId]!
-    expect(cached.notices).toEqual([])
+    expect(cached.liveNotices).toEqual([])
     expect(cached.cursor?.sequence).toBe(1)
   })
 

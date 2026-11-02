@@ -58,6 +58,7 @@ export function applyLegacyHistory(
       messages: history.messages,
       reasoning: [],
       tools: [],
+      notices: [],
       order: history.messages.map((message) => ({
         kind: 'message' as const,
         id: message.messageId,

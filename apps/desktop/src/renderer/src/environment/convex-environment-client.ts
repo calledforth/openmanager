@@ -346,7 +346,12 @@ export function createConvexEnvironmentClient(
   /** The `turn.started` a thread event's turn never had, if it had none. */
   const backgroundTurnStart = (state: EnvironmentState, proof: ProofEvent): ProofEvent | null => {
     if (proof.scope.type !== 'thread' || proof.name === 'turn.started') return null
-    if (proof.name === 'turn.notice' || !('turnId' in proof.payload)) return null
+    if (
+      proof.name === 'turn.notice' ||
+      proof.name === 'turn.notice.cleared' ||
+      !('turnId' in proof.payload)
+    )
+      return null
     const thread = state.threads[proof.scope.threadId]
     if (thread && !namesUnknownTurn(thread, proof)) return null
     return {
