@@ -6,6 +6,9 @@ import {
 } from '@openmanager/environment-client'
 import { providerBlocksComposer, type ProviderUiStatus } from './platform-provider'
 
+/** The provider a session starts with when nothing says otherwise. */
+export const DEFAULT_PROVIDER_ID: ProviderId = 'opencode'
+
 /** Each provider's health as the composer reads it; absent is unknown. */
 export type ProviderStatuses = Partial<Record<ProviderId, ProviderUiStatus>>
 
