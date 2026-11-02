@@ -112,6 +112,7 @@ export const SERVER_CAPABILITIES = [
   'session.delete',
   'session.title.regenerate',
   'session.settle',
+  'session.pin',
   'session.acknowledge',
   'session.background.stop',
   'turn.send',

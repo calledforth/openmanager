@@ -56,7 +56,7 @@ import {
   createThreadState,
   deriveSessionStatus,
 } from './state'
-import { dropOverlayEntry, settleAnswered, updateOverlay } from './overlay'
+import { dropOverlayEntry, pinAnswered, settleAnswered, updateOverlay } from './overlay'
 import { applyDraftList } from './draft-state'
 import { createDraftSync } from './draft-sync'
 import { createEnvironmentStore } from './store'
@@ -1214,6 +1214,33 @@ export function createMockEnvironmentClient(
         throw error
       }
       store.update((state) => settleAnswered(state, sessionId, ticket))
+    },
+    pinSession: async (sessionId, pinned) => {
+      // As the client does: the click shows at once (pending.pins).
+      const ticket = ++settleTickets
+      store.update((state) =>
+        updateOverlay(state, 'pins', (entries) => ({
+          ...entries,
+          [sessionId]: { ticket, pinned, inFlight: true, at: now() },
+        })),
+      )
+      try {
+        await run('pinSession', { sessionId, pinned }, () => {
+          if (!store.getState().sessions[sessionId]) {
+            throw new EnvironmentClientError('not_found', 'Session not found.')
+          }
+          emit({
+            ...base(),
+            name: 'session.updated',
+            scope: envScope(),
+            payload: { sessionId, pinnedAt: pinned ? now() : null },
+          })
+        })
+      } catch (error) {
+        store.update((state) => dropOverlayEntry(state, 'pins', sessionId, ticket))
+        throw error
+      }
+      store.update((state) => pinAnswered(state, sessionId, ticket))
     },
     stopBackgroundTasks: (input) =>
       run('stopBackgroundTasks', input, () => {

@@ -109,6 +109,10 @@ export const ProofCommandSchemas = {
   // brings it back. Either way the change reaches every client as `session.updated`.
   // Settling a running or waiting session is a `conflict`; bringing one back never is.
   'session.settle': command('session.settle', SessionTargetSchema.extend({ settled: z.boolean() })),
+  // Pinning keeps a session at the top of the active list; `pinned: false` lets
+  // it go. Either way the change reaches every client as `session.updated`. Any
+  // session can be pinned, live ones too, and pinning never moves `updatedAt`.
+  'session.pin': command('session.pin', SessionTargetSchema.extend({ pinned: z.boolean() })),
   // Clears `doneAt` once the user has looked at a finished session, so every
   // client stops showing it as done. A session that is not done is a no-op.
   'session.acknowledge': command('session.acknowledge', SessionTargetSchema),
@@ -177,6 +181,7 @@ export const ProofCommandSchema = z.discriminatedUnion('name', [
   ProofCommandSchemas['session.delete'],
   ProofCommandSchemas['session.title.regenerate'],
   ProofCommandSchemas['session.settle'],
+  ProofCommandSchemas['session.pin'],
   ProofCommandSchemas['session.acknowledge'],
   ProofCommandSchemas['session.background.stop'],
   ProofCommandSchemas['turn.send'],
@@ -226,6 +231,7 @@ export const ProofResponseSchemas = {
   'session.delete': response(z.null()),
   'session.title.regenerate': response(z.object({ session: SessionSchema })),
   'session.settle': response(z.object({ settledAt: TimestampSchema.nullable() })),
+  'session.pin': response(z.object({ pinnedAt: TimestampSchema.nullable() })),
   'session.acknowledge': response(z.null()),
   'session.background.stop': response(z.null()),
   'turn.send': response(TurnStartSchema),

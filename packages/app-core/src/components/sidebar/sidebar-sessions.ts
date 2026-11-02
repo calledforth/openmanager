@@ -25,6 +25,8 @@ export interface SidebarSession {
   updatedAt?: string
   /** ISO time the user settled it; null or absent while it is active. */
   settledAt?: string | null
+  /** ISO time the user pinned it; null or absent while it is not pinned. */
+  pinnedAt?: string | null
   /** Its composer holds text or an image that was not sent. */
   hasUnsentDraft?: boolean
   /** What a waiting session waits on; a question gets its own state. */
