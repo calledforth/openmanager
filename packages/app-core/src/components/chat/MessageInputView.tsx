@@ -1025,10 +1025,10 @@ export function useMessageInputController({
       url: held ? null : url,
       hint:
         images.length > 0
-          ? 'Images can’t go to a cloud session'
+          ? 'Images can’t go in the cloud link'
           : url
             ? 'Open in a Claude Code cloud session'
-            : 'Too long for a cloud session',
+            : 'Too long for the cloud link',
     }
   }, [cloudUrlFor, textOverride, text, images.length, disabled, sending, pendingDraftSessionStart])
   const effortChoices = effortOptions ?? effortLevels.map((level) => ({ id: level, name: level }))
@@ -1342,7 +1342,9 @@ export function MessageInputView(props: MessageInputViewProps) {
                   }}
                   disabled={!cloud.url}
                   aria-label="Open in a Claude Code cloud session"
-                  className="flex h-6 w-6 items-center justify-center rounded-full text-[var(--basis-text-muted)] transition-colors hover:bg-hover hover:text-[var(--basis-text)] disabled:cursor-default disabled:text-[var(--basis-text-faint)] disabled:hover:bg-transparent"
+                  // Sky, a step from the ⚡'s electric blue, pulled toward the text
+                  // colour so it reads in light themes as well as dark.
+                  className="flex h-6 w-6 items-center justify-center rounded-full text-[color-mix(in_srgb,#38bdf8_82%,var(--basis-text-strong))] transition-colors hover:bg-[color-mix(in_srgb,#38bdf8_16%,transparent)] disabled:cursor-default disabled:text-[var(--basis-text-faint)] disabled:hover:bg-transparent"
                 >
                   <CloudArrowUpIcon size={15} />
                 </button>
