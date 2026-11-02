@@ -176,33 +176,74 @@ describe('environment identity cache', () => {
     expect(await readEnvironmentCache('env-one')).toBeNull()
   })
 
-  it('drops a state cached under another event format, or before one was recorded', async () => {
-    await writeEnvironmentCache('env-one', seed())
-    expect(await readEnvironmentCache('env-one')).not.toBeNull()
-    // An additive field keeps the protocol, and a build that ignored it moved
-    // its cursor past the event: resuming that cursor would never bring it.
-    expect(
-      await readEnvironmentCache('env-one', PROTOCOL_VERSION, EVENT_FORMAT_VERSION + 1),
-    ).toBeNull()
+  describe('a state cached under another event format, or before one was recorded', () => {
+    const CURSOR = {
+      scope: { type: 'environment', environmentId: 'env-one' },
+      epoch: 'epoch',
+      sequence: 7,
+    } as const
+    // What only the copy holds, beside the cursors that promise the rest.
+    const held = () => {
+      const state = seed()
+      state.cursors.environment = CURSOR
+      state.draftEdits = {
+        draft: {
+          target: { type: 'session', sessionId: 'session' },
+          content: { text: 'Typed offline' },
+          editedAt: 1,
+        },
+      } as unknown as typeof state.draftEdits
+      state.threads = {
+        thread: {
+          ...state.threads.thread!,
+          cursor: {
+            ...CURSOR,
+            scope: { type: 'thread', threadId: 'thread', sessionId: 'session' },
+          },
+          outbox: [{ commandId: 'send', text: 'Held send', status: 'held', waited: true }],
+        },
+      } as unknown as typeof state.threads
+      return state
+    }
+    const expectKeptWithoutCursors = (restored: EnvironmentState | null) => {
+      expect(restored?.draftEdits.draft?.content.text).toBe('Typed offline')
+      expect(restored?.threads.thread?.outbox).toMatchObject([
+        { commandId: 'send', text: 'Held send' },
+      ])
+      expect(restored?.sessions.session?.title).toBe('Cached session')
+      // A build that ignored a field moved these past its event.
+      expect(restored?.cursors).toEqual({ environment: null, sessions: {} })
+      expect(restored?.threads.thread?.cursor).toBeUndefined()
+    }
 
-    // What an older build wrote: its protocol matches, and no format is named.
-    const state = cacheState(seed())
-    await new Promise<void>((resolve, reject) => {
-      const request = indexedDB.open(environmentCacheName('env-one'), 1)
-      request.onerror = () => reject(request.error)
-      request.onsuccess = () => {
-        const database = request.result
-        const transaction = database.transaction('state', 'readwrite')
-        transaction
-          .objectStore('state')
-          .put({ protocolVersion: PROTOCOL_VERSION, state }, 'snapshot')
-        transaction.oncomplete = () => {
-          database.close()
-          resolve()
-        }
-      }
+    it('keeps what only the copy holds and forgets its cursors', async () => {
+      await writeEnvironmentCache('env-one', held())
+      expect((await readEnvironmentCache('env-one'))?.cursors.environment).toEqual(CURSOR)
+      expectKeptWithoutCursors(
+        await readEnvironmentCache('env-one', PROTOCOL_VERSION, EVENT_FORMAT_VERSION + 1),
+      )
     })
-    expect(await readEnvironmentCache('env-one')).toBeNull()
+
+    it('treats what an older build wrote the same, naming no format', async () => {
+      const state = cacheState(held())
+      await new Promise<void>((resolve, reject) => {
+        const request = indexedDB.open(environmentCacheName('env-one'), 1)
+        request.onupgradeneeded = () => request.result.createObjectStore('state')
+        request.onerror = () => reject(request.error)
+        request.onsuccess = () => {
+          const database = request.result
+          const transaction = database.transaction('state', 'readwrite')
+          transaction
+            .objectStore('state')
+            .put({ protocolVersion: PROTOCOL_VERSION, state }, 'snapshot')
+          transaction.oncomplete = () => {
+            database.close()
+            resolve()
+          }
+        }
+      })
+      expectKeptWithoutCursors(await readEnvironmentCache('env-one'))
+    })
   })
 
   it('drops a state cached under another protocol version', async () => {

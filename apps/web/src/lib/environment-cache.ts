@@ -2,6 +2,7 @@ import {
   cacheState,
   createEnvironmentStore,
   createInitialState,
+  forgetCursors,
   type EnvironmentState,
   type EnvironmentStore,
 } from '@openmanager/environment-client'
@@ -14,9 +15,11 @@ const CACHE_VERSION = 1
  * written under. A state from another protocol was folded by other rules (an
  * older build's reducers, events it no longer receives), so it is never
  * resumed: the first load after an upgrade is a fresh one
- * (docs/sync-foundations.md §4.7.7). The event format counts too: an additive
- * field leaves the protocol alone, and a build that ignored it still moved its
- * cursor past the event, so resuming that cursor would never bring the field.
+ * (docs/sync-foundations.md §4.7.7). The event format counts too, less
+ * strictly: an additive field leaves the protocol alone, and a build that
+ * ignored it still moved its cursor past the event, so resuming that cursor
+ * would never bring the field. Such a copy keeps its state and forgets its
+ * cursors: it is the only home of unsent drafts and held sends.
  */
 interface CachedDocument {
   protocolVersion: number
@@ -69,13 +72,9 @@ export async function readEnvironmentCache(
       const request = transaction.objectStore(STATE_STORE).get('snapshot')
       request.onsuccess = () => {
         const document = request.result as Partial<CachedDocument> | undefined
-        // A document from another protocol or event format, or from before
-        // the cache said which, is dropped rather than merged into this
-        // build's state.
-        const state =
-          document?.protocolVersion === protocolVersion && document.eventFormat === eventFormat
-            ? document.state
-            : undefined
+        // A document from another protocol, or from before the cache said
+        // which, is dropped rather than merged into this build's state.
+        const state = document?.protocolVersion === protocolVersion ? document.state : undefined
         const initial = createInitialState()
         // Reject incompatible/corrupt documents rather than leaking another identity.
         if (
@@ -93,7 +92,8 @@ export async function readEnvironmentCache(
           return
         }
         try {
-          resolve(cacheState(state))
+          const kept = cacheState(state)
+          resolve(document?.eventFormat === eventFormat ? kept : forgetCursors(kept))
         } catch {
           resolve(null)
         }

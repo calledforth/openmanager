@@ -50,3 +50,20 @@ export function cacheState(state: EnvironmentState): EnvironmentState {
     ),
   }
 }
+
+/**
+ * A kept copy with nothing promised about what it holds: every scope asks for
+ * a whole snapshot, which replaces the server-owned part. What only the copy
+ * has, unsent drafts and held sends, stays, so a reload cannot lose it. For a
+ * copy written under another event format, whose build may have ignored a
+ * field and still moved its cursor past the event.
+ */
+export function forgetCursors(state: EnvironmentState): EnvironmentState {
+  return {
+    ...state,
+    cursors: { environment: null, sessions: {} },
+    threads: Object.fromEntries(
+      Object.entries(state.threads).map(([id, { cursor: _cursor, ...thread }]) => [id, thread]),
+    ),
+  }
+}

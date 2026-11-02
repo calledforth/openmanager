@@ -101,7 +101,7 @@ export {
   selectWorkspaces,
   shallowEqualArray,
 } from './state'
-export { cacheState } from './cache-state'
+export { cacheState, forgetCursors } from './cache-state'
 export { createEnvironmentStore, type EnvironmentStore } from './store'
 export {
   applyDraftDeleted,

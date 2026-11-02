@@ -1191,8 +1191,10 @@ in case a format ever changes without a protocol bump. For today's clients it is
 **Since then:** both of those have happened. Clients keep cursors (#264), and an additive event
 field changes the format without a protocol bump (`pinnedAt`, #270). So a client can reach a floor:
 a transport that reconnects after the upgrade takes the existing `gap_expired` snapshot, with no
-client change. The cache is keyed on the event format as well as the protocol, so a document whose
-build ignored a new field is dropped rather than resumed from a cursor already past the event.
+client change. The cache records the event format as well as the protocol. A document from another
+format keeps its state and forgets its cursors (`forgetCursors`): its build may have ignored a field
+and still moved past the event, and it is the only home of unsent drafts and held sends, so every
+scope takes a whole snapshot instead of the document being dropped.
 
 **The cached state is a separate case.** The upgrade reload starts from the IndexedDB cache, a
 v16-shaped state. It has no cursors, but it has:
