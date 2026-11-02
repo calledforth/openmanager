@@ -88,6 +88,12 @@ export type AddressLookup = {
   offline: readonly string[]
   /** The environment on screen answered that it does not have this session. */
   reportAbsent: (sessionId: string) => void
+  /**
+   * Someone opened this address from a card of this environment. An address
+   * does not say whose it is, and ids are only unique within one environment,
+   * so the card's word comes first when two have it.
+   */
+  prefer: (address: Address, environmentId: string) => void
 }
 
 const NO_LABELS: readonly string[] = []
@@ -99,6 +105,7 @@ const AddressLookupContext = createContext<AddressLookup>({
   status: 'settled',
   offline: NO_LABELS,
   reportAbsent: NOTHING,
+  prefer: NOTHING,
 })
 
 export const AddressLookupProvider = AddressLookupContext.Provider
@@ -131,6 +138,20 @@ export function useFindAddress(address: Address | null): AddressLookup {
   if (settled !== null && settled !== key) setSettled(null)
   const searching = address !== null && settled !== key
 
+  const [preferred, setPreferred] = useState<{ key: string | null; environmentId: string } | null>(
+    null,
+  )
+  const prefer = useCallback(
+    (next: Address, environmentId: string) => {
+      const nextKey = keyOf(next)
+      setPreferred({ key: nextKey, environmentId })
+      // Already on the address, in another environment: nothing else moves.
+      if (nextKey === key) setSettled(null)
+    },
+    [key],
+  )
+  const first = preferred?.key === key ? preferred.environmentId : selectedId
+
   const [answers, setAnswers] = useState<{ key: string | null; from: ReadonlySet<string> }>({
     key: null,
     from: NO_ONE,
@@ -143,14 +164,14 @@ export function useFindAddress(address: Address | null): AddressLookup {
     }))
   }, [])
 
-  // The selected environment first, so it decides a match it shares.
+  // The selected environment first, so it decides a match it shares. A card
+  // names its own, which goes ahead of that.
   const ordered = useMemo(
     () =>
       [...links].sort(
-        (a, b) =>
-          Number(b.environmentId === selectedId) - Number(a.environmentId === selectedId),
+        (a, b) => Number(b.environmentId === first) - Number(a.environmentId === first),
       ),
-    [links, selectedId],
+    [first, links],
   )
   const readOwner = useCallback(
     () =>
@@ -253,7 +274,7 @@ export function useFindAddress(address: Address | null): AddressLookup {
   )
 
   return useMemo(() => {
-    const result = { owner: pendingOwner, offline: NO_LABELS, reportAbsent }
+    const result = { owner: pendingOwner, offline: NO_LABELS, reportAbsent, prefer }
     if (!address) return { ...result, status: 'settled' }
     // Someone chose to be somewhere else: only that environment's word counts.
     if (!searching) {
@@ -278,6 +299,7 @@ export function useFindAddress(address: Address | null): AddressLookup {
     ordered,
     owner,
     pendingOwner,
+    prefer,
     reportAbsent,
     searching,
     selectedId,
