@@ -12,8 +12,18 @@ import { resolveDraftProvider, type ProviderStatuses } from '../../providers/dra
 
 const NO_STATUSES: ProviderStatuses = {}
 
+/**
+ * A row's identity in a list that can span environments. Ids are only unique
+ * within one environment, so anything that tells rows apart keys by this.
+ */
+export function sidebarRowKey(environmentId: string | undefined, id: string): string {
+  return environmentId ? `${environmentId}/${id}` : id
+}
+
 export interface SidebarSession {
   externalId: string
+  /** The environment it lives on, on hosts that know one. */
+  environmentId?: string
   title?: string
   status: string
   /** Every host names it; the sidebar never guesses a provider (§4.7.2). */
@@ -45,6 +55,8 @@ export interface SidebarSession {
  */
 export interface SidebarDraft {
   draftId: string
+  /** The environment it is saved on, on hosts that know one. */
+  environmentId?: string
   /**
    * The id its session will get. Cards are keyed by it, so sending the draft
    * turns its card into the session's card in place, with nothing folding
@@ -79,6 +91,8 @@ export interface DraftDiscardOptions {
   fromKeyboard?: boolean
   /** Where focus goes when the notice closes with focus on it: the next card over. */
   returnFocus?: HTMLElement | null
+  /** The environment the draft is on, where the list spans several. */
+  environmentId?: string
 }
 
 /** Long enough for any card width; the rest is never shown. */
@@ -119,8 +133,10 @@ export function sidebarDraftCard(
   if (!content || !hasDraftContent(content)) return null
   const picked = content.providerId
   const status = selectDraftSyncStatus(state, draftId)
+  const environmentId = state.environment?.environmentId
   return {
     draftId,
+    ...(environmentId ? { environmentId } : {}),
     sessionId: target.sessionId,
     workspaceId: target.workspaceId,
     // The provider its composer will run, by the composer's own rule.
@@ -199,7 +215,7 @@ export function selectSidebarDrafts(
   }
 }
 
-function newestDraftFirst(left: SidebarDraft, right: SidebarDraft) {
+export function newestDraftFirst(left: SidebarDraft, right: SidebarDraft) {
   return right.editedAt - left.editedAt || (right.draftId > left.draftId ? 1 : -1)
 }
 
@@ -207,6 +223,7 @@ function sameDraft(left: SidebarDraft, right: SidebarDraft) {
   return (
     left === right ||
     (left.draftId === right.draftId &&
+      left.environmentId === right.environmentId &&
       left.sessionId === right.sessionId &&
       left.workspaceId === right.workspaceId &&
       left.providerId === right.providerId &&
@@ -294,6 +311,8 @@ export function selectSessionsWithUnsentDraft(
 export interface SidebarWorkspace {
   path: string
   name: string
+  /** The environment it is registered on, on hosts that know one. */
+  environmentId?: string
   /** Registered but not on disk right now; no session can start here. */
   missing?: boolean
   availability?: 'available' | 'missing' | 'inaccessible'

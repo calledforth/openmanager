@@ -28,6 +28,7 @@ import {
   XIcon,
 } from '@phosphor-icons/react'
 import type { ProviderId } from '@agentpack/contract'
+import type { SidebarRowEnvironment } from '../../providers/sidebar-provider'
 import { describeUnavailableWorkspace } from '../../lib/workspace-availability'
 import { formatRelativeTime, useNow } from '../../lib/relative-time'
 import { noticeAnchorRef } from '../../lib/notice-anchors'
@@ -63,6 +64,7 @@ import { SessionBusyLoader, sessionBusyTone, type SessionBusyTone } from './Sess
 import {
   DRAFT_CARD_ATTRIBUTE,
   flattenSidebarSessions,
+  sidebarRowKey,
   type DraftDiscardOptions,
   type SidebarDraft,
   type SidebarSession,
@@ -150,9 +152,39 @@ const timeOf = (iso: string | null | undefined) => {
  * them. Active work is newest activity first, under anything pinned, which is
  * most recently pinned first; settled work is most recently settled first.
  * Child transcripts ride with their parent, so a settled parent takes its
- * subagents with it.
+ * subagents with it. Several environments share the one list, each arranged
+ * on its own first, since a session's id and its parent's mean something only
+ * within its environment.
  */
 export function partitionSidebarSessions(workspaces: SidebarWorkspace[]): {
+  active: SidebarBoardEntry[]
+  settled: SidebarBoardEntry[]
+} {
+  const byEnvironment = new Map<string | undefined, SidebarWorkspace[]>()
+  for (const workspace of workspaces) {
+    const group = byEnvironment.get(workspace.environmentId)
+    if (group) group.push(workspace)
+    else byEnvironment.set(workspace.environmentId, [workspace])
+  }
+  if (byEnvironment.size <= 1) return partitionEnvironmentSessions(workspaces)
+  const parts = [...byEnvironment.values()].map(partitionEnvironmentSessions)
+  return {
+    // Pins first, most recently pinned on top, whichever environment they are
+    // on; then the rest by activity, as within one environment.
+    active: parts
+      .flatMap((part) => part.active)
+      .sort(
+        (a, b) =>
+          timeOf(b.root.session.pinnedAt) - timeOf(a.root.session.pinnedAt) ||
+          timeOf(b.root.session.updatedAt) - timeOf(a.root.session.updatedAt),
+      ),
+    settled: parts
+      .flatMap((part) => part.settled)
+      .sort((a, b) => timeOf(b.root.session.settledAt) - timeOf(a.root.session.settledAt)),
+  }
+}
+
+function partitionEnvironmentSessions(workspaces: SidebarWorkspace[]): {
   active: SidebarBoardEntry[]
   settled: SidebarBoardEntry[]
 } {
@@ -206,9 +238,17 @@ export function placeSidebarDrafts(
   workspaces: SidebarWorkspace[],
 ): SidebarDraftRow[] {
   if (drafts.length === 0) return NO_DRAFT_ROWS
-  const byPath = new Map(workspaces.map((workspace) => [workspace.path, workspace]))
+  const byPath = new Map(
+    workspaces.map((workspace) => [
+      sidebarRowKey(workspace.environmentId, workspace.path),
+      workspace,
+    ]),
+  )
   return drafts.map((draft) => {
-    const workspace = draft.workspaceId === null ? undefined : byPath.get(draft.workspaceId)
+    const workspace =
+      draft.workspaceId === null
+        ? undefined
+        : byPath.get(sidebarRowKey(draft.environmentId, draft.workspaceId))
     return workspace ? { kind: 'draft', draft, workspace } : { kind: 'draft', draft }
   })
 }
@@ -326,13 +366,19 @@ interface HandoffFold {
   count: number
 }
 
+/** A card's key among the cards of every environment. */
+function entryKey(entry: SidebarBoardEntry): string {
+  const { environmentId, externalId } = entry.root.session
+  return sidebarRowKey(environmentId, externalId)
+}
+
 /** A sent draft whose session took its card over. */
 interface Handoff {
   /** Counts hand-offs, so each one replays the Active label's fade. */
   count: number
-  /** The session each handed-over card belongs to, and the draft it was. */
+  /** The session each handed-over card belongs to (`entryKey`), and the draft it was. */
   from: ReadonlyMap<string, string>
-  /** What each handed-over card read as a draft: its title until the session is named. */
+  /** What each handed-over card read as a draft: its title until the session is named. By `entryKey`. */
   previews: ReadonlyMap<string, string>
   /** The last draft went with it (see `HandoffFold`). */
   fold: HandoffFold | null
@@ -371,19 +417,21 @@ function useHandoff(
     [],
   )
   if (seen.drafts === drafts) return [seen.handoff, endFold]
-  const before = new Map(seen.drafts.map((draft) => [draft.sessionId, draft]))
+  const before = new Map(
+    seen.drafts.map((draft) => [sidebarRowKey(draft.environmentId, draft.sessionId), draft]),
+  )
   const from = new Map<string, string>()
   // A sent card reads as its draft until its session is named, through any
   // later change to the drafts or another hand-off.
   const previews = new Map<string, string>()
   for (const entry of active) {
-    const id = entry.root.session.externalId
+    const id = entryKey(entry)
     const preview = seen.handoff.previews.get(id)
     if (preview !== undefined && !entry.root.session.title) previews.set(id, preview)
   }
   if (before.size > 0) {
     for (const entry of active) {
-      const id = entry.root.session.externalId
+      const id = entryKey(entry)
       const draft = before.get(id)
       if (draft === undefined) continue
       from.set(id, draft.draftId)
@@ -437,14 +485,24 @@ function handedSelection(
   entry: SidebarBoardEntry,
   handoff: Handoff,
   activeDraftId: string | null,
+  activeEnvironmentId: string | undefined,
 ): string | null {
-  const id = entry.root.session.externalId
-  return activeDraftId !== null && handoff.from.get(id) === activeDraftId ? id : null
+  const { environmentId, externalId } = entry.root.session
+  return activeDraftId !== null &&
+    environmentId === activeEnvironmentId &&
+    handoff.from.get(entryKey(entry)) === activeDraftId
+    ? externalId
+    : null
 }
 
 /** The id a card shows selected: the session on screen if it is this card or one of its subagents. */
-function entrySelection(entry: SidebarBoardEntry, activeSessionId: string | null): string | null {
+function entrySelection(
+  entry: SidebarBoardEntry,
+  activeSessionId: string | null,
+  activeEnvironmentId: string | undefined,
+): string | null {
   if (activeSessionId === null) return null
+  if (entry.root.session.environmentId !== activeEnvironmentId) return null
   if (entry.root.session.externalId === activeSessionId) return activeSessionId
   return entry.children.some((child) => child.session.externalId === activeSessionId)
     ? activeSessionId
@@ -572,14 +630,35 @@ function CardAction({
 
 export interface WorkspaceSidebarViewProps {
   environmentLabel?: string
+  /**
+   * Set when more than one environment is saved: each card then shows the
+   * name of the environment it is on, which is also what it can do there.
+   * Rows are told apart by environment from then on.
+   */
+  rowEnvironments?: Readonly<Record<string, SidebarRowEnvironment>>
+  /** Some environment's rows may yet arrive, and are no news when they do. */
+  rowsFilling?: boolean
   workspaces: SidebarWorkspace[]
+  /** The environment the open session and `activeWorkspacePath` belong to. */
+  activeEnvironmentId?: string
   activeWorkspacePath: string | null
   activeSessionId: string | null
   onCreateSession: (workspacePath: string) => void
-  onSelectSession: (workspacePath: string, externalId: string, providerId: ProviderId) => void
+  /** What a row does is told the row's environment, last. */
+  onSelectSession: (
+    workspacePath: string,
+    externalId: string,
+    providerId: ProviderId,
+    environmentId?: string,
+  ) => void
   /** Rename and delete stay on the contract, but the rows do not offer them
    *  for now: settling is the one thing a row does besides opening. */
-  onRenameSession?: (workspacePath: string, externalId: string, title: string | null) => void
+  onRenameSession?: (
+    workspacePath: string,
+    externalId: string,
+    title: string | null,
+    environmentId?: string,
+  ) => void
   /** Absent when the host cannot keep a settled session; the action is hidden.
    *  The host shows the move at once (the environment client does), and a
    *  refusal moves the row back through the same data. */
@@ -587,6 +666,7 @@ export interface WorkspaceSidebarViewProps {
     workspacePath: string,
     externalId: string,
     settled: boolean,
+    environmentId?: string,
   ) => void | Promise<unknown>
   /** Absent when the host cannot keep a pin; a pinned card keeps its mark, not
    *  the button. Moves the same way a settle does. */
@@ -594,8 +674,14 @@ export interface WorkspaceSidebarViewProps {
     workspacePath: string,
     externalId: string,
     pinned: boolean,
+    environmentId?: string,
   ) => void | Promise<unknown>
-  onDeleteSession?: (workspacePath: string, externalId: string, providerId: ProviderId) => void
+  onDeleteSession?: (
+    workspacePath: string,
+    externalId: string,
+    providerId: ProviderId,
+    environmentId?: string,
+  ) => void
   /**
    * Unsent new-session drafts, shown as cards in a Drafts section above Active, in the
    * order given (newest edit first). Hosts without draft pages leave them out.
@@ -603,7 +689,7 @@ export interface WorkspaceSidebarViewProps {
   drafts?: SidebarDraft[]
   /** The draft on screen; its card shows selected. */
   activeDraftId?: string | null
-  onOpenDraft?: (draftId: string) => void
+  onOpenDraft?: (draftId: string, environmentId?: string) => void
   /** Absent when drafts cannot be discarded here; the card offers no discard. */
   onDiscardDraft?: (draftId: string, options?: DraftDiscardOptions) => void
   onAddWorkspace: () => void
@@ -623,7 +709,10 @@ export interface WorkspaceSidebarViewProps {
  */
 export function WorkspaceSidebarView({
   environmentLabel,
+  rowEnvironments,
+  rowsFilling = false,
   workspaces,
+  activeEnvironmentId,
   activeWorkspacePath,
   activeSessionId,
   onCreateSession,
@@ -666,7 +755,10 @@ export function WorkspaceSidebarView({
     (...args) => selectRef.current(...args),
     [],
   )
-  const onOpenDraft = useCallback((draftId: string) => openDraftRef.current?.(draftId), [])
+  const onOpenDraft = useCallback(
+    (draftId: string, environmentId?: string) => openDraftRef.current?.(draftId, environmentId),
+    [],
+  )
   const canDiscardDraft = requestDiscardDraft !== undefined
   const onDiscardDraft = useMemo(
     () =>
@@ -698,11 +790,13 @@ export function WorkspaceSidebarView({
         : undefined,
     [canPin],
   )
-  const present = (path: string | null) =>
-    path !== null && workspaces.some((workspace) => workspace.path === path && !workspace.missing)
-  const newThreadTarget = present(activeWorkspacePath)
+  // A new agent starts in the open environment, whatever else is listed.
+  const startable = workspaces.filter(
+    (workspace) => workspace.environmentId === activeEnvironmentId && !workspace.missing,
+  )
+  const newThreadTarget = startable.some((workspace) => workspace.path === activeWorkspacePath)
     ? activeWorkspacePath
-    : (workspaces.find((workspace) => !workspace.missing)?.path ?? null)
+    : (startable[0]?.path ?? null)
 
   const { active, settled } = useMemo(() => partitionSidebarSessions(workspaces), [workspaces])
   const draftRows = useMemo(() => placeSidebarDrafts(drafts, workspaces), [drafts, workspaces])
@@ -717,8 +811,8 @@ export function WorkspaceSidebarView({
   const [armed, setArmed] = useState(false)
   const hasSessions = active.length + settled.length + draftRows.length > 0
   useEffect(() => {
-    if (hasSessions) setArmed(true)
-  }, [hasSessions])
+    if (hasSessions && !rowsFilling) setArmed(true)
+  }, [hasSessions, rowsFilling])
   const rowMotion = useRowMotion(armed)
   const onSettledOpenChange = useCallback((open: boolean) => {
     setSettledOpen(open)
@@ -730,22 +824,21 @@ export function WorkspaceSidebarView({
     [],
   )
   // The shelf hears about the selection only when it is one of its rows.
+  const activeRow =
+    activeSessionId === null ? null : sidebarRowKey(activeEnvironmentId, activeSessionId)
   const settledSelection =
-    activeSessionId !== null &&
+    activeRow !== null &&
     settled
       .slice(0, settledVisible)
-      .some(
-        (entry) =>
-          entry.root.session.externalId === activeSessionId ||
-          entry.children.some((child) => child.session.externalId === activeSessionId),
-      )
-      ? activeSessionId
+      .some((entry) => entrySelection(entry, activeSessionId, activeEnvironmentId) !== null)
+      ? activeRow
       : null
   // Selection is handed to each row as its own (`selected`), not as the id
   // on screen: opening another session re-renders the two rows it moves
   // between, not the whole list.
   const shared = {
     environmentLabel,
+    rowEnvironments,
     now,
     onSelectSession,
     onSettleSession,
@@ -811,13 +904,18 @@ export function WorkspaceSidebarView({
                 ) : null}
                 {draftRows.map((row, index) => (
                   <MemoActiveCard
-                    key={row.draft.sessionId}
+                    key={sidebarRowKey(row.draft.environmentId, row.draft.sessionId)}
                     item={row}
                     place={index}
                     layoutTransition={cardLayout}
                     fold={null}
                     untitled={undefined}
-                    selected={row.draft.draftId === activeDraftId ? row.draft.draftId : null}
+                    selected={
+                      row.draft.draftId === activeDraftId &&
+                      row.draft.environmentId === activeEnvironmentId
+                        ? row.draft.draftId
+                        : null
+                    }
                     {...shared}
                   />
                 ))}
@@ -830,15 +928,15 @@ export function WorkspaceSidebarView({
                 />
                 {active.map((entry) => (
                   <MemoActiveCard
-                    key={entry.root.session.externalId}
+                    key={entryKey(entry)}
                     item={{ kind: 'session', entry }}
                     place={entry.root.session.pinnedAt ? 'pinned' : 'session'}
                     layoutTransition={cardLayout}
-                    fold={fold && handoff.from.has(entry.root.session.externalId) ? fold : null}
-                    untitled={handoff.previews.get(entry.root.session.externalId)}
+                    fold={fold && handoff.from.has(entryKey(entry)) ? fold : null}
+                    untitled={handoff.previews.get(entryKey(entry))}
                     selected={
-                      entrySelection(entry, activeSessionId) ??
-                      handedSelection(entry, handoff, activeDraftId)
+                      entrySelection(entry, activeSessionId, activeEnvironmentId) ??
+                      handedSelection(entry, handoff, activeDraftId, activeEnvironmentId)
                     }
                     {...shared}
                   />
@@ -897,7 +995,7 @@ function SettledShelf({
   onOpenChange: (open: boolean) => void
   visible: number
   onShowMore: () => void
-  /** The open session when it is one of the shelf's rows, else null. */
+  /** The open session's `sidebarRowKey` when it is one of the shelf's rows, else null. */
   selected: string | null
 }) {
   return (
@@ -925,9 +1023,13 @@ function SettledShelf({
             .flatMap((entry) => [entry.root, ...entry.children])
             .map((row) => (
               <MemoSettledRow
-                key={row.session.externalId}
+                key={sidebarRowKey(row.session.environmentId, row.session.externalId)}
                 row={row}
-                selected={row.session.externalId === selected ? selected : null}
+                selected={
+                  sidebarRowKey(row.session.environmentId, row.session.externalId) === selected
+                    ? row.session.externalId
+                    : null
+                }
                 {...shared}
               />
             ))}
@@ -1194,6 +1296,7 @@ function sameHandlers(a: RowHandlers, b: RowHandlers): boolean {
   return (
     a.selected === b.selected &&
     a.environmentLabel === b.environmentLabel &&
+    a.rowEnvironments === b.rowEnvironments &&
     a.now === b.now &&
     a.onSelectSession === b.onSelectSession &&
     a.onSettleSession === b.onSettleSession &&
@@ -1213,11 +1316,12 @@ interface RowHandlers {
    */
   selected: string | null
   environmentLabel?: string
+  rowEnvironments?: WorkspaceSidebarViewProps['rowEnvironments']
   now: number
   onSelectSession: WorkspaceSidebarViewProps['onSelectSession']
   onSettleSession?: WorkspaceSidebarViewProps['onSettleSession']
   onPinSession?: WorkspaceSidebarViewProps['onPinSession']
-  onOpenDraft?: (draftId: string) => void
+  onOpenDraft?: (draftId: string, environmentId?: string) => void
   onDiscardDraft?: (draftId: string, options?: DraftDiscardOptions) => void
   providerLabel?: WorkspaceSidebarViewProps['providerLabel']
   rowMotion: MotionProps
@@ -1362,12 +1466,41 @@ function UnsentMark() {
   )
 }
 
+/**
+ * The environment a card is on, when there is more than one to tell apart:
+ * set quietly at the foot of the card, opposite what the card is about. Screen
+ * readers get it with the card's title.
+ */
+function EnvironmentName({ name }: { name: string }) {
+  return (
+    <span aria-hidden className="ml-auto min-w-0 max-w-[55%] shrink-0 truncate pl-1" title={name}>
+      {name}
+    </span>
+  )
+}
+
+/** A row's own environment, and the name to read out for it. */
+function rowEnvironmentOf(
+  environmentId: string | undefined,
+  rowEnvironments: RowHandlers['rowEnvironments'],
+  environmentLabel: string | undefined,
+) {
+  const environment = environmentId ? rowEnvironments?.[environmentId] : undefined
+  return {
+    environment,
+    spokenName: environment?.name ?? environmentLabel,
+    // What the row's environment says, or the host's one answer for every row.
+    iconLookup: rowEnvironments ? (environment?.iconLookup ?? null) : undefined,
+  }
+}
+
 function SessionCardBody({
   entry,
   untitled,
   pinned,
   selected,
   environmentLabel,
+  rowEnvironments,
   now,
   onSelectSession,
   onSettleSession,
@@ -1381,13 +1514,22 @@ function SessionCardBody({
     ? describeUnavailableWorkspace(workspace.availability)
     : null
   const git = workspace.git
-  const select = () => onSelectSession(workspace.path, session.externalId, providerId)
+  const { environmentId } = session
+  const { environment, spokenName, iconLookup } = rowEnvironmentOf(
+    environmentId,
+    rowEnvironments,
+    environmentLabel,
+  )
+  const settleHere = !rowEnvironments || environment?.canSettle ? onSettleSession : undefined
+  const pinHere = !rowEnvironments || environment?.canPin ? onPinSession : undefined
+  const select = () =>
+    onSelectSession(workspace.path, session.externalId, providerId, environmentId)
   const providerName = providerLabel?.(providerId) ?? providerId
   const tone = sessionBusyTone(session.status, session)
   const moment = useStatusMoment(tone)
   // Live work cannot be settled, so its status has nothing to make room for.
   const hasActions =
-    Boolean(onSettleSession) &&
+    Boolean(settleHere) &&
     tone !== 'working' &&
     tone !== 'background' &&
     tone !== 'needs' &&
@@ -1405,7 +1547,7 @@ function SessionCardBody({
 
   const projectLine = (
     <span className="flex min-w-0 items-center gap-1.5 text-[12px] leading-4 text-muted-foreground">
-      <ProjectIcon workspacePath={workspace.path} className="opacity-80" />
+      <ProjectIcon workspacePath={workspace.path} className="opacity-80" iconLookup={iconLookup} />
       <span className={cn('truncate', workspace.missing && 'line-through decoration-faint')}>
         {workspace.name}
       </span>
@@ -1463,6 +1605,7 @@ function SessionCardBody({
           <span className="truncate">{git.branch ?? 'detached'}</span>
         </span>
       ) : null}
+      {environment ? <EnvironmentName name={environment.name} /> : null}
     </span>
   )
 
@@ -1508,7 +1651,7 @@ function SessionCardBody({
           {projectLine}
           <span className="truncate text-[14px] leading-5 text-foreground">
             {session.title || untitled || 'New session'}
-            {environmentLabel ? <span className="sr-only"> on {environmentLabel}</span> : null}
+            {spokenName ? <span className="sr-only"> on {spokenName}</span> : null}
           </span>
           {metaLine}
         </button>
@@ -1528,7 +1671,7 @@ function SessionCardBody({
       </div>
       {/* Live work cannot be settled: the environment refuses it, since
             nothing would bring the card back once the turn finished. */}
-      {onSettleSession && hasActions ? (
+      {settleHere && hasActions ? (
         <div className="absolute right-1.5 top-1.5 flex items-center gap-0.5 opacity-0 transition-opacity duration-80 group-has-[:focus-visible]/card:opacity-100 group-hover/card:opacity-100 pointer-coarse:opacity-100 [:root[data-draft-discard-guard]_&]:opacity-0">
           <CardAction
             label="Settle"
@@ -1536,7 +1679,7 @@ function SessionCardBody({
               // The second half of a double click that discarded the draft
               // above: this card slid up under it. A keypress still settles.
               if (event.detail > 0 && onDiscardGuardedSpot(event)) return
-              onSettleSession(workspace.path, session.externalId, true)
+              settleHere(workspace.path, session.externalId, true, environmentId)
             }}
           >
             <CheckIcon />
@@ -1552,13 +1695,15 @@ function SessionCardBody({
             'opacity-0 group-has-[:focus-visible]/card:opacity-100 group-hover/card:opacity-100 pointer-coarse:opacity-100',
         )}
       >
-        {onPinSession ? (
+        {pinHere ? (
           <CardAction
             label={pinned ? 'Unpin' : 'Pin to top'}
             onClick={(event) => {
               // The card leaves on the first click, so a double click's second
               // would land on whichever card took its place.
-              if (event.detail <= 1) onPinSession(workspace.path, session.externalId, !pinned)
+              if (event.detail <= 1) {
+                pinHere(workspace.path, session.externalId, !pinned, environmentId)
+              }
             }}
           >
             <PushPinIcon weight={pinned ? 'fill' : 'regular'} />
@@ -1657,11 +1802,18 @@ function DraftCardBody({
   row,
   selected,
   environmentLabel,
+  rowEnvironments,
   onOpenDraft,
   onDiscardDraft,
   providerLabel,
 }: RowHandlers & { row: SidebarDraftRow }) {
   const { draft, workspace } = row
+  const { environmentId } = draft
+  const { environment, spokenName, iconLookup } = rowEnvironmentOf(
+    environmentId,
+    rowEnvironments,
+    environmentLabel,
+  )
   const isActive = draft.draftId === selected
   const providerName = providerLabel?.(draft.providerId) ?? draft.providerId
   const unavailable = workspace?.missing
@@ -1670,7 +1822,7 @@ function DraftCardBody({
   const git = workspace?.git
   const preview = draft.preview || imagesLabel(draft.imageCount)
   const unsynced = draft.unsynced ? DRAFT_SYNC_EXPLANATION[draft.unsynced] : undefined
-  const open = () => onOpenDraft?.(draft.draftId)
+  const open = () => onOpenDraft?.(draft.draftId, environmentId)
   // A draft being sent is the send's: nothing here discards it. A click
   // with no pointer behind it (detail 0) came from the keyboard: the undo
   // notice takes focus, and hands it to the next card over when it goes.
@@ -1682,6 +1834,7 @@ function DraftCardBody({
           onDiscardDraft(draft.draftId, {
             fromKeyboard,
             returnFocus: fromKeyboard ? neighbourCard(cardRef.current) : null,
+            ...(environmentId ? { environmentId } : {}),
           })
         }
       : undefined
@@ -1705,7 +1858,11 @@ function DraftCardBody({
     >
       {workspace ? (
         <>
-          <ProjectIcon workspacePath={workspace.path} className="opacity-80" />
+          <ProjectIcon
+            workspacePath={workspace.path}
+            className="opacity-80"
+            iconLookup={iconLookup}
+          />
           <span className={cn('truncate', workspace.missing && 'line-through decoration-faint')}>
             {workspace.name}
           </span>
@@ -1762,10 +1919,11 @@ function DraftCardBody({
           <span className="truncate">{git.branch ?? 'detached'}</span>
         </span>
       ) : null}
+      {environment ? <EnvironmentName name={environment.name} /> : null}
       {/* The composer's "Not synced", made quiet: the mark, and its reason on hover. */}
       {unsynced ? (
         <Tooltip content={unsynced}>
-          <span className="ml-auto flex shrink-0 items-center gap-1">
+          <span className={cn('flex shrink-0 items-center gap-1', !environment && 'ml-auto')}>
             <CloudSlashIcon className="h-3 w-3" aria-hidden />
             <span className="sr-only">Not synced. {unsynced}</span>
           </span>
@@ -1814,7 +1972,7 @@ function DraftCardBody({
           {projectLine}
           <span className="truncate text-[14px] leading-5 text-foreground">
             {preview}
-            {environmentLabel ? <span className="sr-only"> on {environmentLabel}</span> : null}
+            {spokenName ? <span className="sr-only"> on {spokenName}</span> : null}
           </span>
           {metaLine}
         </button>
@@ -1879,7 +2037,9 @@ function ChildRow({
       <button
         type="button"
         aria-current={isActive ? 'page' : undefined}
-        onClick={() => onSelectSession(workspace.path, session.externalId, providerId)}
+        onClick={() =>
+          onSelectSession(workspace.path, session.externalId, providerId, session.environmentId)
+        }
         style={depth > 1 ? { paddingLeft: 8 + Math.min(depth - 1, 3) * 12 } : undefined}
         className={cn(
           'flex h-7 w-full min-w-0 items-center gap-1.5 rounded-md px-2 text-left outline-none transition-colors duration-80',
@@ -1902,11 +2062,25 @@ function ChildRow({
 // A menu row that can grow in and fold away (see useRowMotion).
 const MotionMenuItem = motion.create(SidebarMenuItem)
 
+/** The environment of a settled row: a one-line row, so it follows the title. */
+function SettledEnvironmentName({ name }: { name: string }) {
+  return (
+    <span
+      aria-hidden
+      className="min-w-0 max-w-[45%] shrink-0 truncate text-[12px] text-faint"
+      title={name}
+    >
+      {name}
+    </span>
+  )
+}
+
 /** Settled work at a glance: what it was and when it was put away. */
 function SettledRow({
   row,
   selected,
   environmentLabel,
+  rowEnvironments,
   now,
   onSelectSession,
   onSettleSession,
@@ -1914,6 +2088,13 @@ function SettledRow({
 }: RowHandlers & { row: SidebarBoardRow }) {
   const { session, workspace, depth } = row
   const providerId = session.providerId
+  const { environmentId } = session
+  const { environment, spokenName } = rowEnvironmentOf(
+    environmentId,
+    rowEnvironments,
+    environmentLabel,
+  )
+  const settleHere = !rowEnvironments || environment?.canSettle ? onSettleSession : undefined
   const tone = sessionBusyTone(session.status, session)
   const isActive = session.externalId === selected
   // Settled work can still hold a reply the user started: the active cards' mark.
@@ -1925,14 +2106,18 @@ function SettledRow({
         isActive={isActive}
         className="text-muted-foreground"
         style={depth > 0 ? { paddingLeft: 8 + Math.min(depth, 4) * 12 } : undefined}
-        onClick={() => onSelectSession(workspace.path, session.externalId, providerId)}
+        onClick={() =>
+          onSelectSession(workspace.path, session.externalId, providerId, environmentId)
+        }
       >
         <span className="truncate">{session.title || 'New session'}</span>
         {unsent ? <UnsentMark /> : null}
+        {/* Under a parent, its subagents go without: they are on the same one. */}
+        {environment && depth === 0 ? <SettledEnvironmentName name={environment.name} /> : null}
         <span className="sr-only">
           {' '}
           in {workspace.name}
-          {environmentLabel ? ` on ${environmentLabel}` : ''}
+          {spokenName ? ` on ${spokenName}` : ''}
         </span>
       </SidebarMenuButton>
       <SidebarMenuBadge>
@@ -1942,11 +2127,11 @@ function SettledRow({
           formatRelativeTime(session.settledAt ?? session.updatedAt, now)
         )}
       </SidebarMenuBadge>
-      {onSettleSession && depth === 0 ? (
+      {settleHere && depth === 0 ? (
         <SidebarMenuActions showOnHover>
           <SidebarMenuAction
             aria-label="Move back to active"
-            onClick={() => onSettleSession(workspace.path, session.externalId, false)}
+            onClick={() => settleHere(workspace.path, session.externalId, false, environmentId)}
           >
             <ArrowUUpLeftIcon />
           </SidebarMenuAction>
