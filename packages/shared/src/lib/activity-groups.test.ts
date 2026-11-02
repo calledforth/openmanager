@@ -76,6 +76,23 @@ describe('groupActivityParts', () => {
     expect(summaries(groupActivityParts(run))).toEqual(['Edited 2 files, ran 1 command'])
   })
 
+  it.each(['declined', 'cancelled', 'error'])('never counts a call that ended %s', (status) => {
+    const edit = (id: string, state: string) => ({
+      type: 'tool',
+      id,
+      tool: 'Edit',
+      state: { status: state, input: { path: `${id}.ts` } },
+    })
+    const items = groupActivityParts([
+      edit('a', 'completed'),
+      edit('b', status),
+      edit('c', 'completed'),
+    ])
+    const texts = items.flatMap((item) => (item.kind === 'group' ? [item.summary.text] : []))
+    expect(texts).toEqual(['Edited 1 file', 'Edited 1 file'])
+    expect(items.filter((item) => item.kind !== 'group')).toHaveLength(1)
+  })
+
   it('honours a custom minimum group size', () => {
     const parts = [tool('1', 'Read'), tool('2', 'Read')]
 

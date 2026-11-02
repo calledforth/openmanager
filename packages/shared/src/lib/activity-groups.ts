@@ -86,8 +86,12 @@ const KIND_CATEGORIES: Record<string, ActivityCategory> = {
 
 const CATEGORY_ORDER: ActivityCategory[] = ['edit', 'read', 'search', 'shell', 'other']
 
-function isToolError(stateType: string): boolean {
-  return /error|fail/i.test(stateType)
+/**
+ * A call that ended without doing what it set out to: it keeps its own row,
+ * which says so, and a summary's count of what was done never includes it.
+ */
+function didNotComplete(stateType: string): boolean {
+  return /error|fail|declined|cancelled/i.test(stateType)
 }
 
 function toolCategory(part: ToolPartShape): ActivityCategory {
@@ -109,7 +113,7 @@ function isGroupable(part: ToolPartShape, pendingPermissionCallId?: string | nul
   const toolName = typeof part.tool === 'string' ? part.tool : ''
   if (BARRIER_TOOLS.has(canonicalizeToolName(toolName))) return false
   if (BARRIER_TOOLS.has(resolveTool(part as ToolPartData).canonical)) return false
-  if (isToolError(getToolStateType(part.state))) return false
+  if (didNotComplete(getToolStateType(part.state))) return false
   const callId = typeof part.callID === 'string' ? part.callID : undefined
   if (pendingPermissionCallId && callId && callId === pendingPermissionCallId) return false
   return true
