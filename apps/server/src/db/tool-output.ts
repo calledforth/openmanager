@@ -72,12 +72,15 @@ export function createToolOutputStore(database: DatabaseSync): ToolOutputStore {
 export function createToolOutputReader(database: DatabaseSync) {
   const store = createToolOutputStore(database)
   const owned = database.prepare(
-    `SELECT a.activity_id FROM turn_activity a
+    `SELECT a.workspace_id FROM turn_activity a
      JOIN threads t ON t.thread_id = a.thread_id
      WHERE a.activity_id = ? AND a.kind = 'tool' AND t.session_id = ?`,
   )
-  return (sessionId: string, toolCallId: string): string | undefined =>
-    owned.get(toolCallId, sessionId) ? store.read(toolCallId) : undefined
+  return (sessionId: string, toolCallId: string) => {
+    const row = owned.get(toolCallId, sessionId) as { workspace_id: string } | undefined
+    const text = row ? store.read(toolCallId) : undefined
+    return row && text !== undefined ? { text, workspaceId: row.workspace_id } : undefined
+  }
 }
 
 /**

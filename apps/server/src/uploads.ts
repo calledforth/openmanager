@@ -97,7 +97,10 @@ export function createUploadService(options: {
   /** The workspace that owns a session, or `undefined` when the session does not exist. */
   sessionWorkspace: (sessionId: string) => string | undefined
   /** A settled tool's text, by the session and call a client names; undefined when it has none. */
-  toolOutput?: (sessionId: string, toolCallId: string) => string | undefined
+  toolOutput?: (
+    sessionId: string,
+    toolCallId: string,
+  ) => { text: string; workspaceId: string } | undefined
   /** Whether the caller may reach the workspace; a refusal is audited by the resolver. */
   resolveWorkspace: (workspaceId: string, context?: CommandContext) => unknown | undefined
   clock?: () => number
@@ -475,29 +478,38 @@ export function createUploadService(options: {
         // session may read its tools. The answer is text, so it is compressed
         // on the way by any proxy that compresses text, which the socket's
         // frames are not; and it does not wait in that connection's queue.
-        const match = /^\/tool-output\/([^/]+)\/([^/]+)$/.exec(path)
-        const decoded = match ? decodePair(match[1]!, match[2]!) : undefined
-        const workspaceId = decoded && options.sessionWorkspace(decoded[0])
-        const text =
-          decoded &&
-          workspaceId !== undefined &&
-          client.capabilities.includes('read') &&
-          options.resolveWorkspace(workspaceId, { clientId: client.clientId, command })
-            ? options.toolOutput?.(decoded[0], decoded[1])
-            : undefined
-        if (text === undefined) {
-          respond(response, 404, errorResult(null, 'not_found', 'Tool output not found.'))
-          return true
+        // A client learns of a settled tool only after its write commits, so
+        // this reads the rows and flushes nothing; and an error here must not
+        // reach the listener, where it would take the server down.
+        try {
+          const match = /^\/tool-output\/([^/]+)\/([^/]+)$/.exec(path)
+          const decoded = match ? decodePair(match[1]!, match[2]!) : undefined
+          const found =
+            decoded && client.capabilities.includes('read')
+              ? options.toolOutput?.(decoded[0], decoded[1])
+              : undefined
+          if (
+            !found ||
+            !options.resolveWorkspace(found.workspaceId, { clientId: client.clientId, command })
+          ) {
+            respond(response, 404, errorResult(null, 'not_found', 'Tool output not found.'))
+            return true
+          }
+          const bytes = Buffer.from(found.text, 'utf8')
+          // Never cached, like an artifact, for the same reason.
+          response.writeHead(200, {
+            'content-type': 'text/plain; charset=utf-8',
+            'content-length': bytes.length,
+            'cache-control': 'no-store',
+            'x-content-type-options': 'nosniff',
+          })
+          response.end(bytes)
+        } catch (error) {
+          options.log('error', 'tool output could not be read', {
+            error: error instanceof Error ? error.message : String(error),
+          })
+          respond(response, 503, errorResult(null, 'unavailable', 'Tool output is unavailable.'))
         }
-        const bytes = Buffer.from(text, 'utf8')
-        // Never cached, like an artifact, for the same reason.
-        response.writeHead(200, {
-          'content-type': 'text/plain; charset=utf-8',
-          'content-length': bytes.length,
-          'cache-control': 'no-store',
-          'x-content-type-options': 'nosniff',
-        })
-        response.end(bytes)
         return true
       }
       if (download) {
