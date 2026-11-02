@@ -105,6 +105,37 @@ describe('ToolRow', () => {
     expect(fetchToolOutput).not.toHaveBeenCalled()
   })
 
+  it('keeps showing what ran while the whole text is on its way', async () => {
+    let answer: (text: string) => void = () => undefined
+    const fetchToolOutput = vi.fn(() => new Promise<string>((resolve) => (answer = resolve)))
+    client.current = { fetchToolOutput } as Partial<EnvironmentClient>
+    const running: ToolRowPart = {
+      ...settled,
+      toolName: 'Bash',
+      outputBytes: undefined,
+      state: { status: 'running', input: { command: 'pnpm build' }, output: 'building' },
+    }
+    const view = render(<ToolRow part={running} />)
+    open(view.container)
+    expect(shown()).toContain('building')
+    act(() =>
+      root!.render(
+        <ToolRow
+          part={{
+            ...running,
+            outputBytes: 16,
+            state: { status: 'completed', input: { command: 'pnpm build' } },
+          }}
+        />,
+      ),
+    )
+    expect(fetchToolOutput).toHaveBeenCalledTimes(1)
+    expect(shown()).toContain('building')
+    expect(shown()).not.toContain('Reading')
+    await act(async () => answer('building\nbuilt ok'))
+    expect(shown()).toContain('built ok')
+  })
+
   it('has nothing to open on a read, which is its path alone', () => {
     const { container } = render(
       <ToolRow

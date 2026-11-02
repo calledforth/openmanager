@@ -181,6 +181,12 @@ function RowDetails({ part, model }: { part: ToolRowPart; model: ToolPresenterMo
       ? { sessionId: part.sessionId, toolCallId: part.callID ?? part.id }
       : undefined
   const { read, retry } = useToolOutput(target)
+  // The settle takes the running text out of the store. What this open row was
+  // showing stays until the whole text arrives: view state, nothing more.
+  const [last, setLast] = useState(running)
+  if (running !== undefined && running !== last) setLast(running)
+  const shown = running ?? (read.state === 'ready' ? read.text : undefined)
+  const held = read.state === 'failed' ? undefined : last
   const lead =
     model.uiKind === 'terminal' && model.fullDetail && model.fullDetail !== model.detail
       ? model.fullDetail
@@ -209,13 +215,9 @@ function RowDetails({ part, model }: { part: ToolRowPart; model: ToolPresenterMo
         <div className="mt-1 max-h-[300px] overflow-y-auto custom-scrollbar">
           <StructuredDiffBody diff={diff} />
         </div>
-      ) : running !== undefined ? (
+      ) : (shown ?? held) !== undefined ? (
         <div className={cn(fillBody, model.outcome === 'failed' && 'text-rose-400/90')}>
-          <Scroller>{running}</Scroller>
-        </div>
-      ) : read.state === 'ready' ? (
-        <div className={cn(fillBody, model.outcome === 'failed' && 'text-rose-400/90')}>
-          <Scroller>{read.text}</Scroller>
+          <Scroller>{shown ?? held}</Scroller>
         </div>
       ) : read.state === 'failed' ? (
         <div className={cn(fillBody, 'flex items-center gap-2')}>

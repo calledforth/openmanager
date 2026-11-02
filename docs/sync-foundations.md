@@ -1878,10 +1878,17 @@ that. The cost was the text, not the cap.
   it on, and the tracker keeps it for the failure that may follow.
 - **Closes state how much is left.** `turn-closure.ts` and the boot repair add `finishedAt` and
   `outputBytes` from the rows.
-- **Deltas coalesce** like text in the batcher, by call, and a real 145 s command went from 853 pipe
-  chunks to 262 events. They are small, so a long gap in them loses to a snapshot by rule 4, which is
-  that rule working. Nothing on main streams through a delta API yet: Claude's result arrives whole,
-  and ACP providers resend, which `ToolCallTracker` turns into deltas by digest.
+- **Deltas coalesce** like text in the batcher, by call. Only a bare delta can: ACP repeats a call's
+  status, title and input on every resend, so the tracker sends only the fields that changed. A real
+  76 s command replayed at its own timing through the tracker and the batcher went from 783 pipe chunks
+  to 343 records, and its replay is 2.4 times its 144 KB of output. At that rate a chat reaches 10,000
+  events in about 37 minutes. A long gap in deltas loses to a snapshot by rule 4, which is that rule
+  working. Nothing on main streams through a delta API yet: Claude's result arrives whole, and ACP
+  providers resend, which `ToolCallTracker` turns into deltas by digest.
+- **Running text ends with the call.** Text a provider sends after a call settled is dropped twice:
+  the tracker does not emit it, and the projection does not store it for a settled row, so the store
+  and every client agree (rule 6). The text a settling update brings is the exception: that is the
+  call's result, and a refused call can still take the failure that follows.
 - **Event format 4.** Old stored events are still valid, but the schema changed, so the bump follows
   §4.7.7. The protocol change drops every browser cache anyway, so the first load is a fresh one.
 - **Old calls** have no input or output: providers never sent them to the log. Their rows look as they

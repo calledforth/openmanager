@@ -275,6 +275,74 @@ describe('running text', () => {
   })
 })
 
+describe('a resend that only extends text', () => {
+  const text = (value: string) => [{ type: 'content', content: { type: 'text', text: value } }]
+
+  it('is a bare delta, whatever ACP repeats on it', () => {
+    const { feed } = harness()
+    feed('tool_call', {
+      title: 'bash',
+      kind: 'execute',
+      status: 'pending',
+      rawInput: { command: 'ls' },
+    })
+    const repeated = {
+      title: 'bash',
+      kind: 'execute',
+      status: 'in_progress',
+      rawInput: { command: 'ls' },
+    }
+    feed('tool_call_update', { ...repeated, content: text('one') })
+    expect(feed('tool_call_update', { ...repeated, content: text('one two') })).toEqual({
+      toolCallId: 'tool-1',
+      turnId: 'turn-1',
+      outputDelta: ' two',
+    })
+  })
+
+  it('keeps a field that changed', () => {
+    const { feed } = harness()
+    feed('tool_call', { title: 'bash', kind: 'execute', status: 'in_progress' })
+    feed('tool_call_update', { status: 'in_progress', content: text('one') })
+    expect(
+      feed('tool_call_update', {
+        status: 'in_progress',
+        title: 'Runs it',
+        content: text('one two'),
+      }),
+    ).toEqual({ toolCallId: 'tool-1', turnId: 'turn-1', title: 'Runs it', outputDelta: ' two' })
+  })
+})
+
+describe('text after a call settled', () => {
+  const text = (value: string) => [{ type: 'content', content: { type: 'text', text: value } }]
+
+  it('sends none, on a resend or an append', () => {
+    const { feed, tracker, updates } = harness()
+    feed('tool_call', { title: 'bash', kind: 'execute' })
+    feed('tool_call_update', { status: 'completed', rawOutput: 'final' })
+    expect(tracker.takeBody('tool-1')).toBe('final')
+    const late = feed('tool_call_update', {
+      status: 'in_progress',
+      content: text('final and more'),
+    })
+    expect(late.output).toBeUndefined()
+    expect(late.outputDelta).toBeUndefined()
+    expect(tracker.append('tool-1', ' more')).toEqual({})
+    expect(tracker.outputBytes('tool-1')).toBe(5)
+    expect(wire(updates)).not.toContain('and more')
+  })
+
+  it('sends none after a refusal either', () => {
+    const { feed, tracker } = harness()
+    feed('tool_call', { title: 'Bash', toolName: 'Bash', kind: 'execute' })
+    tracker.decline('tool-1')
+    const late = feed('tool_call_update', { status: 'in_progress', content: text('late') })
+    expect(late.output).toBeUndefined()
+    expect(tracker.outputBytes('tool-1')).toBe(0)
+  })
+})
+
 describe('outcomes', () => {
   it('reads a failure after a refusal as declined', () => {
     const { feed, tracker, state } = harness()
