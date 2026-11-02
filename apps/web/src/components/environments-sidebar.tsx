@@ -248,9 +248,12 @@ function EnvironmentsSidebar({ footer }: { footer: ReactNode }) {
     [everyCacheRead, others, rowEnvironments],
   )
 
+  // Null for the open environment's rows. A row of another environment goes
+  // through that environment or nowhere: with its client gone, the open one
+  // must not be handed an id that means something else there.
   const elsewhere = useCallback(
     (environmentId: string | undefined) =>
-      environmentId && environmentId !== openId ? clients[environmentId] : undefined,
+      environmentId && environmentId !== openId ? { client: clients[environmentId] } : null,
     [clients, openId],
   )
   const opening = useCallback(
@@ -276,22 +279,23 @@ function EnvironmentsSidebar({ footer }: { footer: ReactNode }) {
       ...(renameSession
         ? {
             renameSession: async (path, id, title, environmentId) => {
-              const client = elsewhere(environmentId)
-              if (client) await client.commands.renameSession(id, title).catch(() => undefined)
+              const other = elsewhere(environmentId)
+              if (other)
+                await other.client?.commands.renameSession(id, title).catch(() => undefined)
               else await renameSession(path, id, title)
             },
           }
         : {}),
       deleteSession: async (path, id, providerId, environmentId) => {
-        const client = elsewhere(environmentId)
-        if (client) await client.commands.deleteSession(id).catch(() => undefined)
+        const other = elsewhere(environmentId)
+        if (other) await other.client?.commands.deleteSession(id).catch(() => undefined)
         else await deleteSession(path, id, providerId)
       },
       ...(settleSession || anySettles
         ? {
             settleSession: async (path, id, settled, environmentId) => {
-              const client = elsewhere(environmentId)
-              if (client) await client.commands.settleSession(id, settled)
+              const other = elsewhere(environmentId)
+              if (other) await other.client?.commands.settleSession(id, settled)
               else await settleSession?.(path, id, settled)
             },
           }
@@ -330,9 +334,9 @@ function EnvironmentsSidebar({ footer }: { footer: ReactNode }) {
         openDraft(draftId)
       },
       discardDraft: (draftId, options) => {
-        const client = elsewhere(options?.environmentId)
-        if (client) discards.begin(client, draftId, options)
-        else discardDraft(draftId, options)
+        const other = elsewhere(options?.environmentId)
+        if (!other) discardDraft(draftId, options)
+        else if (other.client) discards.begin(other.client, draftId, options)
       },
     }
   }, [discards, elsewhere, openDrafts, opening, others, pending])

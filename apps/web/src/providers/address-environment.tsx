@@ -212,6 +212,8 @@ export function useFindAddress(address: Address | null): AddressLookup {
   useEffect(() => {
     if (!pendingOwner) return
     setSettled(key)
+    // It spoke for this arrival, not for a later one at the same address.
+    setPreferred((current) => (current?.key === key ? null : current))
     if (pendingOwner !== selectedId) followEnvironment(pendingOwner)
   }, [followEnvironment, key, pendingOwner, selectedId])
 
