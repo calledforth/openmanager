@@ -823,7 +823,12 @@ describe('handshake and scoped subscriptions', () => {
       eventId: 'notice-1',
       timestamp: new Date().toISOString(),
       scope: threadScope,
-      payload: { turnId: 'turn-1', message: 'Retrying' },
+      payload: {
+        noticeId: 'notice-1',
+        turnId: 'turn-1',
+        kind: 'retrying' as const,
+        message: 'Retrying',
+      },
     }
     host.server.sockets.deliver({ kind: 'transient', event, after })
     expect(await a.next()).toEqual({
@@ -891,7 +896,12 @@ describe('handshake and scoped subscriptions', () => {
           eventId: 'notice-1',
           timestamp: new Date().toISOString(),
           scope: threadScope,
-          payload: { turnId: 'turn-1', message: 'not durable' },
+          payload: {
+            noticeId: 'notice-1',
+            turnId: 'turn-1',
+            kind: 'retrying',
+            message: 'not durable',
+          },
         },
       } as never,
     })

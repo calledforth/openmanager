@@ -157,6 +157,7 @@ const RUN_BREAKING_EVENTS: ReadonlySet<RuntimeEvent['event']> = new Set<RuntimeE
   'plan_review_request',
   'plan_update',
   'subtask_update',
+  'provider_notice',
   'extension_request',
   'extension_notification',
   'rpc_error',
@@ -558,6 +559,32 @@ export function createThreadService(
     return rejection ? errorResult(requestId, rejection.code, rejection.message) : undefined
   }
 
+  /** The turns with a live notice out; see `endLiveNotice`. */
+  const liveNotices = new Set<string>()
+
+  /**
+   * A live notice says what the provider is doing about a hiccup right now.
+   * The turn's next durable event means it has moved on, or the turn has
+   * ended, and the server says so: a client holds a live notice until then.
+   * The user's own prompt is no sign of recovery.
+   */
+  const endLiveNotice = (event: ProofEvent) => {
+    if (!('turnId' in event.payload) || !liveNotices.has(event.payload.turnId)) return
+    if (event.name === 'message.delta' && event.payload.role === 'user') return
+    const { turnId } = event.payload
+    liveNotices.delete(turnId)
+    publishTransient(
+      ProofEventSchemas['turn.notice.cleared'].parse({
+        type: 'event',
+        name: 'turn.notice.cleared',
+        eventId: randomUUID(),
+        timestamp: event.timestamp,
+        scope: event.scope,
+        payload: { turnId },
+      }),
+    )
+  }
+
   // Provider callbacks and turn settlement must not fail because a write did:
   // the in-memory turn still settles, and the host decides how to report it.
   // Answers whether the event committed, so what memory records about the
@@ -572,6 +599,7 @@ export function createThreadService(
       options.onPersistenceError(error, event.name)
       committed = false
     }
+    endLiveNotice(event)
     if (
       event.name === 'turn.completed' ||
       event.name === 'turn.interrupted' ||
@@ -1200,18 +1228,24 @@ export function createThreadService(
         }
       } catch (error) {
         options.onPersistenceError?.(error, 'artifact.generated')
-        // Never fall back to putting image bytes in the event log.
-        publishTransient({
-          type: 'event',
-          name: 'turn.notice',
-          eventId: randomUUID(),
-          timestamp: event.timestamp,
-          scope: threadScope(record),
-          payload: {
-            turnId: projected.payload.turnId,
-            message: 'A generated image could not be stored.',
-          },
-        })
+        // Never fall back to putting image bytes in the event log. The gap
+        // stays explained in the transcript, where the image would have been.
+        const noticeId = randomUUID()
+        appendRuntimeEvent(
+          ProofEventSchemas['turn.notice.recorded'].parse({
+            type: 'event',
+            name: 'turn.notice.recorded',
+            eventId: noticeId,
+            timestamp: event.timestamp,
+            scope: threadScope(record),
+            payload: {
+              noticeId,
+              turnId: projected.payload.turnId,
+              kind: 'warning',
+              message: 'A generated image could not be stored.',
+            },
+          }),
+        )
         return
       }
     }
@@ -1225,7 +1259,8 @@ export function createThreadService(
     if (
       active &&
       ((projected.name === 'message.delta' && projected.payload.role === 'assistant') ||
-        projected.name === 'tool.updated')
+        projected.name === 'tool.updated' ||
+        projected.name === 'turn.notice.recorded')
     ) {
       closeOpenReasoning(record, active, projected.timestamp)
     }
@@ -1237,8 +1272,10 @@ export function createThreadService(
     // written either. That holds for a second request that arrives while
     // the first one's write is still failing. Dropping it here would lose a
     // request the next flush commits.
-    if (projected.name === 'turn.notice') publishTransient(projected)
-    else appendRuntimeEvent(projected)
+    if (projected.name === 'turn.notice') {
+      liveNotices.add(projected.payload.turnId)
+      publishTransient(projected)
+    } else appendRuntimeEvent(projected)
     if (active && projected.name === 'message.reasoning') {
       active.openReasoning ??= new Set()
       if (projected.payload.phase === 'stop')
@@ -2059,6 +2096,7 @@ export function createThreadService(
         messages: record.messages,
         reasoning: [],
         tools: [],
+        notices: [],
         order: [],
         interactions: [...record.interactions.values()]
           .filter((entry) => !entry.settled && record.activeTurn?.turn.turnId === entry.turnId)
@@ -3114,6 +3152,7 @@ export function createThreadService(
         event.event === 'plan_review_resolved' ||
         event.event === 'plan_update' ||
         event.event === 'subtask_update' ||
+        event.event === 'provider_notice' ||
         event.category === 'error' ||
         event.event === 'process_exited'
       // Output of a turn the provider began by itself just before this one's

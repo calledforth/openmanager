@@ -81,7 +81,9 @@ export function createPersistentEventService(
     options,
   )
   const durable = (event: ProofEvent): DurableProofEvent => {
-    if (event.name === 'turn.notice') throw new Error('turn.notice is transient')
+    if (event.name === 'turn.notice' || event.name === 'turn.notice.cleared') {
+      throw new Error(`${event.name} is transient`)
+    }
     return event
   }
   return {

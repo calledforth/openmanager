@@ -45,15 +45,16 @@ export const MESSAGE_PARTS_SQL = `
 /** Turns of a thread in start order, joined to messages by callers hydrating a page. */
 export const TURNS_FOR_THREAD_SQL = `
   SELECT turn_id, thread_id, workspace_id, state, command_id, failure_reason, failure_message,
-         interrupted_by, origin, started_at, finished_at, updated_at
+         failure_action, failure_resets_at, failure_detail, interrupted_by, origin, started_at,
+         finished_at, updated_at
   FROM turns
   WHERE thread_id = ?
   ORDER BY started_at, turn_id`
 
 /** Retry dedupe: the turn a command id already started in a thread, if any. */
 export const TURN_FOR_COMMAND_ID_SQL = `
-  SELECT turn_id, thread_id, state, command_id, failure_reason, failure_message, interrupted_by,
-         origin, started_at, finished_at
+  SELECT turn_id, thread_id, state, command_id, failure_reason, failure_message, failure_action,
+         failure_resets_at, failure_detail, interrupted_by, origin, started_at, finished_at
   FROM turns
   WHERE thread_id = ? AND command_id = ?`
 
@@ -120,6 +121,13 @@ export const MESSAGE_PARTS_FOR_THREAD_SQL = `
 export const TURN_ACTIVITY_FOR_THREAD_SQL = `
   SELECT activity_id, turn_id, kind, ordinal, state_json
   FROM turn_activity
+  WHERE thread_id = ?
+  ORDER BY ordinal`
+
+/** Every durable notice of a thread, in the order they happened. */
+export const TURN_NOTICES_FOR_THREAD_SQL = `
+  SELECT notice_id, turn_id, ordinal, notice_json
+  FROM turn_notices
   WHERE thread_id = ?
   ORDER BY ordinal`
 

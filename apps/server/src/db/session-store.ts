@@ -6,6 +6,7 @@ import { createToolOutputStore } from './tool-output.ts'
 import { toolIsOpen } from './turn-closure.ts'
 import {
   ContentBlockSchema,
+  DurableTurnNoticeSchema,
   InteractionSchema,
   ReasoningBlockSchema,
   SessionSummarySchema,
@@ -14,6 +15,7 @@ import {
   TURN_FAILURE_MESSAGES,
   type ActivityRef,
   type ComposerListing,
+  type DurableTurnNotice,
   type Interaction,
   type Message,
   type ReasoningBlock,
@@ -37,6 +39,7 @@ import {
   THREADS_FOR_SESSION_SQL,
   TURN_ACTIVITY_FOR_THREAD_SQL,
   TURN_FOR_COMMAND_ID_SQL,
+  TURN_NOTICES_FOR_THREAD_SQL,
   TURNS_FOR_THREAD_SQL,
   USER_MESSAGE_FOR_TURN_SQL,
 } from './queries.ts'
@@ -54,7 +57,9 @@ export interface ThreadState {
   messages: Message[]
   reasoning: ReasoningBlock[]
   tools: ToolCallState[]
-  /** Every message, reasoning block and tool call, in the order they happened. */
+  /** Every durable notice. */
+  notices: DurableTurnNotice[]
+  /** Every message, reasoning block, tool call and notice, in the order they happened. */
   order: ActivityRef[]
   /** Pending requests, each with the turn it belongs to. */
   interactions: Array<{ turnId: string; interaction: Interaction }>
@@ -88,6 +93,9 @@ type TurnRow = {
   command_id: string | null
   failure_reason: string | null
   failure_message: string | null
+  failure_action: string | null
+  failure_resets_at: string | null
+  failure_detail: string | null
   interrupted_by: string | null
   started_at: number
   finished_at: number | null
@@ -112,6 +120,9 @@ function turnFromRow(row: TurnRow): Turn {
               row.failure_message ??
               TURN_FAILURE_MESSAGES[row.failure_reason as TurnFailureReason] ??
               '',
+            ...(row.failure_action ? { action: row.failure_action } : {}),
+            ...(row.failure_resets_at ? { resetsAt: row.failure_resets_at } : {}),
+            ...(row.failure_detail ? { detail: row.failure_detail } : {}),
           },
         }
       : {}),
@@ -127,6 +138,12 @@ type TurnActivityRow = {
   kind: 'reasoning' | 'tool'
   ordinal: number
   state_json: string
+}
+type TurnNoticeRow = {
+  notice_id: string
+  turn_id: string
+  ordinal: number
+  notice_json: string
 }
 type MessageRow = {
   message_id: string
@@ -242,8 +259,9 @@ export function getProviderSessionId(
 
 /**
  * The whole thread, as its snapshot carries it: every turn, message,
- * reasoning block (uncapped) and tool call, their order by the thread-wide
- * ordinal both tables draw from, and the pending requests with their turn.
+ * reasoning block (uncapped), tool call and notice, their order by the
+ * thread-wide ordinal those tables draw from, and the pending requests with
+ * their turn.
  * One query per table, whatever the thread's length.
  */
 export function readThreadState(
@@ -290,25 +308,28 @@ export function readThreadState(
       tools.push(output === undefined ? tool : { ...tool, output })
     }
   }
-  // Both lists are in ordinal order already: merge them.
-  const order: ActivityRef[] = []
-  let message = 0
-  let activity = 0
-  while (message < messageRows.length || activity < activityRows.length) {
-    const nextMessage = messageRows[message]
-    const nextActivity = activityRows[activity]
-    if (nextMessage && (!nextActivity || nextMessage.ordinal < nextActivity.ordinal)) {
-      order.push({ kind: 'message', id: nextMessage.message_id, turnId: nextMessage.turn_id })
-      message += 1
-    } else if (nextActivity) {
-      order.push({
-        kind: nextActivity.kind,
-        id: nextActivity.activity_id,
-        turnId: nextActivity.turn_id,
-      })
-      activity += 1
-    }
-  }
+  const noticeRows = database
+    .prepare(TURN_NOTICES_FOR_THREAD_SQL)
+    .all(query.threadId) as TurnNoticeRow[]
+  const notices = noticeRows.map((row) =>
+    DurableTurnNoticeSchema.parse(JSON.parse(row.notice_json)),
+  )
+  const order: ActivityRef[] = [
+    ...activityRows.map((row) => ({
+      ordinal: row.ordinal,
+      ref: { kind: row.kind, id: row.activity_id, turnId: row.turn_id },
+    })),
+    ...messageRows.map((row) => ({
+      ordinal: row.ordinal,
+      ref: { kind: 'message' as const, id: row.message_id, turnId: row.turn_id },
+    })),
+    ...noticeRows.map((row) => ({
+      ordinal: row.ordinal,
+      ref: { kind: 'notice' as const, id: row.notice_id, turnId: row.turn_id },
+    })),
+  ]
+    .sort((left, right) => left.ordinal - right.ordinal)
+    .map((item) => item.ref)
   const interactions = (
     database.prepare(PENDING_INTERACTIONS_FOR_THREAD_SQL).all(query.threadId) as InteractionRow[]
   ).map((row) => ({ turnId: row.turn_id, interaction: interactionFromRow(row) }))
@@ -318,6 +339,7 @@ export function readThreadState(
     messages,
     reasoning,
     tools,
+    notices,
     order,
     interactions,
     listing: readThreadListing(database, query.threadId, log) ?? {},
