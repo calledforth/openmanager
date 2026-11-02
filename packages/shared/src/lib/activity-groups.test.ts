@@ -93,6 +93,25 @@ describe('groupActivityParts', () => {
     expect(items.filter((item) => item.kind !== 'group')).toHaveLength(1)
   })
 
+  it('keeps notices and failures on their own rows beside a call that did not complete', () => {
+    const read = (id: string, status: string) => ({
+      type: 'tool',
+      id,
+      tool: 'Read',
+      state: { status, input: { path: `${id}.ts` } },
+    })
+    const items = groupActivityParts([
+      read('a', 'completed'),
+      { type: 'notice', id: 'notice:n1' },
+      read('b', 'declined'),
+      read('c', 'completed'),
+      { type: 'failure', id: 'failure:t1' },
+    ])
+    expect(items.map((item) => (item.kind === 'group' ? item.summary.text : item.part.id))).toEqual(
+      ['Explored 1 file', 'notice:n1', 'b', 'Explored 1 file', 'failure:t1'],
+    )
+  })
+
   it('honours a custom minimum group size', () => {
     const parts = [tool('1', 'Read'), tool('2', 'Read')]
 

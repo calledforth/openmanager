@@ -240,6 +240,40 @@ describe('notices and failures', () => {
     await expectConverges('N8', rig, reloaded)
   })
 
+  scenario('N10 a notice stays in place among bare deltas and closed tools', {}, async (rig) => {
+    const a = await rig.connect('A')
+    const target = await createSession(rig, a, { quiet: true })
+    await startTurn(a, target)
+    const { sessionId } = target
+    await rig.provider({
+      op: 'openTool',
+      sessionId,
+      toolCallId: 'n10-1',
+      title: 'bash',
+      kind: 'execute',
+    })
+    await rig.provider({ op: 'streamToolLines', sessionId, toolCallId: 'n10-1', lines: 40 })
+    await rig.provider({ op: 'emitUnstorableImage', sessionId })
+    await untilThread(a, target, (state) => state.notices.length === 1, 'the notice')
+    rig.proxy.down()
+    rig.proxy.cut()
+    await rig.provider({ op: 'streamToolLines', sessionId, toolCallId: 'n10-1', lines: 80 })
+    await rig.provider({
+      op: 'openTool',
+      sessionId,
+      toolCallId: 'n10-2',
+      title: 'bash',
+      kind: 'execute',
+    })
+    await rig.provider({ op: 'completeTurn', sessionId })
+    await rig.waitQuiet()
+    rig.proxy.up()
+    await untilThread(a, target, (state) => state.turns.at(-1)?.state === 'completed', 'the replay')
+    expect(orderKinds(a, target)).toEqual(['message', 'tool', 'notice', 'tool'])
+    expect(thread(a, target)?.tools.map((tool) => tool.status)).toEqual(['cancelled', 'cancelled'])
+    await expectConverges('N10', rig, a)
+  })
+
   scenario('N9 a retry after a reload is a new turn beside the failed one', {}, async (rig) => {
     const a = await rig.connect('A')
     const { target } = await claudeTurn(rig, a)

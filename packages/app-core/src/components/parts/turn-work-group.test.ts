@@ -45,6 +45,16 @@ describe('settled turn work grouping', () => {
     expect(partition.finalParts.map((part) => part.id)).toEqual(['image', 'final'])
   })
 
+  it('keeps a failure in view after a call that was declined', () => {
+    const partition = partitionSettledTurnParts([
+      { type: 'tool', id: 'edit', tool: 'Edit', state: { status: 'declined' } },
+      { type: 'failure', id: 'failure:t1' },
+    ])
+
+    expect(partition.workParts.map((part) => part.id)).toEqual(['edit'])
+    expect(partition.finalParts.map((part) => part.id)).toEqual(['failure:t1'])
+  })
+
   it('formats successful duration and stopped outcomes', () => {
     expect(
       settledTurnLabel({
