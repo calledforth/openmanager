@@ -34,6 +34,8 @@ export interface SidebarEnvironment {
 
 export interface SidebarSessionEntry {
   externalId: string
+  /** The environment it lives on, on hosts that know one. */
+  environmentId?: string
   title?: string
   status: string
   providerId: ProviderId
@@ -80,6 +82,12 @@ export interface SidebarDataValue {
    * show no environment copy.
    */
   environment?: SidebarEnvironment
+  /**
+   * The environment `workspaces` and the open session belong to, even with no
+   * name to show. Rows of other environments (`useSidebarEnvironments`) are
+   * told from its own by this.
+   */
+  activeEnvironmentId?: string
   workspaces: WorkspaceEntry[]
   /**
    * Workspaces with session activity, most recent first, for the new-chat
@@ -94,20 +102,46 @@ export interface SidebarDataValue {
   toggleWorkspaceCollapsed: (workspacePath: string) => void
   addWorkspace: () => Promise<void>
   removeWorkspace: (path: string) => Promise<void>
-  selectSession: (workspacePath: string, externalId: string, providerId: ProviderId) => void
+  /**
+   * The row commands here take the row's environment last. A host listing
+   * several sends each through that environment's own connection, never the
+   * open one's; the others have only one to go through and ignore it.
+   */
+  selectSession: (
+    workspacePath: string,
+    externalId: string,
+    providerId: ProviderId,
+    environmentId?: string,
+  ) => void
   createSession: (workspacePath: string) => Promise<void>
-  renameSession?: (workspacePath: string, externalId: string, title: string | null) => Promise<void>
+  renameSession?: (
+    workspacePath: string,
+    externalId: string,
+    title: string | null,
+    environmentId?: string,
+  ) => Promise<void>
   /** Name the session again with the environment's title model. Hosts
    * whose environment cannot generate titles leave it out. */
   regenerateSessionTitle?: (externalId: string) => Promise<void>
   /** Settle (`true`) or bring back (`false`). Hosts without settling leave it out. */
-  settleSession?: (workspacePath: string, externalId: string, settled: boolean) => Promise<void>
+  settleSession?: (
+    workspacePath: string,
+    externalId: string,
+    settled: boolean,
+    environmentId?: string,
+  ) => Promise<void>
   /** Pin (`true`) or unpin (`false`). Hosts without pins leave it out. */
-  pinSession?: (workspacePath: string, externalId: string, pinned: boolean) => Promise<void>
+  pinSession?: (
+    workspacePath: string,
+    externalId: string,
+    pinned: boolean,
+    environmentId?: string,
+  ) => Promise<void>
   deleteSession: (
     workspacePath: string,
     externalId: string,
     providerId: ProviderId,
+    environmentId?: string,
   ) => Promise<void>
   /** Clear the "finished, unread" marker once the session is on screen.
    * Hosts that derive status live have nothing to clear and leave it out. */
@@ -147,9 +181,57 @@ export function useSidebarSessions(): SidebarSessionsByWorkspace {
   return ctx
 }
 
+/** One environment's rows, for a sidebar that lists more than the open one. */
+export interface SidebarEnvironmentRows {
+  environmentId: string
+  workspaces: WorkspaceEntry[]
+  sessions: SidebarSessionsByWorkspace
+  /** Its draft cards, newest edit first. */
+  drafts: SidebarDraft[]
+  /** Settling can be offered: it is connected and can keep the change. */
+  canSettle: boolean
+  /** Pinning can be offered, on the same terms. */
+  canPin: boolean
+  /** Its project icons can be asked for. */
+  hasIcons: boolean
+}
+
+/** What a row needs to know about the environment it is on. */
+export interface SidebarRowEnvironment {
+  /** Its saved name, shown on the card. */
+  name: string
+  canSettle: boolean
+  canPin: boolean
+  /** Null where it has no icons to give. */
+  iconLookup: ((workspaceId: string) => Promise<string | null>) | null
+}
+
+/**
+ * The rest of the list, on a host with more than one environment saved.
+ * Everything else about the sidebar stays the open environment's. Kept the
+ * same object while nothing a row shows has changed.
+ */
+export interface SidebarEnvironmentsValue {
+  /** The environments other than the open one, in their saved order. */
+  others: readonly SidebarEnvironmentRows[]
+  /** By environment id, the open one included. */
+  rowEnvironments: Readonly<Record<string, SidebarRowEnvironment>>
+  /** Some environment's rows may yet arrive: what joins now is the list filling, not news. */
+  filling: boolean
+}
+
+export const SidebarEnvironmentsContext = createContext<SidebarEnvironmentsValue | null>(null)
+
+/** Null on a host with one environment, which is every host but the web's. */
+export function useSidebarEnvironments(): SidebarEnvironmentsValue | null {
+  return useContext(SidebarEnvironmentsContext)
+}
+
 /** A draft discard waiting out its undo window. */
 export interface PendingDraftDiscard {
   draftId: string
+  /** The environment the draft is on, on hosts that know one. */
+  environmentId?: string
   /** Tells one discard from the next, so a second one restarts the notice. */
   key: number
   /** Made from the keyboard: the notice takes focus, so Undo is a keypress away. */
@@ -172,8 +254,8 @@ export interface SidebarDraftsValue {
   drafts: SidebarDraft[]
   /** The draft on screen, whose card shows selected. */
   openDraftId: string | null
-  /** Go to the draft's page, everything as it was left. */
-  openDraft: (draftId: string) => void
+  /** Go to the draft's page, everything as it was left. Takes the card's environment, as the session commands do. */
+  openDraft: (draftId: string, environmentId?: string) => void
   /**
    * Hide the draft's card, and delete the draft once the undo window closes
    * or the page goes. The draft on screen leaves for a blank page. Does

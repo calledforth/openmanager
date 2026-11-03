@@ -535,6 +535,43 @@ describe('the undo notice', () => {
     expect(document.activeElement).not.toBe(document.body)
   })
 
+  it('returns Undo\u2019s focus to the card on the discard\u2019s own environment', async () => {
+    const twins = (
+      <div data-sidebar="content">
+        <button type="button" data-draft-card="d1" data-draft-card-environment="desk">
+          on the desk
+        </button>
+        <button type="button" data-draft-card="d1" data-draft-card-environment="laptop">
+          on the laptop
+        </button>
+      </div>
+    )
+    const at = (pending: PendingDraftDiscard | null) =>
+      act(() =>
+        root.render(
+          <ThemeProvider>
+            <SidebarProvider persist={false}>
+              {twins}
+              <DraftDiscardToast
+                pending={pending}
+                onUndo={() => undefined}
+                onDismiss={() => undefined}
+                onHold={() => undefined}
+              />
+            </SidebarProvider>
+          </ThemeProvider>,
+        ),
+      )
+    await at(null)
+    await at({ ...PENDING, key: 40, fromKeyboard: true, environmentId: 'laptop' })
+    const undo = [...region().querySelectorAll('button')].find(
+      (node) => node.textContent === 'Undo',
+    )!
+    await act(() => undo.click())
+    await at(null)
+    expect(document.activeElement?.textContent).toBe('on the laptop')
+  })
+
   it('leaves a replaced notice inert, still bound to its own discard', async () => {
     // Let the exit play (jsdom never finishes it), as a real replacement does.
     MotionGlobalConfig.skipAnimations = false

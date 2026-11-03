@@ -8,8 +8,6 @@ import {
 import { EnvironmentApplicationProviders } from '@openmanager/app-core/providers/environment-application'
 import { useSidebarData } from '@openmanager/app-core/providers/sidebar-provider'
 import { ProjectIcon } from '@openmanager/app-core/components/sidebar/ProjectIcon'
-import { WorkspaceSidebar } from '@openmanager/app-core/components/sidebar/WorkspaceSidebar'
-import { DraftDiscardNotice } from '@openmanager/app-core/components/sidebar/DraftDiscardToast'
 import { phosphorIcon, useIcon } from '@openmanager/app-core/components/fluid/lib/icon-context'
 import {
   CommandPalette,
@@ -54,6 +52,7 @@ import {
 } from '../providers/address-environment'
 import { AddWorkspaceDialog } from './add-workspace-dialog'
 import { ConnectionBanner, ConnectionScreen, ConnectionStatusChip } from './connection-surfaces'
+import { EnvironmentsSidebarHost, SidebarSource } from './environments-sidebar'
 import { SessionNotifications } from './session-notifications'
 import { SidebarDock } from './sidebar-dock'
 
@@ -337,8 +336,7 @@ function ConnectedShell({
       landingDraftId={landingDraftId}
       holdLandingDraft={holdLandingDraft}
     >
-      {/* A healthy connection says nothing; trouble shows as the banner. */}
-      <WorkspaceSidebar footer={<SidebarDock pathname={pathname} />} />
+      <SidebarSource />
       {children}
       <ConnectedOverlays
         client={client}
@@ -346,9 +344,6 @@ function ConnectedShell({
         closeAddWorkspace={closeAddWorkspace}
       />
       <SessionNotifications openSession={openSession} />
-      {/* Beside the sidebar, not in it: on a phone the sidebar is a modal
-          sheet that closes on the tap that reaches for Undo. */}
-      <DraftDiscardNotice />
     </EnvironmentApplicationProviders>
   )
 }
@@ -427,18 +422,22 @@ export function AppShell() {
       <EnvironmentClientProvider client={client}>
         <AddressLookupProvider value={lookup}>
           {client ? (
-            // By environment, not by client: its drafts and page state are that
-            // environment's, while a client replaced on the same environment keeps
-            // the page as it is.
-            <ConnectedShell
-              key={lookup.owner ?? selectedId}
-              client={client}
-              pathname={pathname}
-              landingDraftId={address?.kind === 'draft' ? address.id : null}
-              holdLandingDraft={address?.kind === 'draft' && lookup.status === 'searching'}
+            <EnvironmentsSidebarHost
+              footer={<SidebarDock pathname={pathname} />}
             >
-              {main}
-            </ConnectedShell>
+              {/* By environment, not by client: its drafts and page state are that
+                  environment's, while a client replaced on the same environment keeps
+                  the page as it is. */}
+              <ConnectedShell
+                key={lookup.owner ?? selectedId}
+                client={client}
+                pathname={pathname}
+                landingDraftId={address?.kind === 'draft' ? address.id : null}
+                holdLandingDraft={address?.kind === 'draft' && lookup.status === 'searching'}
+              >
+                {main}
+              </ConnectedShell>
+            </EnvironmentsSidebarHost>
           ) : (
             <>
               <Sidebar className="text-[15px]">

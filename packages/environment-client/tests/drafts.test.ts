@@ -17,7 +17,7 @@ import {
   selectNewSessionDraftId,
   selectNewSessionDraftIds,
 } from '../src/draft-state'
-import { createDraftSync } from '../src/draft-sync'
+import { createDraftSync, draftAnswersOf } from '../src/draft-sync'
 import { EnvironmentClientError } from '../src/errors'
 import { createMockEnvironmentClient } from '../src/mock'
 import { applyEvent, applyWorkspaceList, createInitialState } from '../src/state'
@@ -303,7 +303,13 @@ describe('draft sync', () => {
         },
       ),
     }
-    const sync = createDraftSync({ store, commands, supported: () => true, debounceMs: 1000 })
+    const sync = createDraftSync({
+      store,
+      answers: draftAnswersOf(store),
+      commands,
+      supported: () => true,
+      debounceMs: 1000,
+    })
     return {
       store,
       sync,
@@ -410,6 +416,43 @@ describe('draft sync', () => {
     expect(deletes.at(-1)).toEqual({ draftId: 'e', ifRevision: eMadeOn })
     expect(store.getState().drafts.e).toBeUndefined()
     sync.dispose()
+  })
+
+  it('still knows its own save after the client is replaced on the same store', async () => {
+    const { store, sync, commands, deletes, server, hold } = setup()
+    await vi.advanceTimersByTimeAsync(0)
+    sync.edit('d', NEW, { text: 'mine' })
+    await vi.advanceTimersByTimeAsync(1000)
+    const madeOn = store.getState().drafts.d!.revision
+
+    // The discard is made while the closing save is on the wire.
+    const unpin = sync.pinAnswer('d')
+    const release = hold()
+    sync.edit('d', NEW, { text: 'mine, last words' })
+    await vi.advanceTimersByTimeAsync(1000)
+    release()
+    await settle()
+    expect(store.getState().drafts.d!.revision).toBe(madeOn + 1)
+
+    // A route change: the delete goes out through a client that wrote nothing.
+    sync.dispose()
+    const next = createDraftSync({
+      store,
+      answers: draftAnswersOf(store),
+      commands,
+      supported: () => true,
+    })
+    await settle()
+    next.discard('d', { ifRevision: madeOn })
+    unpin()
+    await settle()
+    await vi.advanceTimersByTimeAsync(0)
+    await settle()
+
+    expect(deletes).toEqual([{ draftId: 'd', ifRevision: madeOn + 1 }])
+    expect(store.getState().drafts.d).toBeUndefined()
+    expect(typeof server.get('d')).toBe('number')
+    next.dispose()
   })
 
   it('raises a discard to the answer of its own save queued ahead of it', async () => {

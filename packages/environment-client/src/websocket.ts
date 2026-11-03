@@ -44,7 +44,7 @@ import { z } from 'zod'
 import { namesUnknownTurn } from '@agentpack/view/protocol'
 import { EnvironmentClientError, isEnvironmentClientError } from './errors'
 import { applyDraftList, applyDraftsUnlisted } from './draft-state'
-import { createDraftSync } from './draft-sync'
+import { createDraftSync, draftAnswersOf } from './draft-sync'
 import { placeRecord, placeTransient } from './placement'
 import {
   applyActiveSession,
@@ -2026,6 +2026,7 @@ export function createWebSocketEnvironmentClient(
 
   const drafts = createDraftSync({
     store,
+    answers: draftAnswersOf(backingStore),
     commands,
     supported: () => capabilities.has(WIRE_COMMANDS.saveDraft),
   })

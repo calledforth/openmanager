@@ -21,7 +21,128 @@ const ids = (entries: ReturnType<typeof partitionSidebarSessions>['active']) =>
     ...entry.children.map((child) => child.session.externalId),
   ])
 
+describe('placeSidebarDrafts across environments', () => {
+  it('finds a draft its project on its own environment', () => {
+    const draft = {
+      draftId: 'd',
+      sessionId: 's',
+      environmentId: 'laptop',
+      workspaceId: 'same-path',
+      providerId: 'opencode',
+      preview: 'text',
+      imageCount: 0,
+      editedAt: 1,
+    } satisfies SidebarDraft
+    const [row] = placeSidebarDrafts(
+      [draft],
+      [
+        { ...workspace('same-path', []), name: 'On desk', environmentId: 'desk' },
+        { ...workspace('same-path', []), name: 'On laptop', environmentId: 'laptop' },
+      ],
+    )
+    expect(row?.workspace?.name).toBe('On laptop')
+  })
+})
+
 describe('partitionSidebarSessions', () => {
+  it('lists several environments together, newest first, in the same two lists', () => {
+    const desk = [
+      session('old', '2026-09-20T10:00:00Z', { environmentId: 'desk' }),
+      session('put-away', '2026-09-21T10:00:00Z', {
+        environmentId: 'desk',
+        settledAt: '2026-09-22T10:00:00Z',
+      }),
+    ]
+    const laptop = [
+      session('new', '2026-09-24T10:00:00Z', { environmentId: 'laptop' }),
+      session('earlier', '2026-09-19T10:00:00Z', {
+        environmentId: 'laptop',
+        settledAt: '2026-09-23T10:00:00Z',
+      }),
+    ]
+    const { active, settled } = partitionSidebarSessions([
+      { ...workspace('same-path', desk), environmentId: 'desk' },
+      { ...workspace('same-path', laptop), environmentId: 'laptop' },
+    ])
+    expect(ids(active)).toEqual([['new'], ['old']])
+    expect(ids(settled)).toEqual([['earlier'], ['put-away']])
+    expect(active.map((entry) => entry.root.workspace.environmentId)).toEqual(['laptop', 'desk'])
+  })
+
+  it('puts every environment\u2019s pins on top, newest pin first, then the rest by activity', () => {
+    const { active } = partitionSidebarSessions([
+      {
+        ...workspace('same-path', [
+          session('desk-new', '2026-09-24T10:00:00Z', { environmentId: 'desk' }),
+          session('desk-pinned', '2026-09-20T10:00:00Z', {
+            environmentId: 'desk',
+            pinnedAt: '2026-09-21T10:00:00Z',
+          }),
+        ]),
+        environmentId: 'desk',
+      },
+      {
+        ...workspace('same-path', [
+          session('laptop-pinned', '2026-09-19T10:00:00Z', {
+            environmentId: 'laptop',
+            pinnedAt: '2026-09-22T10:00:00Z',
+          }),
+          session('laptop-old', '2026-09-18T10:00:00Z', { environmentId: 'laptop' }),
+        ]),
+        environmentId: 'laptop',
+      },
+    ])
+    expect(ids(active)).toEqual([['laptop-pinned'], ['desk-pinned'], ['desk-new'], ['laptop-old']])
+  })
+
+  it('keeps equal times in the same order whichever environment is listed first', () => {
+    const at = '2026-09-24T10:00:00Z'
+    const on = (environmentId: string) => ({
+      ...workspace('same-path', [
+        session(`${environmentId}-live`, at, { environmentId }),
+        session(`${environmentId}-put-away`, at, { environmentId, settledAt: at }),
+      ]),
+      environmentId,
+    })
+    const order = (first: string, second: string) => {
+      const { active, settled } = partitionSidebarSessions([on(first), on(second)])
+      return { active: ids(active), settled: ids(settled) }
+    }
+    expect(order('desk', 'laptop')).toEqual({
+      active: [['desk-live'], ['laptop-live']],
+      settled: [['desk-put-away'], ['laptop-put-away']],
+    })
+    expect(order('laptop', 'desk')).toEqual(order('desk', 'laptop'))
+  })
+
+  it('does not mix up sessions with the same id on different environments', () => {
+    const on = (environmentId: string, at: string) => ({
+      ...workspace('same-path', [
+        session('parent', at, { environmentId, title: environmentId }),
+        session('child', at, { environmentId, parentExternalId: 'parent', title: environmentId }),
+      ]),
+      environmentId,
+    })
+    const { active } = partitionSidebarSessions([
+      on('desk', '2026-09-20T10:00:00Z'),
+      on('laptop', '2026-09-24T10:00:00Z'),
+    ])
+    expect(ids(active)).toEqual([
+      ['parent', 'child'],
+      ['parent', 'child'],
+    ])
+    expect(
+      active.map((entry) => [
+        entry.root.workspace.environmentId,
+        entry.root.session.title,
+        entry.children[0]?.session.title,
+      ]),
+    ).toEqual([
+      ['laptop', 'laptop', 'laptop'],
+      ['desk', 'desk', 'desk'],
+    ])
+  })
+
   it('merges every project into one newest-first active list', () => {
     const { active, settled } = partitionSidebarSessions([
       workspace('alpha', [

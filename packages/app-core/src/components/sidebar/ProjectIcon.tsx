@@ -18,6 +18,11 @@ interface ProjectIconProps {
   workspacePath: string
   className?: string
   fallbackIcon?: ComponentType<{ className?: string; weight?: 'regular' | 'bold' }>
+  /**
+   * Where the list spans environments: the lookup of the environment this
+   * workspace is on, and null when it has none. Left out, the context's.
+   */
+  iconLookup?: ViewActions['resolveWorkspaceIcon'] | null
 }
 
 /**
@@ -25,8 +30,9 @@ interface ProjectIconProps {
  * `WorkspaceIconContext` where the host provides it, so switching sessions
  * leaves every icon be; hosts that only provide `ViewActions` still work.
  */
-export function ProjectIcon(props: ProjectIconProps) {
-  const lookup = useContext(WorkspaceIconContext)
+export function ProjectIcon({ iconLookup, ...props }: ProjectIconProps) {
+  const context = useContext(WorkspaceIconContext)
+  const lookup = iconLookup === undefined ? context : iconLookup
   return lookup === WORKSPACE_ICONS_UNSET ? (
     <ProjectIconFromViewActions {...props} />
   ) : (
