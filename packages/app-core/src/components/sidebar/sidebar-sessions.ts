@@ -217,8 +217,17 @@ export function selectSidebarDrafts(
   }
 }
 
+/**
+ * Newest edit first. Ties go by environment, then by id, so two cards that tie
+ * on everything but where they are keep their order whichever environment is
+ * open; nothing left to tell them apart, they are equal.
+ */
 export function newestDraftFirst(left: SidebarDraft, right: SidebarDraft) {
-  return right.editedAt - left.editedAt || (right.draftId > left.draftId ? 1 : -1)
+  return (
+    right.editedAt - left.editedAt ||
+    (left.environmentId ?? '').localeCompare(right.environmentId ?? '') ||
+    (left.draftId === right.draftId ? 0 : right.draftId > left.draftId ? 1 : -1)
+  )
 }
 
 function sameDraft(left: SidebarDraft, right: SidebarDraft) {
