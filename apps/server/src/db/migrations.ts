@@ -963,6 +963,41 @@ export const MIGRATIONS: readonly Migration[] = [
       `)
     },
   },
+  {
+    version: 26,
+    name: 'turn_notices',
+    up(database) {
+      // Durable notices of a turn (a compaction, a model switch, a refusal, a
+      // usage warning, a provider's warning), one row each. `ordinal` comes
+      // from the thread-wide counter messages and turn activity share, so one
+      // sort places a notice where it happened. They go with their turn.
+      database.exec(`
+        CREATE TABLE IF NOT EXISTS turn_notices (
+          notice_id TEXT PRIMARY KEY NOT NULL,
+          workspace_id TEXT NOT NULL,
+          thread_id TEXT NOT NULL,
+          turn_id TEXT NOT NULL,
+          ordinal REAL NOT NULL CHECK (ordinal >= 0),
+          notice_json TEXT NOT NULL CHECK (json_valid(notice_json)),
+          created_at INTEGER NOT NULL,
+          FOREIGN KEY (turn_id, thread_id, workspace_id)
+            REFERENCES turns(turn_id, thread_id, workspace_id) ON DELETE CASCADE,
+          UNIQUE (thread_id, ordinal)
+        ) STRICT;
+        CREATE INDEX IF NOT EXISTS turn_notices_turn_id_idx ON turn_notices(turn_id);
+      `)
+      // The rest of a failure, beside its reason and message: what can be done
+      // about it, when a limit resets, and the provider's own words.
+      const turns = new Set(
+        (database.prepare('PRAGMA table_info(turns)').all() as { name: string }[]).map(
+          (column) => column.name,
+        ),
+      )
+      for (const column of ['failure_action', 'failure_resets_at', 'failure_detail']) {
+        if (!turns.has(column)) database.exec(`ALTER TABLE turns ADD COLUMN ${column} TEXT`)
+      }
+    },
+  },
 ]
 
 type RetainedActivityRow = {

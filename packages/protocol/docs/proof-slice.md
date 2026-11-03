@@ -153,7 +153,7 @@ keys; provider sequence numbers are never synchronization cursors.
 The public event families are listed in `ProofEventSchemas` and illustrated in
 `tests/proof-fixtures.ts`. A turn starts with a user message; message/reasoning
 deltas and tool summaries follow, then a completed/interrupted/failed event.
-`turn.notice` is nonterminal. `message.reasoning` preserves start/delta/stop even
+`turn.notice`, `turn.notice.cleared` and `turn.notice.recorded` are nonterminal. `message.reasoning` preserves start/delta/stop even
 when no text exists, and zero is a valid token reading. Interaction requested and
 resolved events carry the same host interaction identity and their owning turn.
 

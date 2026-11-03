@@ -43,7 +43,7 @@ export function cacheState(state: EnvironmentState): EnvironmentState {
           confirmedEchoes: undefined,
           // Never stored by the server, so a fresh load has none. The cursor
           // stays: durable state and cursor were written together.
-          notices: [],
+          liveNotices: [],
           hydration: thread.hydration === 'loading' ? 'idle' : thread.hydration,
         },
       ]),

@@ -13,7 +13,9 @@ import {
   InteractionKindSchema,
   ThreadSchema,
   TurnStartedSchema,
-  TurnFailureReasonSchema,
+  TurnFailureSchema,
+  TransientTurnNoticeSchema,
+  DurableTurnNoticeSchema,
   TurnInterruptionSchema,
   BackgroundTaskListSchema,
   ContentBlockSchema,
@@ -203,17 +205,21 @@ export const ProofEventSchemas = {
   'turn.failed': event(
     'turn.failed',
     ThreadScopeSchema,
-    z.object({
-      turnId: EntityIdSchema,
-      reason: TurnFailureReasonSchema,
-      message: z.string(),
-    }),
+    TurnFailureSchema.extend({ turnId: EntityIdSchema }),
   ),
-  'turn.notice': event(
-    'turn.notice',
+  /** What the provider is doing about a hiccup right now. Transient: never stored or replayed. */
+  'turn.notice': event('turn.notice', ThreadScopeSchema, TransientTurnNoticeSchema),
+  /**
+   * The server's word that a turn's live notice is over: the provider moved
+   * on, or the turn ended. Transient, like the notice it ends.
+   */
+  'turn.notice.cleared': event(
+    'turn.notice.cleared',
     ThreadScopeSchema,
-    z.object({ turnId: EntityIdSchema, message: z.string() }),
+    z.object({ turnId: EntityIdSchema }),
   ),
+  /** A notice that stays part of the turn: stored, replayed and placed in its order. */
+  'turn.notice.recorded': event('turn.notice.recorded', ThreadScopeSchema, DurableTurnNoticeSchema),
   'message.delta': event(
     'message.delta',
     ThreadScopeSchema,
@@ -309,6 +315,8 @@ export const ProofEventSchema = z.discriminatedUnion('name', [
   ProofEventSchemas['turn.interrupted'],
   ProofEventSchemas['turn.failed'],
   ProofEventSchemas['turn.notice'],
+  ProofEventSchemas['turn.notice.cleared'],
+  ProofEventSchemas['turn.notice.recorded'],
   ProofEventSchemas['message.delta'],
   ProofEventSchemas['message.reasoning'],
   ProofEventSchemas['tool.updated'],

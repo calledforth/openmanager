@@ -1,12 +1,14 @@
 import {
   applyToolUpdate,
   type ContentBlock,
+  type DurableTurnNotice,
   type Interaction,
   type Message,
   type ProofEvent,
   type Thread,
   type ToolCallState,
   type Turn,
+  type TurnFailure,
 } from '@openmanager/protocol'
 
 export interface ReasoningEntry {
@@ -29,10 +31,10 @@ export interface PendingInteraction {
 
 /**
  * One thing that took its place in a turn's transcript: a message, a reasoning
- * block or a tool call, named by the id it is stored under.
+ * block, a tool call or a durable notice, named by the id it is stored under.
  */
 export interface ActivityRef {
-  kind: 'message' | 'reasoning' | 'tool'
+  kind: 'message' | 'reasoning' | 'tool' | 'notice'
   id: string
   turnId: string
 }
@@ -44,9 +46,11 @@ export interface ProtocolThreadView {
   messages: Message[]
   reasoning: ReasoningEntry[]
   tools: ToolState[]
+  /** Durable notices, placed in `order` under kind `notice`. */
+  notices: DurableTurnNotice[]
   /**
-   * Messages, reasoning blocks and tool calls in the order they first appeared.
-   * The three lists above are keyed by id and say nothing about how their
+   * Messages, reasoning blocks, tool calls and notices in the order they first
+   * appeared. The lists above are keyed by id and say nothing about how their
    * entries interleave; this is what a transcript walks to show a thought, the
    * tools it led to, and the text that followed, in that order.
    */
@@ -85,17 +89,28 @@ function mergeContent(existing: ContentBlock[], delta: ContentBlock): ContentBlo
     : [...existing, delta]
 }
 
+/** What a `turn.failed` says about the turn: everything but which turn it is. */
+function failureOf(payload: TurnFailure & { turnId: string }): TurnFailure {
+  const { turnId: _turnId, ...failure } = payload
+  return failure
+}
+
 /**
  * Whether a turn-scoped event of this thread names a turn the view does not
  * hold. Every subscription starts with a replay or a snapshot, so that is a
  * protocol error: the caller recovers the scope instead of inventing the
  * turn (docs/sync-foundations.md §3.5). `turn.started` introduces its turn,
- * and a transient notice is never worth a recovery.
+ * and a live notice is never worth a recovery.
  */
 export function namesUnknownTurn(current: ProtocolThreadView, event: ProofEvent): boolean {
   if (event.scope.type !== 'thread' || event.scope.threadId !== current.thread.threadId)
     return false
-  if (event.name === 'turn.started' || event.name === 'turn.notice') return false
+  if (
+    event.name === 'turn.started' ||
+    event.name === 'turn.notice' ||
+    event.name === 'turn.notice.cleared'
+  )
+    return false
   if (!('turnId' in event.payload)) return false
   const { turnId } = event.payload
   return !current.turns.some((turn) => turn.turnId === turnId)
@@ -138,11 +153,19 @@ export function foldProtocolEvent<T extends ProtocolThreadView>(current: T, even
           state,
           // The terminal event's time is when the work stopped.
           finishedAt: event.timestamp,
-          ...(event.name === 'turn.failed'
-            ? { failure: { reason: event.payload.reason, message: event.payload.message } }
-            : {}),
+          ...(event.name === 'turn.failed' ? { failure: failureOf(event.payload) } : {}),
           ...(event.name === 'turn.interrupted' ? { interruptedBy: event.payload.reason } : {}),
         }),
+      }
+    }
+    case 'turn.notice.recorded': {
+      const existing = current.notices.some((notice) => notice.noticeId === event.payload.noticeId)
+      return {
+        ...current,
+        notices: upsert(current.notices, (notice) => notice.noticeId, event.payload),
+        order: existing
+          ? current.order
+          : placeActivity(current.order, { kind: 'notice', id: event.payload.noticeId, turnId }),
       }
     }
     case 'message.delta': {

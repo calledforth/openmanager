@@ -453,23 +453,29 @@ describe('kept cursors', () => {
     )
   })
 
-  scenario('KC9 a notice does not outlive a replay', {}, async (rig) => {
+  scenario('KC9 a live notice does not outlive a replay', {}, async (rig) => {
     const a = await rig.connect('A')
-    const { target, other } = await twoChats(rig, a)
+    const { other } = await twoChats(rig, a)
     await rig.provider({ op: 'setAutoScript', steps: null })
+    const target = await createSession(rig, a, { providerId: 'claude', quiet: true })
     await startTurn(a, target, 'Draw something')
-    await rig.provider({ op: 'emitUnstorableImage', sessionId: target.sessionId })
-    await untilThread(a, target, (state) => state.notices.length === 1, 'the notice to arrive')
-    await rig.provider({ op: 'completeTurn', sessionId: target.sessionId })
-    await rig.settle()
+    await rig.provider({ op: 'claudeWaitPrompt', prompts: 1 })
+    await rig.provider({
+      op: 'claudeEmit',
+      messages: [{ type: 'system', subtype: 'api_retry', attempt: 1, max_retries: 10 }],
+    })
+    await untilThread(a, target, (state) => state.liveNotices.length === 1, 'the notice to arrive')
     await a.client.commands.openSession(other.sessionId)
+    await rig.settle()
+    // It ends while A is elsewhere, so A never hears that it did.
+    await rig.provider({ op: 'claudeComplete' })
     await rig.settle()
     const mark = rig.proxy.frames.length
     await a.client.commands.openSession(target.sessionId)
     const [answer] = await answered(rig, a, mark, (asked) => ofThread(asked, target))
     expect(answer).toMatchObject({ hadCursor: true, mode: 'replay' })
     // A fresh load has none: the server never stored it.
-    expect(thread(a, target)?.notices).toEqual([])
+    expect(thread(a, target)?.liveNotices).toEqual([])
     await expectConverges('KC9', rig, a)
   })
 })

@@ -12,6 +12,7 @@ import {
   PENDING_INTERACTIONS_FOR_THREAD_SQL,
   REPLAY_SIZE_SQL,
   TURN_ACTIVITY_FOR_THREAD_SQL,
+  TURN_NOTICES_FOR_THREAD_SQL,
   AUDIT_EVENTS_FOR_CLIENT_SQL,
   AUDIT_EVENTS_FOR_TYPE_SQL,
   AUDIT_EVENTS_RECENT_SQL,
@@ -98,6 +99,7 @@ describe('bounded query plans', () => {
     expect(parts.some((step) => step.includes('INDEX sqlite_autoindex_messages_'))).toBe(true)
     expect(parts.some((step) => step.includes('INDEX sqlite_autoindex_message_parts_'))).toBe(true)
     expectIndexed(plan(database, TURN_ACTIVITY_FOR_THREAD_SQL), 'sqlite_autoindex_turn_activity_')
+    expectIndexed(plan(database, TURN_NOTICES_FOR_THREAD_SQL), 'sqlite_autoindex_turn_notices_')
     const pending = plan(database, PENDING_INTERACTIONS_FOR_THREAD_SQL)
     expect(pending.some((step) => step.includes('INDEX interactions_turn_id_idx'))).toBe(true)
   })

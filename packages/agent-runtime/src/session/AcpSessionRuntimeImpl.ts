@@ -59,6 +59,7 @@ import {
 } from './AppliedConfigCache.js'
 import { DEFAULT_RUNTIME_TIMEOUTS, type RuntimeTimeouts } from './constants.js'
 import { RpcTimeoutError, withTimeout } from './timeout.js'
+import { problemFromMessage } from './problems.js'
 import type {
   DesiredSessionConfig,
   ProcessExit,
@@ -1652,10 +1653,12 @@ export class AcpSessionRuntimeImpl implements ManagedSessionRuntime {
   }
   private rpcError(sessionId: string | undefined, source: string, error: unknown): Error {
     if (isAuthRequired(error)) return this.authRequired(undefined, errorMessage(error))
+    const problem = problemFromMessage(errorMessage(error))
     this.emit(
       routeEvent(this.route(), sessionId, 'error', 'rpc_error', {
         source,
         message: errorMessage(error),
+        ...(problem ? { problem } : {}),
         code: errorCode(error),
         details: object(error).data,
       }),

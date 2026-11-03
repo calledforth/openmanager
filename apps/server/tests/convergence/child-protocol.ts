@@ -62,16 +62,10 @@ export type ProviderOp =
   | { op: 'askQuestion'; sessionId: string; questionId: string; toolCallId?: string }
   | { op: 'completeTurn'; sessionId: string; stopReason?: string }
   | { op: 'crashProvider'; sessionId: string }
-  /** An image the artifact store refuses, so the server publishes a transient `turn.notice`. */
+  /** An image the artifact store refuses, so the server records a `warning` notice. */
   | { op: 'emitUnstorableImage'; sessionId: string }
   /** An OpenCode `task` tool that names a child provider session (`subtask_update`). */
   | { op: 'emitSubtask'; sessionId: string; toolCallId: string; childProviderSessionId: string }
-  /**
-   * Text, then an image the artifact store refuses, in one step: the notice
-   * is published while the text still waits in the batcher, whatever the
-   * host's scheduling (S5).
-   */
-  | { op: 'emitTextThenUnstorableImage'; sessionId: string; text: string }
   /** Text produced inside the child at a steady rate, so the IPC channel is not the bottleneck. */
   | { op: 'streamText'; sessionId: string; bytesPerSecond: number; durationMs: number }
   | { op: 'setNewSessionDelay'; ms: number }
@@ -85,7 +79,13 @@ export type ProviderOp =
       op: 'claudeBackground'
       tasks: Array<{ task_id: string; task_type: string; description: string }>
     }
-  | { op: 'claudeComplete' }
+  | {
+      op: 'claudeComplete'
+      /** End the turn on this failure, as a result with an error subtype. */
+      failure?: { subtype: 'error_during_execution'; errors: string[]; terminalReason?: string }
+    }
+  /** Raw SDK frames, all in one step: nothing yields to a timer between them. */
+  | { op: 'claudeEmit'; messages: Record<string, unknown>[] }
   /** Every prompt from now on runs these steps by itself; `null` returns to manual prompts. */
   | { op: 'setAutoScript'; steps: ScriptStep[] | null }
 
@@ -263,6 +263,7 @@ export interface ServerThreadRead {
   messages: unknown[]
   reasoning: unknown[]
   tools: unknown[]
+  notices: unknown[]
   order: unknown[]
   interactions: Array<{ turnId: string; interaction: unknown }>
   listing: unknown

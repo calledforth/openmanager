@@ -87,10 +87,11 @@ export function createThreadState(
     messages: [],
     reasoning: [],
     tools: [],
+    notices: [],
     order: [],
     interactions: [],
     listing: {},
-    notices: [],
+    liveNotices: [],
     outbox: [],
     hydration,
   }
@@ -334,9 +335,9 @@ function removeSession(state: EnvironmentState, sessionId: string): EnvironmentS
 /**
  * Fold one live event into the state. Branches keyed by resource ID
  * (sessions, turns, tools, interactions) are idempotent, so a replayed event
- * cannot double-apply. Delta events (`message.delta`, `message.reasoning`,
- * `turn.notice`) append and are not; the transport de-duplicates those by
- * cursor at the snapshot/replay boundary.
+ * cannot double-apply. Delta events (`message.delta`, `message.reasoning`)
+ * append and are not; the transport de-duplicates those by cursor at the
+ * snapshot/replay boundary.
  */
 export function applyEvent(state: EnvironmentState, event: ProofEvent): EnvironmentState {
   switch (event.name) {
@@ -478,12 +479,28 @@ export function applyEvent(state: EnvironmentState, event: ProofEvent): Environm
     case 'message.delta':
     case 'message.reasoning':
     case 'tool.updated':
+    case 'turn.notice.recorded':
       return patchThread(state, thread, (current) => foldProtocolEvent(current, event))
     case 'turn.notice':
+      // The newest says where the provider has got to; one per turn.
       return patchThread(state, thread, (current) => ({
         ...current,
-        notices: [...current.notices, event.payload],
+        liveNotices: [
+          ...current.liveNotices.filter((notice) => notice.turnId !== event.payload.turnId),
+          event.payload,
+        ],
       }))
+    case 'turn.notice.cleared':
+      return patchThread(state, thread, (current) =>
+        current.liveNotices.some((notice) => notice.turnId === event.payload.turnId)
+          ? {
+              ...current,
+              liveNotices: current.liveNotices.filter(
+                (notice) => notice.turnId !== event.payload.turnId,
+              ),
+            }
+          : current,
+      )
     case 'interaction.requested':
       return patchThread(state, thread, (current) => {
         if (!current.turns.some((turn) => turn.turnId === event.payload.turnId)) return current
@@ -533,9 +550,9 @@ export function applyEvent(state: EnvironmentState, event: ProofEvent): Environm
  *   composer preferences, provider profiles and workspace listings. Threads
  *   of sessions that no longer exist go, with their cursors.
  * - **Session:** its summary and its thread list.
- * - **Thread:** turns, messages, reasoning, tools, order, pending requests
- *   and listing. The client's own echoes are settled against it; notices start
- *   over (the transport places held transients after it).
+ * - **Thread:** turns, messages, reasoning, tools, notices, order, pending
+ *   requests and listing. The client's own echoes are settled against it; live
+ *   notices start over (the transport places held transients after it).
  *
  * The scope's cursor moves here too, in the same update as what it describes.
  */
@@ -580,6 +597,7 @@ export function applySnapshot(state: EnvironmentState, snapshot: ScopeSnapshot):
     messages,
     reasoning: shareById(existing.reasoning, snapshotState.reasoning, (item) => item.messageId),
     tools: shareById(existing.tools, snapshotState.tools, (item) => item.toolCallId),
+    notices: shareById(existing.notices, snapshotState.notices, (item) => item.noticeId),
     order: share(existing.order, snapshotState.order),
     interactions: shareById(
       existing.interactions,
@@ -735,14 +753,18 @@ export function applyRecord(state: EnvironmentState, record: DurableEvent): Envi
 }
 
 /**
- * Notices are never stored, so a catch-up starts them over whichever way it
- * answers: a chat caught up by replay shows what a fresh load shows, none, and
- * the transport places held transients after the answer.
+ * Live notices are never stored, so a catch-up starts them over whichever way
+ * it answers: a chat caught up by replay shows what a fresh load shows, none,
+ * and the transport places held transients after the answer. One whose end was
+ * missed in a gap goes here too.
  */
-export function applyNoticesCleared(state: EnvironmentState, threadId: string): EnvironmentState {
+export function applyLiveNoticesCleared(
+  state: EnvironmentState,
+  threadId: string,
+): EnvironmentState {
   const thread = state.threads[threadId]
-  if (!thread || thread.notices.length === 0) return state
-  return { ...state, threads: { ...state.threads, [threadId]: { ...thread, notices: [] } } }
+  if (!thread || thread.liveNotices.length === 0) return state
+  return { ...state, threads: { ...state.threads, [threadId]: { ...thread, liveNotices: [] } } }
 }
 
 /** A thread's catch-up started or ended. Nothing else moves, so no chat renders for it. */
@@ -1429,6 +1451,29 @@ export function selectActiveSession(state: EnvironmentState): SessionSummary | n
 
 export function selectActiveThread(state: EnvironmentState): ThreadState | null {
   return state.activeThreadId ? (state.threads[state.activeThreadId] ?? null) : null
+}
+
+/** The prompt a turn was sent with, as a retry would send it again. */
+export function resendablePrompt(
+  messages: readonly Message[],
+  turnId: string,
+): { text: string; artifactIds: string[] } | undefined {
+  const prompt = messages.find((message) => message.turnId === turnId && message.role === 'user')
+  if (!prompt) return undefined
+  const text = prompt.content.map((block) => (block.type === 'text' ? block.text : '')).join('')
+  const artifactIds = prompt.content.flatMap((block) =>
+    block.type === 'artifact' ? [block.artifactId] : [],
+  )
+  return text || artifactIds.length > 0 ? { text, artifactIds } : undefined
+}
+
+/**
+ * A send of the chat on screen is on its way: echoed and not yet started,
+ * waiting behind a catch-up included. The turn that settles it arrives in the
+ * same update, so a turn that starts and ends at once leaves nothing pending.
+ */
+export function selectActiveSendPending(state: EnvironmentState): boolean {
+  return !!selectActiveThread(state)?.outbox.some((entry) => entry.status !== 'failed')
 }
 
 export function selectActiveTurn(state: EnvironmentState): Turn | null {

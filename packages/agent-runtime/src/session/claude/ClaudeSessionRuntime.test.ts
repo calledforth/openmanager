@@ -1,3 +1,4 @@
+import type { SDKMessage } from '@anthropic-ai/claude-agent-sdk'
 import { describe, expect, it, vi } from 'vitest'
 import { SessionUnknownError } from '../../core/errors.js'
 import type { BackendEvent } from '../../backends/Backend.js'
@@ -7,6 +8,7 @@ import { claude } from '../../providers/claude.js'
 import type { RuntimeTimeouts } from '../constants.js'
 import type { SessionRuntimeExit } from '../lifecycle.js'
 import type { SessionRuntimeSpec } from '../SessionRuntime.js'
+import { ClaudeMessageTranslator } from './ClaudeMessageTranslator.js'
 import { ClaudeSessionRuntime } from './ClaudeSessionRuntime.js'
 import { FakeClaudeSdk } from './test-sdk.js'
 
@@ -328,6 +330,61 @@ describe('ClaudeSessionRuntime turn failure', () => {
     expect(runtime.phase).toBe('ready')
   })
 
+  it('carries a typed problem on the terminal error, never the synthetic text', async () => {
+    const { runtime, events, sdk } = build()
+    await runtime.start()
+    const turn = runtime.prompt({ prompt: { text: 'hi', blocks: [] } })
+    void turn.catch(() => undefined)
+    await vi.waitFor(() => expect(sdk.last.prompts).toHaveLength(1))
+
+    sdk.last.emit({
+      type: 'assistant',
+      message: {
+        id: 'msg-error',
+        model: '<synthetic>',
+        content: [{ type: 'text', text: 'Prompt is too long' }],
+      },
+      parent_tool_use_id: null,
+      error: 'invalid_request',
+      uuid: crypto.randomUUID(),
+      session_id: runtime.sessionId ?? '',
+    } as unknown as SDKMessage)
+    sdk.last.emitResult({
+      subtype: 'error_during_execution',
+      stopReason: null,
+      terminalReason: 'prompt_too_long',
+    })
+
+    await expect(turn).rejects.toThrow()
+    expect(names(events)).not.toContain('agent_message_chunk')
+    expect(events.find((event) => event.event === 'runtime_error')?.data).toMatchObject({
+      problem: { code: 'context_window_exceeded', action: 'compact' },
+    })
+  })
+
+  it("logs Claude Code's own words for a failure and starts each turn clean", async () => {
+    const beginTurn = vi.spyOn(ClaudeMessageTranslator.prototype, 'beginTurn')
+    const { runtime, sdk, log } = build()
+    await runtime.start()
+    const turn = runtime.prompt({ prompt: { text: 'hi', blocks: [] } })
+    void turn.catch(() => undefined)
+    await vi.waitFor(() => expect(sdk.last.prompts).toHaveLength(1))
+    // Dispatching the turn is what clears the last turn's flags, since a
+    // result nobody waited for is dropped before the translator sees it.
+    expect(beginTurn).toHaveBeenCalledTimes(1)
+
+    sdk.last.emitResult({ subtype: 'error_during_execution', stopReason: null, errors: ['boom'] })
+    await expect(turn).rejects.toThrow('boom')
+    expect(
+      log.mock.calls.some(
+        ([entry]) =>
+          String(entry?.message).includes('ended the turn with an error') &&
+          (entry?.data as { error?: string } | undefined)?.error === 'boom',
+      ),
+    ).toBe(true)
+    beginTurn.mockRestore()
+  })
+
   it('reports max-turns exhaustion under its subtype when there is no message', async () => {
     const { runtime, events, sdk } = build()
     await runtime.start()
@@ -628,15 +685,22 @@ describe('ClaudeSessionRuntime permissions', () => {
       'reject_once',
     ])
 
-    expect(runtime.respondPermission(request.requestId, { outcome: 'selected', optionId: 'allow_once' })).toBe(true)
+    expect(
+      runtime.respondPermission(request.requestId, { outcome: 'selected', optionId: 'allow_once' }),
+    ).toBe(true)
     // No `updatedInput`: the input is unchanged and the SDK reads an omitted
     // one as "run what you asked to run".
     expect(await result).toEqual({ behavior: 'allow' })
   })
 
-  it('carries the SDK\'s own suggestions on always-allow, and never synthesizes any', async () => {
+  it("carries the SDK's own suggestions on always-allow, and never synthesizes any", async () => {
     const suggestions = [
-      { type: 'addRules', rules: [{ toolName: 'Bash' }], behavior: 'allow', destination: 'session' },
+      {
+        type: 'addRules',
+        rules: [{ toolName: 'Bash' }],
+        behavior: 'allow',
+        destination: 'session',
+      },
     ]
     const { runtime, events, sdk } = build()
     await runtime.start()
@@ -647,11 +711,14 @@ describe('ClaudeSessionRuntime permissions', () => {
       outcome: 'selected',
       optionId: 'allow_always',
     })
-    expect(await withSuggestions.result).toEqual({ behavior: 'allow', updatedPermissions: suggestions })
+    expect(await withSuggestions.result).toEqual({
+      behavior: 'allow',
+      updatedPermissions: suggestions,
+    })
 
     const withoutSuggestions = sdk.last.useTool('Read', { file_path: 'C:/a.ts' })
-    await vi.waitFor(
-      () => expect(names(events).filter((name) => name === 'permission_request')).toHaveLength(2),
+    await vi.waitFor(() =>
+      expect(names(events).filter((name) => name === 'permission_request')).toHaveLength(2),
     )
     runtime.respondPermission(requestIdOf(events, 'permission_request'), {
       outcome: 'selected',
@@ -675,8 +742,8 @@ describe('ClaudeSessionRuntime permissions', () => {
     expect(await rejected.result).toMatchObject({ behavior: 'deny' })
 
     const cancelled = sdk.last.useTool('Bash', { command: 'ls' })
-    await vi.waitFor(
-      () => expect(names(events).filter((name) => name === 'permission_request')).toHaveLength(2),
+    await vi.waitFor(() =>
+      expect(names(events).filter((name) => name === 'permission_request')).toHaveLength(2),
     )
     runtime.respondPermission(requestIdOf(events, 'permission_request'), {
       outcome: 'cancelled',
@@ -715,7 +782,12 @@ describe('ClaudeSessionRuntime permissions', () => {
     const permission = sdk.last.useTool('Bash', { command: 'ls' })
     const question = sdk.last.useTool('AskUserQuestion', {
       questions: [
-        { question: 'Which?', header: 'Pick', multiSelect: false, options: [{ label: 'a', description: '' }] },
+        {
+          question: 'Which?',
+          header: 'Pick',
+          multiSelect: false,
+          options: [{ label: 'a', description: '' }],
+        },
       ],
     })
     await vi.waitFor(() => expect(names(events)).toContain('question_request'))
@@ -838,9 +910,11 @@ describe('ClaudeSessionRuntime questions', () => {
         { questionId: `${request.requestId}:1`, selectedOptionIds: ['o1'] },
       ],
     })
-    expect((await result as { updatedInput: { answers: unknown } }).updatedInput.answers).toEqual({
-      'Same?': 'a, d',
-    })
+    expect(((await result) as { updatedInput: { answers: unknown } }).updatedInput.answers).toEqual(
+      {
+        'Same?': 'a, d',
+      },
+    )
   })
 
   it('denies when the user dismisses the question', async () => {
@@ -911,7 +985,7 @@ describe('ClaudeSessionRuntime plan review', () => {
     expect(await result).toEqual({ behavior: 'allow' })
   })
 
-  it('denies with the reviewer\'s reason on rejection', async () => {
+  it("denies with the reviewer's reason on rejection", async () => {
     const { runtime, events, sdk } = build()
     await runtime.start()
 
@@ -1036,7 +1110,12 @@ describe('ClaudeSessionRuntime mode reported by the CLI', () => {
 describe('ClaudeSessionRuntime interaction atomicity', () => {
   const question = {
     questions: [
-      { question: 'A?', header: 'Pick', multiSelect: false, options: [{ label: 'x', description: '' }] },
+      {
+        question: 'A?',
+        header: 'Pick',
+        multiSelect: false,
+        options: [{ label: 'x', description: '' }],
+      },
     ],
   }
 
@@ -1051,9 +1130,9 @@ describe('ClaudeSessionRuntime interaction atomicity', () => {
     expect(await sdk.last.useTool('AskUserQuestion', question, { signal }).result).toMatchObject({
       behavior: 'deny',
     })
-    expect(await sdk.last.useTool('ExitPlanMode', { plan: '# Plan' }, { signal }).result).toMatchObject(
-      { behavior: 'deny' },
-    )
+    expect(
+      await sdk.last.useTool('ExitPlanMode', { plan: '# Plan' }, { signal }).result,
+    ).toMatchObject({ behavior: 'deny' })
 
     // No request and no resolution for any of the three. A request that is
     // never emitted cannot be emitted after its settlement.
@@ -1136,9 +1215,11 @@ describe('ClaudeSessionRuntime result correlation', () => {
     sdk.last.emitResult({ userMessageUuid: uuid })
     await turn
     expect(
-      (events.find((event) => event.event === 'prompt_completed')?.data as {
-        usage?: { inputTokens: number }
-      }).usage,
+      (
+        events.find((event) => event.event === 'prompt_completed')?.data as {
+          usage?: { inputTokens: number }
+        }
+      ).usage,
     ).toMatchObject({ inputTokens: 100 })
   })
 
@@ -1170,9 +1251,11 @@ describe('ClaudeSessionRuntime result correlation', () => {
     await turn
 
     expect(
-      (events.find((event) => event.event === 'prompt_completed')?.data as {
-        usage?: { inputTokens: number; outputTokens: number }
-      }).usage,
+      (
+        events.find((event) => event.event === 'prompt_completed')?.data as {
+          usage?: { inputTokens: number; outputTokens: number }
+        }
+      ).usage,
     ).toMatchObject({ inputTokens: 42, outputTokens: 7 })
   })
 })
@@ -1332,9 +1415,11 @@ describe('ClaudeSessionRuntime background work', () => {
     // The unprompted turn's tokens closed with it rather than being billed to
     // the user's turn.
     expect(
-      (events.find((event) => event.event === 'prompt_completed')?.data as {
-        usage?: { inputTokens: number }
-      }).usage,
+      (
+        events.find((event) => event.event === 'prompt_completed')?.data as {
+          usage?: { inputTokens: number }
+        }
+      ).usage,
     ).toMatchObject({ inputTokens: 10 })
   })
 
@@ -1444,9 +1529,11 @@ describe('ClaudeSessionRuntime prompt content', () => {
     await runtime.start()
 
     expect(
-      (events.find((event) => event.event === 'initialized')?.data as {
-        promptCapabilities?: { image?: boolean }
-      }).promptCapabilities,
+      (
+        events.find((event) => event.event === 'initialized')?.data as {
+          promptCapabilities?: { image?: boolean }
+        }
+      ).promptCapabilities,
     ).toMatchObject({ image: true })
   })
 
@@ -1523,7 +1610,10 @@ describe('ClaudeSessionRuntime catalogs', () => {
   ]
   const withModels = (spec: Partial<SessionRuntimeSpec> = {}) => {
     const built = build(spec)
-    built.sdk.initialize = { ...built.sdk.initialize, models: MODELS } as typeof built.sdk.initialize
+    built.sdk.initialize = {
+      ...built.sdk.initialize,
+      models: MODELS,
+    } as typeof built.sdk.initialize
     return built
   }
   /** The *latest* matching event: a model change now republishes the mode
@@ -1625,8 +1715,9 @@ describe('ClaudeSessionRuntime settings', () => {
     } as typeof built.sdk.initialize
     return built
   }
-  const optionIds = (runtime: { applied?: { options: ReadonlyMap<string, unknown> } }) =>
-    [...(runtime.applied?.options.keys() ?? [])]
+  const optionIds = (runtime: { applied?: { options: ReadonlyMap<string, unknown> } }) => [
+    ...(runtime.applied?.options.keys() ?? []),
+  ]
 
   it('writes effort through the flag-settings layer', async () => {
     const { runtime, sdk } = withModels({ desiredConfig: { modelId: 'opus' } })

@@ -192,7 +192,7 @@ describe('event repository transactions', () => {
     const { database } = await createDatabase()
     const repository = createEventRepository(database)
     const statuses: unknown[] = []
-    const append = (event: Exclude<ProofEvent, { name: 'turn.notice' }>) => {
+    const append = (event: Parameters<typeof repository.appendEvents>[1][number]) => {
       const records = repository.appendEvents(event.scope, [event])
       for (const record of records) {
         if (record.event.name !== 'session.updated') continue
@@ -1193,7 +1193,7 @@ describe('transients among the durable events', () => {
       eventId,
       timestamp: '2026-09-10T10:00:01.500Z',
       scope,
-      payload: { turnId: 'turn-1', message: 'Retrying' },
+      payload: { noticeId: 'notice-1', turnId: 'turn-1', kind: 'retrying', message: 'Retrying' },
     })
 
   it('commits the text still in the batcher, then places the notice after it', async () => {

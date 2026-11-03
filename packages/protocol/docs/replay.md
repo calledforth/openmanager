@@ -10,18 +10,19 @@ stream. A cursor is `{ scope, epoch, sequence }`:
   subscriptions, so a client keeps one cursor per scope it follows.
 - `epoch` changes whenever the host cannot preserve a scope's sequence history
   (for example a rebuilt store). Sequences are only comparable within an epoch.
-- `turn.notice` is transient and never receives a cursor.
+- `turn.notice` and `turn.notice.cleared` are transient and never receive a cursor;
+  `turn.notice.recorded` is the durable kind and is sequenced like any other event.
 
 Provider sequence numbers and event timestamps are never cursors.
 
 ## Messages
 
-| Message | Shape |
-| --- | --- |
-| `subscription.replay` command | `{ scope, cursor \| null }`; `null` requests an initial snapshot |
-| Replay response | `{ mode: 'replay', subscriptionId, from, to, events }` — exactly the contiguous range `(from, to]` in one epoch, no duplicates |
-| Snapshot response | `{ mode: 'snapshot', subscriptionId, reason, snapshot }` — full current state for the scope with its cursor |
-| `subscription.event` | `{ subscriptionId, record: { cursor, event } }` live delivery after the response |
+| Message                       | Shape                                                                                                                          |
+| ----------------------------- | ------------------------------------------------------------------------------------------------------------------------------ |
+| `subscription.replay` command | `{ scope, cursor \| null }`; `null` requests an initial snapshot                                                               |
+| Replay response               | `{ mode: 'replay', subscriptionId, from, to, events }` — exactly the contiguous range `(from, to]` in one epoch, no duplicates |
+| Snapshot response             | `{ mode: 'snapshot', subscriptionId, reason, snapshot }` — full current state for the scope with its cursor                    |
+| `subscription.event`          | `{ subscriptionId, record: { cursor, event } }` live delivery after the response                                               |
 
 Both response modes establish the subscription; live events continue from the
 response's `to` or snapshot cursor. Validate responses against the pending
@@ -31,15 +32,15 @@ decision below.
 
 ## Behavior
 
-| Situation | Result |
-| --- | --- |
-| No cursor | snapshot, `initial` |
-| Cursor within retained range | replay from the cursor to head (possibly empty) |
-| Cursor older than the oldest retained event | snapshot, `gap_expired` |
-| Cursor sequence ahead of the host's head | snapshot, `cursor_ahead` |
-| Cursor epoch differs from the host's epoch | snapshot, `stream_reset` |
-| Replay larger than the snapshot (exact UTF-8 sizes; ties replay) | snapshot, `snapshot_smaller` |
-| Cursor from another environment or scope | `validation` error; no snapshot is offered |
+| Situation                                                        | Result                                          |
+| ---------------------------------------------------------------- | ----------------------------------------------- |
+| No cursor                                                        | snapshot, `initial`                             |
+| Cursor within retained range                                     | replay from the cursor to head (possibly empty) |
+| Cursor older than the oldest retained event                      | snapshot, `gap_expired`                         |
+| Cursor sequence ahead of the host's head                         | snapshot, `cursor_ahead`                        |
+| Cursor epoch differs from the host's epoch                       | snapshot, `stream_reset`                        |
+| Replay larger than the snapshot (exact UTF-8 sizes; ties replay) | snapshot, `snapshot_smaller`                    |
+| Cursor from another environment or scope                         | `validation` error; no snapshot is offered      |
 
 A snapshot's `reason` must be consistent with the requested cursor; clients
 reject a contradictory reason. A foreign cursor is rejected before any state is

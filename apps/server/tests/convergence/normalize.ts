@@ -16,14 +16,14 @@ import type { ServerThreadRead } from './child-protocol.ts'
  * the composer preferences of `preferencePairs` (the pairs the client holds
  * plus the one its composer shows; see `Rig.checkConvergence` for the read the
  * app makes for an unloaded one), and, for the session on screen, each
- * thread's turns, messages, reasoning, tools, order, the transcript order of
- * reasoning and tools that `order` does not place, pending interactions and
- * each turn as the server states it, its failure included.
+ * thread's turns, messages, reasoning, tools, durable notices, order, the
+ * transcript order of reasoning and tools that `order` does not place, pending
+ * interactions and each turn as the server states it, its failure included.
  *
  * Dropped: everything the client owns or only reads (connection, selection,
  * hydration, the outbox, history cursors, local draft edits, draft
  * tombstones, which only refuse stale saves and are never shown, the provider
- * catalog and health) and transient notices.
+ * catalog and health) and live notices.
  *
  * A session's thread list is kept only for the session on screen: a fresh
  * load learns the threads of the session it opens, and no others, so for
@@ -46,6 +46,7 @@ export interface ThreadView {
   messages: unknown[]
   reasoning: Record<string, unknown>
   tools: Record<string, unknown>
+  notices: Record<string, unknown>
   order: unknown[]
   /** Reasoning and tools `order` does not place, as the transcript appends them: in array order. */
   unplaced: { reasoning: string[]; tools: string[] }
@@ -119,7 +120,7 @@ function sessionView(session: SessionSummary, onScreen: boolean): unknown {
 export function threadView(
   thread: Pick<
     ThreadState,
-    'turns' | 'messages' | 'reasoning' | 'tools' | 'order' | 'interactions' | 'listing'
+    'turns' | 'messages' | 'reasoning' | 'tools' | 'notices' | 'order' | 'interactions' | 'listing'
   >,
 ): ThreadView {
   return canonical({
@@ -130,6 +131,7 @@ export function threadView(
     // does not place, so they compare by id.
     reasoning: keyed(thread.reasoning, (entry) => entry.messageId),
     tools: keyed(thread.tools, (tool) => tool.toolCallId),
+    notices: keyed(thread.notices, (notice) => notice.noticeId),
     order: thread.order,
     unplaced: {
       reasoning: thread.reasoning
@@ -154,6 +156,7 @@ export function serverThreadView(read: ServerThreadRead): ThreadView {
     messages: read.messages,
     reasoning: read.reasoning,
     tools: read.tools,
+    notices: read.notices,
     order: read.order,
     interactions: read.interactions,
     listing: read.listing,

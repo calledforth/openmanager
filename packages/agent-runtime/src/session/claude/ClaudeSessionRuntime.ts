@@ -294,6 +294,7 @@ export class ClaudeSessionRuntime implements ManagedSessionRuntime {
     this.translator = new ClaudeMessageTranslator({
       route: () => this.route(),
       log: this.host.log,
+      turnOpen: () => this.turn !== undefined,
       ...(this.config.subtasks ? { subtasks: this.config.subtasks } : {}),
     })
     this.exited = new Promise<SessionRuntimeExit>((resolve) => {
@@ -585,9 +586,7 @@ export class ClaudeSessionRuntime implements ManagedSessionRuntime {
         resumeId ? 'session_loaded' : 'session_created',
         {
           configOptions: [
-            ...(this.applied
-              ? [...this.applied.options.values()]
-              : this.settingConfigOptions()),
+            ...(this.applied ? [...this.applied.options.values()] : this.settingConfigOptions()),
           ],
           // Both catalogs, with whatever the launch actually applied as the
           // current selection. Without this the composer has no anchor for a
@@ -737,9 +736,7 @@ export class ClaudeSessionRuntime implements ManagedSessionRuntime {
   private noteReportedMode(message: SDKMessage): void {
     if (!this.leavingPlan || message.type !== 'system') return
     if (message.subtype !== 'status' && message.subtype !== 'init') return
-    const reported = claudePermissionMode(
-      (message as { permissionMode?: string }).permissionMode,
-    )
+    const reported = claudePermissionMode((message as { permissionMode?: string }).permissionMode)
     if (!reported || reported === 'plan') return
     this.leavingPlan = false
     if (reported === this.appliedModeId) return
@@ -935,6 +932,7 @@ export class ClaudeSessionRuntime implements ManagedSessionRuntime {
       done,
     }
     this.turn = turn
+    this.translator.beginTurn()
     return turn
   }
 
@@ -1073,10 +1071,19 @@ export class ClaudeSessionRuntime implements ManagedSessionRuntime {
     // the second time against a turn that no longer exists.
     if (completed.isError && !completed.interrupted) {
       const message = completed.errorText ?? 'Claude Code ended the turn with an error'
+      // The typed reason is the headline a client shows. The host keeps Claude
+      // Code's own words in its log as well.
+      this.host.log({
+        scope: 'claude',
+        level: 'warn',
+        message: 'Claude Code ended the turn with an error',
+        data: { error: message, ...(completed.problem ? { code: completed.problem.code } : {}) },
+      })
       this.emit(
         routeEvent(this.route(), completed.sessionId, 'error', 'runtime_error', {
           kind: 'provider',
           message,
+          ...(completed.problem ? { problem: completed.problem } : {}),
           // The counts still happened, and this is the only frame left to carry
           // them; `prompt_completed`'s `usage` field has no failure counterpart.
           details: {
@@ -1241,9 +1248,7 @@ export class ClaudeSessionRuntime implements ManagedSessionRuntime {
    * fast mode and the `auto` permission mode. */
   private currentModel(): ModelOption | undefined {
     const id = this.appliedModelId ?? CLAUDE_DEFAULT_MODEL_ID
-    return (
-      this.modelCatalogValue.find((model) => model.id === id) ?? this.modelCatalogValue[0]
-    )
+    return this.modelCatalogValue.find((model) => model.id === id) ?? this.modelCatalogValue[0]
   }
 
   private settingConfigOptions(): SessionConfigOption[] {
@@ -1454,7 +1459,9 @@ export class ClaudeSessionRuntime implements ManagedSessionRuntime {
    * flag-settings write immediately after `initialize`. Best-effort by design
    * — a rejected *setting* must not fail a session that is otherwise ready,
    * and the composer re-publishes what actually landed either way. */
-  private async applyLaunchSettings(values: Readonly<Record<string, string | boolean>>): Promise<void> {
+  private async applyLaunchSettings(
+    values: Readonly<Record<string, string | boolean>>,
+  ): Promise<void> {
     const model = this.currentModel()
     const effort = values[CLAUDE_CONFIG.effort]
     if (typeof effort === 'string' && (model?.effortLevels ?? []).includes(effort))
@@ -1713,7 +1720,8 @@ export class ClaudeSessionRuntime implements ManagedSessionRuntime {
           }),
         ),
     })
-    const review = outcome.outcome === 'responded' ? (outcome.response as PlanReviewOutcome) : undefined
+    const review =
+      outcome.outcome === 'responded' ? (outcome.response as PlanReviewOutcome) : undefined
     const result: PermissionResult =
       review?.outcome === 'accepted'
         ? // No `updatedInput`: the plan is unchanged and the SDK treats an
@@ -2028,11 +2036,7 @@ export class ClaudeSessionRuntime implements ManagedSessionRuntime {
    * assigned, so a caller that only checked the settled exit would be waved
    * through into exactly the window this exists to close. */
   private assertUsable(): void {
-    if (
-      this.exitSettlement ||
-      this.phaseValue === 'stopping' ||
-      this.phaseValue === 'exited'
-    )
+    if (this.exitSettlement || this.phaseValue === 'stopping' || this.phaseValue === 'exited')
       throw new Error(`Claude runtime for ${this.providerId} has stopped`)
   }
 }

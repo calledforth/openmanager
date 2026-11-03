@@ -89,6 +89,12 @@ import {
 // counts, its times and the `declined` outcome. Text travels while a tool runs
 // (`output`, `outputDelta`); once it settles, `outputBytes` says how much is
 // waiting at `toolOutputPath`. A v20 client's status enum refuses `declined`.
+// Provider problems are typed too. `turn.failed` and `Turn.failure` gain
+// reasons (`context_window_exceeded`, `usage_limit`, `rate_limited`,
+// `overloaded`, `refused`) a v20 enum refuses, plus `action`, `resetsAt` and
+// `detail`. `turn.notice` becomes a typed live notice that lasts until
+// `turn.notice.cleared`. The durable `turn.notice.recorded` is stored and
+// placed in `order` under kind `notice`, and a thread snapshot lists `notices`.
 export const PROTOCOL_VERSION = 21 as const
 
 export const ProtocolVersionSchema = z.number().int().positive().max(Number.MAX_SAFE_INTEGER)

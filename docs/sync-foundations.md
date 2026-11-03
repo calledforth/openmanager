@@ -1912,7 +1912,7 @@ that. The cost was the text, not the cap.
   call's result, and a refused call can still take the failure that follows.
 - **Event format 4.** Old stored events are still valid, but the schema changed, so the bump follows
   §4.7.7. Session pins (#270) introduced format 4 and are not released yet, so the digest of 4
-  covers both. The protocol change drops every browser cache anyway, so the first load is a fresh one.
+  covers pins, F6 and F7. The protocol change drops every browser cache anyway, so the first load is a fresh one.
 - **Old calls** have no input or output: providers never sent them to the log. Their rows look as they
   did.
 - **Provider facts the code depends on.** Cursor has no `failed` status (`rawOutput.error`, `rejected`,
@@ -2433,6 +2433,17 @@ user merges; every agent summarizes only what it did.
   B17's capability sniffing (`#213: packages/app-core/src/components/chat/MessageInput.tsx:365`)
   must not break desktop.
 - Migration 23.
+- As built: migration 26, protocol v21 and event format 4, shared with F6 (and format 4 with
+  session pins, #270).
+  - **Live notices** last until `turn.notice.cleared`, which the server publishes on the turn's next
+    durable event or its end. A client also drops them at every catch-up, since a fresh load has none.
+    They stay out of snapshots and the comparison.
+  - **Durable notices** are `turn_notices` rows on the thread's one ordinal, so a snapshot's `order`
+    places them. A failure keeps `action`, `resetsAt` and `detail` on its turn. No text limits.
+  - **A refused generated image** is now a durable `warning`, not a live notice.
+  - **B13:** `turnPending` is gone; the web reads a pending send from the outbox.
+  - **B3:** recovery also waits for a catch-up, because a held Retry could answer a stale failure.
+  - **B11 and B17** no longer apply: on the web a session's images upload as they are attached.
 
 ### 10.2 Where #219 touches the same code
 

@@ -7,6 +7,7 @@ import type {
   Cursor,
   Draft,
   DraftContent,
+  DurableTurnNotice,
   DraftList,
   DraftDeleteInput,
   DraftSaveInput,
@@ -29,6 +30,7 @@ import type {
   SessionStatus,
   SessionTitleSource,
   Thread,
+  TransientTurnNotice,
   Turn,
   UploadResult,
   Workspace,
@@ -124,10 +126,12 @@ export interface HeldComposerListing {
   updatedAt: string
 }
 
-export interface TurnNotice {
-  turnId: string
-  message: string
-}
+/**
+ * What the provider is doing about a hiccup in a turn right now: retrying a
+ * request, or compacting the conversation. Never stored; a thread keeps the
+ * latest one per turn until the server says it is over.
+ */
+export type TurnNotice = TransientTurnNotice
 
 /**
  * `idle` means we only know the thread exists (its scope produced an event
@@ -142,7 +146,9 @@ export interface ThreadState {
   messages: Message[]
   reasoning: ReasoningEntry[]
   tools: ToolState[]
-  /** Messages, reasoning and tools in arrival order; see `ProtocolThreadView.order`. */
+  /** Durable notices, placed in `order`; see `ProtocolThreadView.notices`. */
+  notices: DurableTurnNotice[]
+  /** Messages, reasoning, tools and notices in arrival order; see `ProtocolThreadView.order`. */
   order: ActivityRef[]
   interactions: PendingInteraction[]
   /** What the provider offers this chat. It arrives with the chat. */
@@ -154,7 +160,8 @@ export interface ThreadState {
    * Absent while the client has nothing it can resume from.
    */
   cursor?: Cursor
-  notices: TurnNotice[]
+  /** The live notice of each turn that has one, at most one per turn. */
+  liveNotices: TurnNotice[]
   /** Sends still waiting on the environment, oldest first, newest last. */
   outbox: OutboxEntry[]
   /**

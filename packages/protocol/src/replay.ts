@@ -20,6 +20,7 @@ import {
   ReasoningBlockSchema,
   ToolCallStateSchema,
   ActivityRefSchema,
+  DurableTurnNoticeSchema,
   InteractionSchema,
   type SubscriptionScope,
 } from './domains.js'
@@ -87,7 +88,7 @@ export const DurableEventSchema = z
         message: 'Event payload resources must belong to the event scope',
       })
     }
-    if (record.event.name === 'turn.notice') {
+    if (record.event.name === 'turn.notice' || record.event.name === 'turn.notice.cleared') {
       ctx.addIssue({
         code: 'custom',
         path: ['event', 'name'],
@@ -189,7 +190,12 @@ const ThreadSnapshotSchema = z
       messages: z.array(MessageSchema),
       reasoning: z.array(ReasoningBlockSchema),
       tools: z.array(ToolCallStateSchema),
-      /** Every message, reasoning block and tool of the thread, in the order they happened. */
+      /** Every durable notice of the thread; each is placed in `order`. */
+      notices: z.array(DurableTurnNoticeSchema),
+      /**
+       * Every message, reasoning block, tool and notice of the thread, in the
+       * order they happened.
+       */
       order: z.array(ActivityRefSchema),
       interactions: z.array(z.object({ turnId: EntityIdSchema, interaction: InteractionSchema })),
       /** What the provider offers this chat. */
@@ -216,6 +222,7 @@ const ThreadSnapshotSchema = z
       ...state.messages,
       ...state.reasoning,
       ...state.tools,
+      ...state.notices,
       ...state.interactions,
     ]
     // A reasoning block is filed under its own message id, distinct from the
@@ -327,9 +334,12 @@ export type SubscriptionEvent = z.infer<typeof SubscriptionEventSchema>
 
 /**
  * An event that is never stored: it has no cursor of its own and is not in
- * any replay or snapshot. Only `turn.notice` today.
+ * any replay or snapshot: a live notice, and the word that it is over.
  */
-export const TransientEventSchema = z.discriminatedUnion('name', [ProofEventSchemas['turn.notice']])
+export const TransientEventSchema = z.discriminatedUnion('name', [
+  ProofEventSchemas['turn.notice'],
+  ProofEventSchemas['turn.notice.cleared'],
+])
 export type TransientEvent = z.infer<typeof TransientEventSchema>
 
 /**

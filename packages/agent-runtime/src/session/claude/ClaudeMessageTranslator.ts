@@ -2,6 +2,8 @@ import type { SDKMessage } from '@anthropic-ai/claude-agent-sdk'
 import type {
   AvailableCommand,
   ContentBlock,
+  ProviderNotice,
+  ProviderProblem,
   SubtaskUpdate,
   TokenUsage,
   ToolCall,
@@ -21,6 +23,19 @@ import {
   claudeToolTitle,
   planUpdateFromTodoWrite,
 } from './claude-tools.js'
+import {
+  classifyClaudeFailure,
+  compactionNotice,
+  informationalNotice,
+  notificationNotice,
+  providerDetail,
+  recoveredErrorNotice,
+  refusalFallbackNotice,
+  refusalNotice,
+  retryProblem,
+  usageWarningNotice,
+  type ClaudeRateLimit,
+} from './claude-problems.js'
 
 /** What the runtime does with a translated message. `events` are forwarded
  * verbatim; `completed` is the turn-terminal *candidate* the runtime matches
@@ -49,6 +64,9 @@ export type TranslatedMessage = {
      * makes every cancelled job show up as broken. */
     interrupted: boolean
     usage?: TokenUsage
+    /** Why a failed turn failed, typed. Absent unless `isError` and not
+     * `interrupted`. */
+    problem?: ProviderProblem
   }
 }
 
@@ -111,6 +129,8 @@ export type ClaudeMessageTranslatorDeps = {
    * `AcpSessionRuntimeImpl.subtaskFromTool` invokes it. Absent for a provider
    * that does not classify subtasks. */
   subtasks?: SubtaskAdapter
+  /** Whether a turn is open. Absent means one always is. */
+  turnOpen?: () => boolean
 }
 
 /** SDK messages in, `BackendEvent`s out.
@@ -128,9 +148,11 @@ export type ClaudeMessageTranslatorDeps = {
  *   at 0 on every `message_start`, so a map keyed by index must die with the
  *   message. Carrying it over makes index 0 of the next message inherit the
  *   previous message's identity — text deltas mistaken for tool JSON.
- * - TURN-scoped (`usage`, the drop counter): reset only when a *top-level*
- *   result lands, because that is the only frame meaning "the user's turn is
- *   over". A subagent result must not zero the user's token counts.
+ * - TURN-scoped (`usage`, the drop counter, `apiError`, `refused`,
+ *   `shownNotices`): reset when a *top-level* result lands, the only frame
+ *   meaning "the user's turn is over", so a subagent result cannot zero the
+ *   user's token counts. Also reset by `beginTurn`, because a result nobody
+ *   waited for is dropped untranslated and cannot be relied on to clear them.
  * - SESSION-scoped (`toolNames`, `claimedSubtasks`, `contentFromInput`): a
  *   `tool_result` is correlated by `tool_use_id` and is not bounded by the
  *   message that opened the call, so those maps outlive both.
@@ -143,6 +165,7 @@ export class ClaudeMessageTranslator {
   private readonly route: () => BackendRoute
   private readonly log: Pick<HostDeps, 'log'>['log']
   private readonly subtasks: SubtaskAdapter | undefined
+  private readonly turnOpen: () => boolean
 
   // -- message-scoped ------------------------------------------------------
   private blocks = new Map<number, BlockState>()
@@ -156,6 +179,15 @@ export class ClaudeMessageTranslator {
    * silently discarded: without this the loss is invisible, and "the subagent's
    * work never appeared" is indistinguishable from "the subagent did nothing". */
   private droppedSubagentMessages = 0
+  /** A top-level assistant message the CLI flagged with `error`: its text is
+   * Claude Code's own "API Error: ..." line, not the model's reply, so it is
+   * held back and becomes the turn's typed failure (or a notice, if the turn
+   * recovers) instead of chat text. */
+  private apiError: { error: string; text: string } | undefined
+  /** The model declined this turn with no fallback to retry it. */
+  private refused = false
+  /** Notification lines already shown this turn; the CLI repeats them. */
+  private readonly shownNotices = new Set<string>()
 
   // -- session-scoped ------------------------------------------------------
   private readonly toolNames = new Map<string, string>()
@@ -167,11 +199,29 @@ export class ClaudeMessageTranslator {
    * a `tool_result` does not overwrite an accurate diff with raw output text —
    * the projector and the renderer both REPLACE `content` wholesale. */
   private readonly contentFromInput = new Set<string>()
+  /** The latest `rate_limit_info`: the only structured source of when a
+   * usage limit resets, read when a turn then fails on that limit. */
+  private rateLimit: ClaudeRateLimit | undefined
+  /** Limits already warned about, so each threshold is announced once per
+   * allowance window. */
+  private readonly warnedLimits = new Set<string>()
 
   constructor(deps: ClaudeMessageTranslatorDeps) {
     this.route = deps.route
     this.log = deps.log
     this.subtasks = deps.subtasks
+    this.turnOpen = deps.turnOpen ?? (() => true)
+  }
+
+  /** A new turn was dispatched. What the last one flagged, refused, showed or
+   * counted belongs to it: a result nobody waited for is dropped untranslated,
+   * so its settlement cannot be relied on to clear this. */
+  beginTurn(): void {
+    this.usage = emptyUsage()
+    this.droppedSubagentMessages = 0
+    this.apiError = undefined
+    this.refused = false
+    this.shownNotices.clear()
   }
 
   translate(message: SDKMessage): TranslatedMessage {
@@ -214,6 +264,8 @@ export class ClaudeMessageTranslator {
         return { events: this.systemMessage(message) }
       case 'result':
         return this.result(message)
+      case 'rate_limit_event':
+        return { events: this.rateLimitEvent(message) }
       default:
         // Members of the union carrying nothing the contract can express —
         // status banners, hook frames, task notifications, plugin installs.
@@ -432,6 +484,10 @@ export class ClaudeMessageTranslator {
   private assistantSnapshot(message: Extract<SDKMessage, { type: 'assistant' }>): BackendEvent[] {
     const content = object(message.message).content
     const blocks = Array.isArray(content) ? content : []
+    // `error` marks Claude Code's own synthetic message ("API Error: 529 ...",
+    // a usage-limit line): never streamed, and not the model's words. Text
+    // that did stream is left alone; the rest is held for the turn's outcome.
+    const flagged = string(object(message).error)
     const events: BackendEvent[] = []
     for (const raw of blocks) {
       const block = object(raw)
@@ -439,12 +495,26 @@ export class ClaudeMessageTranslator {
       const text = string(block.text)
       if (!text) continue
       if (this.claimStreamedText(text)) continue
+      if (flagged) {
+        const held = this.apiError?.text
+        this.apiError = { error: flagged, text: held ? `${held}\n${text}` : text }
+        continue
+      }
       events.push(
         routeEvent(this.route(), message.session_id, 'stream', 'agent_message_chunk', {
           messageId: message.uuid,
           content: { type: 'text', text },
         }),
       )
+    }
+    if (flagged) {
+      this.apiError ??= { error: flagged, text: '' }
+      this.log({
+        scope: 'claude',
+        level: 'info',
+        message: 'Claude Code flagged an assistant message as an API error',
+        data: { error: flagged },
+      })
     }
     return events
   }
@@ -550,6 +620,7 @@ export class ClaudeMessageTranslator {
               number(raw.attempt) ?? 0
             }/${number(raw.max_retries) ?? 0})`,
             recoverable: true,
+            problem: retryProblem(raw),
             ...(number(raw.error_status) !== undefined ? { code: number(raw.error_status) } : {}),
           }),
         ]
@@ -570,7 +641,46 @@ export class ClaudeMessageTranslator {
             postTokens: number(metadata.post_tokens),
           },
         })
-        return []
+        // A marker in the transcript: the turns above it are summarized.
+        return [this.notice(message.session_id, compactionNotice(raw))]
+      }
+      case 'status': {
+        if (raw.status === 'compacting') {
+          return [
+            this.notice(message.session_id, {
+              kind: 'compacting',
+              message: 'Compacting the conversation',
+            }),
+          ]
+        }
+        if (raw.compact_result !== 'failed') return []
+        const detail = string(raw.compact_error)
+        return [
+          this.notice(message.session_id, {
+            kind: 'warning',
+            message: 'The conversation could not be compacted',
+            ...(detail ? { detail } : {}),
+          }),
+        ]
+      }
+      case 'model_refusal_fallback':
+        // The refused partial stays on screen: the retracted uuids are SDK
+        // message ids the transcript does not keep.
+        return [this.notice(message.session_id, refusalFallbackNotice(raw))]
+      case 'model_refusal_no_fallback':
+        this.refused = true
+        return [this.notice(message.session_id, refusalNotice(raw))]
+      case 'informational': {
+        const notice = informationalNotice(raw)
+        return notice ? [this.notice(message.session_id, notice)] : []
+      }
+      case 'notification': {
+        const notice = notificationNotice(raw)
+        if (!notice) return []
+        const key = `${string(raw.key) ?? ''}:${notice.message}`
+        if (this.shownNotices.has(key)) return []
+        this.shownNotices.add(key)
+        return [this.notice(message.session_id, notice)]
       }
       case 'permission_denied': {
         // The auto-deny short circuit: a deny rule, `dontAsk`, or the auto-mode
@@ -601,20 +711,82 @@ export class ClaudeMessageTranslator {
   // ----------------------------------------------------------------- result
 
   private result(message: Extract<SDKMessage, { type: 'result' }>): TranslatedMessage {
+    const apiError = this.apiError
+    const refused = this.refused
     const usage = this.settleTurnUsage(message)
+    const isError = message.is_error === true || message.subtype !== 'success'
+    const interrupted = isInterrupted(message)
+    const raw = object(message)
+    const terminalReason = string(raw.terminal_reason)
+    const apiErrorStatus = number(raw.api_error_status)
+    // Claude Code's own words for the failure: its flagged message, else what
+    // the result says. An API error can arrive as subtype `success` with
+    // `is_error`, so the result's text counts there too. Logged by the host as
+    // the error text, and shown to the user under the typed reason.
+    const resultText =
+      message.subtype === 'success' ? (string(raw.result) ?? '') : (message.errors ?? []).join('\n')
+    const providerText = apiError?.text || resultText
+    const detail = providerDetail(providerText)
+    const classified =
+      isError && !interrupted
+        ? classifyClaudeFailure({
+            ...(apiError ? { apiError } : {}),
+            ...(terminalReason ? { terminalReason } : {}),
+            ...(message.stop_reason ? { stopReason: message.stop_reason } : {}),
+            ...(apiErrorStatus !== undefined ? { apiErrorStatus } : {}),
+            text: resultText,
+            ...(this.rateLimit ? { rateLimit: this.rateLimit } : {}),
+            refused,
+          })
+        : undefined
+    const problem = classified && detail ? { ...classified, detail } : classified
+    // A flagged message on a turn that went on to finish is still worth a
+    // line: its text was held back and would otherwise vanish.
+    const events =
+      apiError && !isError
+        ? [this.notice(message.session_id, recoveredErrorNotice(apiError.error, apiError.text))]
+        : []
     return {
-      events: [],
+      events,
       completed: {
         sessionId: message.session_id,
         ...(message.stop_reason ? { stopReason: message.stop_reason } : {}),
-        isError: message.is_error === true || message.subtype !== 'success',
-        interrupted: isInterrupted(message),
-        ...(message.subtype === 'success'
-          ? {}
-          : { errorText: message.errors?.join('; ') || message.subtype }),
+        isError,
+        interrupted,
+        ...(message.subtype !== 'success'
+          ? { errorText: message.errors?.join('; ') || apiError?.text || message.subtype }
+          : isError && providerText
+            ? { errorText: providerText }
+            : {}),
         ...(usage ? { usage } : {}),
+        ...(problem ? { problem } : {}),
       },
     }
+  }
+
+  /** `rate_limit_event`: remembered for a failure's reset time, and announced
+   * once per threshold when a limit is getting close. */
+  private rateLimitEvent(
+    message: Extract<SDKMessage, { type: 'rate_limit_event' }>,
+  ): BackendEvent[] {
+    const info = object(message.rate_limit_info)
+    this.rateLimit = info
+    if (string(info.status) !== 'allowed_warning') return []
+    // A notice belongs to a turn: with none open it would be dropped, and
+    // remembering it here would lose the warning for its whole window.
+    if (!this.turnOpen()) return []
+    // Keyed by the allowance window too: the same threshold in the next window
+    // is a new warning, not a repeat.
+    const key = [info.rateLimitType, info.surpassedThreshold, info.resetsAt]
+      .map((part) => (typeof part === 'string' || typeof part === 'number' ? part : ''))
+      .join(':')
+    if (this.warnedLimits.has(key)) return []
+    this.warnedLimits.add(key)
+    return [this.notice(message.session_id, usageWarningNotice(info))]
+  }
+
+  private notice(sessionId: string, notice: ProviderNotice): BackendEvent {
+    return routeEvent(this.route(), sessionId, 'session', 'provider_notice', notice)
   }
 
   /** Close the turn's books and reset the turn-scoped state.
@@ -636,6 +808,9 @@ export class ClaudeMessageTranslator {
     const accumulated = this.usage
     this.usage = emptyUsage()
     this.thinkingTokens = undefined
+    this.apiError = undefined
+    this.refused = false
+    this.shownNotices.clear()
     // The result's own `usage` is a fallback, not the primary source: a
     // streamed turn reports its tokens through `message_delta` and folding both
     // would double count. It matters for turns that stream nothing at all (a

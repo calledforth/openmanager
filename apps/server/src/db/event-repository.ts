@@ -9,6 +9,7 @@ import {
   type Cursor,
   type DurableEvent,
   type ProofEvent,
+  type TransientEvent,
   type SubscriptionScope,
   type SessionStatus,
 } from '@openmanager/protocol/node'
@@ -23,8 +24,8 @@ export type TerminalEvent = Extract<
   ProofEvent,
   { name: 'turn.completed' | 'turn.interrupted' | 'turn.failed' }
 >
-/** Events that receive durable cursors. `turn.notice` is transient and is never persisted. */
-export type DurableProofEvent = Exclude<ProofEvent, { name: 'turn.notice' }>
+/** Events that receive durable cursors. A transient event is never persisted. */
+export type DurableProofEvent = Exclude<ProofEvent, TransientEvent>
 
 export interface EventRepositoryOptions {
   epoch?: string
@@ -635,6 +636,7 @@ function eventTurnId(event: DurableProofEvent): string | undefined {
     case 'message.delta':
     case 'message.reasoning':
     case 'tool.updated':
+    case 'turn.notice.recorded':
     case 'interaction.requested':
     case 'interaction.resolved':
     case 'interaction.expired':

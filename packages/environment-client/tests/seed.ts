@@ -56,6 +56,7 @@ export function loadThread(
       messages: page.messages,
       reasoning: page.reasoning ?? [],
       tools: page.tools ?? [],
+      notices: [],
       order:
         page.order ??
         page.messages.map((message) => ({
