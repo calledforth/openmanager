@@ -271,7 +271,7 @@ describe('authenticated upgrade', () => {
     expect(plain.extensions).toBe('')
   })
 
-  it('deflates large messages, leaves small frames plain, and keeps their order up to a close', async () => {
+  it('deflates every message, small ones too, and keeps their order up to a close', async () => {
     const host = await setup()
     const client = await connect(host)
     await handshake(client)
@@ -280,21 +280,29 @@ describe('authenticated upgrade', () => {
       name: 'provider_health_changed',
       payload: { providerId, note: 'x'.repeat(size) },
     })
-    // RSV1 of each read from the wire: the first is a frame's first byte.
-    const deflated: boolean[] = []
+    // Each read from the wire: RSV1 of its first frame, and its size.
+    const reads: { deflated: boolean; bytes: number }[] = []
     const socket = (client.ws as unknown as { _socket: Socket })._socket
-    socket.prependListener('data', (chunk: Buffer) => deflated.push((chunk[0]! & 0x40) !== 0))
+    socket.prependListener('data', (chunk: Buffer) =>
+      reads.push({ deflated: (chunk[0]! & 0x40) !== 0, bytes: chunk.length }),
+    )
 
+    // The second small event repeats the first, and the context remembers it.
     host.server.sockets.deliver({ kind: 'broadcast', event: health('small', 10) })
     expect(await client.next()).toEqual(health('small', 10))
-    expect(deflated[0]).toBe(false)
-    deflated.length = 0
+    host.server.sockets.deliver({ kind: 'broadcast', event: health('small', 10) })
+    expect(await client.next()).toEqual(health('small', 10))
+    const [first, repeat] = reads
+    expect(first!.deflated).toBe(true)
+    expect(repeat!.deflated).toBe(true)
+    expect(repeat!.bytes).toBeLessThan(first!.bytes / 2)
+    reads.length = 0
     host.server.sockets.deliver({ kind: 'broadcast', event: health('large', 4096) })
     expect(await client.next()).toEqual(health('large', 4096))
-    expect(deflated[0]).toBe(true)
+    expect(reads[0]!.deflated).toBe(true)
 
-    // A deflated message, a plain frame right behind it and a close in one
-    // tick: both frames arrive, in that order, before the close.
+    // A large message, a small one right behind it and a close in one tick:
+    // both arrive, in that order, before the close.
     const closed = once(client.ws, 'close')
     host.server.sockets.deliver({ kind: 'broadcast', event: health('large', 4096) })
     host.server.sockets.deliver({ kind: 'broadcast', event: health('small', 10) })

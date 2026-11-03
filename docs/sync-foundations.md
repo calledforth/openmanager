@@ -2060,7 +2060,8 @@ closing a live connection or losing content.
 - **Old clients:** none; the version must match exactly.
 - **Compression** (`perMessageDeflate`, `apps/server/src/websocket.ts`) is on when the client
   offers it, and orthogonal to this: the writer and the client both count payload bytes, before
-  deflating and after inflating. Text under 1 KiB goes out plain.
+  deflating and after inflating. Every message is deflated, small ones too: the context carries
+  over between messages, so a small event mostly repeats the last one.
 - **Memory:** answers are held as one string or `Buffer`; fragments are `subarray` views.
 - **Test seams:**
   - the client's `WebSocketLike` (`environment-client/src/websocket.ts:92-100`) needs

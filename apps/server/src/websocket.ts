@@ -120,16 +120,12 @@ export const REVOKED_CLOSE_REASON = CLIENT_REVOKED_CLOSE_REASON
 /**
  * Offered in the handshake: a client that can't, or a proxy that drops the offer,
  * gets the same frames uncompressed. Level 1 keeps the cost near 230 KB per socket
- * and shrinks chat text about three times.
+ * and shrinks chat text about three times. Every message is deflated, small ones
+ * too: the context carries over between messages (`ws` ignores `threshold` while
+ * it does), so a small event mostly repeats what the last one said and shrinks
+ * to a few bytes.
  */
 const SOCKET_COMPRESSION = { zlibDeflateOptions: { level: 1 } }
-
-/**
- * Text under this goes out plain: it isn't worth a trip through zlib. `ws` has a
- * `threshold` option for this, but ignores it while messages share a deflate
- * context, and sharing one is what shrinks a message sent in fragments.
- */
-const COMPRESS_TEXT_FROM_BYTES = 1024
 
 /** Transport owns only live connection state. Durable event records come from the host. */
 export function attachWebSocket(
@@ -318,15 +314,12 @@ export function attachWebSocket(
       // inside the send window, large messages in rate-sized fragments. There
       // is no size-based close (docs/sync-foundations.md §7.2). `ws` deflates
       // off the main thread, so a send can leave later than it is made, but
-      // later frames and the close frame wait behind it. A fragment is a slice
-      // of a large message, so it is always deflated.
+      // later frames and the close frame wait behind it.
       const writer = createConnectionWriter({
         now,
         socket: {
           sendText: (text) => {
-            if (active && ws.readyState === WebSocket.OPEN) {
-              ws.send(text, { compress: text.length >= COMPRESS_TEXT_FROM_BYTES }, sent)
-            }
+            if (active && ws.readyState === WebSocket.OPEN) ws.send(text, sent)
           },
           sendBinary: (frame) => {
             if (active && ws.readyState === WebSocket.OPEN) ws.send(frame, { binary: true }, sent)
