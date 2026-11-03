@@ -351,6 +351,27 @@ async function connected(
 }
 
 describe('websocket environment client', () => {
+  it('has caught up only once the answer for the environment has landed, each connection', async () => {
+    const { client, socket, timers } = await connected()
+    expect(client.getState().connection).toMatchObject({ phase: 'connected', caughtUp: false })
+
+    await answerCatalog(socket)
+    await flush()
+    expect(client.getState().connection.caughtUp).toBe(true)
+
+    socket.drop()
+    timers.advance(1_000)
+    const next = FakeSocket.instances[1]!
+    next.open()
+    next.respond('protocol.handshake', bootstrap(FULL_CAPABILITIES))
+    await flush()
+    expect(client.getState().connection).toMatchObject({ phase: 'connected', caughtUp: false })
+
+    answerKept(next, lastReplay(next, 'environment')!, 'sub-env')
+    await flush()
+    expect(client.getState().connection.caughtUp).toBe(true)
+  })
+
   it('retains environment data and opens restored session scopes on a new replay-capable transport', async () => {
     const state = createInitialState()
     state.environment = { environmentId: ENV, name: 'Local' }
