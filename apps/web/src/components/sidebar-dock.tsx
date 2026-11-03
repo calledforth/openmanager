@@ -2,6 +2,7 @@ import { useNavigate } from '@tanstack/react-router'
 import { GearSixIcon } from '@phosphor-icons/react'
 import { useSidebar } from '@openmanager/app-core/components/fluid/ui/sidebar'
 import { UsageDockButton } from '@openmanager/app-core/components/usage/UsageLimits'
+import { useEnvironmentClientOptional } from '@openmanager/app-core/providers/environment-client'
 import { Tooltip } from '@openmanager/app-core/components/ui/Tooltip'
 import { cn } from '@openmanager/app-core/lib/utils'
 
@@ -29,15 +30,21 @@ export function SidebarDock({ pathname }: { pathname: string }) {
     void navigate({ to })
   }
   const onUsage = pathname === '/usage'
+  // Usage is the open environment's. With none open (its token refused, or
+  // offline with nothing kept) the sidebar still lists the others, and the
+  // dock offers what needs no environment.
+  const open = useEnvironmentClientOptional() !== null
   const onSettings = pathname === '/settings'
   return (
     <nav aria-label="Primary" className="flex px-1 pb-0.5">
       <div className="inline-flex items-center gap-0.5 rounded-[12px] bg-float p-[3px] shadow-float-rest">
-        <UsageDockButton
-          active={onUsage}
-          onOpenPage={() => go('/usage')}
-          className={dockButtonClass(onUsage)}
-        />
+        {open ? (
+          <UsageDockButton
+            active={onUsage}
+            onOpenPage={() => go('/usage')}
+            className={dockButtonClass(onUsage)}
+          />
+        ) : null}
         <Tooltip content="Settings">
           <button
             type="button"

@@ -1,5 +1,6 @@
 import { useCallback, useState, type FormEvent } from 'react'
 import type { EnvironmentClient } from '@openmanager/environment-client'
+import { useFailureNamer } from '@openmanager/app-core/providers/environment-availability'
 import { AddProjectPalette } from '@openmanager/app-core/components/workspace/AddProjectPalette'
 import { Button } from '@openmanager/app-core/components/fluid/ui/button'
 import {
@@ -111,6 +112,7 @@ function AddWorkspaceForm({
 }) {
   const [path, setPath] = useState('')
   const [error, setError] = useState<string | null>(null)
+  const nameFailure = useFailureNamer()
 
   const submit = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault()
@@ -127,7 +129,7 @@ function AddWorkspaceForm({
       onClose()
       onAdded?.(workspace.workspaceId)
     } catch (err) {
-      setError(err instanceof Error ? err.message : String(err))
+      setError(nameFailure(err instanceof Error ? err.message : String(err)))
       setBusy(false)
     }
   }

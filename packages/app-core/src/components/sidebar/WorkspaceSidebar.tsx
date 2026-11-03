@@ -61,6 +61,7 @@ function useWorkspaceSidebarModel(closeSheet: MutableRefObject<() => void>) {
     activeWorkspacePath,
     activeSessionId,
     addWorkspace,
+    addWorkspaceDisabled,
     selectSession,
     createSession,
     renameSession,
@@ -73,7 +74,8 @@ function useWorkspaceSidebarModel(closeSheet: MutableRefObject<() => void>) {
   const drafts = useSidebarDrafts()
   const listed = useSidebarEnvironments()
   const others = listed?.others
-  const providerLabel = useContext(PlatformCapabilitiesContext)?.providerDisplayName
+  const providerLabel =
+    useContext(PlatformCapabilitiesContext)?.providerDisplayName ?? listed?.providerDisplayName
   const visible = useDocumentVisible()
   // On a phone the sidebar is a sheet over the page: going somewhere from it
   // (a session, a draft, a new agent, Add project) closes it, so what was
@@ -151,6 +153,7 @@ function useWorkspaceSidebarModel(closeSheet: MutableRefObject<() => void>) {
         }
       : {}),
     onAddWorkspace: away(() => void addWorkspace()),
+    addWorkspaceDisabled,
     providerLabel,
   }
 }

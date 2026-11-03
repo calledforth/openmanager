@@ -547,18 +547,25 @@ type StatusMoment = { tone: SessionBusyTone; key: number }
  * Changes are events, not only states: when a session finishes, asks, or
  * fails while the sidebar is watching, mark it once. What the card already
  * showed when it first rendered is left alone, so opening the app is quiet.
+ *
+ * While its environment is offline the card shows no status, and what it last
+ * had is kept: coming back with the same status is no news, a new one still is.
  */
-function useStatusMoment(tone: SessionBusyTone | null): StatusMoment | null {
+function useStatusMoment(tone: SessionBusyTone | null, offline = false): StatusMoment | null {
   const previous = useRef(tone)
   const [moment, setMoment] = useState<StatusMoment | null>(null)
   useEffect(() => {
+    if (offline) {
+      setMoment(null)
+      return
+    }
     if (previous.current === tone) return
     previous.current = tone
     // Work going on, in a turn or behind one, is not news.
     setMoment(
       tone && tone !== 'working' && tone !== 'background' ? { tone, key: Date.now() } : null,
     )
-  }, [tone])
+  }, [offline, tone])
   return moment
 }
 
@@ -699,6 +706,8 @@ export interface WorkspaceSidebarViewProps {
   /** Absent when drafts cannot be discarded here; the card offers no discard. */
   onDiscardDraft?: (draftId: string, options?: DraftDiscardOptions) => void
   onAddWorkspace: () => void
+  /** There is nowhere to add a project just now. */
+  addWorkspaceDisabled?: boolean
   /** The name a provider goes by; the raw id when the host has no catalog. */
   providerLabel?: (providerId: ProviderId) => string
   /** Above the header: a frameless window's drag strip, for one. */
@@ -730,6 +739,7 @@ export function WorkspaceSidebarView({
   onOpenDraft: requestOpenDraft,
   onDiscardDraft: requestDiscardDraft,
   onAddWorkspace,
+  addWorkspaceDisabled = false,
   providerLabel,
   titlebar,
   footer,
@@ -893,6 +903,7 @@ export function WorkspaceSidebarView({
         newThreadEnvironmentId={elsewhere?.environmentId}
         onCreateSession={onCreateSessionStable}
         onAddWorkspace={onAddWorkspaceStable}
+        addWorkspaceDisabled={addWorkspaceDisabled}
       />
       <SidebarContent>
         {workspaces.length === 0 ? (
@@ -1107,12 +1118,14 @@ function SidebarActions({
   newThreadEnvironmentId,
   onCreateSession,
   onAddWorkspace,
+  addWorkspaceDisabled,
 }: {
   newThreadTarget: string | null
   /** Set when that project is another environment's. */
   newThreadEnvironmentId?: string
   onCreateSession: (workspacePath: string, environmentId?: string) => void
   onAddWorkspace: () => void
+  addWorkspaceDisabled: boolean
 }) {
   return (
     <SidebarHeader>
@@ -1129,7 +1142,11 @@ function SidebarActions({
           </SidebarMenuButton>
         </SidebarMenuItem>
         <SidebarMenuItem>
-          <SidebarMenuButton icon={AddProjectIcon} onClick={onAddWorkspace}>
+          <SidebarMenuButton
+            icon={AddProjectIcon}
+            disabled={addWorkspaceDisabled}
+            onClick={onAddWorkspace}
+          >
             Add project
           </SidebarMenuButton>
         </SidebarMenuItem>
@@ -1488,12 +1505,33 @@ function UnsentMark() {
   )
 }
 
+/** Said for an offline environment's row: what's on it is from the last time it was seen. */
+const offlineExplanation = (name: string) => `${name} is offline. This is what was last seen.`
+
+/** The word beside an offline environment's name. It stays when the name truncates. */
+function OfflineWord() {
+  return <span className="shrink-0">· offline</span>
+}
+
 /**
  * The environment a card is on, when there is more than one to tell apart:
  * set quietly at the foot of the card, opposite what the card is about. Screen
  * readers get it with the card's title.
  */
-function EnvironmentName({ name }: { name: string }) {
+function EnvironmentName({ environment }: { environment: SidebarRowEnvironment }) {
+  const { name, offline } = environment
+  if (offline) {
+    return (
+      <span
+        aria-hidden
+        className="ml-auto flex min-w-0 max-w-[65%] shrink-0 items-center gap-1 pl-1"
+        title={offlineExplanation(name)}
+      >
+        <span className="min-w-0 truncate">{name}</span>
+        <OfflineWord />
+      </span>
+    )
+  }
   return (
     <span aria-hidden className="ml-auto min-w-0 max-w-[55%] shrink-0 truncate pl-1" title={name}>
       {name}
@@ -1510,7 +1548,9 @@ function rowEnvironmentOf(
   const environment = environmentId ? rowEnvironments?.[environmentId] : undefined
   return {
     environment,
-    spokenName: environment?.name ?? environmentLabel,
+    spokenName: environment?.offline
+      ? `${environment.name}, offline`
+      : (environment?.name ?? environmentLabel),
     // What the row's environment says, or the host's one answer for every row.
     iconLookup: rowEnvironments ? (environment?.iconLookup ?? null) : undefined,
   }
@@ -1547,8 +1587,12 @@ function SessionCardBody({
   const select = () =>
     onSelectSession(workspace.path, session.externalId, providerId, environmentId)
   const providerName = providerLabel?.(providerId) ?? providerId
-  const tone = sessionBusyTone(session.status, session)
-  const moment = useStatusMoment(tone)
+  // What an offline environment's session was last doing isn't what it's doing
+  // now: its card rests and says how old it is.
+  const offline = environment?.offline === true
+  const lastSeen = sessionBusyTone(session.status, session)
+  const tone = offline ? null : lastSeen
+  const moment = useStatusMoment(lastSeen, offline)
   // Live work cannot be settled, so its status has nothing to make room for.
   const hasActions =
     Boolean(settleHere) &&
@@ -1627,7 +1671,7 @@ function SessionCardBody({
           <span className="truncate">{git.branch ?? 'detached'}</span>
         </span>
       ) : null}
-      {environment ? <EnvironmentName name={environment.name} /> : null}
+      {environment ? <EnvironmentName environment={environment} /> : null}
     </span>
   )
 
@@ -1686,6 +1730,7 @@ function SessionCardBody({
                 selected={selected}
                 now={now}
                 onSelectSession={onSelectSession}
+                offline={environment?.offline}
               />
             ))}
           </div>
@@ -1941,7 +1986,7 @@ function DraftCardBody({
           <span className="truncate">{git.branch ?? 'detached'}</span>
         </span>
       ) : null}
-      {environment ? <EnvironmentName name={environment.name} /> : null}
+      {environment ? <EnvironmentName environment={environment} /> : null}
       {/* The composer's "Not synced", made quiet: the mark, and its reason on hover. */}
       {unsynced ? (
         <Tooltip content={unsynced}>
@@ -2049,11 +2094,16 @@ function ChildRow({
   selected,
   now,
   onSelectSession,
-}: Pick<RowHandlers, 'selected' | 'now' | 'onSelectSession'> & { row: SidebarBoardRow }) {
+  offline,
+}: Pick<RowHandlers, 'selected' | 'now' | 'onSelectSession'> & {
+  row: SidebarBoardRow
+  /** Its environment is offline, so this is its last known state. */
+  offline?: boolean
+}) {
   const { session, workspace, depth } = row
   const providerId = session.providerId
   const isActive = session.externalId === selected
-  const tone = sessionBusyTone(session.status, session)
+  const tone = offline ? null : sessionBusyTone(session.status, session)
   return (
     // Buttons inherit their font, so the size is set on the wrapper.
     <div role="listitem" className="text-[13px]">
@@ -2086,7 +2136,20 @@ function ChildRow({
 const MotionMenuItem = motion.create(SidebarMenuItem)
 
 /** The environment of a settled row: a one-line row, so it follows the title. */
-function SettledEnvironmentName({ name }: { name: string }) {
+function SettledEnvironmentName({ environment }: { environment: SidebarRowEnvironment }) {
+  const { name, offline } = environment
+  if (offline) {
+    return (
+      <span
+        aria-hidden
+        className="flex min-w-0 max-w-[55%] shrink-0 items-center gap-1 text-[12px] text-faint"
+        title={offlineExplanation(name)}
+      >
+        <span className="min-w-0 truncate">{name}</span>
+        <OfflineWord />
+      </span>
+    )
+  }
   return (
     <span
       aria-hidden
@@ -2118,7 +2181,7 @@ function SettledRow({
     environmentLabel,
   )
   const settleHere = !rowEnvironments || environment?.canSettle ? onSettleSession : undefined
-  const tone = sessionBusyTone(session.status, session)
+  const tone = environment?.offline ? null : sessionBusyTone(session.status, session)
   const isActive = session.externalId === selected
   // Settled work can still hold a reply the user started: the active cards' mark.
   const unsent = Boolean(session.hasUnsentDraft) && !isActive
@@ -2136,7 +2199,7 @@ function SettledRow({
         <span className="truncate">{session.title || 'New session'}</span>
         {unsent ? <UnsentMark /> : null}
         {/* Under a parent, its subagents go without: they are on the same one. */}
-        {environment && depth === 0 ? <SettledEnvironmentName name={environment.name} /> : null}
+        {environment && depth === 0 ? <SettledEnvironmentName environment={environment} /> : null}
         <span className="sr-only">
           {' '}
           in {workspace.name}

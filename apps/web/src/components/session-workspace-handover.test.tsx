@@ -8,7 +8,7 @@ vi.mock('@openmanager/app-core/components/chat/ChatWorkspace', () => ({
   ChatWorkspace: () => <p>chat</p>,
 }))
 vi.mock('../providers/connection-provider', () => ({
-  useConnection: () => ({ ui: { kind: 'ready' } }),
+  useConnection: () => ({ ui: { kind: 'ready' }, environments: [] }),
 }))
 vi.mock('@tanstack/react-router', () => {
   const navigate = vi.fn()
