@@ -190,10 +190,10 @@ type ConnectionValue = {
   replaceCredential: (environmentId: string, credential: string) => void
   /**
    * Save the credential a pairing exchange answered with, reached through the
-   * link's route, select that environment and connect to it. Returns false,
-   * saving nothing, when the environment already has a credential here: a
-   * pairing link never replaces one. A device that has one redeems the link
-   * over its own socket instead.
+   * link's route, and connect to it beside whatever is connected already. It
+   * is selected only if nothing is. Returns false, saving nothing, when the
+   * environment already has a credential here: a pairing link never replaces
+   * one. A device that has one redeems the link over its own socket instead.
    */
   addPairedEnvironment: (input: {
     environmentId: string
@@ -1305,9 +1305,13 @@ export function ConnectionProvider({
         ? undefined
         : findStoredEnvironment(readEnvironmentRegistry().environments, input.environmentId)
       if (inMemory?.credential || persisted?.credential) return false
-      const next = update((current) => upsertStoredEnvironment(current, { ...input, endpoint }))
+      const staying = registryRef.current.selectedId
+      const next = update((current) => {
+        const added = upsertStoredEnvironment(current, { ...input, endpoint })
+        return added && staying ? { ...added, selectedId: staying } : added
+      })
       if (!next) return false
-      abandonPendingConnect()
+      if (!staying) abandonPendingConnect()
       forgottenRoutes.current.delete(routeKey(input.environmentId, endpoint))
       startOver(input.environmentId, endpoint)
       return true
