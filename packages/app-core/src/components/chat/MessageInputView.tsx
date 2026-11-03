@@ -379,6 +379,8 @@ export interface MessageInputViewProps {
   /** Why this draft cannot be sent as it stands (its provider or project is
    * unavailable). Send is held, and the reason shown, until it clears. */
   sendBlockedReason?: string | null
+  /** Says whose failure this is, on a host with more than one environment to mean. */
+  nameFailure?: (message: string) => string
   slashCommands?: SlashCommandItem[]
   usage?: ComposerUsage | null
   onModeChange: (id: string) => void
@@ -427,6 +429,7 @@ export function useMessageInputController({
   imageUploadEnabled,
   imageSupportMessage,
   sendBlockedReason = null,
+  nameFailure,
   slashCommands = [],
   onConfigOptionChange,
   onSend,
@@ -936,7 +939,8 @@ export function useMessageInputController({
           ...active.filter((artifactId) => !restoreImages.includes(artifactId)),
         ])
       }
-      setAttachmentError(error instanceof Error ? error.message : 'Failed to send message')
+      const message = error instanceof Error ? error.message : 'Failed to send message'
+      setAttachmentError(nameFailure ? nameFailure(message) : message)
     } finally {
       setSending(false)
     }

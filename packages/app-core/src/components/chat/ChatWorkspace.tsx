@@ -10,6 +10,7 @@ import { useState, type ReactNode } from 'react'
 import { noticeAnchorRef } from '../../lib/notice-anchors'
 import { cn } from '../../lib/utils'
 import { describeUnavailableWorkspace } from '../../lib/workspace-availability'
+import { useFailureNamer } from '../../providers/environment-availability'
 import {
   useEnvironmentClientOptional,
   useEnvironmentState,
@@ -32,6 +33,7 @@ function SessionOpenBoundary({ children }: { children: ReactNode }) {
   const [confirmingSessionId, setConfirmingSessionId] = useState<string | null>(null)
   const [deleting, setDeleting] = useState(false)
   const [deleteError, setDeleteError] = useState<string | null>(null)
+  const nameFailure = useFailureNamer()
   if (!failure) return children
   // The folder, not the request, is what has to change, so the pane explains
   // the on-disk fix and still offers a way out that does not need the folder.
@@ -60,7 +62,7 @@ function SessionOpenBoundary({ children }: { children: ReactNode }) {
                 : 'Could not open session'}
           </h2>
           {workspace ? <p className="break-all font-mono text-ui-xs">{workspace.path}</p> : null}
-          <p>{failure.message}</p>
+          <p>{nameFailure(failure.message)}</p>
           {unavailable ? (
             <p>
               {cause.reason} {cause.fix}
@@ -112,7 +114,9 @@ function SessionOpenBoundary({ children }: { children: ReactNode }) {
                     // A refused delete leaves the session listed, so say so
                     // instead of resetting the button as if it had worked.
                     setDeleteError(
-                      error instanceof Error ? error.message : 'Could not delete this session.',
+                      nameFailure(
+                        error instanceof Error ? error.message : 'Could not delete this session.',
+                      ),
                     )
                   })
                   .finally(() => setDeleting(false))

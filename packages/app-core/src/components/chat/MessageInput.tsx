@@ -3,6 +3,10 @@ import type { ProviderId } from '@agentpack/contract'
 import { deriveSessionChrome } from '@agentpack/view'
 import { providerBlocksComposer, usePlatformCapabilities } from '../../providers/platform-provider'
 import { useSessionState } from '../../providers/session-provider'
+import {
+  useEnvironmentAvailability,
+  useFailureNamer,
+} from '../../providers/environment-availability'
 import { useComposerState } from '../../providers/composer-provider'
 import { useActiveThreadState } from '../../providers/active-thread-provider'
 import { useQuestionStateOptional } from '../../providers/question-provider'
@@ -410,12 +414,16 @@ export function useMessageInputBinding() {
   // the pick stands, and the send waits for it or for another pick. Only a
   // provider known to be down holds it; one being checked does not.
   const draftProviderStatus = agentUiStatusByProvider[currentProviderId]
+  const availability = useEnvironmentAvailability()
+  const nameFailure = useFailureNamer()
+  // What is typed stays either way: only the send waits.
   const sendBlockedReason =
-    activeSessionId || !isSessionDraftOpen
+    availability?.sendBlockedReason ??
+    (activeSessionId || !isSessionDraftOpen
       ? null
       : draftProviderStatus !== 'probing' && providerBlocksComposer(draftProviderStatus)
         ? `${currentProviderName} is unavailable. Pick another model, or retry it from Settings.`
-        : null
+        : null)
   const imageSupportMessage = !canUploadImages
     ? 'Image prompts are not available on this host.'
     : providerImageSupport === undefined
@@ -492,8 +500,9 @@ export function useMessageInputBinding() {
       modelImageSupport !== false &&
       modelImageSupport !== undefined,
     imageSupportMessage,
-    settingsError: composerError,
+    settingsError: composerError ? nameFailure(composerError) : composerError,
     sendBlockedReason,
+    nameFailure,
     slashCommands,
     usage,
     onModeChange: (id) => {
