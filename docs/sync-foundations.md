@@ -2068,8 +2068,10 @@ closing a live connection or losing content.
   4.6 hours. It is delivered intact: beats keep the server's side alive, about 600 B fragments
   every 2 s keep the watchdog alive, and the window paces it.
 - **Old clients:** none; the version must match exactly.
-- **Compression** (`perMessageDeflate` is off, `websocket.ts:118`) is a possible measured
-  follow-up, orthogonal to this.
+- **Compression** (`perMessageDeflate`, `apps/server/src/websocket.ts`) is on when the client
+  offers it, and orthogonal to this: the writer and the client both count payload bytes, before
+  deflating and after inflating. Every message is deflated, small ones too: the context carries
+  over between messages, so a small event mostly repeats the last one.
 - **Memory:** answers are held as one string or `Buffer`; fragments are `subarray` views.
 - **Test seams:**
   - the client's `WebSocketLike` (`environment-client/src/websocket.ts:92-100`) needs

@@ -117,6 +117,16 @@ function readingKey(event: { name: string; payload?: unknown }): string {
 export const REVOKED_CLOSE_CODE = CLIENT_REVOKED_CLOSE_CODE
 export const REVOKED_CLOSE_REASON = CLIENT_REVOKED_CLOSE_REASON
 
+/**
+ * Offered in the handshake: a client that can't, or a proxy that drops the offer,
+ * gets the same frames uncompressed. Level 1 keeps the cost near 230 KB per socket
+ * and shrinks chat text about three times. Every message is deflated, small ones
+ * too: the context carries over between messages (`ws` ignores `threshold` while
+ * it does), so a small event mostly repeats what the last one said and shrinks
+ * to a few bytes.
+ */
+const SOCKET_COMPRESSION = { zlibDeflateOptions: { level: 1 } }
+
 /** Transport owns only live connection state. Durable event records come from the host. */
 export function attachWebSocket(
   server: Server,
@@ -158,7 +168,7 @@ export function attachWebSocket(
   const wss = new WebSocketServer({
     noServer: true,
     maxPayload: SOCKET_LIMITS.maxPayloadBytes,
-    perMessageDeflate: false,
+    perMessageDeflate: SOCKET_COMPRESSION,
     handleProtocols: (protocols) => (protocols.has('openmanager.v1') ? 'openmanager.v1' : false),
   })
   type Connection = {
@@ -302,7 +312,9 @@ export function attachWebSocket(
       }
       // Everything this connection sends goes through its writer: in order,
       // inside the send window, large messages in rate-sized fragments. There
-      // is no size-based close (docs/sync-foundations.md §7.2).
+      // is no size-based close (docs/sync-foundations.md §7.2). `ws` deflates
+      // off the main thread, so a send can leave later than it is made, but
+      // later frames and the close frame wait behind it.
       const writer = createConnectionWriter({
         now,
         socket: {
@@ -873,6 +885,8 @@ export function attachWebSocket(
     /**
      * Stop serving a client's sockets at once, because its grant changed, and
      * close them with `code` after the replies already queued have gone out.
+     * A frame read after that is refused; one still being inflated when the
+     * socket closes is never answered, and the client fails it on the close.
      */
     retireClient(clientId: string, code: number, reason: string) {
       retiring.add(clientId)
