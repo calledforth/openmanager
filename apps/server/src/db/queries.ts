@@ -133,7 +133,7 @@ export const PENDING_INTERACTIONS_FOR_THREAD_SQL = `
 /** Every session, newest first: the environment snapshot's sidebar. */
 export const ALL_SESSIONS_SQL = `
   SELECT session_id, workspace_id, parent_session_id, provider_id, title, title_source, title_generated, status,
-         composer_json, background_tasks_json, settled_at, done_at, created_at, updated_at
+         composer_json, background_tasks_json, settled_at, pinned_at, done_at, created_at, updated_at
   FROM sessions
   ORDER BY updated_at DESC, session_id DESC`
 

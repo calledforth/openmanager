@@ -102,6 +102,8 @@ export function createEventProjector(
     updateSessionSettled: database.prepare(
       'UPDATE sessions SET settled_at = ? WHERE session_id = ?',
     ),
+    // Only the user moves it, so no activity or settling touches this column.
+    updateSessionPinned: database.prepare('UPDATE sessions SET pinned_at = ? WHERE session_id = ?'),
     // Work that needs the user brings a settled session back to the active list.
     unsettleSession: database.prepare(
       'UPDATE sessions SET settled_at = NULL WHERE session_id = ? AND settled_at IS NOT NULL',
@@ -591,6 +593,13 @@ export function createEventProjector(
             event.payload.settledAt === null ? null : Date.parse(event.payload.settledAt)
           if (s.updateSessionSettled.run(settledAt, event.payload.sessionId).changes !== 1) {
             throw new ProjectionRefusal(`Cannot settle missing session ${event.payload.sessionId}`)
+          }
+        }
+        if (event.payload.pinnedAt !== undefined) {
+          const pinnedAt =
+            event.payload.pinnedAt === null ? null : Date.parse(event.payload.pinnedAt)
+          if (s.updateSessionPinned.run(pinnedAt, event.payload.sessionId).changes !== 1) {
+            throw new ProjectionRefusal(`Cannot pin missing session ${event.payload.sessionId}`)
           }
         }
         if (event.payload.doneAt !== undefined) {

@@ -751,15 +751,26 @@ describe('pairing through the environment server', () => {
 
     // A downgrade with a privileged frame right behind it, in one write: the
     // second frame is refused, not served under the grant the redeem replaced.
+    // Both go plain on a compressed socket, as a phone's small commands do
+    // (OkHttp deflates from 1 KiB): a deflated frame is written and read off
+    // the main thread, so cork can't hold it in one write. The next test
+    // covers deflated frames.
+    expect(again.ws.extensions).toContain('permessage-deflate')
     const narrower = owner.command('pairing.create', { capabilities: ['read'] })
     const third = PairingResponseSchemas['pairing.create'].parse(
       await nextResponse(owner, narrower),
     ).payload.token
     const socket = (again.ws as unknown as { _socket: Socket })._socket
     const reclosed = once(again.ws, 'close')
+    const sendPlain = (requestId: string, name: string, payload: unknown) => {
+      again.ws.send(JSON.stringify({ type: 'command', requestId, name, payload }), {
+        compress: false,
+      })
+      return requestId
+    }
     socket.cork()
-    const downgradeId = again.command('pairing.redeem', { token: third })
-    const behindId = again.command('workspace.remove', { workspaceId: 'any' })
+    const downgradeId = sendPlain('downgrade', 'pairing.redeem', { token: third })
+    const behindId = sendPlain('behind', 'workspace.remove', { workspaceId: 'any' })
     socket.uncork()
     expect(await nextResponse(again, downgradeId)).toMatchObject({
       type: 'response',
@@ -770,6 +781,44 @@ describe('pairing through the environment server', () => {
       error: { code: 'auth' },
     })
     expect(((await reclosed) as [number])[0]).toBe(GRANT_CHANGED_CLOSE_CODE)
+  })
+
+  it('never serves a deflated frame behind a downgrade under the replaced grant', async () => {
+    const host = await startProtocolHost()
+    const owner = await connectProtocol(host)
+    await handshake(owner)
+    const link = async (capabilities: AccessCapability[]) => {
+      const id = owner.command('pairing.create', { capabilities })
+      const created = PairingResponseSchemas['pairing.create'].parse(await nextResponse(owner, id))
+      return created.payload.token
+    }
+    const exchanged = await fetch(`${host.server.url}${PAIRING_EXCHANGE_PATH}`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ token: await link(['read', 'operate']) }),
+    })
+    const paired = PairingExchangeResponseSchema.parse(await exchanged.json())
+    const device = await connectProtocol({ ...host, token: paired.credential })
+    await handshake(device)
+    const token = await link(['read'])
+
+    // A browser deflates every frame, and the server inflates each one after
+    // the last. The socket can close before this frame is read, so it may get
+    // a refusal or nothing. What it can't get is served: the grant it needs is
+    // gone, and the workspace is still there.
+    const closed = once(device.ws, 'close')
+    const redeemId = device.command('pairing.redeem', { token })
+    const behindId = device.command('workspace.remove', { workspaceId: host.workspaceId })
+    expect(await nextResponse(device, redeemId)).toMatchObject({
+      type: 'response',
+      payload: { grant: ['read'], grantChanged: true },
+    })
+    const answer = await Promise.race([nextResponse(device, behindId), closed.then(() => null)])
+    if (answer) expect(answer).toMatchObject({ type: 'error', error: { code: 'auth' } })
+    expect(((await closed) as [number])[0]).toBe(GRANT_CHANGED_CLOSE_CODE)
+    expect(host.server.workspaces.list().map((workspace) => workspace.workspaceId)).toContain(
+      host.workspaceId,
+    )
   })
 
   it('answers a command whose service throws and keeps serving the socket', async () => {

@@ -45,6 +45,7 @@ function useWorkspaceSidebarModel(closeSheet: MutableRefObject<() => void>) {
     createSession,
     renameSession,
     settleSession,
+    pinSession,
     deleteSession,
     acknowledgeSessionDone,
   } = useSidebarData()
@@ -105,6 +106,10 @@ function useWorkspaceSidebarModel(closeSheet: MutableRefObject<() => void>) {
     // The host shows the move at once and puts it back if this rejects.
     onSettleSession: settleSession
       ? (path: string, id: string, settled: boolean) => settleSession(path, id, settled)
+      : undefined,
+    // Likewise.
+    onPinSession: pinSession
+      ? (path: string, id: string, pinned: boolean) => pinSession(path, id, pinned)
       : undefined,
     onDeleteSession: (...args: Parameters<typeof deleteSession>) => void deleteSession(...args),
     ...(drafts

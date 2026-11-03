@@ -4,7 +4,7 @@
  * Every scenario reads what crossed the wire, so "resumed" is never assumed.
  */
 import { describe, expect } from 'vitest'
-import { cacheState } from '@openmanager/environment-client'
+import { cacheState, forgetCursors } from '@openmanager/environment-client'
 import type { ProviderOp } from './child-protocol.ts'
 import { expectConverges } from './evidence.ts'
 import { Driver, until, type EnvironmentState, type Rig, type TestClient } from './harness.ts'
@@ -408,6 +408,49 @@ describe('kept cursors', () => {
     rig.proxy.heal()
     await expectConverges('KC10', rig, reloaded)
     expect(JSON.stringify(thread(reloaded, target)?.messages).match(/Held send/g)).toHaveLength(1)
+  })
+
+  scenario('KC11 a copy from another event format keeps a held send and heals', {}, async (rig) => {
+    const a = await rig.connect('A')
+    const { target, other } = await twoChats(rig, a)
+    await a.client.commands.pinSession(other.sessionId, true)
+    await rig.settle()
+    await a.client.commands.openSession(other.sessionId)
+    await rig.settle()
+    rig.proxy.latency(400)
+    void a.client.commands.openSession(target.sessionId).catch(() => undefined)
+    await untilThread(a, target, (state) => state.hydration === 'loading', 'the chat to reopen')
+    void a.client.commands.sendTurn({ ...target, text: 'Held send' }).catch(() => undefined)
+    await untilThread(
+      a,
+      target,
+      (state) => state.outbox.some((entry) => entry.status === 'held'),
+      'the send to be held',
+    )
+    // The copy an older build left: it ignored the pin, and its cursor moved
+    // past the event all the same. The chat left closed is the one to watch:
+    // opening a chat restates its summary, so only a snapshot can bring this.
+    const reloaded = await rig.reload(a, 'proxy', 'connected', (cached) => {
+      const { pinnedAt: _ignored, ...session } = cached.sessions[other.sessionId]!
+      return forgetCursors({
+        ...cached,
+        sessions: { ...cached.sessions, [other.sessionId]: session },
+      })
+    })
+    expect(thread(reloaded, target)?.outbox).toMatchObject([{ text: 'Held send', status: 'held' }])
+    await untilThread(
+      reloaded,
+      target,
+      (state) => JSON.stringify(state.messages).includes('Held send') && state.outbox.length === 0,
+      'the held send to reach the chat',
+      30_000,
+    )
+    rig.proxy.heal()
+    await expectConverges('KC11', rig, reloaded)
+    expect(JSON.stringify(thread(reloaded, target)?.messages).match(/Held send/g)).toHaveLength(1)
+    expect(reloaded.client.getState().sessions[other.sessionId]?.pinnedAt).toEqual(
+      expect.any(String),
+    )
   })
 
   scenario('KC9 a notice does not outlive a replay', {}, async (rig) => {

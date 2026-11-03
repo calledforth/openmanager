@@ -931,6 +931,22 @@ export const MIGRATIONS: readonly Migration[] = [
   },
   {
     version: 24,
+    name: 'session_pinned_at',
+    up(database) {
+      const columns = new Set(
+        (database.prepare('PRAGMA table_info(sessions)').all() as { name: string }[]).map(
+          (column) => column.name,
+        ),
+      )
+      if (!columns.has('pinned_at')) {
+        // When the user pinned the session, projected from `session.updated`.
+        // Null while it is not pinned; only the user changes it.
+        database.exec('ALTER TABLE sessions ADD COLUMN pinned_at INTEGER')
+      }
+    },
+  },
+  {
+    version: 25,
     name: 'tool_output',
     up(database) {
       // A tool's text, apart from its row: rows go to every client in a

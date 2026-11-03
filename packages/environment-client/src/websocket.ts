@@ -77,6 +77,7 @@ import {
   dropOverlayEntry,
   dropPreferenceRequest,
   preferenceKey as overlayPreferenceKey,
+  pinAnswered,
   settleAnswered,
   updateOverlay,
 } from './overlay'
@@ -1791,6 +1792,24 @@ export function createWebSocketEnvironmentClient(
         throw error
       }
       store.update((state) => settleAnswered(state, sessionId, ticket))
+    },
+    async pinSession(sessionId, pinned) {
+      // As with a settle: the card moves at once, and the latest click owns
+      // what it shows until server state agrees.
+      const ticket = nextTicket()
+      store.update((state) =>
+        updateOverlay(state, 'pins', (entries) => ({
+          ...entries,
+          [sessionId]: { ticket, pinned, inFlight: true, at: new Date().toISOString() },
+        })),
+      )
+      try {
+        await request('session.pin', { sessionId, pinned })
+      } catch (error) {
+        store.update((state) => dropOverlayEntry(state, 'pins', sessionId, ticket))
+        throw error
+      }
+      store.update((state) => pinAnswered(state, sessionId, ticket))
     },
     async acknowledgeSession(sessionId) {
       const ticket = nextTicket()

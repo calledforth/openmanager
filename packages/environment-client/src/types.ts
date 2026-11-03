@@ -72,6 +72,8 @@ export interface SessionSummary extends Session {
   updatedAt: string
   /** When the user settled the session; null or absent while it is active. */
   settledAt?: string | null
+  /** When the user pinned the session; null or absent while it is not pinned. */
+  pinnedAt?: string | null
   /**
    * When the last turn completed, while nobody has opened the session since.
    * Null or absent means there is nothing unseen.
@@ -497,6 +499,12 @@ export interface EnvironmentCommands {
    * goes back to what it last confirmed and this rejects.
    */
   settleSession(sessionId: string, settled: boolean): Promise<void>
+  /**
+   * Keep a session at the top of the active list (`true`) or let it go
+   * (`false`), on every client of this environment. The state shows the move
+   * at once; if the environment refuses, it goes back and this rejects.
+   */
+  pinSession(sessionId: string, pinned: boolean): Promise<void>
   /** The user has looked at a finished session; every client stops showing it as done. */
   acknowledgeSession(sessionId: string): Promise<void>
   /**

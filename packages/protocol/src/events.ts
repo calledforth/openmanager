@@ -93,6 +93,8 @@ export const ProofEventSchemas = {
       updatedAt: TimestampSchema.optional(),
       /** Present only when the session was settled (a time) or brought back (null). */
       settledAt: TimestampSchema.nullable().optional(),
+      /** Present only when the session was pinned (a time) or unpinned (null). */
+      pinnedAt: TimestampSchema.nullable().optional(),
       /** Present only when a turn completed (a time) or the user acknowledged it (null). */
       doneAt: TimestampSchema.nullable().optional(),
       /** Present only when the session's background work changed: every task still running. */

@@ -130,6 +130,13 @@ export const SessionSummarySchema = SessionSchema.extend({
    */
   settledAt: TimestampSchema.nullable().optional(),
   /**
+   * When the user pinned the session to the top of the active list. Absent
+   * or null means it is not pinned; a summary leaves it out while it is not,
+   * so nothing that creates a session has to say so. Only the user changes it:
+   * settling keeps it, and so does any turn.
+   */
+  pinnedAt: TimestampSchema.nullable().optional(),
+  /**
    * When the last turn completed, while the user has not opened the session
    * since. Null or absent means there is nothing unseen: the environment clears
    * it on `session.acknowledge` and whenever the next turn starts.
