@@ -48,7 +48,6 @@ import {
 import { AddWorkspaceDialog } from './add-workspace-dialog'
 import { ConnectionBanner, ConnectionScreen, ConnectionStatusChip } from './connection-surfaces'
 import { EnvironmentsSidebarHost, SidebarSource } from './environments-sidebar'
-import { SessionNotifications } from './session-notifications'
 
 const NewAgentIcon = phosphorIcon(NotePencilIcon)
 const AddProjectIcon = phosphorIcon(FolderPlusIcon)
@@ -288,10 +287,6 @@ function ConnectedShell({
       navigate({ to: '/drafts/$draftId', params: { draftId }, replace: options?.replace }),
     [navigate],
   )
-  const openSession = useCallback(
-    (sessionId: string) => void navigateSession(sessionId),
-    [navigateSession],
-  )
   const [addingWorkspace, setAddingWorkspace] = useState(false)
   const closeAddWorkspace = useCallback(() => setAddingWorkspace(false), [])
   // The dialog owns the round trip; the sidebar only needs to know it opened.
@@ -319,7 +314,6 @@ function ConnectedShell({
         addingWorkspace={addingWorkspace}
         closeAddWorkspace={closeAddWorkspace}
       />
-      <SessionNotifications openSession={openSession} />
     </EnvironmentApplicationProviders>
   )
 }
