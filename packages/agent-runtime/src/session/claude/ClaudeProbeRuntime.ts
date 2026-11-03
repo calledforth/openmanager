@@ -5,6 +5,7 @@ import type {
   ModelListing,
   ProviderId,
   ProviderSessionInfo,
+  UsageLimitsResult,
 } from '@agentpack/contract'
 import type { BackendEvent, BackendRoute } from '../../backends/Backend.js'
 import { CapabilityMissingError } from '../../core/errors.js'
@@ -23,6 +24,7 @@ import {
   type ClaudeContextWindow,
 } from './claude-catalog.js'
 import { CLAUDE_PROMPT_CAPABILITIES } from './claude-prompt.js'
+import { claudeUsageReading } from './claude-usage-limits.js'
 import { resolveClaudeExecutable } from './executable.js'
 import { loadClaudeSdk, type ClaudeQuerySession, type ClaudeSdk } from './sdk.js'
 
@@ -48,6 +50,11 @@ export type ClaudeProbeDeps = {
 /** How long `claude --version` gets. It is a local exec that prints one line;
  * anything slower is a broken install, not a slow machine. */
 const VERSION_TIMEOUT_MS = 4_000
+
+/** How long the `/usage` read gets once the handshake is done. Measured at
+ * 27–56 s on a machine with 1.2 GB of transcripts; generous on purpose, since
+ * a timeout only means the old reading stays up a little longer. */
+const USAGE_TIMEOUT_MS = 180_000
 
 /** Provider-level questions for Claude Code, answered out of process.
  *
@@ -219,6 +226,23 @@ export class ClaudeProbeRuntime implements ProbeRuntime {
   async listModels(_cwd: string): Promise<ModelListing> {
     const result = await this.probe()
     return result.models ?? {}
+  }
+
+  /** Plan limits from the same never-prompted process the health probe uses:
+   * no turn, no tokens. Slow — the CLI scans local transcripts for the `/usage`
+   * dialog before answering (25–80 s measured), hence its own budget. */
+  async readUsageLimits(): Promise<UsageLimitsResult> {
+    await this.probe()
+    const query = this.query
+    const read = query?.usage_EXPERIMENTAL_MAY_CHANGE_DO_NOT_RELY_ON_THIS_API_YET
+    if (!query || typeof read !== 'function') return { outcome: 'unsupported' }
+    const response = await withTimeout(
+      read.call(query),
+      USAGE_TIMEOUT_MS,
+      () => new RpcTimeoutError(this.providerId, 'usage', USAGE_TIMEOUT_MS),
+    )
+    const reading = claudeUsageReading(response)
+    return reading ? { outcome: 'ok', reading } : { outcome: 'unavailable' }
   }
 
   async dispose(): Promise<void> {

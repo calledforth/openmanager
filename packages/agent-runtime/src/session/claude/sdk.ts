@@ -3,6 +3,7 @@ import type {
   Options,
   PermissionMode,
   SDKControlGetContextUsageResponse,
+  SDKControlGetUsageResponse,
   SDKControlInitializeResponse,
   SDKMessage,
   SDKSessionInfo,
@@ -58,6 +59,10 @@ export interface ClaudeQuerySession extends AsyncIterable<SDKMessage> {
    * *counts* for a turn (`TokenUsage`), a different contract entirely, and
    * publishing one as the other draws the meter at an invented percentage. */
   getContextUsage(): Promise<SDKControlGetContextUsageResponse>
+  /** The data behind `/usage`, plan limits included. Experimental in the SDK
+   * and named to say so; optional here so a CLI or SDK that drops or renames
+   * it reads as "cannot report limits" rather than a crash. */
+  usage_EXPERIMENTAL_MAY_CHANGE_DO_NOT_RELY_ON_THIS_API_YET?(): Promise<SDKControlGetUsageResponse>
   /** Stop one background task by the id `background_tasks_changed` lists it
    * under. The CLI answers with a roster that no longer has it. */
   stopTask(taskId: string): Promise<void>

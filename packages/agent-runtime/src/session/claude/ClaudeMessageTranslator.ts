@@ -36,6 +36,7 @@ import {
   usageWarningNotice,
   type ClaudeRateLimit,
 } from './claude-problems.js'
+import { claudeUsageObservation } from './claude-usage-limits.js'
 
 /** What the runtime does with a translated message. `events` are forwarded
  * verbatim; `completed` is the turn-terminal *candidate* the runtime matches
@@ -771,18 +772,23 @@ export class ClaudeMessageTranslator {
   ): BackendEvent[] {
     const info = object(message.rate_limit_info)
     this.rateLimit = info
-    if (string(info.status) !== 'allowed_warning') return []
+    // The provider's limits move whether or not a turn is open to warn in.
+    const observation = claudeUsageObservation(info)
+    const update = observation
+      ? [routeEvent(this.route(), message.session_id, 'session', 'usage_limits_update', observation)]
+      : []
+    if (string(info.status) !== 'allowed_warning') return update
     // A notice belongs to a turn: with none open it would be dropped, and
     // remembering it here would lose the warning for its whole window.
-    if (!this.turnOpen()) return []
+    if (!this.turnOpen()) return update
     // Keyed by the allowance window too: the same threshold in the next window
     // is a new warning, not a repeat.
     const key = [info.rateLimitType, info.surpassedThreshold, info.resetsAt]
       .map((part) => (typeof part === 'string' || typeof part === 'number' ? part : ''))
       .join(':')
-    if (this.warnedLimits.has(key)) return []
+    if (this.warnedLimits.has(key)) return update
     this.warnedLimits.add(key)
-    return [this.notice(message.session_id, usageWarningNotice(info))]
+    return [...update, this.notice(message.session_id, usageWarningNotice(info))]
   }
 
   private notice(sessionId: string, notice: ProviderNotice): BackendEvent {

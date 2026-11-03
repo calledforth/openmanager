@@ -95,7 +95,11 @@ import {
 // `detail`. `turn.notice` becomes a typed live notice that lasts until
 // `turn.notice.cleared`. The durable `turn.notice.recorded` is stored and
 // placed in `order` under kind `notice`, and a thread snapshot lists `notices`.
-export const PROTOCOL_VERSION = 21 as const
+// v22: every provider entry carries `limits` (usage-limit windows, kept with
+// their age), `provider_limits_changed` is broadcast, and
+// `provider.limits.refresh` reads them again. A v21 client's strict provider
+// entry refuses the new field.
+export const PROTOCOL_VERSION = 22 as const
 
 export const ProtocolVersionSchema = z.number().int().positive().max(Number.MAX_SAFE_INTEGER)
 export const CapabilitySchema = MessageNameSchema

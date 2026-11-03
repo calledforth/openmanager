@@ -2,6 +2,7 @@ import type {
   Options,
   PermissionMode,
   SDKControlGetContextUsageResponse,
+  SDKControlGetUsageResponse,
   SDKControlInitializeResponse,
   SDKMessage,
   SDKSessionInfo,
@@ -391,6 +392,19 @@ export class FakeClaudeQuery implements ClaudeQuerySession {
     this.contextUsageCalls += 1
     if (this.contextUsageError) throw this.contextUsageError
     return this.contextUsage
+  }
+  /** What `/usage` answers; null leaves the method off, like an SDK without it. */
+  usageResponse: Record<string, unknown> | null = {
+    rate_limits_available: true,
+    rate_limits: { five_hour: { utilization: 37, resets_at: '2026-11-03T14:20:00Z' } },
+  }
+  get usage_EXPERIMENTAL_MAY_CHANGE_DO_NOT_RELY_ON_THIS_API_YET():
+    | (() => Promise<SDKControlGetUsageResponse>)
+    | undefined {
+    const response = this.usageResponse
+    return response
+      ? async () => response as unknown as SDKControlGetUsageResponse
+      : undefined
   }
   async stopTask(taskId: string): Promise<void> {
     this.stoppedTasks.push(taskId)

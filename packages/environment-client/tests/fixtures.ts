@@ -132,6 +132,7 @@ export const BARE_PROVIDER: ProviderCatalogEntry = {
     lastProbe: null,
     update: 'current',
   },
+  limits: { supported: false, reading: null, refreshing: false, lastRefresh: null },
 }
 
 export const PROVIDER: ProviderCatalogEntry = {

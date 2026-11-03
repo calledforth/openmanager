@@ -74,6 +74,7 @@ const OPENCODE: ProviderCatalogEntry = {
     lastProbe: null,
     update: 'current',
   },
+  limits: { supported: false, reading: null, refreshing: false, lastRefresh: null },
   profile: {
     providerId: 'opencode',
     availableModels: [
