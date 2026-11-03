@@ -38,6 +38,7 @@ import {
   type Thread,
   type TransientEvent,
   UploadResultSchema,
+  EnvironmentPlatformSchema,
   WorkspaceUnavailableDetailsSchema,
 } from '@openmanager/protocol'
 import { z } from 'zod'
@@ -624,7 +625,12 @@ export function createWebSocketEnvironmentClient(
     // without an `environment.get` round trip (or a server that lacks one).
     const label = typeof bootstrap.label === 'string' ? bootstrap.label.trim() : ''
     if (label) {
-      const environment = { environmentId: bootstrap.environmentId, name: label }
+      const platform = EnvironmentPlatformSchema.safeParse(bootstrap.platform)
+      const environment = {
+        environmentId: bootstrap.environmentId,
+        name: label,
+        ...(platform.success ? { platform: platform.data } : {}),
+      }
       store.update((state) => applyEnvironment(state, environment))
     }
     // Providers and their health ride the handshake too, so the composer can

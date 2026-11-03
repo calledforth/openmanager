@@ -27,6 +27,7 @@ import {
   type StoredEnvironment,
   routeHealthLabel,
 } from '@openmanager/environment-client/connection'
+import { platformBeside } from '../lib/environment-names'
 import { canClaimLocalOwner } from '../lib/local-owner'
 import { cn } from '../lib/utils'
 import type { AddRouteResult } from '../providers/connection-provider'
@@ -492,6 +493,12 @@ export function EnvironmentList({
                     {environment.label}
                   </span>
                 </Tooltip>
+                {platformBeside(environment) ? (
+                  <span className="shrink-0 rounded bg-active px-1.5 py-px text-[11px] text-muted-foreground">
+                    <span className="sr-only">Runs on </span>
+                    {platformBeside(environment)}
+                  </span>
+                ) : null}
                 {selected && several ? (
                   <span className="shrink-0 rounded bg-active px-1.5 py-px text-[11px] text-muted-foreground">
                     Current

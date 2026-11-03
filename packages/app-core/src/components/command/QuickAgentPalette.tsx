@@ -605,6 +605,7 @@ function QuickAgentPaletteBound() {
             workspaces={workspaces}
             recentWorkspaces={recentWorkspaces}
             environmentLabel={environment?.label}
+            environmentPlatform={environment?.platform}
             onClose={close}
             onExpand={navigation ? expand : undefined}
             onAddWorkspace={() => {
@@ -630,6 +631,7 @@ function QuickAgentPaletteContent({
   workspaces,
   recentWorkspaces,
   environmentLabel,
+  environmentPlatform,
   onClose,
   onExpand,
   onAddWorkspace,
@@ -639,6 +641,7 @@ function QuickAgentPaletteContent({
   workspaces: WorkspaceEntry[]
   recentWorkspaces: WorkspaceEntry[]
   environmentLabel?: string
+  environmentPlatform?: string
   onClose: () => void
   onExpand?: () => void
   onAddWorkspace: () => void
@@ -661,6 +664,7 @@ function QuickAgentPaletteContent({
             recentWorkspaces={recentWorkspaces}
             activeWorkspace={activeWorkspace}
             environmentLabel={environmentLabel}
+            environmentPlatform={environmentPlatform}
             onSelect={(workspacePath) => {
               if (workspacePath !== activeWorkspacePath) setDraftWorkspace?.(workspacePath)
             }}

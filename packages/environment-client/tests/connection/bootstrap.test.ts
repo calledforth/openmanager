@@ -114,6 +114,23 @@ describe('interpretBootstrapResponse', () => {
     })
   })
 
+  it('reads the platform a server reports, and nothing for one it does not know', () => {
+    const answer = (platform: unknown) =>
+      interpretBootstrapResponse({
+        ok: true,
+        status: 200,
+        body: {
+          protocolVersion: PROTOCOL_VERSION,
+          environmentId: 'env-local',
+          capabilities: [],
+          label: 'Laptop',
+          platform,
+        },
+      })
+    expect(answer('wsl')).toMatchObject({ status: 'ready', platform: 'wsl' })
+    expect(answer('plan9')).not.toHaveProperty('platform')
+  })
+
   it('returns incompatible_protocol from evaluateBootstrap', () => {
     const result = interpretBootstrapResponse({
       ok: true,

@@ -16,6 +16,7 @@ const RECENT_CHIP_LIMIT = 4
 
 export function NewSessionLandingView({
   environmentLabel,
+  environmentPlatform,
   environmentPicker,
   workspaces,
   recentWorkspaces = [],
@@ -28,6 +29,8 @@ export function NewSessionLandingView({
 }: {
   /** Where the session will run; omitted, no environment copy shows. */
   environmentLabel?: string
+  /** The kind of machine it is ("WSL"), when its server says. */
+  environmentPlatform?: string
   /** Stands where the label would, on a host with more than one environment. */
   environmentPicker?: ReactNode
   workspaces: WorkspaceEntry[]
@@ -112,6 +115,7 @@ export function NewSessionLandingView({
             recentWorkspaces={recentWorkspaces}
             activeWorkspace={activeWorkspace}
             environmentLabel={environmentLabel}
+            environmentPlatform={environmentPlatform}
             onSelect={(workspacePath) => {
               // With nothing open the first project is only what the picker
               // shows, so choosing it must still open it.
@@ -132,7 +136,11 @@ export function NewSessionLandingView({
           ) : (
             environmentLabel && (
               <>
-                <EnvironmentLabel label={environmentLabel} className="max-w-[240px]" />
+                <EnvironmentLabel
+                  label={environmentLabel}
+                  platform={environmentPlatform}
+                  className="max-w-[240px]"
+                />
                 <span aria-hidden>·</span>
               </>
             )
@@ -225,6 +233,7 @@ export function NewSessionLanding() {
   return (
     <NewSessionLandingView
       environmentLabel={environment?.label}
+      environmentPlatform={environment?.platform}
       environmentPicker={
         // What it marks as chosen is the environment this page's client is
         // on, so the two cannot disagree.

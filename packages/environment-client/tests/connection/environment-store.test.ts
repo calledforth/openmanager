@@ -170,6 +170,26 @@ describe('upsertStoredEnvironment', () => {
     expect(next.environments[0]!.label).toBe('Studio')
   })
 
+  it('keeps the platform the server reports, and keeps it when a later answer says nothing', () => {
+    const added = upsertStoredEnvironment(EMPTY_REGISTRY, {
+      environmentId: 'env-local',
+      endpoint: LOCAL,
+      label: 'Laptop',
+      platform: 'wsl',
+    })!
+    expect(added.environments[0]!.platform).toBe('wsl')
+    const again = upsertStoredEnvironment(added, {
+      environmentId: 'env-local',
+      endpoint: LOCAL,
+      label: 'Laptop',
+    })!
+    expect(again.environments[0]!.platform).toBe('wsl')
+    expect(parseStoredEnvironment(again.environments[0])?.platform).toBe('wsl')
+    expect(
+      parseStoredEnvironment({ ...again.environments[0], platform: 'plan9' })?.platform,
+    ).toBeUndefined()
+  })
+
   it('inserts a new record keyed by environment ID, with one route', () => {
     const next = upsertStoredEnvironment(EMPTY_REGISTRY, {
       environmentId: 'env-local',

@@ -62,6 +62,7 @@ import {
 } from './pairing.ts'
 import { createClientService, type ClientSockets } from './client-service.ts'
 import { loadEnvironmentIdentity } from './identity.ts'
+import { detectEnvironmentPlatform } from './platform.ts'
 import {
   evaluateLocalOwnerAccess,
   evaluateLocalOwnerRouteAccess,
@@ -163,6 +164,7 @@ export async function startServer(config: ServerConfig) {
   // device Cloudflare names instead, apart from local traffic.
   const budgetKey = createBudgetKey(config.tunnel?.hostname)
   const identity = await loadEnvironmentIdentity(config.dataDir)
+  const platform = detectEnvironmentPlatform()
   const audit = createAuditLog(log, { dataDir: config.dataDir })
   const environmentSettings = openEnvironmentSettings(config.dataDir)
   const filesystem = createFilesystemService({ settings: environmentSettings })
@@ -341,7 +343,11 @@ export async function startServer(config: ServerConfig) {
       .map(({ id }) => id)
   const replayReader = createReplayReader(eventDatabase, {
     epoch: eventEpoch,
-    environment: () => ({ environmentId: identity.environmentId, name: identity.label }),
+    environment: () => ({
+      environmentId: identity.environmentId,
+      name: identity.label,
+      ...(platform ? { platform } : {}),
+    }),
     workspaces: () => workspaces.list(),
     log,
   })
@@ -556,6 +562,7 @@ export async function startServer(config: ServerConfig) {
       instanceId,
       environmentId: identity.environmentId,
       label: identity.label,
+      ...(platform ? { platform } : {}),
       protocolVersion: PROTOCOL_VERSION,
       capabilities: SERVER_CAPABILITIES,
       providers: providerService.snapshot(),

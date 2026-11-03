@@ -1,3 +1,5 @@
+import type { EnvironmentPlatform } from '@openmanager/protocol'
+
 /**
  * Connection UI is derived from environment selection, the bootstrap
  * response, and transport status. Timeouts never invent a state on their own.
@@ -52,6 +54,7 @@ export type BootstrapOutcome =
       status: 'ready'
       environmentId: string
       label?: string
+      platform?: EnvironmentPlatform
       protocolVersion: number
     }
   | {
@@ -60,6 +63,7 @@ export type BootstrapOutcome =
       serverProtocolVersion: number
       environmentId?: string
       label?: string
+      platform?: EnvironmentPlatform
     }
   | { status: 'unauthorized'; message?: string }
   | {

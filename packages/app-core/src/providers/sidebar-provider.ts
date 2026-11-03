@@ -30,6 +30,8 @@ export interface SidebarEnvironment {
   environmentId: string
   /** The name the environment reports for itself (its host name by default). */
   label: string
+  /** The kind of machine it runs on, as read ("WSL"), when its server says. */
+  platform?: string
 }
 
 export interface SidebarSessionEntry {

@@ -30,6 +30,7 @@ import {
 } from '@openmanager/app-core/providers/sidebar-provider'
 import { environmentIsDown } from '@openmanager/environment-client/connection'
 import { isRecentDraftHandover, type DraftHandover, type LeftDraft } from '../lib/draft-handovers'
+import { platformBeside } from '../lib/environment-names'
 import { useConnection } from '../providers/connection-provider'
 import { useEnvironmentClients } from '../providers/environment-client-provider'
 
@@ -136,16 +137,20 @@ export function EnvironmentChoiceHost({ children }: { children: ReactNode }) {
   // `links` changes with each connection, which is what `reachable` reads.
   const options = useMemo<readonly EnvironmentOption[] | null>(() => {
     if (environments.length < 2) return null
-    return environments.map(({ environmentId, label }) => {
+    return environments.map((environment) => {
+      const { environmentId, label } = environment
       const twin = environments.some(
         (other) => other.label === label && other.environmentId !== environmentId,
       )
       const link = links.find((item) => item.environmentId === environmentId)
       const endpoint = link?.endpoint
+      const detail = [platformBeside(environment), twin && endpoint ? hostOf(endpoint) : undefined]
+        .filter(Boolean)
+        .join(' · ')
       return {
         environmentId,
         label,
-        ...(twin && endpoint ? { detail: hostOf(endpoint) } : {}),
+        ...(detail ? { detail } : {}),
         // Down (the device offline, say) while its socket still reads connected,
         // it reads offline everywhere else, so it isn't one to pick.
         reachable:
