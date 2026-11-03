@@ -120,9 +120,16 @@ export const REVOKED_CLOSE_REASON = CLIENT_REVOKED_CLOSE_REASON
 /**
  * Offered in the handshake: a client that can't, or a proxy that drops the offer,
  * gets the same frames uncompressed. Level 1 keeps the cost near 230 KB per socket
- * and shrinks chat text about three times; frames under 1 KiB aren't worth it.
+ * and shrinks chat text about three times.
  */
-const SOCKET_COMPRESSION = { threshold: 1024, zlibDeflateOptions: { level: 1 } }
+const SOCKET_COMPRESSION = { zlibDeflateOptions: { level: 1 } }
+
+/**
+ * Text under this goes out plain: it isn't worth a trip through zlib. `ws` has a
+ * `threshold` option for this, but ignores it while messages share a deflate
+ * context, and sharing one is what shrinks a message sent in fragments.
+ */
+const COMPRESS_TEXT_FROM_BYTES = 1024
 
 /** Transport owns only live connection state. Durable event records come from the host. */
 export function attachWebSocket(
@@ -309,12 +316,17 @@ export function attachWebSocket(
       }
       // Everything this connection sends goes through its writer: in order,
       // inside the send window, large messages in rate-sized fragments. There
-      // is no size-based close (docs/sync-foundations.md §7.2).
+      // is no size-based close (docs/sync-foundations.md §7.2). `ws` deflates
+      // off the main thread, so a send can leave later than it is made, but
+      // later frames and the close frame wait behind it. A fragment is a slice
+      // of a large message, so it is always deflated.
       const writer = createConnectionWriter({
         now,
         socket: {
           sendText: (text) => {
-            if (active && ws.readyState === WebSocket.OPEN) ws.send(text, sent)
+            if (active && ws.readyState === WebSocket.OPEN) {
+              ws.send(text, { compress: text.length >= COMPRESS_TEXT_FROM_BYTES }, sent)
+            }
           },
           sendBinary: (frame) => {
             if (active && ws.readyState === WebSocket.OPEN) ws.send(frame, { binary: true }, sent)
@@ -880,6 +892,8 @@ export function attachWebSocket(
     /**
      * Stop serving a client's sockets at once, because its grant changed, and
      * close them with `code` after the replies already queued have gone out.
+     * A frame read after that is refused; one still being inflated when the
+     * socket closes is never answered, and the client fails it on the close.
      */
     retireClient(clientId: string, code: number, reason: string) {
       retiring.add(clientId)
