@@ -495,11 +495,79 @@ describe('pairing a browser from a link', () => {
     await user.click(screen.getByRole('button', { name: 'Update access' }))
 
     await waitFor(() => expect(router.state.location.pathname).toBe('/'))
+    const redeemsOn = (environmentId: string) =>
+      sockets.clients
+        .filter((client) => client.getState().environment?.environmentId === environmentId)
+        .flatMap((client) => client.calls.filter((call) => call.command === 'redeemPairingLink'))
+    expect(redeemsOn('env-desk')).toHaveLength(1)
+    expect(redeemsOn('env-home')).toEqual([])
+    expect(stored().selectedId).toBe('env-home')
+  })
+
+  it('selects a saved environment that is not connected yet, and redeems once it is', async () => {
+    const user = userEvent.setup()
+    localStorage.setItem(
+      ENVIRONMENT_STORAGE_KEY,
+      JSON.stringify({
+        version: 2,
+        selectedId: 'env-home',
+        environments: [
+          {
+            environmentId: 'env-home',
+            label: 'Home',
+            credential: `omc1.${'h'.repeat(43)}`,
+            routes: [{ type: 'remote', endpoint: LAN, priority: 0 }],
+          },
+          {
+            environmentId: 'env-desk',
+            label: 'Desk',
+            credential: `omc1.${'s'.repeat(43)}`,
+            routes: [{ type: 'remote', endpoint: ROUTE, priority: 0 }],
+          },
+        ],
+      }),
+    )
+    // Desk's route does not answer until the test says so.
+    let answer = (): void => undefined
+    const asked = new Promise<void>((resolve) => {
+      answer = resolve
+    })
+    const fetchMock = mockEnvironment(null)
+    const reply = fetchMock.getMockImplementation()!
+    fetchMock.mockImplementation(async (input, init) => {
+      if (!String(input).startsWith(LAN)) {
+        await asked
+        return reply(input, init)
+      }
+      return new Response(
+        JSON.stringify({
+          protocolVersion: PROTOCOL_VERSION,
+          capabilities: ['connection.heartbeat'],
+          environmentId: 'env-home',
+          label: 'Home',
+        }),
+        { status: 200 },
+      )
+    })
+    const sockets = trackClients((environmentId) =>
+      environmentId === 'env-desk'
+        ? idleUntilDialled(pairedPhone(environmentId), undefined, { cached: true })
+        : createMockEnvironmentClient({
+            seed: { environment: { environmentId, name: 'Home' } },
+          }),
+    )
+    const { router } = renderWebApp(pairPath(), { createEnvironmentClient: sockets.create })
+    await connectedShell()
+
+    await user.click(screen.getByRole('button', { name: 'Update access' }))
+    await waitFor(() => expect(stored().selectedId).toBe('env-desk'))
+
+    answer()
+    await waitFor(() => expect(router.state.location.pathname).toBe('/'))
     const redeemed = sockets.clients.flatMap((client) =>
       client.calls.filter((call) => call.command === 'redeemPairingLink'),
     )
     expect(redeemed).toHaveLength(1)
-    expect(stored().selectedId).toBe('env-home')
   })
 
   it('selects the saved environment first when another one is in use', async () => {
