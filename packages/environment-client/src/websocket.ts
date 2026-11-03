@@ -641,6 +641,7 @@ export function createWebSocketEnvironmentClient(
       capabilities: [...capabilities],
       attempt: 0,
       retriesExhausted: false,
+      caughtUp: false,
     })
     for (const flush of queued.splice(0)) flush()
     const generation = connectionGeneration
@@ -1341,6 +1342,11 @@ export function createWebSocketEnvironmentClient(
     // per-socket, so until it lands nothing of the scope is sent at all.
     for (const subscription of [...subscriptions.values()])
       void recover(subscription).catch(() => undefined)
+    // Answered or refused, nothing more about the past is on its way.
+    const caughtUp = () => {
+      if (generation === connectionGeneration && ready) patchConnection({ caughtUp: true })
+    }
+    void recover(subscriptions.get(key)!).then(caughtUp, caughtUp)
     // The provider catalog is a current reading (models, health), not synced state.
     if (supports('getProviderCatalog')) {
       await commands.getProviderCatalog().catch(() => undefined)

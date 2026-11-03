@@ -351,6 +351,61 @@ async function connected(
 }
 
 describe('websocket environment client', () => {
+  it('has caught up only once the answer for the environment has landed, each connection', async () => {
+    const { client, socket, timers } = await connected()
+    expect(client.getState().connection).toMatchObject({ phase: 'connected', caughtUp: false })
+
+    await answerCatalog(socket)
+    await flush()
+    expect(client.getState().connection.caughtUp).toBe(true)
+
+    socket.drop()
+    timers.advance(1_000)
+    const next = FakeSocket.instances[1]!
+    next.open()
+    next.respond('protocol.handshake', bootstrap(FULL_CAPABILITIES))
+    await flush()
+    expect(client.getState().connection).toMatchObject({ phase: 'connected', caughtUp: false })
+
+    answerKept(next, lastReplay(next, 'environment')!, 'sub-env')
+    await flush()
+    expect(client.getState().connection.caughtUp).toBe(true)
+  })
+
+  it('has nothing to catch up without replay, or once a replay is refused', async () => {
+    // A plain subscribe brings live frames only: from here on, a change is news.
+    const plain = await connected(
+      FULL_CAPABILITIES.filter((name) => name !== 'subscription.replay'),
+    )
+    expect(plain.client.getState().connection.caughtUp).toBe(true)
+
+    const { client, socket } = await connected()
+    expect(client.getState().connection.caughtUp).toBe(false)
+    socket.receive({
+      type: 'error',
+      requestId: lastReplay(socket, 'environment')!.requestId,
+      error: { code: 'internal', message: 'No catch-up today.' },
+    })
+    await flush()
+    // It falls back to live frames, so nothing about the past follows.
+    expect(client.getState().connection.caughtUp).toBe(true)
+  })
+
+  it('waits for the new connection when the socket drops before the answer', async () => {
+    const { client, socket, timers } = await connected()
+    socket.drop()
+    timers.advance(1_000)
+    const next = FakeSocket.instances[1]!
+    next.open()
+    next.respond('protocol.handshake', bootstrap(FULL_CAPABILITIES))
+    await flush()
+    expect(client.getState().connection.caughtUp).toBe(false)
+
+    await answerCatalog(next)
+    await flush()
+    expect(client.getState().connection.caughtUp).toBe(true)
+  })
+
   it('retains environment data and opens restored session scopes on a new replay-capable transport', async () => {
     const state = createInitialState()
     state.environment = { environmentId: ENV, name: 'Local' }

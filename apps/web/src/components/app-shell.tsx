@@ -48,7 +48,7 @@ import {
 import { AddWorkspaceDialog } from './add-workspace-dialog'
 import { ConnectionBanner, ConnectionScreen, ConnectionStatusChip } from './connection-surfaces'
 import { EnvironmentsSidebarHost, SidebarSource } from './environments-sidebar'
-import { SessionNotifications } from './session-notifications'
+import { EnvironmentNotifications } from './session-notifications'
 
 const NewAgentIcon = phosphorIcon(NotePencilIcon)
 const AddProjectIcon = phosphorIcon(FolderPlusIcon)
@@ -141,11 +141,19 @@ function ConnectedOverlays({
   const {
     workspaces,
     activeWorkspacePath,
+    activeEnvironmentId,
     activeSessionId,
     addWorkspace,
     createSession,
     regenerateSessionTitle,
   } = useSidebarData()
+  // Settings can be acting on another environment behind the palette, so with
+  // several saved, Add project says whose list it adds to.
+  const { environments } = useConnection()
+  const addsTo =
+    environments.length > 1
+      ? environments.find((item) => item.environmentId === activeEnvironmentId)?.label
+      : undefined
   // A project just added opens as a new agent in it: adding one is the
   // first step of working there.
   const openAdded = useCallback(
@@ -189,7 +197,7 @@ function ConnectedOverlays({
           : []),
       {
         value: 'action:add-project',
-        label: 'Add project',
+        label: addsTo ? `Add project to ${addsTo}` : 'Add project',
         icon: AddProjectIcon,
         group: 'Actions',
         keywords: ['add', 'project', 'workspace', 'folder', 'open'],
@@ -215,6 +223,7 @@ function ConnectedOverlays({
       newAgentTarget,
       createSession,
       addWorkspace,
+      addsTo,
       activeSessionId,
       regenerateSessionTitle,
     ],
@@ -288,10 +297,6 @@ function ConnectedShell({
       navigate({ to: '/drafts/$draftId', params: { draftId }, replace: options?.replace }),
     [navigate],
   )
-  const openSession = useCallback(
-    (sessionId: string) => void navigateSession(sessionId),
-    [navigateSession],
-  )
   const [addingWorkspace, setAddingWorkspace] = useState(false)
   const closeAddWorkspace = useCallback(() => setAddingWorkspace(false), [])
   // The dialog owns the round trip; the sidebar only needs to know it opened.
@@ -319,7 +324,6 @@ function ConnectedShell({
         addingWorkspace={addingWorkspace}
         closeAddWorkspace={closeAddWorkspace}
       />
-      <SessionNotifications openSession={openSession} />
     </EnvironmentApplicationProviders>
   )
 }
@@ -397,6 +401,7 @@ export function AppShell() {
     <SidebarProvider className="h-svh min-h-0 overflow-hidden bg-background text-foreground">
       <EnvironmentClientProvider client={client}>
         <AddressLookupProvider value={lookup}>
+          <EnvironmentNotifications openId={lookup.owner ?? selectedId} />
           {client ? (
             <EnvironmentsSidebarHost
               footer={<NavMenu pathname={pathname} includeSessions={false} />}

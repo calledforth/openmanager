@@ -97,6 +97,7 @@ export function PairDeviceDialog({
   onLinksChanged,
   grant,
   environmentId,
+  environmentName,
   routes,
   inUseEndpoint,
   appUrl,
@@ -112,6 +113,8 @@ export function PairDeviceDialog({
   /** What this device holds; a link can offer no more. */
   grant: readonly AccessCapability[]
   environmentId: string
+  /** What the dialog calls the environment the link opens. */
+  environmentName?: string
   routes: readonly EnvironmentRoute[]
   inUseEndpoint: string | null
   /** Where this web app is served: the page the link opens. */
@@ -129,6 +132,7 @@ export function PairDeviceDialog({
             onLinksChanged={onLinksChanged}
             grant={grant}
             environmentId={environmentId}
+            environmentName={environmentName}
             routes={routes}
             inUseEndpoint={inUseEndpoint}
             appUrl={appUrl}
@@ -147,6 +151,7 @@ function PairDeviceFlow({
   onLinksChanged,
   grant,
   environmentId,
+  environmentName,
   routes,
   inUseEndpoint,
   appUrl,
@@ -158,6 +163,7 @@ function PairDeviceFlow({
   onLinksChanged?: () => void
   grant: readonly AccessCapability[]
   environmentId: string
+  environmentName?: string
   routes: readonly EnvironmentRoute[]
   inUseEndpoint: string | null
   appUrl: string
@@ -186,6 +192,7 @@ function PairDeviceFlow({
       client={client}
       grant={grant}
       environmentId={environmentId}
+      environmentName={environmentName}
       routes={routes}
       inUseEndpoint={inUseEndpoint}
       appUrl={appUrl}
@@ -208,6 +215,7 @@ function SetupForm({
   client,
   grant,
   environmentId,
+  environmentName,
   routes,
   inUseEndpoint,
   appUrl,
@@ -217,6 +225,7 @@ function SetupForm({
   client: EnvironmentClient
   grant: readonly AccessCapability[]
   environmentId: string
+  environmentName?: string
   routes: readonly EnvironmentRoute[]
   inUseEndpoint: string | null
   appUrl: string
@@ -272,7 +281,9 @@ function SetupForm({
   return (
     <form onSubmit={(event) => void submit(event)}>
       <DialogHeader>
-        <DialogTitle>Pair a device</DialogTitle>
+        <DialogTitle>
+          {environmentName ? `Pair a device with ${environmentName}` : 'Pair a device'}
+        </DialogTitle>
         <DialogDescription>
           Make a single-use link for a phone or another browser. It opens OpenManager there and
           gives that device its own access, which you can revoke here at any time.
