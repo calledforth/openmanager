@@ -437,6 +437,10 @@ export function createDraftSync(options: DraftSyncOptions): DraftSync & { dispos
       void write(draftId)
     },
 
+    holdsImage(draftId: string) {
+      return (emptyHolds.get(draftId) ?? 0) > 0
+    },
+
     holdEmpty(draftId: string) {
       emptyHolds.set(draftId, (emptyHolds.get(draftId) ?? 0) + 1)
       let held = true

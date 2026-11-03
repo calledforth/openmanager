@@ -39,6 +39,9 @@ type Left = {
   environmentId: string
   /** The revision the copy was made from: the only one the old draft may be deleted at. */
   revision: number
+  /** What was copied. The old draft goes only while it still says exactly this. */
+  text: string
+  /** Attached, or on their way in: either way they cannot go along. */
   images: number
 }
 
@@ -68,9 +71,9 @@ type Handover = { environmentId: string; copy: { draftId: string; sessionId: str
  * lost by it:
  *
  * - The old draft is deleted once the copy is saved on the environment it went
- *   to, and only at the revision the copy was made from: written since, from
- *   another device, it stays.
- * - A draft with images is not deleted at all. It stays where it is, its card
+ *   to, and only while it still says exactly what was copied: written since,
+ *   on this device or another, it stays.
+ * - A draft with images, or one on its way in, is not deleted at all. It stays where it is, its card
  *   too, and the notice offers to discard it there.
  */
 export function EnvironmentChoiceHost({ children }: { children: ReactNode }) {
@@ -102,7 +105,7 @@ export function EnvironmentChoiceHost({ children }: { children: ReactNode }) {
     })
   }, [clients, environments, links])
 
-  const live = { clients, move, navigate, pathname, selectedId, selectEnvironment }
+  const live = { clients, handovers, move, navigate, pathname, selectedId, selectEnvironment }
   const liveRef = useRef(live)
   useLayoutEffect(() => {
     liveRef.current = live
@@ -112,13 +115,22 @@ export function EnvironmentChoiceHost({ children }: { children: ReactNode }) {
   // report is no reason to render every card.
   const choose = useCallback<EnvironmentChoiceValue['choose']>(
     (environmentId, from, workspaceId) => {
-      const { clients, move, navigate, pathname, selectedId, selectEnvironment } = liveRef.current
+      const { clients, handovers, move, navigate, pathname, selectedId, selectEnvironment } =
+        liveRef.current
       const target = clients[environmentId]
       const sourceId = from?.environmentId ?? selectedId
       if (environmentId === sourceId || !isEnvironmentReachable(target)) return false
-      // Already on its way: a second copy of its text would be a second draft.
-      if (from && move?.left?.draftId === from.draftId) return false
-      const state = from ? clients[from.environmentId]?.getState() : undefined
+      // Already on its way, or copied and waiting to go: a second copy of its
+      // text would be a second draft.
+      if (
+        from &&
+        (move?.left?.draftId === from.draftId ||
+          handovers.some(({ left }) => left.draftId === from.draftId))
+      ) {
+        return false
+      }
+      const source = from ? clients[from.environmentId] : undefined
+      const state = source?.getState()
       // A draft being sent is the send's: it becomes a session where it was written.
       if (from && state?.draftEdits[from.draftId]?.launching) return false
       const content = from && state ? selectDraftContent(state, from.draftId) : undefined
@@ -128,7 +140,10 @@ export function EnvironmentChoiceHost({ children }: { children: ReactNode }) {
               draftId: from.draftId,
               environmentId: from.environmentId,
               revision: state.drafts[from.draftId]?.revision ?? 0,
-              images: content.artifactIds?.length ?? 0,
+              text: content.text,
+              images:
+                (content.artifactIds?.length ?? 0) +
+                (source?.drafts?.holdsImage?.(from.draftId) ? 1 : 0),
             }
           : null
       setOpening(workspaceId ? { environmentId, workspaceId } : null)
@@ -197,21 +212,31 @@ export function EnvironmentChoiceHost({ children }: { children: ReactNode }) {
       })
       return
     }
-    if (copy)
+    if (copy) {
       setHandovers((current) => [...current, { environmentId: move.environmentId, copy, left }])
-    // Text only in whitespace, or picks alone: nothing in it to lose.
-    else clients[left.environmentId]?.drafts?.discard(left.draftId, { ifRevision: left.revision })
+      return
+    }
+    // Text only in whitespace, or picks alone: nothing in it to lose. Text that
+    // had nowhere to go, an environment that keeps no drafts, stays.
+    if (!left.text.trim()) {
+      clients[left.environmentId]?.drafts?.discard(left.draftId, { ifRevision: left.revision })
+    }
     // `from` reads `environments`, which the deps already have.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [clients, discards, environments, move, pathname, selectedId])
 
-  // Each original goes once its copy is saved, wherever the page has gone since.
+  // Each original goes once its copy is saved, wherever the page has gone
+  // since, and only while it is still what was copied. Written to since, here
+  // or anywhere, or given an image, it is the user's again and stays.
   useEffect(() => {
     if (handovers.length === 0) return
     const leave: Array<() => void> = []
     for (const handover of handovers) {
       const target = clients[handover.environmentId]
-      if (!target) continue
+      const source = clients[handover.left.environmentId]
+      if (!target || !source) continue
+      const { left } = handover
+      const done = () => setHandovers((current) => current.filter((item) => item !== handover))
       const check = () => {
         const state = target.getState()
         const { draftId, sessionId } = handover.copy
@@ -220,14 +245,27 @@ export function EnvironmentChoiceHost({ children }: { children: ReactNode }) {
         const saved =
           state.drafts[draftId] !== undefined && selectDraftSyncStatus(state, draftId) === 'synced'
         const lost = !sent && !saved && selectDraftContent(state, draftId) === undefined
-        if (!sent && !saved && !lost) return
-        setHandovers((current) => current.filter((item) => item !== handover))
         // The copy was refused: the original is all there is.
-        if (lost) return
-        const { left } = handover
-        clients[left.environmentId]?.drafts?.discard(left.draftId, { ifRevision: left.revision })
+        if (lost) return done()
+        if (!sent && !saved) return
+        const original = source.getState()
+        const content = selectDraftContent(original, left.draftId)
+        // Gone already, sent or discarded elsewhere: nothing left to do.
+        if (!content) return done()
+        const unchanged =
+          content.text === left.text &&
+          !content.artifactIds?.length &&
+          !source.drafts?.holdsImage?.(left.draftId)
+        if (!unchanged) return done()
+        // Its own last save still on its way: once it lands, the revision it
+        // gets is the one to name.
+        if (original.draftEdits[left.draftId]) return
+        done()
+        source.drafts?.discard(left.draftId, {
+          ifRevision: original.drafts[left.draftId]?.revision ?? left.revision,
+        })
       }
-      leave.push(target.subscribe(check))
+      leave.push(target.subscribe(check), source.subscribe(check))
       check()
     }
     return () => {

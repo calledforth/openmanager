@@ -460,6 +460,103 @@ describe('a draft that changes environment', () => {
     expect(desk.getState().drafts['desk-draft']?.content.artifactIds).toEqual(['image-1'])
     expect(commandsOf(desk, 'deleteDraft')).toEqual([])
   })
+
+  it('keeps the old draft when it is written to here while the copy saves', async () => {
+    seedRegistry()
+    answering()
+    const user = userEvent.setup()
+    const desk = deskClient()
+    const laptop = laptopClient(1500)
+    await edit(desk, { text: 'First paragraph' })
+    renderBoth('/drafts/desk-draft', { desk, laptop })
+    await connected(desk, laptop)
+    await screen.findByDisplayValue('First paragraph')
+
+    await pick(user, 'Laptop')
+    await waitFor(() => expect(selected()).toBe('env-laptop'))
+    // Back on the original on this device, before the laptop has the copy.
+    const target = desk.getState().drafts['desk-draft']!.target
+    act(() => desk.drafts!.edit('desk-draft', target, { text: 'First paragraph\n\nAnd a second' }))
+    const [copy] = selectNewSessionDraftIds(laptop.getState())
+    await waitFor(() => expect(laptop.getState().drafts[copy!]).toBeDefined(), { timeout: 6000 })
+    await settleFor(1500)
+
+    expect(desk.getState().drafts['desk-draft']?.content.text).toBe(
+      'First paragraph\n\nAnd a second',
+    )
+  })
+
+  it('counts an image still on its way in, and deletes nothing', async () => {
+    seedRegistry()
+    answering()
+    const user = userEvent.setup()
+    const desk = deskClient()
+    const laptop = laptopClient()
+    await edit(desk, { text: 'Picture coming' })
+    renderBoth('/drafts/desk-draft', { desk, laptop })
+    await connected(desk, laptop)
+    await screen.findByDisplayValue('Picture coming')
+    // What the composer holds while an attached image uploads.
+    const release = desk.drafts!.holdEmpty('desk-draft')
+
+    await pick(user, 'Laptop')
+
+    expect(await screen.findByText('Its images stayed with the draft on Desk')).toBeInTheDocument()
+    await settleFor(1500)
+    expect(desk.getState().drafts['desk-draft']?.content.text).toBe('Picture coming')
+    expect(commandsOf(desk, 'deleteDraft')).toEqual([])
+    release()
+  })
+
+  it('makes one copy of a draft moved twice', async () => {
+    seedRegistry()
+    answering()
+    const user = userEvent.setup()
+    const desk = deskClient()
+    const laptop = laptopClient(1500)
+    await edit(desk, { text: 'Only once' })
+    const { router } = renderBoth('/drafts/desk-draft', { desk, laptop })
+    await connected(desk, laptop)
+    await screen.findByDisplayValue('Only once')
+
+    await pick(user, 'Laptop')
+    await waitFor(() => expect(selected()).toBe('env-laptop'))
+    // Back to the original while its copy is still saving, and away again.
+    await act(() => router.navigate({ to: '/drafts/$draftId', params: { draftId: 'desk-draft' } }))
+    await waitFor(() => expect(selected()).toBe('env-desk'))
+    await screen.findByDisplayValue('Only once')
+    await pick(user, 'Laptop')
+    await settleFor(300)
+
+    const copies = selectNewSessionDraftIds(laptop.getState()).filter(
+      (draftId) => selectDraftContent(laptop.getState(), draftId)?.text === 'Only once',
+    )
+    expect(copies).toHaveLength(1)
+  })
+
+  it('drops a choice the user moved on from, and leaves its draft be', async () => {
+    seedRegistry()
+    answering()
+    const user = userEvent.setup()
+    const desk = deskClient()
+    const laptop = laptopClient()
+    await edit(desk, { text: 'Changed my mind' })
+    const { router } = renderBoth('/drafts/desk-draft', { desk, laptop })
+    await connected(desk, laptop)
+    await screen.findByDisplayValue('Changed my mind')
+
+    await user.click(await picker())
+    const menu = await screen.findByRole('dialog', { name: 'Choose an environment' })
+    // Settings, in the same moment as the choice, before its page arrives.
+    await act(async () => {
+      fireEvent.click(within(menu).getByRole('option', { name: /^Laptop/ }))
+      void router.navigate({ to: '/settings' })
+    })
+    await waitFor(() => expect(router.state.location.pathname).toBe('/settings'))
+    await settleFor(1500)
+
+    expect(desk.getState().drafts['desk-draft']?.content.text).toBe('Changed my mind')
+  })
 })
 
 describe('New agent where the open environment has no projects', () => {

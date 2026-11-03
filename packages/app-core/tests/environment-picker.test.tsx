@@ -16,7 +16,11 @@ import { WorkspaceSidebarView } from '../src/components/sidebar/WorkspaceSidebar
 import type { SidebarWorkspace } from '../src/components/sidebar/sidebar-sessions'
 import { EnvironmentApplicationProviders } from '../src/providers/environment-application'
 import { EnvironmentClientProvider } from '../src/providers/environment-client'
-import type { EnvironmentOption } from '../src/providers/sidebar-provider'
+import {
+  EnvironmentChoiceContext,
+  type EnvironmentChoiceValue,
+  type EnvironmentOption,
+} from '../src/providers/sidebar-provider'
 import { ThemeProvider } from '../src/providers/theme-provider'
 
 const ENVIRONMENTS: EnvironmentOption[] = [
@@ -302,5 +306,60 @@ describe('starting a session', () => {
     expect(creates(client)).toEqual([])
     expect(container.textContent).toContain('This page is on another environment now')
     expect(container.querySelector('textarea')!.value).toBe('Run this')
+  })
+})
+
+describe('choosing from the page', () => {
+  it('names the environment the page is on, not the one selected', async () => {
+    const client = createMockEnvironmentClient({
+      seed: {
+        environment: { environmentId: 'env-desk', name: 'Desk' },
+        workspaces: [
+          {
+            workspaceId: '/repo',
+            name: 'repo',
+            path: '/repo',
+            lastUsedAt: null,
+            lastActivityAt: null,
+            exists: true,
+            capabilities: { git: false },
+          } as Workspace,
+        ],
+      },
+    })
+    const choose = vi.fn<EnvironmentChoiceValue['choose']>(() => true)
+    const choice: EnvironmentChoiceValue = {
+      environments: [
+        { environmentId: 'env-desk', label: 'Desk', reachable: true },
+        { environmentId: 'env-laptop', label: 'Laptop', reachable: true },
+      ],
+      // The selection has moved on; this page has not.
+      selectedId: 'env-laptop',
+      choose,
+      opening: null,
+      opened: () => undefined,
+    }
+    await render(
+      <ThemeProvider>
+        <EnvironmentClientProvider client={client}>
+          <EnvironmentChoiceContext.Provider value={choice}>
+            <EnvironmentApplicationProviders onLanding collapsedWorkspaceStorage={null}>
+              <SidebarProvider persist={false}>
+                <ChatWorkspace />
+              </SidebarProvider>
+            </EnvironmentApplicationProviders>
+          </EnvironmentChoiceContext.Provider>
+        </EnvironmentClientProvider>
+      </ThemeProvider>,
+    )
+    await act(() => client.settle())
+    expect(trigger()!.textContent).toContain('Desk')
+    await act(async () => trigger()!.click())
+    await act(async () => option('Laptop')!.click())
+
+    expect(choose).toHaveBeenCalledTimes(1)
+    const [to, from] = choose.mock.calls[0]!
+    expect(to).toBe('env-laptop')
+    expect(from).toMatchObject({ environmentId: 'env-desk', draftId: expect.any(String) })
   })
 })
