@@ -1,5 +1,6 @@
 import { CaretDownIcon, CaretLeftIcon, CaretRightIcon, PlayIcon } from '@phosphor-icons/react'
 import type { PlanTodo, PlanTodoStatus } from '@agentpack/contract'
+import { useEnvironmentAvailability } from '../../providers/environment-availability'
 import { usePlanStateOptional, type PlanRow } from '../../providers/plan-provider'
 import { TextPart } from '../parts/TextPart'
 import { typographyBody, typographyCaptionTiny, typographyLabelSm } from '../../lib/typography'
@@ -123,6 +124,8 @@ function PlanBody({ plan }: { plan: PlanRow }) {
 /** Review chip above the composer — expands upward in place to show the plan. */
 export function ComposerPlanPrompt() {
   const ctx = usePlanStateOptional()
+  // Building is an answer, so it waits with the composer's send, which says why.
+  const held = Boolean(useEnvironmentAvailability()?.sendBlockedReason)
   if (!ctx?.pendingPlan || !ctx.activeSessionId) return null
 
   const {
@@ -242,9 +245,10 @@ export function ComposerPlanPrompt() {
         </button>
         <button
           type="button"
-          onClick={() => void buildPendingPlan()}
-          disabled={isBuilding}
-          className={buildButtonClass}
+          // Whoever builds says why one didn't go; the chip stays to try again.
+          onClick={() => void buildPendingPlan().catch(() => undefined)}
+          disabled={isBuilding || held}
+          className={cn(buildButtonClass, held && 'disabled:cursor-default')}
         >
           <PlayIcon className="h-2.5 w-2.5" weight="fill" />
           {isBuilding ? '…' : 'Build'}

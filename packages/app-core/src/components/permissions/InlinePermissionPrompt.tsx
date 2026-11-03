@@ -5,6 +5,7 @@ import {
   usePermissionStateOptional,
   type PendingPermission,
 } from '../../providers/permission-provider'
+import { useEnvironmentAvailability } from '../../providers/environment-availability'
 import { typographyCaption, typographyCaptionTiny } from '../../lib/typography'
 
 function formatValue(value: unknown): string | null {
@@ -27,8 +28,9 @@ const OPTION_LABELS: Record<PermissionOption['kind'], string> = {
   reject_always: 'Always deny',
 }
 
-const denyButtonClass = `rounded-[3px] border-0 bg-[var(--basis-surface-hover)] px-1 py-px ${typographyCaptionTiny} leading-none text-[var(--basis-text-muted)] transition-colors hover:text-[var(--basis-text)]`
-const allowButtonClass = `rounded-[3px] border-0 bg-[var(--basis-action-bg)] px-1 py-px ${typographyCaptionTiny} leading-none text-[var(--basis-action-fg)] transition-colors hover:bg-[var(--basis-action-hover)]`
+const heldButtonClass = 'disabled:pointer-events-none disabled:opacity-50'
+const denyButtonClass = `rounded-[3px] border-0 bg-[var(--basis-surface-hover)] px-1 py-px ${typographyCaptionTiny} leading-none text-[var(--basis-text-muted)] transition-colors hover:text-[var(--basis-text)] ${heldButtonClass}`
+const allowButtonClass = `rounded-[3px] border-0 bg-[var(--basis-action-bg)] px-1 py-px ${typographyCaptionTiny} leading-none text-[var(--basis-action-fg)] transition-colors hover:bg-[var(--basis-action-hover)] ${heldButtonClass}`
 
 function PermissionCard({
   pending,
@@ -36,9 +38,17 @@ function PermissionCard({
   showDetails,
 }: {
   pending: PendingPermission
-  onResolve: (selection: PermissionSelection) => void
+  onResolve: (selection: PermissionSelection) => void | Promise<void>
   showDetails: boolean
 }) {
+  // An answer is a send: while the host holds sends, the choices wait and say why.
+  const heldReason = useEnvironmentAvailability()?.sendBlockedReason ?? null
+  const held = heldReason !== null
+  // Whoever answers says why one didn't go; the card stays to try again.
+  const resolve = (selection: PermissionSelection) => {
+    if (held) return
+    void Promise.resolve(onResolve(selection)).catch(() => undefined)
+  }
   const inputPreview = showDetails ? formatValue(pending.input) : null
   // Reject options left, allow options right; provider order kept within each group.
   const options = [...(pending.options ?? [])].sort(
@@ -64,7 +74,8 @@ function PermissionCard({
           options.map((option) => (
             <button
               key={option.optionId}
-              onClick={() => onResolve({ optionId: option.optionId })}
+              disabled={held}
+              onClick={() => resolve({ optionId: option.optionId })}
               className={isAllowKind(option.kind) ? allowButtonClass : denyButtonClass}
             >
               {option.name || OPTION_LABELS[option.kind] || option.kind}
@@ -72,15 +83,28 @@ function PermissionCard({
           ))
         ) : (
           <>
-            <button onClick={() => onResolve({ approved: false })} className={denyButtonClass}>
+            <button
+              disabled={held}
+              onClick={() => resolve({ approved: false })}
+              className={denyButtonClass}
+            >
               Deny
             </button>
-            <button onClick={() => onResolve({ approved: true })} className={allowButtonClass}>
+            <button
+              disabled={held}
+              onClick={() => resolve({ approved: true })}
+              className={allowButtonClass}
+            >
               Approve
             </button>
           </>
         )}
       </div>
+      {heldReason ? (
+        <div className={`mt-0.5 text-right ${typographyCaptionTiny} text-amber-500`} role="status">
+          {heldReason}
+        </div>
+      ) : null}
       {inputPreview ? (
         <pre
           className={`m-0 mt-1 max-h-24 overflow-auto font-mono text-ui-2xs leading-relaxed text-[var(--basis-text-muted)] whitespace-pre-wrap wrap-break-word custom-scrollbar`}
