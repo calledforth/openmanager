@@ -6,6 +6,7 @@ import {
   useEnvironmentState,
 } from '@openmanager/app-core/providers/environment-client'
 import { EnvironmentApplicationProviders } from '@openmanager/app-core/providers/environment-application'
+import { useSessionState } from '@openmanager/app-core/providers/session-provider'
 import { useSidebarData } from '@openmanager/app-core/providers/sidebar-provider'
 import { ProjectIcon } from '@openmanager/app-core/components/sidebar/ProjectIcon'
 import { phosphorIcon, useIcon } from '@openmanager/app-core/components/fluid/lib/icon-context'
@@ -154,11 +155,15 @@ function ConnectedOverlays({
     environments.length > 1
       ? environments.find((item) => item.environmentId === activeEnvironmentId)?.label
       : undefined
+  const { isDraftProjectRemoved, setDraftWorkspace } = useSessionState()
   // A project just added opens as a new agent in it: adding one is the
-  // first step of working there.
+  // first step of working there. A draft waiting for a project takes it.
   const openAdded = useCallback(
-    (workspaceId: string) => void createSession(workspaceId),
-    [createSession],
+    (workspaceId: string) => {
+      if (isDraftProjectRemoved && setDraftWorkspace) setDraftWorkspace(workspaceId)
+      else void createSession(workspaceId)
+    },
+    [createSession, isDraftProjectRemoved, setDraftWorkspace],
   )
   // New agent opens the quick palette over the page; where there is none
   // (an environment that keeps no drafts) it opens a page where the
@@ -273,12 +278,14 @@ function SessionTrail() {
 
 function ConnectedShell({
   client,
+  environmentId,
   pathname,
   landingDraftId,
   holdLandingDraft,
   children,
 }: {
   client: EnvironmentClient
+  environmentId: string | null
   pathname: string
   landingDraftId: string | null
   holdLandingDraft: boolean
@@ -308,6 +315,7 @@ function ConnectedShell({
   }, [client])
   return (
     <EnvironmentApplicationProviders
+      {...(environmentId ? { environmentId } : {})}
       addWorkspace={addWorkspace}
       navigateSession={navigateSession}
       navigateDraft={navigateDraft}
@@ -334,7 +342,10 @@ export function AppShell() {
   const { clients } = useEnvironmentClients()
   const address = useMemo(() => addressOf(pathname), [pathname])
   const lookup = useFindAddress(address)
-  const client = (lookup.owner ? clients[lookup.owner] : null) || selectedClient
+  // The owner only counts with its client in hand: the shell is keyed by, and
+  // names, the environment whose client it is given.
+  const ownerClient = lookup.owner ? clients[lookup.owner] : undefined
+  const client = ownerClient || selectedClient
   const {
     ui,
     connect,
@@ -351,6 +362,7 @@ export function AppShell() {
     selectedId,
     inUseEndpoint,
   } = useConnection()
+  const shellEnvironmentId = (ownerClient && lookup.owner) || selectedId
   // Pairing is how a browser with no environment gets one, so it never waits
   // behind the connect screen.
   const ungated =
@@ -410,8 +422,9 @@ export function AppShell() {
                   environment's, while a client replaced on the same environment keeps
                   the page as it is. */}
               <ConnectedShell
-                key={lookup.owner ?? selectedId}
+                key={shellEnvironmentId}
                 client={client}
+                environmentId={shellEnvironmentId}
                 pathname={pathname}
                 landingDraftId={address?.kind === 'draft' ? address.id : null}
                 holdLandingDraft={address?.kind === 'draft' && lookup.status === 'searching'}
