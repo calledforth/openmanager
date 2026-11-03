@@ -1,54 +1,53 @@
 import {
-  ClipboardTextIcon,
+  ChatIcon,
   DownloadSimpleIcon,
-  NotePencilIcon,
-  FilePlusIcon,
   FileMagnifyingGlassIcon,
-  FoldersIcon,
+  FilePlusIcon,
+  FolderOpenIcon,
   GlobeIcon,
   ListChecksIcon,
-  ChatIcon,
   MagnifyingGlassIcon,
+  NotePencilIcon,
+  PlugsConnectedIcon,
+  RobotIcon,
   TerminalIcon,
+  TrashIcon,
   WrenchIcon,
   type Icon,
 } from 'phosphor-react-native'
-import { canonicalizeToolName } from '@openmanager/shared/lib/tool-meta'
+import {
+  resolveTool,
+  type ToolPartData,
+  type ToolUiKind,
+} from '@openmanager/shared/lib/tool-presenter'
 
-// Phosphor equivalents of the desktop `ToolRegistry` icon map. Kept
-// 1:1 with apps/desktop/.../components/parts/ToolRegistry.ts so the two clients
-// present the same glyph per tool.
+// Phosphor equivalents of web's `ToolRow` icon map (app-core
+// components/parts/ToolRow.tsx), kept 1:1 so the two clients show the same
+// glyph per tool. The tool is resolved the way web resolves it
+// (`resolveTool`): by the provider's name where it gives one (Claude Code,
+// OpenCode), else from the title and ACP kind (Cursor), so a call reads the
+// same whichever provider ran it.
 
 const TOOL_ICONS: Record<string, Icon> = {
   Bash: TerminalIcon,
   Edit: NotePencilIcon,
-  Write: FilePlusIcon,
   MultiEdit: NotePencilIcon,
+  Write: FilePlusIcon,
+  Delete: TrashIcon,
   Read: FileMagnifyingGlassIcon,
   Grep: MagnifyingGlassIcon,
-  Glob: FoldersIcon,
+  Search: MagnifyingGlassIcon,
+  Glob: FolderOpenIcon,
+  List: FolderOpenIcon,
   WebSearch: GlobeIcon,
   WebFetch: DownloadSimpleIcon,
   TodoWrite: ListChecksIcon,
-  Task: ClipboardTextIcon,
+  Task: RobotIcon,
   AskUserQuestion: ChatIcon,
 }
 
-/** The protocol's tool kinds, for a call the environment names in its own words. */
-const KIND_ICONS: Record<string, Icon> = {
-  read: FileMagnifyingGlassIcon,
-  edit: NotePencilIcon,
-  delete: NotePencilIcon,
-  move: FoldersIcon,
-  search: MagnifyingGlassIcon,
-  execute: TerminalIcon,
-  fetch: DownloadSimpleIcon,
-}
-
-export function getToolIcon(toolName: string, kind?: string): Icon {
-  return (
-    TOOL_ICONS[canonicalizeToolName(toolName)] ??
-    (kind ? KIND_ICONS[kind] : undefined) ??
-    WrenchIcon
-  )
+/** The glyph for a call; `uiKind` is the shared presenter's, which knows an MCP call. */
+export function getToolIcon(part: ToolPartData, uiKind?: ToolUiKind): Icon {
+  if (uiKind === 'mcp') return PlugsConnectedIcon
+  return TOOL_ICONS[resolveTool(part).canonical] ?? WrenchIcon
 }

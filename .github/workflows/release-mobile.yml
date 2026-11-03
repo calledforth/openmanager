@@ -1,12 +1,12 @@
 name: Mobile Release
 
-# Every merge to dev that can change the phone app publishes a signed Android
+# Every merge to main that can change the phone app publishes a signed Android
 # APK to a `mobile-v<version>` GitHub Release, and points the feed the installed
 # app reads at it. See docs/RELEASING.md.
 
 on:
   push:
-    branches: [dev]
+    branches: [main]
     paths:
       - 'apps/mobile/**'
       - 'packages/**'
@@ -60,11 +60,8 @@ jobs:
           java-version: 21
 
       - name: Set up Gradle
+        # Releases run on main, the default branch, which saves this cache.
         uses: gradle/actions/setup-gradle@8da46b539cd8fe6ab27ca75128919a18d757604c # v6.4.1
-        with:
-          # By default only the default branch saves this cache. Releases run on
-          # dev, so without this every build starts empty.
-          cache-read-only: false
 
       - name: Install dependencies
         # Expo's recommended pnpm layout for a native build.

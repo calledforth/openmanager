@@ -1,7 +1,12 @@
 import { memo, useMemo, type ReactNode } from 'react'
 import { View } from 'react-native'
 import { groupActivityParts, type ActivitySummary } from '@openmanager/shared/lib/activity-groups'
-import type { ArtifactSource, MessagePart } from '@openmanager/app-core/logic'
+import type {
+  ArtifactSource,
+  FailurePart,
+  MessagePart,
+  NoticePart,
+} from '@openmanager/app-core/logic'
 
 import { countRender } from '../../session/render-probe'
 import { usePhoneTheme } from '../../theme/ThemeProvider'
@@ -10,6 +15,7 @@ import { ImagePart } from './ImagePart'
 import { TextPart } from './TextPart'
 import { ThinkingPart } from './ThinkingPart'
 import { ToolRow, type ToolPartData } from './ToolRow'
+import { TurnFailureRow, TurnNoticeRow } from './TurnNoticeRow'
 import { toolCallCount, workGroupLabel } from './work-groups'
 import { WorkGroup } from './WorkGroup'
 
@@ -90,6 +96,14 @@ function renderPart(part: Part, isStreaming: boolean | undefined): ReactNode {
       )
     case 'compaction':
       return <NoteRow>Session compacted</NoteRow>
+    case 'notice': {
+      // What the provider said about the turn: kept with it, or live until
+      // the environment clears it.
+      const notice = part as unknown as NoticePart
+      return <TurnNoticeRow notice={notice.notice} live={notice.live === true} />
+    }
+    case 'failure':
+      return <TurnFailureRow part={part as unknown as FailurePart} />
     default:
       // Step markers, snapshots and parts the phone does not draw yet.
       return null

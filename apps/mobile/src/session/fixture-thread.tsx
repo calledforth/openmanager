@@ -30,7 +30,6 @@ import {
   permissionThread,
   workingThread,
 } from './fixture-threads'
-import { threadNoticeSource, type TurnNoticeSource } from './turn-notices'
 
 /** The fixture session that opens the recorded thread. */
 export const FIXTURE_THREAD_SESSION_ID = 's-tool-payloads'
@@ -56,7 +55,6 @@ export interface FixtureDriver {
 
 export interface FixtureThread {
   stores: ActiveThreadStores
-  notices: TurnNoticeSource
   subscribe: (listener: () => void) => () => void
   getThread: () => ThreadState | null
   getMessages: () => UIMessage[]
@@ -160,7 +158,6 @@ export function createFixtureThread(initial: ThreadState | null): FixtureThread 
     subscribe,
     getThread: () => thread,
     getMessages: () => projection.messages,
-    notices: threadNoticeSource(subscribe, () => thread),
     stores: {
       streamingStore: {
         subscribe: (_id, listener) => subscribe(listener),

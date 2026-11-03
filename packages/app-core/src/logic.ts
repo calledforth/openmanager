@@ -27,6 +27,7 @@ export * from './providers/platform-provider'
 export * from './providers/question-provider'
 export * from './providers/session-provider'
 export * from './providers/sidebar-provider'
+export * from './providers/turn-recovery'
 export * from './providers/view-actions'
 
 // Stores and view-model helpers.
@@ -39,6 +40,8 @@ export * from './lib/stream-continuity'
 export * from './lib/streaming-messages-store'
 export * from './lib/theme-families'
 export * from './lib/theme-tokens'
+export * from './lib/tool-output'
+export * from './lib/turn-notice-parts'
 export * from './lib/workspace-availability'
 
 // Pure logic that lives beside the components it serves.

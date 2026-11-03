@@ -51,7 +51,7 @@ it an unpaired phone shows the empty home.
 
 ## Releases
 
-Every merge to `dev` that can change the app publishes a signed APK, and installed copies offer
+Every merge to `main` that can change the app publishes a signed APK, and installed copies offer
 it on the home and in Settings. See [Mobile releases](../../docs/RELEASING.md#mobile-releases).
 Local builds have no updater; `src/updates/distribution.ts` is the switch.
 

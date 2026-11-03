@@ -17,6 +17,7 @@ type Message = ThreadState['messages'][number]
 type Tool = ThreadState['tools'][number]
 type Reasoning = ThreadState['reasoning'][number]
 type Ref = ThreadState['order'][number]
+type Notice = ThreadState['notices'][number]
 
 const iso = (ms: number) => new Date(ms).toISOString()
 const text = (value: string): ContentBlock[] => [{ type: 'text', text: value }]
@@ -35,6 +36,7 @@ class ThreadBuilder {
       order: [],
       interactions: [],
       notices: [],
+      liveNotices: [],
       outbox: [],
       hydration: 'ready',
       listing: {},
@@ -74,15 +76,31 @@ class ThreadBuilder {
     return this
   }
 
+  /** A tool call; `extra` carries what a v21 environment sends with it (name, input, paths, counts, times). */
   tool(
     turnId: string,
     toolCallId: string,
     title: string,
     kind: Tool['kind'],
     status: Tool['status'],
+    extra: Omit<Partial<Tool>, 'toolCallId' | 'turnId' | 'title' | 'kind' | 'status'> = {},
   ) {
-    this.state.tools.push({ toolCallId, turnId, title, ...(kind ? { kind } : {}), status })
+    this.state.tools.push({
+      toolCallId,
+      turnId,
+      title,
+      ...(kind ? { kind } : {}),
+      status,
+      ...extra,
+    })
     this.place({ kind: 'tool', id: toolCallId, turnId })
+    return this
+  }
+
+  /** A durable notice, in the place it happened. */
+  notice(turnId: string, noticeId: string, fields: Omit<Notice, 'noticeId' | 'turnId'>) {
+    this.state.notices.push({ noticeId, turnId, ...fields })
+    this.place({ kind: 'notice', id: noticeId, turnId })
     return this
   }
 
@@ -112,10 +130,28 @@ export function workingThread(now: number): ThreadState {
       'assistant',
       "The runtime already forwards `rawInput` and `rawOutput`; only `projectAgentEvent` drops them. I'll carry them through `turn_activity` and bump the protocol to v17.",
     )
-    .tool(turn, 'live-t1', 'Read', 'read', 'completed')
-    .tool(turn, 'live-t2', 'Read', 'read', 'completed')
-    .tool(turn, 'live-t3', 'Edit', 'edit', 'completed')
-    .tool(turn, 'live-t4', 'Bash', 'execute', 'in_progress')
+    .tool(turn, 'live-t1', 'Read', 'read', 'completed', {
+      toolName: 'Read',
+      input: { file_path: 'packages/agent-runtime/src/protocol/projectAgentEvent.ts' },
+      locations: [{ path: 'packages/agent-runtime/src/protocol/projectAgentEvent.ts' }],
+    })
+    .tool(turn, 'live-t2', 'Read', 'read', 'completed', {
+      toolName: 'Read',
+      input: { file_path: 'packages/protocol/src/domains.ts' },
+      locations: [{ path: 'packages/protocol/src/domains.ts' }],
+    })
+    .tool(turn, 'live-t3', 'Edit', 'edit', 'completed', {
+      toolName: 'Edit',
+      input: { file_path: 'packages/protocol/src/domains.ts' },
+      locations: [{ path: 'packages/protocol/src/domains.ts' }],
+      lineChanges: { added: 24, removed: 3 },
+    })
+    .tool(turn, 'live-t4', 'Bash', 'execute', 'in_progress', {
+      toolName: 'Bash',
+      input: { command: 'pnpm --filter @openmanager/protocol test' },
+      output: ' RUN  v4.1.0 packages/protocol\n\n ✓ tests/tool-state.test.ts (12 tests)\n',
+      startedAt: iso(now - 4_000),
+    })
     .thought(turn, 'live-thought-2', '', 'delta')
   return live.state
 }
@@ -149,7 +185,10 @@ export function permissionThread(now: number): ThreadState {
     )
     .tool(turn, 'p-t1', 'Read', 'read', 'completed')
     .tool(turn, 'p-t2', 'Edit', 'edit', 'completed')
-    .tool(turn, 'p-t3', 'pnpm --filter @openmanager/web test', 'execute', 'pending')
+    .tool(turn, 'p-t3', 'pnpm --filter @openmanager/web test', 'execute', 'pending', {
+      toolName: 'Bash',
+      input: { command: 'pnpm --filter @openmanager/web test' },
+    })
   b.state.interactions.push({
     sessionId: 's-settings-redesign',
     threadId: b.state.thread.threadId,
@@ -210,9 +249,26 @@ export function doneThread(now: number): ThreadState {
       'd-thought',
       'Three tiers read best when each one names who it is for. Keep the numbers in one table and one source object.',
     )
-    .tool(turn, 'd-t1', 'Read', 'read', 'completed')
-    .tool(turn, 'd-t2', 'Grep', 'search', 'completed')
-    .tool(turn, 'd-t3', 'Edit', 'edit', 'completed')
+    .tool(turn, 'd-t1', 'Read', 'read', 'completed', {
+      toolName: 'Read',
+      input: { file_path: 'apps/site/src/pages/pricing.tsx' },
+      locations: [{ path: 'apps/site/src/pages/pricing.tsx' }],
+    })
+    .tool(turn, 'd-t2', 'Grep', 'search', 'completed', {
+      toolName: 'Grep',
+      input: { pattern: 'TIERS', path: 'apps/site/src' },
+    })
+    .tool(turn, 'd-t3', 'Edit', 'edit', 'completed', {
+      toolName: 'Edit',
+      input: { file_path: 'apps/site/src/pages/pricing.tsx' },
+      locations: [{ path: 'apps/site/src/pages/pricing.tsx' }],
+      lineChanges: { added: 41, removed: 12 },
+    })
+    .notice(turn, 'd-n1', {
+      kind: 'compacted',
+      message: 'Conversation compacted',
+      compaction: { trigger: 'auto', tokensBefore: 182_400, tokensAfter: 21_300 },
+    })
     .message(turn, 'd-a1', 'assistant', PRICING_ANSWER)
   return b.state
 }
@@ -223,8 +279,14 @@ export function backgroundThread(now: number): ThreadState {
   const turn = 'turn-b1'
   b.turn(turn, 'completed', now - 262_000, now - 240_000)
     .message(turn, 'b-user', 'user', 'Start the dev server and keep the tests watching.')
-    .tool(turn, 'b-t1', 'Bash', 'execute', 'completed')
-    .tool(turn, 'b-t2', 'Bash', 'execute', 'completed')
+    .tool(turn, 'b-t1', 'Bash', 'execute', 'completed', {
+      toolName: 'Bash',
+      input: { command: 'pnpm dev --port 5174', run_in_background: true },
+    })
+    .tool(turn, 'b-t2', 'Bash', 'execute', 'completed', {
+      toolName: 'Bash',
+      input: { command: 'pnpm vitest --watch', run_in_background: true },
+    })
     .message(
       turn,
       'b-a1',
@@ -234,20 +296,46 @@ export function backgroundThread(now: number): ThreadState {
   return b.state
 }
 
-/** A turn the provider gave up on, with the environment's words for why. */
+/**
+ * A turn the provider gave up on: a call that failed, one the user declined,
+ * a notice that a limit is close, and the typed failure the turn ends on.
+ */
 export function failedThread(now: number): ThreadState {
   const b = new ThreadBuilder('s-sync-f2')
   const turn = 'turn-f1'
-  b.turn(turn, 'failed', now - 10_838_000, now - 10_800_000)
+  const started = now - 10_838_000
+  b.turn(turn, 'failed', started, now - 10_800_000)
     .message(turn, 'f-user', 'user', 'Run the convergence harness against the fixture replay.')
-    .tool(turn, 'f-t1', 'Bash', 'execute', 'completed')
-    .tool(turn, 'f-t2', 'Bash', 'execute', 'failed')
+    .tool(turn, 'f-t1', 'Bash', 'execute', 'completed', {
+      toolName: 'Bash',
+      input: { command: 'pnpm --filter @openmanager/server build' },
+      outputBytes: 1_840,
+      startedAt: iso(started + 2_000),
+      finishedAt: iso(started + 14_500),
+    })
+    .tool(turn, 'f-t2', 'Bash', 'execute', 'failed', {
+      toolName: 'Bash',
+      input: { command: 'node --test tests/convergence/scenarios.test.ts' },
+      outputBytes: 6_210,
+      startedAt: iso(started + 15_000),
+      finishedAt: iso(started + 21_000),
+    })
+    .tool(turn, 'f-t3', 'Bash', 'execute', 'declined', {
+      toolName: 'Bash',
+      input: { command: 'rm -rf apps/server/.data' },
+    })
+    .notice(turn, 'f-n1', {
+      kind: 'usage_warning',
+      message: "You've used 90% of your weekly limit",
+      resetsAt: iso(now + 2 * 86_400_000),
+    })
   // The turn carries its failure, as the environment's snapshot does.
   b.state.turns[b.state.turns.length - 1]!.failure = {
-    reason: 'provider_process_exited',
-    message: 'The provider process exited (code 1).',
+    reason: 'overloaded',
+    message: 'The provider is overloaded right now.',
+    action: 'retry',
+    detail: 'API Error: 529 {"type":"overloaded_error","message":"Overloaded"}',
   }
-  b.state.notices.push({ turnId: turn, message: 'Retried once after the provider was overloaded.' })
   return b.state
 }
 

@@ -140,6 +140,7 @@ export const RECORDED_THREAD: ThreadState = {
   ],
   interactions: [],
   notices: [],
+  liveNotices: [],
   outbox: [],
   hydration: 'ready',
   listing: {},

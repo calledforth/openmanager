@@ -39,7 +39,6 @@ import {
   statusLineView,
 } from '../src/session/status-line'
 import { turnIdOf } from '../src/session/thread-rows'
-import { noticesOfTurn } from '../src/session/turn-notices'
 
 const NOW = Date.parse('2026-10-22T10:00:00.000Z')
 
@@ -90,7 +89,7 @@ describe('status line', () => {
     expect(view).toMatchObject({
       mark: 'error',
       label: 'Failed',
-      detail: 'The provider process exited (code 1).',
+      detail: 'The provider is overloaded right now.',
     })
     expect(formatClock(view!.clock!, NOW)).toBe('3h ago')
   })
@@ -197,14 +196,6 @@ describe('transcript rows', () => {
     expect(turnIdOf({ role: 'assistant', rowKey: 'send:1' })).toBeNull()
   })
 
-  it('hands out the same notices array until the list changes', () => {
-    const thread = failedThread(NOW)
-    const first = noticesOfTurn(thread.notices, 'turn-f1')
-    expect(first).toEqual(['Retried once after the provider was overloaded.'])
-    expect(noticesOfTurn(thread.notices, 'turn-f1')).toBe(first)
-    expect(noticesOfTurn(thread.notices, 'other')).toBe(noticesOfTurn([], 'x'))
-  })
-
   it('lists a session children in the order the shared listing gives them', () => {
     const rows = [
       session({ externalId: 'p' }),
@@ -267,7 +258,8 @@ describe('work groups', () => {
     const fold = foldSettledTurn(projection.byId.get(reply.externalId)!.content.parts ?? [])
     expect(fold.toolCount).toBe(3)
     expect(fold.work.map((part) => part.type)).toEqual(['reasoning', 'tool', 'tool', 'tool'])
-    expect(fold.answer.map((part) => part.type)).toEqual(['text'])
+    // The compaction notice changes how to read the answer, so it stays out with it.
+    expect(fold.answer.map((part) => part.type)).toEqual(['notice', 'text'])
   })
 
   it('labels a run as a line, live or settled', () => {

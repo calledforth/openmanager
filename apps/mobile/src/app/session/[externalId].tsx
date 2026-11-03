@@ -15,7 +15,6 @@ import { usePhoneConnection } from '../../environment/PhoneEnvironmentProvider'
 import { childSessionsOf } from '../../session/child-sessions'
 import { FixtureThreadStores, useFixtureThread } from '../../session/fixture-thread'
 import { SessionThread } from '../../session/SessionThread'
-import { threadNoticeSource, TurnNoticesProvider } from '../../session/turn-notices'
 import { useReadOnlySession } from '../../session/useReadOnlySession'
 import { unavailableSessionActions, useSessionActions } from '../../session/useSessionActions'
 import { useStatusLine } from '../../session/useStatusLine'
@@ -39,14 +38,13 @@ function LiveSession({ sessionId }: { sessionId: string }) {
     { focused },
   )
   // The session's own thread, while it is the one the client has open: the
-  // status line's times and the turns' notices come from it.
+  // status line's times come from it.
   const getThread = useCallback(() => {
     const state = client.getState()
     return state.activeSessionId === sessionId ? selectActiveThread(state) : null
   }, [client, sessionId])
   const subscribe = useCallback((listener: () => void) => client.subscribe(listener), [client])
   const status = useStatusLine(session, subscribe, getThread)
-  const notices = useMemo(() => threadNoticeSource(subscribe, getThread), [getThread, subscribe])
   // Work the agent left running: above the status line, with its Stop.
   const tasks = useBackgroundTasks(client, sessionId)
   const stopTasks = useCallback(
@@ -75,22 +73,20 @@ function LiveSession({ sessionId }: { sessionId: string }) {
   // One element for the page's life: the thread re-rendering leaves it be.
   const composer = useMemo(() => <LiveComposer sessionId={sessionId} ui={ui} />, [sessionId, ui])
   return (
-    <TurnNoticesProvider source={notices}>
-      <SessionThread
-        title={untitled(session?.title ?? title)}
-        project={workspace?.name}
-        projectId={workspace?.path ?? null}
-        above={above}
-        status={status}
-        messages={messages}
-        phase={phase}
-        failure={failure}
-        onRetry={retry}
-        childSessions={childSessions}
-        actions={actions}
-        composer={composer}
-      />
-    </TurnNoticesProvider>
+    <SessionThread
+      title={untitled(session?.title ?? title)}
+      project={workspace?.name}
+      projectId={workspace?.path ?? null}
+      above={above}
+      status={status}
+      messages={messages}
+      phase={phase}
+      failure={failure}
+      onRetry={retry}
+      childSessions={childSessions}
+      actions={actions}
+      composer={composer}
+    />
   )
 }
 
@@ -112,19 +108,17 @@ function FixtureSession({ sessionId, opened }: { sessionId: string; opened?: str
   const composer = useMemo(() => <FixtureComposer session={session} ui={ui} />, [session, ui])
   return (
     <FixtureThreadStores stores={fixture.stores}>
-      <TurnNoticesProvider source={fixture.notices}>
-        <SessionThread
-          title={untitled(session?.title)}
-          project={workspace?.name}
-          projectId={workspace?.path ?? null}
-          status={status}
-          messages={messages}
-          phase="ready"
-          childSessions={childSessions}
-          actions={actions}
-          composer={composer}
-        />
-      </TurnNoticesProvider>
+      <SessionThread
+        title={untitled(session?.title)}
+        project={workspace?.name}
+        projectId={workspace?.path ?? null}
+        status={status}
+        messages={messages}
+        phase="ready"
+        childSessions={childSessions}
+        actions={actions}
+        composer={composer}
+      />
     </FixtureThreadStores>
   )
 }

@@ -3,8 +3,7 @@ import { View } from 'react-native'
 import { useMessageContent, useStreamingMessage, type UIMessage } from '@openmanager/app-core/logic'
 
 import { countRender } from '../../session/render-probe'
-import { readsPersistedContent, resolveThreadRow, turnIdOf } from '../../session/thread-rows'
-import { useTurnNotices } from '../../session/turn-notices'
+import { readsPersistedContent, resolveThreadRow } from '../../session/thread-rows'
 import { AssistantMessage } from './AssistantMessage'
 import { UserMessage } from './UserMessage'
 
@@ -18,7 +17,6 @@ export const ResolvedMessage = memo(function ResolvedMessage({ message }: { mess
   countRender('ResolvedMessage')
   const streaming = useStreamingMessage(message.externalId)
   const content = useMessageContent(message.externalId, readsPersistedContent(message))
-  const notices = useTurnNotices(turnIdOf(message))
   const row = resolveThreadRow(message, content, streaming)
 
   if (!row) return null
@@ -38,7 +36,6 @@ export const ResolvedMessage = memo(function ResolvedMessage({ message }: { mess
           isFinal={row.isFinal}
           parts={row.parts}
           runtime={row.runtime}
-          notices={notices}
         />
       )}
     </View>
