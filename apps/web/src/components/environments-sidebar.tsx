@@ -449,6 +449,7 @@ function EnvironmentsSidebar({
       const client = clients[environmentId]
       // Down, its client would hold the command and send it on reconnecting,
       // long after anyone asked. It waits for the environment, not in a queue.
+      // Nothing was sent, so nothing moved that a rejection would move back.
       const refusal = !client
         ? `Couldn't ${asked} on ${name}: it isn't connected.`
         : down.has(environmentId)
@@ -456,7 +457,7 @@ function EnvironmentsSidebar({
           : null
       if (refusal) {
         reportFailure(refusal)
-        throw new Error(refusal)
+        return
       }
       try {
         await run(client!)
