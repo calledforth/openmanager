@@ -190,6 +190,8 @@ export interface SidebarEnvironmentRows {
   drafts: SidebarDraft[]
   /** Settling can be offered: it is connected and can keep the change. */
   canSettle: boolean
+  /** Pinning can be offered, on the same terms. */
+  canPin: boolean
   /** Its project icons can be asked for. */
   hasIcons: boolean
 }

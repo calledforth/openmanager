@@ -394,6 +394,29 @@ describe('one sidebar for every environment', () => {
     expect(selected()).toBe('env-desk')
   })
 
+  it('pins a card through its own environment, whichever is open', async () => {
+    seedRegistry()
+    answering()
+    const user = userEvent.setup()
+    const desk = mockOf('env-desk')
+    const laptop = mockOf('env-laptop')
+    const onDesk = vi.spyOn(desk.commands, 'pinSession')
+    const onLaptop = vi.spyOn(laptop.commands, 'pinSession')
+    renderBoth('/', { desk, laptop })
+
+    await waitFor(() => expect(laptop.getState().connection.phase).toBe('connected'))
+    const { card } = await cardOf(/Laptop chat/)
+    await user.click(await card.findByRole('button', { name: 'Pin to top' }))
+
+    expect(onLaptop).toHaveBeenCalledWith('env-laptop-session', true)
+    expect(onDesk).not.toHaveBeenCalled()
+    await waitFor(() =>
+      expect(laptop.getState().sessions['env-laptop-session']?.pinnedAt).toBeTruthy(),
+    )
+    expect(await card.findByRole('button', { name: 'Unpin' })).toBeInTheDocument()
+    expect(selected()).toBe('env-desk')
+  })
+
   it('settles the card it was asked to when its twin is open', async () => {
     seedRegistry()
     answering()
@@ -447,6 +470,10 @@ describe('one sidebar for every environment', () => {
     expect(settle).not.toHaveBeenCalled()
     expect(rename).not.toHaveBeenCalled()
     expect(remove).not.toHaveBeenCalled()
+    await act(async () => {
+      await sidebar.data!.pinSession?.('/desk-project', id, true, 'env-gone')
+    })
+    expect(desk.getState().sessions[id]?.pinnedAt ?? null).toBeNull()
     expect(sidebar.drafts!.pendingDiscard).toBeNull()
     expect(desk.getState().sessions[id]?.title).toBe('Desk chat')
   })

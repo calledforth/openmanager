@@ -171,6 +171,7 @@ export function sidebarRowAbilities(client: Reader) {
   const { connection } = client.getState()
   return {
     canSettle: connection.phase === 'connected' && client.supports('settleSession'),
+    canPin: connection.phase === 'connected' && client.supports('pinSession'),
     hasIcons:
       connection.capabilities.includes('workspace.icon') && client.supports('resolveWorkspaceIcon'),
   }
@@ -234,13 +235,14 @@ export function createSidebarRowsReader() {
     const facts = sameSidebarDraftFacts(previous?.facts ?? NO_DRAFT_FACTS, read)
       ? (previous?.facts ?? read)
       : read
-    const { canSettle, hasIcons } = sidebarRowAbilities(client)
+    const { canSettle, canPin, hasIcons } = sidebarRowAbilities(client)
     const unchanged =
       previous &&
       previous.rows.workspaces === workspaces &&
       previous.rows.sessions === sessions &&
       previous.facts === facts &&
       previous.rows.canSettle === canSettle &&
+      previous.rows.canPin === canPin &&
       previous.rows.hasIcons === hasIcons
     const rows: SidebarEnvironmentRows = unchanged
       ? previous.rows
@@ -250,6 +252,7 @@ export function createSidebarRowsReader() {
           sessions,
           drafts: facts.cards,
           canSettle,
+          canPin,
           hasIcons,
         }
     last = { inputs, rows, facts }

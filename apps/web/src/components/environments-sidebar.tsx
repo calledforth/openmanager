@@ -155,11 +155,15 @@ const NOT_OFFERED = 'none'
 function useOpenRowAbilities(client: EnvironmentClient | undefined) {
   const read = useCallback(() => {
     if (!client) return NOT_OFFERED
-    const { canSettle, hasIcons } = sidebarRowAbilities(client)
-    return `${canSettle ? 'settle' : ''} ${hasIcons ? 'icons' : ''}`
+    const { canSettle, canPin, hasIcons } = sidebarRowAbilities(client)
+    return `${canSettle ? 'settle' : ''} ${canPin ? 'pin' : ''} ${hasIcons ? 'icons' : ''}`
   }, [client])
   const abilities = useSyncExternalStore(client?.subscribe ?? NEVER, read, read)
-  return { canSettle: abilities.includes('settle'), hasIcons: abilities.includes('icons') }
+  return {
+    canSettle: abilities.includes('settle'),
+    canPin: abilities.includes('pin'),
+    hasIcons: abilities.includes('icons'),
+  }
 }
 
 /**
@@ -193,6 +197,7 @@ function sameRowEnvironments(
         b !== undefined &&
         a.name === b.name &&
         a.canSettle === b.canSettle &&
+        a.canPin === b.canPin &&
         a.iconLookup === b.iconLookup
       )
     })
@@ -225,30 +230,38 @@ function EnvironmentsSidebar({ footer }: { footer: ReactNode }) {
   const pending = discards.pending
   const several = order.length > 1
   const others = useOtherEnvironmentRows(clients, several ? order : NO_ORDER, openId)
-  const { canSettle: openCanSettle, hasIcons: openHasIcons } = useOpenRowAbilities(openClient)
+  const {
+    canSettle: openCanSettle,
+    canPin: openCanPin,
+    hasIcons: openHasIcons,
+  } = useOpenRowAbilities(openClient)
 
   const rowEnvironmentsRef = useRef<SidebarEnvironmentsValue['rowEnvironments'] | null>(null)
   const rowEnvironments = useMemo(() => {
     if (!several) return null
     const next: Record<string, SidebarRowEnvironment> = {}
-    const add = (environmentId: string, canSettle: boolean, hasIcons: boolean) => {
+    const add = (
+      environmentId: string,
+      { canSettle, canPin, hasIcons }: { canSettle: boolean; canPin: boolean; hasIcons: boolean },
+    ) => {
       const client = clients[environmentId]
       next[environmentId] = {
         name:
           environments.find((item) => item.environmentId === environmentId)?.label ?? environmentId,
         canSettle,
+        canPin,
         iconLookup: hasIcons && client ? iconLookupOf(client) : null,
       }
     }
-    if (openId) add(openId, openCanSettle, openHasIcons)
-    for (const { environmentId, canSettle, hasIcons } of others) {
-      add(environmentId, canSettle, hasIcons)
+    if (openId) {
+      add(openId, { canSettle: openCanSettle, canPin: openCanPin, hasIcons: openHasIcons })
     }
+    for (const row of others) add(row.environmentId, row)
     const before = rowEnvironmentsRef.current
     if (before && sameRowEnvironments(before, next)) return before
     rowEnvironmentsRef.current = next
     return next
-  }, [clients, environments, openCanSettle, openHasIcons, openId, others, several])
+  }, [clients, environments, openCanPin, openCanSettle, openHasIcons, openId, others, several])
 
   const listed = useMemo<SidebarEnvironmentsValue | null>(
     () => (rowEnvironments ? { others, rowEnvironments, filling: !everyCacheRead } : null),
@@ -271,9 +284,10 @@ function EnvironmentsSidebar({ footer }: { footer: ReactNode }) {
   )
 
   const anySettles = others.some((row) => row.canSettle)
+  const anyPins = others.some((row) => row.canPin)
   const sidebarData = useMemo<SidebarDataValue | null>(() => {
     if (!data) return null
-    const { deleteSession, renameSession, selectSession, settleSession } = data
+    const { deleteSession, pinSession, renameSession, selectSession, settleSession } = data
     return {
       ...data,
       selectSession: (path, id, providerId, environmentId) => {
@@ -307,8 +321,17 @@ function EnvironmentsSidebar({ footer }: { footer: ReactNode }) {
             },
           }
         : {}),
+      ...(pinSession || anyPins
+        ? {
+            pinSession: async (path, id, pinned, environmentId) => {
+              const other = elsewhere(environmentId)
+              if (other) await other.client?.commands.pinSession(id, pinned)
+              else await pinSession?.(path, id, pinned)
+            },
+          }
+        : {}),
     }
-  }, [anySettles, data, elsewhere, opening])
+  }, [anyPins, anySettles, data, elsewhere, opening])
 
   // The cards are the same array while no card changed: the sidebar reads a
   // new one as a card having changed.

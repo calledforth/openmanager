@@ -69,6 +69,32 @@ describe('partitionSidebarSessions', () => {
     expect(active.map((entry) => entry.root.workspace.environmentId)).toEqual(['laptop', 'desk'])
   })
 
+  it('puts every environment\u2019s pins on top, newest pin first, then the rest by activity', () => {
+    const { active } = partitionSidebarSessions([
+      {
+        ...workspace('same-path', [
+          session('desk-new', '2026-09-24T10:00:00Z', { environmentId: 'desk' }),
+          session('desk-pinned', '2026-09-20T10:00:00Z', {
+            environmentId: 'desk',
+            pinnedAt: '2026-09-21T10:00:00Z',
+          }),
+        ]),
+        environmentId: 'desk',
+      },
+      {
+        ...workspace('same-path', [
+          session('laptop-pinned', '2026-09-19T10:00:00Z', {
+            environmentId: 'laptop',
+            pinnedAt: '2026-09-22T10:00:00Z',
+          }),
+          session('laptop-old', '2026-09-18T10:00:00Z', { environmentId: 'laptop' }),
+        ]),
+        environmentId: 'laptop',
+      },
+    ])
+    expect(ids(active)).toEqual([['laptop-pinned'], ['desk-pinned'], ['desk-new'], ['laptop-old']])
+  })
+
   it('keeps equal times in the same order whichever environment is listed first', () => {
     const at = '2026-09-24T10:00:00Z'
     const on = (environmentId: string) => ({
