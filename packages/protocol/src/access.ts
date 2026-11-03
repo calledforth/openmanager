@@ -13,7 +13,7 @@ import { ComposerCommandSchemas } from './composer.js'
 import { ErrorEnvelopeSchema } from './envelopes.js'
 import { ProtocolErrorSchema } from './errors.js'
 import { HEARTBEAT_CAPABILITY } from './heartbeat.js'
-import { PROVIDER_PROBE_CAPABILITY } from './providers.js'
+import { PROVIDER_LIMITS_REFRESH_CAPABILITY, PROVIDER_PROBE_CAPABILITY } from './providers.js'
 import type { ReplayCommand } from './replay.js'
 import { UPLOAD_TICKET_CAPABILITY, UploadCommandSchemas } from './uploads.js'
 import {
@@ -49,6 +49,7 @@ export type CommandName =
   | 'protocol.handshake'
   | typeof HEARTBEAT_CAPABILITY
   | typeof PROVIDER_PROBE_CAPABILITY
+  | typeof PROVIDER_LIMITS_REFRESH_CAPABILITY
   | keyof typeof ProofCommandSchemas
   | keyof typeof ComposerCommandSchemas
   | keyof typeof UploadCommandSchemas
@@ -78,6 +79,8 @@ export const COMMAND_ACCESS = Object.freeze({
   'subscription.replay': 'read',
   'provider.catalog.get': 'read',
   [PROVIDER_PROBE_CAPABILITY]: 'read',
+  // Spawns a throwaway CLI like a probe; the server throttles it.
+  [PROVIDER_LIMITS_REFRESH_CAPABILITY]: 'read',
   [ENVIRONMENT_SETTINGS_GET_CAPABILITY]: 'read',
   [DRAFT_LIST_CAPABILITY]: 'read',
   'session.create': 'operate',

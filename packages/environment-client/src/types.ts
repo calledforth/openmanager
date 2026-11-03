@@ -24,6 +24,7 @@ import type {
   PairingLink,
   PairingRedeemResponse,
   ProviderBootstrap,
+  ProviderLimits,
   ProviderCatalogEntry,
   Session,
   SessionComposerState,
@@ -458,6 +459,13 @@ export interface ProbeProviderInput {
   workspaceId: string
 }
 
+export interface RefreshProviderLimitsInput {
+  providerId: string
+  /** Keep a reading younger than this. The environment holds its own floor
+   * (a minute), so asking often is cheap. */
+  maxAgeMs?: number
+}
+
 export interface SetSessionModelInput {
   sessionId: string
   modelId: string
@@ -527,6 +535,12 @@ export interface EnvironmentCommands {
   getProviderCatalog(): Promise<ProviderCatalogEntry[]>
   /** Re-checks one provider now; resolves with its entry once the probe settles. */
   probeProvider(input: ProbeProviderInput): Promise<ProviderBootstrap>
+  /**
+   * Ask the environment to read a provider's usage limits again. Resolves at
+   * once with the current state (`refreshing` while a read runs); the result
+   * lands on the provider entry when `provider_limits_changed` arrives.
+   */
+  refreshProviderLimits(input: RefreshProviderLimitsInput): Promise<ProviderLimits>
   setComposerPreference(input: SetComposerPreferenceInput): Promise<WorkspaceComposerPreference>
   /**
    * The session setters change the live session and remember the choice for

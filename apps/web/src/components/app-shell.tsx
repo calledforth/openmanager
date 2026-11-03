@@ -21,7 +21,12 @@ import {
   requestQuickAgent,
   useQuickAgentAvailable,
 } from '@openmanager/app-core/components/command/QuickAgentPalette'
-import { ArrowsClockwiseIcon, FolderPlusIcon, NotePencilIcon } from '@phosphor-icons/react'
+import {
+  ArrowsClockwiseIcon,
+  FolderPlusIcon,
+  GaugeIcon,
+  NotePencilIcon,
+} from '@phosphor-icons/react'
 import {
   Sidebar,
   SidebarContent,
@@ -50,9 +55,11 @@ import {
 import { AddWorkspaceDialog } from './add-workspace-dialog'
 import { ConnectionBanner, ConnectionScreen, ConnectionStatusChip } from './connection-surfaces'
 import { SessionNotifications } from './session-notifications'
+import { SidebarDock } from './sidebar-dock'
 
 const NewAgentIcon = phosphorIcon(NotePencilIcon)
 const AddProjectIcon = phosphorIcon(FolderPlusIcon)
+const UsageIcon = phosphorIcon(GaugeIcon)
 const RegenerateTitleIcon = phosphorIcon(ArrowsClockwiseIcon)
 
 function isSessionPath(pathname: string) {
@@ -66,11 +73,11 @@ function NavMenu({ pathname, includeSessions }: { pathname: string; includeSessi
   const { isMobile, setOpenMobile } = useSidebar()
   const SessionsIcon = useIcon('message-circle')
   const SettingsIcon = useIcon('settings')
-  const StatesIcon = useIcon('sliders-horizontal')
+  // The connection-states playground is a dev page: ⌘K and its URL reach it.
   const items = [
     ...(includeSessions ? [{ to: '/', label: 'Sessions', icon: SessionsIcon }] : []),
+    { to: '/usage', label: 'Usage', icon: UsageIcon },
     { to: '/settings', label: 'Settings', icon: SettingsIcon },
-    { to: '/playground/connection', label: 'States', icon: StatesIcon },
   ] as const
   // Fluid's menu is a bare list; the nav keeps the shell's pages a landmark.
   return (
@@ -108,6 +115,7 @@ function ShellCommandPalette({
 }) {
   const navigate = useNavigate()
   const SettingsIcon = useIcon('settings')
+  const StatesIcon = useIcon('sliders-horizontal')
   const items = useMemo<CommandPaletteItemData[]>(
     () => [
       ...commands,
@@ -119,8 +127,24 @@ function ShellCommandPalette({
         keywords: ['settings', 'preferences', 'environments', 'options'],
         onSelect: () => void navigate({ to: '/settings' }),
       },
+      {
+        value: 'go:usage',
+        label: 'Open usage',
+        icon: UsageIcon,
+        group: 'Go to',
+        keywords: ['usage', 'limits', 'quota', 'plan', 'claude'],
+        onSelect: () => void navigate({ to: '/usage' }),
+      },
+      {
+        value: 'go:states',
+        label: 'Open connection states',
+        icon: StatesIcon,
+        group: 'Go to',
+        keywords: ['states', 'playground', 'connection', 'debug'],
+        onSelect: () => void navigate({ to: '/playground/connection' }),
+      },
     ],
-    [commands, SettingsIcon, navigate],
+    [commands, SettingsIcon, StatesIcon, navigate],
   )
   return <CommandPalette commands={items} />
 }
@@ -314,7 +338,7 @@ function ConnectedShell({
       holdLandingDraft={holdLandingDraft}
     >
       {/* A healthy connection says nothing; trouble shows as the banner. */}
-      <WorkspaceSidebar footer={<NavMenu pathname={pathname} includeSessions={false} />} />
+      <WorkspaceSidebar footer={<SidebarDock pathname={pathname} />} />
       {children}
       <ConnectedOverlays
         client={client}

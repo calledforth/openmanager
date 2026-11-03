@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto'
+import { homedir } from 'node:os'
 import { join } from 'node:path'
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http'
 import type { AddressInfo } from 'node:net'
@@ -28,6 +29,7 @@ import {
   PROVIDER_DISCOVERY_CAPABILITY,
   PROVIDER_HEALTH_CAPABILITY,
   PROVIDER_PROBE_CAPABILITY,
+  PROVIDER_LIMITS_REFRESH_CAPABILITY,
   PAIRING_CREATE_CAPABILITY,
   PAIRING_EXCHANGE_CAPABILITY,
   PAIRING_LIST_CAPABILITY,
@@ -76,6 +78,7 @@ import { createReplayReader } from './db/replay.ts'
 import { readWorkspaceListing } from './db/composer-rows.ts'
 import { getSessionSummary, readThreadListing } from './db/session-store.ts'
 import { createLogger, resolveLogSink } from './logger.ts'
+import { createProviderLimits, openProviderLimitsStore } from './provider-limits.ts'
 import { createProviderService } from './provider-service.ts'
 import { createRateLimiter } from './rate-limit.ts'
 import { createRequestGuard } from './request-guard.ts'
@@ -100,6 +103,7 @@ export const SERVER_CAPABILITIES = [
   PROVIDER_DISCOVERY_CAPABILITY,
   PROVIDER_HEALTH_CAPABILITY,
   PROVIDER_PROBE_CAPABILITY,
+  PROVIDER_LIMITS_REFRESH_CAPABILITY,
   PROVIDER_CATALOG_CAPABILITY,
   COMPOSER_PREFERENCES_SET_CAPABILITY,
   COMPOSER_MODEL_SET_CAPABILITY,
@@ -304,11 +308,29 @@ export async function startServer(config: ServerConfig) {
   )
   let observeProviderCatalog: (providerId: string, result: RuntimeProviderBootstrap) => void = () =>
     undefined
+  // Usage limits (CAL-242): Claude Code only for now. Read in a throwaway CLI
+  // in the most recent project, or the home directory before there is one.
+  const providerLimitsStore = openProviderLimitsStore(config.dataDir)
+  const providerLimits = createProviderLimits({
+    providerIds: Object.keys(providers),
+    supports: (providerId) =>
+      config.probeProviders === true &&
+      providers[providerId as keyof typeof providers]?.kind === 'claude',
+    read: (providerId) =>
+      runtime.readUsageLimits({
+        providerId: providerId as keyof typeof providers,
+        threadId: `usage-limits:${providerId}`,
+        cwd: workspaces.mostRecent()?.root ?? homedir(),
+      }),
+    store: providerLimitsStore,
+    log,
+  })
   const providerService = createProviderService(
     runtime,
     providers,
     (providerId, result) => observeProviderCatalog(providerId, result),
     resolveWorkspace,
+    (providerId) => providerLimits.get(providerId),
   )
   // Broader than provider health's `available`: an unprobed provider is still runnable, so an
   // explicit create only fails for a provider the server would reject anyway.
@@ -520,6 +542,7 @@ export async function startServer(config: ServerConfig) {
     log('error', 'stale background work was not cleared', { reason: String(error) })
   }
   onRuntimeEvent = (event) => {
+    if (event.event === 'usage_limits_update') providerLimits.observe(event.providerId, event.data)
     composerService.onRuntimeEvent(event)
     threadService.onRuntimeEvent(event)
   }
@@ -777,6 +800,7 @@ export async function startServer(config: ServerConfig) {
       workspaces.dispatch(command, context) ??
       threadService.dispatch(command, context) ??
       providerService.dispatch(command, context) ??
+      providerLimits.dispatch(command) ??
       uploads.dispatch(command, context) ??
       filesystem.dispatch(command, context) ??
       drafts.dispatch(command, context) ??
@@ -802,6 +826,9 @@ export async function startServer(config: ServerConfig) {
   const stopHealthEvents = providerService.onHealthChanged((event) =>
     deliveries.enqueue({ kind: 'broadcast', event }),
   )
+  const stopLimitsEvents = providerLimits.onChanged((event) =>
+    deliveries.enqueue({ kind: 'broadcast', event }),
+  )
   try {
     await new Promise<void>((resolve, reject) => {
       server.once('error', reject)
@@ -814,6 +841,8 @@ export async function startServer(config: ServerConfig) {
     clientService.stop()
     await sockets.close()
     stopHealthEvents()
+    stopLimitsEvents()
+    providerLimits.stop()
     providerService.stop()
     composerService.stop()
     await runtime.shutdown()
@@ -823,6 +852,7 @@ export async function startServer(config: ServerConfig) {
     eventService.close()
     eventDatabase.close()
     composerStore.close()
+    providerLimitsStore.close()
     environmentSettings.close()
     clients.close()
     workspaces.close()
@@ -913,12 +943,15 @@ export async function startServer(config: ServerConfig) {
           eventService.close()
           eventDatabase.close()
           composerStore.close()
+          providerLimitsStore.close()
           environmentSettings.close()
           clients.close()
           workspaces.close()
           audit.close()
         })
         stopHealthEvents()
+        stopLimitsEvents()
+        providerLimits.stop()
         providerService.stop()
       }
       return closePromise

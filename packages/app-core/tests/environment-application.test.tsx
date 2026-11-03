@@ -1258,6 +1258,7 @@ describe('the shared application over the environment client', () => {
         lastProbe: null,
         update: 'current' as const,
       },
+      limits: { supported: false, reading: null, refreshing: false, lastRefresh: null },
     }
     const MODELS = [
       { modelId: 'anthropic/sonnet', name: 'Sonnet', supportsImageInput: true },

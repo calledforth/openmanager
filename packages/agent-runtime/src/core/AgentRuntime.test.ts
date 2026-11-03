@@ -1290,6 +1290,34 @@ describe('AgentRuntime recoverable errors', () => {
     return { runtime, events, claudeSdk }
   }
 
+  it('reads Claude usage limits through the runtime probe, and leaves nothing running', async () => {
+    const { runtime, claudeSdk } = buildClaude()
+    const result = await runtime.readUsageLimits({ ...CLAUDE_ROUTE, threadId: 'usage-limits:claude' })
+    expect(result).toEqual({
+      outcome: 'ok',
+      reading: {
+        windows: [
+          expect.objectContaining({ id: 'five_hour', usedPercent: 37, resetsAt: '2026-11-03T14:20:00.000Z' }),
+        ],
+        extraUsage: null,
+      },
+    })
+    expect(claudeSdk.last.closed).toBe(true)
+    expect(claudeSdk.last.prompts).toEqual([])
+    vi.unstubAllEnvs()
+  })
+
+  it('reports usage limits as unsupported where the SDK has no route', async () => {
+    const { runtime, claudeSdk } = buildClaude()
+    claudeSdk.prepare = (query) => {
+      query.usageResponse = null
+    }
+    expect(
+      await runtime.readUsageLimits({ ...CLAUDE_ROUTE, threadId: 'usage-limits:claude' }),
+    ).toEqual({ outcome: 'unsupported' })
+    vi.unstubAllEnvs()
+  })
+
   it('keeps the assistant message id alive across an api_retry', async () => {
     const { runtime, events, claudeSdk } = buildClaude()
     const session = await runtime.ensureSession({ ...CLAUDE_ROUTE, threadId: 'thread-1' })

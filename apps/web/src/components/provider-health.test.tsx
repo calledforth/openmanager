@@ -58,6 +58,7 @@ const provider = (
     update: 'current',
     ...health,
   },
+  limits: { supported: false, reading: null, refreshing: false, lastRefresh: null },
 })
 
 const seed = (providers: ProviderCatalogEntry[]): MockSeed => ({

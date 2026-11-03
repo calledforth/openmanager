@@ -41,6 +41,7 @@ const provider = {
     supportsQuestions: true,
   },
   health,
+  limits: { supported: false, reading: null, refreshing: false, lastRefresh: null },
 } as const
 
 describe('provider service wire contract', () => {

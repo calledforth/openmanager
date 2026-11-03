@@ -28,6 +28,7 @@ const commands: EnvironmentCommands = {
   respondToInteraction: reject('respondToInteraction'),
   getProviderCatalog: reject('getProviderCatalog'),
   probeProvider: reject('probeProvider'),
+  refreshProviderLimits: reject('refreshProviderLimits'),
   setComposerPreference: reject('setComposerPreference'),
   setSessionModel: reject('setSessionModel'),
   setSessionMode: reject('setSessionMode'),

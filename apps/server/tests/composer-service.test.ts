@@ -53,6 +53,7 @@ const provider: ProviderBootstrap = {
     lastProbe: null,
     update: 'current',
   },
+  limits: { supported: false, reading: null, refreshing: false, lastRefresh: null },
 }
 
 async function harness() {

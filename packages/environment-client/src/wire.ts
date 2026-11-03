@@ -5,6 +5,7 @@ import {
   FilesystemResponseSchemas,
   PairingResponseSchemas,
   ProofResponseSchemas,
+  ProviderLimitsRefreshResponseSchema,
   ProviderProbeResponseSchema,
   SessionSchema,
   UPLOAD_TICKET_CAPABILITY,
@@ -39,6 +40,7 @@ export const WIRE_COMMANDS = {
   respondToInteraction: 'interaction.respond',
   getProviderCatalog: 'provider.catalog.get',
   probeProvider: 'provider.probe',
+  refreshProviderLimits: 'provider.limits.refresh',
   setComposerPreference: 'composer.preferences.set',
   setSessionModel: 'composer.model.set',
   setSessionMode: 'composer.mode.set',
@@ -92,6 +94,7 @@ export const WIRE_RESPONSES = {
   'interaction.respond': payload(ProofResponseSchemas['interaction.respond'].shape.payload),
   'provider.catalog.get': payload(ComposerResponseSchemas['provider.catalog.get'].shape.payload),
   'provider.probe': payload(ProviderProbeResponseSchema.shape.payload),
+  'provider.limits.refresh': payload(ProviderLimitsRefreshResponseSchema.shape.payload),
   'composer.preferences.set': payload(
     ComposerResponseSchemas['composer.preferences.set'].shape.payload,
   ),

@@ -9,6 +9,7 @@ import {
   SERVER_SHUTDOWN_CLOSE_CODE,
   SERVER_SHUTDOWN_CLOSE_REASON,
   ProviderHealthChangedEventSchema,
+  ProviderLimitsChangedEventSchema,
   FLOW_POLICY,
   FragmentAssembler,
   ServerMessageSchema,
@@ -56,6 +57,7 @@ import {
   applyProviderBootstrap,
   applyProviderCatalog,
   applyProviderHealth,
+  applyProviderLimits,
   applyProviderProbe,
   applyLiveNoticesCleared,
   applyRecord as applyRecordToState,
@@ -993,6 +995,13 @@ export function createWebSocketEnvironmentClient(
     if (health.success) {
       const { providerId, health: next } = health.data.payload
       store.update((state) => applyProviderHealth(state, providerId, next))
+      return
+    }
+    // Usage limits travel the same way: a current reading, broadcast.
+    const limits = ProviderLimitsChangedEventSchema.safeParse(raw)
+    if (limits.success) {
+      const { providerId, limits: next } = limits.data.payload
+      store.update((state) => applyProviderLimits(state, providerId, next))
     }
   }
 
@@ -1927,6 +1936,14 @@ export function createWebSocketEnvironmentClient(
       const payload = await request('provider.probe', input)
       store.update((state) => applyProviderProbe(state, payload.provider))
       return payload.provider
+    },
+    async refreshProviderLimits(input) {
+      const payload = await request('provider.limits.refresh', {
+        providerId: input.providerId,
+        ...(input.maxAgeMs !== undefined ? { maxAgeMs: input.maxAgeMs } : {}),
+      })
+      store.update((state) => applyProviderLimits(state, payload.providerId, payload.limits))
+      return payload.limits
     },
     setComposerPreference: (input) =>
       composerWrite(

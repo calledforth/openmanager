@@ -60,6 +60,10 @@ export type AgentEventName =
    * `ProviderNotice`. Retries are not notices: they stay a recoverable
    * `rpc_error`, whose contract the terminal-cleanup sites depend on. */
   | 'provider_notice'
+  /** A live session's word on one usage-limit window (Claude's
+   * `rate_limit_event`). Sparse; see `UsageLimitObservation`. Provider-wide,
+   * not a turn's: consumers fold it into the provider's limits. */
+  | 'usage_limits_update'
   | 'extension_request'
   | 'extension_resolved'
   | 'extension_notification'
@@ -403,6 +407,46 @@ export type ProviderNotice = {
   resetsAt?: string
 }
 
+/** One usage-limit window of a provider's plan, as a full read reports it. */
+export type UsageLimitWindow = {
+  /** Stable for the provider: `five_hour`, `seven_day`, `model:<name>`. */
+  id: string
+  label: string
+  group: 'session' | 'weekly' | 'other'
+  /** Percent used, 0–100; null when the provider gave no number. */
+  usedPercent: number | null
+  /** ISO 8601. */
+  resetsAt: string | null
+  status: 'ok' | 'warning' | 'limited' | null
+}
+
+/** Everything a provider said about its plan limits in one read. */
+export type UsageLimitsReading = {
+  windows: UsageLimitWindow[]
+  extraUsage: { enabled: boolean; usedPercent: number | null } | null
+}
+
+/** What reading a provider's limits came to. `unavailable`: the account has
+ * no plan limits (an API key, say); `unsupported`: this provider or CLI has no
+ * way to report them. */
+export type UsageLimitsResult =
+  | { outcome: 'ok'; reading: UsageLimitsReading }
+  | { outcome: 'unavailable' }
+  | { outcome: 'unsupported' }
+
+/** A `usage_limits_update`: what a live session said about one window. Sparse
+ * on purpose: a field the provider did not state is absent, never guessed. */
+export type UsageLimitObservation = {
+  windowId: string
+  label: string
+  group: UsageLimitWindow['group']
+  status?: 'ok' | 'warning' | 'limited'
+  /** ISO 8601. */
+  resetsAt?: string
+  /** A lower bound on the percent used: the threshold the provider says was crossed. */
+  usedPercentAtLeast?: number
+}
+
 /** `recoverable: true` is a statement about the TURN, not about the process.
  *
  * It means: the operation that failed is being retried and the turn this error
@@ -648,6 +692,12 @@ export type AgentEvent = AgentEventBase &
         event: 'provider_notice'
         sessionId: string
         data: ProviderNotice
+      }
+    | {
+        category: 'session'
+        event: 'usage_limits_update'
+        sessionId: string
+        data: UsageLimitObservation
       }
     | {
         category: 'extension'

@@ -89,6 +89,7 @@ describe('composer command wire contract', () => {
                 lastProbe: null,
                 update: 'current',
               },
+              limits: { supported: false, reading: null, refreshing: false, lastRefresh: null },
               profile: {
                 providerId: 'cursor',
                 availableModels: [{ modelId: 'claude-opus', name: 'Claude Opus' }],
