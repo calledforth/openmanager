@@ -435,7 +435,21 @@ describe('session workspace', () => {
     await waitFor(() => expect(screen.getByRole('textbox')).toBeEnabled())
   })
 
-  it('offers new agent, add project and settings in the command palette', async () => {
+  it('opens the quick New agent palette from the command palette', async () => {
+    const user = userEvent.setup()
+    renderConnected('/', SEED)
+    await findInSidebar('Sidebar move')
+
+    await user.keyboard('{Control>}k{/Control}')
+    const commands = await screen.findByRole('dialog', { name: 'Search and commands' })
+    await user.click(within(commands).getByRole('option', { name: /New agent/ }))
+
+    // The page has a composer of its own, so the palette's is the one to find.
+    const newAgent = await screen.findByRole('dialog', { name: 'New agent' })
+    await waitFor(() => expect(within(newAgent).getByRole('textbox')).toBeEnabled())
+  })
+
+  it('offers add project and settings in the command palette', async () => {
     const user = userEvent.setup()
     const { router } = renderConnected('/', {
       ...SEED,
@@ -447,9 +461,6 @@ describe('session workspace', () => {
       await user.keyboard('{Control>}k{/Control}')
       return screen.findByRole('dialog', { name: 'Search and commands' })
     }
-
-    await user.click(within(await palette()).getByRole('option', { name: /New agent/ }))
-    await waitFor(() => expect(screen.getByRole('textbox')).toBeEnabled())
 
     await user.click(within(await palette()).getByRole('option', { name: /Add project/ }))
     await screen.findByRole('dialog', { name: 'Add a project' })

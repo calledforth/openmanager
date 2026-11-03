@@ -99,9 +99,7 @@ import {
   toggleCollapsedWorkspace,
   type SidebarDataValue,
   type SidebarEnvironment,
-  type SidebarSessionEntry,
   type SidebarSessionsByWorkspace,
-  type WorkspaceEntry,
 } from './sidebar-provider'
 import {
   ActiveThreadStateContext,
@@ -121,9 +119,9 @@ import { PlanStateProvider, type PlanRow } from './plan-provider'
 import { ViewActionsContext, WorkspaceIconContext, type ViewActions } from './view-actions'
 import { createEnvironmentThreadStores } from '../lib/environment-thread'
 import { providerHealthReportFromWire } from '../lib/provider-health-view'
-import { availableProviderIds } from './draft-provider'
+import { DEFAULT_PROVIDER_ID, availableProviderIds } from './draft-provider'
+import { groupSidebarSessions, reuseUnchanged, toWorkspaceEntry } from './sidebar-rows'
 
-const DEFAULT_PROVIDER_ID: ProviderId = 'opencode'
 const COLLAPSED_WORKSPACES_KEY = 'openmanager.sidebar.collapsed-workspaces'
 
 /** Stable identity: an inline callback here re-renders every message row. */
@@ -1209,19 +1207,6 @@ function defaultStorage(): Pick<Storage, 'getItem' | 'setItem'> | null {
   }
 }
 
-function toWorkspaceEntry(workspace: Workspace, available: string[]): WorkspaceEntry {
-  return {
-    path: workspace.workspaceId,
-    name: workspace.name,
-    missing: !workspace.exists,
-    availability: workspace.availability,
-    lastActivityAt: workspace.lastActivityAt,
-    // Which providers could start here is provider health, the same for every project.
-    capabilities: { git: workspace.capabilities.git, providers: available },
-    ...(workspace.git ? { git: workspace.git } : {}),
-  }
-}
-
 function EnvironmentSidebarDataProvider({
   storage: storageOption,
   children,
@@ -1254,6 +1239,7 @@ function EnvironmentSidebarDataProvider({
     [storage],
   )
 
+  const activeEnvironmentId = environmentState?.environmentId
   const environment = useMemo<SidebarEnvironment | undefined>(() => {
     const label = environmentState?.name.trim()
     return environmentState && label
@@ -1293,52 +1279,15 @@ function EnvironmentSidebarDataProvider({
   // What the sidebar was last handed, so an unchanged row stays the same object.
   const shownSessions = useRef<SidebarSessionsByWorkspace | null>(null)
   const sessionsByWorkspace = useMemo(() => {
-    const unsentIds = new Set(unsent)
-    const grouped: SidebarSessionsByWorkspace = {}
-    const unavailableWorkspaces = new Set(
-      workspaceEntries
-        .filter((workspace) =>
-          workspace.availability ? workspace.availability !== 'available' : workspace.missing,
-        )
-        .map((workspace) => workspace.path),
-    )
-    for (const summary of sessions) {
-      const entry: SidebarSessionEntry = {
-        externalId: summary.sessionId,
-        title: summary.title ?? undefined,
-        // Idle with an unseen completion is done until someone opens it. Plain
-        // server idle means ready; legacy desktop idle clears an unread
-        // completion marker, so keep the presentation alias at this boundary.
-        status: summary.status === 'idle' ? (summary.doneAt ? 'done' : 'ready') : summary.status,
-        providerId: summary.providerId as ProviderId,
-        ...(summary.parentSessionId ? { parentExternalId: summary.parentSessionId } : {}),
-        // ChatView still branches on `isDriven` for the Convex IPC overlay.
-        // This path has one protocol-event stream and no `stream_chunks`
-        // subscription, so the flag is always true. Desktop must drop the
-        // overlay at thin-shell cutover rather than reintroduce `driven`.
-        isDriven: true,
-        ...(unavailableWorkspaces.has(summary.workspaceId) ? { workspaceUnavailable: true } : {}),
-        ...(summary.updatedAt ? { updatedAt: summary.updatedAt } : {}),
-        settledAt: summary.settledAt ?? null,
-        pinnedAt: summary.pinnedAt ?? null,
-        ...(unsentIds.has(summary.sessionId) ? { hasUnsentDraft: true } : {}),
-        ...(summary.waitingOn ? { waitingOn: summary.waitingOn } : {}),
-        ...(summary.inBackground ? { inBackground: true } : {}),
-        // Primitives, so an unchanged roster keeps the row as it was.
-        ...(summary.backgroundTasks?.length
-          ? {
-              backgroundTaskCount: summary.backgroundTasks.length,
-              backgroundTaskNames: summary.backgroundTasks
-                .map((task) => task.description || task.kind)
-                .join('\n'),
-            }
-          : {}),
-      }
-      ;(grouped[summary.workspaceId] ??= []).push(entry)
-    }
+    const grouped = groupSidebarSessions({
+      sessions,
+      unsent,
+      workspaces: workspaceEntries,
+      environmentId: activeEnvironmentId,
+    })
     shownSessions.current = reuseUnchanged(shownSessions.current, grouped)
     return shownSessions.current
-  }, [sessions, unsent, workspaceEntries])
+  }, [activeEnvironmentId, sessions, unsent, workspaceEntries])
 
   // Offered only once the environment says it can keep the change.
   const canSettle = connection.phase === 'connected' && client.supports('settleSession')
@@ -1371,6 +1320,7 @@ function EnvironmentSidebarDataProvider({
   const value = useMemo<SidebarDataValue>(
     () => ({
       environment,
+      ...(activeEnvironmentId ? { activeEnvironmentId } : {}),
       workspaces: workspaceEntries,
       recentWorkspaces: recentEntries,
       isWorkspacesLoading,
@@ -1392,6 +1342,7 @@ function EnvironmentSidebarDataProvider({
       deleteSession: session.deleteSession,
     }),
     [
+      activeEnvironmentId,
       canSettle,
       canPin,
       settleSession,
@@ -1422,47 +1373,6 @@ function EnvironmentSidebarDataProvider({
         <EnvironmentSidebarDraftsProvider>{children}</EnvironmentSidebarDraftsProvider>
       </SidebarSessionsContext.Provider>
     </SidebarDataContext.Provider>
-  )
-}
-
-/**
- * The next grouping, keeping every row and group whose shown fields did not
- * change as the object it was. Sessions carry more than the sidebar shows
- * (the composer selection, thread ids) and a listing rebuilds them all; a
- * change the sidebar does not show then leaves the whole value as it was.
- */
-function reuseUnchanged(
-  previous: SidebarSessionsByWorkspace | null,
-  next: SidebarSessionsByWorkspace,
-): SidebarSessionsByWorkspace {
-  if (!previous) return next
-  const rows = new Map<string, SidebarSessionEntry>()
-  for (const group of Object.values(previous)) {
-    for (const row of group) rows.set(row.externalId, row)
-  }
-  let changed = Object.keys(previous).length !== Object.keys(next).length
-  const result: SidebarSessionsByWorkspace = {}
-  for (const [path, group] of Object.entries(next)) {
-    const kept = group.map((row) => {
-      const before = rows.get(row.externalId)
-      return before && sameEntry(before, row) ? before : row
-    })
-    const before = previous[path]
-    const same =
-      before !== undefined &&
-      before.length === kept.length &&
-      kept.every((row, index) => row === before[index])
-    result[path] = same ? before : kept
-    if (!same) changed = true
-  }
-  return changed ? result : previous
-}
-
-function sameEntry(left: SidebarSessionEntry, right: SidebarSessionEntry): boolean {
-  const keys = Object.keys(left) as (keyof SidebarSessionEntry)[]
-  return (
-    keys.length === Object.keys(right).length &&
-    keys.every((key) => Object.is(left[key], right[key]))
   )
 }
 

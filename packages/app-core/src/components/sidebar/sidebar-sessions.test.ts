@@ -15,6 +15,7 @@ import {
   sidebarDraftCard,
   type SidebarDraft,
   type SidebarSession,
+  newestDraftFirst,
 } from './sidebar-sessions'
 import { sessionBusyTone } from './SessionBusyLoader'
 import { resolveDraftProvider } from '../../providers/draft-provider'
@@ -443,5 +444,37 @@ describe('unsent session drafts', () => {
     })
     expect(selectSessionsWithUnsentDraft(state, 'open')).toEqual(['a', 'b'])
     expect(selectSessionsWithUnsentDraft(state, null)).toEqual(['a', 'b', 'open'])
+  })
+})
+
+describe('newestDraftFirst', () => {
+  const card = (environmentId: string, draftId = 'same'): SidebarDraft => ({
+    draftId,
+    environmentId,
+    sessionId: `${environmentId}-next`,
+    workspaceId: null,
+    providerId: 'opencode',
+    preview: 'text',
+    imageCount: 0,
+    editedAt: 5,
+  })
+
+  it('keeps two drafts that tie on everything but their environment in one order', () => {
+    const desk = card('desk')
+    const laptop = card('laptop')
+    expect([desk, laptop].sort(newestDraftFirst)).toEqual([desk, laptop])
+    expect([laptop, desk].sort(newestDraftFirst)).toEqual([desk, laptop])
+  })
+
+  it('reads two drafts with nothing to tell them apart as equal', () => {
+    expect(newestDraftFirst(card('desk'), card('desk'))).toBe(0)
+  })
+
+  it('still puts the newest edit first, then the id', () => {
+    const older = { ...card('desk', 'a'), editedAt: 1 }
+    expect([older, card('desk', 'a')].sort(newestDraftFirst)[0]!.editedAt).toBe(5)
+    expect(
+      [card('desk', 'a'), card('desk', 'b')].sort(newestDraftFirst).map((c) => c.draftId),
+    ).toEqual(['b', 'a'])
   })
 })

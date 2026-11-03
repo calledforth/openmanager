@@ -494,6 +494,48 @@ describe('websocket environment client', () => {
     client.dispose()
   })
 
+  it('hands what a draft save was answered with on to the client that replaces it', async () => {
+    const AT = '2026-10-24T10:00:00.000Z'
+    const target = { type: 'new_session', sessionId: 'next', workspaceId: 'w' } as const
+    const row = (revision: number, text: string) => ({
+      draftId: 'd',
+      target,
+      content: { text },
+      revision,
+      createdAt: AT,
+      updatedAt: AT,
+      updatedByClientId: null,
+    })
+    const store = createEnvironmentStore()
+    const capabilities = [...FULL_CAPABILITIES, 'draft.list', 'draft.save', 'draft.delete']
+    const first = await connected(capabilities, {}, { environmentId: ENV, store })
+    first.socket.respond('draft.list', { drafts: [], tombstones: [] })
+    await flush()
+    const save = async (revision: number, text: string) => {
+      first.client.drafts!.edit('d', target, { text })
+      first.client.drafts!.flush()
+      await flush()
+      first.socket.respond('draft.save', { draft: row(revision, text) })
+      await flush()
+    }
+    await save(1, 'mine')
+    await save(2, 'mine, last words')
+    first.client.dispose()
+
+    // Made on revision 1; revision 2 was this device's own, on the old client.
+    const second = await connected(capabilities, {}, { environmentId: ENV, store })
+    second.socket.respond('draft.list', { drafts: [row(2, 'mine, last words')], tombstones: [] })
+    await flush()
+    second.client.drafts!.discard('d', { ifRevision: 1 })
+    await flush()
+
+    expect(second.socket.last('draft.delete').payload).toMatchObject({
+      draftId: 'd',
+      ifRevision: 2,
+    })
+    second.client.dispose()
+  })
+
   it('rejects a shared store without an identity or with a different identity', () => {
     const store = createEnvironmentStore({
       ...createInitialState(),

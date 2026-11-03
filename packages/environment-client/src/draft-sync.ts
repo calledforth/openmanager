@@ -43,8 +43,35 @@ const LIST_RETRY_MAX_MS = 30_000
 const SAVE_RETRY_MIN_MS = 1_000
 const SAVE_RETRY_MAX_MS = 30_000
 
+/**
+ * What this device's saves of its drafts were answered with, and the drafts a
+ * discard is waiting on. Kept with the state rather than the transport: a
+ * client replaced on a new route carries on with the same drafts and the same
+ * token, so a save the old one was answered for is still this device's own.
+ * Lost, a discard waiting on that save would name an older revision and be
+ * refused, and the draft would come back.
+ */
+export interface DraftAnswers {
+  answered: Map<string, number>
+  pinned: Map<string, number>
+}
+
+const answersByStore = new WeakMap<EnvironmentStore, DraftAnswers>()
+
+/** The answers kept for this store, for every sync that works on it in turn. */
+export function draftAnswersOf(store: EnvironmentStore): DraftAnswers {
+  let answers = answersByStore.get(store)
+  if (!answers) {
+    answers = { answered: new Map(), pinned: new Map() }
+    answersByStore.set(store, answers)
+  }
+  return answers
+}
+
 export interface DraftSyncOptions {
   store: EnvironmentStore
+  /** Shared by the syncs of one store. Absent, this sync keeps its own. */
+  answers?: DraftAnswers
   commands: Pick<EnvironmentCommands, 'listDrafts' | 'saveDraft' | 'deleteDraft'>
   /** Whether the connected environment keeps drafts. */
   supported: () => boolean
@@ -68,14 +95,14 @@ export function createDraftSync(options: DraftSyncOptions): DraftSync & { dispos
   const now = options.now ?? Date.now
   const timers = new Map<string, ReturnType<typeof setTimeout>>()
   const inFlight = new Set<string>()
-  // The revision the environment answered this client's latest write of a
-  // draft with. Answers only, never announcements: what a conditional delete
-  // may name as this client's own. Bounded; one forgotten only makes a
-  // discard name an older revision, which the environment refuses.
-  const answered = new Map<string, number>()
-  // Drafts a discard is waiting on (its undo window, then its delete): their
-  // answers are never evicted, or the discard would be refused for nothing.
-  const pinned = new Map<string, number>()
+  // `answered`: the revision the environment answered this client's latest
+  // write of a draft with. Answers only, never announcements: what a
+  // conditional delete may name as this client's own. Bounded; one forgotten
+  // only makes a discard name an older revision, which the environment
+  // refuses. `pinned`: drafts a discard is waiting on (its undo window, then
+  // its delete): their answers are never evicted, or the discard would be
+  // refused for nothing.
+  const { answered, pinned } = options.answers ?? { answered: new Map(), pinned: new Map() }
   const isPinned = (draftId: string) =>
     pinned.has(draftId) || store.getState().draftEdits[draftId]?.deleteIf !== undefined
   const answer = (draftId: string, revision: number) => {
