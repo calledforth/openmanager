@@ -1,107 +1,63 @@
-import { useState } from 'react'
-import { ScrollView, TouchableOpacity, View } from 'react-native'
+import { memo } from 'react'
+import { View } from 'react-native'
 
-import { presentToolPart } from '@openmanager/shared/lib/tool-presenter'
-
-import { useTokens } from '../../theme/useTokens'
+import { usePhoneTheme } from '../../theme/ThemeProvider'
+import { StatusMark } from '../../ui/StatusMark'
 import { AppText } from '../ui/AppText'
-import { ShimmerText } from '../chat/ShimmerText'
 import { getToolIcon } from './toolIcons'
 
-interface ToolPartData {
+export interface ToolPartData {
   type: 'tool'
   id: string
+  /** What the environment calls the call (its title, else its kind). */
   tool?: string
-  callID?: string
-  state?: {
-    type?: string
-    status?: string
-    input?: unknown
-    output?: string
-    title?: string
-    error?: string
-  }
+  /** The protocol's tool kind: read, edit, execute, search, fetch… */
+  kind?: string
+  state?: { status?: string }
 }
 
-// Mirror of the desktop tool rows (`ToolCallPart` / `ToolLine`): a single-line
-// icon + verb + detail from the shared `tool-presenter`. Running rows shimmer,
-// errored rows take a destructive tint, and rows with output expand to a
-// scrollable, capped mono panel.
-
-export function ToolRow({ part }: { part: ToolPartData }) {
-  const tokens = useTokens()
-  const [expanded, setExpanded] = useState(false)
-  const model = presentToolPart(part)
-  const Icon = getToolIcon(part.tool ?? '')
-
-  const iconColor = model.isError
-    ? tokens.destructive
-    : model.isRunning
-      ? tokens.textMuted
-      : tokens.textFaint
-
-  const detail = model.detail?.trim()
-  const label = detail ? `${model.verb} ${detail}` : model.verb
-  const hasOutput = !!model.expandedText
-
-  const line = (
-    <View className="flex-row items-center gap-1.5">
-      <Icon size={13} color={iconColor} />
-      {model.isRunning ? (
-        <ShimmerText variant="text-14-regular" className="flex-1">
-          {label}
-        </ShimmerText>
-      ) : (
-        <AppText
-          variant="text-14-regular"
-          numberOfLines={expanded ? undefined : 1}
-          className={`flex-1 ${model.isError ? 'text-destructive' : 'text-textMuted'}`}
-        >
-          <AppText
-            variant="text-14-regular"
-            className={model.isError ? 'text-destructive' : 'text-textMuted'}
-          >
-            {model.verb}
-          </AppText>
-          {detail ? (
-            <AppText
-              variant="text-14-regular"
-              className={model.isError ? 'text-destructive' : 'text-textFaint'}
-            >
-              {' '}
-              {detail}
-            </AppText>
-          ) : null}
-        </AppText>
-      )}
-    </View>
-  )
-
-  if (!hasOutput) {
-    return <View className="py-px">{line}</View>
-  }
-
+/**
+ * A bare tool row: the tool's glyph, the provider's own name for the call,
+ * and its status on the right (a turning ring while it runs, a dot once it
+ * is done, red when it failed), as the environment reports them. Inputs,
+ * output and diffs come with the rich tool rows later; nothing here expands.
+ */
+export const ToolRow = memo(function ToolRow({ part }: { part: ToolPartData }) {
+  const theme = usePhoneTheme()
+  const status = part.state?.status
+  const running = status === 'running'
+  const failed = status === 'error'
+  const waiting = status === 'pending'
+  const Icon = getToolIcon(part.tool ?? '', part.kind)
+  const name = part.tool?.trim() || part.kind || 'Tool'
   return (
-    <View className="py-px">
-      <TouchableOpacity
-        activeOpacity={0.7}
-        onPress={() => setExpanded((prev) => !prev)}
-        hitSlop={6}
+    <View
+      accessibilityLabel={`${name}${failed ? ', failed' : running ? ', running' : waiting ? ', waiting' : ''}`}
+      style={{ flexDirection: 'row', alignItems: 'center', gap: 8, minHeight: 20 }}
+    >
+      <Icon size={13} color={failed ? theme.status.error : theme.faint} />
+      <AppText
+        variant="text-13-medium"
+        numberOfLines={1}
+        style={{ flex: 1, color: failed ? theme.status.error : theme.fg }}
       >
-        {line}
-      </TouchableOpacity>
-      {expanded ? (
-        <ScrollView
-          style={{ maxHeight: 260 }}
-          className="mt-1 rounded border border-borderMuted bg-surface"
-          contentContainerStyle={{ padding: 10 }}
-          nestedScrollEnabled
-        >
-          <AppText variant="mono" className="text-textMuted" selectable>
-            {model.expandedText}
-          </AppText>
-        </ScrollView>
+        {name}
+      </AppText>
+      {running ? (
+        <StatusMark mark="working" size={11} />
+      ) : failed ? (
+        <AppText variant="text-12-regular" style={{ color: theme.status.error }}>
+          failed
+        </AppText>
+      ) : waiting ? (
+        <AppText variant="text-12-regular" style={{ color: theme.faint }}>
+          waiting
+        </AppText>
+      ) : status === 'completed' ? (
+        <View
+          style={{ width: 6, height: 6, borderRadius: 3, backgroundColor: theme.status.done }}
+        />
       ) : null}
     </View>
   )
-}
+})

@@ -144,7 +144,7 @@ encoded without padding, with a version prefix, for example
 `omc1.Qy9m…` (`omc1.` plus 43 characters). The prefix makes credentials
 greppable in leaked logs and lets the format change later. The alphabet fits
 the RFC 6455 subprotocol token charset the web client already validates
-(`apps/web/src/lib/environment-store.ts`), so the same string is sent as
+(`packages/environment-client/src/connection/environment-store.ts`), so the same string is sent as
 `Authorization: Bearer <credential>` over HTTP and as the
 `openmanager.auth.<credential>` subprotocol on WebSocket upgrade. Nothing else
 changes on the wire.

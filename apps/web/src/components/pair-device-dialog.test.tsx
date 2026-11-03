@@ -9,7 +9,7 @@ import {
   type MockEnvironmentClient,
 } from '@openmanager/environment-client'
 import { EnvironmentClientProvider } from '@openmanager/app-core/providers/environment-client'
-import type { EnvironmentRoute } from '../lib/environment-store'
+import type { EnvironmentRoute } from '@openmanager/environment-client/connection'
 import { DevicesSettingControl, type PairingTarget } from './devices-settings'
 import { defaultPairingRoute, formatRemaining } from './pair-device-dialog'
 

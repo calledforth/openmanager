@@ -1,7 +1,7 @@
-import type { ProviderId } from '@agentpack/contract'
 import { OpenAiLogoIcon } from '@phosphor-icons/react'
 import { isLightTheme, useTheme } from '../../providers/theme-provider'
 import { cn } from '../../lib/utils'
+import type { ProviderIconId } from './providerIconId'
 
 /** SVGL brand marks — https://svgl.app (OpenCode, Cursor). */
 function OpenCodeIcon({ dark, className }: { dark: boolean; className?: string }) {
@@ -74,11 +74,7 @@ function ClaudeIcon({ className }: { className?: string }) {
   )
 }
 
-/**
- * Every tool with a mark: the session providers, and Codex, which the
- * environment runs only to write session titles for now.
- */
-export type ProviderIconId = ProviderId | 'codex'
+export type { ProviderIconId }
 
 export function ProviderIcon({
   providerId,

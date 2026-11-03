@@ -36,10 +36,12 @@ import {
   trackAddEnvironment,
   useAddEnvironmentDraft,
 } from '../lib/add-environment-draft'
-import { connectionStatusLabel } from '../lib/connection-state'
-import { findStoredEnvironment } from '../lib/environment-store'
+import {
+  connectionStatusLabel,
+  findStoredEnvironment,
+} from '@openmanager/environment-client/connection'
 import { UI_FONTS, type UiFontId } from '../lib/fonts'
-import { pairingAppUrl } from '../lib/pairing'
+import { pairingAppUrl } from '../lib/pairing-app-url'
 import { useConnection } from '../providers/connection-provider'
 import type { AppearanceMode } from '@openmanager/app-core/providers/theme-provider'
 import { ThemeFamilyPicker } from '../components/theme-family-picker'

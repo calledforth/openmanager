@@ -1,8 +1,11 @@
 import { cleanup, render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { deriveConnectionUi } from '../lib/connection-state'
-import { routeTypeForEndpoint, type EnvironmentRoute } from '../lib/environment-store'
+import {
+  deriveConnectionUi,
+  routeTypeForEndpoint,
+  type EnvironmentRoute,
+} from '@openmanager/environment-client/connection'
 import { CONNECTION_STORIES, ROUTE_FAILURE_STORIES } from '../stories/connection-states'
 import {
   ConnectionBanner,

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import type { RouteFailure } from './connection-state'
+import type { RouteFailure } from '@openmanager/environment-client/connection'
 import {
   connectionOf,
   dropConnection,

@@ -83,6 +83,13 @@ import {
 } from './environment-composer'
 import { EnvironmentComposerDraftProvider, sendingNewSessionDraft } from './environment-drafts'
 import { EnvironmentSidebarDraftsProvider } from './environment-sidebar-drafts'
+import {
+  DeviceHostContext,
+  useDeviceStorage,
+  type DeviceHost,
+  type DeviceStorage,
+  type SubscribePageExit,
+} from './device-host'
 import { selectSessionsWithUnsentDraft } from '../components/sidebar/sidebar-sessions'
 import {
   DraftPageContext,
@@ -109,6 +116,7 @@ import {
   type ActiveThreadDetails,
   type ActiveThreadStateValue,
   type ActiveThreadStores,
+  type SendRefused,
   type UIMessage,
 } from './active-thread-provider'
 import {
@@ -154,8 +162,17 @@ export interface EnvironmentApplicationOptions {
   /** The host has yet to learn where that draft is, so not having it here says
    * nothing: its page waits rather than giving up the address. */
   holdLandingDraft?: boolean
-  /** Where folded sidebar rows are remembered. Defaults to `localStorage`. */
-  collapsedWorkspaceStorage?: Pick<Storage, 'getItem' | 'setItem'> | null
+  /**
+   * What this device remembers for itself: folded sidebar rows, where a sent
+   * draft's address leads, composer drafts kept before the environment did.
+   * Defaults to the browser's `localStorage`; `null` keeps nothing.
+   */
+  storage?: DeviceStorage | null
+  /** When the page is going away, so a pending draft discard is carried out
+   * first. Defaults to the browser's `pagehide` and `freeze`. */
+  subscribePageExit?: SubscribePageExit
+  /** Where folded sidebar rows are remembered. Defaults to `storage`. */
+  collapsedWorkspaceStorage?: Pick<DeviceStorage, 'getItem' | 'setItem'> | null
   /** Host actions for views (child sessions, icons, uploads). */
   viewActions?: Omit<ViewActions, 'activeSessionId'>
 }
@@ -170,31 +187,41 @@ export function EnvironmentApplicationProviders({
   children,
   ...options
 }: EnvironmentApplicationOptions & { children: ReactNode }) {
+  const { storage, subscribePageExit } = options
+  const device = useMemo<DeviceHost>(
+    () => ({
+      ...(storage !== undefined ? { storage } : {}),
+      ...(subscribePageExit ? { subscribePageExit } : {}),
+    }),
+    [storage, subscribePageExit],
+  )
   return (
-    <EnvironmentPlatformCapabilitiesProvider>
-      <EnvironmentSessionStateProvider
-        addWorkspace={options.addWorkspace}
-        navigateSession={options.navigateSession}
-        navigateDraft={options.navigateDraft}
-        onLanding={options.onLanding ?? false}
-        landingDraftId={options.landingDraftId ?? null}
-        holdLandingDraft={options.holdLandingDraft ?? false}
-      >
-        <EnvironmentComposerStateProvider>
-          <EnvironmentComposerDraftProvider>
-            <EnvironmentSidebarDataProvider storage={options.collapsedWorkspaceStorage}>
-              <EnvironmentActiveThreadProvider>
-                <EnvironmentInteractionProviders>
-                  <EnvironmentViewActions actions={options.viewActions}>
-                    {children}
-                  </EnvironmentViewActions>
-                </EnvironmentInteractionProviders>
-              </EnvironmentActiveThreadProvider>
-            </EnvironmentSidebarDataProvider>
-          </EnvironmentComposerDraftProvider>
-        </EnvironmentComposerStateProvider>
-      </EnvironmentSessionStateProvider>
-    </EnvironmentPlatformCapabilitiesProvider>
+    <DeviceHostContext.Provider value={device}>
+      <EnvironmentPlatformCapabilitiesProvider>
+        <EnvironmentSessionStateProvider
+          addWorkspace={options.addWorkspace}
+          navigateSession={options.navigateSession}
+          navigateDraft={options.navigateDraft}
+          onLanding={options.onLanding ?? false}
+          landingDraftId={options.landingDraftId ?? null}
+          holdLandingDraft={options.holdLandingDraft ?? false}
+        >
+          <EnvironmentComposerStateProvider>
+            <EnvironmentComposerDraftProvider>
+              <EnvironmentSidebarDataProvider storage={options.collapsedWorkspaceStorage}>
+                <EnvironmentActiveThreadProvider>
+                  <EnvironmentInteractionProviders>
+                    <EnvironmentViewActions actions={options.viewActions}>
+                      {children}
+                    </EnvironmentViewActions>
+                  </EnvironmentInteractionProviders>
+                </EnvironmentActiveThreadProvider>
+              </EnvironmentSidebarDataProvider>
+            </EnvironmentComposerDraftProvider>
+          </EnvironmentComposerStateProvider>
+        </EnvironmentSessionStateProvider>
+      </EnvironmentPlatformCapabilitiesProvider>
+    </DeviceHostContext.Provider>
   )
 }
 
@@ -463,6 +490,7 @@ function EnvironmentSessionStateProvider({
   const client = useEnvironmentClient()
   const { commands } = client
   const sync = client.drafts
+  const deviceStorage = useDeviceStorage()
   // Only which session is on screen, and where: its title, status or settle
   // are the sidebar's and the thread's to show, and reading the whole session
   // here would hand every reader of session state a new value on each.
@@ -608,6 +636,12 @@ function EnvironmentSessionStateProvider({
         : null
 
   const isSessionDraftOpen = activeSessionId === null && shown !== null && !pageUnusable
+  // The draft is on screen only while a new-session page is in front. A host
+  // with draft pages can leave them for a page of its own (the phone's
+  // sessions home, web's settings) with the page kept for when it comes back;
+  // meanwhile the draft is a card like any other, and discarding it leaves
+  // the reader where they are.
+  const draftOnScreen = isSessionDraftOpen && (!routed || onLanding)
   const activeWorkspacePath = activeSessionWorkspaceId ?? draftWorkspaceId
   const isDraftLoading = activeSessionId === null && selectedSessionId === null && pageUnusable
   const isDraftProjectRemoved = isSessionDraftOpen && !!shown?.claimed && draftWorkspaceId === null
@@ -628,7 +662,8 @@ function EnvironmentSessionStateProvider({
   // A sent draft's session need not be loaded: the session's address asks
   // the environment for it, and leads on to `/` if it has gone since.
   const draftsListed = useEnvironmentState(selectDraftsListed)
-  const sentSessionId = pagePending && shown ? sentDraftSession(shown.draftId) : undefined
+  const sentSessionId =
+    pagePending && shown ? sentDraftSession(shown.draftId, deviceStorage) : undefined
   const sentSessionKnown = useEnvironmentState((state) =>
     sentSessionId ? state.sessions[sentSessionId] !== undefined : false,
   )
@@ -641,7 +676,9 @@ function EnvironmentSessionStateProvider({
     // Back at that address later, it is followed again.
     if (redirectedRef.current !== routeDraft) redirectedRef.current = null
     if (!pageUnusable || !pageDraftId || selectedSessionId !== null) return
-    if (pageConsumed && consumedSessionId) rememberSentDraft(pageDraftId, consumedSessionId)
+    if (pageConsumed && consumedSessionId) {
+      rememberSentDraft(pageDraftId, consumedSessionId, deviceStorage)
+    }
     if (!routed || !navigateSession) {
       // No address to follow: a blank page takes its place, in its project.
       if (!pageConsumed) return
@@ -671,6 +708,7 @@ function EnvironmentSessionStateProvider({
   }, [
     canList,
     consumedSessionId,
+    deviceStorage,
     draftsListed,
     holdLandingDraft,
     navigateSession,
@@ -718,11 +756,11 @@ function EnvironmentSessionStateProvider({
     if (!movedOn && retiredState !== 'restored') return
     setRetired(null)
     if (movedOn) return
-    forgetSentDraft(retired.draftId)
+    forgetSentDraft(retired.draftId, deviceStorage)
     if (routeDraft !== retired.draftId) {
       void navigateDraft?.(retired.draftId, { replace: true }).catch(noop)
     }
-  }, [navigateDraft, retired, retiredState, routeDraft, selectedSessionId])
+  }, [deviceStorage, navigateDraft, retired, retiredState, routeDraft, selectedSessionId])
 
   /**
    * Navigate, holding the page this provider opened until every navigation
@@ -889,7 +927,7 @@ function EnvironmentSessionStateProvider({
   const workspacesRef = useRef(workspaces)
   workspacesRef.current = workspaces
   const onScreenDraftRef = useRef<string | null>(null)
-  onScreenDraftRef.current = isSessionDraftOpen ? pageDraftId : null
+  onScreenDraftRef.current = draftOnScreen ? pageDraftId : null
 
   // The sidebar's draft cards: a draft's own page, by its address. A launch
   // still in flight continues in the sidebar, as when a session is picked.
@@ -990,7 +1028,7 @@ function EnvironmentSessionStateProvider({
       if (draft) {
         client.drafts?.endLaunch(draft.draftId, 'sent')
         claimedRef.current.delete(draft.draftId)
-        rememberSentDraft(draft.draftId, session.sessionId)
+        rememberSentDraft(draft.draftId, session.sessionId, deviceStorage)
       }
       // The user moved on, while its images uploaded or the session was
       // being created: do not pull the view back to it, nor take the page
@@ -1034,7 +1072,7 @@ function EnvironmentSessionStateProvider({
       }
       return { sessionId: session.sessionId, threadId: thread.threadId }
     },
-    [client, commands, draftWorkspaceId, openSessionLatest, routed],
+    [client, commands, deviceStorage, draftWorkspaceId, openSessionLatest, routed],
   )
 
   // The commands the sidebar and the palette call stay the same functions
@@ -1092,7 +1130,7 @@ function EnvironmentSessionStateProvider({
       isSessionDraftOpen,
       // Only where the environment keeps drafts: elsewhere the composer keeps
       // one draft per project, in this browser.
-      newSessionDraftId: sync && isSessionDraftOpen ? pageDraftId : null,
+      newSessionDraftId: sync && draftOnScreen ? pageDraftId : null,
       isDraftLoading,
       isDraftProjectRemoved,
       ...(sync ? { setDraftWorkspace } : {}),
@@ -1147,6 +1185,7 @@ function EnvironmentSessionStateProvider({
       createSession,
       defaultProviderId,
       deleteSession,
+      draftOnScreen,
       draftRequest,
       error,
       fail,
@@ -1201,14 +1240,6 @@ function readCollapsed(storage: EnvironmentApplicationOptions['collapsedWorkspac
   }
 }
 
-function defaultStorage(): Pick<Storage, 'getItem' | 'setItem'> | null {
-  try {
-    return globalThis.localStorage ?? null
-  } catch {
-    return null
-  }
-}
-
 function toWorkspaceEntry(workspace: Workspace, available: string[]): WorkspaceEntry {
   return {
     path: workspace.workspaceId,
@@ -1236,7 +1267,8 @@ function EnvironmentSidebarDataProvider({
   const recentWorkspaces = useRecentWorkspaces()
   const sessions = useSessionList()
   const connection = useConnectionState()
-  const storage = storageOption === undefined ? defaultStorage() : storageOption
+  const deviceStorage = useDeviceStorage()
+  const storage = storageOption === undefined ? deviceStorage : storageOption
   const [collapsedWorkspacePaths, setCollapsed] = useState<string[]>(() => readCollapsed(storage))
 
   const toggleWorkspaceCollapsed = useCallback(
@@ -1625,9 +1657,21 @@ function EnvironmentActiveThreadProvider({ children }: { children: ReactNode }) 
         beginSessionTurn()
         // A rejected send keeps its own row on screen with the reason and a
         // retry, so it is neither an error banner nor a composer rollback.
-        await commands
+        // The refusal is still answered, for a host that has no such row.
+        return await commands
           .sendTurn({ ...current, text, ...(artifactIds?.length ? { artifactIds } : {}) })
-          .catch(() => failTurn())
+          .then(
+            () => undefined,
+            (refusal: unknown): SendRefused => {
+              failTurn()
+              return {
+                refused:
+                  refusal instanceof Error && refusal.message
+                    ? refusal.message
+                    : 'The environment refused the message.',
+              }
+            },
+          )
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err)
         failTurn(message)

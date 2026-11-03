@@ -3,7 +3,7 @@ import { act, cleanup, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { createMockEnvironmentClient, type MockSeed } from '@openmanager/environment-client'
-import { ENVIRONMENT_STORAGE_KEY } from '../lib/environment-store'
+import { ENVIRONMENT_STORAGE_KEY } from '@openmanager/environment-client/connection'
 import { renderWebApp } from '../test-utils'
 
 const WORKSPACE = {

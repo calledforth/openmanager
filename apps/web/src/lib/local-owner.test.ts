@@ -1,5 +1,8 @@
 import { describe, expect, it, vi } from 'vitest'
-import { environmentLocalOwnerUrl, isLoopbackEnvironmentEndpoint } from './environment-store'
+import {
+  environmentLocalOwnerUrl,
+  isLoopbackEnvironmentEndpoint,
+} from '@openmanager/environment-client/connection'
 import { fetchLocalOwner, LOCAL_OWNER_CLAIM_HEADER, parseLocalOwnerClaim } from './local-owner'
 
 const OWNER_CREDENTIAL = `omc1.${'A'.repeat(43)}`

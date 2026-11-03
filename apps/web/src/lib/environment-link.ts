@@ -1,13 +1,13 @@
-import { PROTOCOL_VERSION } from './bootstrap'
 import {
   deriveConnectionUi,
+  PROTOCOL_VERSION,
+  WRONG_ENVIRONMENT_MESSAGE,
   type BootstrapOutcome,
   type ConnectionUiState,
+  type StoredEnvironment,
   type TransportStatus,
-} from './connection-state'
+} from '@openmanager/environment-client/connection'
 import type { EnvironmentConnection } from './environment-connections'
-import type { StoredEnvironment } from './environment-store'
-import { WRONG_ENVIRONMENT_MESSAGE } from './route-health'
 
 /** What a saved environment's connection comes to, on the route it is using. */
 export type EnvironmentLink = {

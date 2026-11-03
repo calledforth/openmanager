@@ -1,6 +1,33 @@
 import type { ProviderId, ProviderMetadata, SessionConfigOption } from '@agentpack/contract'
 import type { ProviderComposerProfiles } from '@openmanager/shared/contracts/composer-profile'
-import type { ProviderModelGroup } from './ProviderModelPicker'
+import type { ProviderIconId } from '../providers/providerIconId'
+
+export type ProviderModelOption = {
+  id: string
+  name: string
+  description?: string
+  resolvedModel?: string
+  effortLevels?: string[]
+  supportsFastMode?: boolean
+  supportsAutoMode?: boolean
+  contextWindowTokens?: number
+  configOptions?: SessionConfigOption[]
+}
+
+/** A tool whose models the picker lists: a session provider, or Codex for titles. */
+export type PickerProviderId = ProviderIconId
+
+export type ProviderModelGroup<P extends PickerProviderId = ProviderId> = {
+  providerId: P
+  providerName: string
+  models: ProviderModelOption[]
+  /** Why this provider cannot be switched to right now. Its models stay
+   * listed, so the picker says what is wrong instead of hiding the provider. */
+  unavailableReason?: string
+  /** Offer what is typed in this provider's tab as a model id of its own, for
+   *  a tool no catalog lists the models of. */
+  acceptsTypedIds?: boolean
+}
 
 /** `description` is load-bearing for Claude Code, not decoration: the CLI puts
  * the marketing name there rather than in `displayName`, so a row reads
