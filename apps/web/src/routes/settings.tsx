@@ -165,13 +165,25 @@ function useSettingsEnvironment(): StoredEnvironment | undefined {
 
 const NEVER = () => () => undefined
 
+/** Still on its way, so saying it isn't connected would only flash. */
+const ON_ITS_WAY: ReadonlySet<string> = new Set(['connecting', 'reconnecting', 'ready'])
+
 /** The choice itself. With one environment saved there is nothing to choose. */
-function EnvironmentChoice({ chosen }: { chosen: StoredEnvironment | undefined }) {
+function EnvironmentChoice({
+  chosen,
+  within = false,
+}: {
+  chosen: StoredEnvironment | undefined
+  /** Inside a section of its own, rather than one headed "Applies to". */
+  within?: boolean
+}) {
   const navigate = useNavigate()
-  const { environments } = useConnection()
+  const { environments, links } = useConnection()
   const client = useEnvironmentClients().clients[chosen?.environmentId ?? '']
   const read = () => client?.getState().connection.phase === 'connected'
   const connected = useSyncExternalStore(client?.subscribe ?? NEVER, read, read)
+  const link = links.find((item) => item.environmentId === chosen?.environmentId)
+  const unreachable = chosen && !connected && !(link && ON_ITS_WAY.has(link.ui.kind))
   if (environments.length < 2) return null
   const labels = environments.map((item) => item.label)
   // Two machines with the same host name must not read the same here: what
@@ -183,11 +195,8 @@ function EnvironmentChoice({ chosen }: { chosen: StoredEnvironment | undefined }
         ? label
         : `${label} (${hostOf(routes[0].endpoint)})`,
   }))
-  return (
-    <SettingsSection
-      title="Applies to"
-      description={chosen && !connected ? `${chosen.label} isn’t connected right now.` : undefined}
-    >
+  const choice = (
+    <>
       <ChoiceGroup
         name="settings-environment"
         label="Applies to"
@@ -201,8 +210,15 @@ function EnvironmentChoice({ chosen }: { chosen: StoredEnvironment | undefined }
           })
         }
       />
-    </SettingsSection>
+      {unreachable ? (
+        <p className="mt-2 text-[13px] text-muted-foreground">
+          {chosen.label} isn’t connected right now.
+        </p>
+      ) : null}
+    </>
   )
+  if (within) return choice
+  return <SettingsSection title="Applies to">{choice}</SettingsSection>
 }
 
 /**
@@ -240,20 +256,38 @@ function EnvironmentScope({
   )
 }
 
-/** Settings an environment keeps for itself, under the choice of which. */
+/**
+ * Settings an environment keeps for itself, under the choice of which. Given a
+ * section, the choice sits inside it, under its heading: beside the list of
+ * environments, a second heading of its own would read as a second list.
+ */
 function EnvironmentSettings({
+  section,
   children,
 }: {
+  section?: { title: string; description: (name: string) => string }
   children: (environment: StoredEnvironment | undefined, name: string) => ReactNode
 }) {
   const chosen = useSettingsEnvironment()
+  const name = chosen?.label ?? 'this environment'
+  const scoped = (
+    // By environment: nothing typed or open for one may reach the next.
+    <EnvironmentScope key={chosen?.environmentId} environmentId={chosen?.environmentId}>
+      {children(chosen, name)}
+    </EnvironmentScope>
+  )
+  if (section) {
+    return (
+      <SettingsSection title={section.title} description={section.description(name)}>
+        <EnvironmentChoice chosen={chosen} within />
+        {scoped}
+      </SettingsSection>
+    )
+  }
   return (
     <>
       <EnvironmentChoice chosen={chosen} />
-      {/* By environment: nothing typed or open for one may reach the next. */}
-      <EnvironmentScope key={chosen?.environmentId} environmentId={chosen?.environmentId}>
-        {children(chosen, chosen?.label ?? 'this environment')}
-      </EnvironmentScope>
+      {scoped}
     </>
   )
 }
@@ -470,19 +504,13 @@ function EnvironmentsPanel() {
 /** Settings an environment keeps for all of its clients. */
 function ConnectedEnvironmentSettings() {
   return (
-    <EnvironmentSettings>
-      {(_, name) => (
-        <AddProjectStartSetting
-          section={(field) => (
-            <SettingsSection
-              title="Add project starts in"
-              description={`Where Add project opens on ${name}, on every device.`}
-            >
-              {field}
-            </SettingsSection>
-          )}
-        />
-      )}
+    <EnvironmentSettings
+      section={{
+        title: 'Add project starts in',
+        description: (name) => `Where Add project opens on ${name}, on every device.`,
+      }}
+    >
+      {() => <AddProjectStartSetting section={(field) => field} />}
     </EnvironmentSettings>
   )
 }
