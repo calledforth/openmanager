@@ -48,6 +48,7 @@ import {
 import { AddWorkspaceDialog } from './add-workspace-dialog'
 import { ConnectionBanner, ConnectionScreen, ConnectionStatusChip } from './connection-surfaces'
 import { EnvironmentsSidebarHost, SidebarSource } from './environments-sidebar'
+import { EnvironmentNotifications } from './session-notifications'
 
 const NewAgentIcon = phosphorIcon(NotePencilIcon)
 const AddProjectIcon = phosphorIcon(FolderPlusIcon)
@@ -400,6 +401,7 @@ export function AppShell() {
     <SidebarProvider className="h-svh min-h-0 overflow-hidden bg-background text-foreground">
       <EnvironmentClientProvider client={client}>
         <AddressLookupProvider value={lookup}>
+          <EnvironmentNotifications openId={lookup.owner ?? selectedId} />
           {client ? (
             <EnvironmentsSidebarHost
               footer={<NavMenu pathname={pathname} includeSessions={false} />}

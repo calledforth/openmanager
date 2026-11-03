@@ -58,11 +58,12 @@ function seedRegistry(saved: 'both' | 'desk' = 'both') {
   )
 }
 
-function answering(label?: string) {
+function answering(label?: string, { desk = true }: { desk?: boolean } = {}) {
   vi.stubGlobal(
     'fetch',
     vi.fn(async (input: RequestInfo | URL) => {
       const onLaptop = String(input).startsWith(LAPTOP)
+      if (!onLaptop && !desk) throw new TypeError('Failed to fetch')
       return {
         ok: true,
         status: 200,
@@ -218,6 +219,24 @@ describe('notifications across environments', () => {
     await act(() => router.navigate({ to: '/settings' }))
     await finishTurn(desk, 'desk-session', 'env-desk-thread')
     await waitFor(() => expect(FakeNotification.created).toHaveLength(1))
+  })
+
+  it('still tells of another environment while the open one has no client', async () => {
+    seedRegistry()
+    answering(undefined, { desk: false })
+    const { desk, laptop } = twoEnvironments()
+    const { router } = renderBoth('/', desk, laptop)
+    await connected(laptop)
+    // Desk is selected, can't be reached and has nothing cached.
+    expect(desk.getState().connection.phase).not.toBe('connected')
+
+    await finishTurn(laptop, 'laptop-session', 'env-laptop-thread')
+    await waitFor(() => expect(FakeNotification.created).toHaveLength(1))
+    expect(FakeNotification.created[0]!.options.tag).toBe('env-laptop/laptop-session')
+
+    act(() => FakeNotification.created[0]!.onclick?.())
+    await waitFor(() => expect(router.state.location.pathname).toBe('/sessions/laptop-session'))
+    expect(await screen.findByText('Written on env-laptop')).toBeInTheDocument()
   })
 
   it('keeps watching across a move between environments', async () => {

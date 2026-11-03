@@ -1,4 +1,5 @@
-import { useEffect, useRef } from 'react'
+import { useEffect, useMemo, useRef } from 'react'
+import { useNavigate, useRouterState } from '@tanstack/react-router'
 import {
   selectSessionList,
   type EnvironmentClient,
@@ -13,6 +14,9 @@ import {
   readNotificationsEnabled,
   sessionNotice,
 } from '../lib/session-notifications'
+import { addressOf, useAddressLookup } from '../providers/address-environment'
+import { useConnection } from '../providers/connection-provider'
+import { useEnvironmentClients } from '../providers/environment-client-provider'
 
 /** What one environment's sessions last said, as this page saw it. */
 type Watched = {
@@ -138,4 +142,42 @@ export function SessionNotifications({
   }, [names])
 
   return null
+}
+
+/**
+ * Notifications for every saved environment, for as long as the app is up:
+ * neither a move between environments nor an open one with no client stops
+ * them. A click is a card's click: the address does not say whose session it
+ * means, so the notice tells the lookup.
+ */
+export function EnvironmentNotifications({ openId }: { openId: string | null }) {
+  const { clients } = useEnvironmentClients()
+  const { environments } = useConnection()
+  const { prefer } = useAddressLookup()
+  const navigate = useNavigate()
+  const pathname = useRouterState({ select: (state) => state.location.pathname })
+  const names = useMemo(
+    () => Object.fromEntries(environments.map((item) => [item.environmentId, item.label])),
+    [environments],
+  )
+  const isOnScreen = (environmentId: string, sessionId: string) => {
+    // Not the open environment's active session: that stays set behind Settings.
+    const address = addressOf(pathname)
+    return address?.kind === 'session' && address.id === sessionId && openId === environmentId
+  }
+  const openSession = (environmentId: string, sessionId: string) => {
+    // Removed since: its id could mean something else in one that's left.
+    // One that's saved but unreachable is the lookup's to explain.
+    if (!Object.hasOwn(names, environmentId)) return
+    prefer({ kind: 'session', id: sessionId }, environmentId)
+    void navigate({ to: '/sessions/$sessionId', params: { sessionId } })
+  }
+  return (
+    <SessionNotifications
+      clients={clients}
+      names={names}
+      isOnScreen={isOnScreen}
+      openSession={openSession}
+    />
+  )
 }

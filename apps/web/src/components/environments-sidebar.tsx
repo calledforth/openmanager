@@ -9,7 +9,6 @@ import {
   useSyncExternalStore,
   type ReactNode,
 } from 'react'
-import { useNavigate, useRouterState } from '@tanstack/react-router'
 import { shallowEqualArray, type EnvironmentClient } from '@openmanager/environment-client'
 import { DraftDiscardNotice } from '@openmanager/app-core/components/sidebar/DraftDiscardToast'
 import { WorkspaceSidebar } from '@openmanager/app-core/components/sidebar/WorkspaceSidebar'
@@ -42,10 +41,9 @@ import {
   sidebarRowAbilities,
 } from '@openmanager/app-core/providers/sidebar-rows'
 import { WorkspaceIconContext } from '@openmanager/app-core/providers/view-actions'
-import { addressOf, useAddressLookup, type Address } from '../providers/address-environment'
+import { useAddressLookup, type Address } from '../providers/address-environment'
 import { useConnection } from '../providers/connection-provider'
 import { useEnvironmentClients } from '../providers/environment-client-provider'
-import { SessionNotifications } from './session-notifications'
 
 /** What the open environment's providers hand the sidebar. */
 type OpenEnvironment = {
@@ -283,11 +281,13 @@ function EnvironmentsSidebar({ footer }: { footer: ReactNode }) {
       environmentId && environmentId !== openId ? { client: clients[environmentId] } : null,
     [clients, openId],
   )
+  // Always, the open environment's own cards too: a word left from an
+  // earlier click that never arrived would otherwise decide for this one.
   const opening = useCallback(
     (environmentId: string | undefined, address: Address) => {
-      if (environmentId && environmentId !== openId) prefer(address, environmentId)
+      if (environmentId) prefer(address, environmentId)
     },
-    [openId, prefer],
+    [prefer],
   )
 
   const anySettles = others.some((row) => row.canSettle)
@@ -423,53 +423,10 @@ function EnvironmentsSidebar({ footer }: { footer: ReactNode }) {
 }
 
 /**
- * Notifications for every environment, here so they carry on across a move
- * between them. A click is a card's click: the address does not say whose
- * session it means, so the notice tells the lookup.
- */
-function EnvironmentNotifications() {
-  const bridge = useContext(SidebarBridgeContext)!
-  const { clients } = useEnvironmentClients()
-  const { environments } = useConnection()
-  const { prefer } = useAddressLookup()
-  const navigate = useNavigate()
-  const pathname = useRouterState({ select: (state) => state.location.pathname })
-  const names = useMemo(
-    () => Object.fromEntries(environments.map((item) => [item.environmentId, item.label])),
-    [environments],
-  )
-  const isOnScreen = (environmentId: string, sessionId: string) => {
-    // Not the open environment's active session: that stays set behind Settings.
-    const address = addressOf(pathname)
-    return (
-      address?.kind === 'session' &&
-      address.id === sessionId &&
-      bridge.get()?.data.activeEnvironmentId === environmentId
-    )
-  }
-  const openSession = (environmentId: string, sessionId: string) => {
-    // Gone since: its id could mean something else in the environment that's left.
-    if (!clients[environmentId]) return
-    if (environmentId !== bridge.get()?.data.activeEnvironmentId) {
-      prefer({ kind: 'session', id: sessionId }, environmentId)
-    }
-    void navigate({ to: '/sessions/$sessionId', params: { sessionId } })
-  }
-  return (
-    <SessionNotifications
-      clients={clients}
-      names={names}
-      isOnScreen={isOnScreen}
-      openSession={openSession}
-    />
-  )
-}
-
-/**
  * The one sidebar of every environment, and what must outlive any one of them:
  * `children` holds the shell keyed by environment, which reports through
  * `SidebarSource`. A discarded draft's undo is here too, so it carries on
- * across a move between environments, and so are notifications.
+ * across a move between environments.
  */
 export function EnvironmentsSidebarHost({
   footer,
@@ -491,7 +448,6 @@ export function EnvironmentsSidebarHost({
       <DraftDiscardsContext.Provider value={discards}>
         <EnvironmentsSidebar footer={footer} />
         {children}
-        <EnvironmentNotifications />
       </DraftDiscardsContext.Provider>
     </SidebarBridgeContext.Provider>
   )
