@@ -101,6 +101,8 @@ export interface SidebarDataValue {
   collapsedWorkspacePaths: string[]
   toggleWorkspaceCollapsed: (workspacePath: string) => void
   addWorkspace: () => Promise<void>
+  /** There is nowhere to add a project just now, so the sidebar doesn't offer it. */
+  addWorkspaceDisabled?: boolean
   removeWorkspace: (path: string) => Promise<void>
   /**
    * The row commands here take the row's environment last. A host listing
@@ -211,6 +213,8 @@ export interface SidebarRowEnvironment {
   reachable?: boolean
   canSettle: boolean
   canPin: boolean
+  /** Nothing reaches it: its rows are what this device last saw of it, not news. */
+  offline?: boolean
   /** Null where it has no icons to give. */
   iconLookup: ((workspaceId: string) => Promise<string | null>) | null
 }
@@ -227,6 +231,8 @@ export interface SidebarEnvironmentsValue {
   rowEnvironments: Readonly<Record<string, SidebarRowEnvironment>>
   /** Some environment's rows may yet arrive: what joins now is the list filling, not news. */
   filling: boolean
+  /** Names a provider where no environment is open to say what it's called. */
+  providerDisplayName?: (providerId: ProviderId) => string
 }
 
 export const SidebarEnvironmentsContext = createContext<SidebarEnvironmentsValue | null>(null)
