@@ -63,6 +63,7 @@ import { ProjectIcon } from './ProjectIcon'
 import { SessionBusyLoader, sessionBusyTone, type SessionBusyTone } from './SessionBusyLoader'
 import {
   DRAFT_CARD_ATTRIBUTE,
+  DRAFT_CARD_ENVIRONMENT_ATTRIBUTE,
   flattenSidebarSessions,
   sidebarRowKey,
   type DraftDiscardOptions,
@@ -168,6 +169,12 @@ export function partitionSidebarSessions(workspaces: SidebarWorkspace[]): {
   }
   if (byEnvironment.size <= 1) return partitionEnvironmentSessions(workspaces)
   const parts = [...byEnvironment.values()].map(partitionEnvironmentSessions)
+  // The open environment is listed first, so a tie left to the order given
+  // would swap places whenever it changed.
+  const newest =
+    (field: 'updatedAt' | 'settledAt') => (a: SidebarBoardEntry, b: SidebarBoardEntry) =>
+      timeOf(b.root.session[field]) - timeOf(a.root.session[field]) ||
+      (a.root.session.environmentId ?? '').localeCompare(b.root.session.environmentId ?? '')
   return {
     // Pins first, most recently pinned on top, whichever environment they are
     // on; then the rest by activity, as within one environment.
@@ -176,11 +183,9 @@ export function partitionSidebarSessions(workspaces: SidebarWorkspace[]): {
       .sort(
         (a, b) =>
           timeOf(b.root.session.pinnedAt) - timeOf(a.root.session.pinnedAt) ||
-          timeOf(b.root.session.updatedAt) - timeOf(a.root.session.updatedAt),
+          newest('updatedAt')(a, b),
       ),
-    settled: parts
-      .flatMap((part) => part.settled)
-      .sort((a, b) => timeOf(b.root.session.settledAt) - timeOf(a.root.session.settledAt)),
+    settled: parts.flatMap((part) => part.settled).sort(newest('settledAt')),
   }
 }
 
@@ -1955,6 +1960,7 @@ function DraftCardBody({
           ref={cardRef}
           type="button"
           {...{ [DRAFT_CARD_ATTRIBUTE]: draft.draftId }}
+          {...(environmentId ? { [DRAFT_CARD_ENVIRONMENT_ATTRIBUTE]: environmentId } : {})}
           aria-current={isActive ? 'page' : undefined}
           onClick={open}
           onKeyDown={(event) => {

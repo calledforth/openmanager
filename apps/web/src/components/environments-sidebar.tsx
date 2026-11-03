@@ -70,7 +70,9 @@ function createSidebarBridge() {
     },
     subscribe: (listener: () => void) => {
       listeners.add(listener)
-      return () => listeners.delete(listener)
+      return () => {
+        listeners.delete(listener)
+      }
     },
   }
 }
@@ -82,7 +84,9 @@ const SidebarBridgeContext = createContext<SidebarBridge | null>(null)
 /**
  * Renders nothing: inside an environment's providers, it tells the sidebar what
  * they say. In a layout effect, so a new environment's providers reach the
- * sidebar in the commit that mounts them, before anything is painted.
+ * sidebar in the commit that mounts them, before anything is painted. That
+ * takes the sidebar listening by then, on the first commit too, which is why
+ * `EnvironmentsSidebar` comes first in the tree and listens in a layout effect.
  */
 export function SidebarSource() {
   const bridge = useContext(SidebarBridgeContext)
@@ -203,7 +207,10 @@ function sameRowEnvironments(
 function EnvironmentsSidebar({ footer }: { footer: ReactNode }) {
   const bridge = useContext(SidebarBridgeContext)!
   const discards = useContext(DraftDiscardsContext)!
-  const open = useSyncExternalStore(bridge.subscribe, bridge.get, bridge.get)
+  // Not `useSyncExternalStore`: it subscribes after paint, so on boot the shell
+  // would show for a frame with no sidebar beside it.
+  const [open, setOpen] = useState(bridge.get)
+  useLayoutEffect(() => bridge.subscribe(() => setOpen(bridge.get())), [bridge])
   const { clients, everyCacheRead } = useEnvironmentClients()
   const { environments } = useConnection()
   const { prefer } = useAddressLookup()

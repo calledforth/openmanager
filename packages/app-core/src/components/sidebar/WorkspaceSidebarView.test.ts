@@ -69,6 +69,26 @@ describe('partitionSidebarSessions', () => {
     expect(active.map((entry) => entry.root.workspace.environmentId)).toEqual(['laptop', 'desk'])
   })
 
+  it('keeps equal times in the same order whichever environment is listed first', () => {
+    const at = '2026-09-24T10:00:00Z'
+    const on = (environmentId: string) => ({
+      ...workspace('same-path', [
+        session(`${environmentId}-live`, at, { environmentId }),
+        session(`${environmentId}-put-away`, at, { environmentId, settledAt: at }),
+      ]),
+      environmentId,
+    })
+    const order = (first: string, second: string) => {
+      const { active, settled } = partitionSidebarSessions([on(first), on(second)])
+      return { active: ids(active), settled: ids(settled) }
+    }
+    expect(order('desk', 'laptop')).toEqual({
+      active: [['desk-live'], ['laptop-live']],
+      settled: [['desk-put-away'], ['laptop-put-away']],
+    })
+    expect(order('laptop', 'desk')).toEqual(order('desk', 'laptop'))
+  })
+
   it('does not mix up sessions with the same id on different environments', () => {
     const on = (environmentId: string, at: string) => ({
       ...workspace('same-path', [

@@ -10,7 +10,10 @@ import {
 import { ENVIRONMENT_STORAGE_KEY } from './lib/environment-store'
 import { idleUntilDialled, renderWebApp } from './test-utils'
 
-import type { SidebarDataValue } from '@openmanager/app-core/providers/sidebar-provider'
+import type {
+  SidebarDataValue,
+  SidebarDraftsValue,
+} from '@openmanager/app-core/providers/sidebar-provider'
 
 /**
  * One set per mounted page, of the environments it was ever given; and the
@@ -18,7 +21,11 @@ import type { SidebarDataValue } from '@openmanager/app-core/providers/sidebar-p
  */
 const { pageSaw, sidebar } = vi.hoisted(() => ({
   pageSaw: new Set<Set<string>>(),
-  sidebar: { renders: 0, data: null as SidebarDataValue | null },
+  sidebar: {
+    renders: 0,
+    data: null as SidebarDataValue | null,
+    drafts: null as SidebarDraftsValue | null,
+  },
 }))
 
 vi.mock('./components/session-notifications', async () => {
@@ -45,12 +52,15 @@ vi.mock('@openmanager/app-core/components/sidebar/WorkspaceSidebar', async (impo
     await importOriginal<
       typeof import('@openmanager/app-core/components/sidebar/WorkspaceSidebar')
     >()
-  const { useSidebarData } = await import('@openmanager/app-core/providers/sidebar-provider')
+  const { useSidebarData, useSidebarDrafts } = await import(
+    '@openmanager/app-core/providers/sidebar-provider'
+  )
   return {
     ...actual,
     WorkspaceSidebar: (props: Parameters<typeof actual.WorkspaceSidebar>[0]) => {
       sidebar.renders += 1
       sidebar.data = useSidebarData()
+      sidebar.drafts = useSidebarDrafts()
       return <actual.WorkspaceSidebar {...props} />
     },
   }
@@ -66,6 +76,7 @@ afterEach(() => {
   pageSaw.clear()
   sidebar.renders = 0
   sidebar.data = null
+  sidebar.drafts = null
   localStorage.clear()
   vi.unstubAllGlobals()
 })
@@ -381,6 +392,80 @@ describe('one sidebar for every environment', () => {
     )
     expect(await screen.findByRole('button', { name: 'Move back to active' })).toBeInTheDocument()
     expect(selected()).toBe('env-desk')
+  })
+
+  it('settles the card it was asked to when its twin is open', async () => {
+    seedRegistry()
+    answering()
+    const user = userEvent.setup()
+    const desk = createMockEnvironmentClient({ seed: twins('env-desk', 'Desk twin') })
+    const laptop = createMockEnvironmentClient({ seed: twins('env-laptop', 'Laptop twin') })
+    const onDesk = vi.spyOn(desk.commands, 'settleSession')
+    const onLaptop = vi.spyOn(laptop.commands, 'settleSession')
+    renderBoth('/sessions/shared-session', { desk, laptop })
+
+    expect(await screen.findByText('Written on env-desk')).toBeInTheDocument()
+    await waitFor(() => expect(laptop.getState().connection.phase).toBe('connected'))
+    const { card } = await cardOf(/Laptop twin/)
+    await user.click(await card.findByRole('button', { name: 'Settle' }))
+
+    expect(onLaptop).toHaveBeenCalledWith('shared-session', true)
+    expect(onDesk).not.toHaveBeenCalled()
+    await waitFor(() =>
+      expect(laptop.getState().sessions['shared-session']?.settledAt).toBeTruthy(),
+    )
+    expect(desk.getState().sessions['shared-session']?.settledAt ?? null).toBeNull()
+    expect(screen.getByText('Written on env-desk')).toBeInTheDocument()
+    expect(selected()).toBe('env-desk')
+  })
+
+  it('does nothing for a row whose environment has no client, least of all on the open one', async () => {
+    seedRegistry()
+    answering()
+    const desk = mockOf('env-desk')
+    const settle = vi.spyOn(desk.commands, 'settleSession')
+    const rename = vi.spyOn(desk.commands, 'renameSession')
+    const remove = vi.spyOn(desk.commands, 'deleteSession')
+    await desk.commands.saveDraft({
+      draftId: 'desk-draft',
+      baseRevision: 0,
+      target: { type: 'new_session', sessionId: 'next-desk', workspaceId: '/desk-project' },
+      content: { text: 'Typed on the desk' },
+    })
+    renderBoth('/', { desk })
+    await cardOf(/Desk chat/)
+    await waitFor(() => expect(desk.getState().connection.phase).toBe('connected'))
+
+    const id = 'env-desk-session'
+    await act(async () => {
+      await sidebar.data!.settleSession!('/desk-project', id, true, 'env-gone')
+      await sidebar.data!.renameSession!('/desk-project', id, 'Wrong', 'env-gone')
+      await sidebar.data!.deleteSession('/desk-project', id, 'opencode', 'env-gone')
+      sidebar.drafts!.discardDraft('desk-draft', { environmentId: 'env-gone' })
+    })
+
+    expect(settle).not.toHaveBeenCalled()
+    expect(rename).not.toHaveBeenCalled()
+    expect(remove).not.toHaveBeenCalled()
+    expect(sidebar.drafts!.pendingDiscard).toBeNull()
+    expect(desk.getState().sessions[id]?.title).toBe('Desk chat')
+  })
+
+  it('never paints the page without the sidebar beside it', async () => {
+    seedRegistry()
+    answering()
+    // Each snapshot is what a frame painted now would show.
+    const bare: string[] = []
+    const watch = new MutationObserver(() => {
+      if (!screen.queryByRole('main')) return
+      if (!document.querySelector('[data-sidebar="sidebar"]')) bare.push(location.pathname)
+    })
+    watch.observe(document.body, { childList: true, subtree: true })
+    renderBoth('/')
+
+    await cardOf(/Desk chat/)
+    watch.disconnect()
+    expect(bare).toEqual([])
   })
 
   it('sends a rename and a delete through the row\'s own environment', async () => {

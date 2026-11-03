@@ -84,6 +84,8 @@ export interface SidebarDraft {
 
 /** Marks a draft card's button with its draft id, for focus to find it again. */
 export const DRAFT_CARD_ATTRIBUTE = 'data-draft-card'
+/** And its environment, where it has one: a draft's id is only unique within that. */
+export const DRAFT_CARD_ENVIRONMENT_ATTRIBUTE = 'data-draft-card-environment'
 
 /** How a draft card's discard was made. */
 export interface DraftDiscardOptions {

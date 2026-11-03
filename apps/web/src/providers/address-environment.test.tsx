@@ -136,6 +136,9 @@ function Probe({ address }: { address: Address }) {
       <button type="button" onClick={() => selectEnvironment('env-a')}>
         pick a
       </button>
+      <button type="button" onClick={() => lookup.prefer(address, 'env-b')}>
+        card on b
+      </button>
       <button type="button" onClick={() => setCurrent(null)}>
         leave
       </button>
@@ -181,6 +184,33 @@ describe('addressOf', () => {
 })
 
 describe('finding the environment of an address', () => {
+  it('goes where a card says when two environments have the address, for that arrival only', async () => {
+    seed()
+    answering()
+    const clients = {
+      a: fakeClient('env-a', { state: has('session-1') }),
+      b: fakeClient('env-b', { state: has('session-1') }),
+    }
+    renderLookup(SESSION, clients)
+    await shows('status: settled')
+    await settle()
+    expect(screen.getByText('selected: env-a')).toBeInTheDocument()
+
+    click('card on b')
+    await shows('selected: env-b')
+
+    // Someone moves back, leaves, and comes back to the same address. Nothing
+    // says Laptop's any more, so the selected environment decides as usual.
+    click('pick a')
+    await shows('selected: env-a')
+    click('leave')
+    await settle()
+    click('come back')
+    await settle()
+    await settle()
+    expect(screen.getByText('selected: env-a')).toBeInTheDocument()
+  })
+
   it('stays in the selected environment when it has the session, asking nobody', async () => {
     // Not the first saved, so it is the selection that decides.
     seed('env-b')
