@@ -241,7 +241,7 @@ function environmentContext(input: DeriveConnectionInput) {
 }
 
 /** `host:port` reads better in a sentence than the full URL. */
-function hostOf(endpoint: string): string {
+export function hostOf(endpoint: string): string {
   try {
     return new URL(endpoint).host || endpoint
   } catch {

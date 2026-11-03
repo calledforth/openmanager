@@ -1,5 +1,9 @@
 import { useContext, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
-import type { EnvironmentClient } from '@openmanager/environment-client'
+import {
+  selectProviderCatalog,
+  shallowEqualArray,
+  type EnvironmentClient,
+} from '@openmanager/environment-client'
 import {
   DEFAULT_TITLE_GENERATION_MODELS,
   type TitleGenerationProvider,
@@ -14,6 +18,7 @@ import { Switch } from '@openmanager/app-core/components/fluid/ui/switch'
 import {
   useConnectionState,
   useEnvironmentClientOptional,
+  useEnvironmentState,
 } from '@openmanager/app-core/providers/environment-client'
 import {
   ComposerStateContext,
@@ -130,7 +135,16 @@ function ConnectedSetting({
 
 function TitleGenerationForm({ client }: { client: EnvironmentClient }) {
   const platform = useContext(PlatformCapabilitiesContext)
-  const profiles = useContext(ComposerStateContext)?.providerComposerProfiles
+  // No composer around an environment that is not the open one, so its own
+  // catalog says.
+  const composer = useContext(ComposerStateContext)
+  const catalog = useEnvironmentState(selectProviderCatalog, shallowEqualArray)
+  const profiles = useMemo(() => {
+    if (composer) return composer.providerComposerProfiles
+    return Object.fromEntries(
+      catalog.flatMap((entry) => (entry.profile ? [[entry.id, entry.profile]] : [])),
+    ) as ComposerStateValue['providerComposerProfiles']
+  }, [catalog, composer])
   const [saved, setSaved] = useState<TitleGenerationSetting | null>(null)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -170,7 +184,7 @@ function TitleGenerationForm({ client }: { client: EnvironmentClient }) {
   }
 
   const groups = useMemo(
-    () => titleModelGroups(platform?.providers ?? [], profiles ?? {}, saved),
+    () => titleModelGroups(platform?.providers ?? [], profiles, saved),
     [platform?.providers, profiles, saved],
   )
 

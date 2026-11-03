@@ -1,5 +1,6 @@
 import { PROTOCOL_VERSION } from '@openmanager/protocol'
-import { act, cleanup, screen, waitFor } from '@testing-library/react'
+import { act, cleanup, screen, waitFor, within } from '@testing-library/react'
+import userEvent from '@testing-library/user-event'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import {
   createMockEnvironmentClient,
@@ -255,3 +256,96 @@ describe('notifications across environments', () => {
   })
 })
 
+describe('settings for a chosen environment', () => {
+  const choice = (name: string) => screen.findByRole('radio', { name })
+
+  it('offers no choice with one environment, and still names it', async () => {
+    seedRegistry('desk')
+    answering()
+    const desk = mock(seedOf('env-desk', 'Desk chat', 'desk-session', 'Desk phone'))
+    renderBoth('/settings?tab=devices', desk, desk)
+
+    await waitFor(() => expect(screen.getByText(/Who can reach Desk\./)).toBeInTheDocument())
+    await connected(desk)
+    expect(screen.queryByRole('radiogroup', { name: 'Applies to' })).not.toBeInTheDocument()
+  })
+
+  it('lists and revokes on the chosen environment, and the selection stays put', async () => {
+    seedRegistry()
+    answering()
+    const user = userEvent.setup()
+    const { desk, laptop } = twoEnvironments()
+    const { router } = renderBoth('/settings?tab=devices', desk, laptop)
+
+    expect(await choice('Desk')).toBeChecked()
+    expect(await screen.findByText('Desk phone')).toBeInTheDocument()
+
+    await user.click(await choice('Laptop'))
+
+    expect(await screen.findByText('Laptop phone')).toBeInTheDocument()
+    expect(screen.queryByText('Desk phone')).not.toBeInTheDocument()
+    expect(screen.getByText(/Who can reach Laptop\./)).toBeInTheDocument()
+
+    const row = screen.getByText('Laptop phone').closest('li')!
+    await user.click(within(row).getByRole('button', { name: /Revoke/ }))
+    const dialog = await screen.findByRole('dialog')
+    expect(dialog).toHaveTextContent('loses access to Laptop now')
+    await user.click(within(dialog).getByRole('button', { name: 'Revoke' }))
+
+    await waitFor(() =>
+      expect(laptop.calls.filter((call) => call.command === 'revokeAuthorizedClient')).toHaveLength(
+        1,
+      ),
+    )
+    expect(desk.calls.filter((call) => call.command === 'revokeAuthorizedClient')).toEqual([])
+    expect(selected()).toBe('env-desk')
+    expect(router.state.location.pathname).toBe('/settings')
+  })
+
+  it('keeps the choice across a tab change and acts there too', async () => {
+    seedRegistry()
+    answering()
+    const user = userEvent.setup()
+    const { desk, laptop } = twoEnvironments()
+    renderBoth('/settings?tab=devices&environment=env-laptop', desk, laptop)
+
+    expect(await choice('Laptop')).toBeChecked()
+    await user.click(screen.getByRole('tab', { name: 'Environments' }))
+
+    expect(await screen.findByText(/Where Add project opens on Laptop/)).toBeInTheDocument()
+    expect(await screen.findByText('/starts-on-env-laptop')).toBeInTheDocument()
+    expect(screen.queryByText('/starts-on-env-desk')).not.toBeInTheDocument()
+    expect(selected()).toBe('env-desk')
+
+    await user.click(screen.getByRole('tab', { name: 'Providers' }))
+    expect(await screen.findByText(/The coding agents Laptop can run/)).toBeInTheDocument()
+    expect(await choice('Laptop')).toBeChecked()
+  })
+
+  it('falls back to the selected environment when the choice is no longer saved', async () => {
+    seedRegistry()
+    answering()
+    const { desk, laptop } = twoEnvironments()
+    renderBoth('/settings?tab=devices&environment=env-gone', desk, laptop)
+    expect(await choice('Desk')).toBeChecked()
+  })
+
+  it('tells two environments with one name apart', async () => {
+    localStorage.setItem(
+      ENVIRONMENT_STORAGE_KEY,
+      JSON.stringify({
+        version: 1,
+        selectedId: 'env-desk',
+        environments: [
+          { environmentId: 'env-desk', label: 'Clemax', endpoints: [DESK], credential: '' },
+          { environmentId: 'env-laptop', label: 'Clemax', endpoints: [LAPTOP], credential: '' },
+        ],
+      }),
+    )
+    answering('Clemax')
+    const { desk, laptop } = twoEnvironments()
+    renderBoth('/settings?tab=devices', desk, laptop)
+    await waitFor(() => expect(screen.getByRole('radio', { name: /43120/ })).toBeChecked())
+    expect(screen.getByRole('radio', { name: 'Clemax (127.0.0.1:43121)' })).not.toBeChecked()
+  })
+})
