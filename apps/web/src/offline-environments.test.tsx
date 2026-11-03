@@ -13,7 +13,7 @@ import { idleUntilDialled, renderWebApp } from './test-utils'
 
 const { sidebar } = vi.hoisted(() => ({ sidebar: { data: null as SidebarDataValue | null } }))
 
-vi.mock('./components/session-notifications', () => ({ SessionNotifications: () => null }))
+vi.mock('./components/session-notifications', () => ({ EnvironmentNotifications: () => null }))
 
 vi.mock('@openmanager/app-core/components/sidebar/WorkspaceSidebar', async (importOriginal) => {
   const actual =
@@ -347,7 +347,6 @@ describe('the open environment is down', () => {
   it('opens from the cache, and holds the send saying why', async () => {
     saved('laptop', 'desk')
     answering({ laptop: false })
-    const user = userEvent.setup()
     const laptop = laptopMock()
     const sent = vi.spyOn(laptop.commands, 'sendTurn')
     renderApp('/sessions/env-laptop-session', { cached: ['laptop'], laptop })
