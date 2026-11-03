@@ -217,7 +217,8 @@ describe('the selected environment has no client', () => {
     await waitFor(() => expect(screen.queryByRole('button', { name: /Desk chat/ })).toBeNull())
 
     expect(sidebar.data!.activeEnvironmentId).toBeUndefined()
-    expect(screen.getByRole('button', { name: 'New agent' })).toBeDisabled()
+    // New agent hands over to a reachable environment's project (#278).
+    expect(screen.getByRole('button', { name: 'New agent' })).toBeEnabled()
     expect(screen.getByRole('button', { name: 'Add project' })).toBeDisabled()
     await act(async () => {
       await sidebar.data!.renameSession!(
@@ -543,11 +544,39 @@ describe('a row of another environment fails', () => {
         "Couldn't settle a session on Laptop: it's offline. Try again once it's back.",
       ),
     ).toBeInTheDocument()
+    expect(sidebar.data!.pinSession).toBeDefined()
     await act(async () => {
-      await sidebar.data!.pinSession?.('/laptop-project', 'env-laptop-session', true, 'env-laptop')
+      await sidebar.data!.pinSession!('/laptop-project', 'env-laptop-session', true, 'env-laptop')
     })
+    expect(
+      await screen.findByText(
+        "Couldn't pin a session on Laptop: it's offline. Try again once it's back.",
+      ),
+    ).toBeInTheDocument()
     expect(settle).not.toHaveBeenCalled()
     expect(pin).not.toHaveBeenCalled()
+  })
+
+  it('refuses a draft discard to an environment that is down, keeping the card', async () => {
+    saved('desk', 'laptop')
+    answering({ laptop: false })
+    const user = userEvent.setup()
+    const laptop = laptopMock()
+    await saveDraftOn(laptop, 'Typed on the laptop')
+    const discard = vi.spyOn(laptop.commands, 'deleteDraft')
+    renderApp('/', { cached: ['laptop'], laptop })
+    await screen.findByText('Laptop is offline')
+
+    const { card } = await cardOf(/Typed on the laptop/)
+    await user.click(await card.findByRole('button', { name: 'Discard draft' }))
+    expect(
+      await screen.findByText(
+        "Couldn't discard a draft on Laptop: it's offline. Try again once it's back.",
+      ),
+    ).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /Typed on the laptop/ })).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Undo' })).toBeNull()
+    expect(discard).not.toHaveBeenCalled()
   })
 
   it('refuses one the client cannot send yet, whatever the banner says', async () => {
@@ -618,12 +647,46 @@ describe('with one environment saved', () => {
 
   it('leaves the composer as it is on main when it is down', async () => {
     saved('desk')
-    answering({ desk: false })
-    renderApp('/', { cached: ['desk'] })
+    let deskUp = true
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => {
+        if (!deskUp) throw new TypeError('Failed to fetch')
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({
+            protocolVersion: PROTOCOL_VERSION,
+            capabilities: ['connection.heartbeat'],
+            environmentId: 'env-desk',
+            label: 'Desk',
+          }),
+        }
+      }),
+    )
+    const user = userEvent.setup()
+    const desk = deskMock()
+    const sent = vi.spyOn(desk.commands, 'sendTurn')
+    renderApp('/sessions/env-desk-session', { desk })
+    await screen.findByText('Written on env-desk')
+    await connected(desk)
 
-    expect(await screen.findByText("Can't reach Desk")).toBeInTheDocument()
-    expect(await screen.findByRole('textbox')).toBeInTheDocument()
+    deskUp = false
+    act(() =>
+      desk.setConnection({
+        phase: 'reconnecting',
+        failure: { code: 'unavailable', message: 'Connection closed.' },
+      }),
+    )
+    expect(
+      await screen.findByText("Can't reach Desk", undefined, { timeout: 4000 }),
+    ).toBeInTheDocument()
     expect(screen.queryByText(/Can't send until/)).toBeNull()
+
+    // As on main, the send isn't held: it goes, and the client answers it.
+    await user.click(screen.getByRole('textbox'))
+    await user.keyboard('Hello{Enter}')
+    await waitFor(() => expect(sent).toHaveBeenCalled())
   })
 
   it('says a failure as it is', async () => {

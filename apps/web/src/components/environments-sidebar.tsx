@@ -41,6 +41,7 @@ import {
 } from '@openmanager/app-core/providers/sidebar-provider'
 import {
   createSidebarRowsReader,
+  isEnvironmentReachable,
   sidebarRowAbilities,
 } from '@openmanager/app-core/providers/sidebar-rows'
 import { WorkspaceIconContext } from '@openmanager/app-core/providers/view-actions'
@@ -329,7 +330,11 @@ function EnvironmentsSidebar({
     hasIcons: openHasIcons,
   } = useOpenRowAbilities(openClient)
 
-  // Compared as text: `links` is new with every report from any connection.
+  // Down is narrower than not reachable (`isEnvironmentReachable`): it is what
+  // the banner says can't be reached, and leaves out a first connection still on
+  // its way, so nothing reads offline at boot. Every one that is down is also not
+  // reachable. Compared as text: `links` is new with every report from any
+  // connection.
   const downKey = links
     .filter((link) => environmentIsDown(link.ui))
     .map((link) => link.environmentId)
@@ -439,39 +444,46 @@ function EnvironmentsSidebar({
   // environment's rows included: the providers keep a failure to themselves, and
   // this says who was asked. Nothing waits to be sent again: if it didn't go,
   // it's up to the person to ask again.
+  // Down, its client would hold the command and send it on reconnecting, after
+  // anyone asked. It waits for the environment, not in a queue. The client's
+  // word as well as the banner's: after a drop the banner can read ready until
+  // the route is asked again. Says why, or null when it can go.
+  const refusalFor = useCallback(
+    (environmentId: string, asked: string) => {
+      const name = nameOf(environmentId)
+      const client = clients[environmentId]
+      return !client
+        ? `Couldn't ${asked} on ${name}: it isn't connected.`
+        : down.has(environmentId)
+          ? `Couldn't ${asked} on ${name}: it's offline. Try again once it's back.`
+          : !isEnvironmentReachable(client)
+            ? `Couldn't ${asked} on ${name}: it isn't connected right now. Try again once it is.`
+            : null
+    },
+    [clients, down, nameOf],
+  )
+
   const askRowEnvironment = useCallback(
     async (
       environmentId: string,
       asked: string,
       run: (client: EnvironmentClient) => Promise<unknown>,
     ) => {
-      const name = nameOf(environmentId)
-      const client = clients[environmentId]
-      // Down, its client would hold the command and send it on reconnecting,
-      // long after anyone asked. It waits for the environment, not in a queue.
       // Nothing was sent, so nothing moved that a rejection would move back.
-      // The client's word as well as the banner's: after a drop the banner can
-      // read ready until the route is asked again.
-      const refusal = !client
-        ? `Couldn't ${asked} on ${name}: it isn't connected.`
-        : down.has(environmentId)
-          ? `Couldn't ${asked} on ${name}: it's offline. Try again once it's back.`
-          : client.getState().connection.phase !== 'connected'
-            ? `Couldn't ${asked} on ${name}: it isn't connected right now. Try again once it is.`
-            : null
+      const refusal = refusalFor(environmentId, asked)
       if (refusal) {
         reportFailure(refusal)
         return
       }
       try {
-        await run(client!)
+        await run(clients[environmentId]!)
       } catch (error) {
         const reason = error instanceof Error ? error.message : String(error)
-        reportFailure(`Couldn't ${asked} on ${name}: ${reason}`)
+        reportFailure(`Couldn't ${asked} on ${nameOf(environmentId)}: ${reason}`)
         throw error
       }
     },
-    [clients, down, nameOf, reportFailure],
+    [clients, nameOf, refusalFor, reportFailure],
   )
 
   const askedDirectly = useCallback(
@@ -582,11 +594,17 @@ function EnvironmentsSidebar({
       },
       discardDraft: (draftId, options) => {
         const other = elsewhere(options?.environmentId)
-        if (!other) discardDraft(draftId, options)
+        if (!other) {
+          discardDraft(draftId, options)
+          return
+        }
+        // Its delete would wait in that client's queue, as any command would.
+        const refusal = refusalFor(options!.environmentId!, 'discard a draft')
+        if (refusal) reportFailure(refusal)
         else if (other.client) discards.begin(other.client, draftId, options)
       },
     }
-  }, [discards, elsewhere, openDrafts, opening, others, pending])
+  }, [discards, elsewhere, openDrafts, opening, others, pending, refusalFor, reportFailure])
 
   const platformValue = useMemo(() => {
     if (!platform || !several) return platform
@@ -689,7 +707,11 @@ export function EnvironmentsSidebarHost({
       <DraftDiscardsContext.Provider value={discards}>
         <EnvironmentFailureContext.Provider value={failures}>
           <EnvironmentChoiceHost>
-            <EnvironmentsSidebar footer={footer} fallback={fallback} reportFailure={reportFailure} />
+            <EnvironmentsSidebar
+              footer={footer}
+              fallback={fallback}
+              reportFailure={reportFailure}
+            />
             {children}
           </EnvironmentChoiceHost>
         </EnvironmentFailureContext.Provider>

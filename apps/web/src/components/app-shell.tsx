@@ -449,14 +449,14 @@ export function AppShell() {
   const othersNotice =
     ungated || !online
       ? null
-    : otherEnvironmentsNotice(
-        links
-          .filter((link) => link.environmentId !== openId)
-          .map((link) => ({
-            label: labelOf(link.environmentId) ?? link.environmentId,
-            state: link.ui,
-          })),
-      )
+      : otherEnvironmentsNotice(
+          links
+            .filter((link) => link.environmentId !== openId)
+            .map((link) => ({
+              label: labelOf(link.environmentId) ?? link.environmentId,
+              state: link.ui,
+            })),
+        )
 
   const placed = placeConnectionUi(ui, environments.length)
   const showScreen = !ungated && placed.surface === 'screen'
