@@ -1,12 +1,8 @@
 import { createContext, useContext } from 'react'
 import type { ProviderId } from '@agentpack/contract'
-import type {
-  DraftDiscardOptions,
-  DraftDiscardWording,
-  SidebarDraft,
-} from '../components/sidebar/sidebar-sessions'
+import type { DraftDiscardOptions, SidebarDraft } from '../components/sidebar/sidebar-sessions'
 
-export type { DraftDiscardOptions, DraftDiscardWording }
+export type { DraftDiscardOptions }
 
 /** Cheap facts about a workspace the host already knows; nothing is probed here. */
 export interface WorkspaceCapabilitySummary {
@@ -291,8 +287,6 @@ export interface PendingDraftDiscard {
   fromKeyboard: boolean
   /** Where focus goes when the notice closes with focus on it, unless the card is back. */
   returnFocus: HTMLElement | null
-  /** What the notice says instead of the plain discard. */
-  wording?: DraftDiscardWording
 }
 
 /**

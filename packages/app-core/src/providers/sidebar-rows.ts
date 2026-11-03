@@ -166,12 +166,12 @@ function statusesOf(state: EnvironmentState): ProviderStatuses {
 
 type Reader = Pick<EnvironmentClient, 'getState' | 'supports'>
 
-/** What can be offered for an environment's rows just now. */
 /** Connected now: commands sent to it are answered, and a session could start there. */
 export function isEnvironmentReachable(client: Pick<Reader, 'getState'> | undefined): boolean {
   return client?.getState().connection.phase === 'connected'
 }
 
+/** What can be offered for an environment's rows just now. */
 export function sidebarRowAbilities(client: Reader) {
   const { connection } = client.getState()
   return {
