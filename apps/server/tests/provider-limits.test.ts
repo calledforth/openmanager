@@ -41,7 +41,10 @@ function memoryStore(): ProviderLimitsStore & { saved: unknown[] } {
   }
 }
 
-function harness(read: (providerId: string) => Promise<UsageLimitsResult>, store = memoryStore()) {
+function harness(
+  read: (providerId: string) => Promise<UsageLimitsResult>,
+  store: ProviderLimitsStore = memoryStore(),
+) {
   let now = START
   const reads: string[] = []
   const service = createProviderLimits({
