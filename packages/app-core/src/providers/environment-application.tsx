@@ -204,7 +204,7 @@ export function EnvironmentApplicationProviders({
 const statusOf = (entry: Pick<ProviderCatalogEntry, 'health'>): ProviderUiStatus =>
   deriveProviderUiStatus(providerHealthReportFromWire(entry.health))
 
-function EnvironmentPlatformCapabilitiesProvider({ children }: { children: ReactNode }) {
+export function EnvironmentPlatformCapabilitiesProvider({ children }: { children: ReactNode }) {
   const client = useEnvironmentClient()
   const environment = useEnvironmentState((state) => state.environment)
   const catalog = useEnvironmentState(selectProviderCatalog, shallowEqualArray)

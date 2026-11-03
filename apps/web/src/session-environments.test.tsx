@@ -28,13 +28,13 @@ const { pageSaw, sidebar } = vi.hoisted(() => ({
   },
 }))
 
-vi.mock('./components/session-notifications', async () => {
+vi.mock('./components/add-workspace-dialog', async () => {
   const { useEnvironmentClient } = await import(
     '@openmanager/app-core/providers/environment-client'
   )
   const { useRef } = await import('react')
   return {
-    SessionNotifications: () => {
+    AddWorkspaceDialog: () => {
       const seen = useRef<Set<string> | null>(null)
       if (!seen.current) {
         seen.current = new Set()

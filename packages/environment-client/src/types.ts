@@ -203,6 +203,13 @@ export interface ConnectionState {
    * brings it back. See `docs/connection-retry.md`.
    */
   retriesExhausted: boolean
+  /**
+   * False from a handshake until the environment's own catch-up has landed:
+   * what the sessions say until then may be from before this connection, and
+   * the catch-up can move many of them in one update. Hosts that keep no copy
+   * across connections leave it unset.
+   */
+  caughtUp?: boolean
 }
 
 /** Normalized, immutable. Every update produces a new root object. */

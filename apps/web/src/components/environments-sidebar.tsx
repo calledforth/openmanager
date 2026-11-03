@@ -281,11 +281,13 @@ function EnvironmentsSidebar({ footer }: { footer: ReactNode }) {
       environmentId && environmentId !== openId ? { client: clients[environmentId] } : null,
     [clients, openId],
   )
+  // Always, the open environment's own cards too: a word left from an
+  // earlier click that never arrived would otherwise decide for this one.
   const opening = useCallback(
     (environmentId: string | undefined, address: Address) => {
-      if (environmentId && environmentId !== openId) prefer(address, environmentId)
+      if (environmentId) prefer(address, environmentId)
     },
-    [openId, prefer],
+    [prefer],
   )
 
   const anySettles = others.some((row) => row.canSettle)
