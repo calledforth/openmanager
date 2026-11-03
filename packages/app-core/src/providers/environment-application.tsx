@@ -62,6 +62,7 @@ import {
   useRecentWorkspaces,
   useWorkspaces,
 } from './environment-client'
+import { useEnvironmentAvailability } from './environment-availability'
 import {
   PlatformCapabilitiesContext,
   coordinateProviderConnection,
@@ -1662,11 +1663,17 @@ function EnvironmentActiveThreadProvider({ children }: { children: ReactNode }) 
     [activeProviderId, compactSession, providerDisplayName, recoveryBusy, retryTurn],
   )
 
+  // An answer (a question's, a plan's, a permission's) is a send too: held while
+  // the host holds the composer's, rather than queued until the socket is back.
+  const sendHeld = useEnvironmentAvailability()?.sendBlockedReason ?? null
+  const sendHeldRef = useRef(sendHeld)
+  sendHeldRef.current = sendHeld
   const respond = useCallback(
     async (threadId: string, response: InteractionResponse) => {
       const state = client.getState()
       const current = state.threads[threadId]
       if (!current) return
+      if (sendHeldRef.current) throw new Error(sendHeldRef.current)
       setError(null)
       try {
         await commands.respondToInteraction({ ...current.thread, response })
