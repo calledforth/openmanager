@@ -48,6 +48,35 @@ describe('partitionSidebarSessions', () => {
     expect(ids(settled)).toEqual([['parent', 'child'], ['old']])
   })
 
+  it('lifts pinned sessions to the top, newest pin first, children with their parent', () => {
+    const { active } = partitionSidebarSessions([
+      workspace('alpha', [
+        session('newest', '2026-09-24T12:00:00Z'),
+        session('newer', '2026-09-24T11:00:00Z'),
+        session('old', '2026-09-24T10:00:00Z', { pinnedAt: '2026-09-24T08:00:00Z' }),
+        session('child', '2026-09-24T10:30:00Z', { parentExternalId: 'old' }),
+      ]),
+      workspace('beta', [
+        session('oldest', '2026-09-24T09:00:00Z', { pinnedAt: '2026-09-24T08:30:00Z' }),
+      ]),
+    ])
+    expect(ids(active)).toEqual([['oldest'], ['old', 'child'], ['newest'], ['newer']])
+  })
+
+  it('leaves pinned work on the shelf once it is settled', () => {
+    const { active, settled } = partitionSidebarSessions([
+      workspace('alpha', [
+        session('live', '2026-09-24T12:00:00Z'),
+        session('put-away', '2026-09-24T11:00:00Z', {
+          pinnedAt: '2026-09-24T11:10:00Z',
+          settledAt: '2026-09-24T11:30:00Z',
+        }),
+      ]),
+    ])
+    expect(ids(active)).toEqual([['live']])
+    expect(ids(settled)).toEqual([['put-away']])
+  })
+
   it('keeps an orphaned child visible as its own entry', () => {
     const { active } = partitionSidebarSessions([
       workspace('alpha', [session('orphan', '2026-09-24T10:00:00Z', { parentExternalId: 'gone' })]),

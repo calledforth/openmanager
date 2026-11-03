@@ -23,6 +23,7 @@ import {
   GitForkIcon,
   NotePencilIcon,
   PencilSimpleLineIcon,
+  PushPinIcon,
   TrashIcon,
   XIcon,
 } from '@phosphor-icons/react'
@@ -146,9 +147,10 @@ const timeOf = (iso: string | null | undefined) => {
 
 /**
  * Every project's sessions in one list, split by whether the user settled
- * them. Active work is newest activity first; settled work is most recently
- * settled first. Child transcripts ride with their parent, so a settled
- * parent takes its subagents with it.
+ * them. Active work is newest activity first, under anything pinned, which is
+ * most recently pinned first; settled work is most recently settled first.
+ * Child transcripts ride with their parent, so a settled parent takes its
+ * subagents with it.
  */
 export function partitionSidebarSessions(workspaces: SidebarWorkspace[]): {
   active: SidebarBoardEntry[]
@@ -179,6 +181,8 @@ export function partitionSidebarSessions(workspaces: SidebarWorkspace[]): {
     }
   }
   settled.sort((a, b) => timeOf(b.root.session.settledAt) - timeOf(a.root.session.settledAt))
+  // Stable, so everything unpinned (time 0) keeps its order from above.
+  active.sort((a, b) => timeOf(b.root.session.pinnedAt) - timeOf(a.root.session.pinnedAt))
   return { active, settled }
 }
 
@@ -584,6 +588,13 @@ export interface WorkspaceSidebarViewProps {
     externalId: string,
     settled: boolean,
   ) => void | Promise<unknown>
+  /** Absent when the host cannot keep a pin; a pinned card keeps its mark, not
+   *  the button. Moves the same way a settle does. */
+  onPinSession?: (
+    workspacePath: string,
+    externalId: string,
+    pinned: boolean,
+  ) => void | Promise<unknown>
   onDeleteSession?: (workspacePath: string, externalId: string, providerId: ProviderId) => void
   /**
    * Unsent new-session drafts, shown as cards in a Drafts section above Active, in the
@@ -618,6 +629,7 @@ export function WorkspaceSidebarView({
   onCreateSession,
   onSelectSession: requestSelect,
   onSettleSession: requestSettle,
+  onPinSession: requestPin,
   drafts = NO_DRAFTS,
   activeDraftId = null,
   onOpenDraft: requestOpenDraft,
@@ -630,6 +642,7 @@ export function WorkspaceSidebarView({
   // Rows are memoized, so they get one callback of each kind for good.
   const selectRef = useRef(requestSelect)
   const settleRef = useRef(requestSettle)
+  const pinRef = useRef(requestPin)
   const openDraftRef = useRef(requestOpenDraft)
   const discardDraftRef = useRef(requestDiscardDraft)
   const createSessionRef = useRef(onCreateSession)
@@ -637,6 +650,7 @@ export function WorkspaceSidebarView({
   useLayoutEffect(() => {
     selectRef.current = requestSelect
     settleRef.current = requestSettle
+    pinRef.current = requestPin
     openDraftRef.current = requestOpenDraft
     discardDraftRef.current = requestDiscardDraft
     createSessionRef.current = onCreateSession
@@ -672,6 +686,17 @@ export function WorkspaceSidebarView({
           }
         : undefined,
     [canSettle],
+  )
+  const canPin = requestPin !== undefined
+  const onPinSession = useMemo<WorkspaceSidebarViewProps['onPinSession']>(
+    () =>
+      canPin
+        ? (...args) => {
+            // A refusal already moved the card back; there is nothing to add.
+            void Promise.resolve(pinRef.current?.(...args)).catch(() => undefined)
+          }
+        : undefined,
+    [canPin],
   )
   const present = (path: string | null) =>
     path !== null && workspaces.some((workspace) => workspace.path === path && !workspace.missing)
@@ -724,6 +749,7 @@ export function WorkspaceSidebarView({
     now,
     onSelectSession,
     onSettleSession,
+    onPinSession,
     onOpenDraft,
     onDiscardDraft,
     providerLabel,
@@ -806,7 +832,7 @@ export function WorkspaceSidebarView({
                   <MemoActiveCard
                     key={entry.root.session.externalId}
                     item={{ kind: 'session', entry }}
-                    place="session"
+                    place={entry.root.session.pinnedAt ? 'pinned' : 'session'}
                     layoutTransition={cardLayout}
                     fold={fold && handoff.from.has(entry.root.session.externalId) ? fold : null}
                     untitled={handoff.previews.get(entry.root.session.externalId)}
@@ -1171,6 +1197,7 @@ function sameHandlers(a: RowHandlers, b: RowHandlers): boolean {
     a.now === b.now &&
     a.onSelectSession === b.onSelectSession &&
     a.onSettleSession === b.onSettleSession &&
+    a.onPinSession === b.onPinSession &&
     a.onOpenDraft === b.onOpenDraft &&
     a.onDiscardDraft === b.onDiscardDraft &&
     a.providerLabel === b.providerLabel &&
@@ -1189,6 +1216,7 @@ interface RowHandlers {
   now: number
   onSelectSession: WorkspaceSidebarViewProps['onSelectSession']
   onSettleSession?: WorkspaceSidebarViewProps['onSettleSession']
+  onPinSession?: WorkspaceSidebarViewProps['onPinSession']
   onOpenDraft?: (draftId: string) => void
   onDiscardDraft?: (draftId: string, options?: DraftDiscardOptions) => void
   providerLabel?: WorkspaceSidebarViewProps['providerLabel']
@@ -1199,11 +1227,12 @@ interface ActiveCardProps extends RowHandlers {
   item: ActiveItem
   /**
    * Where the card is, as far as moving goes: a draft's index among the
-   * drafts, or `session`. The card is measured for a move only when this
-   * changes, so a draft handed to its session (or closing up after one) moves,
-   * and nothing else measures.
+   * drafts, or whether a session is `pinned`. The card is measured for a move
+   * only when this changes, so a draft handed to its session (or closing up
+   * after one) moves, as does a card being pinned or unpinned, and nothing
+   * else measures.
    */
-  place: number | 'session'
+  place: number | 'session' | 'pinned'
   /** How the card moves when its place changes (`useCardLayoutTransition`). */
   layoutTransition: MotionProps['transition']
   /**
@@ -1280,7 +1309,12 @@ function ActiveCard({
       {item.kind === 'draft' ? (
         <DraftCardBody row={item} {...handlers} />
       ) : (
-        <SessionCardBody entry={item.entry} untitled={untitled} {...handlers} />
+        <SessionCardBody
+          entry={item.entry}
+          untitled={untitled}
+          pinned={place === 'pinned'}
+          {...handlers}
+        />
       )}
     </motion.div>
   )
@@ -1331,13 +1365,15 @@ function UnsentMark() {
 function SessionCardBody({
   entry,
   untitled,
+  pinned,
   selected,
   environmentLabel,
   now,
   onSelectSession,
   onSettleSession,
+  onPinSession,
   providerLabel,
-}: RowHandlers & { entry: SidebarBoardEntry; untitled?: string }) {
+}: RowHandlers & { entry: SidebarBoardEntry; untitled?: string; pinned: boolean }) {
   const { session, workspace } = entry.root
   const providerId = session.providerId
   const isActive = session.externalId === selected
@@ -1406,7 +1442,8 @@ function SessionCardBody({
   // does not flicker as its composer empties and fills.
   const unsent = Boolean(session.hasUnsentDraft) && !isActive
   const metaLine = (
-    <span className="flex min-w-0 items-center gap-2 text-[12px] leading-4 text-faint">
+    // The padding keeps a long branch name out from under the pin.
+    <span className="flex min-w-0 items-center gap-2 pr-5 text-[12px] leading-4 text-faint">
       {/* The mark alone; its name is for hover and assistive tech. */}
       <span className="flex shrink-0 items-center" title={providerName}>
         <ProviderIcon providerId={providerId} className="h-3 w-3 opacity-80" />
@@ -1506,6 +1543,33 @@ function SessionCardBody({
           </CardAction>
         </div>
       ) : null}
+      {/* On the meta line, where any card has room: the top corner is the
+          status of live work, which pins too. A pinned card always shows it. */}
+      <div
+        className={cn(
+          'absolute right-1.5 top-[50px] flex items-center transition-opacity duration-80',
+          !pinned &&
+            'opacity-0 group-has-[:focus-visible]/card:opacity-100 group-hover/card:opacity-100 pointer-coarse:opacity-100',
+        )}
+      >
+        {onPinSession ? (
+          <CardAction
+            label={pinned ? 'Unpin' : 'Pin to top'}
+            onClick={(event) => {
+              // The card leaves on the first click, so a double click's second
+              // would land on whichever card took its place.
+              if (event.detail <= 1) onPinSession(workspace.path, session.externalId, !pinned)
+            }}
+          >
+            <PushPinIcon weight={pinned ? 'fill' : 'regular'} />
+          </CardAction>
+        ) : pinned ? (
+          <span className="flex h-6 w-6 items-center justify-center text-muted-foreground">
+            <PushPinIcon weight="fill" className="size-3.5" aria-hidden />
+            <span className="sr-only">Pinned</span>
+          </span>
+        ) : null}
+      </div>
     </div>
   )
 }

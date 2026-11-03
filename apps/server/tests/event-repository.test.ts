@@ -343,6 +343,36 @@ describe('event repository transactions', () => {
     expect(summary()).toMatchObject({ title: 'Login Redirect Loop', titleSource: 'generated' })
   })
 
+  it('projects a pin without reordering, and refuses one for a missing session', async () => {
+    const { database } = await createDatabase()
+    const repository = createEventRepository(database)
+    const environment = { type: 'environment', environmentId: 'environment-1' } as const
+    const pin = (eventId: string, sessionId: string, pinnedAt: string | null) =>
+      ProofEventSchemas['session.updated'].parse({
+        type: 'event',
+        name: 'session.updated',
+        eventId,
+        timestamp: '2026-09-10T09:00:00.000Z',
+        scope: environment,
+        payload: { sessionId, pinnedAt },
+      })
+    const row = () =>
+      database
+        .prepare('SELECT pinned_at, updated_at FROM sessions WHERE session_id = ?')
+        .get('session-1')
+
+    repository.appendEvents(environment, [pin('pin-1', 'session-1', '2026-09-10T09:00:00.000Z')])
+    expect(row()).toEqual({ pinned_at: Date.parse('2026-09-10T09:00:00.000Z'), updated_at: 1 })
+    expect(getSessionSummary(database, 'session-1')).toMatchObject({
+      pinnedAt: '2026-09-10T09:00:00.000Z',
+    })
+    repository.appendEvents(environment, [pin('pin-2', 'session-1', null)])
+    expect(row()).toEqual({ pinned_at: null, updated_at: 1 })
+    expect(() =>
+      repository.appendEvents(environment, [pin('pin-3', 'session-missing', null)]),
+    ).toThrow(/Cannot pin missing session/)
+  })
+
   it('settles without reordering and unsettles on the next turn through the status broadcast', async () => {
     const { database } = await createDatabase()
     const repository = createEventRepository(database)

@@ -656,6 +656,69 @@ describe('websocket environment client', () => {
     client.disconnect()
   })
 
+  it('pins at once, takes a pin from another client, and goes back if refused', async () => {
+    const { client, socket } = await connected([...FULL_CAPABILITIES, 'session.pin'])
+    await answerCatalog(socket, undefined, { sessions: [SESSION_SUMMARY] })
+    await flush()
+    expect(client.supports('pinSession')).toBe(true)
+    const pinnedAt = () => client.getState().sessions[SESSION.sessionId]?.pinnedAt
+
+    const pinning = client.commands.pinSession(SESSION.sessionId, true)
+    expect(socket.last('session.pin').payload).toEqual({
+      sessionId: SESSION.sessionId,
+      pinned: true,
+    })
+    const shown = pinnedAt()
+    expect(shown).toEqual(expect.any(String))
+    const announce = (sequence: number, at: string | null) =>
+      socket.receive({
+        type: 'event',
+        name: 'subscription.event',
+        payload: {
+          subscriptionId: 'sub-env',
+          record: {
+            cursor: {
+              scope: { type: 'environment', environmentId: ENV },
+              epoch: 'live',
+              sequence,
+            },
+            event: event({
+              name: 'session.updated',
+              scope: environmentScope,
+              payload: { sessionId: SESSION.sessionId, pinnedAt: at },
+            }),
+          },
+        },
+      })
+    announce(1, shown!)
+    socket.respond('session.pin', { pinnedAt: shown! })
+    await pinning
+    expect(pinnedAt()).toBe(shown)
+    expect(client.getState().pending.pins).toEqual({})
+
+    // Another client unpins it: nothing was asked for here, and it moves.
+    announce(2, null)
+    expect(pinnedAt()).toBeNull()
+
+    const refused = client.commands.pinSession(SESSION.sessionId, true)
+    expect(pinnedAt()).toEqual(expect.any(String))
+    socket.receive({
+      type: 'error',
+      requestId: socket.last('session.pin').requestId,
+      error: { code: 'unavailable', message: 'Try again.' },
+    })
+    await expect(refused).rejects.toMatchObject({ code: 'unavailable' })
+    expect(pinnedAt()).toBeNull()
+    expect(client.getState().pending.pins).toEqual({})
+    client.disconnect()
+  })
+
+  it('does not offer pins on an environment that cannot keep them', async () => {
+    const { client } = await connected(FULL_CAPABILITIES)
+    expect(client.supports('pinSession')).toBe(false)
+    client.disconnect()
+  })
+
   it('regenerates a title: the event, not the answer, brings it and its source', async () => {
     const { client, socket } = await connected([...FULL_CAPABILITIES, 'session.title.regenerate'])
     await answerCatalog(socket, undefined, { sessions: [SESSION_SUMMARY] })

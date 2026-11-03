@@ -1,6 +1,7 @@
 import { once } from 'node:events'
 import { onServerText } from './helpers/frames.ts'
 import { mkdir, mkdtemp, readFile, rm } from 'node:fs/promises'
+import type { Socket } from 'node:net'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { setImmediate as immediate } from 'node:timers/promises'
@@ -257,6 +258,59 @@ describe('authenticated upgrade', () => {
     expect(host.server.revokeClient(host.server.owner.clientId)).toBe(false)
     owner.command('unknown.command', null)
     expect(await owner.next()).toMatchObject({ type: 'error', error: { code: 'validation' } })
+  })
+
+  it('compresses when the client offers to, and sends plainly when it does not', async () => {
+    const host = await setup()
+    const headers = { authorization: `Bearer ${host.token}` }
+    const offering = new WebSocket(host.url, { headers })
+    const plain = new WebSocket(host.url, { headers, perMessageDeflate: false })
+    clients.push(offering, plain)
+    await Promise.all([once(offering, 'open'), once(plain, 'open')])
+    expect(offering.extensions).toContain('permessage-deflate')
+    expect(plain.extensions).toBe('')
+  })
+
+  it('deflates every message, small ones too, and keeps their order up to a close', async () => {
+    const host = await setup()
+    const client = await connect(host)
+    await handshake(client)
+    const health = (providerId: string, size: number) => ({
+      type: 'event' as const,
+      name: 'provider_health_changed',
+      payload: { providerId, note: 'x'.repeat(size) },
+    })
+    // Each read from the wire: RSV1 of its first frame, and its size.
+    const reads: { deflated: boolean; bytes: number }[] = []
+    const socket = (client.ws as unknown as { _socket: Socket })._socket
+    socket.prependListener('data', (chunk: Buffer) =>
+      reads.push({ deflated: (chunk[0]! & 0x40) !== 0, bytes: chunk.length }),
+    )
+
+    // The second small event repeats the first, and the context remembers it.
+    host.server.sockets.deliver({ kind: 'broadcast', event: health('small', 10) })
+    expect(await client.next()).toEqual(health('small', 10))
+    host.server.sockets.deliver({ kind: 'broadcast', event: health('small', 10) })
+    expect(await client.next()).toEqual(health('small', 10))
+    const [first, repeat] = reads
+    expect(first!.deflated).toBe(true)
+    expect(repeat!.deflated).toBe(true)
+    expect(repeat!.bytes).toBeLessThan(first!.bytes / 2)
+    reads.length = 0
+    host.server.sockets.deliver({ kind: 'broadcast', event: health('large', 4096) })
+    expect(await client.next()).toEqual(health('large', 4096))
+    expect(reads[0]!.deflated).toBe(true)
+
+    // A large message, a small one right behind it and a close in one tick:
+    // both arrive, in that order, before the close.
+    const closed = once(client.ws, 'close')
+    host.server.sockets.deliver({ kind: 'broadcast', event: health('large', 4096) })
+    host.server.sockets.deliver({ kind: 'broadcast', event: health('small', 10) })
+    const [clientId] = host.server.sockets.connectedClientIds()
+    host.server.sockets.disconnectClient(clientId!)
+    expect(await client.next()).toEqual(health('large', 4096))
+    expect(await client.next()).toEqual(health('small', 10))
+    expect((await closed)[0]).toBe(REVOKED_CLOSE_CODE)
   })
 
   it('rejects untrusted and opaque origins even with a valid credential', async () => {
@@ -1298,19 +1352,38 @@ describe('protocol liveness timers', () => {
       type: 'environment',
       environmentId: host.server.identity.environmentId,
     })
+    const peer = host.server.sockets.flowStats()[0]!.ws
+    // A frame takes real time through zlib and the socket, and the fake clock
+    // doesn't wait for it: 10 s of beats can pass in under a millisecond. Each
+    // beat lands before the clock moves on, as it would on any live link.
+    const beat = () =>
+      new Promise<void>((resolve) => {
+        const landed = (data: Buffer) => {
+          if (!String(data).includes('"beat"')) return
+          peer.off('message', landed)
+          resolve()
+        }
+        peer.on('message', landed)
+        client.ws.send(JSON.stringify({ type: 'beat' }))
+      })
     // Acks count as inbound frames; beats keep the socket alive past 30 s.
     for (let step = 0; step < 6; step++) {
       await vi.advanceTimersByTimeAsync(HEARTBEAT_POLICY.clientBeatIntervalMs)
-      client.ws.send(JSON.stringify({ type: 'beat' }))
+      await beat()
     }
     expect(host.server.sockets.connectionCount).toBe(1)
     // Nothing written for 15 s: a keepalive came, and needs no answer.
     const keepalive = await client.next()
     expect(keepalive).toEqual({ type: 'keepalive' })
+    // The client goes silent, not even acking: nothing it has already sent is
+    // still on its way, and it reads nothing more until the clock has run out.
+    while (host.server.sockets.flowStats()[0]!.inFlight > 0) await immediate()
+    client.ws.pause()
     const closed = once(client.ws, 'close')
     await vi.advanceTimersByTimeAsync(HEARTBEAT_POLICY.serverInboundTimeoutMs)
     expect(host.server.sockets.connectionCount).toBe(0)
     expect(host.server.sockets.subscriptionCount).toBe(0)
+    client.ws.resume()
     const [code, reason] = await closed
     expect(code).toBe(4000)
     expect(String(reason)).toBe('heartbeat_timeout')

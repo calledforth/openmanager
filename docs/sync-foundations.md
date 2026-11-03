@@ -185,6 +185,7 @@ state, and a `pending` overlay for the user's own unconfirmed actions:
 | `pending.creates[sessionId]`                  | `createSession`                     | the new session row and its first message | server state has the session                                                                                                                                                                                  |
 | `pending.answers[interactionId]`              | `respondToInteraction`              | hides the prompt                          | server state no longer lists the interaction as pending, or the command fails with anything except `conflict`. A conflict means it was answered elsewhere, so the prompt stays hidden until the event says so |
 | `pending.settles[sessionId]`                  | `settleSession` (latest click wins) | the requested settled/active placement    | server state's `settledAt` matches the request (null vs set), or the command fails                                                                                                                            |
+| `pending.pins[sessionId]`                     | `pinSession` (latest click wins)    | the requested pinned/unpinned placement   | server state's `pinnedAt` matches the request (null vs set), or the command fails                                                                                                                             |
 | `pending.acks[sessionId]`                     | `acknowledgeSession`                | not done                                  | server state's `doneAt` is null, or the command fails                                                                                                                                                         |
 | `pending.removals[id]`                        | delete session, remove workspace    | hides the row                             | server state no longer has it, or the command fails                                                                                                                                                           |
 | `pending.preferences[workspaceId:providerId]` | composer set commands               | the requested selection                   | server state's preference `revision` is at least the revision the command's acknowledgement named, or the command fails                                                                                       |
@@ -1187,6 +1188,14 @@ code:
 The floor stays as the server's guarantee for any client that might keep bookmarks in future, and
 in case a format ever changes without a protocol bump. For today's clients it is unreachable.
 
+**Since then:** both of those have happened. Clients keep cursors (#264), and an additive event
+field changes the format without a protocol bump (`pinnedAt`, #270). So a client can reach a floor:
+a transport that reconnects after the upgrade takes the existing `gap_expired` snapshot, with no
+client change. The cache records the event format as well as the protocol. A document from another
+format keeps its state and forgets its cursors (`forgetCursors`): its build may have ignored a field
+and still moved past the event, and it is the only home of unsent drafts and held sends, so every
+scope takes a whole snapshot instead of the document being dropped.
+
 **The cached state is a separate case.** The upgrade reload starts from the IndexedDB cache, a
 v16-shaped state. It has no cursors, but it has:
 
@@ -1299,7 +1308,7 @@ F3's verification found these against ad1e856.
   - Main never holds an intermediate wire, so the user's web app breaks against their server once,
     not three times.
 - **Later numbers:** one bump per phase. F4 takes v18, F5 v19 (and v20 if F5a and F5b release
-  apart). F6 takes migration 23 and F7 migration 24.
+  apart). F6 takes migration 25 and F7 migration 26 (24 went to session pins, #270).
 - The cut and the build order are in the F3 plan.
 
 #### 4.7.10 Read answers and mutation answers
@@ -1328,6 +1337,7 @@ Every response writer in `packages/environment-client/src/websocket.ts`:
 | `session.create`                                         | `applySessionCreated` plus an invented status (`:1216-1239`)         | mutation | kept through B, filled from `input.providerId` and `announcedAt`; then `pending.creates` (C1)                                                                                                |
 | `session.rename`, `session.title.regenerate`             | `applySessionTitle` with an invented source (`:1348`, `:1352`)       | mutation | rename: `pending.renames` (shows the requested title until server state has it or a newer title, or the command fails). Regenerate: no overlay; the event brings the title (C1)              |
 | `session.settle`                                         | the settle tracker's masking (`settle.ts`)                           | mutation | `pending.settles` (C1)                                                                                                                                                                       |
+| `session.pin`                                            | none, new with `session.pin`                                         | mutation | `pending.pins`                                                                                                                                                                               |
 | `session.acknowledge`                                    | `applySessionAcknowledged` (`:1364`)                                 | mutation | `pending.acks` (C1)                                                                                                                                                                          |
 | `session.delete`                                         | `applySessionRemoved` (`:1372`)                                      | mutation | `pending.removals` (C1)                                                                                                                                                                      |
 | `turn.send`                                              | `applyTurnStarted` (`:1387`)                                         | mutation | `pending.sends` by `commandId` (C1, C2)                                                                                                                                                      |
@@ -1837,7 +1847,7 @@ orders the client's own command and guesses nothing about server state.
   log, and the catch-up has usually settled the entry first. A transport replaced by another leaves
   its held sends in the store in the same way.
 
-### 6.7 Tool output (F6, protocol v21, migration 24, event format 4)
+### 6.7 Tool output (F6, protocol v21, migration 25, event format 4)
 
 A tool row says what the agent ran and how it went from what the call was given. The output is read
 when the row is opened. This is the one thing a chat does not carry whole, and the reason is measured:
@@ -1901,7 +1911,8 @@ that. The cost was the text, not the cap.
   and every client agree (rule 6). The text a settling update brings is the exception: that is the
   call's result, and a refused call can still take the failure that follows.
 - **Event format 4.** Old stored events are still valid, but the schema changed, so the bump follows
-  §4.7.7. The protocol change drops every browser cache anyway, so the first load is a fresh one.
+  §4.7.7. Session pins (#270) introduced format 4 and are not released yet, so the digest of 4
+  covers pins, F6 and F7. The protocol change drops every browser cache anyway, so the first load is a fresh one.
 - **Old calls** have no input or output: providers never sent them to the log. Their rows look as they
   did.
 - **Provider facts the code depends on.** Cursor has no `failed` status (`rawOutput.error`, `rejected`,
@@ -2130,8 +2141,10 @@ closing a live connection or losing content.
   4.6 hours. It is delivered intact: beats keep the server's side alive, about 600 B fragments
   every 2 s keep the watchdog alive, and the window paces it.
 - **Old clients:** none; the version must match exactly.
-- **Compression** (`perMessageDeflate` is off, `websocket.ts:118`) is a possible measured
-  follow-up, orthogonal to this.
+- **Compression** (`perMessageDeflate`, `apps/server/src/websocket.ts`) is on when the client
+  offers it, and orthogonal to this: the writer and the client both count payload bytes, before
+  deflating and after inflating. Every message is deflated, small ones too: the context carries
+  over between messages, so a small event mostly repeats the last one.
 - **Memory:** answers are held as one string or `Buffer`; fragments are `subarray` views.
 - **Test seams:**
   - the client's `WebSocketLike` (`environment-client/src/websocket.ts:92-100`) needs
@@ -2404,7 +2417,7 @@ user merges; every agent summarizes only what it did.
     inline deltas until then, or chunked artifacts.
   - **Per-scope delivery lanes,** if head-of-line blocking (§5.5) shows in the measurements.
   - Neither is a limit. Both are options that a measurement must justify.
-- As built: §6.7 (migration 24, protocol v21, shared with F7, so F6 is never released alone). Tool
+- As built: §6.7 (migration 25, protocol v21, shared with F7, so F6 is never released alone). Tool
   output by reference won: the open problem above was solved by keeping text in events only while a
   tool runs. Compression is a separate release, and nothing here depends on it.
 
@@ -2420,7 +2433,8 @@ user merges; every agent summarizes only what it did.
   B17's capability sniffing (`#213: packages/app-core/src/components/chat/MessageInput.tsx:365`)
   must not break desktop.
 - Migration 23.
-- As built: migration 25, protocol v21 and event format 4, shared with F6.
+- As built: migration 26, protocol v21 and event format 4, shared with F6 (and format 4 with
+  session pins, #270).
   - **Live notices** last until `turn.notice.cleared`, which the server publishes on the turn's next
     durable event or its end. A client also drops them at every catch-up, since a fresh load has none.
     They stay out of snapshots and the comparison.

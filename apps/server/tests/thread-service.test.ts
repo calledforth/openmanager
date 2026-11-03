@@ -2627,6 +2627,51 @@ describe('durable session lifecycle', () => {
     }
   })
 
+  it('pins a session, live or not, and only the user ever changes it', async () => {
+    const h = setup()
+    try {
+      const { sessionId } = h.created.session
+      await h.service.resolveRuntimeSession(sessionId)
+      const listed = () => h.service.summaries()[0]
+      const movedAt = listed()?.updatedAt
+      const pinnedAt = ProofResponseSchemas['session.pin'].parse(
+        h.dispatch(h.service, 'session.pin', { sessionId, pinned: true }),
+      ).payload.pinnedAt
+      expect(pinnedAt).toEqual(expect.any(String))
+      h.events.flush()
+      // A pin is not activity: the session keeps its place among the unpinned.
+      expect(listed()).toMatchObject({ sessionId, pinnedAt, updatedAt: movedAt })
+      expect(h.published.at(-1)).toMatchObject({
+        name: 'session.updated',
+        payload: { sessionId, pinnedAt },
+      })
+
+      // Settling keeps the pin, and so does a turn bringing the session back.
+      h.dispatch(h.service, 'session.settle', { sessionId, settled: true })
+      h.events.flush()
+      expect(listed()).toMatchObject({ settledAt: expect.any(String), pinnedAt })
+      h.dispatch(h.service, 'turn.send', { ...h.created.thread, text: 'Keep going' })
+      h.events.flush()
+      expect(listed()).toMatchObject({ status: 'running', settledAt: null, pinnedAt })
+
+      expect(
+        ProofResponseSchemas['session.pin'].parse(
+          h.dispatch(h.service, 'session.pin', { sessionId, pinned: false }),
+        ).payload,
+      ).toEqual({ pinnedAt: null })
+      h.events.flush()
+      expect(listed()).toMatchObject({ sessionId, status: 'running' })
+      expect(listed()?.pinnedAt ?? null).toBeNull()
+      expect(
+        h.dispatch(h.service, 'session.pin', { sessionId: 'missing', pinned: true }),
+      ).toMatchObject({ type: 'error', error: { code: 'not_found' } })
+      // The turn ends before the database closes, or its last write has nowhere to go.
+      await vi.waitFor(() => expect(listed()).toMatchObject({ status: 'idle' }))
+    } finally {
+      h.close()
+    }
+  })
+
   it('refuses to settle a live session but still brings one back', async () => {
     const h = setup()
     try {

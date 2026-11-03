@@ -74,9 +74,9 @@ describe('schema migrations', () => {
   it('initializes a fresh database to the latest numbered version', async () => {
     const database = openEnvironmentDatabase(await dataDir())
     databases.push(database)
-    expect(readSchemaVersion(database)).toBe(25)
+    expect(readSchemaVersion(database)).toBe(26)
     expect(database.prepare('PRAGMA user_version').get() as { user_version: number }).toEqual({
-      user_version: 25,
+      user_version: 26,
     })
     expect(database.prepare('PRAGMA journal_mode').get() as { journal_mode: string }).toEqual({
       journal_mode: 'wal',
@@ -118,7 +118,7 @@ describe('schema migrations', () => {
       'workspace_composer_preferences',
       'workspaces',
     ])
-    expect(runMigrations(database, MIGRATIONS)).toBe(25)
+    expect(runMigrations(database, MIGRATIONS)).toBe(26)
   })
 
   it('upgrades sequentially across restarts and leaves already-applied versions untouched', async () => {
@@ -205,7 +205,7 @@ describe('schema migrations', () => {
 
     const database = openEnvironmentDatabase(directory)
     databases.push(database)
-    expect(readSchemaVersion(database)).toBe(25)
+    expect(readSchemaVersion(database)).toBe(26)
     expect(database.prepare('SELECT provider_id FROM provider_profiles').all()).toEqual([
       { provider_id: 'cursor' },
     ])
@@ -336,7 +336,7 @@ describe('schema migrations', () => {
 
     const database = openEnvironmentDatabase(directory)
     databases.push(database)
-    expect(readSchemaVersion(database)).toBe(25)
+    expect(readSchemaVersion(database)).toBe(26)
     expect(database.prepare('SELECT * FROM attachments ORDER BY attachment_id').all()).toEqual(
       before,
     )
@@ -375,7 +375,7 @@ describe('schema migrations', () => {
 
     const database = openEnvironmentDatabase(directory)
     databases.push(database)
-    expect(readSchemaVersion(database)).toBe(25)
+    expect(readSchemaVersion(database)).toBe(26)
     expect(
       database
         .prepare('SELECT client_id, kind, expires_at FROM authorized_clients ORDER BY client_id')
@@ -403,7 +403,7 @@ describe('schema migrations', () => {
 
   it('adds turn notices and the rest of a failure, keeping failed turns as they were', async () => {
     const directory = await dataDir()
-    const previous = openEnvironmentDatabase(directory, MIGRATIONS.slice(0, 24))
+    const previous = openEnvironmentDatabase(directory, MIGRATIONS.slice(0, 25))
     previous.exec(`
       INSERT INTO workspaces (workspace_id, name, path, created_at, updated_at)
         VALUES ('workspace-1', 'Project', '/project', 1, 1);
@@ -419,7 +419,7 @@ describe('schema migrations', () => {
 
     const database = openEnvironmentDatabase(directory)
     databases.push(database)
-    expect(readSchemaVersion(database)).toBe(25)
+    expect(readSchemaVersion(database)).toBe(26)
     expect(
       database
         .prepare(
@@ -457,7 +457,7 @@ describe('schema migrations', () => {
 
     const database = openEnvironmentDatabase(directory)
     databases.push(database)
-    expect(readSchemaVersion(database)).toBe(25)
+    expect(readSchemaVersion(database)).toBe(26)
     expect(tableNames(database)).toContain('audit_events')
     expect(database.prepare('SELECT client_id FROM authorized_clients').all()).toEqual([
       { client_id: 'client-1' },
@@ -673,6 +673,26 @@ describe('schema migrations', () => {
       source_session_id: 'new',
       updated_at: 9,
     })
+  })
+
+  it('adds the pin column to existing sessions, leaving them unpinned', async () => {
+    const directory = await dataDir()
+    const previous = openEnvironmentDatabase(directory, MIGRATIONS.slice(0, 23))
+    previous.exec(`
+      INSERT INTO workspaces (workspace_id, name, path, created_at, updated_at)
+        VALUES ('workspace-1', 'one', '/one', 1, 1);
+      INSERT INTO sessions (session_id, workspace_id, provider_id, status, title, settled_at,
+        created_at, updated_at)
+        VALUES ('session-1', 'workspace-1', 'cursor', 'idle', 'Kept', 7, 1, 2);
+    `)
+    previous.close()
+
+    const database = openEnvironmentDatabase(directory)
+    databases.push(database)
+    expect(readSchemaVersion(database)).toBe(26)
+    expect(
+      database.prepare('SELECT title, settled_at, pinned_at, updated_at FROM sessions').all(),
+    ).toEqual([{ title: 'Kept', settled_at: 7, pinned_at: null, updated_at: 2 }])
   })
 
   it('takes a listing’s source from the newest session on each pair, by activity then id', async () => {

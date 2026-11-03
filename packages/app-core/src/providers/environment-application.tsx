@@ -1320,6 +1320,7 @@ function EnvironmentSidebarDataProvider({
         ...(unavailableWorkspaces.has(summary.workspaceId) ? { workspaceUnavailable: true } : {}),
         ...(summary.updatedAt ? { updatedAt: summary.updatedAt } : {}),
         settledAt: summary.settledAt ?? null,
+        pinnedAt: summary.pinnedAt ?? null,
         ...(unsentIds.has(summary.sessionId) ? { hasUnsentDraft: true } : {}),
         ...(summary.waitingOn ? { waitingOn: summary.waitingOn } : {}),
         ...(summary.inBackground ? { inBackground: true } : {}),
@@ -1344,6 +1345,13 @@ function EnvironmentSidebarDataProvider({
   const settleSession = useCallback(
     (_workspacePath: string, externalId: string, settled: boolean) =>
       client.commands.settleSession(externalId, settled),
+    [client],
+  )
+
+  const canPin = connection.phase === 'connected' && client.supports('pinSession')
+  const pinSession = useCallback(
+    (_workspacePath: string, externalId: string, pinned: boolean) =>
+      client.commands.pinSession(externalId, pinned),
     [client],
   )
 
@@ -1379,12 +1387,15 @@ function EnvironmentSidebarDataProvider({
         ? { regenerateSessionTitle: session.regenerateSessionTitle }
         : {}),
       ...(canSettle ? { settleSession } : {}),
+      ...(canPin ? { pinSession } : {}),
       ...(canAcknowledge ? { acknowledgeSessionDone } : {}),
       deleteSession: session.deleteSession,
     }),
     [
       canSettle,
+      canPin,
       settleSession,
+      pinSession,
       canRegenerateTitle,
       session.regenerateSessionTitle,
       canAcknowledge,

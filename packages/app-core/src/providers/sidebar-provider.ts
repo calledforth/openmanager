@@ -50,6 +50,8 @@ export interface SidebarSessionEntry {
   updatedAt?: string
   /** ISO time the user settled it; null or absent while it is active. */
   settledAt?: string | null
+  /** ISO time the user pinned it; null or absent while it is not pinned. */
+  pinnedAt?: string | null
   /** Its composer holds text or an image that was not sent. Hosts whose
    * drafts do not sync leave it out. */
   hasUnsentDraft?: boolean
@@ -100,6 +102,8 @@ export interface SidebarDataValue {
   regenerateSessionTitle?: (externalId: string) => Promise<void>
   /** Settle (`true`) or bring back (`false`). Hosts without settling leave it out. */
   settleSession?: (workspacePath: string, externalId: string, settled: boolean) => Promise<void>
+  /** Pin (`true`) or unpin (`false`). Hosts without pins leave it out. */
+  pinSession?: (workspacePath: string, externalId: string, pinned: boolean) => Promise<void>
   deleteSession: (
     workspacePath: string,
     externalId: string,

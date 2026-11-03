@@ -103,6 +103,7 @@ export interface ConvexEnvironmentClientOptions {
  */
 const UNSUPPORTED: ReadonlySet<EnvironmentCommandName> = new Set([
   'settleSession',
+  'pinSession',
   'acknowledgeSession',
   'stopBackgroundTasks',
   'getProviderCatalog',
@@ -1193,6 +1194,7 @@ export function createConvexEnvironmentClient(
     },
     // Web only for now; the Convex host has no settled state to keep.
     settleSession: () => unsupported('settleSession'),
+    pinSession: () => unsupported('pinSession'),
     regenerateSessionTitle: () => unsupported('regenerateSessionTitle'),
     acknowledgeSession: () => unsupported('acknowledgeSession'),
     stopBackgroundTasks: () => unsupported('stopBackgroundTasks'),

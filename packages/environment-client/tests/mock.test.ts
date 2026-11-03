@@ -108,6 +108,18 @@ describe('mock environment client', () => {
     expect(client.getState().sessions[SESSION.sessionId]?.status).toBe('idle')
   })
 
+  it('pins a live session, which cannot be settled', async () => {
+    const client = createMockEnvironmentClient({ seed, respond: () => null })
+    await client.commands.sendTurn({ ...THREAD, text: 'wait' })
+    await client.commands.pinSession(SESSION.sessionId, true)
+    expect(client.getState().sessions[SESSION.sessionId]?.pinnedAt).toEqual(expect.any(String))
+    await client.commands.pinSession(SESSION.sessionId, false)
+    expect(client.getState().sessions[SESSION.sessionId]?.pinnedAt).toBeNull()
+    await expect(client.commands.pinSession('missing', true)).rejects.toMatchObject({
+      code: 'not_found',
+    })
+  })
+
   it('refuses to settle a live session, like the environment', async () => {
     const client = createMockEnvironmentClient({ seed, respond: () => null })
     await client.commands.sendTurn({ ...THREAD, text: 'wait' })

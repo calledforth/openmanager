@@ -1,11 +1,12 @@
 import { IDBFactory } from 'fake-indexeddb'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import {
+  cacheState,
   createInitialState,
   createThreadState,
   type EnvironmentState,
 } from '@openmanager/environment-client'
-import { PROTOCOL_VERSION } from '@openmanager/protocol'
+import { EVENT_FORMAT_VERSION, PROTOCOL_VERSION } from '@openmanager/protocol'
 import {
   createEnvironmentCache,
   environmentCacheName,
@@ -162,7 +163,10 @@ describe('environment identity cache', () => {
         const transaction = database.transaction('state', 'readwrite')
         transaction
           .objectStore('state')
-          .put({ protocolVersion: PROTOCOL_VERSION, state }, 'snapshot')
+          .put(
+            { protocolVersion: PROTOCOL_VERSION, eventFormat: EVENT_FORMAT_VERSION, state },
+            'snapshot',
+          )
         transaction.oncomplete = () => {
           database.close()
           resolve()
@@ -170,6 +174,76 @@ describe('environment identity cache', () => {
       }
     })
     expect(await readEnvironmentCache('env-one')).toBeNull()
+  })
+
+  describe('a state cached under another event format, or before one was recorded', () => {
+    const CURSOR = {
+      scope: { type: 'environment', environmentId: 'env-one' },
+      epoch: 'epoch',
+      sequence: 7,
+    } as const
+    // What only the copy holds, beside the cursors that promise the rest.
+    const held = () => {
+      const state = seed()
+      state.cursors.environment = CURSOR
+      state.draftEdits = {
+        draft: {
+          target: { type: 'session', sessionId: 'session' },
+          content: { text: 'Typed offline' },
+          editedAt: 1,
+        },
+      } as unknown as typeof state.draftEdits
+      state.threads = {
+        thread: {
+          ...state.threads.thread!,
+          cursor: {
+            ...CURSOR,
+            scope: { type: 'thread', threadId: 'thread', sessionId: 'session' },
+          },
+          outbox: [{ commandId: 'send', text: 'Held send', status: 'held', waited: true }],
+        },
+      } as unknown as typeof state.threads
+      return state
+    }
+    const expectKeptWithoutCursors = (restored: EnvironmentState | null) => {
+      expect(restored?.draftEdits.draft?.content.text).toBe('Typed offline')
+      expect(restored?.threads.thread?.outbox).toMatchObject([
+        { commandId: 'send', text: 'Held send' },
+      ])
+      expect(restored?.sessions.session?.title).toBe('Cached session')
+      // A build that ignored a field moved these past its event.
+      expect(restored?.cursors).toEqual({ environment: null, sessions: {} })
+      expect(restored?.threads.thread?.cursor).toBeUndefined()
+    }
+
+    it('keeps what only the copy holds and forgets its cursors', async () => {
+      await writeEnvironmentCache('env-one', held())
+      expect((await readEnvironmentCache('env-one'))?.cursors.environment).toEqual(CURSOR)
+      expectKeptWithoutCursors(
+        await readEnvironmentCache('env-one', PROTOCOL_VERSION, EVENT_FORMAT_VERSION + 1),
+      )
+    })
+
+    it('treats what an older build wrote the same, naming no format', async () => {
+      const state = cacheState(held())
+      await new Promise<void>((resolve, reject) => {
+        const request = indexedDB.open(environmentCacheName('env-one'), 1)
+        request.onupgradeneeded = () => request.result.createObjectStore('state')
+        request.onerror = () => reject(request.error)
+        request.onsuccess = () => {
+          const database = request.result
+          const transaction = database.transaction('state', 'readwrite')
+          transaction
+            .objectStore('state')
+            .put({ protocolVersion: PROTOCOL_VERSION, state }, 'snapshot')
+          transaction.oncomplete = () => {
+            database.close()
+            resolve()
+          }
+        }
+      })
+      expectKeptWithoutCursors(await readEnvironmentCache('env-one'))
+    })
   })
 
   it('drops a state cached under another protocol version', async () => {

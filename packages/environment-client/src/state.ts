@@ -356,7 +356,8 @@ export function applyEvent(state: EnvironmentState, event: ProofEvent): Environm
     case 'session.updated': {
       const session = state.sessions[event.payload.sessionId]
       if (!session) return state
-      const { title, status, updatedAt, settledAt, doneAt, backgroundTasks } = event.payload
+      const { title, status, updatedAt, settledAt, pinnedAt, doneAt, backgroundTasks } =
+        event.payload
       const {
         backgroundTasks: heldTasks,
         waitingOn: heldWaitingOn,
@@ -386,6 +387,7 @@ export function applyEvent(state: EnvironmentState, event: ProofEvent): Environm
         ...(title !== undefined ? { title } : {}),
         ...(status !== undefined ? { status } : {}),
         ...(settledAt !== undefined ? { settledAt } : {}),
+        ...(pinnedAt !== undefined ? { pinnedAt } : {}),
         ...(doneAt !== undefined ? { doneAt } : {}),
         // The session's place moves only when the environment says so (§4.7.1).
         ...(updatedAt !== undefined ? { updatedAt } : {}),
@@ -1031,6 +1033,7 @@ export function applySessionCreated(
             status: existing.status,
             updatedAt: existing.updatedAt,
             settledAt: existing.settledAt ?? null,
+            ...(existing.pinnedAt ? { pinnedAt: existing.pinnedAt } : {}),
             doneAt: existing.doneAt ?? null,
             ...(existing.backgroundTasks ? { backgroundTasks: existing.backgroundTasks } : {}),
             ...(existing.waitingOn ? { waitingOn: existing.waitingOn } : {}),

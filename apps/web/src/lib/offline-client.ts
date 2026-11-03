@@ -20,6 +20,7 @@ const commands: EnvironmentCommands = {
   regenerateSessionTitle: reject('regenerateSessionTitle'),
   deleteSession: reject('deleteSession'),
   settleSession: reject('settleSession'),
+  pinSession: reject('pinSession'),
   acknowledgeSession: reject('acknowledgeSession'),
   stopBackgroundTasks: reject('stopBackgroundTasks'),
   sendTurn: reject('sendTurn'),
