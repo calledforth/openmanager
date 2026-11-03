@@ -320,9 +320,13 @@ const iconButton =
 
 export interface QuickAgentNoticeData {
   key: number
-  kind: 'started' | 'saved'
+  /** `message` says `message` and offers `action`; the others say what became of a draft. */
+  kind: 'started' | 'saved' | 'message'
   /** The project's name, if it is known. */
   project?: string
+  message?: string
+  /** The button's words. @default "Open" */
+  action?: string
   onOpen: () => void
 }
 
@@ -391,13 +395,15 @@ function QuickAgentNotice({
 }) {
   const reduceMotion = useReducedMotion() ?? false
   const label =
-    notice.kind === 'started'
-      ? notice.project
-        ? `Agent started in ${notice.project}`
-        : 'Agent started'
-      : notice.project
-        ? `Saved to drafts in ${notice.project}`
-        : 'Saved to drafts'
+    notice.kind === 'message'
+      ? (notice.message ?? '')
+      : notice.kind === 'started'
+        ? notice.project
+          ? `Agent started in ${notice.project}`
+          : 'Agent started'
+        : notice.project
+          ? `Saved to drafts in ${notice.project}`
+          : 'Saved to drafts'
   return (
     <motion.div
       className="pointer-events-auto flex max-w-full items-center gap-1 rounded-float bg-float py-1 pl-3 pr-1 text-[13px] text-foreground shadow-float"
@@ -420,7 +426,7 @@ function QuickAgentNotice({
         }}
         className="h-7 shrink-0 rounded-md px-2 font-medium outline-none transition-colors duration-80 hover:bg-hover focus-visible:ring-1 focus-visible:ring-focus-ring"
       >
-        Open
+        {notice.action ?? 'Open'}
       </button>
       <button
         type="button"

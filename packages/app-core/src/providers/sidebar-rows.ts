@@ -167,9 +167,15 @@ function statusesOf(state: EnvironmentState): ProviderStatuses {
 type Reader = Pick<EnvironmentClient, 'getState' | 'supports'>
 
 /** What can be offered for an environment's rows just now. */
+/** Connected now: commands sent to it are answered, and a session could start there. */
+export function isEnvironmentReachable(client: Pick<Reader, 'getState'> | undefined): boolean {
+  return client?.getState().connection.phase === 'connected'
+}
+
 export function sidebarRowAbilities(client: Reader) {
   const { connection } = client.getState()
   return {
+    reachable: isEnvironmentReachable(client),
     canSettle: connection.phase === 'connected' && client.supports('settleSession'),
     canPin: connection.phase === 'connected' && client.supports('pinSession'),
     hasIcons:
@@ -235,12 +241,13 @@ export function createSidebarRowsReader() {
     const facts = sameSidebarDraftFacts(previous?.facts ?? NO_DRAFT_FACTS, read)
       ? (previous?.facts ?? read)
       : read
-    const { canSettle, canPin, hasIcons } = sidebarRowAbilities(client)
+    const { reachable, canSettle, canPin, hasIcons } = sidebarRowAbilities(client)
     const unchanged =
       previous &&
       previous.rows.workspaces === workspaces &&
       previous.rows.sessions === sessions &&
       previous.facts === facts &&
+      previous.rows.reachable === reachable &&
       previous.rows.canSettle === canSettle &&
       previous.rows.canPin === canPin &&
       previous.rows.hasIcons === hasIcons
@@ -251,6 +258,7 @@ export function createSidebarRowsReader() {
           workspaces,
           sessions,
           drafts: facts.cards,
+          reachable,
           canSettle,
           canPin,
           hasIcons,

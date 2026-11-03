@@ -158,6 +158,7 @@ export function useDraftDiscards(
         key: keyRef.current,
         fromKeyboard: options?.fromKeyboard ?? false,
         returnFocus: options?.returnFocus ?? null,
+        ...(options?.wording ? { wording: options.wording } : {}),
       }
       pendingRef.current = next
       clientRef.current = client

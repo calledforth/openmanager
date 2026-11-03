@@ -95,6 +95,14 @@ export interface DraftDiscardOptions {
   returnFocus?: HTMLElement | null
   /** The environment the draft is on, where the list spans several. */
   environmentId?: string
+  /** For a draft that is going for a reason of its own. */
+  wording?: DraftDiscardWording
+}
+
+/** A discard notice's words, where "Draft discarded" and Undo would not fit. */
+export interface DraftDiscardWording {
+  message: string
+  undo: string
 }
 
 /** Long enough for any card width; the rest is never shown. */

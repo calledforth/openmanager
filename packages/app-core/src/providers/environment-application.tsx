@@ -36,6 +36,8 @@ import {
   selectDraftContent,
   selectDraftTarget,
   selectProviderCatalog,
+  selectRecentWorkspaces,
+  selectWorkspaces,
   shallowEqualArray,
   type EnvironmentState,
   type PendingInteraction,
@@ -152,6 +154,12 @@ export interface EnvironmentApplicationOptions {
   /** The host has yet to learn where that draft is, so not having it here says
    * nothing: its page waits rather than giving up the address. */
   holdLandingDraft?: boolean
+  /**
+   * On a host with several environments, the one this page was opened for.
+   * A session is only ever started there: a client that says it is another
+   * environment refuses to start one rather than start it on that machine.
+   */
+  environmentId?: string
   /** Where folded sidebar rows are remembered. Defaults to `localStorage`. */
   collapsedWorkspaceStorage?: Pick<Storage, 'getItem' | 'setItem'> | null
   /** Host actions for views (child sessions, icons, uploads). */
@@ -177,6 +185,7 @@ export function EnvironmentApplicationProviders({
         onLanding={options.onLanding ?? false}
         landingDraftId={options.landingDraftId ?? null}
         holdLandingDraft={options.holdLandingDraft ?? false}
+        pageEnvironmentId={options.environmentId}
       >
         <EnvironmentComposerStateProvider>
           <EnvironmentComposerDraftProvider>
@@ -394,6 +403,11 @@ function landingWorkspaceFor(workspaces: Workspace[], recent: Workspace[]): stri
   return (recent.find(canHostDraft) ?? workspaces.find(canHostDraft))?.workspaceId ?? null
 }
 
+/** Where a landing draft would open in this environment. */
+export function selectLandingWorkspaceId(state: EnvironmentState): string | null {
+  return landingWorkspaceFor(selectWorkspaces(state), selectRecentWorkspaces(state))
+}
+
 /**
  * The new-session draft a page shows. Its ids are minted when the page opens
  * blank; nothing is saved until it gets text or an image, and only then does
@@ -448,6 +462,7 @@ function EnvironmentSessionStateProvider({
   onLanding,
   landingDraftId,
   holdLandingDraft,
+  pageEnvironmentId,
   children,
 }: {
   addWorkspace?: () => Promise<void>
@@ -456,6 +471,7 @@ function EnvironmentSessionStateProvider({
   onLanding: boolean
   landingDraftId: string | null
   holdLandingDraft: boolean
+  pageEnvironmentId: string | undefined
   children: ReactNode
 }) {
   const client = useEnvironmentClient()
@@ -960,6 +976,9 @@ function EnvironmentSessionStateProvider({
       const generation = draftGenerationRef.current
       const environmentId = client.getState().environment?.environmentId
       if (!environmentId) throw new Error('No environment is connected')
+      if (pageEnvironmentId && environmentId !== pageEnvironmentId) {
+        throw new Error('This page is on another environment now. Open it again to send this.')
+      }
       const { providerId, preference, modeId, draft } = launch
       // One command, as the draft shows it: the environment files the picks
       // the new session is seeded from, claims the images the draft uploaded,
@@ -1032,7 +1051,7 @@ function EnvironmentSessionStateProvider({
       }
       return { sessionId: session.sessionId, threadId: thread.threadId }
     },
-    [client, commands, draftWorkspaceId, openSessionLatest, routed],
+    [client, commands, draftWorkspaceId, openSessionLatest, pageEnvironmentId, routed],
   )
 
   // The commands the sidebar and the palette call stay the same functions

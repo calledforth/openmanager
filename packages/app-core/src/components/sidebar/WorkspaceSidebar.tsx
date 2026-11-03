@@ -122,7 +122,10 @@ function useWorkspaceSidebarModel(closeSheet: MutableRefObject<() => void>) {
     activeEnvironmentId,
     activeWorkspacePath,
     activeSessionId,
-    onCreateSession: away((workspacePath: string) => void createSession(workspacePath)),
+    onCreateSession: away(
+      (workspacePath: string, environmentId?: string) =>
+        void createSession(workspacePath, environmentId),
+    ),
     onSelectSession: away(selectSession),
     onRenameSession: renameSession
       ? (path: string, id: string, title: string | null, environmentId?: string) =>

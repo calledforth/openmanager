@@ -220,14 +220,18 @@ function Notice({
         onClose('dismiss', discard)
       }}
     >
-      <span className="truncate pr-2">Draft discarded</span>
+      {discard.wording ? (
+        <span className="min-w-0 pr-2">{discard.wording.message}</span>
+      ) : (
+        <span className="truncate pr-2">Draft discarded</span>
+      )}
       <button
         ref={present ? undoRef : undefined}
         type="button"
         onClick={() => onClose('undo', discard)}
         className="h-7 shrink-0 rounded-md px-2 font-medium outline-none transition-colors duration-80 hover:bg-hover focus-visible:ring-1 focus-visible:ring-focus-ring"
       >
-        Undo
+        {discard.wording?.undo ?? 'Undo'}
       </button>
       <button
         type="button"
