@@ -1,7 +1,13 @@
+import { useEffect, type ReactNode } from 'react'
 import { useSessionState } from '../../providers/session-provider'
-import { useSidebarData, type WorkspaceEntry } from '../../providers/sidebar-provider'
+import {
+  useEnvironmentChoice,
+  useSidebarData,
+  type WorkspaceEntry,
+} from '../../providers/sidebar-provider'
 import { FolderSimpleIcon, FolderPlusIcon, GitBranchIcon } from '@phosphor-icons/react'
 import { EnvironmentLabel } from '../sidebar/EnvironmentLabel'
+import { EnvironmentPicker } from './EnvironmentPicker'
 import { ProjectIcon } from '../sidebar/ProjectIcon'
 import { ProjectPicker, describeCapabilities } from './ProjectPicker'
 
@@ -10,6 +16,7 @@ const RECENT_CHIP_LIMIT = 4
 
 export function NewSessionLandingView({
   environmentLabel,
+  environmentPicker,
   workspaces,
   recentWorkspaces = [],
   activeWorkspacePath,
@@ -21,6 +28,8 @@ export function NewSessionLandingView({
 }: {
   /** Where the session will run; omitted, no environment copy shows. */
   environmentLabel?: string
+  /** Stands where the label would, on a host with more than one environment. */
+  environmentPicker?: ReactNode
   workspaces: WorkspaceEntry[]
   /** Most recently active first; the host may omit it. */
   recentWorkspaces?: WorkspaceEntry[]
@@ -38,6 +47,12 @@ export function NewSessionLandingView({
         <div className="flex items-center gap-2 text-12-regular text-[var(--basis-text-faint)]">
           <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-[var(--basis-text-faint)]" />
           Opening your workspace
+          {environmentPicker && (
+            <>
+              <span aria-hidden>·</span>
+              {environmentPicker}
+            </>
+          )}
         </div>
       </div>
     )
@@ -64,6 +79,9 @@ export function NewSessionLandingView({
             <FolderPlusIcon className="h-3.5 w-3.5" />
             Add project
           </button>
+          {environmentPicker && (
+            <div className="mt-3 flex justify-center text-12-regular">{environmentPicker}</div>
+          )}
         </div>
       </div>
     )
@@ -106,11 +124,18 @@ export function NewSessionLandingView({
         </div>
 
         <div className="mt-3 flex items-center justify-center gap-1.5 text-12-regular text-[var(--basis-text-faint)]">
-          {environmentLabel && (
+          {environmentPicker ? (
             <>
-              <EnvironmentLabel label={environmentLabel} className="max-w-[240px]" />
+              {environmentPicker}
               <span aria-hidden>·</span>
             </>
+          ) : (
+            environmentLabel && (
+              <>
+                <EnvironmentLabel label={environmentLabel} className="max-w-[240px]" />
+                <span aria-hidden>·</span>
+              </>
+            )
           )}
           <span>
             {isStarting ? 'Starting session…' : (unavailable ?? 'Start with a message below')}
@@ -163,22 +188,62 @@ export function NewSessionLanding() {
     activeWorkspacePath,
     pendingDraftSessionStart,
     isSessionDraftOpen,
+    newSessionDraftId,
     isDraftLoading,
     isDraftProjectRemoved,
     setDraftWorkspace,
   } = useSessionState()
   const {
     environment,
+    activeEnvironmentId,
     workspaces,
     recentWorkspaces,
     isWorkspacesLoading,
     createSession,
     addWorkspace,
   } = useSidebarData()
+  const choice = useEnvironmentChoice()
+  // A page that has not heard which environment it is on is the selected one's.
+  const pageEnvironmentId = activeEnvironmentId ?? choice?.selectedId ?? null
+  const selectWorkspace = (workspacePath: string) =>
+    isSessionDraftOpen && setDraftWorkspace
+      ? setDraftWorkspace(workspacePath)
+      : void createSession(workspacePath)
+  // New agent sent here from another environment, for one of this one's projects.
+  const opening = choice?.opening
+  useEffect(() => {
+    if (!opening || opening.environmentId !== activeEnvironmentId || !choice) return
+    if (isWorkspacesLoading || !!isDraftLoading) return
+    choice.opened()
+    if (workspaces.some((workspace) => workspace.path === opening.workspaceId)) {
+      selectWorkspace(opening.workspaceId)
+    }
+    // Once, when the page is ready for it; `selectWorkspace` is rebuilt each render.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [opening, activeEnvironmentId, isWorkspacesLoading, isDraftLoading])
 
   return (
     <NewSessionLandingView
       environmentLabel={environment?.label}
+      environmentPicker={
+        // What it marks as chosen is the environment this page's client is
+        // on, so the two cannot disagree.
+        choice && pageEnvironmentId ? (
+          <EnvironmentPicker
+            environments={choice.environments}
+            selectedId={pageEnvironmentId}
+            disabled={pendingDraftSessionStart}
+            onSelect={(environmentId) =>
+              void choice.choose(
+                environmentId,
+                newSessionDraftId
+                  ? { draftId: newSessionDraftId, environmentId: pageEnvironmentId }
+                  : null,
+              )
+            }
+          />
+        ) : undefined
+      }
       workspaces={workspaces}
       recentWorkspaces={recentWorkspaces}
       activeWorkspacePath={activeWorkspacePath}
@@ -189,11 +254,7 @@ export function NewSessionLanding() {
       draftWithoutProject={!!isDraftProjectRemoved}
       // Where drafts have pages, picking a project moves the open draft with
       // everything in it; elsewhere, or with none open, it opens one there.
-      onSelectWorkspace={(workspacePath) =>
-        isSessionDraftOpen && setDraftWorkspace
-          ? setDraftWorkspace(workspacePath)
-          : void createSession(workspacePath)
-      }
+      onSelectWorkspace={selectWorkspace}
       onAddWorkspace={() => void addWorkspace()}
     />
   )

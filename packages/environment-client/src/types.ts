@@ -721,6 +721,11 @@ export interface DraftSync {
    */
   holdEmpty(draftId: string): () => void
   /**
+   * Whether `holdEmpty` holds the draft: an image is on its way into it.
+   * Optional, for syncs that came before it; absent reads as none.
+   */
+  holdsImage?(draftId: string): boolean
+  /**
    * Hold the draft's saves while a `session.create` sends it. `sent` is what
    * the send carries, when the composer has already emptied the draft;
    * readers (the sidebar's card) show it instead of the emptied content.

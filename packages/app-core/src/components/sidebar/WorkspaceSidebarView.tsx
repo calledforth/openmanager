@@ -648,7 +648,8 @@ export interface WorkspaceSidebarViewProps {
   activeEnvironmentId?: string
   activeWorkspacePath: string | null
   activeSessionId: string | null
-  onCreateSession: (workspacePath: string) => void
+  /** A new agent where the open environment has nowhere to start one is told whose project it is. */
+  onCreateSession: (workspacePath: string, environmentId?: string) => void
   /** What a row does is told the row's environment, last. */
   onSelectSession: (
     workspacePath: string,
@@ -752,7 +753,8 @@ export function WorkspaceSidebarView({
   })
   // The header's two actions, stable too, so a session update leaves it be.
   const onCreateSessionStable = useCallback(
-    (workspacePath: string) => createSessionRef.current(workspacePath),
+    (workspacePath: string, environmentId?: string) =>
+      createSessionRef.current(workspacePath, environmentId),
     [],
   )
   const onAddWorkspaceStable = useCallback(() => addWorkspaceRef.current(), [])
@@ -795,13 +797,24 @@ export function WorkspaceSidebarView({
         : undefined,
     [canPin],
   )
-  // A new agent starts in the open environment, whatever else is listed.
+  // A new agent starts in the open environment. One with nowhere to start it
+  // hands over to the first reachable environment that has, in that project:
+  // the page that opens says which, and offers the others.
   const startable = workspaces.filter(
     (workspace) => workspace.environmentId === activeEnvironmentId && !workspace.missing,
   )
+  const elsewhere =
+    startable.length > 0
+      ? undefined
+      : workspaces.find(
+          (workspace) =>
+            !workspace.missing &&
+            workspace.environmentId !== undefined &&
+            rowEnvironments?.[workspace.environmentId]?.reachable === true,
+        )
   const newThreadTarget = startable.some((workspace) => workspace.path === activeWorkspacePath)
     ? activeWorkspacePath
-    : (startable[0]?.path ?? null)
+    : (startable[0]?.path ?? elsewhere?.path ?? null)
 
   const { active, settled } = useMemo(() => partitionSidebarSessions(workspaces), [workspaces])
   const draftRows = useMemo(() => placeSidebarDrafts(drafts, workspaces), [drafts, workspaces])
@@ -877,6 +890,7 @@ export function WorkspaceSidebarView({
       {titlebar}
       <MemoSidebarActions
         newThreadTarget={newThreadTarget}
+        newThreadEnvironmentId={elsewhere?.environmentId}
         onCreateSession={onCreateSessionStable}
         onAddWorkspace={onAddWorkspaceStable}
       />
@@ -1090,11 +1104,14 @@ const MemoSettledShelf = memo(
  */
 function SidebarActions({
   newThreadTarget,
+  newThreadEnvironmentId,
   onCreateSession,
   onAddWorkspace,
 }: {
   newThreadTarget: string | null
-  onCreateSession: (workspacePath: string) => void
+  /** Set when that project is another environment's. */
+  newThreadEnvironmentId?: string
+  onCreateSession: (workspacePath: string, environmentId?: string) => void
   onAddWorkspace: () => void
 }) {
   return (
@@ -1105,7 +1122,7 @@ function SidebarActions({
             icon={NewAgentIcon}
             disabled={!newThreadTarget}
             onClick={() => {
-              if (newThreadTarget) onCreateSession(newThreadTarget)
+              if (newThreadTarget) onCreateSession(newThreadTarget, newThreadEnvironmentId)
             }}
           >
             New agent

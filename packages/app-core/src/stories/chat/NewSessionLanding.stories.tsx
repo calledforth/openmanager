@@ -1,4 +1,5 @@
 import type { Meta, StoryObj } from '@storybook/react-vite'
+import { EnvironmentPicker } from '../../components/chat/EnvironmentPicker'
 import { NewSessionLandingView } from '../../components/chat/NewSessionLanding'
 
 const meta = {
@@ -64,6 +65,23 @@ export const Starting: Story = {
 /** A host that has not learned the environment's name shows no environment copy. */
 export const UnnamedEnvironment: Story = {
   args: { environmentLabel: undefined },
+}
+
+/** With more than one environment saved, the label becomes the picker. */
+export const SeveralEnvironments: Story = {
+  args: {
+    environmentPicker: (
+      <EnvironmentPicker
+        environments={[
+          { environmentId: 'studio', label: 'studio-workstation', reachable: true },
+          { environmentId: 'laptop', label: 'travel-laptop', reachable: true },
+          { environmentId: 'homelab', label: 'homelab', reachable: false },
+        ]}
+        selectedId="studio"
+        onSelect={() => undefined}
+      />
+    ),
+  },
 }
 
 export const NoProjects: Story = {

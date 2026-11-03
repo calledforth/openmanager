@@ -26,6 +26,7 @@ import {
   SidebarDraftsContext,
   SidebarEnvironmentsContext,
   SidebarSessionsContext,
+  useEnvironmentChoice,
   useSidebarData,
   useSidebarDrafts,
   useSidebarSessions,
@@ -44,6 +45,7 @@ import { WorkspaceIconContext } from '@openmanager/app-core/providers/view-actio
 import { useAddressLookup, type Address } from '../providers/address-environment'
 import { useConnection } from '../providers/connection-provider'
 import { useEnvironmentClients } from '../providers/environment-client-provider'
+import { EnvironmentChoiceHost } from './environment-choice'
 
 /** What the open environment's providers hand the sidebar. */
 type OpenEnvironment = {
@@ -155,11 +157,12 @@ const NOT_OFFERED = 'none'
 function useOpenRowAbilities(client: EnvironmentClient | undefined) {
   const read = useCallback(() => {
     if (!client) return NOT_OFFERED
-    const { canSettle, canPin, hasIcons } = sidebarRowAbilities(client)
-    return `${canSettle ? 'settle' : ''} ${canPin ? 'pin' : ''} ${hasIcons ? 'icons' : ''}`
+    const { reachable, canSettle, canPin, hasIcons } = sidebarRowAbilities(client)
+    return `${reachable ? 'reachable' : ''} ${canSettle ? 'settle' : ''} ${canPin ? 'pin' : ''} ${hasIcons ? 'icons' : ''}`
   }, [client])
   const abilities = useSyncExternalStore(client?.subscribe ?? NEVER, read, read)
   return {
+    reachable: abilities.includes('reachable'),
     canSettle: abilities.includes('settle'),
     canPin: abilities.includes('pin'),
     hasIcons: abilities.includes('icons'),
@@ -196,6 +199,7 @@ function sameRowEnvironments(
       return (
         b !== undefined &&
         a.name === b.name &&
+        a.reachable === b.reachable &&
         a.canSettle === b.canSettle &&
         a.canPin === b.canPin &&
         a.iconLookup === b.iconLookup
@@ -224,6 +228,7 @@ function EnvironmentsSidebar({ footer }: { footer: ReactNode }) {
   const { clients, everyCacheRead } = useEnvironmentClients()
   const { environments } = useConnection()
   const { prefer } = useAddressLookup()
+  const choose = useEnvironmentChoice()?.choose
   const savedKey = environments.map(({ environmentId }) => environmentId).join('\n')
   const order = useMemo(() => (savedKey ? savedKey.split('\n') : []), [savedKey])
 
@@ -236,6 +241,7 @@ function EnvironmentsSidebar({ footer }: { footer: ReactNode }) {
   const several = order.length > 1
   const others = useOtherEnvironmentRows(clients, several ? order : NO_ORDER, openId)
   const {
+    reachable: openReachable,
     canSettle: openCanSettle,
     canPin: openCanPin,
     hasIcons: openHasIcons,
@@ -247,26 +253,47 @@ function EnvironmentsSidebar({ footer }: { footer: ReactNode }) {
     const next: Record<string, SidebarRowEnvironment> = {}
     const add = (
       environmentId: string,
-      { canSettle, canPin, hasIcons }: { canSettle: boolean; canPin: boolean; hasIcons: boolean },
+      {
+        reachable,
+        canSettle,
+        canPin,
+        hasIcons,
+      }: { reachable?: boolean; canSettle: boolean; canPin: boolean; hasIcons: boolean },
     ) => {
       const client = clients[environmentId]
       next[environmentId] = {
         name:
           environments.find((item) => item.environmentId === environmentId)?.label ?? environmentId,
+        reachable: reachable === true,
         canSettle,
         canPin,
         iconLookup: hasIcons && client ? iconLookupOf(client) : null,
       }
     }
     if (openId) {
-      add(openId, { canSettle: openCanSettle, canPin: openCanPin, hasIcons: openHasIcons })
+      add(openId, {
+        reachable: openReachable,
+        canSettle: openCanSettle,
+        canPin: openCanPin,
+        hasIcons: openHasIcons,
+      })
     }
     for (const row of others) add(row.environmentId, row)
     const before = rowEnvironmentsRef.current
     if (before && sameRowEnvironments(before, next)) return before
     rowEnvironmentsRef.current = next
     return next
-  }, [clients, environments, openCanPin, openCanSettle, openHasIcons, openId, others, several])
+  }, [
+    clients,
+    environments,
+    openCanPin,
+    openCanSettle,
+    openHasIcons,
+    openId,
+    openReachable,
+    others,
+    several,
+  ])
 
   const listed = useMemo<SidebarEnvironmentsValue | null>(
     () => (rowEnvironments ? { others, rowEnvironments, filling: !everyCacheRead } : null),
@@ -294,12 +321,25 @@ function EnvironmentsSidebar({ footer }: { footer: ReactNode }) {
   const anyPins = others.some((row) => row.canPin)
   const sidebarData = useMemo<SidebarDataValue | null>(() => {
     if (!data) return null
-    const { deleteSession, pinSession, renameSession, selectSession, settleSession } = data
+    const {
+      createSession,
+      deleteSession,
+      pinSession,
+      renameSession,
+      selectSession,
+      settleSession,
+    } = data
     return {
       ...data,
       selectSession: (path, id, providerId, environmentId) => {
         opening(environmentId, { kind: 'session', id })
         selectSession(path, id, providerId)
+      },
+      // The open environment's providers can only open a page of their own;
+      // another environment's project opens on that environment's page.
+      createSession: async (path, environmentId) => {
+        if (environmentId && environmentId !== openId) choose?.(environmentId, null, path)
+        else await createSession(path)
       },
       // A row of another environment goes straight to its client. What the
       // open environment says about a failure (`fail`) is about the page, and
@@ -338,7 +378,7 @@ function EnvironmentsSidebar({ footer }: { footer: ReactNode }) {
           }
         : {}),
     }
-  }, [anyPins, anySettles, data, elsewhere, opening])
+  }, [anyPins, anySettles, choose, data, elsewhere, openId, opening])
 
   // The cards are the same array while no card changed: the sidebar reads a
   // new one as a card having changed.
@@ -446,8 +486,10 @@ export function EnvironmentsSidebarHost({
   return (
     <SidebarBridgeContext.Provider value={bridge}>
       <DraftDiscardsContext.Provider value={discards}>
-        <EnvironmentsSidebar footer={footer} />
-        {children}
+        <EnvironmentChoiceHost>
+          <EnvironmentsSidebar footer={footer} />
+          {children}
+        </EnvironmentChoiceHost>
       </DraftDiscardsContext.Provider>
     </SidebarBridgeContext.Provider>
   )

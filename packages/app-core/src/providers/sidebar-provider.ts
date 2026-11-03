@@ -113,7 +113,12 @@ export interface SidebarDataValue {
     providerId: ProviderId,
     environmentId?: string,
   ) => void
-  createSession: (workspacePath: string) => Promise<void>
+  /**
+   * Open a new session page in that project. A host listing several
+   * environments takes another environment's to mean that environment's page,
+   * and leaves it to the page to say where it is.
+   */
+  createSession: (workspacePath: string, environmentId?: string) => Promise<void>
   renameSession?: (
     workspacePath: string,
     externalId: string,
@@ -188,6 +193,8 @@ export interface SidebarEnvironmentRows {
   sessions: SidebarSessionsByWorkspace
   /** Its draft cards, newest edit first. */
   drafts: SidebarDraft[]
+  /** Connected now (`isEnvironmentReachable`). Absent reads as not. */
+  reachable?: boolean
   /** Settling can be offered: it is connected and can keep the change. */
   canSettle: boolean
   /** Pinning can be offered, on the same terms. */
@@ -200,6 +207,8 @@ export interface SidebarEnvironmentRows {
 export interface SidebarRowEnvironment {
   /** Its saved name, shown on the card. */
   name: string
+  /** Connected now, so a new agent could start there. Absent reads as not. */
+  reachable?: boolean
   canSettle: boolean
   canPin: boolean
   /** Null where it has no icons to give. */
@@ -225,6 +234,46 @@ export const SidebarEnvironmentsContext = createContext<SidebarEnvironmentsValue
 /** Null on a host with one environment, which is every host but the web's. */
 export function useSidebarEnvironments(): SidebarEnvironmentsValue | null {
   return useContext(SidebarEnvironmentsContext)
+}
+
+/** One saved environment, as the new session page offers it. */
+export interface EnvironmentOption {
+  environmentId: string
+  label: string
+  /** Its address, for an environment whose name another saved one shares. */
+  detail?: string
+  /** Connected now. Nothing could start on one that is not, so it cannot be picked. */
+  reachable: boolean
+}
+
+/** Where new sessions run, on a host with more than one environment saved. */
+export interface EnvironmentChoiceValue {
+  /** In their saved order. */
+  environments: readonly EnvironmentOption[]
+  /** The environment selected now, for a page that has not learned its own. */
+  selectedId: string | null
+  /**
+   * Go to that environment's new session page, false if it cannot be gone to
+   * now. `from` is the draft on the page and the environment it is on: its
+   * text goes along, and its images stay with it where they were uploaded.
+   * `workspaceId` is the project to open there, in place of the most recent.
+   */
+  choose: (
+    environmentId: string,
+    from: { draftId: string; environmentId: string } | null,
+    workspaceId?: string,
+  ) => boolean
+  /** A project `choose` was asked to open, until that environment's page takes it. */
+  opening: { environmentId: string; workspaceId: string } | null
+  /** The page has opened it. */
+  opened: () => void
+}
+
+export const EnvironmentChoiceContext = createContext<EnvironmentChoiceValue | null>(null)
+
+/** Null with one environment saved, which is always so off the web: nothing to pick. */
+export function useEnvironmentChoice(): EnvironmentChoiceValue | null {
+  return useContext(EnvironmentChoiceContext)
 }
 
 /** A draft discard waiting out its undo window. */
