@@ -7,6 +7,10 @@ import {
 } from '@openmanager/app-core/providers/environment-client'
 import { EnvironmentApplicationProviders } from '@openmanager/app-core/providers/environment-application'
 import { useSessionState } from '@openmanager/app-core/providers/session-provider'
+import {
+  EnvironmentAvailabilityContext,
+  type EnvironmentAvailability,
+} from '@openmanager/app-core/providers/environment-availability'
 import { useSidebarData } from '@openmanager/app-core/providers/sidebar-provider'
 import { ProjectIcon } from '@openmanager/app-core/components/sidebar/ProjectIcon'
 import { phosphorIcon, useIcon } from '@openmanager/app-core/components/fluid/lib/icon-context'
@@ -44,6 +48,11 @@ import {
   WorkspaceTile,
 } from '@openmanager/app-core/components/fluid/sidebar-app/workspace-header'
 import type { EnvironmentClient, EnvironmentState } from '@openmanager/environment-client'
+import {
+  otherEnvironmentsNotice,
+  placeConnectionUi,
+  sendBlockedReason,
+} from '../lib/connection-state'
 import { useConnection } from '../providers/connection-provider'
 import { useEnvironmentClients } from '../providers/environment-client-provider'
 import {
@@ -52,8 +61,17 @@ import {
   useFindAddress,
 } from '../providers/address-environment'
 import { AddWorkspaceDialog } from './add-workspace-dialog'
-import { ConnectionBanner, ConnectionScreen, ConnectionStatusChip } from './connection-surfaces'
-import { EnvironmentsSidebarHost, SidebarSource } from './environments-sidebar'
+import {
+  ConnectionBanner,
+  ConnectionScreen,
+  ConnectionStatusChip,
+  OtherEnvironmentsStatus,
+} from './connection-surfaces'
+import {
+  EnvironmentFailureNotice,
+  EnvironmentsSidebarHost,
+  SidebarSource,
+} from './environments-sidebar'
 import { EnvironmentNotifications } from './session-notifications'
 import { SidebarDock } from './sidebar-dock'
 
@@ -303,6 +321,7 @@ function SessionTrail() {
 function ConnectedShell({
   client,
   environmentId,
+  availability,
   pathname,
   landingDraftId,
   holdLandingDraft,
@@ -310,6 +329,7 @@ function ConnectedShell({
 }: {
   client: EnvironmentClient
   environmentId: string | null
+  availability: EnvironmentAvailability
   pathname: string
   landingDraftId: string | null
   holdLandingDraft: boolean
@@ -338,29 +358,32 @@ function ConnectedShell({
     setAddingWorkspace(true)
   }, [client])
   return (
-    <EnvironmentApplicationProviders
-      {...(environmentId ? { environmentId } : {})}
-      addWorkspace={addWorkspace}
-      navigateSession={navigateSession}
-      navigateDraft={navigateDraft}
-      // `/` is a blank new-session page, ready on arrival; `/drafts/<id>` is
-      // a draft's own page, which it gets with its first text or image.
-      onLanding={pathname === '/' || landingDraftId !== null}
-      landingDraftId={landingDraftId}
-      holdLandingDraft={holdLandingDraft}
-    >
-      <SidebarSource />
-      {children}
-      <ConnectedOverlays
-        client={client}
-        addingWorkspace={addingWorkspace}
-        closeAddWorkspace={closeAddWorkspace}
-      />
-    </EnvironmentApplicationProviders>
+    <EnvironmentAvailabilityContext.Provider value={availability}>
+      <EnvironmentApplicationProviders
+        {...(environmentId ? { environmentId } : {})}
+        addWorkspace={addWorkspace}
+        navigateSession={navigateSession}
+        navigateDraft={navigateDraft}
+        // `/` is a blank new-session page, ready on arrival; `/drafts/<id>` is
+        // a draft's own page, which it gets with its first text or image.
+        onLanding={pathname === '/' || landingDraftId !== null}
+        landingDraftId={landingDraftId}
+        holdLandingDraft={holdLandingDraft}
+      >
+        <SidebarSource />
+        {children}
+        <ConnectedOverlays
+          client={client}
+          addingWorkspace={addingWorkspace}
+          closeAddWorkspace={closeAddWorkspace}
+        />
+      </EnvironmentApplicationProviders>
+    </EnvironmentAvailabilityContext.Provider>
   )
 }
 
 export function AppShell() {
+  const navigate = useNavigate()
   const pathname = useRouterState({ select: (state) => state.location.pathname })
   const selectedClient = useEnvironmentClientOptional()
   const { clients } = useEnvironmentClients()
@@ -385,6 +408,7 @@ export function AppShell() {
     environments,
     selectedId,
     inUseEndpoint,
+    links,
   } = useConnection()
   const shellEnvironmentId = (ownerClient && lookup.owner) || selectedId
   // Pairing is how a browser with no environment gets one, so it never waits
@@ -403,20 +427,51 @@ export function AppShell() {
     onRemoveRoute: removeRoute,
     onCheckRoutes: checkRoutes,
   }
-  const showScreen = !ungated && ui.surface === 'screen'
-  const showBanner = !ungated && ui.surface === 'banner'
+  // Whose page this is, and how the others are doing.
+  const openId = shellEnvironmentId
+  const labelOf = (environmentId: string | null) =>
+    environments.find((item) => item.environmentId === environmentId)?.label
+  const openLabel = labelOf(openId) ?? 'this environment'
+  const openState = links.find((link) => link.environmentId === openId)?.ui
+  const blocked = openState ? sendBlockedReason(openState, openLabel) : null
+  const several = environments.length > 1
+  const availability = useMemo<EnvironmentAvailability>(
+    () => ({ ...(several ? { name: openLabel } : {}), sendBlockedReason: blocked }),
+    [blocked, openLabel, several],
+  )
+  const othersNotice = ungated
+    ? null
+    : otherEnvironmentsNotice(
+        links
+          .filter((link) => link.environmentId !== openId)
+          .map((link) => ({
+            label: labelOf(link.environmentId) ?? link.environmentId,
+            state: link.ui,
+          })),
+      )
+
+  const placed = placeConnectionUi(ui, environments.length)
+  const showScreen = !ungated && placed.surface === 'screen'
+  const showBanner = !ungated && placed.surface === 'banner'
 
   const main = (
     <SidebarInset className="overflow-hidden">
       <SidebarInsetTopbar>
         {client && isSessionPath(pathname) ? <SessionTrail /> : null}
+        {othersNotice ? (
+          <OtherEnvironmentsStatus
+            notice={othersNotice}
+            onOpenSettings={() => void navigate({ to: '/settings' })}
+          />
+        ) : null}
       </SidebarInsetTopbar>
       {/* Floats over the page under the topbar, so the session stays where it was. */}
-      {showBanner ? (
-        <div className="pointer-events-none absolute inset-x-0 top-11 z-30 flex justify-center px-3">
-          <ConnectionBanner className="pointer-events-auto" state={ui} handlers={handlers} />
-        </div>
-      ) : null}
+      <div className="pointer-events-none absolute inset-x-0 top-11 z-30 flex flex-col items-center gap-1.5 px-3">
+        {showBanner ? (
+          <ConnectionBanner className="pointer-events-auto" state={placed} handlers={handlers} />
+        ) : null}
+        <EnvironmentFailureNotice className="pointer-events-auto" />
+      </div>
       {showScreen ? (
         <ConnectionScreen
           state={ui}
@@ -438,29 +493,17 @@ export function AppShell() {
       <EnvironmentClientProvider client={client}>
         <AddressLookupProvider value={lookup}>
           <EnvironmentNotifications openId={lookup.owner ?? selectedId} />
-          {client ? (
-            <EnvironmentsSidebarHost
-              footer={<SidebarDock pathname={pathname} />}
-            >
-              {/* By environment, not by client: its drafts and page state are that
-                  environment's, while a client replaced on the same environment keeps
-                  the page as it is. */}
-              <ConnectedShell
-                key={shellEnvironmentId}
-                client={client}
-                environmentId={shellEnvironmentId}
-                pathname={pathname}
-                landingDraftId={address?.kind === 'draft' ? address.id : null}
-                holdLandingDraft={address?.kind === 'draft' && lookup.status === 'searching'}
-              >
-                {main}
-              </ConnectedShell>
-            </EnvironmentsSidebarHost>
-          ) : (
-            <>
+          {/* Above the choice of what is open: an environment with no client
+              takes neither the sidebar nor the other environments' cards with it. */}
+          <EnvironmentsSidebarHost
+            footer={<SidebarDock pathname={pathname} />}
+            fallback={
               <Sidebar className="text-[15px]">
                 <SidebarHeader>
-                  <SidebarWorkspaceHeader name="OpenManager" tile={<WorkspaceTile>O</WorkspaceTile>} />
+                  <SidebarWorkspaceHeader
+                    name="OpenManager"
+                    tile={<WorkspaceTile>O</WorkspaceTile>}
+                  />
                 </SidebarHeader>
                 <SidebarContent>
                   <NavMenu pathname={pathname} includeSessions />
@@ -469,10 +512,30 @@ export function AppShell() {
                   <ConnectionStatusChip state={ui} />
                 </SidebarFooter>
               </Sidebar>
-              {main}
-              <ShellCommandPalette />
-            </>
-          )}
+            }
+          >
+            {client ? (
+              // By environment, not by client: its drafts and page state are that
+              // environment's, while a client replaced on the same environment keeps
+              // the page as it is.
+              <ConnectedShell
+                key={shellEnvironmentId}
+                client={client}
+                environmentId={shellEnvironmentId}
+                availability={availability}
+                pathname={pathname}
+                landingDraftId={address?.kind === 'draft' ? address.id : null}
+                holdLandingDraft={address?.kind === 'draft' && lookup.status === 'searching'}
+              >
+                {main}
+              </ConnectedShell>
+            ) : (
+              <>
+                {main}
+                <ShellCommandPalette />
+              </>
+            )}
+          </EnvironmentsSidebarHost>
         </AddressLookupProvider>
       </EnvironmentClientProvider>
     </SidebarProvider>

@@ -9,6 +9,7 @@ import {
   useSyncExternalStore,
   type ReactNode,
 } from 'react'
+import { useNavigate } from '@tanstack/react-router'
 import { shallowEqualArray, type EnvironmentClient } from '@openmanager/environment-client'
 import { DraftDiscardNotice } from '@openmanager/app-core/components/sidebar/DraftDiscardToast'
 import { WorkspaceSidebar } from '@openmanager/app-core/components/sidebar/WorkspaceSidebar'
@@ -16,6 +17,7 @@ import { newestDraftFirst } from '@openmanager/app-core/components/sidebar/sideb
 import {
   DraftDiscardsContext,
   useDraftDiscards,
+  type DraftDiscards,
 } from '@openmanager/app-core/providers/environment-sidebar-drafts'
 import {
   PlatformCapabilitiesContext,
@@ -42,6 +44,8 @@ import {
   sidebarRowAbilities,
 } from '@openmanager/app-core/providers/sidebar-rows'
 import { WorkspaceIconContext } from '@openmanager/app-core/providers/view-actions'
+import { EnvironmentFailureStrip } from './connection-surfaces'
+import { environmentIsDown } from '../lib/connection-state'
 import { useAddressLookup, type Address } from '../providers/address-environment'
 import { useConnection } from '../providers/connection-provider'
 import { useEnvironmentClients } from '../providers/environment-client-provider'
@@ -64,11 +68,19 @@ type OpenEnvironment = {
 function createSidebarBridge() {
   let open: OpenEnvironment | null = null
   const listeners = new Set<() => void>()
+  const tell = () => {
+    for (const listener of [...listeners]) listener()
+  }
   return {
     get: () => open,
     set: (next: OpenEnvironment) => {
       open = next
-      for (const listener of [...listeners]) listener()
+      tell()
+    },
+    clear: () => {
+      if (!open) return
+      open = null
+      tell()
     },
     subscribe: (listener: () => void) => {
       listeners.add(listener)
@@ -99,11 +111,62 @@ export function SidebarSource() {
   useLayoutEffect(() => {
     bridge?.set({ data, sessions, drafts, platform })
   }, [bridge, data, drafts, platform, sessions])
+  // Its commands go through providers that are leaving. Moving to another
+  // environment, the next source speaks in this same commit, so the sidebar
+  // never renders the gap between them.
+  useLayoutEffect(() => () => bridge?.clear(), [bridge])
   return null
 }
 
 const NO_ROWS: readonly SidebarEnvironmentRows[] = []
 const NO_ORDER: readonly string[] = []
+type ProviderId = SidebarSessionsByWorkspace[string][number]['providerId']
+
+const NO_SESSIONS: SidebarSessionsByWorkspace = {}
+const NOTHING = () => undefined
+const NOTHING_LATER = async () => undefined
+
+/**
+ * The sidebar with no environment open, because the selected one has no client:
+ * it refused the token, or it is offline with nothing kept. Only other
+ * environments' rows are left, and each of those goes through its own. Opening
+ * one needs no providers: everything that opens goes through the address.
+ */
+function noOpenEnvironment(
+  navigate: ReturnType<typeof useNavigate>,
+  { undo, confirm, hold }: Pick<DraftDiscards, 'undo' | 'confirm' | 'hold'>,
+): OpenEnvironment {
+  return {
+    data: {
+      workspaces: [],
+      isWorkspacesLoading: false,
+      activeWorkspacePath: null,
+      activeSessionId: null,
+      collapsedWorkspacePaths: [],
+      toggleWorkspaceCollapsed: NOTHING,
+      addWorkspace: NOTHING_LATER,
+      addWorkspaceDisabled: true,
+      removeWorkspace: NOTHING_LATER,
+      selectSession: (_workspacePath, sessionId) =>
+        void navigate({ to: '/sessions/$sessionId', params: { sessionId } }),
+      createSession: NOTHING_LATER,
+      renameSession: NOTHING_LATER,
+      deleteSession: NOTHING_LATER,
+    },
+    sessions: NO_SESSIONS,
+    drafts: {
+      drafts: [],
+      openDraftId: null,
+      openDraft: (draftId) => void navigate({ to: '/drafts/$draftId', params: { draftId } }),
+      discardDraft: NOTHING,
+      pendingDiscard: null,
+      undoDiscard: undo,
+      confirmDiscard: confirm,
+      holdDiscard: hold,
+    },
+    platform: null,
+  }
+}
 
 /**
  * The rows of every environment but the open one, in saved order, kept the same
@@ -202,6 +265,7 @@ function sameRowEnvironments(
         a.reachable === b.reachable &&
         a.canSettle === b.canSettle &&
         a.canPin === b.canPin &&
+        a.offline === b.offline &&
         a.iconLookup === b.iconLookup
       )
     })
@@ -212,8 +276,20 @@ function sameRowEnvironments(
  * What the sidebar shows: the open environment's rows as its providers made
  * them, and every other's as its client has them. With one environment saved
  * that is the providers' word alone, and nothing here adds to it.
+ *
+ * With nothing open and no other environment's rows to list it shows
+ * `fallback`. With rows it stays the same sidebar, so losing the open
+ * environment costs the others neither their cards nor their place.
  */
-function EnvironmentsSidebar({ footer }: { footer: ReactNode }) {
+function EnvironmentsSidebar({
+  footer,
+  fallback,
+  reportFailure,
+}: {
+  footer: ReactNode
+  fallback: ReactNode
+  reportFailure: (message: string) => void
+}) {
   const bridge = useContext(SidebarBridgeContext)!
   const discards = useContext(DraftDiscardsContext)!
   // Not `useSyncExternalStore`: it subscribes after paint, so on boot the shell
@@ -225,8 +301,14 @@ function EnvironmentsSidebar({ footer }: { footer: ReactNode }) {
     setOpen(bridge.get())
     return stop
   }, [bridge])
+  const navigate = useNavigate()
+  const { undo, confirm, hold } = discards
+  const nothingOpen = useMemo(
+    () => noOpenEnvironment(navigate, { undo, confirm, hold }),
+    [confirm, hold, navigate, undo],
+  )
   const { clients, everyCacheRead } = useEnvironmentClients()
-  const { environments } = useConnection()
+  const { environments, links } = useConnection()
   const { prefer } = useAddressLookup()
   const choose = useEnvironmentChoice()?.choose
   const savedKey = environments.map(({ environmentId }) => environmentId).join('\n')
@@ -234,8 +316,8 @@ function EnvironmentsSidebar({ footer }: { footer: ReactNode }) {
 
   // Who is open comes from what the providers last said, not from the address:
   // that keeps a card from leaving the list for the commit between the two.
-  const data = open?.data
-  const openId = data?.activeEnvironmentId
+  const { data, sessions, drafts: openDrafts, platform } = open ?? nothingOpen
+  const openId = data.activeEnvironmentId
   const openClient = openId ? clients[openId] : undefined
   const pending = discards.pending
   const several = order.length > 1
@@ -246,6 +328,20 @@ function EnvironmentsSidebar({ footer }: { footer: ReactNode }) {
     canPin: openCanPin,
     hasIcons: openHasIcons,
   } = useOpenRowAbilities(openClient)
+
+  // Compared as text: `links` is new with every report from any connection.
+  const downKey = links
+    .filter((link) => environmentIsDown(link.ui))
+    .map((link) => link.environmentId)
+    .join('\n')
+
+  const down = useMemo(() => new Set(downKey.split('\n')), [downKey])
+
+  const nameOf = useCallback(
+    (environmentId: string) =>
+      environments.find((item) => item.environmentId === environmentId)?.label ?? environmentId,
+    [environments],
+  )
 
   const rowEnvironmentsRef = useRef<SidebarEnvironmentsValue['rowEnvironments'] | null>(null)
   const rowEnvironments = useMemo(() => {
@@ -262,11 +358,11 @@ function EnvironmentsSidebar({ footer }: { footer: ReactNode }) {
     ) => {
       const client = clients[environmentId]
       next[environmentId] = {
-        name:
-          environments.find((item) => item.environmentId === environmentId)?.label ?? environmentId,
+        name: nameOf(environmentId),
         reachable: reachable === true,
         canSettle,
         canPin,
+        offline: down.has(environmentId),
         iconLookup: hasIcons && client ? iconLookupOf(client) : null,
       }
     }
@@ -285,7 +381,8 @@ function EnvironmentsSidebar({ footer }: { footer: ReactNode }) {
     return next
   }, [
     clients,
-    environments,
+    down,
+    nameOf,
     openCanPin,
     openCanSettle,
     openHasIcons,
@@ -295,9 +392,30 @@ function EnvironmentsSidebar({ footer }: { footer: ReactNode }) {
     several,
   ])
 
+  // A provider's name is the same everywhere, but only the catalog of an
+  // environment that offers it can say so.
+  const catalogName = useCallback(
+    (providerId: ProviderId) => {
+      for (const client of Object.values(clients)) {
+        const entry = client.getState().providers[providerId]
+        if (entry) return entry.displayName
+      }
+      return providerId
+    },
+    [clients],
+  )
+
   const listed = useMemo<SidebarEnvironmentsValue | null>(
-    () => (rowEnvironments ? { others, rowEnvironments, filling: !everyCacheRead } : null),
-    [everyCacheRead, others, rowEnvironments],
+    () =>
+      rowEnvironments
+        ? {
+            others,
+            rowEnvironments,
+            filling: !everyCacheRead,
+            ...(platform ? {} : { providerDisplayName: catalogName }),
+          }
+        : null,
+    [catalogName, everyCacheRead, others, platform, rowEnvironments],
   )
 
   // Null for the open environment's rows. A row of another environment goes
@@ -317,10 +435,49 @@ function EnvironmentsSidebar({ footer }: { footer: ReactNode }) {
     [prefer],
   )
 
+  // With several listed, what a row asks goes through here, the open
+  // environment's rows included: the providers keep a failure to themselves, and
+  // this says who was asked. Nothing waits to be sent again: if it didn't go,
+  // it's up to the person to ask again.
+  const askRowEnvironment = useCallback(
+    async (
+      environmentId: string,
+      asked: string,
+      run: (client: EnvironmentClient) => Promise<unknown>,
+    ) => {
+      const name = nameOf(environmentId)
+      const client = clients[environmentId]
+      // Down, its client would hold the command and send it on reconnecting,
+      // long after anyone asked. It waits for the environment, not in a queue.
+      const refusal = !client
+        ? `Couldn't ${asked} on ${name}: it isn't connected.`
+        : down.has(environmentId)
+          ? `Couldn't ${asked} on ${name}: it's offline. Try again once it's back.`
+          : null
+      if (refusal) {
+        reportFailure(refusal)
+        throw new Error(refusal)
+      }
+      try {
+        await run(client!)
+      } catch (error) {
+        const reason = error instanceof Error ? error.message : String(error)
+        reportFailure(`Couldn't ${asked} on ${name}: ${reason}`)
+        throw error
+      }
+    },
+    [clients, down, nameOf, reportFailure],
+  )
+
+  const askedDirectly = useCallback(
+    (environmentId: string | undefined): environmentId is string =>
+      Boolean(environmentId) && (several || environmentId !== openId),
+    [openId, several],
+  )
+
   const anySettles = others.some((row) => row.canSettle)
   const anyPins = others.some((row) => row.canPin)
-  const sidebarData = useMemo<SidebarDataValue | null>(() => {
-    if (!data) return null
+  const sidebarData = useMemo<SidebarDataValue>(() => {
     const {
       createSession,
       deleteSession,
@@ -341,49 +498,57 @@ function EnvironmentsSidebar({ footer }: { footer: ReactNode }) {
         if (environmentId && environmentId !== openId) choose?.(environmentId, null, path)
         else await createSession(path)
       },
-      // A row of another environment goes straight to its client. What the
-      // open environment says about a failure (`fail`) is about the page, and
-      // that environment's failures have no place to show yet.
+      // A row of another environment goes straight to its client.
       ...(renameSession
         ? {
             renameSession: async (path, id, title, environmentId) => {
-              const other = elsewhere(environmentId)
-              if (other)
-                await other.client?.commands.renameSession(id, title).catch(() => undefined)
-              else await renameSession(path, id, title)
+              if (askedDirectly(environmentId)) {
+                await askRowEnvironment(environmentId, 'rename a session', ({ commands }) =>
+                  commands.renameSession(id, title),
+                ).catch(NOTHING)
+              } else await renameSession(path, id, title)
             },
           }
         : {}),
       deleteSession: async (path, id, providerId, environmentId) => {
-        const other = elsewhere(environmentId)
-        if (other) await other.client?.commands.deleteSession(id).catch(() => undefined)
-        else await deleteSession(path, id, providerId)
+        if (askedDirectly(environmentId)) {
+          await askRowEnvironment(environmentId, 'delete a session', ({ commands }) =>
+            commands.deleteSession(id),
+          ).catch(NOTHING)
+        } else await deleteSession(path, id, providerId)
       },
       ...(settleSession || anySettles
         ? {
             settleSession: async (path, id, settled, environmentId) => {
-              const other = elsewhere(environmentId)
-              if (other) await other.client?.commands.settleSession(id, settled)
-              else await settleSession?.(path, id, settled)
+              if (askedDirectly(environmentId)) {
+                await askRowEnvironment(
+                  environmentId,
+                  settled ? 'settle a session' : 'bring a session back',
+                  ({ commands }) => commands.settleSession(id, settled),
+                )
+              } else await settleSession?.(path, id, settled)
             },
           }
         : {}),
       ...(pinSession || anyPins
         ? {
             pinSession: async (path, id, pinned, environmentId) => {
-              const other = elsewhere(environmentId)
-              if (other) await other.client?.commands.pinSession(id, pinned)
-              else await pinSession?.(path, id, pinned)
+              if (askedDirectly(environmentId)) {
+                await askRowEnvironment(
+                  environmentId,
+                  pinned ? 'pin a session' : 'unpin a session',
+                  ({ commands }) => commands.pinSession(id, pinned),
+                )
+              } else await pinSession?.(path, id, pinned)
             },
           }
         : {}),
     }
-  }, [anyPins, anySettles, choose, data, elsewhere, openId, opening])
+  }, [anyPins, anySettles, askedDirectly, askRowEnvironment, choose, data, openId, opening])
 
   // The cards are the same array while no card changed: the sidebar reads a
   // new one as a card having changed.
   const mergedDrafts = useRef<SidebarDraftsValue['drafts'] | null>(null)
-  const openDrafts = open?.drafts
   const sidebarDrafts = useMemo<SidebarDraftsValue | null>(() => {
     if (!openDrafts) return null
     const theirs = others.flatMap(({ drafts }) =>
@@ -418,41 +583,36 @@ function EnvironmentsSidebar({ footer }: { footer: ReactNode }) {
     }
   }, [discards, elsewhere, openDrafts, opening, others, pending])
 
-  // A provider's name is the same everywhere, but only the catalog of an
-  // environment that offers it can say so.
-  const platform = open?.platform
   const platformValue = useMemo(() => {
-    if (!platform || !several) return platform ?? null
+    if (!platform || !several) return platform
     const { providerDisplayName } = platform
     return {
       ...platform,
-      providerDisplayName: (providerId: Parameters<typeof providerDisplayName>[0]) => {
+      providerDisplayName: (providerId: ProviderId) => {
         const named = providerDisplayName(providerId)
-        if (named !== providerId) return named
-        for (const client of Object.values(clients)) {
-          const entry = client.getState().providers[providerId]
-          if (entry) return entry.displayName
-        }
-        return named
+        return named !== providerId ? named : catalogName(providerId)
       },
     }
-  }, [clients, platform, several])
+  }, [catalogName, platform, several])
 
   const iconLookup = openHasIcons && openClient ? iconLookupOf(openClient) : null
 
-  if (!open || !sidebarData) return null
+  // Nothing open with no rows is the plain sidebar: the card list would only say
+  // there are no projects, which nobody can tell.
+  const listing = open !== null || others.length > 0
   return (
     <PlatformCapabilitiesContext.Provider value={platformValue}>
       <WorkspaceIconContext.Provider value={iconLookup}>
         <SidebarDataContext.Provider value={sidebarData}>
-          <SidebarSessionsContext.Provider value={open.sessions}>
+          <SidebarSessionsContext.Provider value={sessions}>
             <SidebarDraftsContext.Provider value={sidebarDrafts}>
               <SidebarEnvironmentsContext.Provider value={listed}>
                 {/* A healthy connection says nothing; trouble shows as the banner. */}
-                <WorkspaceSidebar footer={footer} />
+                {listing ? <WorkspaceSidebar footer={footer} /> : fallback}
                 {/* Beside the sidebar, not in it: on a phone the sidebar is a modal
-                    sheet that closes on the tap that reaches for Undo. */}
-                <DraftDiscardNotice />
+                    sheet that closes on the tap that reaches for Undo. A discard
+                    waiting when the list goes keeps its Undo. */}
+                {listing || pending ? <DraftDiscardNotice /> : null}
               </SidebarEnvironmentsContext.Provider>
             </SidebarDraftsContext.Provider>
           </SidebarSessionsContext.Provider>
@@ -462,17 +622,46 @@ function EnvironmentsSidebar({ footer }: { footer: ReactNode }) {
   )
 }
 
+type EnvironmentFailure = { key: number; message: string }
+
+const EnvironmentFailureContext = createContext<{
+  failure: EnvironmentFailure | null
+  dismiss: () => void
+} | null>(null)
+
+/**
+ * The last thing asked of a row's environment that failed, for the page to show
+ * over itself. It stays until it's dismissed or another takes its place.
+ */
+export function EnvironmentFailureNotice({ className }: { className?: string }) {
+  const failures = useContext(EnvironmentFailureContext)
+  if (!failures?.failure) return null
+  return (
+    <EnvironmentFailureStrip
+      key={failures.failure.key}
+      className={className}
+      message={failures.failure.message}
+      onDismiss={failures.dismiss}
+    />
+  )
+}
+
 /**
  * The one sidebar of every environment, and what must outlive any one of them:
  * `children` holds the shell keyed by environment, which reports through
  * `SidebarSource`. A discarded draft's undo is here too, so it carries on
- * across a move between environments.
+ * across a move between environments, and through losing the open one.
+ *
+ * Mounted whether or not an environment is open; `fallback` is what shows
+ * while nothing can be listed.
  */
 export function EnvironmentsSidebarHost({
   footer,
+  fallback,
   children,
 }: {
   footer: ReactNode
+  fallback: ReactNode
   children: ReactNode
 }) {
   const [bridge] = useState(createSidebarBridge)
@@ -483,13 +672,22 @@ export function EnvironmentsSidebarHost({
   }, [clients])
   const latest = useCallback((environmentId: string) => clientsRef.current[environmentId], [])
   const discards = useDraftDiscards(latest)
+  const [failure, setFailure] = useState<EnvironmentFailure | null>(null)
+  const failureKey = useRef(0)
+  const reportFailure = useCallback((message: string) => {
+    failureKey.current += 1
+    setFailure({ key: failureKey.current, message })
+  }, [])
+  const failures = useMemo(() => ({ failure, dismiss: () => setFailure(null) }), [failure])
   return (
     <SidebarBridgeContext.Provider value={bridge}>
       <DraftDiscardsContext.Provider value={discards}>
-        <EnvironmentChoiceHost>
-          <EnvironmentsSidebar footer={footer} />
-          {children}
-        </EnvironmentChoiceHost>
+        <EnvironmentFailureContext.Provider value={failures}>
+          <EnvironmentChoiceHost>
+            <EnvironmentsSidebar footer={footer} fallback={fallback} reportFailure={reportFailure} />
+            {children}
+          </EnvironmentChoiceHost>
+        </EnvironmentFailureContext.Provider>
       </DraftDiscardsContext.Provider>
     </SidebarBridgeContext.Provider>
   )
