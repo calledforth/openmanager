@@ -357,9 +357,9 @@ describe('the open environment is down', () => {
     const reason = "Can't send until Laptop is back. What you type here is kept."
     expect(await screen.findByText(reason)).toBeInTheDocument()
 
-    // Typing on there is the real client's to show: it selects a cached session
-    // as it starts to open it, which this mock's frozen idle state cannot.
-    await user.keyboard('{Enter}')
+    // The chat's own composer is the real client's to show: it selects a cached
+    // session as it starts to open it, which this mock's frozen idle state
+    // cannot. The landing's, for a new session there, shows the same hold.
     expect(sent).not.toHaveBeenCalled()
     // The banner is about this page, so the smaller notice has nothing to add.
     expect(screen.queryByText('Laptop is offline')).toBeNull()
@@ -372,6 +372,56 @@ describe('the open environment is down', () => {
     renderApp('/sessions/env-laptop-session', { laptop: laptopMock({ unrecoverable: true }) })
 
     expect(await screen.findByText(/^Laptop: /)).toBeInTheDocument()
+  })
+})
+
+describe('typing while the open environment is down', () => {
+  it('keeps the text, and sends nothing, on Enter', async () => {
+    saved('laptop', 'desk')
+    // Up at first, so the chat is really open; then it stops answering.
+    let laptopUp = true
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (input: RequestInfo | URL) => {
+        const onLaptop = String(input).startsWith(LAPTOP)
+        if (onLaptop && !laptopUp) throw new TypeError('Failed to fetch')
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({
+            protocolVersion: PROTOCOL_VERSION,
+            capabilities: ['connection.heartbeat'],
+            environmentId: onLaptop ? 'env-laptop' : 'env-desk',
+            label: onLaptop ? 'Laptop' : 'Desk',
+          }),
+        }
+      }),
+    )
+    const user = userEvent.setup()
+    const laptop = laptopMock()
+    const sent = vi.spyOn(laptop.commands, 'sendTurn')
+    renderApp('/sessions/env-laptop-session', { laptop })
+    await screen.findByText('Written on env-laptop')
+    await connected(laptop)
+
+    laptopUp = false
+    // As the socket says when it drops.
+    act(() =>
+      laptop.setConnection({
+        phase: 'reconnecting',
+        failure: { code: 'unavailable', message: 'Connection closed.' },
+      }),
+    )
+    const reason = "Can't send until Laptop is back. What you type here is kept."
+    expect(await screen.findByText(reason, undefined, { timeout: 4000 })).toBeInTheDocument()
+
+    const box = screen.getByRole('textbox')
+    await user.click(box)
+    await user.keyboard('Later')
+    expect(box).toHaveValue('Later')
+    await user.keyboard('{Enter}')
+    expect(screen.getByRole('textbox')).toHaveValue('Later')
+    expect(sent).not.toHaveBeenCalled()
   })
 })
 
@@ -471,6 +521,53 @@ describe('a row of another environment fails', () => {
     expect(rename).not.toHaveBeenCalled()
   })
 
+  it('refuses a settle and a pin to an environment that is down, sending neither', async () => {
+    saved('desk', 'laptop')
+    answering({ laptop: false })
+    const laptop = laptopMock()
+    const settle = vi.spyOn(laptop.commands, 'settleSession')
+    const pin = vi.spyOn(laptop.commands, 'pinSession')
+    renderApp('/', { cached: ['laptop'], laptop })
+    await screen.findByText('Laptop is offline')
+    await waitFor(() => expect(sidebar.data!.settleSession).toBeDefined())
+
+    await act(async () => {
+      await sidebar.data!.settleSession!(
+        '/laptop-project',
+        'env-laptop-session',
+        true,
+        'env-laptop',
+      )
+    })
+    expect(
+      await screen.findByText(
+        "Couldn't settle a session on Laptop: it's offline. Try again once it's back.",
+      ),
+    ).toBeInTheDocument()
+    await act(async () => {
+      await sidebar.data!.pinSession?.('/laptop-project', 'env-laptop-session', true, 'env-laptop')
+    })
+    expect(settle).not.toHaveBeenCalled()
+    expect(pin).not.toHaveBeenCalled()
+  })
+
+  it('refuses one the client cannot send yet, whatever the banner says', async () => {
+    const { laptop } = await ready()
+    const rename = vi.spyOn(laptop.commands, 'renameSession')
+    act(() => laptop.setConnection({ phase: 'reconnecting' }))
+
+    await act(async () => {
+      await sidebar.data!.renameSession!(
+        '/laptop-project',
+        'env-laptop-session',
+        'Moved',
+        'env-laptop',
+      )
+    })
+    expect(await screen.findByText(/^Couldn't rename a session on Laptop: it/)).toBeInTheDocument()
+    expect(rename).not.toHaveBeenCalled()
+  })
+
   it("does not ask the open environment when the row's has gone", async () => {
     const { desk, laptop } = await ready()
     const deskDelete = vi.spyOn(desk.commands, 'deleteSession')
@@ -518,6 +615,16 @@ describe('with one environment saved', () => {
     const { card } = await cardOf(/Desk chat/)
     expect(card.queryByText('· offline')).toBeNull()
     expect(screen.queryByText('Desk is offline')).toBeNull()
+  })
+
+  it('leaves the composer as it is on main when it is down', async () => {
+    saved('desk')
+    answering({ desk: false })
+    renderApp('/', { cached: ['desk'] })
+
+    expect(await screen.findByText("Can't reach Desk")).toBeInTheDocument()
+    expect(await screen.findByRole('textbox')).toBeInTheDocument()
+    expect(screen.queryByText(/Can't send until/)).toBeNull()
   })
 
   it('says a failure as it is', async () => {

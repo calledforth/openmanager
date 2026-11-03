@@ -554,5 +554,8 @@ describe('several environments', () => {
       text: 'Laptop is offline · Desk refused this device · Phone needs a matching version',
       needsPerson: true,
     })
+    expect(otherEnvironmentsNotice([of('Laptop', mismatched), of('Phone', mismatched)])?.text).toBe(
+      'Laptop and Phone need a matching version',
+    )
   })
 })

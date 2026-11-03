@@ -283,7 +283,9 @@ export function otherEnvironmentsNotice(
   const parts = [
     ...(offline.length ? [`${names(offline)} ${offline.length > 1 ? 'are' : 'is'} offline`] : []),
     ...(refused.length ? [`${names(refused)} refused this device`] : []),
-    ...(mismatched.length ? [`${names(mismatched)} needs a matching version`] : []),
+    ...(mismatched.length
+      ? [`${names(mismatched)} ${mismatched.length > 1 ? 'need' : 'needs'} a matching version`]
+      : []),
   ]
   if (parts.length === 0) return null
   return { text: parts.join(' · '), needsPerson: refused.length + mismatched.length > 0 }

@@ -450,11 +450,15 @@ function EnvironmentsSidebar({
       // Down, its client would hold the command and send it on reconnecting,
       // long after anyone asked. It waits for the environment, not in a queue.
       // Nothing was sent, so nothing moved that a rejection would move back.
+      // The client's word as well as the banner's: after a drop the banner can
+      // read ready until the route is asked again.
       const refusal = !client
         ? `Couldn't ${asked} on ${name}: it isn't connected.`
         : down.has(environmentId)
           ? `Couldn't ${asked} on ${name}: it's offline. Try again once it's back.`
-          : null
+          : client.getState().connection.phase !== 'connected'
+            ? `Couldn't ${asked} on ${name}: it isn't connected right now. Try again once it is.`
+            : null
       if (refusal) {
         reportFailure(refusal)
         return

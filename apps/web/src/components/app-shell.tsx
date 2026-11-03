@@ -1,4 +1,4 @@
-import { useCallback, useMemo, useState, type ReactNode } from 'react'
+import { useCallback, useMemo, useState, useSyncExternalStore, type ReactNode } from 'react'
 import { Outlet, useNavigate, useRouterState } from '@tanstack/react-router'
 import {
   EnvironmentClientProvider,
@@ -53,6 +53,7 @@ import {
   placeConnectionUi,
   sendBlockedReason,
 } from '../lib/connection-state'
+import { isBrowserOnline, subscribeToNetworkStatus } from '../lib/browser-runtime'
 import { useConnection } from '../providers/connection-provider'
 import { useEnvironmentClients } from '../providers/environment-client-provider'
 import {
@@ -121,6 +122,8 @@ function NavMenu({ pathname, includeSessions }: { pathname: string; includeSessi
 }
 
 const NO_COMMANDS: readonly CommandPaletteItemData[] = []
+
+const onlineOnServer = () => true
 
 /**
  * ⌘K with the shell's own commands on top. Settings is always there; the
@@ -435,12 +438,17 @@ export function AppShell() {
   const openState = links.find((link) => link.environmentId === openId)?.ui
   const blocked = openState ? sendBlockedReason(openState, openLabel) : null
   const several = environments.length > 1
+  // With one saved the composer reads as it always has: the banner says it all.
   const availability = useMemo<EnvironmentAvailability>(
-    () => ({ ...(several ? { name: openLabel } : {}), sendBlockedReason: blocked }),
+    () => (several ? { name: openLabel, sendBlockedReason: blocked } : { sendBlockedReason: null }),
     [blocked, openLabel, several],
   )
-  const othersNotice = ungated
-    ? null
+  // With no network every environment is out of reach, and the banner already
+  // says "You're offline": naming each of them again adds nothing.
+  const online = useSyncExternalStore(subscribeToNetworkStatus, isBrowserOnline, onlineOnServer)
+  const othersNotice =
+    ungated || !online
+      ? null
     : otherEnvironmentsNotice(
         links
           .filter((link) => link.environmentId !== openId)
