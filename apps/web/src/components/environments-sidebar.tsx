@@ -215,7 +215,12 @@ function EnvironmentsSidebar({ footer }: { footer: ReactNode }) {
   // Not `useSyncExternalStore`: it subscribes after paint, so on boot the shell
   // would show for a frame with no sidebar beside it.
   const [open, setOpen] = useState(bridge.get)
-  useLayoutEffect(() => bridge.subscribe(() => setOpen(bridge.get())), [bridge])
+  useLayoutEffect(() => {
+    const stop = bridge.subscribe(() => setOpen(bridge.get()))
+    // Whatever was published before it listened.
+    setOpen(bridge.get())
+    return stop
+  }, [bridge])
   const { clients, everyCacheRead } = useEnvironmentClients()
   const { environments } = useConnection()
   const { prefer } = useAddressLookup()
