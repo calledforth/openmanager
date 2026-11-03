@@ -394,6 +394,9 @@ export interface SendTurnInput extends ThreadTarget {
  * made in, or, for an image held for a new-session draft, the draft that
  * names it.
  */
+/** A tool call, addressed inside the session it belongs to. */
+export type ToolOutputTarget = { sessionId: string; toolCallId: string }
+
 export type ArtifactTarget =
   | { sessionId: string; draftId?: never; artifactId: string }
   | { draftId: string; sessionId?: never; artifactId: string }
@@ -621,6 +624,13 @@ export interface EnvironmentClient {
    * route leave this out, and views show the image as unavailable.
    */
   fetchArtifact?(input: ArtifactTarget, init?: { signal?: AbortSignal }): Promise<Blob>
+  /**
+   * Read a settled tool's output over the same authorized HTTP route family.
+   * The text is the environment's and never changes once a tool has settled,
+   * so what comes back is shown as it is and kept by nobody but the view.
+   * Clients with no such route leave this out.
+   */
+  fetchToolOutput?(input: ToolOutputTarget, init?: { signal?: AbortSignal }): Promise<string>
   /**
    * Store a prompt attachment on the environment: a ticket on the command
    * channel, then the bytes over the same authorized HTTP route family as

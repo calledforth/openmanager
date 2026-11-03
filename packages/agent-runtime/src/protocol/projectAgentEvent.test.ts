@@ -62,7 +62,6 @@ const fixtures: AgentEvent[] = [
     data: {
       toolCallId: 'provider-tool',
       title: 'Read',
-      rawInput: { secret: 'hidden' },
       metadata: { secret: 'hidden' },
     },
   },

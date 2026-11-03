@@ -10,8 +10,8 @@ import {
 
 /** Tool rows replaced by a counting stub: one entry per render, by tool call. */
 const toolRenders: string[] = []
-vi.mock('../src/components/parts/ToolCallPart', () => ({
-  ToolCallPart: ({ part }: { part: { id: string } }) => {
+vi.mock('../src/components/parts/ToolRow', () => ({
+  ToolRow: ({ part }: { part: { id: string } }) => {
     toolRenders.push(part.id)
     return <div data-tool={part.id} />
   },

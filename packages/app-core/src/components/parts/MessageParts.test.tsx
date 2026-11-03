@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { renderToStaticMarkup } from 'react-dom/server'
+import { presentToolPart } from '@openmanager/shared/lib/tool-presenter'
 import { MessageParts } from './MessageParts'
 
 describe('MessageParts', () => {
@@ -146,29 +147,56 @@ describe('MessageParts', () => {
     expect(html).not.toContain('Thought')
   })
 
-  it('renders Cursor structured tool output without passing objects to React', () => {
+  it.each([
+    ['cancelled', 'Image generation cancelled'],
+    ['declined', 'Image generation declined'],
+    ['error', 'Image generation failed'],
+  ])('never claims an image when the call ended %s', (status, line) => {
     const html = renderToStaticMarkup(
       <MessageParts
         parts={[
           {
             type: 'tool',
-            id: 'tool-1',
-            tool: 'Shell',
-            state: {
-              status: 'completed',
-              input: { command: 'git status --short' },
-              output: {
-                output: 'working tree clean',
-                metadata: { exitCode: 0 },
-              },
-            },
+            id: 'image-tool',
+            tool: 'Generate Image',
+            state: { status },
+            time: { start: 1_000, end: 8_400 },
           },
         ]}
       />,
     )
+    expect(html).toContain(line)
+    expect(html).not.toContain('Generated image')
+  })
 
-    expect(html).toContain('working tree clean')
-    expect(html).not.toContain('exitCode')
+  it('keeps a waiting question on the plain row, never as skipped', () => {
+    const html = renderToStaticMarkup(
+      <MessageParts
+        parts={[
+          {
+            type: 'tool',
+            id: 'question',
+            tool: 'AskUserQuestion',
+            state: { status: 'running', input: { questions: [{ question: 'Which?' }] } },
+          },
+        ]}
+      />,
+    )
+    expect(html).toContain('Asking')
+    expect(html).not.toContain('Skipped')
+  })
+
+  it('reads Cursor structured tool output as text, never as an object', () => {
+    const model = presentToolPart({
+      tool: 'Shell',
+      state: {
+        status: 'completed',
+        input: { command: 'git status --short' },
+        output: { output: 'working tree clean', metadata: { exitCode: 0 } },
+      },
+    })
+
+    expect(model.expandedText).toBe('working tree clean')
   })
 
   it('keeps a visible label for a Bash call without command input', () => {
@@ -181,7 +209,7 @@ describe('MessageParts', () => {
       />,
     )
 
-    expect(html).toContain('bash')
+    expect(html).toContain('Running')
   })
 
   it('summarises a run of consecutive tool calls on one row', () => {
@@ -234,23 +262,12 @@ describe('MessageParts', () => {
   })
 
   it('renders non-envelope structured OpenCode output as readable JSON', () => {
-    const html = renderToStaticMarkup(
-      <MessageParts
-        parts={[
-          {
-            type: 'tool',
-            id: 'tool-2',
-            tool: 'custom-tool',
-            state: {
-              status: 'completed',
-              output: { files: ['one.ts', 'two.ts'], count: 2 },
-            },
-          },
-        ]}
-      />,
-    )
+    const model = presentToolPart({
+      tool: 'custom-tool',
+      state: { status: 'completed', output: { files: ['one.ts', 'two.ts'], count: 2 } },
+    })
 
-    expect(html).toContain('&quot;files&quot;')
-    expect(html).toContain('one.ts')
+    expect(model.expandedText).toContain('"files"')
+    expect(model.expandedText).toContain('one.ts')
   })
 })

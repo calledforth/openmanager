@@ -936,27 +936,33 @@ describe('websocket environment client', () => {
 
     // An open cut off by a drop leaves its threads loading; a chat is no less
     // readable for that.
-    it.each(['ready', 'loading', 'idle'] as const)('keeps a chat read as %s readable, with no failure on top', async (hydration) => {
-      const client = offlineClient(hydration, [{ messageId: 'cached' }])
-      await expect(client.commands.openSession(SESSION.sessionId)).rejects.toMatchObject({
-        code: 'unavailable',
-      })
-      expect(client.getState().sessionOpenFailure).toBeNull()
-      expect(client.getState().activeSessionId).toBe(SESSION.sessionId)
-      expect(selectActiveThread(client.getState())?.hydration).toBe('ready')
-      expect(FakeSocket.instances).toHaveLength(0)
-    })
+    it.each(['ready', 'loading', 'idle'] as const)(
+      'keeps a chat read as %s readable, with no failure on top',
+      async (hydration) => {
+        const client = offlineClient(hydration, [{ messageId: 'cached' }])
+        await expect(client.commands.openSession(SESSION.sessionId)).rejects.toMatchObject({
+          code: 'unavailable',
+        })
+        expect(client.getState().sessionOpenFailure).toBeNull()
+        expect(client.getState().activeSessionId).toBe(SESSION.sessionId)
+        expect(selectActiveThread(client.getState())?.hydration).toBe('ready')
+        expect(FakeSocket.instances).toHaveLength(0)
+      },
+    )
 
-    it.each(['ready', 'idle'] as const)('still says so when a %s thread has nothing to read', async (hydration) => {
-      const client = offlineClient(hydration)
-      await expect(client.commands.openSession(SESSION.sessionId)).rejects.toMatchObject({
-        code: 'unavailable',
-      })
-      expect(client.getState().sessionOpenFailure).toMatchObject({
-        sessionId: SESSION.sessionId,
-        code: 'unavailable',
-      })
-    })
+    it.each(['ready', 'idle'] as const)(
+      'still says so when a %s thread has nothing to read',
+      async (hydration) => {
+        const client = offlineClient(hydration)
+        await expect(client.commands.openSession(SESSION.sessionId)).rejects.toMatchObject({
+          code: 'unavailable',
+        })
+        expect(client.getState().sessionOpenFailure).toMatchObject({
+          sessionId: SESSION.sessionId,
+          code: 'unavailable',
+        })
+      },
+    )
   })
 
   it('authenticates through subprotocols and negotiates the handshake', async () => {
@@ -1437,18 +1443,22 @@ describe('websocket environment client', () => {
 
   it('reads artifact bytes from the HTTP route beside the socket, with the credential', async () => {
     const requests: Array<{ url: string; authorization: string | null }> = []
-    const { client } = await connected(FULL_CAPABILITIES, {}, {
-      // A tunnel may put a path prefix in front of the environment.
-      url: 'wss://tunnel.example/env-1/ws',
-      credential: 'secret',
-      fetch: async (input, init) => {
-        requests.push({
-          url: String(input),
-          authorization: new Headers(init?.headers).get('authorization'),
-        })
-        return new Response(new Blob(['png-bytes'], { type: 'image/png' }))
+    const { client } = await connected(
+      FULL_CAPABILITIES,
+      {},
+      {
+        // A tunnel may put a path prefix in front of the environment.
+        url: 'wss://tunnel.example/env-1/ws',
+        credential: 'secret',
+        fetch: async (input, init) => {
+          requests.push({
+            url: String(input),
+            authorization: new Headers(init?.headers).get('authorization'),
+          })
+          return new Response(new Blob(['png-bytes'], { type: 'image/png' }))
+        },
       },
-    })
+    )
     const blob = await client.fetchArtifact!({ sessionId: 'session 1', artifactId: 'artifact-1' })
     expect(await blob.text()).toBe('png-bytes')
     expect(requests).toEqual([
@@ -1460,11 +1470,44 @@ describe('websocket environment client', () => {
     client.dispose()
   })
 
+  it('reads settled tool output over the authorized route', async () => {
+    const requests: Array<{ url: string; authorization: string | null }> = []
+    const { client } = await connected(
+      FULL_CAPABILITIES,
+      {},
+      {
+        // A tunnel may put a path prefix in front of the environment.
+        url: 'wss://tunnel.example/env-1/ws',
+        credential: 'secret',
+        fetch: async (input, init) => {
+          requests.push({
+            url: String(input),
+            authorization: new Headers(init?.headers).get('authorization'),
+          })
+          return new Response('tool text')
+        },
+      },
+    )
+    const text = await client.fetchToolOutput!({ sessionId: 'session 1', toolCallId: 'tool 1' })
+    expect(text).toBe('tool text')
+    expect(requests).toEqual([
+      {
+        url: 'https://tunnel.example/env-1/tool-output/session%201/tool%201',
+        authorization: 'Bearer secret',
+      },
+    ])
+    client.dispose()
+  })
+
   it('maps a refused artifact read to a typed error', async () => {
     const answer = async (status: number, body: unknown) => {
-      const { client } = await connected(FULL_CAPABILITIES, {}, {
-        fetch: async () => new Response(JSON.stringify(body), { status }),
-      })
+      const { client } = await connected(
+        FULL_CAPABILITIES,
+        {},
+        {
+          fetch: async () => new Response(JSON.stringify(body), { status }),
+        },
+      )
       return client.fetchArtifact!({ sessionId: 's', artifactId: 'a' })
     }
 
@@ -1473,14 +1516,18 @@ describe('websocket environment client', () => {
     ).rejects.toMatchObject({ code: 'auth', message: 'A valid client credential is required.' })
     await expect(answer(404, {})).rejects.toMatchObject({ code: 'not_found' })
     await expect(answer(429, null)).rejects.toMatchObject({ code: 'unavailable' })
-    const { client } = await connected(FULL_CAPABILITIES, {}, {
-      fetch: async () => {
-        throw new TypeError('fetch failed')
+    const { client } = await connected(
+      FULL_CAPABILITIES,
+      {},
+      {
+        fetch: async () => {
+          throw new TypeError('fetch failed')
+        },
       },
+    )
+    await expect(client.fetchArtifact!({ sessionId: 's', artifactId: 'a' })).rejects.toMatchObject({
+      code: 'unavailable',
     })
-    await expect(
-      client.fetchArtifact!({ sessionId: 's', artifactId: 'a' }),
-    ).rejects.toMatchObject({ code: 'unavailable' })
   })
 
   it('reads no artifact, so sends no token, without a handshake holding', async () => {
@@ -1493,9 +1540,9 @@ describe('websocket environment client', () => {
     socket.close(1006)
     await flush()
 
-    await expect(
-      client.fetchArtifact!({ sessionId: 's', artifactId: 'a' }),
-    ).rejects.toMatchObject({ code: 'unavailable' })
+    await expect(client.fetchArtifact!({ sessionId: 's', artifactId: 'a' })).rejects.toMatchObject({
+      code: 'unavailable',
+    })
     expect(fetchBytes).toHaveBeenCalledTimes(1)
     client.dispose()
   })

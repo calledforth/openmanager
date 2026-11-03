@@ -832,7 +832,7 @@ async function handle(request: ChildRequest): Promise<unknown> {
         sessionUpdate: 'tool_call',
         toolCallId: request.toolCallId,
         title: request.title ?? 'Run tests',
-        kind: 'execute',
+        kind: (request.kind ?? 'execute') as 'execute',
         status: 'in_progress',
       })
     case 'updateTool':
@@ -840,7 +840,25 @@ async function handle(request: ChildRequest): Promise<unknown> {
         sessionUpdate: 'tool_call_update',
         toolCallId: request.toolCallId,
         status: request.status,
+        ...(request.rawInput !== undefined ? { rawInput: request.rawInput } : {}),
+        ...(request.rawOutput !== undefined ? { rawOutput: request.rawOutput } : {}),
+        ...(request.content !== undefined ? { content: request.content as never } : {}),
+        ...(request.locations !== undefined ? { locations: request.locations as never } : {}),
       })
+    case 'streamToolLines': {
+      const active = await promptOf(request.sessionId)
+      let text = ''
+      for (let line = 0; line < request.lines; line++) {
+        text += `line ${line}\n`
+        await update(active, {
+          sessionUpdate: 'tool_call_update',
+          toolCallId: request.toolCallId,
+          status: 'in_progress',
+          content: [{ type: 'content', content: { type: 'text', text } }],
+        })
+      }
+      return null
+    }
     case 'askPermission': {
       const active = await promptOf(request.sessionId)
       touch()
@@ -867,6 +885,7 @@ async function handle(request: ChildRequest): Promise<unknown> {
       touch()
       void active.connection
         .extMethod('cursor/ask_question', {
+          ...(request.toolCallId ? { toolCallId: request.toolCallId } : {}),
           questions: [
             {
               id: request.questionId,
@@ -1039,6 +1058,26 @@ async function handle(request: ChildRequest): Promise<unknown> {
       return null
     case 'readDropped':
       return dropped
+    case 'toolOutputRows': {
+      const reader = new DatabaseSync(join(config.dataDir, DATABASE_FILENAME), { readOnly: true })
+      const row = reader
+        .prepare('SELECT COUNT(*) AS count FROM tool_output WHERE activity_id = ?')
+        .get(request.toolCallId) as { count: number }
+      reader.close()
+      return row.count
+    }
+    case 'countEvents': {
+      const reader = new DatabaseSync(join(config.dataDir, DATABASE_FILENAME), { readOnly: true })
+      const row = reader
+        .prepare(
+          `SELECT COUNT(*) AS count FROM event_log e
+           JOIN event_streams s ON s.scope_key = e.scope_key
+           WHERE s.thread_id = ? AND e.event_name = ?`,
+        )
+        .get(request.threadId, request.name) as { count: number }
+      reader.close()
+      return row.count
+    }
     case 'raiseReplayFloor': {
       const writer = new DatabaseSync(join(config.dataDir, DATABASE_FILENAME))
       writer

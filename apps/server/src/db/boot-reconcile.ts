@@ -2,7 +2,8 @@ import type { DatabaseSync } from 'node:sqlite'
 import { ProofEventSchemas, type SubscriptionScope } from '@openmanager/protocol/node'
 import type { DurableEvent } from '@openmanager/protocol/node'
 import type { DurableProofEvent, EventRepository } from './event-repository.ts'
-import { reasoningIsOpen, toolIsOpen } from './turn-closure.ts'
+import { createToolOutputStore } from './tool-output.ts'
+import { reasoningIsOpen, toolCloseFields, toolIsOpen } from './turn-closure.ts'
 
 type ThreadScope = Extract<SubscriptionScope, { type: 'thread' }>
 
@@ -133,6 +134,7 @@ export function reconcileAfterRestart(
     rows.push(row)
     byThread.set(row.thread_id, rows)
   }
+  const toolOutput = createToolOutputStore(database)
   for (const [threadId, rows] of byThread) {
     const scope = scopeOf(rows[0]!)
     try {
@@ -150,7 +152,11 @@ export function reconcileAfterRestart(
               eventId: `repair:tool:${row.activity_id}`,
               timestamp,
               scope,
-              payload: { toolCallId: row.activity_id, turnId: row.turn_id, status: 'cancelled' },
+              payload: {
+                toolCallId: row.activity_id,
+                turnId: row.turn_id,
+                ...toolCloseFields(toolOutput.bytes(row.activity_id), timestamp),
+              },
             })
           : ProofEventSchemas['message.reasoning'].parse({
               type: 'event',

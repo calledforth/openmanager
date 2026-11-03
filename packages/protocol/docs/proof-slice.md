@@ -40,17 +40,17 @@ const result = parseProofResult(command, {
 All commands execute within the authenticated connection's environment. Resource
 IDs refer to host-owned identities, not a provider's session or thread IDs.
 
-| Command                    | Payload                             | Success payload                                        |
-| -------------------------- | ----------------------------------- | ------------------------------------------------------ |
-| `environment.get`          | `null`                              | `{ environment }` with environment ID and display name |
-| `workspace.list`           | `null`                              | `{ workspaces }`                                       |
-| `session.create`           | `{ workspaceId, title? }`           | `{ session, thread }` with the initial thread          |
-| `session.open`             | `{ sessionId }`                     | `{ session, threads }` — no transcript                 |
-| `turn.send`                | `{ sessionId, threadId, text, commandId? }` | `{ turn, userMessage, commandId }`             |
-| `turn.interrupt`           | `{ sessionId, threadId, turnId }`   | `{ turnId }` acknowledging the interrupt request       |
-| `interaction.respond`      | `{ sessionId, threadId, response, commandId? }` | `null`                                     |
-| `subscription.subscribe`   | `{ scope }`                         | `{ subscriptionId, scope }`                            |
-| `subscription.unsubscribe` | `{ subscriptionId }`                | `null`                                                 |
+| Command                    | Payload                                         | Success payload                                        |
+| -------------------------- | ----------------------------------------------- | ------------------------------------------------------ |
+| `environment.get`          | `null`                                          | `{ environment }` with environment ID and display name |
+| `workspace.list`           | `null`                                          | `{ workspaces }`                                       |
+| `session.create`           | `{ workspaceId, title? }`                       | `{ session, thread }` with the initial thread          |
+| `session.open`             | `{ sessionId }`                                 | `{ session, threads }` — no transcript                 |
+| `turn.send`                | `{ sessionId, threadId, text, commandId? }`     | `{ turn, userMessage, commandId }`                     |
+| `turn.interrupt`           | `{ sessionId, threadId, turnId }`               | `{ turnId }` acknowledging the interrupt request       |
+| `interaction.respond`      | `{ sessionId, threadId, response, commandId? }` | `null`                                                 |
+| `subscription.subscribe`   | `{ scope }`                                     | `{ subscriptionId, scope }`                            |
+| `subscription.unsubscribe` | `{ subscriptionId }`                            | `null`                                                 |
 
 `environment.get` provides domain discovery over the command channel. It does
 not replace the future HTTP bootstrap or promise version negotiation.
@@ -170,44 +170,44 @@ process details and diagnostics are never used as protocol identities or copied
 to payloads. Missing required context throws instead of falling back to a
 provider value. Every non-null result is validated by `ProofEventSchema`.
 
-| `AgentEventName` | Protocol event | Disposition |
-| --- | --- | --- |
-| `process_spawned` | — | Host health only |
-| `process_exited` | `turn.failed` / `turn.interrupted` | Active turns only; host classifies crash/exit/interrupt |
-| `initialized` | — | Host health/catalog only |
-| `authenticated` | — | Host health only |
-| `session_created` | `session.created` | Host session/workspace IDs |
-| `session_loaded` | `session.updated` | Host session ID |
-| `session_deleted` | `session.deleted` | Host session ID |
-| `prompt_started` | `turn.started` | Host turn and user-message IDs |
-| `prompt_completed` | `turn.completed` / `turn.interrupted` / `turn.failed` | Host completion classification |
-| `user_message_chunk` | `message.delta` | Host user-message ID |
-| `agent_message_chunk` | `message.delta` | Host assistant-message ID |
-| `agent_thought_chunk` | `message.reasoning` | Host assistant-message ID |
-| `tool_call` | `tool.updated` | Host tool-call ID; raw input/output omitted |
-| `tool_call_update` | `tool.updated` | Host tool-call ID; raw input/output omitted |
-| `tool_call_content` | — | Deferred protocol family |
-| `plan_update` | — | Deferred protocol family |
-| `subtask_update` | — | Deferred protocol family |
-| `permission_request` | `interaction.requested` | Host interaction/tool IDs |
-| `permission_resolved` | `interaction.resolved` | Host interaction ID |
-| `question_request` | `interaction.requested` | Host interaction ID |
-| `question_resolved` | `interaction.resolved` | Host interaction ID |
-| `plan_review_request` | `interaction.requested` | Host interaction ID |
-| `plan_review_resolved` | `interaction.resolved` | Host interaction ID |
-| `current_model_update` | — | Provider profile service |
-| `current_mode_update` | — | Provider profile service |
-| `config_option_update` | — | Provider profile service |
-| `session_info_update` | `session.updated` | Only portable title data |
-| `usage_update` | — | Deferred protocol family |
-| `available_commands_update` | — | Provider profile service |
-| `extension_request` | — | Opaque provider extension stays host-side |
-| `extension_resolved` | — | Opaque provider extension stays host-side |
-| `extension_notification` | — | Opaque provider extension stays host-side |
-| `rpc_error` | `turn.notice` / `turn.failed` | Active turns only; generic message |
-| `runtime_error` | `turn.notice` / `turn.failed` | Active turns only; generic message |
-| `auth_required` | `turn.failed` | Active turns only; `authentication_required` |
-| `capability_missing` | `turn.failed` | Active turns only; `capability_missing` |
+| `AgentEventName`            | Protocol event                                        | Disposition                                                                                                  |
+| --------------------------- | ----------------------------------------------------- | ------------------------------------------------------------------------------------------------------------ |
+| `process_spawned`           | —                                                     | Host health only                                                                                             |
+| `process_exited`            | `turn.failed` / `turn.interrupted`                    | Active turns only; host classifies crash/exit/interrupt                                                      |
+| `initialized`               | —                                                     | Host health/catalog only                                                                                     |
+| `authenticated`             | —                                                     | Host health only                                                                                             |
+| `session_created`           | `session.created`                                     | Host session/workspace IDs                                                                                   |
+| `session_loaded`            | `session.updated`                                     | Host session ID                                                                                              |
+| `session_deleted`           | `session.deleted`                                     | Host session ID                                                                                              |
+| `prompt_started`            | `turn.started`                                        | Host turn and user-message IDs                                                                               |
+| `prompt_completed`          | `turn.completed` / `turn.interrupted` / `turn.failed` | Host completion classification                                                                               |
+| `user_message_chunk`        | `message.delta`                                       | Host user-message ID                                                                                         |
+| `agent_message_chunk`       | `message.delta`                                       | Host assistant-message ID                                                                                    |
+| `agent_thought_chunk`       | `message.reasoning`                                   | Host assistant-message ID                                                                                    |
+| `tool_call`                 | `tool.updated`                                        | Host tool-call ID; provider name, input without bodies, paths, times                                         |
+| `tool_call_update`          | `tool.updated`                                        | As above; text only while the call runs. Settling states `outputBytes`; the text is read at `toolOutputPath` |
+| `tool_call_content`         | —                                                     | Deferred protocol family                                                                                     |
+| `plan_update`               | —                                                     | Deferred protocol family                                                                                     |
+| `subtask_update`            | —                                                     | Deferred protocol family                                                                                     |
+| `permission_request`        | `interaction.requested`                               | Host interaction/tool IDs                                                                                    |
+| `permission_resolved`       | `interaction.resolved`                                | Host interaction ID                                                                                          |
+| `question_request`          | `interaction.requested`                               | Host interaction ID                                                                                          |
+| `question_resolved`         | `interaction.resolved`                                | Host interaction ID                                                                                          |
+| `plan_review_request`       | `interaction.requested`                               | Host interaction ID                                                                                          |
+| `plan_review_resolved`      | `interaction.resolved`                                | Host interaction ID                                                                                          |
+| `current_model_update`      | —                                                     | Provider profile service                                                                                     |
+| `current_mode_update`       | —                                                     | Provider profile service                                                                                     |
+| `config_option_update`      | —                                                     | Provider profile service                                                                                     |
+| `session_info_update`       | `session.updated`                                     | Only portable title data                                                                                     |
+| `usage_update`              | —                                                     | Deferred protocol family                                                                                     |
+| `available_commands_update` | —                                                     | Provider profile service                                                                                     |
+| `extension_request`         | —                                                     | Opaque provider extension stays host-side                                                                    |
+| `extension_resolved`        | —                                                     | Opaque provider extension stays host-side                                                                    |
+| `extension_notification`    | —                                                     | Opaque provider extension stays host-side                                                                    |
+| `rpc_error`                 | `turn.notice` / `turn.failed`                         | Active turns only; generic message                                                                           |
+| `runtime_error`             | `turn.notice` / `turn.failed`                         | Active turns only; generic message                                                                           |
+| `auth_required`             | `turn.failed`                                         | Active turns only; `authentication_required`                                                                 |
+| `capability_missing`        | `turn.failed`                                         | Active turns only; `capability_missing`                                                                      |
 
 `turn.failed.reason` is a provider-neutral enum:
 `provider_process_exited`, `provider_process_crashed`, `provider_error`,

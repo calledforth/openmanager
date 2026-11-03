@@ -1,6 +1,7 @@
 import type { DatabaseSync, StatementSync } from 'node:sqlite'
 import { ProofEventSchemas, type InteractionKind } from '@openmanager/protocol/node'
 import type { DurableProofEvent, TerminalEvent } from './event-repository.ts'
+import { createToolOutputStore } from './tool-output.ts'
 
 /**
  * What a turn's end closes (docs/sync-foundations.md §4.3, I3). Every child
@@ -27,6 +28,15 @@ export function closeEventId(terminalEventId: string, kind: string, childId: str
 
 type ActivityRow = { activity_id: string; kind: 'tool' | 'reasoning'; state_json: string }
 type InteractionRow = { interaction_id: string; kind: InteractionKind }
+
+/** The fields that close an open tool: when, and how much output it left. */
+export function toolCloseFields(outputBytes: number, timestamp: string) {
+  return {
+    status: 'cancelled' as const,
+    finishedAt: timestamp,
+    ...(outputBytes > 0 ? { outputBytes } : {}),
+  }
+}
 
 /** A tool with no status, or one still `pending` or `in_progress`, is open. */
 export function toolIsOpen(state: { status?: string }): boolean {
@@ -68,6 +78,7 @@ function prepared(database: DatabaseSync) {
 
 export function createTurnClosure(database: DatabaseSync): TurnClosure {
   const s = prepared(database)
+  const toolOutput = createToolOutputStore(database)
 
   const openActivity = (turnId: string, threadId: string) =>
     (s.activity.all(turnId, threadId) as ActivityRow[]).filter((row) => {
@@ -90,7 +101,11 @@ export function createTurnClosure(database: DatabaseSync): TurnClosure {
                 ...base,
                 name: 'tool.updated',
                 eventId: closeEventId(terminal.eventId, 'tool', row.activity_id),
-                payload: { toolCallId: row.activity_id, turnId, status: 'cancelled' },
+                payload: {
+                  toolCallId: row.activity_id,
+                  turnId,
+                  ...toolCloseFields(toolOutput.bytes(row.activity_id), terminal.timestamp),
+                },
               })
             : ProofEventSchemas['message.reasoning'].parse({
                 ...base,

@@ -67,7 +67,12 @@ export function useEnvironmentClients() {
  * that has not answered as this environment must never be sent that.
  */
 function cachedView(client: EnvironmentClient): EnvironmentClient {
-  return { ...client, fetchArtifact: undefined, uploadArtifact: undefined }
+  return {
+    ...client,
+    fetchArtifact: undefined,
+    fetchToolOutput: undefined,
+    uploadArtifact: undefined,
+  }
 }
 
 /**

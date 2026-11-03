@@ -16,7 +16,9 @@ export type ExtensionNotificationHandler = (params: unknown) => void | Promise<v
 export type QuestionAdapter = {
   /** Extract structured questions from the wire params; undefined falls back to
    * plain extension-request handling. */
-  parse: (params: unknown) => { title?: string; questions: Question[] } | undefined
+  parse: (
+    params: unknown,
+  ) => { title?: string; questions: Question[]; toolCallId?: string } | undefined
   /** Build the provider-native wire response from the user's outcome. */
   respond: (outcome: QuestionOutcome, params: unknown) => unknown
 }

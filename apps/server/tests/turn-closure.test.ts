@@ -111,6 +111,30 @@ function openTurn() {
 }
 
 describe('turn closure', () => {
+  it('states how much output a tool it closes left, and when it ended', async () => {
+    const database = await createDatabase()
+    const repository = createEventRepository(database)
+    repository.appendEvents(scope, [
+      ...openTurn(),
+      event('tool.updated', 'tool-text', {
+        toolCallId: 'tool-1',
+        turnId: 'turn-1',
+        outputDelta: 'héllo',
+      }),
+    ])
+    const terminal = event('turn.interrupted', 'stop', { turnId: 'turn-1', reason: 'user' }, T(5))
+    const records = repository.finalizeTurn(scope, [terminal])
+    expect(
+      records.find((record) => record.event.eventId === 'stop:close:tool:tool-1')?.event.payload,
+    ).toEqual({
+      toolCallId: 'tool-1',
+      turnId: 'turn-1',
+      status: 'cancelled',
+      finishedAt: T(5),
+      outputBytes: 6,
+    })
+  })
+
   it('closes each open child with its own event before the terminal, in one transaction', async () => {
     const database = await createDatabase()
     const repository = createEventRepository(database)
@@ -128,7 +152,7 @@ describe('turn closure', () => {
       'stop',
     ])
     expect(thread.map((record) => record.event.payload)).toEqual([
-      { toolCallId: 'tool-1', turnId: 'turn-1', status: 'cancelled' },
+      { toolCallId: 'tool-1', turnId: 'turn-1', status: 'cancelled', finishedAt: T(2) },
       { messageId: 'thought-1', turnId: 'turn-1', phase: 'stop' },
       {
         turnId: 'turn-1',

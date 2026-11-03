@@ -3,13 +3,11 @@ import { groupActivityParts, type ActivitySummary } from '@openmanager/shared/li
 import { TextPart } from './TextPart'
 import { ToolCallPermission } from '../permissions/InlinePermissionPrompt'
 import { usePermissionStateOptional } from '../../providers/permission-provider'
-import { ToolCallPart } from './ToolCallPart'
-import { BashToolPart } from './BashToolPart'
-import { EditToolPart } from './EditToolPart'
+import { ToolRow, type ToolRowPart } from './ToolRow'
 import { ThinkingPart } from './ThinkingPart'
 import { ActivityGroup } from './ActivityGroup'
 import { SubtaskCard } from './SubtaskCard'
-import { canonicalizeToolName } from './ToolRegistry'
+import { resolveTool } from '@openmanager/shared/lib/tool-presenter'
 import { AskedQuestionPart } from '../questions/AskedQuestionPart'
 import { readAskedQuestions } from '../questions/askedQuestion'
 import { ImageGenerationToolPart } from './ImageGenerationToolPart'
@@ -58,7 +56,7 @@ function renderPart(part: Part, index: number, isStreaming?: boolean): ReactNode
       return <TextPart key={key} text={text} />
     }
     case 'tool': {
-      const toolName = canonicalizeToolName((part.tool as string) ?? '')
+      const toolName = resolveTool(part as ToolRowPart).canonical
       const callID = (part as { callID?: string }).callID
       let toolElement: ReactNode
       const asked = toolName === 'AskUserQuestion' ? readAskedQuestions(part.state) : null
@@ -70,12 +68,8 @@ function renderPart(part: Part, index: number, isStreaming?: boolean): ReactNode
         )
       } else if (asked) {
         toolElement = <AskedQuestionPart questions={asked} />
-      } else if (toolName === 'Bash') {
-        toolElement = <BashToolPart part={part as Parameters<typeof BashToolPart>[0]['part']} />
-      } else if (toolName === 'Edit' || toolName === 'Write' || toolName === 'MultiEdit') {
-        toolElement = <EditToolPart part={part as Parameters<typeof EditToolPart>[0]['part']} />
       } else {
-        toolElement = <ToolCallPart part={part as Parameters<typeof ToolCallPart>[0]['part']} />
+        toolElement = <ToolRow part={part as ToolRowPart} />
       }
       return (
         <Fragment key={key}>

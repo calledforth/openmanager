@@ -90,6 +90,7 @@ import {
 } from './tunnel.ts'
 import { createBudgetKey } from './budget-key.ts'
 import { createArtifactStore } from './artifacts.ts'
+import { createToolOutputReader } from './db/tool-output.ts'
 import { createUploadService } from './uploads.ts'
 import { attachWebSocket, SOCKET_CAPABILITIES } from './websocket.ts'
 import { openWorkspaceRegistry } from './workspaces.ts'
@@ -471,6 +472,7 @@ export async function startServer(config: ServerConfig) {
       eventService.flush()
       return getSessionSummary(eventDatabase, sessionId)?.workspaceId
     },
+    toolOutput: createToolOutputReader(eventDatabase),
     resolveWorkspace,
   })
   let closeClientSockets: (clientId: string) => void = () => undefined

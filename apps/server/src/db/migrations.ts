@@ -443,8 +443,9 @@ export const MIGRATIONS: readonly Migration[] = [
     name: 'artifact_session_and_source',
     up(database) {
       const columns = new Set(
-        (database.prepare('PRAGMA table_info(attachments)').all() as { name: string }[])
-          .map((column) => column.name),
+        (database.prepare('PRAGMA table_info(attachments)').all() as { name: string }[]).map(
+          (column) => column.name,
+        ),
       )
       if (!columns.has('session_id')) {
         database.exec(`
@@ -474,8 +475,9 @@ export const MIGRATIONS: readonly Migration[] = [
     name: 'provider_prompt_capabilities',
     up(database) {
       const columns = new Set(
-        (database.prepare('PRAGMA table_info(provider_profiles)').all() as { name: string }[])
-          .map((column) => column.name),
+        (database.prepare('PRAGMA table_info(provider_profiles)').all() as { name: string }[]).map(
+          (column) => column.name,
+        ),
       )
       if (!columns.has('prompt_capabilities_json')) {
         // What the provider's process said it accepts in a prompt at
@@ -770,9 +772,7 @@ export const MIGRATIONS: readonly Migration[] = [
       // around every status change and for each live session a listing
       // returns (db/session-activity.ts). Keyed by state as well, they reach
       // a thread's open turns without walking the finished ones before them.
-      database.exec(
-        'CREATE INDEX IF NOT EXISTS turns_thread_state_idx ON turns(thread_id, state)',
-      )
+      database.exec('CREATE INDEX IF NOT EXISTS turns_thread_state_idx ON turns(thread_id, state)')
     },
   },
   {
@@ -945,6 +945,24 @@ export const MIGRATIONS: readonly Migration[] = [
       }
     },
   },
+  {
+    version: 25,
+    name: 'tool_output',
+    up(database) {
+      // A tool's text, apart from its row: rows go to every client in a
+      // snapshot, the text only to a client that opens the tool. Calls
+      // recorded before this have none: providers never sent it to the event
+      // log. Append-only, and it goes with its row.
+      database.exec(`
+        CREATE TABLE IF NOT EXISTS tool_output (
+          activity_id TEXT NOT NULL REFERENCES turn_activity(activity_id) ON DELETE CASCADE,
+          seq INTEGER NOT NULL CHECK (seq >= 0),
+          text TEXT NOT NULL,
+          PRIMARY KEY (activity_id, seq)
+        ) STRICT, WITHOUT ROWID;
+      `)
+    },
+  },
 ]
 
 type RetainedActivityRow = {
@@ -1039,8 +1057,7 @@ function backfillTurnActivity(database: DatabaseSync): void {
             ? [...blocks.slice(0, -1), { type: 'text', text: last.text + String(content.text) }]
             : [...blocks, content]
       const tokens = payload.tokens as number | undefined
-      const total =
-        tokens === undefined ? previous.tokens : Math.max(previous.tokens ?? 0, tokens)
+      const total = tokens === undefined ? previous.tokens : Math.max(previous.tokens ?? 0, tokens)
       thread.set(activityId, {
         activityId,
         turnId,

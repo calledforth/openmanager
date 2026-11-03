@@ -1308,7 +1308,7 @@ F3's verification found these against ad1e856.
   - Main never holds an intermediate wire, so the user's web app breaks against their server once,
     not three times.
 - **Later numbers:** one bump per phase. F4 takes v18, F5 v19 (and v20 if F5a and F5b release
-  apart). F6 takes migration 23 and F7 migration 24.
+  apart). F6 takes migration 25 and F7 migration 26 (24 went to session pins, #270).
 - The cut and the build order are in the F3 plan.
 
 #### 4.7.10 Read answers and mutation answers
@@ -1847,6 +1847,79 @@ orders the client's own command and guesses nothing about server state.
   log, and the catch-up has usually settled the entry first. A transport replaced by another leaves
   its held sends in the store in the same way.
 
+### 6.7 Tool output (F6, protocol v21, migration 25, event format 4)
+
+A tool row says what the agent ran and how it went from what the call was given. The output is read
+when the row is opened. This is the one thing a chat does not carry whole, and the reason is measured:
+on the real database the largest chat goes from 689 KB to 3.3 MB with every tool's text in it, and a
+first open at 2 Mbit/s from 4.6 s to 15.5 s, while dropping the old 16 KiB cap accounts for only 6% of
+that. The cost was the text, not the cap.
+
+- **A row reads from its input.** `tool.updated` carries `toolName`, `input`, `locations`,
+  `lineChanges`, `startedAt`, `finishedAt` and the `declined` status. Nothing is capped.
+- **Text while a tool runs travels in events** (`output` replaces, `outputDelta` appends) and is in
+  the snapshot, so a client that opens a chat mid-command sees what the command has written.
+- **The update that settles a call carries no text** (the schema refuses it). It states `outputBytes`,
+  and `applyToolUpdate` drops the running text at that point, on every client and in the row alike,
+  so a replay and a snapshot fold to the same state (rule 6).
+- **`tool_output` holds the text, append-only**, one row per delta. A row rewritten per delta is
+  quadratic in the output on the server's one thread: 100 ms per delta at 10 MB, against 0.3 ms for an
+  insert. Running text reaches it as its event projects, so a snapshot and its cursor agree. The text
+  a tool settles with never enters the event: it travels beside it (`withSettledText`) and is written
+  in the event's transaction, the way an artifact's bytes are stored with a reference in the event.
+  Rule 2 holds for everything a client's state holds; the store is what `outputBytes` refers to.
+- **`GET /tool-output/<session>/<tool>`** answers it, with the artifact route's credential check:
+  a failed credential is audited and counts toward the lockout, and a refused workspace is audited by
+  its resolver. A successful read is not audited, and only failed credentials are rate limited. It
+  reads committed rows and flushes nothing, because a client learns of a settled tool only after its
+  write commits, and a read that fails answers 503. Settled text does not change, and that is
+  enforced: the tracker, the projection and `applyToolUpdate` each keep what a call settled with, so
+  a read needs no invalidation, and nothing merges or compares it. The view shows what came back and
+  keeps it only while the row is open. The one exception is a call refused with nothing stored, which
+  can still take the failure that follows: that is its first text, not a change.
+  An HTTP route rather than a socket command, for three reasons. It stays out of the connection's one
+  ordered queue, where a body would wait behind a whole chat and delay what comes after it. Text
+  over HTTP is compressed by the edge (3.40 to 1.13 MB measured through a quick tunnel), which socket
+  frames are not. And web and the phone already read artifacts this way. A read command was
+  rejected for listings in §6.4 because it needed invalidating; this read does not.
+- **Reads and edits carry paths only.** No `Read` output is stored or sent. A read or an edit keeps
+  its paths, its line counts as the provider reported them, and one line of error text if it failed
+  (`pathToolMessage`, which cuts a quoted body). A listing reports as a read on OpenCode and names
+  files rather than holding one, so its output stays.
+- **What "whole" means.** The text is what the agent saw. Claude Code keeps results it considers too
+  large on disk and hands over a preview; the preview is what is stored.
+- **A refusal is an event when it happens**, not a fact in memory: the server writes
+  `tool.updated {declined}` as it records the answer, so a restart cannot lose it and a later failure
+  cannot replace it. A permission for a call with no row (Cursor's `web_search_0`) has nothing to say
+  it on, and the tracker keeps it for the failure that may follow.
+- **An answered question states its answers.** A row reads them from the tool's input, and on neither
+  provider did they arrive there. Claude Code's come from the structured result, which holds
+  `{questions, answers}`. Cursor's exist only in the interaction, so the server writes them onto the
+  tool when the question resolves, found by the `toolCallId` its request carries. A question with no
+  answers is a plain row, and reads "Skipped" only when the call's status says it ended that way.
+- **Closes state how much is left.** `turn-closure.ts` and the boot repair add `finishedAt` and
+  `outputBytes` from the rows.
+- **Deltas coalesce** like text in the batcher, by call. Only a bare delta can: ACP repeats a call's
+  status, title and input on every resend, so the tracker sends only the fields that changed. A real
+  76 s command replayed at its own timing through the tracker and the batcher went from 783 pipe chunks
+  to 343 records, and its replay is 2.4 times its 144 KB of output. At that rate a chat reaches 10,000
+  events in about 37 minutes. A long gap in deltas loses to a snapshot by rule 4, which is that rule
+  working. Nothing on main streams through a delta API yet: Claude's result arrives whole, and ACP
+  providers resend, which `ToolCallTracker` turns into deltas by digest.
+- **Running text ends with the call.** Text a provider sends after a call settled is dropped twice:
+  the tracker does not emit it, and the projection does not store it for a settled row, so the store
+  and every client agree (rule 6). The text a settling update brings is the exception: that is the
+  call's result, and a refused call can still take the failure that follows.
+- **Event format 4.** Old stored events are still valid, but the schema changed, so the bump follows
+  §4.7.7. Session pins (#270) introduced format 4 and are not released yet, so the digest of 4
+  covers both. The protocol change drops every browser cache anyway, so the first load is a fresh one.
+- **Old calls** have no input or output: providers never sent them to the log. Their rows look as they
+  did.
+- **Provider facts the code depends on.** Cursor has no `failed` status (`rawOutput.error`, `rejected`,
+  `permissionDenied`), reports a shell as `{ stdout, stderr }` and a search as a count, carries an
+  edit's path only in the diff it completes with, and puts the command or path in its title.
+  OpenCode's first title is the tool's name, and later ones are prose.
+
 ---
 
 ## 7. Rule 5: no artificial limits, liveness and flow control
@@ -2344,7 +2417,9 @@ user merges; every agent summarizes only what it did.
     inline deltas until then, or chunked artifacts.
   - **Per-scope delivery lanes,** if head-of-line blocking (§5.5) shows in the measurements.
   - Neither is a limit. Both are options that a measurement must justify.
-- Migration 22 and the next protocol number.
+- As built: §6.7 (migration 25, protocol v21, shared with F7, so F6 is never released alone). Tool
+  output by reference won: the open problem above was solved by keeping text in events only while a
+  tool runs. Compression is a separate release, and nothing here depends on it.
 
 **F7: rebuild #213 (notices and failures).**
 

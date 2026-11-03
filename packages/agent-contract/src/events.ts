@@ -186,7 +186,29 @@ export type ToolCallContent =
   | { type: 'diff'; path: string; oldText?: string | null; newText: string }
   | { type: 'terminal'; terminalId: string }
 
-export type ToolCall = {
+/** Why a call that did not complete ended, when the provider says. `status`
+ * stays `failed` alongside it, so a consumer that predates the field still
+ * reads the call as ended. */
+export type ToolCallOutcome = 'declined' | 'cancelled'
+
+/** Lines an edit added and removed, exactly as the provider reported them.
+ * Never computed by diffing anything ourselves. */
+export type ToolLineChanges = {
+  added: number
+  removed: number
+}
+
+/** What the provider says about a tool call beyond ACP's fields. All optional:
+ * a provider that cannot say leaves them out. */
+type ToolCallExtras = {
+  /** The provider's own name for the tool (`Bash`, `mcp__github__search`),
+   * separate from `title`, which may be prose. */
+  toolName?: string
+  outcome?: ToolCallOutcome
+  lineChanges?: ToolLineChanges
+}
+
+export type ToolCall = ToolCallExtras & {
   toolCallId: string
   title: string
   kind?: ToolKind
@@ -198,7 +220,7 @@ export type ToolCall = {
   metadata?: Record<string, unknown>
 }
 
-export type ToolCallUpdate = {
+export type ToolCallUpdate = ToolCallExtras & {
   toolCallId: string
   title?: string
   kind?: ToolKind
@@ -611,10 +633,7 @@ export type AgentEvent = AgentEventBase &
  * Takes the loose `BackendEvent`-shaped object rather than a narrowed
  * `AgentEvent` so it can be called before an event is stamped, where the union
  * has been collapsed and `data` cannot be narrowed by `event`. */
-export function isRecoverableError(event: {
-  event: AgentEventName
-  data?: unknown
-}): boolean {
+export function isRecoverableError(event: { event: AgentEventName; data?: unknown }): boolean {
   if (event.event !== 'rpc_error' && event.event !== 'runtime_error') return false
   return (event.data as { recoverable?: unknown } | undefined)?.recoverable === true
 }

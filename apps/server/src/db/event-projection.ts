@@ -7,7 +7,10 @@ import {
   SessionSummarySchema,
   WorkspaceComposerPreferenceSchema,
   WorkspaceSchema,
+  applyToolUpdate,
+  isSettledToolStatus,
   type ProofEvent,
+  type ToolCallState,
 } from '@openmanager/protocol/node'
 import {
   preferenceFromRow,
@@ -21,6 +24,7 @@ import { prepareDraftProjection } from './draft-projection.ts'
 import { OPEN_TURN_FOR_SESSION_SQL } from './queries.ts'
 import { getSessionSummary } from './session-store.ts'
 import { gitJsonOf, readWorkspace } from './workspace-rows.ts'
+import { createToolOutputStore, settledTextOf } from './tool-output.ts'
 import { createTurnClosure, reasoningIsOpen, toolIsOpen } from './turn-closure.ts'
 
 type TurnStarted = Extract<ProofEvent, { name: 'turn.started' }>
@@ -45,6 +49,7 @@ export function createEventProjector(
   const drafts = prepareDraftProjection(database)
   const composer = prepareComposerProjection(database)
   const closure = createTurnClosure(database)
+  const toolOutput = createToolOutputStore(database)
   const s = {
     insertSession: database.prepare(
       `INSERT INTO sessions (
@@ -389,13 +394,16 @@ export function createEventProjector(
     if (!existing) return false
     const state = JSON.parse(existing.state_json) as { status?: string; phase?: string }
     if (event.name === 'tool.updated') {
-      const { status, title, kind } = event.payload
+      const { status, title, kind, input, output, outputDelta } = event.payload
       return (
         existing.kind === 'tool' &&
         toolIsOpen(state) &&
         status === 'cancelled' &&
         title === undefined &&
-        kind === undefined
+        kind === undefined &&
+        input === undefined &&
+        output === undefined &&
+        outputDelta === undefined
       )
     }
     const { phase, content, tokens } = event.payload
@@ -434,17 +442,35 @@ export function createEventProjector(
     })
   }
 
-  /** Later updates fill in or revise title, kind and status; nothing is forgotten. */
+  /**
+   * Fold the update exactly as clients do (`applyToolUpdate`), except its text,
+   * which goes to `tool_output` in this transaction. A running call's text
+   * comes in the event; a settling call's beside it.
+   */
   function projectTool(event: ToolUpdated, at: number): void {
-    const { toolCallId, turnId, title, kind, status } = event.payload
-    upsertActivity(event, toolCallId, 'tool', at, (existing) => ({
-      ...((existing as Record<string, unknown> | undefined) ?? {}),
-      toolCallId,
-      turnId,
-      ...(title === undefined ? {} : { title }),
-      ...(kind === undefined ? {} : { kind }),
-      ...(status === undefined ? {} : { status }),
-    }))
+    const { output, outputDelta, ...update } = event.payload
+    const { toolCallId } = update
+    let open = true
+    let settledBefore = false
+    upsertActivity(event, toolCallId, 'tool', at, (existing) => {
+      const previous = existing as ToolCallState | undefined
+      const next = applyToolUpdate(previous, update)
+      open = !isSettledToolStatus(next.status)
+      settledBefore = isSettledToolStatus(previous?.status)
+      return next
+    })
+    const settled = settledTextOf(event)
+    if (settled !== undefined) {
+      // Settled text does not change. A refused call with nothing stored can
+      // still take the failure that follows.
+      if (!settledBefore || toolOutput.bytes(toolCallId) === 0) {
+        toolOutput.replace(toolCallId, settled)
+      }
+    }
+    // Every client drops running text once a call has settled; the store does too.
+    else if (!open) return
+    else if (output !== undefined) toolOutput.replace(toolCallId, output)
+    else if (outputDelta !== undefined) toolOutput.append(toolCallId, outputDelta)
   }
 
   return function projectEvent(event: DurableProofEvent, write?: WriteOptions): void {

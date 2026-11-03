@@ -85,7 +85,11 @@ import {
 // by `thread.listing.updated`, and a new chat borrows the one the environment
 // keeps per provider and workspace (`composer.listing.updated`). A v19 client
 // would page a chat it already holds whole.
-export const PROTOCOL_VERSION = 20 as const
+// v21: a tool call carries the provider's name, its input, its paths, its line
+// counts, its times and the `declined` outcome. Text travels while a tool runs
+// (`output`, `outputDelta`); once it settles, `outputBytes` says how much is
+// waiting at `toolOutputPath`. A v20 client's status enum refuses `declined`.
+export const PROTOCOL_VERSION = 21 as const
 
 export const ProtocolVersionSchema = z.number().int().positive().max(Number.MAX_SAFE_INTEGER)
 export const CapabilitySchema = MessageNameSchema

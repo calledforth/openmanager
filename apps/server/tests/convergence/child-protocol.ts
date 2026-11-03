@@ -44,16 +44,22 @@ export type ProviderOp =
   | { op: 'emitCommands'; sessionId: string; names: string[] }
   | { op: 'emitSetting'; sessionId: string; settingId: string; currentValue: string }
   | { op: 'emitThought'; sessionId: string; text: string }
-  | { op: 'openTool'; sessionId: string; toolCallId: string; title?: string }
+  | { op: 'openTool'; sessionId: string; toolCallId: string; title?: string; kind?: string }
   | {
       op: 'updateTool'
       sessionId: string
       toolCallId: string
       status: 'pending' | 'in_progress' | 'completed' | 'failed'
+      rawInput?: unknown
+      rawOutput?: unknown
+      content?: unknown[]
+      locations?: unknown[]
     }
+  /** Many one-line updates at once, each resending the text so far, as ACP does. */
+  | { op: 'streamToolLines'; sessionId: string; toolCallId: string; lines: number }
   | { op: 'askPermission'; sessionId: string; toolCallId: string; title?: string }
   /** Cursor's own question request (`cursor/ask_question`); the session must run on Cursor. */
-  | { op: 'askQuestion'; sessionId: string; questionId: string }
+  | { op: 'askQuestion'; sessionId: string; questionId: string; toolCallId?: string }
   | { op: 'completeTurn'; sessionId: string; stopReason?: string }
   | { op: 'crashProvider'; sessionId: string }
   /** An image the artifact store refuses, so the server publishes a transient `turn.notice`. */
@@ -118,6 +124,10 @@ export type ServerOp =
    * event format: a client below the head catches up by snapshot.
    */
   | { op: 'raiseReplayFloor'; threadId: string }
+  /** How many durable records of one event a thread's stream holds. */
+  | { op: 'countEvents'; threadId: string; name: string }
+  /** How many `tool_output` rows a call holds. */
+  | { op: 'toolOutputRows'; toolCallId: string }
 
 export type ChildRequest = (ProviderOp | ServerOp) & { id: number }
 

@@ -220,7 +220,10 @@ export class Rig {
     // A direct client always dials the live server, whatever port it is on now.
     const url = () => (link === 'proxy' ? this.proxy.url : `ws://127.0.0.1:${this.server.port}/ws`)
     const now = () => this.now()
-    const delivery = { allowSynchronousEvents: this.synchronousDelivery }
+    // The link proxy reads frames as they cross it, so test clients offer no
+    // compression: the server sends plain frames to a client that does not
+    // take part.
+    const delivery = { allowSynchronousEvents: this.synchronousDelivery, perMessageDeflate: false }
     class RecordingWebSocket extends WebSocket {
       constructor(_url: string, protocols?: string[]) {
         super(url(), protocols, delivery)

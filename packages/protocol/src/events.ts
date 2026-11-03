@@ -17,7 +17,7 @@ import {
   TurnInterruptionSchema,
   BackgroundTaskListSchema,
   ContentBlockSchema,
-  ToolCallStateSchema,
+  ToolCallUpdateSchema,
   InteractionSchema,
   InteractionResponseSchema,
 } from './domains.js'
@@ -235,7 +235,7 @@ export const ProofEventSchemas = {
       tokens: z.number().int().nonnegative().optional(),
     }),
   ),
-  'tool.updated': event('tool.updated', ThreadScopeSchema, ToolCallStateSchema),
+  'tool.updated': event('tool.updated', ThreadScopeSchema, ToolCallUpdateSchema),
   'interaction.requested': event(
     'interaction.requested',
     ThreadScopeSchema,

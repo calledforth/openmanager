@@ -50,10 +50,7 @@ export function ActivityGroup({
           </span>
         )}
       </summary>
-      <div
-        ref={bodyRef}
-        className="thin-scrollbar mt-0.5 max-h-[260px] overflow-y-auto border-l border-[var(--basis-border-muted)] pl-2"
-      >
+      <div ref={bodyRef} className="thin-scrollbar mt-0.5 max-h-[260px] overflow-y-auto pl-2">
         {children}
       </div>
     </details>

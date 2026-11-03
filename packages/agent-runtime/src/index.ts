@@ -105,13 +105,7 @@ export type {
   TerminationRequest,
   ThreadId,
 } from './session/index.js'
-export {
-  acpCommandBin,
-  cursor,
-  opencode,
-  providers,
-  requireAcpConfig,
-} from './providers/index.js'
+export { acpCommandBin, cursor, opencode, providers, requireAcpConfig } from './providers/index.js'
 // For running a provider's CLI outside any session, as the environment's
 // session titles do: the same binary a session would spawn, and the same way
 // of taking down everything it started.
@@ -140,5 +134,5 @@ export type {
   OpencodeModelLookupOptions,
 } from './providers/opencode-models.js'
 export type { HostDeps, HostLogEntry } from './host.js'
-export { projectAgentEvent } from './protocol/projectAgentEvent.js'
+export { projectAgentEvent, ToolCallTracker } from './protocol/projectAgentEvent.js'
 export type { ProtocolEventContext } from './protocol/projectAgentEvent.js'
