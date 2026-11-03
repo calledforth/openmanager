@@ -108,7 +108,10 @@ export function ChatView() {
     acknowledgeOptimisticMessage,
     retrySend,
   } = useActiveThreadState()
-  const environmentName = useEnvironmentAvailability()?.name
+  const availability = useEnvironmentAvailability()
+  const environmentName = availability?.name
+  // A "Not sent" row's retry is a send, so it waits with the composer's.
+  const sendHeld = Boolean(availability?.sendBlockedReason)
   // State rather than a ref: the virtualizer needs the element on the render
   // after it mounts, and a ref read during render is still null then.
   const [scrollElement, setScrollElement] = useState<HTMLDivElement | null>(null)
@@ -175,7 +178,7 @@ export function ChatView() {
           timelineRef={timelineRef}
           onAtEndChange={handleAtEndChange}
           onPersistedContentReady={acknowledgeOptimisticMessage}
-          onRetrySend={retrySend}
+          onRetrySend={sendHeld ? undefined : retrySend}
         />
       </div>
       <ScrollToEndButton

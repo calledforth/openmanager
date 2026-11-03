@@ -547,18 +547,25 @@ type StatusMoment = { tone: SessionBusyTone; key: number }
  * Changes are events, not only states: when a session finishes, asks, or
  * fails while the sidebar is watching, mark it once. What the card already
  * showed when it first rendered is left alone, so opening the app is quiet.
+ *
+ * While its environment is offline the card shows no status, and what it last
+ * had is kept: coming back with the same status is no news, a new one still is.
  */
-function useStatusMoment(tone: SessionBusyTone | null): StatusMoment | null {
+function useStatusMoment(tone: SessionBusyTone | null, offline = false): StatusMoment | null {
   const previous = useRef(tone)
   const [moment, setMoment] = useState<StatusMoment | null>(null)
   useEffect(() => {
+    if (offline) {
+      setMoment(null)
+      return
+    }
     if (previous.current === tone) return
     previous.current = tone
     // Work going on, in a turn or behind one, is not news.
     setMoment(
       tone && tone !== 'working' && tone !== 'background' ? { tone, key: Date.now() } : null,
     )
-  }, [tone])
+  }, [offline, tone])
   return moment
 }
 
@@ -1582,8 +1589,10 @@ function SessionCardBody({
   const providerName = providerLabel?.(providerId) ?? providerId
   // What an offline environment's session was last doing isn't what it's doing
   // now: its card rests and says how old it is.
-  const tone = environment?.offline ? null : sessionBusyTone(session.status, session)
-  const moment = useStatusMoment(tone)
+  const offline = environment?.offline === true
+  const lastSeen = sessionBusyTone(session.status, session)
+  const tone = offline ? null : lastSeen
+  const moment = useStatusMoment(lastSeen, offline)
   // Live work cannot be settled, so its status has nothing to make room for.
   const hasActions =
     Boolean(settleHere) &&

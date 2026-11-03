@@ -489,7 +489,8 @@ export function useMessageInputBinding() {
           onChange: questionFlow.setText,
           placeholder: 'Or type your own answer…',
           onSubmit: questionFlow.advance,
-          canSubmit: questionFlow.canAdvance,
+          // Answering is a send too.
+          canSubmit: questionFlow.canAdvance && !sendBlockedReason,
         }
       : undefined,
     attachedTop,

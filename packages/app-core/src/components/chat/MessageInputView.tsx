@@ -1220,7 +1220,7 @@ export function MessageInputView(props: MessageInputViewProps) {
             {settingsError}
           </div>
         )}
-        {sendBlockedReason && !textOverride && (
+        {sendBlockedReason && (
           <div className="px-2 pb-1 text-[11px] leading-4 text-amber-500" role="status">
             {sendBlockedReason}
           </div>
