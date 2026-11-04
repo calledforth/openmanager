@@ -327,7 +327,8 @@ export interface QuickAgentNoticeData {
   message?: string
   /** The button's words. @default "Open" */
   action?: string
-  onOpen: () => void
+  /** What the button does. Absent, a `message` is only said, with no button. */
+  onOpen?: () => void
 }
 
 /**
@@ -417,17 +418,25 @@ function QuickAgentNotice({
         if (!event.currentTarget.contains(event.relatedTarget as Node | null)) onHold(false)
       }}
     >
-      <span className="truncate pr-2">{label}</span>
-      <button
-        type="button"
-        onClick={() => {
-          notice.onOpen()
-          onDismiss()
-        }}
-        className="h-7 shrink-0 rounded-md px-2 font-medium outline-none transition-colors duration-80 hover:bg-hover focus-visible:ring-1 focus-visible:ring-focus-ring"
+      {/* A message is a sentence that has to be read whole: it wraps rather than
+          trailing off. A project name is cut short instead. */}
+      <span
+        className={notice.kind === 'message' ? 'min-w-0 break-words py-1 pr-2' : 'truncate pr-2'}
       >
-        {notice.action ?? 'Open'}
-      </button>
+        {label}
+      </span>
+      {notice.onOpen ? (
+        <button
+          type="button"
+          onClick={() => {
+            notice.onOpen?.()
+            onDismiss()
+          }}
+          className="h-7 shrink-0 rounded-md px-2 font-medium outline-none transition-colors duration-80 hover:bg-hover focus-visible:ring-1 focus-visible:ring-focus-ring"
+        >
+          {notice.action ?? 'Open'}
+        </button>
+      ) : null}
       <button
         type="button"
         aria-label="Dismiss"
