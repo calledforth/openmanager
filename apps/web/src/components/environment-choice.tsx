@@ -115,6 +115,7 @@ export function EnvironmentChoiceHost({ children }: { children: ReactNode }) {
   const live = {
     clients,
     handovers,
+    links,
     move,
     navigate,
     pathname,
@@ -134,6 +135,7 @@ export function EnvironmentChoiceHost({ children }: { children: ReactNode }) {
       const {
         clients,
         handovers,
+        links,
         move,
         navigate,
         pathname,
@@ -143,7 +145,15 @@ export function EnvironmentChoiceHost({ children }: { children: ReactNode }) {
       } = liveRef.current
       const target = clients[environmentId]
       const sourceId = from?.environmentId ?? selectedId
-      if (environmentId === sourceId || !isEnvironmentReachable(target)) return false
+      // Down as well as not reachable: a draft saved there would wait in its queue.
+      const link = links.find((item) => item.environmentId === environmentId)
+      if (
+        environmentId === sourceId ||
+        !isEnvironmentReachable(target) ||
+        (link && environmentIsDown(link.ui))
+      ) {
+        return false
+      }
       // Already on its way, or copied and waiting to go: a second copy of its
       // text would be a second draft.
       if (

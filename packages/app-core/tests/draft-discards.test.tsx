@@ -29,12 +29,14 @@ function clientWith(environmentId: string) {
 
 function Host({
   latest,
+  refuse,
   handle,
 }: {
   latest: (environmentId: string) => EnvironmentClient | undefined
+  refuse?: (environmentId: string, draftId: string) => boolean
   handle: Ref<DraftDiscards>
 }) {
-  const discards = useDraftDiscards(latest)
+  const discards = useDraftDiscards(latest, refuse)
   useImperativeHandle(handle, () => discards, [discards])
   return null
 }
@@ -51,9 +53,12 @@ afterEach(async () => {
   vi.unstubAllGlobals()
 })
 
-async function mount(latest: (environmentId: string) => EnvironmentClient | undefined) {
+async function mount(
+  latest: (environmentId: string) => EnvironmentClient | undefined,
+  refuse?: (environmentId: string, draftId: string) => boolean,
+) {
   const handle: { current: DraftDiscards | null } = { current: null }
-  await act(async () => root.render(<Host latest={latest} handle={handle} />))
+  await act(async () => root.render(<Host latest={latest} refuse={refuse} handle={handle} />))
   return handle
 }
 
@@ -91,6 +96,38 @@ describe('a discard waiting out its undo window', () => {
 
     await act(async () => void discards.current!.begin(only.client, 'd'))
     await act(async () => discards.current!.confirm())
+
+    expect(only.discard).toHaveBeenCalledWith('d', { ifRevision: REVISION })
+  })
+})
+
+describe('a discard the host refuses as it goes', () => {
+  it('deletes nothing once the window ends, and brings the card back', async () => {
+    const only = clientWith('env-a')
+    // The environment went down inside the window.
+    let down = false
+    const refuse = vi.fn(() => down)
+    const discards = await mount(() => only.client, refuse)
+
+    await act(async () => void discards.current!.begin(only.client, 'd'))
+    expect(refuse).not.toHaveBeenCalled()
+    down = true
+    await act(async () => vi.advanceTimersByTime(6_000))
+
+    expect(refuse).toHaveBeenCalledWith('env-a', 'd')
+    expect(only.discard).not.toHaveBeenCalled()
+    expect(discards.current!.pending).toBeNull()
+  })
+
+  it('deletes as before when the host lets it go', async () => {
+    const only = clientWith('env-a')
+    const discards = await mount(
+      () => only.client,
+      () => false,
+    )
+
+    await act(async () => void discards.current!.begin(only.client, 'd'))
+    await act(async () => vi.advanceTimersByTime(6_000))
 
     expect(only.discard).toHaveBeenCalledWith('d', { ifRevision: REVISION })
   })

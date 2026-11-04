@@ -83,9 +83,15 @@ export interface DraftDiscards {
  * at a time, of whichever client it was given. `latest` names the client to
  * reach an environment through when the delete goes, for a host whose client
  * can be replaced while the window runs.
+ *
+ * `refuse`, asked as the delete would go, is for a host that won't let a
+ * delete wait in a client's queue for an environment that is down: true keeps
+ * the draft, its card comes back, and the host says why. Absent, every
+ * delete goes as it always did.
  */
 export function useDraftDiscards(
   latest?: (environmentId: string) => EnvironmentClient | undefined,
+  refuse?: (environmentId: string, draftId: string) => boolean,
 ): DraftDiscards {
   // One discard waits out its undo window at a time; its card is hidden
   // meanwhile, and nothing is deleted until the window closes.
@@ -103,6 +109,8 @@ export function useDraftDiscards(
   const keyRef = useRef(0)
   const latestRef = useRef(latest)
   latestRef.current = latest
+  const refuseRef = useRef(refuse)
+  refuseRef.current = refuse
 
   const stopClock = useCallback(() => {
     if (timerRef.current === undefined) return
@@ -127,7 +135,12 @@ export function useDraftDiscards(
       setPending(null)
       const client =
         (current.environmentId && latestRef.current?.(current.environmentId)) || clientRef.current
-      if (commit && client && discardOutstanding(client.getState(), current.draftId)) {
+      if (
+        commit &&
+        client &&
+        discardOutstanding(client.getState(), current.draftId) &&
+        !(current.environmentId && refuseRef.current?.(current.environmentId, current.draftId))
+      ) {
         client.drafts?.discard(current.draftId, { ifRevision: madeOnRef.current })
       }
       unpinRef.current?.()

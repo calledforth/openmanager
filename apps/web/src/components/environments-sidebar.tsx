@@ -282,6 +282,80 @@ function sameRowEnvironments(
  * `fallback`. With rows it stays the same sidebar, so losing the open
  * environment costs the others neither their cards nor their place.
  */
+/**
+ * A draft only this device has: never saved to its environment, and stalled
+ * for the lack of a connection. Discarding it reaches nothing there, so no
+ * delete can wait in a queue for it.
+ */
+function onlyOnThisDevice(client: EnvironmentClient, draftId: string) {
+  const state = client.getState()
+  const edit = state.draftEdits[draftId]
+  return (
+    state.drafts[draftId] === undefined && edit?.baseRevision === 0 && edit.stalled === 'offline'
+  )
+}
+
+/**
+ * Why nothing should be asked of an environment just now, by name.
+ *
+ * Down is what the banner says can't be reached. It isn't the same as not
+ * reachable (`isEnvironmentReachable`, the client's word), and each leaves out
+ * a case of the other: a first connection still on its way isn't down, so
+ * nothing reads offline at boot, and with the device offline an environment
+ * is down while its socket can still read connected. So nothing is offered to
+ * start on, or sent to, an environment either one rules out.
+ *
+ * Down, its client would hold a command and send it on reconnecting, after
+ * anyone asked. It waits for the environment, not in a queue. The client's
+ * word as well as the banner's: after a drop the banner can read ready until
+ * the route is asked again.
+ */
+function useRefusals() {
+  const { clients } = useEnvironmentClients()
+  const { environments, links } = useConnection()
+  // Compared as text: `links` is new with every report from any connection.
+  const downKey = links
+    .filter((link) => environmentIsDown(link.ui))
+    .map((link) => link.environmentId)
+    .join('\n')
+  const down = useMemo(() => new Set(downKey.split('\n')), [downKey])
+
+  const nameOf = useCallback(
+    (environmentId: string) =>
+      environments.find((item) => item.environmentId === environmentId)?.label ?? environmentId,
+    [environments],
+  )
+
+  // Says why, or null when it can go.
+  const refusalFor = useCallback(
+    (environmentId: string, asked: string) => {
+      const name = nameOf(environmentId)
+      const client = clients[environmentId]
+      return !client
+        ? `Couldn't ${asked} on ${name}: it isn't connected.`
+        : down.has(environmentId)
+          ? `Couldn't ${asked} on ${name}: it's offline. Try again once it's back.`
+          : !isEnvironmentReachable(client)
+            ? `Couldn't ${asked} on ${name}: it isn't connected right now. Try again once it is.`
+            : null
+    },
+    [clients, down, nameOf],
+  )
+
+  // A draft only this device has is let go here, whatever its environment is doing.
+  const discardRefusal = useCallback(
+    (environmentId: string, draftId: string) => {
+      const client = clients[environmentId]
+      return client && onlyOnThisDevice(client, draftId)
+        ? null
+        : refusalFor(environmentId, 'discard a draft')
+    },
+    [clients, refusalFor],
+  )
+
+  return { down, nameOf, refusalFor, discardRefusal, several: environments.length > 1 }
+}
+
 function EnvironmentsSidebar({
   footer,
   fallback,
@@ -309,7 +383,8 @@ function EnvironmentsSidebar({
     [confirm, hold, navigate, undo],
   )
   const { clients, everyCacheRead } = useEnvironmentClients()
-  const { environments, links } = useConnection()
+  const { environments } = useConnection()
+  const { down, nameOf, refusalFor, discardRefusal } = useRefusals()
   const { prefer } = useAddressLookup()
   const choose = useEnvironmentChoice()?.choose
   const savedKey = environments.map(({ environmentId }) => environmentId).join('\n')
@@ -329,26 +404,6 @@ function EnvironmentsSidebar({
     canPin: openCanPin,
     hasIcons: openHasIcons,
   } = useOpenRowAbilities(openClient)
-
-  // Down is what the banner says can't be reached. It isn't the same as not
-  // reachable (`isEnvironmentReachable`, the client's word), and each leaves out
-  // a case of the other: a first connection still on its way isn't down, so
-  // nothing reads offline at boot, and with the device offline an environment
-  // is down while its socket can still read connected. So nothing is offered
-  // to start on, or sent to, an environment either one rules out. Compared as
-  // text: `links` is new with every report from any connection.
-  const downKey = links
-    .filter((link) => environmentIsDown(link.ui))
-    .map((link) => link.environmentId)
-    .join('\n')
-
-  const down = useMemo(() => new Set(downKey.split('\n')), [downKey])
-
-  const nameOf = useCallback(
-    (environmentId: string) =>
-      environments.find((item) => item.environmentId === environmentId)?.label ?? environmentId,
-    [environments],
-  )
 
   const rowEnvironmentsRef = useRef<SidebarEnvironmentsValue['rowEnvironments'] | null>(null)
   const rowEnvironments = useMemo(() => {
@@ -446,26 +501,8 @@ function EnvironmentsSidebar({
   // With several listed, what a row asks goes through here, the open
   // environment's rows included: the providers keep a failure to themselves, and
   // this says who was asked. Nothing waits to be sent again: if it didn't go,
-  // it's up to the person to ask again.
-  // Down, its client would hold the command and send it on reconnecting, after
-  // anyone asked. It waits for the environment, not in a queue. The client's
-  // word as well as the banner's: after a drop the banner can read ready until
-  // the route is asked again. Says why, or null when it can go.
-  const refusalFor = useCallback(
-    (environmentId: string, asked: string) => {
-      const name = nameOf(environmentId)
-      const client = clients[environmentId]
-      return !client
-        ? `Couldn't ${asked} on ${name}: it isn't connected.`
-        : down.has(environmentId)
-          ? `Couldn't ${asked} on ${name}: it's offline. Try again once it's back.`
-          : !isEnvironmentReachable(client)
-            ? `Couldn't ${asked} on ${name}: it isn't connected right now. Try again once it is.`
-            : null
-    },
-    [clients, down, nameOf],
-  )
-
+  // it's up to the person to ask again. Refused up front where it would only
+  // wait (`useRefusals`).
   const askRowEnvironment = useCallback(
     async (
       environmentId: string,
@@ -514,11 +551,13 @@ function EnvironmentsSidebar({
       },
       // The open environment's providers can only open a page of their own;
       // another environment's project opens on that environment's page.
-      // One that is down isn't offered, as `choose` already leaves alone one
-      // that isn't reachable.
+      // Another environment's project starts its session there, unless it is
+      // down or not connected, which is said as for any other row command.
       createSession: async (path, environmentId) => {
         if (environmentId && environmentId !== openId) {
-          if (!down.has(environmentId)) choose?.(environmentId, null, path)
+          const refusal = refusalFor(environmentId, 'start a session')
+          if (refusal) reportFailure(refusal)
+          else choose?.(environmentId, null, path)
         } else await createSession(path)
       },
       // A row of another environment goes straight to its client.
@@ -567,7 +606,18 @@ function EnvironmentsSidebar({
           }
         : {}),
     }
-  }, [anyPins, anySettles, askedDirectly, askRowEnvironment, choose, data, down, openId, opening])
+  }, [
+    anyPins,
+    anySettles,
+    askedDirectly,
+    askRowEnvironment,
+    choose,
+    data,
+    openId,
+    opening,
+    refusalFor,
+    reportFailure,
+  ])
 
   // The cards are the same array while no card changed: the sidebar reads a
   // new one as a card having changed.
@@ -603,14 +653,16 @@ function EnvironmentsSidebar({
         // Its delete would wait in that client's queue, as any command would,
         // and go out once it's back. Refused the same for the open
         // environment's own drafts, with others saved; with one, as before.
+        // Asked again as the delete goes (`EnvironmentsSidebarHost`).
         const asked = other ? options!.environmentId! : several ? openId : null
-        const refusal = asked ? refusalFor(asked, 'discard a draft') : null
+        const refusal = asked ? discardRefusal(asked, draftId) : null
         if (refusal) reportFailure(refusal)
         else if (!other) discardDraft(draftId, options)
         else if (other.client) discards.begin(other.client, draftId, options)
       },
     }
   }, [
+    discardRefusal,
     discards,
     elsewhere,
     openDrafts,
@@ -618,7 +670,6 @@ function EnvironmentsSidebar({
     opening,
     others,
     pending,
-    refusalFor,
     reportFailure,
     several,
   ])
@@ -711,13 +762,31 @@ export function EnvironmentsSidebarHost({
     clientsRef.current = clients
   }, [clients])
   const latest = useCallback((environmentId: string) => clientsRef.current[environmentId], [])
-  const discards = useDraftDiscards(latest)
   const [failure, setFailure] = useState<EnvironmentFailure | null>(null)
   const failureKey = useRef(0)
   const reportFailure = useCallback((message: string) => {
     failureKey.current += 1
     setFailure({ key: failureKey.current, message })
   }, [])
+  // A discard was let through when it was asked for; the environment can go
+  // down in its undo window, and the delete would then wait in the client's
+  // queue. Asked again as it goes: refused, the card comes back and says why.
+  // With one environment saved, as before.
+  const { discardRefusal, several } = useRefusals()
+  const refusalRef = useRef({ discardRefusal, several })
+  useLayoutEffect(() => {
+    refusalRef.current = { discardRefusal, several }
+  }, [discardRefusal, several])
+  const refuse = useCallback(
+    (environmentId: string, draftId: string) => {
+      const { discardRefusal, several } = refusalRef.current
+      const refusal = several ? discardRefusal(environmentId, draftId) : null
+      if (refusal) reportFailure(refusal)
+      return refusal !== null
+    },
+    [reportFailure],
+  )
+  const discards = useDraftDiscards(latest, refuse)
   const failures = useMemo(() => ({ failure, dismiss: () => setFailure(null) }), [failure])
   return (
     <SidebarBridgeContext.Provider value={bridge}>

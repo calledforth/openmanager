@@ -197,6 +197,19 @@ function answeringUntil() {
 
 const HELD = "Can't send until Laptop is back. What you type here is kept."
 
+/** Laptop stops answering and its socket drops, so nothing dials it back meanwhile. */
+function dropLaptop(laptop: Mock, answers: { up: boolean }) {
+  answers.up = false
+  // The mock would connect again at once when asked to.
+  vi.spyOn(laptop, 'connect').mockImplementation(() => undefined)
+  act(() =>
+    laptop.setConnection({
+      phase: 'reconnecting',
+      failure: { code: 'unavailable', message: 'Connection closed.' },
+    }),
+  )
+}
+
 describe('the selected environment has no client', () => {
   it("keeps the other environments' cards, in the same sidebar, on a refused token", async () => {
     saved('desk', 'laptop')
@@ -669,6 +682,74 @@ describe('a row of another environment fails', () => {
     expect(screen.getByRole('button', { name: /Typed on the laptop/ })).toBeInTheDocument()
     expect(screen.queryByRole('button', { name: 'Undo' })).toBeNull()
     expect(discard).not.toHaveBeenCalled()
+  })
+
+  it('refuses a discard whose environment drops inside its undo window', async () => {
+    saved('desk', 'laptop')
+    const answers = answeringUntil()
+    const user = userEvent.setup()
+    const laptop = laptopMock()
+    await saveDraftOn(laptop, 'Typed on the laptop')
+    const discard = vi.spyOn(laptop.commands, 'deleteDraft')
+    renderApp('/', { laptop })
+    await connected(laptop)
+
+    const { card } = await cardOf(/Typed on the laptop/)
+    await user.click(await card.findByRole('button', { name: 'Discard draft' }))
+    expect(await screen.findByRole('button', { name: 'Undo' })).toBeInTheDocument()
+
+    dropLaptop(laptop, answers)
+    // Letting the window end: the delete would go now, and wait in the queue.
+    await user.click(screen.getByRole('button', { name: 'Dismiss' }))
+    expect(await screen.findByText(/^Couldn't discard a draft on Laptop: it/)).toBeInTheDocument()
+    expect(await screen.findByRole('button', { name: /Typed on the laptop/ })).toBeInTheDocument()
+    expect(discard).not.toHaveBeenCalled()
+    expect(laptop.getState().draftEdits['waiting-draft']).toBeUndefined()
+  })
+
+  it('lets a draft only this device has be discarded while its environment is away', async () => {
+    saved('laptop', 'desk')
+    answering({ laptop: false })
+    const user = userEvent.setup()
+    const laptop = laptopMock()
+    const discard = vi.spyOn(laptop.commands, 'deleteDraft')
+    // Typed with Laptop away, and never saved there: kept on this device.
+    laptop.setConnection({ phase: 'reconnecting' })
+    laptop.drafts!.edit(
+      'local-draft',
+      { type: 'new_session', sessionId: 'later', workspaceId: '/laptop-project' },
+      { text: 'Only on this device' },
+    )
+    await waitFor(() =>
+      expect(laptop.getState().draftEdits['local-draft']?.stalled).toBe('offline'),
+    )
+    renderApp('/', { cached: ['laptop'], laptop })
+    await screen.findByText("Can't reach Laptop")
+
+    const { card } = await cardOf(/Only on this device/)
+    await user.click(await card.findByRole('button', { name: 'Discard draft' }))
+    // Not refused as it is asked for, nor as it goes: it reaches nothing there.
+    expect(await screen.findByRole('button', { name: 'Undo' })).toBeInTheDocument()
+    await user.click(screen.getByRole('button', { name: 'Dismiss' }))
+    await waitFor(() => expect(screen.queryByRole('button', { name: 'Undo' })).toBeNull())
+    expect(screen.queryByText(/^Couldn't discard/)).toBeNull()
+    expect(discard).not.toHaveBeenCalled()
+  })
+
+  it('says why a project row cannot start a session on an environment that is away', async () => {
+    saved('desk', 'laptop')
+    const answers = answeringUntil()
+    const laptop = laptopMock()
+    renderApp('/', { laptop })
+    await cardOf(/Laptop chat/)
+    await connected(laptop)
+    dropLaptop(laptop, answers)
+
+    await act(async () => {
+      await sidebar.data!.createSession('/laptop-project', 'env-laptop')
+    })
+    expect(await screen.findByText(/^Couldn't start a session on Laptop: it/)).toBeInTheDocument()
+    expect(selected()).toBe('env-desk')
   })
 
   it('refuses one the client cannot send yet, whatever the banner says', async () => {
