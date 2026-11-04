@@ -55,7 +55,9 @@ After publishing, check an install from the release on Windows and on Linux or W
 
 `.github/workflows/release-mobile.yml` runs on every merge to `main` that touches `apps/mobile`,
 `packages` or the lockfile. It builds an arm64 Android APK and publishes it, with nothing to do by
-hand:
+hand. The phone's handshake must match the environment's protocol version exactly, so the APK is
+built from the same branch as the server: a merge that moves the protocol ships the phone that
+speaks it.
 
 - **The release:** tag `mobile-v<version>`, asset `openmanager-<version>.apk`, always a prerelease
   and never "latest". The version is `app.json`'s with its last part replaced by the workflow's run
