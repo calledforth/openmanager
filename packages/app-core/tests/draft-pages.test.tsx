@@ -610,17 +610,25 @@ describe('draft pages', () => {
     expect(client.getState().activeSessionId).toBe(SESSION.sessionId)
   })
 
-  it('does not follow a draft with the same id sent in another environment', async () => {
+  it('leads the address of a draft sent from another environment to its session there', async () => {
     const client = createMockEnvironmentClient({ seed: SEED })
-    rememberSentDraft('another-environment', 'sent-there', SESSION.sessionId)
+    // Opened here while another environment is selected: that session's own
+    // address finds the environment it is on.
+    rememberSentDraft('another-environment', 'sent-there', 'session-there')
     await mount(client, { draftId: 'sent-there' })
     await settle(client)
-    // Unknown here: a blank page, as for any draft this environment never had.
-    expect(navigations).toEqual(['replace /'])
-    expect(client.getState().activeSessionId).toBeNull()
+    expect(navigations).toEqual(['replace /sessions/session-there'])
   })
 
-  it('still follows an address remembered before sent drafts were kept by environment', async () => {
+  it("prefers this environment's send of a draft id another environment also sent", async () => {
+    const client = createMockEnvironmentClient({ seed: SEED })
+    rememberSentDraft(MOCK_ENVIRONMENT, 'sent-both', SESSION.sessionId)
+    rememberSentDraft('another-environment', 'sent-both', 'session-there')
+    await mount(client, { draftId: 'sent-both' })
+    expect(navigations).toEqual([`replace /sessions/${SESSION.sessionId}`])
+  })
+
+  it('follows an address remembered before sent drafts were kept by environment, then keeps it here', async () => {
     const client = createMockEnvironmentClient({ seed: SEED })
     globalThis.localStorage.setItem(
       'openmanager.sent-drafts',
@@ -628,6 +636,9 @@ describe('draft pages', () => {
     )
     await mount(client, { draftId: 'sent-before' })
     expect(navigations).toEqual([`replace /sessions/${SESSION.sessionId}`])
+    expect(JSON.parse(globalThis.localStorage.getItem('openmanager.sent-drafts')!)).toEqual({
+      [JSON.stringify([MOCK_ENVIRONMENT, 'sent-before'])]: SESSION.sessionId,
+    })
   })
 
   it('keeps a draft whose project was removed, and lets another project take it', async () => {
@@ -1203,6 +1214,8 @@ describe('sent drafts', () => {
       removeItem: (key: string) => void data.delete(key),
     }
   }
+  const stored = (storage: ReturnType<typeof memory>) =>
+    JSON.parse(storage.getItem('openmanager.sent-drafts')!) as Record<string, string>
 
   it('keeps the same draft id apart in two environments', () => {
     const storage = memory()
@@ -1212,22 +1225,36 @@ describe('sent drafts', () => {
     expect(sentDraftSession('env-b', 'same-draft', storage)).toBe('session-b')
 
     forgetSentDraft('env-a', 'same-draft', storage)
-    expect(sentDraftSession('env-a', 'same-draft', storage)).toBeUndefined()
+    // Not sent here any more: the other environment's send is the one left.
+    expect(sentDraftSession('env-a', 'same-draft', storage)).toBe('session-b')
     expect(sentDraftSession('env-b', 'same-draft', storage)).toBe('session-b')
   })
 
-  it('reads an entry from before environments counted, until it is kept or forgotten', () => {
+  it('keeps a host without environments under its own key, never the old shape', () => {
+    const storage = memory()
+    rememberSentDraft(null, 'no-environment', 'session-x', storage)
+    expect(stored(storage)).toEqual({ '[null,"no-environment"]': 'session-x' })
+  })
+
+  it('drops an entry from before environments counted only when it is the same send', () => {
+    const storage = memory()
+    storage.setItem(
+      'openmanager.sent-drafts',
+      JSON.stringify({ 'same-send': 'session-1', 'other-send': 'session-elsewhere' }),
+    )
+    rememberSentDraft('env-a', 'same-send', 'session-1', storage)
+    rememberSentDraft('env-a', 'other-send', 'session-2', storage)
+    expect(stored(storage)).toEqual({
+      'other-send': 'session-elsewhere',
+      '["env-a","same-send"]': 'session-1',
+      '["env-a","other-send"]': 'session-2',
+    })
+  })
+
+  it('reads an entry from before environments counted until it is forgotten', () => {
     const storage = memory()
     storage.setItem('openmanager.sent-drafts', JSON.stringify({ 'old-draft': 'session-old' }))
     expect(sentDraftSession('env-a', 'old-draft', storage)).toBe('session-old')
-
-    // Sent again here: kept by its environment from now on, the old entry gone.
-    rememberSentDraft('env-a', 'old-draft', 'session-new', storage)
-    expect(JSON.parse(storage.getItem('openmanager.sent-drafts')!)).toEqual({
-      '["env-a","old-draft"]': 'session-new',
-    })
-
-    storage.setItem('openmanager.sent-drafts', JSON.stringify({ 'old-draft': 'session-old' }))
     forgetSentDraft('env-a', 'old-draft', storage)
     expect(sentDraftSession('env-a', 'old-draft', storage)).toBeUndefined()
   })

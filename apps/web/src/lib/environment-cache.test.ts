@@ -11,6 +11,8 @@ import {
   createEnvironmentCache,
   deleteEnvironmentCache,
   environmentCacheName,
+  forgetRemovedEnvironments,
+  holdsUnsentWork,
   readEnvironmentCache,
   writeEnvironmentCache,
 } from './environment-cache'
@@ -47,8 +49,26 @@ function seed(environmentId = 'env-one') {
   return state
 }
 
+/** A draft typed here that the environment has not saved yet. */
+function withUnsentDraft(state: EnvironmentState): EnvironmentState {
+  return {
+    ...state,
+    draftEdits: {
+      'draft-typed': {
+        target: { type: 'new_session', workspaceId: 'workspace', sessionId: 'next' },
+        content: { text: 'not sent yet' },
+        baseRevision: 0,
+        editedAt: 1,
+      },
+    },
+  }
+}
+
 beforeEach(() => vi.stubGlobal('indexedDB', new IDBFactory()))
-afterEach(() => vi.unstubAllGlobals())
+afterEach(() => {
+  vi.unstubAllGlobals()
+  forgetRemovedEnvironments()
+})
 
 describe('environment identity cache', () => {
   it('restores session selection and messages across a new cache instance', async () => {
@@ -109,6 +129,38 @@ describe('environment identity cache', () => {
     expect(names).toContain(environmentCacheName('env-kept'))
     expect(await readEnvironmentCache('env-removed')).toBeNull()
     expect((await readEnvironmentCache('env-kept'))!.sessions.session!.title).toBe('Cached session')
+  })
+
+  it('keeps the copy of a removed environment that holds unsent work', async () => {
+    // Held only in the copy: no store for it in this tab.
+    await writeEnvironmentCache('env-unsent', withUnsentDraft(seed('env-unsent')))
+    await deleteEnvironmentCache('env-unsent')
+    expect((await readEnvironmentCache('env-unsent'))?.draftEdits['draft-typed']?.content).toEqual({
+      text: 'not sent yet',
+    })
+
+    // Held in this tab's store: kept, and its last save still writes.
+    const cache = createEnvironmentCache()
+    const store = await cache.getStore('env-typing')
+    store.update(() => withUnsentDraft(seed('env-typing')))
+    await deleteEnvironmentCache('env-typing')
+    await writeEnvironmentCache('env-typing', store.getServerState())
+    expect(await cache.getStore('env-typing')).toBe(store)
+    expect((await readEnvironmentCache('env-typing'))?.draftEdits['draft-typed']).toBeDefined()
+  })
+
+  it('counts unsent drafts and held sends as unsent work, and nothing else', () => {
+    expect(holdsUnsentWork(seed())).toBe(false)
+    expect(holdsUnsentWork(withUnsentDraft(seed()))).toBe(true)
+    const held = seed()
+    held.threads.thread!.outbox = [
+      { commandId: 'held', text: 'Waiting', status: 'held', waited: true },
+    ]
+    expect(holdsUnsentWork(held)).toBe(true)
+    // A send this page made without holding it is the environment's to answer.
+    const pending = seed()
+    pending.threads.thread!.outbox = [{ commandId: 'send', text: 'Pending', status: 'pending' }]
+    expect(holdsUnsentWork(pending)).toBe(false)
   })
 
   it('starts an environment added again after its removal from nothing, and saves it again', async () => {

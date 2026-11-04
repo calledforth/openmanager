@@ -17,7 +17,7 @@ import {
   WRONG_ENVIRONMENT_MESSAGE,
 } from '@openmanager/environment-client/connection'
 import {
-  createEnvironmentCache,
+  forgetRemovedEnvironments,
   readEnvironmentCache,
   writeEnvironmentCache,
 } from '../lib/environment-cache'
@@ -29,6 +29,7 @@ const ENDPOINT = 'http://127.0.0.1:43120'
 
 afterEach(() => {
   cleanup()
+  forgetRemovedEnvironments()
   lastClient = null
   localStorage.clear()
   vi.unstubAllGlobals()
@@ -866,7 +867,9 @@ describe('WebEnvironmentClientProvider', () => {
 
     connection = { phase: 'closed', failure: { code: 'auth', message: 'Token revoked.' } }
     act(() => notify())
-    await waitFor(() => expect(screen.getByText('reason: credential_rejected')).toBeInTheDocument())
+    await waitFor(() =>
+      expect(screen.getByText('reason: credential_rejected')).toBeInTheDocument(),
+    )
     const dialled = client.connect.mock.calls.length
     act(() => screen.getByRole('button', { name: 'remove other' }).click())
     await act(async () => {
@@ -996,7 +999,9 @@ describe('WebEnvironmentClientProvider', () => {
 
     connection = { phase: 'closed', failure: { code: 'auth', message: 'Token revoked.' } }
     act(() => notify())
-    await waitFor(() => expect(screen.getByText('reason: credential_rejected')).toBeInTheDocument())
+    await waitFor(() =>
+      expect(screen.getByText('reason: credential_rejected')).toBeInTheDocument(),
+    )
 
     act(() => screen.getByRole('button', { name: 'select other' }).click())
 
@@ -1202,7 +1207,9 @@ describe('WebEnvironmentClientProvider', () => {
 
     connection = { phase: 'closed', failure: { code: 'auth', message: 'Token revoked.' } }
     act(() => notify())
-    await waitFor(() => expect(screen.getByText('reason: credential_rejected')).toBeInTheDocument())
+    await waitFor(() =>
+      expect(screen.getByText('reason: credential_rejected')).toBeInTheDocument(),
+    )
 
     // Pairing adds it beside the one in use; moving there is a separate choice.
     act(() => screen.getByRole('button', { name: 'pair other' }).click())
@@ -1872,10 +1879,7 @@ describe('what may open a socket', () => {
 
     // The socket drops and its own backoff would dial the same address again.
     answering = 'env-other'
-    script.connection = {
-      phase: 'reconnecting',
-      failure: { code: 'unavailable', message: 'Closed.' },
-    }
+    script.connection = { phase: 'reconnecting', failure: { code: 'unavailable', message: 'Closed.' } }
     script.tell()
 
     await waitFor(() => expect(client.dispose).toHaveBeenCalled())
@@ -1967,8 +1971,7 @@ describe('what may open a socket', () => {
     const { createClient, dials, clients } = trackDials()
     renderProvider(createClient)
     await waitFor(() => expect(dials).toHaveLength(2))
-    const other =
-      clients[createClient.mock.calls.findIndex(([o]) => o.environmentId === 'env-other')]!
+    const other = clients[createClient.mock.calls.findIndex(([o]) => o.environmentId === 'env-other')]!
 
     const registry = JSON.parse(localStorage.getItem(ENVIRONMENT_STORAGE_KEY)!) as {
       environments: Array<{ environmentId: string }>
@@ -2046,11 +2049,9 @@ describe('what may open a socket', () => {
     renderProvider(() => client)
     await waitFor(() => expect(screen.getByText('ready:client')).toBeInTheDocument())
     const saved = () =>
-      (
-        JSON.parse(localStorage.getItem(ENVIRONMENT_STORAGE_KEY)!) as {
-          environments: Array<{ tokenRefused?: boolean }>
-        }
-      ).environments[0]!.tokenRefused
+      (JSON.parse(localStorage.getItem(ENVIRONMENT_STORAGE_KEY)!) as {
+        environments: Array<{ tokenRefused?: boolean }>
+      }).environments[0]!.tokenRefused
 
     script.connection = { phase: 'closed', failure: { code: 'auth', message: 'Revoked.' } }
     script.tell()
@@ -2247,13 +2248,25 @@ describe('an environment this browser has a cache of', () => {
     )
   })
 
-  it('deletes the copy of an environment the user removes, and keeps one that cannot be reached', async () => {
+  const OTHER_CACHED: EnvironmentState = {
+    ...CACHED,
+    environment: { environmentId: 'env-other', name: 'Other' },
+  }
+  const UNSENT: EnvironmentState['draftEdits'] = {
+    'draft-typed': {
+      target: { type: 'new_session', workspaceId: 'workspace', sessionId: 'next' },
+      content: { text: 'not sent yet' },
+      baseRevision: 0,
+      editedAt: 1,
+    },
+  }
+  const cacheNames = async () => (await indexedDB.databases()).map((database) => database.name)
+
+  /** Both environments kept and unreachable; each client's store, by environment. */
+  async function renderCached() {
     vi.stubGlobal('indexedDB', new IDBFactory())
     await writeEnvironmentCache('env-local', CACHED)
-    await writeEnvironmentCache('env-other', {
-      ...CACHED,
-      environment: { environmentId: 'env-other', name: 'Other' },
-    })
+    await writeEnvironmentCache('env-other', OTHER_CACHED)
     seedTwoEnvironments()
     vi.stubGlobal(
       'fetch',
@@ -2267,28 +2280,84 @@ describe('an environment this browser has a cache of', () => {
       return createFakeClient()
     })
     await waitFor(() => expect(stores.size).toBe(2))
-    // A change waiting to be saved, which tearing its client down would write.
-    stores.get('env-other')!.update((state) => ({ ...state, activeSessionId: 'typed' }))
+    return stores
+  }
 
-    act(() => screen.getByRole('button', { name: 'remove other' }).click())
-    await waitFor(async () => {
-      const names = (await indexedDB.databases()).map((database) => database.name)
-      expect(names).not.toContain('openmanager-environment:env-other')
-    })
-    await act(async () => {
+  const settleSaves = () =>
+    act(async () => {
       await new Promise((resolve) => setTimeout(resolve, 50))
     })
-    expect(await readEnvironmentCache('env-other')).toBeNull()
+
+  it('deletes the copy of an environment the user removes, and keeps one that cannot be reached', async () => {
+    const stores = await renderCached()
+    const removed = stores.get('env-other')!
+    // A change waiting to be saved, which tearing its client down would write.
+    removed.update((state) => ({ ...state, activeSessionId: 'typed' }))
+
+    act(() => screen.getByRole('button', { name: 'remove other' }).click())
+    await waitFor(async () =>
+      expect(await cacheNames()).not.toContain('openmanager-environment:env-other'),
+    )
+    await settleSaves()
+    expect(await cacheNames()).not.toContain('openmanager-environment:env-other')
     // Unreachable is not removed: its copy stays.
     expect((await readEnvironmentCache('env-local'))?.environment?.environmentId).toBe('env-local')
 
-    // Added again later: saved as any other.
-    await createEnvironmentCache().getStore('env-other')
-    await writeEnvironmentCache('env-other', {
-      ...CACHED,
-      environment: { environmentId: 'env-other', name: 'Other' },
+    // Added again: a store of its own, from nothing, saved as any other.
+    act(() => screen.getByRole('button', { name: 'pair other' }).click())
+    await waitFor(() => expect(stores.get('env-other')).not.toBe(removed))
+    const again = stores.get('env-other')!
+    expect(again.getState().activeSessionId).toBeNull()
+    again.update(() => ({ ...OTHER_CACHED, activeSessionId: 'after' }))
+    window.dispatchEvent(new Event('pagehide'))
+    await waitFor(async () =>
+      expect((await readEnvironmentCache('env-other'))?.activeSessionId).toBe('after'),
+    )
+  })
+
+  it('keeps the copy of a removed environment holding an unsent draft, and adding it back restores it', async () => {
+    const stores = await renderCached()
+    stores.get('env-other')!.update((state) => ({ ...state, draftEdits: UNSENT }))
+
+    act(() => screen.getByRole('button', { name: 'remove other' }).click())
+    await settleSaves()
+    expect((await readEnvironmentCache('env-other'))?.draftEdits['draft-typed']?.content).toEqual({
+      text: 'not sent yet',
     })
-    expect(await readEnvironmentCache('env-other')).not.toBeNull()
+
+    stores.delete('env-other')
+    act(() => screen.getByRole('button', { name: 'pair other' }).click())
+    await waitFor(() =>
+      expect(stores.get('env-other')?.getState().draftEdits['draft-typed']?.content).toEqual({
+        text: 'not sent yet',
+      }),
+    )
+  })
+
+  it('deletes the copy of an environment another tab removed, unless it holds unsent work', async () => {
+    const stores = await renderCached()
+    stores.get('env-local')!.update((state) => ({ ...state, draftEdits: UNSENT }))
+    stores.get('env-other')!.update((state) => ({ ...state, activeSessionId: 'typed' }))
+
+    // Another tab removed both.
+    const registry = JSON.parse(localStorage.getItem(ENVIRONMENT_STORAGE_KEY)!) as {
+      environments: unknown[]
+      selectedId: string | null
+    }
+    localStorage.setItem(
+      ENVIRONMENT_STORAGE_KEY,
+      JSON.stringify({ ...registry, environments: [], selectedId: null }),
+    )
+    act(() => {
+      window.dispatchEvent(new StorageEvent('storage', { key: ENVIRONMENT_STORAGE_KEY }))
+    })
+    await waitFor(async () =>
+      expect(await cacheNames()).not.toContain('openmanager-environment:env-other'),
+    )
+    await settleSaves()
+    // Its closing save did not write it back.
+    expect(await cacheNames()).not.toContain('openmanager-environment:env-other')
+    expect((await readEnvironmentCache('env-local'))?.draftEdits['draft-typed']).toBeDefined()
   })
 
   it('stays hidden after a reload when the token was refused, until a socket gets through', async () => {

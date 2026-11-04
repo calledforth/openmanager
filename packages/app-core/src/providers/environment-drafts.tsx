@@ -30,11 +30,6 @@ const SESSION_KEY = 'session:'
 const NEW_SESSION_KEY = 'new:'
 /** What this browser kept a project's landing text under before drafts had ids. */
 const LEGACY_PROJECT_KEY = 'draft:'
-/**
- * The one environment old landing text goes to. It is keyed by project, and a
- * project's id is its path, which repeats across machines.
- */
-const LEGACY_PROJECT_OWNER_KEY = 'openmanager.legacy-drafts-environment'
 
 const mintId = () => crypto.randomUUID()
 
@@ -286,32 +281,11 @@ export function createEnvironmentComposerDraftStore(
 }
 
 /**
- * Whether this environment is the one old landing text goes to. That text was
- * written before this browser kept several environments, so it goes to the
- * first one to look for it after the upgrade, which is the one it was written
- * in; recorded here, no other environment takes it, even with a project at the
- * same path. Undecided (no storage, or nothing known about this environment
- * yet) means no: the text is left where it is.
- */
-function ownsLegacyProjectDrafts(environmentId: string | undefined, storage: DeviceStorage | null) {
-  if (!environmentId || !storage) return false
-  try {
-    const owner = storage.getItem(LEGACY_PROJECT_OWNER_KEY)
-    if (owner !== null) return owner === environmentId
-    storage.setItem(LEGACY_PROJECT_OWNER_KEY, environmentId)
-    return storage.getItem(LEGACY_PROJECT_OWNER_KEY) === environmentId
-  } catch {
-    return false
-  }
-}
-
-/**
  * Brings this browser's old localStorage drafts into the environment once
  * their session or project is known here, then forgets them. A project's old
- * landing text becomes a draft of its own, kept like any other, in one
- * environment only (`ownsLegacyProjectDrafts`). A key for a session this
- * client has not listed yet waits for the listing; one for another
- * environment is left alone.
+ * landing text becomes a draft of its own, kept like any other. A key for a
+ * session this client has not listed yet waits for the listing; one for
+ * another environment is left alone.
  */
 function importLocalDrafts(
   state: EnvironmentState,
@@ -322,7 +296,6 @@ function importLocalDrafts(
   const keys = Object.keys(stored)
   if (keys.length === 0) return
   const left = { ...stored }
-  let ownsProjectDrafts: boolean | undefined
   for (const key of keys) {
     const text = stored[key]!.text
     if (key.startsWith(SESSION_KEY)) {
@@ -333,10 +306,6 @@ function importLocalDrafts(
       }
       delete left[key]
     } else if (key.startsWith(LEGACY_PROJECT_KEY)) {
-      // Claimed whether or not this environment has the project: the first
-      // environment to look is the one the text was written in.
-      ownsProjectDrafts ??= ownsLegacyProjectDrafts(state.environment?.environmentId, storage)
-      if (!ownsProjectDrafts) continue
       const workspaceId = key.slice(LEGACY_PROJECT_KEY.length)
       if (!state.workspaces[workspaceId]) continue
       sync.edit(mintId(), newSessionTarget(workspaceId), { text })

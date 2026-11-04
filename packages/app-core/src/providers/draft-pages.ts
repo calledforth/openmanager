@@ -63,11 +63,21 @@ const sentHere = new Map<string, string>()
 /**
  * A sent draft's entry, by its environment as well: a server restored from a
  * copy of another's database holds the same draft ids. Entries from before
- * environments were part of it are under the draft id alone; they are still
- * read, for whichever environment asks.
+ * environments were part of it are under the draft id alone.
  */
 function sentKey(environmentId: string | null | undefined, draftId: string): string {
-  return environmentId ? JSON.stringify([environmentId, draftId]) : draftId
+  return JSON.stringify([environmentId ?? null, draftId])
+}
+
+/** The draft id of an entry kept by environment; undefined for one from before. */
+function sentDraftIdOf(key: string): string | undefined {
+  if (!key.startsWith('[')) return undefined
+  try {
+    const parsed: unknown = JSON.parse(key)
+    return Array.isArray(parsed) && typeof parsed[1] === 'string' ? parsed[1] : undefined
+  } catch {
+    return undefined
+  }
 }
 
 function readSent(storage: DeviceStorage | null): Record<string, string> {
@@ -81,6 +91,16 @@ function readSent(storage: DeviceStorage | null): Record<string, string> {
     )
   } catch {
     return {}
+  }
+}
+
+function writeSent(sent: Record<string, string>, storage: DeviceStorage | null) {
+  const keys = Object.keys(sent)
+  for (const id of keys.slice(0, Math.max(0, keys.length - SENT_DRAFTS_LIMIT))) delete sent[id]
+  try {
+    storage?.setItem(SENT_DRAFTS_KEY, JSON.stringify(sent))
+  } catch {
+    // Private mode or a full quota: the address falls back to a blank page.
   }
 }
 
@@ -99,27 +119,47 @@ export function rememberSentDraft(
   sentHere.set(key, sessionId)
   const sent = readSent(storage)
   delete sent[key]
-  // An entry from before environments counted is this one, now kept by its environment.
-  delete sent[draftId]
+  // An entry from before environments counted, for this same send, is this one.
+  if (sent[draftId] === sessionId) delete sent[draftId]
   sent[key] = sessionId
-  const keys = Object.keys(sent)
-  for (const id of keys.slice(0, Math.max(0, keys.length - SENT_DRAFTS_LIMIT))) delete sent[id]
-  try {
-    storage?.setItem(SENT_DRAFTS_KEY, JSON.stringify(sent))
-  } catch {
-    // Private mode or a full quota: the address falls back to a blank page.
-  }
+  writeSent(sent, storage)
 }
 
-/** The session a draft sent from this browser became, if it remembers one. */
+/**
+ * The session a draft sent from this browser became, if it remembers one:
+ * sent in this environment, or before environments counted, or failing those
+ * in another environment, whose session's address then leads there.
+ */
 export function sentDraftSession(
   environmentId: string | null | undefined,
   draftId: string,
   storage: DeviceStorage | null = browserStorage(),
 ): string | undefined {
+  const sent = { ...readSent(storage), ...Object.fromEntries(sentHere) }
+  const here = sent[sentKey(environmentId, draftId)] ?? sent[draftId]
+  if (here !== undefined) return here
+  // The latest send of that draft id anywhere else.
+  return Object.entries(sent)
+    .reverse()
+    .find(([key]) => sentDraftIdOf(key) === draftId)?.[1]
+}
+
+/**
+ * An address followed by an entry from before environments counted: keep it
+ * by this environment from now on. Does nothing for any other entry.
+ */
+export function keepSentDraftHere(
+  environmentId: string | null | undefined,
+  draftId: string,
+  storage: DeviceStorage | null = browserStorage(),
+) {
   const key = sentKey(environmentId, draftId)
   const sent = readSent(storage)
-  return sentHere.get(key) ?? sent[key] ?? sent[draftId]
+  const sessionId = sent[draftId]
+  if (sessionId === undefined || key in sent || sentHere.has(key)) return
+  delete sent[draftId]
+  sent[key] = sessionId
+  writeSent(sent, storage)
 }
 
 const LANDING_PROJECTS_KEY = 'openmanager.landing-projects'

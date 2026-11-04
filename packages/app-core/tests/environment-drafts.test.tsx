@@ -341,43 +341,6 @@ describe('composer drafts over the environment', () => {
     })
   })
 
-  it("imports a project's old landing text into one environment only, even at a path both have", async () => {
-    localStorage.setItem(
-      COMPOSER_DRAFTS_STORAGE_KEY,
-      JSON.stringify({
-        [`draft:${WORKSPACE.workspaceId}`]: { text: 'old landing text', updatedAt: 2 },
-      }),
-    )
-    const elsewhere = { environmentId: 'env-elsewhere', name: 'Elsewhere' }
-    // The first environment to look, before the project was added there.
-    const first = createMockEnvironmentClient({ seed: { environment: elsewhere } })
-    await mount(first)
-    expect(selectNewSessionDraftIds(first.getState())).toEqual([])
-    await act(() => root.unmount())
-    root = createRoot(container)
-
-    // Another environment with a project at the same path leaves it alone.
-    const second = createMockEnvironmentClient({ seed: SEED })
-    await mount(second)
-    expect(selectNewSessionDraftIds(second.getState())).toEqual([])
-    expect(JSON.parse(localStorage.getItem(COMPOSER_DRAFTS_STORAGE_KEY)!)).toEqual({
-      [`draft:${WORKSPACE.workspaceId}`]: { text: 'old landing text', updatedAt: 2 },
-    })
-    await act(() => root.unmount())
-    root = createRoot(container)
-
-    // Back in the first, once it has the project: imported there, then forgotten.
-    const again = createMockEnvironmentClient({
-      seed: { ...SEED, environment: elsewhere },
-    })
-    await mount(again)
-    act(() => store.flush())
-    await settle(again)
-    const [draftId] = selectNewSessionDraftIds(again.getState())
-    expect(selectDraftContent(again.getState(), draftId!)).toEqual({ text: 'old landing text' })
-    expect(localStorage.getItem(COMPOSER_DRAFTS_STORAGE_KEY)).toBeNull()
-  })
-
   it('shows drafts edited or started offline as not synced until the environment has them', async () => {
     const client = createMockEnvironmentClient({ seed: SEED })
     const sessionKey = 'session:session-1'

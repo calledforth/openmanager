@@ -30,6 +30,8 @@ const STATE_STORE = 'state'
 const writes = new Map<string, Promise<void>>()
 /** Removed by the user: nothing is saved for them until they are added again. */
 const removed = new Set<string>()
+/** Each environment's store in this tab, to tell whether it holds unsent work. */
+const live = new Map<string, EnvironmentStore>()
 
 /** URLs and credentials never participate in the cache namespace or payload. */
 export function environmentCacheName(environmentId: string): string {
@@ -66,6 +68,15 @@ export async function readEnvironmentCache(
   eventFormat: number = EVENT_FORMAT_VERSION,
 ): Promise<EnvironmentState | null> {
   await writes.get(environmentId)
+  return readStoredCache(environmentId, protocolVersion, eventFormat)
+}
+
+/** The kept copy as it is now, without waiting for the saves queued for it. */
+async function readStoredCache(
+  environmentId: string,
+  protocolVersion: number = PROTOCOL_VERSION,
+  eventFormat: number = EVENT_FORMAT_VERSION,
+): Promise<EnvironmentState | null> {
   const database = await openCache(environmentId)
   if (!database) return null
   try {
@@ -159,30 +170,53 @@ function queue(environmentId: string, run: () => Promise<void>): Promise<void> {
 }
 
 /**
- * The user removed this environment: delete what this browser kept of it,
- * after any save already on its way. The save its client makes as it goes is
- * skipped, so the copy is not written back. Only for an explicit removal: an
- * environment that cannot be reached keeps its copy, which may hold the only
- * copy of unsent drafts.
+ * What only this browser has of an environment, and a reload restores: draft
+ * edits the environment has not saved, and sends held for the next client.
+ */
+export function holdsUnsentWork(state: EnvironmentState): boolean {
+  const kept = cacheState(state)
+  return (
+    Object.keys(kept.draftEdits).length > 0 ||
+    Object.values(kept.threads).some((thread) => thread.outbox.length > 0)
+  )
+}
+
+/**
+ * The environment was removed, in this tab or another: delete what this
+ * browser kept of it, after any save already on its way. Never while it holds
+ * unsent work, here or in the kept copy: that is the only copy of it, and
+ * adding the environment back restores it. Otherwise the save its client
+ * makes as it goes is skipped, so the copy is not written back. Only for a
+ * removal: an environment that cannot be reached keeps its copy.
  */
 export function deleteEnvironmentCache(environmentId: string): Promise<void> {
+  const store = live.get(environmentId)
+  // Kept, and its client's last save keeps the latest of it.
+  if (store && holdsUnsentWork(store.getServerState())) return Promise.resolve()
   removed.add(environmentId)
-  return queue(
-    environmentId,
-    () =>
-      new Promise<void>((resolve) => {
-        try {
-          const request = globalThis.indexedDB.deleteDatabase(environmentCacheName(environmentId))
-          request.onsuccess = () => resolve()
-          request.onerror = () => resolve()
-          // Waits for open connections to close; each operation here closes its own.
-          request.onblocked = () => undefined
-        } catch {
-          // Private mode or an unavailable IndexedDB: there is nothing kept to delete.
-          resolve()
-        }
-      }),
-  )
+  live.delete(environmentId)
+  return queue(environmentId, async () => {
+    const kept = await readStoredCache(environmentId)
+    if (kept && holdsUnsentWork(kept)) return
+    await new Promise<void>((resolve) => {
+      try {
+        const request = globalThis.indexedDB.deleteDatabase(environmentCacheName(environmentId))
+        request.onsuccess = () => resolve()
+        request.onerror = () => resolve()
+        // Waits for open connections to close; each operation here closes its own.
+        request.onblocked = () => undefined
+      } catch {
+        // Private mode or an unavailable IndexedDB: there is nothing kept to delete.
+        resolve()
+      }
+    })
+  })
+}
+
+/** For tests: forget every removal and store this module has seen. */
+export function forgetRemovedEnvironments(): void {
+  removed.clear()
+  live.clear()
 }
 
 /** One store per identity, including while its route is being verified. */
@@ -190,13 +224,16 @@ export function createEnvironmentCache() {
   const stores = new Map<string, Promise<EnvironmentStore>>()
   return {
     getStore(environmentId: string): Promise<EnvironmentStore> {
-      // Added again after a removal: it starts from nothing, and is saved again.
+      // Added again after a removal: it starts from what was kept (nothing,
+      // unless it held unsent work), and is saved again.
       if (removed.delete(environmentId)) stores.delete(environmentId)
       let store = stores.get(environmentId)
       if (!store) {
-        store = readEnvironmentCache(environmentId).then((state) =>
-          createEnvironmentStore(state ?? undefined),
-        )
+        store = readEnvironmentCache(environmentId).then((state) => {
+          const created = createEnvironmentStore(state ?? undefined)
+          live.set(environmentId, created)
+          return created
+        })
         stores.set(environmentId, store)
       }
       return store

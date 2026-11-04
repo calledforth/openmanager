@@ -489,7 +489,11 @@ export function ConnectionProvider({
   // The registry as this tab last read or wrote it, to tell what other tabs
   // have saved since.
   const persistedRef = useRef(registry)
-  /** Removing an environment is the one thing that ends its connection. */
+  /**
+   * Removing an environment, here or in another tab, is the one thing that
+   * ends its connection, and the one thing that deletes what this browser
+   * kept of it (unless that holds unsent work).
+   */
   const endRemovedConnections = useCallback(
     (before: EnvironmentRegistry, after: EnvironmentRegistry) => {
       for (const { environmentId } of before.environments) {
@@ -498,6 +502,8 @@ export function ConnectionProvider({
         retryAttempts.current.delete(environmentId)
         setActiveRoute(environmentId, null)
         storeConnections(dropConnection(connectionsRef.current, environmentId))
+        // Before its client is torn down, so the client's last save is skipped.
+        void deleteEnvironmentCache(environmentId)
       }
     },
     [setActiveRoute, storeConnections],
@@ -698,11 +704,7 @@ export function ConnectionProvider({
         // The socket's backoff is dialling this route. Asking it again puts the
         // answer on the connection, which takes that client down: nothing else
         // would stop the token going to whatever answers there now.
-        if (
-          result.probes.some(
-            (p) => p.endpoint === from && answeredAsAnother(p.outcome, environmentId),
-          )
-        ) {
+        if (result.probes.some((p) => p.endpoint === from && answeredAsAnother(p.outcome, environmentId))) {
           askAgain(environmentId)
         }
         if (result.found === null) {
@@ -950,32 +952,35 @@ export function ConnectionProvider({
           )
         })
 
-  const connect = useCallback((nextEndpoint: string, credential = '') => {
-    const endpoint = parseEnvironmentEndpoint(nextEndpoint)
-    if (!endpoint) return
-    const parsed = parseEnvironmentCredential(credential)
-    forgottenRoutes.current.clear()
-    setLocalOwnerClaimFailure(null)
-    const begin = (nextCredential: string, claimedEnvironmentId?: string) => {
-      setPending({ endpoint, credential: nextCredential, claimedEnvironmentId })
-      setConnectAttempt((value) => value + 1)
-    }
-    // A pasted token always wins. Remote endpoints are never asked for an
-    // owner credential (pairing is how those clients enroll). On loopback a
-    // blank token claims the process-minted owner credential before persist
-    // so the registry is keyed to the environment ID with that token.
-    if (parsed || !isLoopbackEnvironmentEndpoint(endpoint)) {
-      claimGeneration.current += 1
-      begin(parsed)
-      return
-    }
-    const requestId = ++claimGeneration.current
-    claimingEndpoint.current = endpoint
-    void fetchLocalOwner(endpoint).then((claim) => {
-      if (requestId !== claimGeneration.current) return
-      begin(claim?.credential ?? '', claim?.environmentId)
-    })
-  }, [])
+  const connect = useCallback(
+    (nextEndpoint: string, credential = '') => {
+      const endpoint = parseEnvironmentEndpoint(nextEndpoint)
+      if (!endpoint) return
+      const parsed = parseEnvironmentCredential(credential)
+      forgottenRoutes.current.clear()
+      setLocalOwnerClaimFailure(null)
+      const begin = (nextCredential: string, claimedEnvironmentId?: string) => {
+        setPending({ endpoint, credential: nextCredential, claimedEnvironmentId })
+        setConnectAttempt((value) => value + 1)
+      }
+      // A pasted token always wins. Remote endpoints are never asked for an
+      // owner credential (pairing is how those clients enroll). On loopback a
+      // blank token claims the process-minted owner credential before persist
+      // so the registry is keyed to the environment ID with that token.
+      if (parsed || !isLoopbackEnvironmentEndpoint(endpoint)) {
+        claimGeneration.current += 1
+        begin(parsed)
+        return
+      }
+      const requestId = ++claimGeneration.current
+      claimingEndpoint.current = endpoint
+      void fetchLocalOwner(endpoint).then((claim) => {
+        if (requestId !== claimGeneration.current) return
+        begin(claim?.credential ?? '', claim?.environmentId)
+      })
+    },
+    [],
+  )
 
   /** Drop what belonged to a connect that is being replaced or abandoned. */
   const abandonPendingConnect = useCallback(() => {
@@ -1027,13 +1032,9 @@ export function ConnectionProvider({
 
   const removeEnvironment = useCallback(
     (environmentId: string) => {
-      const saved = findStoredEnvironment(registryRef.current.environments, environmentId)
       abandonPendingConnect()
       setActiveRoute(environmentId, null)
       update((current) => removeStoredEnvironment(current, environmentId))
-      // The user asked for it to go, so what this browser kept of it goes too.
-      // Before its client is torn down, so the client's last save is skipped.
-      if (saved) void deleteEnvironmentCache(environmentId)
     },
     [abandonPendingConnect, setActiveRoute, update],
   )
@@ -1185,7 +1186,14 @@ export function ConnectionProvider({
         startRouteSearch(environmentId, 'socket')
       }
     },
-    [changeConnection, noteLiveReport, preview, startRouteSearch, tokenChanged, update],
+    [
+      changeConnection,
+      noteLiveReport,
+      preview,
+      startRouteSearch,
+      tokenChanged,
+      update,
+    ],
   )
 
   // One check per route at a time, so a slow answer cannot land after, and
@@ -1195,10 +1203,8 @@ export function ConnectionProvider({
   const checkRoutes = useCallback(() => {
     if (preview) return
     const isInUse = (registry: EnvironmentRegistry, environmentId: string, route: string) =>
-      inUseFor(
-        findStoredEnvironment(registry.environments, environmentId),
-        activeRoutesRef.current,
-      ) === route
+      inUseFor(findStoredEnvironment(registry.environments, environmentId), activeRoutesRef.current) ===
+      route
     const current = registryRef.current
     for (const item of current.environments) {
       for (const route of item.routes) {

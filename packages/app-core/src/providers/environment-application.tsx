@@ -98,6 +98,7 @@ import {
   DraftPageContext,
   DraftPageNavigationContext,
   forgetSentDraft,
+  keepSentDraftHere,
   rememberLandingProject,
   rememberedLandingProject,
   rememberSentDraft,
@@ -755,6 +756,9 @@ function EnvironmentSessionStateProvider({
             : undefined
     if (redirect === undefined || redirectedRef.current === pageDraftId) return
     redirectedRef.current = pageDraftId
+    if (redirect !== null && redirect === sentSessionId) {
+      keepSentDraftHere(landingEnvironmentRef.current, pageDraftId, deviceStorage)
+    }
     if (pageConsumed && consumedSessionId) {
       retiredOpenedRef.current = false
       retiredFellBackRef.current = false
