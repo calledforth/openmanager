@@ -12,6 +12,7 @@ import {
 import type { Workspace } from '@openmanager/protocol'
 import { EnvironmentClientProvider } from '../src/providers/environment-client'
 import { EnvironmentApplicationProviders } from '../src/providers/environment-application'
+import { EnvironmentAvailabilityContext } from '../src/providers/environment-availability'
 import {
   useActiveThreadState,
   useActiveThreadStores,
@@ -1425,6 +1426,283 @@ describe('the shared application over the environment client', () => {
     await render(<App client={client} addWorkspace={addWorkspace} />)
     await act(() => headerRow('Add project')!.click())
     expect(addWorkspace).toHaveBeenCalledOnce()
+  })
+})
+
+describe('an answer while the host holds the send', () => {
+  const REASON = "Can't send until Laptop is back. What you type here is kept."
+
+  function Held({ client, reason }: { client: MockEnvironmentClient; reason: string | null }) {
+    return (
+      <EnvironmentAvailabilityContext.Provider
+        value={{ name: 'Laptop', sendBlockedReason: reason }}
+      >
+        <App client={client} />
+      </EnvironmentAvailabilityContext.Provider>
+    )
+  }
+
+  async function asked(interaction: Parameters<MockEnvironmentClient['requestInteraction']>[1]) {
+    const client = createMockEnvironmentClient({
+      seed: { ...SEEDED_HISTORY, activeSessionId: SESSION.sessionId },
+      respond: () => null,
+    })
+    await render(<Held client={client} reason={REASON} />)
+    const { turn } = await act(() => client.commands.sendTurn({ ...THREAD, text: 'ask me' }))
+    await act(() => client.requestInteraction({ ...THREAD, turnId: turn.turnId }, interaction))
+    return client
+  }
+  const responses = (client: MockEnvironmentClient) =>
+    client.calls.filter((call) => call.command === 'respondToInteraction')
+
+  it("holds a permission's choices, saying why on the card, and sends nothing", async () => {
+    const client = await asked({
+      kind: 'permission',
+      interactionId: 'perm-1',
+      toolCall: { toolCallId: 'tool-1', title: 'pnpm test' },
+      options: [
+        { optionId: 'deny', name: 'Deny', kind: 'reject_once' },
+        { optionId: 'allow', name: 'Allow', kind: 'allow_once' },
+      ],
+    })
+    expect(container.textContent).toContain('pnpm test')
+    const allow = buttonWithText('Allow')!
+    expect(allow.disabled).toBe(true)
+    expect(buttonWithText('Deny')!.disabled).toBe(true)
+    // On the card as well as under the composer: the card can be far up the chat.
+    expect(occurrences(REASON)).toBe(2)
+
+    await act(() => allow.click())
+    await settle(client)
+    expect(responses(client)).toEqual([])
+    expect(container.textContent).toContain('pnpm test')
+  })
+
+  it("keeps a question's choice, holds Submit and Dismiss, and sends once it can", async () => {
+    const client = await asked({
+      kind: 'question',
+      interactionId: 'q-1',
+      questions: [
+        {
+          questionId: 'framework',
+          prompt: 'Which framework?',
+          options: [{ optionId: 'react', label: 'React' }],
+        },
+      ],
+    })
+    expect(container.textContent).toContain('Which framework?')
+    // A single choice on the last question would send at once; held, it is kept.
+    await act(() => buttonWithText('React')!.click())
+    await settle(client)
+    expect(responses(client)).toEqual([])
+    expect(buttonWithText('React')!.getAttribute('aria-checked')).toBe('true')
+    expect(buttonWithText('Submit')!.disabled).toBe(true)
+    expect(buttonWithText('Dismiss')!.disabled).toBe(true)
+    expect(container.textContent).toContain(REASON)
+
+    const card = container.querySelector<HTMLElement>('[aria-label="Agent question"]')!
+    await act(() => {
+      card.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))
+      card.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }))
+    })
+    await settle(client)
+    expect(responses(client)).toEqual([])
+
+    await render(<Held client={client} reason={null} />)
+    expect(buttonWithText('Submit')!.disabled).toBe(false)
+    await act(() => buttonWithText('Submit')!.click())
+    await settle(client)
+    expect(responses(client).at(-1)?.input).toMatchObject({
+      response: {
+        kind: 'question',
+        interactionId: 'q-1',
+        outcome: {
+          outcome: 'answered',
+          answers: [{ questionId: 'framework', selectedOptionIds: ['react'] }],
+        },
+      },
+    })
+  })
+
+  it("holds a plan's Build", async () => {
+    const client = await asked({
+      kind: 'plan',
+      interactionId: 'plan-1',
+      name: 'Migrate the sidebar',
+      markdown: 'Move it.',
+      todos: [{ id: 'todo-1', content: 'Move the sidebar', status: 'pending' }],
+      continuation: 'follow_up_turn',
+    })
+    const build = buttonWithText('Build')!
+    expect(build.disabled).toBe(true)
+    await act(() => build.click())
+    await settle(client)
+    expect(responses(client)).toEqual([])
+  })
+
+  it('keeps the card when the environment refuses an answer, with nothing left unhandled', async () => {
+    const client = await asked({
+      kind: 'permission',
+      interactionId: 'perm-1',
+      toolCall: { toolCallId: 'tool-1', title: 'pnpm test' },
+      options: [{ optionId: 'allow', name: 'Allow', kind: 'allow_once' }],
+    })
+    await render(<Held client={client} reason={null} />)
+    const refused = vi
+      .spyOn(client.commands, 'respondToInteraction')
+      .mockRejectedValue(new Error('Request expired.'))
+    await act(() => buttonWithText('Allow')!.click())
+    await settle(client)
+    expect(refused).toHaveBeenCalledTimes(1)
+    expect(container.textContent).toContain('pnpm test')
+    // Said on the card, named for the environment it came from.
+    expect(container.textContent).toContain('Laptop: Request expired.')
+  })
+
+  const FRAMEWORK: Parameters<MockEnvironmentClient['requestInteraction']>[1] = {
+    kind: 'question',
+    interactionId: 'q-1',
+    questions: [
+      {
+        questionId: 'framework',
+        prompt: 'Which framework?',
+        options: [{ optionId: 'react', label: 'React' }],
+      },
+    ],
+  }
+
+  it('says why a refused answer did not go, keeping the choice for another try', async () => {
+    const client = await asked(FRAMEWORK)
+    await render(<Held client={client} reason={null} />)
+    const refused = vi
+      .spyOn(client.commands, 'respondToInteraction')
+      .mockRejectedValueOnce(new Error('Request expired.'))
+    // A single choice on the only question sends at once.
+    await act(() => buttonWithText('React')!.click())
+    await settle(client)
+    expect(refused).toHaveBeenCalledTimes(1)
+    expect(container.textContent).toContain('Which framework?')
+    expect(container.textContent).toContain('Laptop: Request expired.')
+    expect(buttonWithText('React')!.getAttribute('aria-checked')).toBe('true')
+
+    // The same Submit tries again, and the reason goes with the try.
+    await act(() => buttonWithText('Submit')!.click())
+    await settle(client)
+    expect(refused).toHaveBeenCalledTimes(2)
+    expect(container.textContent).not.toContain('Request expired.')
+  })
+
+  it('says why a refused dismissal did not go', async () => {
+    const client = await asked(FRAMEWORK)
+    await render(<Held client={client} reason={null} />)
+    vi.spyOn(client.commands, 'respondToInteraction').mockRejectedValue(new Error('Too late.'))
+    await act(() => buttonWithText('Dismiss')!.click())
+    await settle(client)
+    expect(container.textContent).toContain('Which framework?')
+    expect(container.textContent).toContain('Laptop: Too late.')
+  })
+
+  it('says why a refused Build did not go', async () => {
+    const client = await asked({
+      kind: 'plan',
+      interactionId: 'plan-1',
+      name: 'Migrate the sidebar',
+      markdown: 'Move it.',
+      todos: [{ id: 'todo-1', content: 'Move the sidebar', status: 'pending' }],
+      continuation: 'follow_up_turn',
+    })
+    await render(<Held client={client} reason={null} />)
+    vi.spyOn(client.commands, 'respondToInteraction').mockRejectedValue(
+      new Error('Plan was replaced.'),
+    )
+    await act(() => buttonWithText('Build')!.click())
+    await settle(client)
+    expect(container.textContent).toContain('Migrate the sidebar')
+    expect(container.textContent).toContain('Laptop: Plan was replaced.')
+  })
+
+  it('keeps the choice when the hold comes on with an answer on its way, and sends it again unchanged', async () => {
+    const client = await asked(FRAMEWORK)
+    await render(<Held client={client} reason={null} />)
+    const respond = client.commands.respondToInteraction.bind(client.commands)
+    let drop: ((error: Error) => void) | undefined
+    const sent = vi
+      .spyOn(client.commands, 'respondToInteraction')
+      .mockImplementationOnce(() => new Promise<void>((_, reject) => (drop = reject)))
+      .mockImplementation(respond)
+    await act(() => buttonWithText('React')!.click())
+    expect(buttonWithText('Sending')).toBeDefined()
+
+    // The connection goes with the answer on its way.
+    await render(<Held client={client} reason={REASON} />)
+    await act(async () => drop!(new Error('Connection closed.')))
+    await settle(client)
+    expect(container.textContent).toContain('Which framework?')
+    expect(buttonWithText('React')!.getAttribute('aria-checked')).toBe('true')
+    expect(buttonWithText('Submit')!.disabled).toBe(true)
+    // Held, the reason under the composer is what's said.
+    expect(container.textContent).not.toContain('Connection closed.')
+    expect(container.textContent).toContain(REASON)
+
+    await render(<Held client={client} reason={null} />)
+    expect(container.textContent).toContain('Laptop: Connection closed.')
+    await act(() => buttonWithText('Submit')!.click())
+    await settle(client)
+    // The same answer: the client sends it again under the same command id
+    // (environment-client's websocket tests), so it can't be a rival.
+    expect(sent).toHaveBeenCalledTimes(2)
+    expect(sent.mock.calls[1]![0]).toEqual(sent.mock.calls[0]![0])
+    expect(client.getState().threads[THREAD.threadId]?.interactions).toEqual([])
+  })
+
+  it('moves through a held set with Next and Enter, but never sends it', async () => {
+    const client = await asked({
+      kind: 'question',
+      interactionId: 'q-2',
+      questions: [
+        {
+          questionId: 'tools',
+          prompt: 'Which tools?',
+          allowMultiple: true,
+          options: [
+            { optionId: 'lint', label: 'Lint' },
+            { optionId: 'test', label: 'Test' },
+          ],
+        },
+        {
+          questionId: 'when',
+          prompt: 'When?',
+          options: [{ optionId: 'now', label: 'Now' }],
+        },
+      ],
+    })
+    const card = () => container.querySelector<HTMLElement>('[aria-label^="Agent question"]')!
+    const enter = () =>
+      act(() => {
+        card().dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }))
+      })
+    expect(container.textContent).toContain('Which tools?')
+    await act(() => buttonWithText('Lint')!.click())
+    // Moving on is not a send.
+    expect(buttonWithText('Next')!.disabled).toBe(false)
+    await act(() => buttonWithText('Next')!.click())
+    expect(container.textContent).toContain('When?')
+    await act(() => buttonWithText('Now')!.click())
+    await enter()
+    await settle(client)
+    expect(container.textContent).toContain('When?')
+    expect(buttonWithText('Submit')!.disabled).toBe(true)
+
+    // Back to the first, and on again from the keyboard.
+    await act(() =>
+      card().dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowLeft', bubbles: true })),
+    )
+    expect(container.textContent).toContain('Which tools?')
+    await enter()
+    expect(container.textContent).toContain('When?')
+    await enter()
+    await settle(client)
+    expect(responses(client)).toEqual([])
   })
 })
 

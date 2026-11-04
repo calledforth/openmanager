@@ -1,5 +1,11 @@
+import { useState } from 'react'
 import { CaretDownIcon, CaretLeftIcon, CaretRightIcon, PlayIcon } from '@phosphor-icons/react'
 import type { PlanTodo, PlanTodoStatus } from '@agentpack/contract'
+import {
+  failureText,
+  useEnvironmentAvailability,
+  useFailureNamer,
+} from '../../providers/environment-availability'
 import { usePlanStateOptional, type PlanRow } from '../../providers/plan-provider'
 import { TextPart } from '../parts/TextPart'
 import { typographyBody, typographyCaptionTiny, typographyLabelSm } from '../../lib/typography'
@@ -123,6 +129,11 @@ function PlanBody({ plan }: { plan: PlanRow }) {
 /** Review chip above the composer — expands upward in place to show the plan. */
 export function ComposerPlanPrompt() {
   const ctx = usePlanStateOptional()
+  // Building is an answer, so it waits with the composer's send, which says why.
+  const held = Boolean(useEnvironmentAvailability()?.sendBlockedReason)
+  // A Build the environment refused is said under the chip, which stays for another try.
+  const nameFailure = useFailureNamer()
+  const [failed, setFailed] = useState<{ requestId: string; text: string } | null>(null)
   if (!ctx?.pendingPlan || !ctx.activeSessionId) return null
 
   const {
@@ -149,6 +160,15 @@ export function ComposerPlanPrompt() {
   const canGoBack = selectedIndex > 0
   const canGoForward = selectedIndex >= 0 && selectedIndex < revisions.length - 1
   const viewingEarlier = !!plan && plan.requestId !== pendingPlan.requestId
+  const failure = failed?.requestId === pendingPlan.requestId && !held ? failed.text : null
+  const build = () => {
+    const { requestId } = pendingPlan
+    setFailed(null)
+    void buildPendingPlan().catch((error: unknown) => {
+      const text = failureText(error, nameFailure)
+      if (text) setFailed({ requestId, text })
+    })
+  }
 
   const toggle = () => {
     if (isExpanded) collapsePlan()
@@ -159,7 +179,7 @@ export function ComposerPlanPrompt() {
     <div
       className={cn(
         'mb-1.5 overflow-hidden border border-[var(--basis-border-muted)] bg-[var(--basis-surface)]/95 backdrop-blur-sm',
-        isExpanded ? 'rounded-[var(--basis-chat-shell-radius)]' : 'rounded-full',
+        isExpanded || failure ? 'rounded-[var(--basis-chat-shell-radius)]' : 'rounded-full',
       )}
     >
       {isExpanded ? (
@@ -242,14 +262,19 @@ export function ComposerPlanPrompt() {
         </button>
         <button
           type="button"
-          onClick={() => void buildPendingPlan()}
-          disabled={isBuilding}
-          className={buildButtonClass}
+          onClick={build}
+          disabled={isBuilding || held}
+          className={cn(buildButtonClass, held && 'disabled:cursor-default')}
         >
           <PlayIcon className="h-2.5 w-2.5" weight="fill" />
           {isBuilding ? '…' : 'Build'}
         </button>
       </div>
+      {failure ? (
+        <div className={cn('px-2.5 pb-1.5', typographyCaptionTiny, 'text-amber-500')} role="alert">
+          {failure}
+        </div>
+      ) : null}
     </div>
   )
 }

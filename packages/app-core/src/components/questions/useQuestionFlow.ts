@@ -1,5 +1,6 @@
 import { useCallback, useMemo, useRef, useState } from 'react'
 import type { Question, QuestionOutcome } from '@agentpack/contract'
+import { failureText, useFailureNamer } from '../../providers/environment-availability'
 import type { PendingQuestion } from '../../providers/question-provider'
 import {
   allAnswered,
@@ -24,6 +25,17 @@ export interface QuestionFlow {
   text: string
   submitting: boolean
   complete: boolean
+  /**
+   * Why the answers can't be sent just now (the host holds every send), or
+   * null while they can. Choosing and moving between questions still work;
+   * only sending and dismissing wait.
+   */
+  heldReason: string | null
+  /**
+   * Why the last answer or dismissal didn't go, when the environment refused
+   * it. The choices are kept, and the same Submit or Dismiss tries again.
+   */
+  failure: string | null
   /** Whether the primary action is available right now. */
   canAdvance: boolean
   /** Whether the primary action sends the answers rather than moving on. */
@@ -61,10 +73,23 @@ const initial = (requestId: string): FlowState => ({
 export function useQuestionFlow(
   pending: PendingQuestion | null,
   onResolve: ((outcome: QuestionOutcome) => void | Promise<void>) | undefined,
+  heldReason: string | null = null,
 ): QuestionFlow | null {
   const [state, setState] = useState<FlowState>(() => initial(pending?.requestId ?? ''))
   const [submitting, setSubmitting] = useState(false)
   const submittingRef = useRef(false)
+  const held = heldReason !== null
+  const nameFailure = useFailureNamer()
+  const [failed, setFailed] = useState<{ requestId: string; text: string } | null>(null)
+  const requestId = pending?.requestId ?? null
+  // Said on the request it is about, and gone with it.
+  const fail = useCallback(
+    (error: unknown) => {
+      const text = failureText(error, nameFailure)
+      if (requestId && text) setFailed({ requestId, text })
+    },
+    [nameFailure, requestId],
+  )
 
   // A new request resets the flow during render, so the first paint of a new
   // question set can never show the previous one's answers.
@@ -112,14 +137,18 @@ export function useQuestionFlow(
       if (!onResolve || submittingRef.current) return
       submittingRef.current = true
       setSubmitting(true)
+      setFailed(null)
       try {
         await onResolve({ outcome: 'answered', answers: buildAnswers(questions, drafts) })
+      } catch (error) {
+        // Nothing is thrown past the card: it stays, with the answers, and says why.
+        fail(error)
       } finally {
         submittingRef.current = false
         setSubmitting(false)
       }
     },
-    [onResolve, questions],
+    [fail, onResolve, questions],
   )
 
   /** Move on from the current question against `drafts` — passed in so an
@@ -127,10 +156,11 @@ export function useQuestionFlow(
   const moveOn = useCallback(
     (drafts: Record<string, QuestionDraft>) => {
       const step = nextStep(questions, drafts, index)
-      if (step.kind === 'submit') void submit(drafts)
-      else goTo(step.index)
+      if (step.kind !== 'submit') goTo(step.index)
+      // Held, the choice is kept and waits for Submit once it can go.
+      else if (!held) void submit(drafts)
     },
-    [goTo, index, questions, submit],
+    [goTo, held, index, questions, submit],
   )
 
   const choose = useCallback(
@@ -149,16 +179,21 @@ export function useQuestionFlow(
     [moveOn, state.drafts],
   )
 
-  const canAdvance = !!question && !!draft && isAnswered(question, draft) && !submitting
+  const willSubmit = nextStep(questions, state.drafts, index).kind === 'submit'
+  const canAdvance =
+    !!question && !!draft && isAnswered(question, draft) && !submitting && !(held && willSubmit)
 
   const advance = useCallback(() => {
     if (!canAdvance) return
     moveOn(state.drafts)
   }, [canAdvance, moveOn, state.drafts])
 
+  // Dismissing is an answer too, so it waits with the rest.
   const skip = useCallback(() => {
-    void onResolve?.({ outcome: 'cancelled', reason: 'user' })
-  }, [onResolve])
+    if (held || !onResolve) return
+    setFailed(null)
+    void Promise.resolve(onResolve({ outcome: 'cancelled', reason: 'user' })).catch(fail)
+  }, [fail, held, onResolve])
 
   if (!pending || !question) return null
 
@@ -172,8 +207,11 @@ export function useQuestionFlow(
     text: draft?.text ?? '',
     submitting,
     complete,
+    heldReason,
+    // Held, the reason under the composer is what's said.
+    failure: !held && failed?.requestId === pending.requestId ? failed.text : null,
     canAdvance,
-    willSubmit: nextStep(questions, state.drafts, index).kind === 'submit',
+    willSubmit,
     setText,
     choose,
     goTo,

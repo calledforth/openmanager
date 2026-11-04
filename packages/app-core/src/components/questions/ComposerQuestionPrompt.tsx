@@ -86,7 +86,11 @@ function StepDots({ flow }: { flow: QuestionFlow }) {
  * Keys: ↑/↓ move between options (and on to the Next button), Enter or Space
  * picks — a single choice moves straight on, a multiple choice toggles —
  * 1–9 pick by number, ←/→ change question, ⌘/Ctrl+Enter moves on from
- * anywhere, Esc dismisses the whole set. */
+ * anywhere, Esc dismisses the whole set.
+ *
+ * While the host holds sends, choices are still kept, but Submit and Dismiss
+ * wait: the composer beneath says why. An answer the environment refused
+ * says so here, with the choices kept for the same Submit to try again. */
 export function QuestionCard({ flow }: { flow: QuestionFlow }) {
   const { questions, index, drafts, question } = flow
   const shellRef = useRef<HTMLDivElement>(null)
@@ -265,13 +269,19 @@ export function QuestionCard({ flow }: { flow: QuestionFlow }) {
         </div>
       </div>
 
+      {flow.failure ? (
+        <div className={`${typographyCaption} text-amber-500`} role="alert">
+          {flow.failure}
+        </div>
+      ) : null}
       <div className="flex items-center justify-between gap-3">
         <button
           type="button"
           tabIndex={-1}
+          disabled={flow.heldReason !== null}
           onMouseDown={(event) => event.preventDefault()}
           onClick={flow.skip}
-          className={`${typographyCaption} rounded-[5px] text-[var(--basis-text-faint)] transition-colors hover:text-[var(--basis-text-muted)]`}
+          className={`${typographyCaption} rounded-[5px] text-[var(--basis-text-faint)] transition-colors hover:text-[var(--basis-text-muted)] disabled:pointer-events-none disabled:opacity-50`}
         >
           Dismiss
         </button>

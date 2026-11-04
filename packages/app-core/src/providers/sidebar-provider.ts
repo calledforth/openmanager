@@ -209,7 +209,10 @@ export interface SidebarEnvironmentRows {
 export interface SidebarRowEnvironment {
   /** Its saved name, shown on the card. */
   name: string
-  /** Connected now, so a new agent could start there. Absent reads as not. */
+  /**
+   * Connected now, and not `offline`, so a new agent could start there.
+   * Absent reads as not.
+   */
   reachable?: boolean
   canSettle: boolean
   canPin: boolean
@@ -248,7 +251,10 @@ export interface EnvironmentOption {
   label: string
   /** Its address, for an environment whose name another saved one shares. */
   detail?: string
-  /** Connected now. Nothing could start on one that is not, so it cannot be picked. */
+  /**
+   * Connected now, and not offline as far as the host can tell. Nothing could
+   * start on one that is not, so it cannot be picked.
+   */
   reachable: boolean
 }
 

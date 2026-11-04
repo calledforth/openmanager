@@ -103,9 +103,15 @@ export function useMessageInputBinding() {
   const { uploadAttachments, discardAttachments, getModelImageSupport } = useViewActions()
   const questionState = useQuestionStateOptional()
   const pendingQuestion = questionState?.pendingQuestion ?? null
+  const availability = useEnvironmentAvailability()
   // Slide state lives here because both the card above and the composer below
-  // it are views onto the same answer draft.
-  const questionFlow = useQuestionFlow(pendingQuestion, questionState?.resolveQuestion)
+  // it are views onto the same answer draft. Answering is a send too, so it
+  // waits with the composer's.
+  const questionFlow = useQuestionFlow(
+    pendingQuestion,
+    questionState?.resolveQuestion,
+    availability?.sendBlockedReason ?? null,
+  )
   const planState = usePlanStateOptional()
   const pendingPlan = planState?.pendingPlan ?? null
   const planEntries = useSessionPlanEntries()
@@ -263,7 +269,6 @@ export function useMessageInputBinding() {
     currentModelName:
       modelOptions.find((model) => model.id === currentModelId)?.name ?? currentModelId,
   })
-  const availability = useEnvironmentAvailability()
   const nameFailure = useFailureNamer()
   // What is typed stays either way: only the send waits.
   const sendBlockedReason = availability?.sendBlockedReason ?? providerBlockedReason
@@ -314,8 +319,8 @@ export function useMessageInputBinding() {
           onChange: questionFlow.setText,
           placeholder: 'Or type your own answer…',
           onSubmit: questionFlow.advance,
-          // Answering is a send too.
-          canSubmit: questionFlow.canAdvance && !sendBlockedReason,
+          // Held, it still moves between questions; only the send waits.
+          canSubmit: questionFlow.canAdvance,
         }
       : undefined,
     attachedTop,

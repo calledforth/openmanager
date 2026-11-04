@@ -23,6 +23,7 @@ import {
   type EnvironmentChoiceValue,
   type EnvironmentOption,
 } from '@openmanager/app-core/providers/sidebar-provider'
+import { environmentIsDown } from '@openmanager/environment-client/connection'
 import { useConnection } from '../providers/connection-provider'
 import { useEnvironmentClients } from '../providers/environment-client-provider'
 
@@ -97,12 +98,16 @@ export function EnvironmentChoiceHost({ children }: { children: ReactNode }) {
       const twin = environments.some(
         (other) => other.label === label && other.environmentId !== environmentId,
       )
-      const endpoint = links.find((link) => link.environmentId === environmentId)?.endpoint
+      const link = links.find((item) => item.environmentId === environmentId)
+      const endpoint = link?.endpoint
       return {
         environmentId,
         label,
         ...(twin && endpoint ? { detail: hostOf(endpoint) } : {}),
-        reachable: isEnvironmentReachable(clients[environmentId]),
+        // Down (the device offline, say) while its socket still reads connected,
+        // it reads offline everywhere else, so it isn't one to pick.
+        reachable:
+          isEnvironmentReachable(clients[environmentId]) && !(link && environmentIsDown(link.ui)),
       }
     })
   }, [clients, environments, links])
@@ -110,6 +115,7 @@ export function EnvironmentChoiceHost({ children }: { children: ReactNode }) {
   const live = {
     clients,
     handovers,
+    links,
     move,
     navigate,
     pathname,
@@ -129,6 +135,7 @@ export function EnvironmentChoiceHost({ children }: { children: ReactNode }) {
       const {
         clients,
         handovers,
+        links,
         move,
         navigate,
         pathname,
@@ -138,7 +145,15 @@ export function EnvironmentChoiceHost({ children }: { children: ReactNode }) {
       } = liveRef.current
       const target = clients[environmentId]
       const sourceId = from?.environmentId ?? selectedId
-      if (environmentId === sourceId || !isEnvironmentReachable(target)) return false
+      // Down as well as not reachable: a draft saved there would wait in its queue.
+      const link = links.find((item) => item.environmentId === environmentId)
+      if (
+        environmentId === sourceId ||
+        !isEnvironmentReachable(target) ||
+        (link && environmentIsDown(link.ui))
+      ) {
+        return false
+      }
       // Already on its way, or copied and waiting to go: a second copy of its
       // text would be a second draft.
       if (
