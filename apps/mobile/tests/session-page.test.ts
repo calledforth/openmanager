@@ -734,11 +734,12 @@ describe('session menu', () => {
   const byId = (items: ReturnType<typeof sessionMenuItems>) =>
     Object.fromEntries(items.map((item) => [item.id, item.disabledReason]))
 
-  it('offers rename, naming and settling for a finished session', () => {
+  it('offers rename, naming, pinning and settling for a finished session', () => {
     const items = sessionMenuItems(input({}))
     expect(items.map((item) => item.id)).toEqual([
       'rename',
       'regenerate-title',
+      'pin',
       'settle',
       'session-settings',
     ])
@@ -757,6 +758,27 @@ describe('session menu', () => {
     const background = sessionMenuItems(input({ mark: 'background', backgroundTaskCount: 2 }))
     const stop = background.find((item) => item.id === 'stop-background')
     expect(stop).toMatchObject({ disabledReason: null, destructive: true })
+  })
+
+  it('pins active work, live work too, and unpins a pinned session wherever it is', () => {
+    const live = sessionMenuItems(input({ mark: 'working' }))
+    expect(live.find((item) => item.id === 'pin')).toMatchObject({
+      label: 'Pin to top',
+      disabledReason: null,
+    })
+    const pinned = sessionMenuItems(input({ pinned: true })).map((item) => item.id)
+    expect(pinned).toContain('unpin')
+    expect(pinned).not.toContain('pin')
+    // As web: only Active is pinned, but a pin can always be taken off.
+    expect(sessionMenuItems(input({ settled: true })).map((item) => item.id)).not.toContain('pin')
+    expect(
+      sessionMenuItems(input({ settled: true, pinned: true })).map((item) => item.id),
+    ).toContain('unpin')
+  })
+
+  it('says why an environment without pins cannot pin', () => {
+    const items = byId(sessionMenuItems(input({ supports: (command) => command !== 'pinSession' })))
+    expect(items.pin).toBe('This environment cannot pin sessions')
   })
 
   it('moves a settled session back to active', () => {

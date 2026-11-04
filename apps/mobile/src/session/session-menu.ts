@@ -10,7 +10,14 @@ import type { EnvironmentCommandName } from '@openmanager/environment-client'
 import type { StatusMark } from '../home/rows'
 
 export type SessionMenuItemId =
-  'rename' | 'regenerate-title' | 'settle' | 'unsettle' | 'stop-background' | 'session-settings'
+  | 'rename'
+  | 'regenerate-title'
+  | 'pin'
+  | 'unpin'
+  | 'settle'
+  | 'unsettle'
+  | 'stop-background'
+  | 'session-settings'
 
 export interface SessionMenuItem {
   id: SessionMenuItemId
@@ -25,6 +32,8 @@ export interface SessionMenuInput {
   mark: StatusMark
   /** The reader settled it (it is in the long tail of All). */
   settled: boolean
+  /** The reader pinned it to the top of Active. */
+  pinned?: boolean
   /** Background tasks the environment lists for it. */
   backgroundTaskCount: number
   /**
@@ -65,6 +74,21 @@ export function sessionMenuItems(input: SessionMenuInput): SessionMenuItem[] {
       ),
     },
   ]
+  // As web's sidebar: any active session can be pinned, live ones too; a
+  // pinned one can always be unpinned, wherever it is.
+  if (input.pinned) {
+    items.push({
+      id: 'unpin',
+      label: 'Unpin',
+      disabledReason: gate(input, 'pinSession', 'This environment cannot pin sessions'),
+    })
+  } else if (!input.settled) {
+    items.push({
+      id: 'pin',
+      label: 'Pin to top',
+      disabledReason: gate(input, 'pinSession', 'This environment cannot pin sessions'),
+    })
+  }
   if (input.settled) {
     items.push({
       id: 'unsettle',

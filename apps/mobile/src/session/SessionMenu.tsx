@@ -3,6 +3,8 @@ import {
   CheckCircleIcon,
   GearSixIcon,
   PencilSimpleIcon,
+  PushPinIcon,
+  PushPinSlashIcon,
   SparkleIcon,
   StopCircleIcon,
   type IconProps,
@@ -21,6 +23,8 @@ import type { SessionMenuItem, SessionMenuItemId } from './session-menu'
 const ICONS: Record<SessionMenuItemId, ComponentType<IconProps>> = {
   rename: PencilSimpleIcon,
   'regenerate-title': SparkleIcon,
+  pin: PushPinIcon,
+  unpin: PushPinSlashIcon,
   settle: CheckCircleIcon,
   unsettle: ArrowUUpLeftIcon,
   'stop-background': StopCircleIcon,

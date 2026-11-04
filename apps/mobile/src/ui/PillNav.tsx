@@ -4,9 +4,11 @@ import { GearSixIcon, ListIcon, MagnifyingGlassIcon, TrayIcon } from 'phosphor-r
 import { useCallback, useEffect, useSyncExternalStore, type ComponentType } from 'react'
 import { Pressable, StyleSheet, View } from 'react-native'
 import Animated, {
+  Easing,
   useAnimatedStyle,
   useSharedValue,
   withSpring,
+  withTiming,
   type SharedValue,
 } from 'react-native-reanimated'
 
@@ -14,6 +16,7 @@ import { AppText } from '../components/ui/AppText'
 import { usePhoneTheme } from '../theme/ThemeProvider'
 import { Glass, GlassTargetProvider } from './Glass'
 import type { TabTargets } from './glass-target'
+import type { TabBarCover } from './tab-bar-cover'
 import { tap } from './haptics'
 import { PILL_PADDING, pillOffset, TAB_GAP, TAB_HEIGHT, TAB_WIDTH, tabEmphasis } from './pill-nav'
 
@@ -31,6 +34,9 @@ const TABS: Record<
 function tabLabel(label: string, badge: number) {
   return badge > 0 ? `${label}, ${badge} ${badge === 1 ? 'needs' : 'need'} you` : label
 }
+
+const noSubscribe = () => () => undefined
+const notCovered = () => false
 
 /** The highlight's spring: quick, settles without a bounce. */
 const SLIDE = { damping: 22, stiffness: 260, mass: 0.7 }
@@ -78,6 +84,8 @@ function TabIcon({
  * pill is drawn beside the tabs' screens, so it blurs the target of the one
  * in front (`targets`), switching the moment the tab does, while the one it
  * leaves is still fading out. The badge is how many sessions wait on you.
+ * While a sheet is up (`cover`) the pill sinks out of its way, and neither
+ * a tap nor a screen reader reaches it.
  */
 export function PillNav({
   state,
@@ -85,7 +93,8 @@ export function PillNav({
   insets,
   badge = 0,
   targets,
-}: BottomTabBarProps & { badge?: number; targets: TabTargets }) {
+  cover,
+}: BottomTabBarProps & { badge?: number; targets: TabTargets; cover?: TabBarCover }) {
   const theme = usePhoneTheme()
   const router = useRouter()
   const front = state.routes[state.index]?.name ?? ''
@@ -99,20 +108,42 @@ export function PillNav({
   const highlight = useAnimatedStyle(() => ({
     transform: [{ translateX: pillOffset(position.value) }],
   }))
+  const covered = useSyncExternalStore(
+    cover?.subscribe ?? noSubscribe,
+    cover?.covered ?? notCovered,
+    cover?.covered ?? notCovered,
+  )
+  // 0 in place, 1 out of the way: timed with the sheet's own rise and fall.
+  const away = useSharedValue(covered ? 1 : 0)
+  useEffect(() => {
+    away.value = withTiming(covered ? 1 : 0, {
+      duration: covered ? 160 : 220,
+      easing: covered ? Easing.in(Easing.cubic) : Easing.out(Easing.cubic),
+    })
+  }, [away, covered])
+  const stepAside = useAnimatedStyle(() => ({
+    opacity: 1 - away.value,
+    transform: [{ translateY: 24 * away.value }],
+  }))
   return (
     <GlassTargetProvider target={target}>
-      <View
-        pointerEvents="box-none"
-        style={{
-          position: 'absolute',
-          left: 0,
-          right: 0,
-          bottom: Math.max(insets.bottom, 16) + 12,
-          flexDirection: 'row',
-          justifyContent: 'center',
-          gap: 10,
-          paddingHorizontal: 20,
-        }}
+      <Animated.View
+        pointerEvents={covered ? 'none' : 'box-none'}
+        accessibilityElementsHidden={covered}
+        importantForAccessibility={covered ? 'no-hide-descendants' : 'auto'}
+        style={[
+          {
+            position: 'absolute',
+            left: 0,
+            right: 0,
+            bottom: Math.max(insets.bottom, 16) + 12,
+            flexDirection: 'row',
+            justifyContent: 'center',
+            gap: 10,
+            paddingHorizontal: 20,
+          },
+          stepAside,
+        ]}
       >
         <Glass
           shadow="float"
@@ -208,7 +239,7 @@ export function PillNav({
             <MagnifyingGlassIcon size={22} color={theme.fg} />
           </Glass>
         </Pressable>
-      </View>
+      </Animated.View>
     </GlassTargetProvider>
   )
 }

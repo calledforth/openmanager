@@ -238,6 +238,65 @@ describe('home rows', () => {
     ])
   })
 
+  it('keeps pinned sessions above every Active group, most recently pinned first', () => {
+    const at = NOW.toISOString()
+    const active = selectHomeRows({
+      sessions: [
+        session({ externalId: 'needs', status: 'waiting', waitingOn: 'permission', updatedAt: at }),
+        session({
+          externalId: 'old-pin',
+          updatedAt: local(2026, 10, 1),
+          pinnedAt: local(2026, 10, 2),
+        }),
+        session({
+          externalId: 'new-pin',
+          status: 'running',
+          updatedAt: at,
+          pinnedAt: local(2026, 10, 3),
+        }),
+        session({ externalId: 'recent', updatedAt: at }),
+      ],
+      workspaces: FIXTURE_WORKSPACES,
+      tab: 'active',
+      now: NOW,
+    })
+    expect(active.map((g) => [g.label, g.rows.map((r) => r.session.externalId)])).toEqual([
+      ['Pinned', ['new-pin', 'old-pin']],
+      ['Needs you', ['needs']],
+      ['Recent', ['recent']],
+    ])
+  })
+
+  it('keeps Pinned on top of All, above the newest day and its drafts', () => {
+    const rows = selectTabRows({
+      sessions: [
+        session({ externalId: 'today', updatedAt: NOW.toISOString() }),
+        session({ externalId: 'pin', updatedAt: local(2026, 9, 1), pinnedAt: local(2026, 10, 1) }),
+        // Settled while pinned: back with the rest, as web keeps pins to Active.
+        session({
+          externalId: 'settled',
+          updatedAt: local(2026, 10, 20),
+          pinnedAt: local(2026, 10, 1),
+          settledAt: local(2026, 10, 20),
+        }),
+      ],
+      drafts: [],
+      workspaces: FIXTURE_WORKSPACES,
+      tab: 'all',
+      now: NOW,
+    })
+    expect(
+      rows.map((g) => [
+        g.label,
+        g.rows.map((r) => (r.kind === 'session' ? r.session.externalId : r.draft.draftId)),
+      ]),
+    ).toEqual([
+      ['Pinned', ['pin']],
+      ['Today', ['today']],
+      ['Yesterday', ['settled']],
+    ])
+  })
+
   it('leaves an empty Active group out', () => {
     const at = NOW.toISOString()
     const active = selectHomeRows({

@@ -13,15 +13,19 @@ import { ProjectChip } from '../ui/ProjectChip'
 import { Sheet } from '../ui/Sheet'
 import { StatusMark } from '../ui/StatusMark'
 import { MenuRow } from './SessionMenu'
-import { unavailableSessionActions, useSessionActions, type SessionActions } from './useSessionActions'
+import {
+  unavailableSessionActions,
+  useSessionActions,
+  type SessionActions,
+} from './useSessionActions'
 import { TITLE_MAX, useSessionChrome } from './useSessionChrome'
 
 const untitled = (title: string | undefined) => title?.trim() || 'Untitled session'
 
 /**
  * A session's actions from its row, on a long press: the same items as the
- * page's ⋯ menu (rename, name it again, settle or move back, stop background
- * work), in a sheet with the session named at its top. Session settings stay
+ * page's ⋯ menu (rename, name it again, pin or unpin, settle or move back,
+ * stop background work), in a sheet with the session named at its top. Session settings stay
  * on the page, where the composer is. A command keeps the sheet open until
  * the environment answers: it closes on success, and says why on failure.
  */

@@ -16,6 +16,8 @@ type Command = SessionMenuItemId | 'rename'
 const BUSY_WORDS: Partial<Record<Command, string>> = {
   rename: 'Renaming…',
   'regenerate-title': 'Naming the session…',
+  pin: 'Pinning…',
+  unpin: 'Unpinning…',
   settle: 'Settling…',
   unsettle: 'Moving back to active…',
   'stop-background': 'Stopping background work…',
@@ -23,6 +25,8 @@ const BUSY_WORDS: Partial<Record<Command, string>> = {
 const FAILED_WORDS: Partial<Record<Command, string>> = {
   rename: 'Could not rename',
   'regenerate-title': 'Could not name it',
+  pin: 'Could not pin it',
+  unpin: 'Could not unpin it',
   settle: 'Could not settle',
   unsettle: 'Could not move it back',
   'stop-background': 'Could not stop the background work',
