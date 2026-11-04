@@ -327,7 +327,8 @@ export interface QuickAgentNoticeData {
   message?: string
   /** The button's words. @default "Open" */
   action?: string
-  onOpen: () => void
+  /** What the button does. Absent, a `message` is only said, with no button. */
+  onOpen?: () => void
 }
 
 /**
@@ -418,16 +419,18 @@ function QuickAgentNotice({
       }}
     >
       <span className="truncate pr-2">{label}</span>
-      <button
-        type="button"
-        onClick={() => {
-          notice.onOpen()
-          onDismiss()
-        }}
-        className="h-7 shrink-0 rounded-md px-2 font-medium outline-none transition-colors duration-80 hover:bg-hover focus-visible:ring-1 focus-visible:ring-focus-ring"
-      >
-        {notice.action ?? 'Open'}
-      </button>
+      {notice.onOpen ? (
+        <button
+          type="button"
+          onClick={() => {
+            notice.onOpen?.()
+            onDismiss()
+          }}
+          className="h-7 shrink-0 rounded-md px-2 font-medium outline-none transition-colors duration-80 hover:bg-hover focus-visible:ring-1 focus-visible:ring-focus-ring"
+        >
+          {notice.action ?? 'Open'}
+        </button>
+      ) : null}
       <button
         type="button"
         aria-label="Dismiss"
