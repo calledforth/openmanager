@@ -4,6 +4,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import {
   deriveConnectionUi,
   routeTypeForEndpoint,
+  typedConnectUi,
   type EnvironmentRoute,
 } from '@openmanager/environment-client/connection'
 import { CONNECTION_STORIES, ROUTE_FAILURE_STORIES } from '../stories/connection-states'
@@ -183,12 +184,55 @@ describe('connection surfaces', () => {
     })
     render(<ConnectionScreen state={state} handlers={{ onChangeEnvironment }} />)
     expect(
-      screen.getByText(/^Home rejected this client\. Update the credential\./),
+      screen.getByText(
+        "Home rejected this client's token. Connect again with a valid token, or pair this device again.",
+      ),
     ).toBeInTheDocument()
     expect(screen.queryByText(/another environment/)).not.toBeInTheDocument()
     expect(screen.queryByRole('button', { name: 'Switch environment' })).not.toBeInTheDocument()
     await user.click(screen.getByRole('button', { name: 'Connect again' }))
     expect(onChangeEnvironment).toHaveBeenCalledTimes(1)
+  })
+
+  it('offers Settings beside Retry where waiting alone will not fix the only environment', async () => {
+    const user = userEvent.setup()
+    const onRetry = vi.fn()
+    const onOpenSettings = vi.fn()
+    const state = deriveConnectionUi({
+      environment: { status: 'selected', endpoint: 'http://127.0.0.1:43120', label: 'Home' },
+      bootstrap: { status: 'loading' },
+      transport: { phase: 'closed', hasConnected: true, failure: null, retriesExhausted: true },
+      network: { online: true },
+      onlyEnvironment: true,
+    })
+    render(<ConnectionBanner state={state} handlers={{ onRetry, onOpenSettings }} />)
+    expect(screen.getByRole('alert')).toHaveTextContent('Stopped retrying.')
+    expect(screen.queryByRole('button', { name: 'Switch environment' })).not.toBeInTheDocument()
+    await user.click(screen.getByRole('button', { name: 'Retry' }))
+    await user.click(screen.getByRole('button', { name: 'Settings' }))
+    expect(onRetry).toHaveBeenCalledTimes(1)
+    expect(onOpenSettings).toHaveBeenCalledTimes(1)
+  })
+
+  it('goes back from a typed address with fewer than two saved', async () => {
+    const user = userEvent.setup()
+    const onChangeEnvironment = vi.fn()
+    const typed = deriveConnectionUi({
+      environment: { status: 'selected', endpoint: 'http://127.0.0.1:43120' },
+      bootstrap: { status: 'unreachable', cause: 'network' },
+      transport: { phase: 'closed', hasConnected: false, failure: { code: 'unreachable' } },
+      autoRetry: false,
+    })
+    const { unmount } = render(
+      <ConnectionBanner state={typedConnectUi(typed, 1)} handlers={{ onChangeEnvironment }} />,
+    )
+    expect(screen.queryByRole('button', { name: 'Switch environment' })).not.toBeInTheDocument()
+    await user.click(screen.getByRole('button', { name: 'Back' }))
+    expect(onChangeEnvironment).toHaveBeenCalledTimes(1)
+    unmount()
+
+    render(<ConnectionBanner state={typedConnectUi(typed, 2)} />)
+    expect(screen.getByRole('button', { name: 'Switch environment' })).toBeInTheDocument()
   })
 
   it('names the only saved environment on the connect screen, with no mark', () => {

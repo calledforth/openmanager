@@ -1,4 +1,5 @@
 import { useEffect, useState, type FormEvent, type ReactNode } from 'react'
+import { useRouter } from '@tanstack/react-router'
 import {
   CloudSlashIcon,
   KeyIcon,
@@ -45,14 +46,17 @@ export type ConnectionHandlers = {
   onChooseRoute?: (environmentId: string, endpoint: string) => void
   onRemoveRoute?: (environmentId: string, endpoint: string) => void
   onCheckRoutes?: () => void
+  /** Settings → Environments. Omitted, the router in context is asked to go there. */
+  onOpenSettings?: () => void
 }
 
 function runAction(action: ConnectionAction, handlers: ConnectionHandlers, endpoint?: string) {
   if (action === 'retry') handlers.onRetry?.()
-  // Both leave the environment for the connect screen.
-  if (action === 'change_environment' || action === 'connect_again') {
+  // All three leave the environment for the connect screen.
+  if (action === 'change_environment' || action === 'connect_again' || action === 'back') {
     handlers.onChangeEnvironment?.()
   }
+  if (action === 'open_settings') handlers.onOpenSettings?.()
   if (action === 'confirm_route') handlers.onConfirmRoute?.()
   if (action === 'decline_route') handlers.onDeclineRoute?.()
   if (action === 'connect' && endpoint) handlers.onConnect?.(endpoint)
@@ -75,6 +79,17 @@ function ActionButtons({
    */
   compact?: boolean
 }) {
+  // Settings is a page of its own, so where nobody says how to get there, the
+  // router does. Outside one (a story, a test) there is nowhere to go.
+  const router = useRouter({ warn: false }) as ReturnType<typeof useRouter> | undefined
+  const withSettings: ConnectionHandlers = handlers.onOpenSettings
+    ? handlers
+    : {
+        ...handlers,
+        onOpenSettings: router
+          ? () => void router.navigate({ to: '/settings', search: { tab: 'environments' } })
+          : undefined,
+      }
   return (
     <div className={cn('flex flex-wrap', compact ? 'gap-1.5' : 'gap-2', className)}>
       {extra}
@@ -84,7 +99,7 @@ function ActionButtons({
           variant={compact ? 'ghost' : 'secondary'}
           size={compact ? 'compact' : undefined}
           className={compact ? 'text-foreground' : undefined}
-          onClick={() => runAction(state.action!, handlers)}
+          onClick={() => runAction(state.action!, withSettings)}
         >
           {connectionActionLabel(state.action)}
         </Button>
@@ -94,7 +109,7 @@ function ActionButtons({
           type="button"
           variant="ghost"
           size={compact ? 'compact' : undefined}
-          onClick={() => runAction(state.secondaryAction!, handlers)}
+          onClick={() => runAction(state.secondaryAction!, withSettings)}
         >
           {connectionActionLabel(state.secondaryAction)}
         </Button>

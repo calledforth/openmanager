@@ -1259,12 +1259,17 @@ describe('web routes', () => {
       })),
     )
 
-    renderWebApp('/')
+    const user = userEvent.setup()
+    const { router } = renderWebApp('/')
     const refused = await screen.findByText(/^127\.0\.0\.1:43120 refused this page's address/)
     const strip = refused.closest('[role="status"]') as HTMLElement
     expect(strip).toHaveTextContent("Can't reach Local environment")
     expect(within(strip).getByRole('button', { name: 'Retry' })).toBeInTheDocument()
     expect(screen.queryByRole('button', { name: 'Switch environment' })).not.toBeInTheDocument()
+    // Waiting won't get past a refusal, so its settings are a press away.
+    await user.click(within(strip).getByRole('button', { name: 'Settings' }))
+    await waitFor(() => expect(router.state.location.pathname).toBe('/settings'))
+    expect(router.state.location.search).toMatchObject({ tab: 'environments' })
   })
 
   it('names the only saved environment on the connect screen', async () => {

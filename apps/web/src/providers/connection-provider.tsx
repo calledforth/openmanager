@@ -14,6 +14,7 @@ import {
   fetchBootstrap,
   bootstrapOutcomeFromQuery,
   deriveConnectionUi,
+  typedConnectUi,
   addStoredRoute,
   classifyDiscoveredRoute,
   EMPTY_REGISTRY,
@@ -868,20 +869,24 @@ export function ConnectionProvider({
   const ui =
     !preview && !pending && selectedLink
       ? selectedLink.ui
-      : deriveConnectionUi(
-          preview ?? {
-            environment,
-            bootstrap: connectBootstrap,
-            transport: transportFromBootstrap(
-              connectBootstrap,
-              connectBootstrap.status === 'ready',
-            ),
-            network: { online },
-            routeOffer,
-            // A typed connect that fails waits for the person.
-            autoRetry: false,
-          },
-        )
+      : preview
+        ? deriveConnectionUi(preview)
+        : // With fewer than two saved, leaving a typed address goes back.
+          typedConnectUi(
+            deriveConnectionUi({
+              environment,
+              bootstrap: connectBootstrap,
+              transport: transportFromBootstrap(
+                connectBootstrap,
+                connectBootstrap.status === 'ready',
+              ),
+              network: { online },
+              routeOffer,
+              // A typed connect that fails waits for the person.
+              autoRetry: false,
+            }),
+            registry.environments.length,
+          )
 
   // Returning from offline is the one event worth acting on: the bootstrap
   // questions and the sockets all get to try again straight away. What the

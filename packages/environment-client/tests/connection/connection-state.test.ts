@@ -8,6 +8,7 @@ import {
   otherEnvironmentsNotice,
   placeConnectionUi,
   sendBlockedReason,
+  typedConnectUi,
   type ConnectionUiState,
   type DeriveConnectionInput,
   type RouteFailure,
@@ -547,21 +548,34 @@ describe('one environment saved', () => {
     transport: { phase: 'closed', hasConnected: true, failure: { code: 'auth' } },
   }
 
-  it('offers no other environment beside a fix', () => {
+  it('offers no other environment beside a fix that waiting brings', () => {
     const states = [
       deriveConnectionUi({ ...only, routeFailure: failure('route_down') }),
-      deriveConnectionUi({ ...only, routeFailure: failure('local_access_blocked') }),
       deriveConnectionUi({
         ...only,
         bootstrap: { status: 'loading' },
         transport: { phase: 'reconnecting', hasConnected: true, failure: null },
       }),
-      deriveConnectionUi({
+    ]
+    for (const state of states) {
+      expect(state.action, state.kind).toBe('retry')
+      expect(state.secondaryAction, state.kind).toBeUndefined()
+    }
+  })
+
+  it('offers Settings beside Retry where waiting alone will not fix it', () => {
+    const states = {
+      local_access_blocked: deriveConnectionUi({
+        ...only,
+        routeFailure: failure('local_access_blocked'),
+      }),
+      route_refused: deriveConnectionUi({ ...only, routeFailure: failure('route_refused') }),
+      stopped_retrying: deriveConnectionUi({
         ...only,
         bootstrap: { status: 'loading' },
         transport: { phase: 'closed', hasConnected: true, failure: null, retriesExhausted: true },
       }),
-      deriveConnectionUi({
+      protocol_mismatch: deriveConnectionUi({
         ...only,
         bootstrap: {
           status: 'incompatible_protocol',
@@ -569,11 +583,33 @@ describe('one environment saved', () => {
           serverProtocolVersion: 2,
         },
       }),
-    ]
-    for (const state of states) {
-      expect(state.action, state.kind).toBe('retry')
-      expect(state.secondaryAction, state.kind).toBeUndefined()
     }
+    for (const [name, state] of Object.entries(states)) {
+      expect(state.action, name).toBe('retry')
+      expect(state.secondaryAction, name).toBe('open_settings')
+    }
+    // With others saved, the same states offer them instead.
+    expect(
+      deriveConnectionUi({ ...READY_CONNECTION_INPUT, routeFailure: failure('route_refused') })
+        .secondaryAction,
+    ).toBe('change_environment')
+  })
+
+  it('goes back from a typed address only with fewer than two saved', () => {
+    const typed = deriveConnectionUi({
+      environment: { status: 'selected', endpoint: 'http://127.0.0.1:43120' },
+      bootstrap: { status: 'unreachable', cause: 'network' },
+      transport: { phase: 'closed', hasConnected: false, failure: { code: 'unreachable' } },
+      autoRetry: false,
+    })
+    expect(typedConnectUi(typed, 0).secondaryAction).toBe('back')
+    expect(typedConnectUi(typed, 1).secondaryAction).toBe('back')
+    expect(typedConnectUi(typed, 2)).toBe(typed)
+    const offer = deriveConnectionUi({
+      ...READY_CONNECTION_INPUT,
+      routeOffer: { endpoint: 'http://x:1', label: 'Laptop' },
+    })
+    expect(typedConnectUi(offer, 1)).toBe(offer)
   })
 
   it('asks to connect again after a refused token, without naming another environment', () => {
@@ -583,7 +619,7 @@ describe('one environment saved', () => {
       surface: 'screen',
       action: 'connect_again',
       description:
-        'Local environment rejected this client. Update the credential. Do not keep retrying while access is denied.',
+        "Local environment rejected this client's token. Connect again with a valid token, or pair this device again.",
     })
     expect(refused.secondaryAction).toBeUndefined()
     expect(

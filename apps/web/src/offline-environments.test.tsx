@@ -336,6 +336,15 @@ describe('another environment is down', () => {
     expect(card.queryByText('Working')).toBeNull()
   })
 
+  it("reads each card's environment out", async () => {
+    saved('desk', 'laptop')
+    answering()
+    renderApp('/')
+
+    expect((await cardOf(/Desk chat/)).button).toHaveAccessibleName(/Desk chat on Desk/)
+    expect((await cardOf(/Laptop chat/)).button).toHaveAccessibleName(/Laptop chat on Laptop/)
+  })
+
   it('shows a live card as live', async () => {
     saved('desk', 'laptop')
     answering()
@@ -806,8 +815,16 @@ describe('with one environment saved', () => {
     await waitFor(() => expect(screen.queryByRole('button', { name: /Desk chat/ })).toBeNull())
     expect(screen.getByRole('button', { name: 'Sessions' })).toBeInTheDocument()
     // The way forward is the connect screen, and nothing says there are others.
-    expect(screen.getByRole('button', { name: 'Connect again' })).toBeInTheDocument()
     expect(screen.queryByRole('button', { name: 'Switch environment' })).toBeNull()
+    await userEvent.setup().click(screen.getByRole('button', { name: 'Connect again' }))
+
+    expect(await screen.findByRole('heading', { name: 'Connect to Desk' })).toBeInTheDocument()
+    const registry = JSON.parse(localStorage.getItem(ENVIRONMENT_STORAGE_KEY) ?? '{}') as {
+      selectedId: string | null
+      environments: Array<{ environmentId: string }>
+    }
+    expect(registry.selectedId).toBeNull()
+    expect(registry.environments.map((item) => item.environmentId)).toEqual(['env-desk'])
   })
 
   it('reads no environment name out on its cards', async () => {
@@ -818,13 +835,13 @@ describe('with one environment saved', () => {
     expect(button).not.toHaveAccessibleName(/ on Desk/)
   })
 
-  it('says a session it cannot open is on the one environment, without a maybe', async () => {
+  it('says a session it cannot open waits on the one environment, without a maybe', async () => {
     saved('desk')
     answering({ desk: false })
     renderApp('/sessions/nobody-has-this')
 
     expect(
-      await screen.findByText('This session is on Desk, which is offline.'),
+      await screen.findByText("Can't open this session while Desk is offline."),
     ).toBeInTheDocument()
   })
 

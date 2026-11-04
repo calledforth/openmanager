@@ -113,10 +113,13 @@ function ConnectedSessionWorkspace({ sessionId }: { sessionId?: string }) {
 
 /**
  * Names who cannot be asked: one of them may have what the address names.
- * With one saved there is nowhere else it could be.
+ * With one saved, what the address names may not be anywhere (deleted, or
+ * mistyped), so all it says is that it can't be opened until that one is back.
  */
 function mayBeOn(offline: readonly string[], several: boolean) {
-  if (!several && offline.length === 1) return `This session is on ${offline[0]}, which is offline.`
+  if (!several && offline.length === 1) {
+    return `Can't open this session while ${offline[0]} is offline.`
+  }
   const names = new Intl.ListFormat('en', { type: 'disjunction' }).format(offline)
   return `This session may be on ${names}, which ${offline.length > 1 ? 'are' : 'is'} offline.`
 }

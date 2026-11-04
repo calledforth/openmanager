@@ -26,6 +26,13 @@ export type ConnectionAction =
    * connect screen is where a new token goes, not where another machine is.
    */
   | 'connect_again'
+  /**
+   * The same as `change_environment`, for an address a person typed in with
+   * fewer than two environments saved: there is no other one to switch to.
+   */
+  | 'back'
+  /** Open the environments' settings, where a saved route can be changed. */
+  | 'open_settings'
   | 'confirm_route'
   | 'decline_route'
 
@@ -220,6 +227,8 @@ const ACTION_LABELS: Record<ConnectionAction, string> = {
   retry: 'Retry',
   change_environment: 'Switch environment',
   connect_again: 'Connect again',
+  back: 'Back',
+  open_settings: 'Settings',
   confirm_route: 'Add route',
   decline_route: 'Cancel',
 }
@@ -334,6 +343,23 @@ function elsewhere({ only }: Context): Pick<ConnectionUiState, 'secondaryAction'
 }
 
 /**
+ * Beside a fix that waiting alone won't bring, for the only environment saved:
+ * its settings, where an address that changed can be put right.
+ */
+function settingsOrElsewhere(context: Context): Pick<ConnectionUiState, 'secondaryAction'> {
+  return context.only ? { secondaryAction: 'open_settings' } : elsewhere(context)
+}
+
+/**
+ * An address a person typed in, with fewer than two environments saved:
+ * leaving it goes back to the connect screen, not to another environment.
+ */
+export function typedConnectUi(state: ConnectionUiState, saved: number): ConnectionUiState {
+  if (saved >= 2 || state.secondaryAction !== 'change_environment') return state
+  return { ...state, secondaryAction: 'back' }
+}
+
+/**
  * What the environment said, shaped to sit in parentheses mid-sentence:
  * "Client token revoked." becomes "client token revoked". Acronyms and
  * proper nouns that open the message keep their capitals.
@@ -391,11 +417,12 @@ function routeFailureUi(failure: RouteFailure, context: Context): ConnectionUiSt
   const host = hostOf(failure.endpoint)
   const tried = triedNote(failure.tried)
   const said = aside(failure.message)
-  const reconnect = (detail: string) =>
+  const reconnect = (detail: string, extra: Partial<ConnectionUiState> = {}) =>
     reconnectUi({ ...context, endpoint: failure.endpoint }, detail, {
       reason: failure.reason,
       routesTried: failure.tried,
       shutDown: failure.stopped === true ? true : undefined,
+      ...extra,
     })
   const reason = failure.reason
   switch (reason) {
@@ -422,7 +449,7 @@ function routeFailureUi(failure: RouteFailure, context: Context): ConnectionUiSt
           "Allow this site to reach apps on this device in the browser's site settings, then retry.",
         detail: `This browser blocked the page from reaching ${host}${tried}`,
         action: 'retry',
-        ...elsewhere(context),
+        ...settingsOrElsewhere(context),
         environmentLabel: label,
         endpoint: failure.endpoint,
         reason,
@@ -445,6 +472,7 @@ function routeFailureUi(failure: RouteFailure, context: Context): ConnectionUiSt
         failure.local
           ? `${host} refused this page's address${said ? ` (${said})` : ''}`
           : `${host} refused this browser${said ? ` (${said})` : ''}${tried}`,
+        settingsOrElsewhere(context),
       )
     case 'wrong_environment':
       return reconnect(`A different environment answers at ${host}${tried}`)
@@ -505,7 +533,7 @@ function offlineUi(input: DeriveConnectionInput, context: Context) {
     title: `Can't reach ${whom(label)}`,
     description: 'Stopped retrying.',
     action: 'retry',
-    ...elsewhere(context),
+    ...settingsOrElsewhere(context),
     environmentLabel: label,
     endpoint,
   } satisfies ConnectionUiState
@@ -563,7 +591,7 @@ export function deriveConnectionUi(input: DeriveConnectionInput): ConnectionUiSt
       title: 'Incompatible protocol',
       description: `The client and environment cannot talk to each other.${versions} Upgrade one of them, then retry.`,
       action: 'retry',
-      ...elsewhere(context),
+      ...settingsOrElsewhere(context),
       environmentLabel: label,
       endpoint,
       clientProtocolVersion,
@@ -602,7 +630,7 @@ export function deriveConnectionUi(input: DeriveConnectionInput): ConnectionUiSt
       description:
         detail ??
         (context.only
-          ? `${named} rejected this client. Update the credential. Do not keep retrying while access is denied.`
+          ? `${named} rejected this client's token. Connect again with a valid token, or pair this device again.`
           : `${named} rejected this client. Update the credential or choose another environment. Do not keep retrying while access is denied.`),
       action: context.only ? 'connect_again' : 'change_environment',
       environmentLabel: label,
