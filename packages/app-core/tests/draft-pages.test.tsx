@@ -26,7 +26,12 @@ import {
   rememberSentDraft,
   sentDraftSession,
 } from '../src/providers/draft-pages'
-import { useSidebarDrafts, type SidebarDraftsValue } from '../src/providers/sidebar-provider'
+import {
+  SidebarDataContext,
+  useSidebarDrafts,
+  type SidebarDataValue,
+  type SidebarDraftsValue,
+} from '../src/providers/sidebar-provider'
 import {
   DraftLaunchContext,
   type DraftLaunchInternals,
@@ -168,6 +173,7 @@ const probe = {} as {
   drafts: ComposerDraftStore
   launch: DraftLaunchInternals
   sidebarDrafts: SidebarDraftsValue | null
+  sidebar: SidebarDataValue | null
   onRender?: () => void
 }
 /** Navigations held until the test lets each through, as a router that
@@ -185,6 +191,7 @@ function Capture() {
   probe.drafts = useComposerDraftStore()
   probe.launch = useContext(DraftLaunchContext)!
   probe.sidebarDrafts = useSidebarDrafts()
+  probe.sidebar = useContext(SidebarDataContext)
   probe.onRender?.()
   return null
 }
@@ -1032,8 +1039,8 @@ describe('the project a new session page opens on', () => {
     await act(() => probe.session.setDraftWorkspace!(BETA.workspaceId))
     expect(remembered()).toEqual({ 'mock-environment': BETA.workspaceId })
 
-    // A written draft sent off: the next blank page opens in the pick, not
-    // in the project that just saw activity.
+    // Written in, so the draft has its own address: back on `/`, the next
+    // blank page opens in the pick rather than the most recent project.
     await type('in beta')
     await settle(client)
     await act(() => probe.go({ draftId: null }))
@@ -1043,7 +1050,44 @@ describe('the project a new session page opens on', () => {
 
     await reload(client)
     expect(probe.session.activeWorkspacePath).toBe(BETA.workspaceId)
-    expect(selectLandingWorkspaceId(client.getState())).toBe(BETA.workspaceId)
+    expect(selectLandingWorkspaceId(client.getState(), globalThis.localStorage)).toBe(
+      BETA.workspaceId,
+    )
+  })
+
+  it('remembers moving a written draft to another project', async () => {
+    const client = createMockEnvironmentClient({ seed: SEED })
+    await mount(client)
+    await type('move me')
+    await settle(client)
+    const draftId = probe.session.newSessionDraftId!
+    expect(pathOf(probe.route)).toBe(`/drafts/${draftId}`)
+    expect(remembered()).toEqual({})
+
+    await act(() => probe.session.setDraftWorkspace!(BETA.workspaceId))
+    await settle(client)
+    expect(pathOf(probe.route)).toBe(`/drafts/${draftId}`)
+    expect(remembered()).toEqual({ 'mock-environment': BETA.workspaceId })
+  })
+
+  it("remembers New agent in a project, from the sidebar's row or after Add project", async () => {
+    const client = createMockEnvironmentClient({ seed: SEED })
+    await mount(client)
+    // The sidebar's New agent on a project's row.
+    await act(() => probe.sidebar!.createSession(BETA.workspaceId))
+    await settle(client)
+    expect(probe.session.activeWorkspacePath).toBe(BETA.workspaceId)
+    expect(remembered()).toEqual({ 'mock-environment': BETA.workspaceId })
+
+    // Add project opens a new agent in the project it added, as the web's does.
+    const added = await act(() => client.commands.addWorkspace({ path: 'C:/gamma' }))
+    await act(() => probe.sidebar!.createSession(added.workspaceId))
+    await settle(client)
+    expect(probe.session.activeWorkspacePath).toBe('C:/gamma')
+    expect(remembered()).toEqual({ 'mock-environment': 'C:/gamma' })
+
+    await reload(client)
+    expect(probe.session.activeWorkspacePath).toBe('C:/gamma')
   })
 
   it('remembers a pick for each environment on its own', async () => {
@@ -1099,5 +1143,31 @@ describe('the project a new session page opens on', () => {
     expect(pathOf(probe.route)).toBe('/')
     expect(probe.session.activeWorkspacePath).toBe(ALPHA.workspaceId)
     expect(globalThis.localStorage.getItem('openmanager.landing-projects')).toBeNull()
+  })
+
+  it("keeps the pick when a discard leaves for a blank page in the draft's own project", async () => {
+    rememberLandingProject('mock-environment', ALPHA.workspaceId)
+    const client = createMockEnvironmentClient({ seed: SEED })
+    // A draft written in BETA on another device, opened here by its address.
+    const draftId = 'beta-draft'
+    act(() =>
+      client.drafts!.edit(
+        draftId,
+        { type: 'new_session', workspaceId: BETA.workspaceId, sessionId: 'beta-session' },
+        { text: 'from elsewhere' },
+      ),
+    )
+    act(() => client.drafts!.flush())
+    await settle(client)
+    await mount(client, { draftId })
+    expect(probe.session.activeWorkspacePath).toBe(BETA.workspaceId)
+
+    await act(() => probe.sidebarDrafts!.discardDraft(draftId))
+    await act(() => probe.sidebarDrafts!.confirmDiscard())
+    await settle(client)
+    // The blank page is in the draft's project, but nobody picked it.
+    expect(pathOf(probe.route)).toBe('/')
+    expect(probe.session.activeWorkspacePath).toBe(BETA.workspaceId)
+    expect(remembered()).toEqual({ 'mock-environment': ALPHA.workspaceId })
   })
 })

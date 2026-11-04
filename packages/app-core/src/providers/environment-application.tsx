@@ -130,7 +130,6 @@ import {
 import { QuestionStateProvider, type PendingQuestion } from './question-provider'
 import { PlanStateProvider, type PlanRow } from './plan-provider'
 import { ViewActionsContext, WorkspaceIconContext, type ViewActions } from './view-actions'
-import { browserStorage } from '../lib/browser-device'
 import { createEnvironmentThreadStores } from '../lib/environment-thread'
 import { providerHealthReportFromWire } from '../lib/provider-health-view'
 import { DEFAULT_PROVIDER_ID, availableProviderIds } from './draft-provider'
@@ -447,7 +446,7 @@ function landingWorkspaceFor(
 /** Where a landing draft would open in this environment. */
 export function selectLandingWorkspaceId(
   state: EnvironmentState,
-  storage: DeviceStorage | null = browserStorage(),
+  storage: DeviceStorage | null,
 ): string | null {
   return landingWorkspaceFor(
     selectWorkspaces(state),
@@ -896,6 +895,20 @@ function EnvironmentSessionStateProvider({
     return known ? { type: 'new_session', ...known } : undefined
   }, [])
 
+  // A project the user chose for a new session: the next blank page here
+  // opens in it. Pages that open on their own (the landing, a reload, a
+  // discard's blank page) do not come through here, and so are never
+  // remembered.
+  const recordPick = useCallback(
+    (workspaceId: string) => {
+      const environmentId = landingEnvironmentRef.current
+      if (!environmentId) return
+      rememberLandingProject(environmentId, workspaceId, deviceStorage)
+      setPick({ environmentId, workspaceId })
+    },
+    [deviceStorage],
+  )
+
   const setDraftWorkspace = useCallback(
     (workspaceId: string) => {
       const current = pageRef.current
@@ -915,16 +928,9 @@ function EnvironmentSessionStateProvider({
       const moved = { ...current, sessionId, workspaceId }
       pageRef.current = moved
       setPage(moved)
-      // The user's own pick, so the next blank page here opens in it. Pages
-      // that open on their own (the landing, a discard's blank page) do not
-      // come through here, and so are never remembered.
-      const environmentId = landingEnvironmentRef.current
-      if (environmentId) {
-        rememberLandingProject(environmentId, workspaceId, deviceStorage)
-        setPick({ environmentId, workspaceId })
-      }
+      recordPick(workspaceId)
     },
-    [client, deviceStorage, sync],
+    [client, recordPick, sync],
   )
 
   // A blank page is never saved, so a fresh one leaves nothing behind when
@@ -1170,9 +1176,15 @@ function EnvironmentSessionStateProvider({
     },
     [commands, fail],
   )
+  // New agent in a project (the sidebar's row, Add project, the palette's
+  // expand) is a pick; a blank page opened after a discard is not, so that
+  // goes to `openDraft` directly.
   const createSession = useCallback(
-    async (workspacePath: string) => openDraftRef.current(workspacePath),
-    [],
+    async (workspacePath: string) => {
+      recordPick(workspacePath)
+      return openDraftRef.current(workspacePath)
+    },
+    [recordPick],
   )
   const renameSession = useCallback(
     async (_workspacePath: string, externalId: string, title: string | null) => {

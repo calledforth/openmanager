@@ -14,6 +14,7 @@ import {
   QuickAgentNoticeView,
   type QuickAgentNoticeData,
 } from '@openmanager/app-core/components/command/QuickAgentPalette'
+import { useDeviceStorage } from '@openmanager/app-core/logic'
 import { selectLandingWorkspaceId } from '@openmanager/app-core/providers/environment-application'
 import { DraftDiscardsContext } from '@openmanager/app-core/providers/environment-sidebar-drafts'
 import { isEnvironmentReachable } from '@openmanager/app-core/providers/sidebar-rows'
@@ -80,6 +81,7 @@ export function EnvironmentChoiceHost({ children }: { children: ReactNode }) {
   const { environments, links, selectedId, selectEnvironment } = useConnection()
   const { clients } = useEnvironmentClients()
   const discards = useContext(DraftDiscardsContext)
+  const storage = useDeviceStorage()
   const navigate = useNavigate()
   const pathname = useRouterState({ select: (state) => state.location.pathname })
   const [move, setMove] = useState<Move | null>(null)
@@ -105,7 +107,16 @@ export function EnvironmentChoiceHost({ children }: { children: ReactNode }) {
     })
   }, [clients, environments, links])
 
-  const live = { clients, handovers, move, navigate, pathname, selectedId, selectEnvironment }
+  const live = {
+    clients,
+    handovers,
+    move,
+    navigate,
+    pathname,
+    selectedId,
+    selectEnvironment,
+    storage,
+  }
   const liveRef = useRef(live)
   useLayoutEffect(() => {
     liveRef.current = live
@@ -115,8 +126,16 @@ export function EnvironmentChoiceHost({ children }: { children: ReactNode }) {
   // report is no reason to render every card.
   const choose = useCallback<EnvironmentChoiceValue['choose']>(
     (environmentId, from, workspaceId) => {
-      const { clients, handovers, move, navigate, pathname, selectedId, selectEnvironment } =
-        liveRef.current
+      const {
+        clients,
+        handovers,
+        move,
+        navigate,
+        pathname,
+        selectedId,
+        selectEnvironment,
+        storage,
+      } = liveRef.current
       const target = clients[environmentId]
       const sourceId = from?.environmentId ?? selectedId
       if (environmentId === sourceId || !isEnvironmentReachable(target)) return false
@@ -158,7 +177,9 @@ export function EnvironmentChoiceHost({ children }: { children: ReactNode }) {
             // Where its new-session page opens: the project last picked there,
             // else its most recent; one whose folder is gone says so on the page.
             workspaceId:
-              selectLandingWorkspaceId(targetState) ?? targetState.workspaceOrder[0] ?? null,
+              selectLandingWorkspaceId(targetState, storage) ??
+              targetState.workspaceOrder[0] ??
+              null,
             sessionId: copy.sessionId,
           },
           { text: content.text },
