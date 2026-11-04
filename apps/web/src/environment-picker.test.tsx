@@ -1,4 +1,4 @@
-import { PROTOCOL_VERSION } from '@openmanager/protocol'
+import { DRAFT_SAVE_MAX_BYTES, PROTOCOL_VERSION, type Draft } from '@openmanager/protocol'
 import { act, cleanup, fireEvent, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { afterEach, describe, expect, it, vi } from 'vitest'
@@ -13,7 +13,11 @@ import {
   type WebSocketEnvironmentClientOptions,
 } from '@openmanager/environment-client'
 import { ENVIRONMENT_STORAGE_KEY } from '@openmanager/environment-client/connection'
-import { DRAFT_HANDOVERS_KEY, type DraftHandover } from './lib/draft-handovers'
+import {
+  DRAFT_HANDOVER_MAX_AGE_MS,
+  DRAFT_HANDOVERS_KEY,
+  type DraftHandover,
+} from './lib/draft-handovers'
 import { idleUntilDialled, renderWebApp } from './test-utils'
 
 const DESK = 'http://127.0.0.1:43120'
@@ -544,16 +548,71 @@ describe('a draft that changes environment', () => {
     expect(copies).toHaveLength(1)
   })
 
-  it('drops a choice the user moved on from, and leaves its draft be', async () => {
+  const refusingLaptop = () =>
+    // A project id the environment's drafts refuse, standing in for any refusal.
+    clientWith('env-laptop', [project('laptop project', '2026-06-01T00:00:00.000Z')])
+  const handoverRecord = (overrides: Partial<DraftHandover> = {}): DraftHandover => ({
+    environmentId: 'env-laptop',
+    copy: { draftId: 'laptop-copy', sessionId: 'laptop-copy-session' },
+    arrival: '/drafts/laptop-copy',
+    left: {
+      draftId: 'desk-draft',
+      environmentId: 'env-desk',
+      revision: 1,
+      text: 'Left behind',
+      images: 0,
+    },
+    createdAt: Date.now(),
+    ...overrides,
+  })
+  const keep = (...handovers: DraftHandover[]) =>
+    localStorage.setItem(DRAFT_HANDOVERS_KEY, JSON.stringify({ version: 1, handovers }))
+  const kept = () =>
+    (
+      JSON.parse(localStorage.getItem(DRAFT_HANDOVERS_KEY) ?? '{"handovers":[]}') as {
+        handovers: DraftHandover[]
+      }
+    ).handovers
+  /**
+   * The copy saved, as the client's cache would have it, and its drafts not
+   * listed yet, until `list`: then only what its server says.
+   */
+  const cachedCopyOn = (client: Mock) => {
+    const at = new Date().toISOString()
+    const copy: Draft = {
+      draftId: 'laptop-copy',
+      target: { type: 'new_session', sessionId: 'laptop-copy-session', workspaceId: '/laptop-old' },
+      content: { text: 'Left behind' },
+      revision: 1,
+      createdAt: at,
+      updatedAt: at,
+      updatedByClientId: null,
+    }
+    const { getState } = client
+    let listed = false
+    client.getState = () => {
+      const state = getState()
+      return listed
+        ? state
+        : { ...state, draftsListed: false, drafts: { ...state.drafts, [copy.draftId]: copy } }
+    }
+    return {
+      list: () => {
+        listed = true
+      },
+    }
+  }
+
+  it('finishes a choice the user moved on from, as asked', async () => {
     seedRegistry()
     answering()
     const user = userEvent.setup()
     const desk = deskClient()
     const laptop = laptopClient()
-    await edit(desk, { text: 'Changed my mind' })
+    await edit(desk, { text: 'Moved on' })
     const { router } = renderBoth('/drafts/desk-draft', { desk, laptop })
     await connected(desk, laptop)
-    await screen.findByDisplayValue('Changed my mind')
+    await screen.findByDisplayValue('Moved on')
 
     await user.click(await picker())
     const menu = await screen.findByRole('dialog', { name: 'Choose an environment' })
@@ -563,46 +622,16 @@ describe('a draft that changes environment', () => {
       void router.navigate({ to: '/settings' })
     })
     await waitFor(() => expect(router.state.location.pathname).toBe('/settings'))
-    // The copy made for the page never reached goes again, once it is saved there.
-    await waitFor(() => expect(commandsOf(laptop, 'deleteDraft')).toHaveLength(1), {
+
+    // The copy stays, and the original goes once the copy is saved.
+    await waitFor(() => expect(desk.getState().drafts['desk-draft']).toBeUndefined(), {
       timeout: 3000,
     })
-    await settleFor(300)
-
-    expect(selectNewSessionDraftIds(laptop.getState())).toEqual([])
-    expect(desk.getState().drafts['desk-draft']?.content.text).toBe('Changed my mind')
-    expect(commandsOf(desk, 'deleteDraft')).toEqual([])
-  })
-
-  it('keeps the copy of a choice the user moved on from once it is written to', async () => {
-    seedRegistry()
-    answering()
-    const user = userEvent.setup()
-    const desk = deskClient()
-    const laptop = laptopClient(800)
-    await edit(desk, { text: 'Changed my mind' })
-    const { router } = renderBoth('/drafts/desk-draft', { desk, laptop })
-    await connected(desk, laptop)
-    await screen.findByDisplayValue('Changed my mind')
-
-    await user.click(await picker())
-    const menu = await screen.findByRole('dialog', { name: 'Choose an environment' })
-    await act(async () => {
-      fireEvent.click(within(menu).getByRole('option', { name: /^Laptop/ }))
-      void router.navigate({ to: '/settings' })
-    })
-    await waitFor(() => expect(router.state.location.pathname).toBe('/settings'))
-    // Written to there before its first save is answered.
-    const [copy] = selectNewSessionDraftIds(laptop.getState())
-    const target = selectDraftTarget(laptop.getState(), copy!)!
-    act(() => laptop.drafts!.edit(copy!, target, { text: 'Changed my mind, and more' }))
-    await waitFor(() => expect(laptop.getState().drafts[copy!]?.revision).toBe(2), {
-      timeout: 6000,
-    })
-    await settleFor(300)
-
-    expect(selectDraftContent(laptop.getState(), copy!)?.text).toBe('Changed my mind, and more')
-    expect(desk.getState().drafts['desk-draft']?.content.text).toBe('Changed my mind')
+    const copies = selectNewSessionDraftIds(laptop.getState()).filter(
+      (draftId) => selectDraftContent(laptop.getState(), draftId)?.text === 'Moved on',
+    )
+    expect(copies).toHaveLength(1)
+    expect(laptop.getState().drafts[copies[0]!]).toBeDefined()
     expect(commandsOf(laptop, 'deleteDraft')).toEqual([])
   })
 
@@ -611,8 +640,7 @@ describe('a draft that changes environment', () => {
     answering()
     const user = userEvent.setup()
     const desk = deskClient()
-    // A project id the environment's drafts refuse, standing in for any refusal.
-    const laptop = clientWith('env-laptop', [project('laptop project', '2026-06-01T00:00:00Z')])
+    const laptop = refusingLaptop()
     await edit(desk, { text: 'Turned away' })
     const { router } = renderBoth('/drafts/desk-draft', { desk, laptop })
     await connected(desk, laptop)
@@ -627,6 +655,34 @@ describe('a draft that changes environment', () => {
     await waitFor(() => expect(selected()).toBe('env-desk'))
     expect(await screen.findByDisplayValue('Turned away')).toBeInTheDocument()
     expect(desk.getState().drafts['desk-draft']?.content.text).toBe('Turned away')
+    expect(commandsOf(desk, 'deleteDraft')).toEqual([])
+  })
+
+  it('offers the original when a copy is refused after the user moved on', async () => {
+    seedRegistry()
+    answering()
+    const user = userEvent.setup()
+    const desk = deskClient()
+    const laptop = refusingLaptop()
+    await edit(desk, { text: 'Turned away' })
+    const { router } = renderBoth('/drafts/desk-draft', { desk, laptop })
+    await connected(desk, laptop)
+    await screen.findByDisplayValue('Turned away')
+
+    await user.click(await picker())
+    const menu = await screen.findByRole('dialog', { name: 'Choose an environment' })
+    await act(async () => {
+      fireEvent.click(within(menu).getByRole('option', { name: /^Laptop/ }))
+      void router.navigate({ to: '/settings' })
+    })
+
+    expect(
+      await screen.findByText("Laptop couldn't save the copy. The draft is still on Desk"),
+    ).toBeInTheDocument()
+    expect(router.state.location.pathname).toBe('/settings')
+    await user.click(screen.getByRole('button', { name: 'Open' }))
+    await waitFor(() => expect(router.state.location.pathname).toBe('/drafts/desk-draft'))
+    expect(await screen.findByDisplayValue('Turned away')).toBeInTheDocument()
     expect(commandsOf(desk, 'deleteDraft')).toEqual([])
   })
 
@@ -651,7 +707,7 @@ describe('a draft that changes environment', () => {
     await pick(user, 'Laptop')
 
     expect(
-      await screen.findByText("Laptop can't save drafts, so this one is still on Desk too"),
+      await screen.findByText("Laptop can't save drafts, so the original on Desk was kept"),
     ).toBeInTheDocument()
     expect(await screen.findByDisplayValue('Nowhere to keep it')).toBeInTheDocument()
     await settleFor(500)
@@ -659,7 +715,36 @@ describe('a draft that changes environment', () => {
     expect(commandsOf(desk, 'deleteDraft')).toEqual([])
   })
 
-  it('finishes a move cut short by a reload', async () => {
+  it('says so, and keeps both, when the draft is too long to save there', async () => {
+    seedRegistry()
+    answering()
+    const user = userEvent.setup()
+    const desk = deskClient()
+    const laptop = laptopClient()
+    // Over what one save may carry, though under the longest text a draft may hold.
+    const long = 'x'.repeat(DRAFT_SAVE_MAX_BYTES + 1_000)
+    await edit(desk, { text: long })
+    renderBoth('/drafts/desk-draft', { desk, laptop })
+    await connected(desk, laptop)
+    await projectPicker()
+
+    await pick(user, 'Laptop')
+
+    expect(
+      await screen.findByText(
+        'This draft is too long to save on Laptop, so the original on Desk was kept',
+      ),
+    ).toBeInTheDocument()
+    await settleFor(500)
+    expect(desk.getState().drafts['desk-draft']?.content.text).toBe(long)
+    expect(commandsOf(desk, 'deleteDraft')).toEqual([])
+    expect(commandsOf(laptop, 'saveDraft')).toEqual([])
+  })
+
+  it.each([
+    ['on the copy', true],
+    ['somewhere else', false],
+  ])('finishes a move cut short by a reload, loading again %s', async (_where, onCopy) => {
     seedRegistry()
     answering()
     const user = userEvent.setup()
@@ -671,14 +756,8 @@ describe('a draft that changes environment', () => {
     await connected(desk, laptop)
     await screen.findByDisplayValue('Across a reload')
     await pick(user, 'Laptop')
-    await waitFor(() => expect(selected()).toBe('env-laptop'))
-    const kept = () =>
-      (
-        JSON.parse(localStorage.getItem(DRAFT_HANDOVERS_KEY) ?? '{"handovers":[]}') as {
-          handovers: DraftHandover[]
-        }
-      ).handovers
-    await waitFor(() => expect(kept().map(({ stage }) => stage)).toEqual(['landed']))
+    // Kept from the moment of the choice.
+    expect(kept()).toHaveLength(1)
     const [handover] = kept()
     const copyTarget = selectDraftTarget(laptop.getState(), handover!.copy.draftId)!
     expect(laptop.getState().drafts[handover!.copy.draftId]).toBeUndefined()
@@ -691,13 +770,89 @@ describe('a draft that changes environment', () => {
     await edit(deskAgain, { text: 'Across a reload' })
     const laptopAgain = laptopClient()
     laptopAgain.drafts!.edit(handover!.copy.draftId, copyTarget, { text: 'Across a reload' })
-    renderBoth(handover!.arrival, { desk: deskAgain, laptop: laptopAgain })
+    renderBoth(onCopy ? handover!.arrival : '/', { desk: deskAgain, laptop: laptopAgain })
     await connected(deskAgain, laptopAgain)
 
-    expect(await screen.findByDisplayValue('Across a reload')).toBeInTheDocument()
     await waitFor(() => expect(laptopAgain.getState().drafts[handover!.copy.draftId]).toBeDefined())
     await waitFor(() => expect(deskAgain.getState().drafts['desk-draft']).toBeUndefined())
     await waitFor(() => expect(localStorage.getItem(DRAFT_HANDOVERS_KEY)).toBeNull())
+  })
+
+  it("keeps the original while the target's cache holds a copy its server lost", async () => {
+    seedRegistry({ selectedId: 'env-laptop' })
+    answering()
+    const desk = deskClient()
+    await edit(desk, { text: 'Left behind' })
+    const laptop = laptopClient()
+    // What a crash before the cache was written could leave: the copy saved,
+    // as the cache has it, though it never reached the laptop.
+    const cache = cachedCopyOn(laptop)
+    keep(handoverRecord())
+    const { router } = renderBoth('/drafts/laptop-copy', { desk, laptop })
+    await connected(desk, laptop)
+
+    // Connected, its drafts not listed yet: the cache's word is not enough.
+    await settleFor(1500)
+    expect(desk.getState().drafts['desk-draft']?.content.text).toBe('Left behind')
+    expect(commandsOf(desk, 'deleteDraft')).toEqual([])
+    expect(kept()).toHaveLength(1)
+
+    // Listed: the laptop has no such copy.
+    await act(async () => {
+      cache.list()
+      await laptop.commands.saveDraft({
+        draftId: 'laptop-other',
+        baseRevision: 0,
+        target: { type: 'new_session', sessionId: 'laptop-other-next', workspaceId: '/laptop-old' },
+        content: { text: 'Something else' },
+      })
+    })
+
+    expect(
+      await screen.findByText("The copy on Laptop wasn't saved, so it's back on Desk"),
+    ).toBeInTheDocument()
+    await waitFor(() => expect(router.state.location.pathname).toBe('/drafts/desk-draft'))
+    expect(desk.getState().drafts['desk-draft']?.content.text).toBe('Left behind')
+    expect(commandsOf(desk, 'deleteDraft')).toEqual([])
+    expect(localStorage.getItem(DRAFT_HANDOVERS_KEY)).toBeNull()
+  })
+
+  it.each([
+    ['older than a day', { createdAt: Date.now() - DRAFT_HANDOVER_MAX_AGE_MS - 60_000 }],
+    ['for an environment no longer saved', { environmentId: 'env-gone' }],
+  ])('lets go of a move %s, and lets the draft move again', async (_why, stale) => {
+    seedRegistry()
+    answering()
+    const user = userEvent.setup()
+    const desk = deskClient()
+    await edit(desk, { text: 'Left behind' })
+    const laptop = laptopClient()
+    // Saved there: a live handover would delete the original now.
+    await laptop.commands.saveDraft({
+      draftId: 'laptop-copy',
+      baseRevision: 0,
+      target: { type: 'new_session', sessionId: 'laptop-copy-session', workspaceId: '/laptop-old' },
+      content: { text: 'Left behind' },
+    })
+    keep(handoverRecord(stale))
+    renderBoth('/drafts/desk-draft', { desk, laptop })
+    await connected(desk, laptop)
+    await screen.findByDisplayValue('Left behind')
+
+    await waitFor(() => expect(localStorage.getItem(DRAFT_HANDOVERS_KEY)).toBeNull())
+    await settleFor(500)
+    expect(desk.getState().drafts['desk-draft']?.content.text).toBe('Left behind')
+    expect(commandsOf(desk, 'deleteDraft')).toEqual([])
+
+    await pick(user, 'Laptop')
+    await waitFor(() => expect(selected()).toBe('env-laptop'))
+    expect(screen.queryByText(/already being copied|was copied to/)).not.toBeInTheDocument()
+    const copies = selectNewSessionDraftIds(laptop.getState()).filter(
+      (draftId) =>
+        draftId !== 'laptop-copy' &&
+        selectDraftContent(laptop.getState(), draftId)?.text === 'Left behind',
+    )
+    expect(copies).toHaveLength(1)
   })
 
   it("moves another environment's draft of the same id while one is on its way", async () => {
@@ -725,11 +880,15 @@ describe('a draft that changes environment', () => {
     await pick(user, 'Desk')
 
     await waitFor(() => expect(selected()).toBe('env-desk'))
-    expect(screen.queryByText(/already being copied/)).not.toBeInTheDocument()
+    expect(screen.queryByText(/already being copied|was copied to/)).not.toBeInTheDocument()
     const copies = selectNewSessionDraftIds(desk.getState()).filter(
       (draftId) => selectDraftContent(desk.getState(), draftId)?.text === 'From the laptop',
     )
     expect(copies).toHaveLength(1)
+    // And the first move finished: Desk's own draft went once its copy was saved.
+    await waitFor(() => expect(desk.getState().drafts['desk-draft']).toBeUndefined(), {
+      timeout: 6000,
+    })
   })
 })
 

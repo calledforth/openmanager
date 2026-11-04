@@ -16,13 +16,10 @@ export interface LeftDraft {
 
 /**
  * A draft's text copied to another environment, and the draft it was copied
- * from, until it is settled which of the two stays.
- *
- * - `moving`: the copy's page is on its way to the screen.
- * - `landed`: the user went to the copy. The original goes once the copy is
- *   saved there, if it still says what was copied and has no images.
- * - `left`: the user went elsewhere first. The copy goes once it is saved
- *   there, if neither it nor the original has changed.
+ * from, from the moment of the choice until it is settled. The user asked to
+ * move it, so the move always finishes, wherever the page goes meanwhile: the
+ * original goes once the copy is saved there, if it still says exactly what
+ * was copied and has no images. The copy is never deleted here.
  */
 export interface DraftHandover {
   /** Where the copy went. */
@@ -31,17 +28,27 @@ export interface DraftHandover {
   /** The copy's address. */
   arrival: string
   left: LeftDraft
-  stage: 'moving' | 'landed' | 'left'
+  /** When the choice was made, in milliseconds since the epoch. */
+  createdAt: number
 }
 
 /**
  * Kept in this browser so a reload or a closed tab does not leave both
- * copies. Only `moving` and `landed` handovers are kept: either one, picked
- * up by another tab, only ever deletes the original, as this tab's would. A
- * `left` one would delete the copy, which another tab may since have gone to,
- * so it lives only in the tab that made it.
+ * copies. Any tab that picks one up does only what the tab that made it
+ * would: delete the original, on the same checks.
  */
 export const DRAFT_HANDOVERS_KEY = 'openmanager.draft-handovers'
+
+/**
+ * How long a handover is kept. One still unsettled after a day, its
+ * environments away all that time, is let go: both copies stay.
+ */
+export const DRAFT_HANDOVER_MAX_AGE_MS = 24 * 60 * 60 * 1000
+
+/** Not yet too old to act on. */
+export function isFreshDraftHandover(handover: DraftHandover, now = Date.now()) {
+  return now - handover.createdAt <= DRAFT_HANDOVER_MAX_AGE_MS
+}
 
 /** More than any one person moves at a time; the oldest go first. */
 const KEPT = 32
@@ -55,7 +62,7 @@ function isHandover(value: unknown): value is DraftHandover {
     typeof item.copy?.draftId === 'string' &&
     typeof item.copy.sessionId === 'string' &&
     typeof item.arrival === 'string' &&
-    (item.stage === 'moving' || item.stage === 'landed') &&
+    typeof item.createdAt === 'number' &&
     typeof left?.draftId === 'string' &&
     typeof left.environmentId === 'string' &&
     typeof left.revision === 'number' &&
@@ -92,10 +99,10 @@ function write(handovers: readonly DraftHandover[]) {
   }
 }
 
-/** Kept, or forgotten if it is `left`. Read and written whole, so other tabs' stay. */
+/** Read and written whole, so other tabs' handovers stay. */
 export function keepDraftHandover(handover: DraftHandover) {
   const others = read().filter((item) => item.copy.draftId !== handover.copy.draftId)
-  write(handover.stage === 'left' ? others : [...others, handover])
+  write([...others, handover])
 }
 
 export function forgetDraftHandover(copyDraftId: string) {
@@ -104,19 +111,10 @@ export function forgetDraftHandover(copyDraftId: string) {
   if (rest.length !== handovers.length) write(rest)
 }
 
-/**
- * The handovers a page left unsettled, picked up as it loads at `pathname`.
- * One whose copy's page was still on its way has landed if this is that page;
- * anywhere else, it is forgotten and both copies stay.
- */
-export function resumeDraftHandovers(pathname: string): DraftHandover[] {
+/** The handovers a page left unsettled, picked up as it loads. Old ones are let go. */
+export function resumeDraftHandovers(now = Date.now()): DraftHandover[] {
   const kept = read()
-  const resumed = kept.flatMap((handover): DraftHandover[] => {
-    if (handover.stage !== 'moving') return [handover]
-    return handover.arrival === pathname ? [{ ...handover, stage: 'landed' }] : []
-  })
-  if (resumed.length !== kept.length || resumed.some((item, index) => item !== kept[index])) {
-    write(resumed)
-  }
-  return resumed
+  const fresh = kept.filter((handover) => isFreshDraftHandover(handover, now))
+  if (fresh.length !== kept.length) write(fresh)
+  return fresh
 }

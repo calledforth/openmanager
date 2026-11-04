@@ -12,7 +12,6 @@ import { useNavigate, useRouterState } from '@tanstack/react-router'
 import {
   selectDraftContent,
   selectDraftSyncStatus,
-  type DraftStall,
   type EnvironmentClient,
   type EnvironmentState,
 } from '@openmanager/environment-client'
@@ -32,6 +31,7 @@ import {
 import { environmentIsDown } from '@openmanager/environment-client/connection'
 import {
   forgetDraftHandover,
+  isFreshDraftHandover,
   keepDraftHandover,
   resumeDraftHandovers,
   type DraftHandover,
@@ -63,9 +63,11 @@ type Move = {
 const listed = (state: EnvironmentState) =>
   state.connection.phase === 'connected' && state.draftsListed
 
-/** Saving it again as it is cannot work there: both copies stay. */
-const neverSaved = (stall: DraftStall | undefined): stall is 'unsupported' | 'too_large' =>
-  stall === 'unsupported' || stall === 'too_large'
+/** Saved where it went, with nothing of its own on its way, or sent from there already. */
+const copyArrived = (state: EnvironmentState, copy: DraftHandover['copy']) =>
+  state.sessions[copy.sessionId] !== undefined ||
+  (state.drafts[copy.draftId] !== undefined &&
+    selectDraftSyncStatus(state, copy.draftId) === 'synced')
 
 /**
  * Whether a draft still says exactly `text`, with no images and none on the
@@ -110,8 +112,8 @@ function standingOf(
  *   on this device or another, it stays.
  * - A draft with images, or one on its way in, is not deleted at all. It stays
  *   where it is, its card too, and the notice offers to discard it there.
- * - A copy whose page the user left before it arrived goes again, once it is
- *   saved, and only while neither it nor the old draft has changed.
+ * - A move, once asked for, finishes wherever the page goes, a reload included.
+ *   The copy is never deleted, so the original is the only thing that goes.
  * - Where that cannot be known, both stay.
  */
 export function EnvironmentChoiceHost({ children }: { children: ReactNode }) {
@@ -122,10 +124,11 @@ export function EnvironmentChoiceHost({ children }: { children: ReactNode }) {
   const navigate = useNavigate()
   const pathname = useRouterState({ select: (state) => state.location.pathname })
   const [move, setMove] = useState<Move | null>(null)
-  // Those a reload or a closed tab cut short are picked up where they were.
-  const [handovers, setHandovers] = useState<readonly DraftHandover[]>(() =>
-    resumeDraftHandovers(pathname),
-  )
+  // Those a reload or a closed tab cut short are picked up and finished.
+  const [handovers, setHandovers] = useState<readonly DraftHandover[]>(() => resumeDraftHandovers())
+  // The copies this page made. One that vanishes before it is saved was
+  // refused; one picked up from before a reload may never have got there.
+  const madeHere = useRef(new Set<string>())
   const [opening, setOpening] = useState<EnvironmentChoiceValue['opening']>(null)
   const [notice, setNotice] = useState<QuickAgentNoticeData | null>(null)
   const noticeKey = useRef(0)
@@ -153,9 +156,18 @@ export function EnvironmentChoiceHost({ children }: { children: ReactNode }) {
 
   const labelOf = (environmentId: string) =>
     environments.find((item) => item.environmentId === environmentId)?.label ?? environmentId
+  // Still worth acting on: not too old, and both its environments still
+  // saved. With none saved yet, say while a pairing previews, nothing is let go.
+  const current = (handover: DraftHandover) =>
+    isFreshDraftHandover(handover) &&
+    (environments.length === 0 ||
+      [handover.environmentId, handover.left.environmentId].every((environmentId) =>
+        environments.some((item) => item.environmentId === environmentId),
+      ))
   const live = {
     clients,
     links,
+    current,
     handovers,
     labelOf,
     move,
@@ -193,6 +205,7 @@ export function EnvironmentChoiceHost({ children }: { children: ReactNode }) {
       const {
         clients,
         links,
+        current,
         handovers,
         labelOf,
         move,
@@ -214,21 +227,26 @@ export function EnvironmentChoiceHost({ children }: { children: ReactNode }) {
         return false
       }
       // Already on its way, or copied and waiting to go: a second copy of its
-      // text would be a second draft. One whose page the user left is theirs
-      // to move again. A draft is known by its environment and its id: another
-      // environment's draft of the same id is another draft.
+      // text would be a second draft. A draft is known by its environment and
+      // its id: another environment's draft of the same id is another draft.
       const isFrom = (draft: { draftId: string; environmentId: string } | null | undefined) =>
         !!from && draft?.draftId === from.draftId && draft.environmentId === from.environmentId
-      const copying = handovers.find(({ left, stage }) => isFrom(left) && stage !== 'left')
+      const copying = handovers.find((handover) => isFrom(handover.left) && current(handover))
       if (copying) {
-        tell(`This draft is already being copied to ${labelOf(copying.environmentId)}`, {
-          action: 'Open the copy',
-          onOpen: () =>
-            void liveRef.current.navigate({
-              to: '/drafts/$draftId',
-              params: { draftId: copying.copy.draftId },
-            }),
-        })
+        const there = clients[copying.environmentId]?.getState()
+        tell(
+          there && listed(there) && copyArrived(there, copying.copy)
+            ? `This draft was copied to ${labelOf(copying.environmentId)}. ${labelOf(copying.left.environmentId)} still has the original`
+            : `This draft is already being copied to ${labelOf(copying.environmentId)}`,
+          {
+            action: 'Open the copy',
+            onOpen: () =>
+              void liveRef.current.navigate({
+                to: '/drafts/$draftId',
+                params: { draftId: copying.copy.draftId },
+              }),
+          },
+        )
         return false
       }
       if (isFrom(move?.left)) return false
@@ -271,8 +289,10 @@ export function EnvironmentChoiceHost({ children }: { children: ReactNode }) {
         // Saved now rather than after the pause in typing: the original waits on it.
         void target!.drafts.flush()
         const arrival = `/drafts/${copy.draftId}`
-        // Kept before its page arrives, so a reload in between still knows it.
-        track({ environmentId, copy, arrival, left, stage: 'moving' })
+        madeHere.current.add(copy.draftId)
+        // Kept from the moment of the choice: asked for, it finishes whatever
+        // the page does next, a reload included.
+        track({ environmentId, copy, arrival, left, createdAt: Date.now() })
         setMove({ environmentId, origin: pathname, arrival, left, copy })
         // In its place: the draft it replaces is on its way out. The address is
         // what moves the selection, as it is for any draft of another environment.
@@ -290,22 +310,16 @@ export function EnvironmentChoiceHost({ children }: { children: ReactNode }) {
 
   useEffect(() => {
     if (!move) return
-    const { copy, left } = move
-    const handover = (stage: DraftHandover['stage']) => {
-      if (copy && left)
-        track({ environmentId: move.environmentId, copy, arrival: move.arrival, left, stage })
-    }
-    // Gone somewhere else meanwhile: the choice is off, and its draft left
-    // alone. Its copy goes once it is saved, if neither has changed.
+    // Gone somewhere else meanwhile: the page is off. Its handover is not: a
+    // copy made finishes the move wherever the page has gone.
     if (pathname !== move.arrival && pathname !== move.origin) {
       setMove(null)
       setOpening(null)
-      handover('left')
       return
     }
     if (pathname !== move.arrival || selectedId !== move.environmentId) return
     setMove(null)
-    handover('landed')
+    const { copy, left } = move
     if (!left) return
     const { labelOf } = liveRef.current
     if (left.images > 0) {
@@ -335,18 +349,25 @@ export function EnvironmentChoiceHost({ children }: { children: ReactNode }) {
         source?.drafts?.discard(left.draftId, { ifRevision: standing.revision })
       }
     }
-  }, [clients, discards, move, pathname, selectedId, tell, track])
+  }, [clients, discards, move, pathname, selectedId, tell])
 
-  // Each copy is settled wherever the page has gone since. Landed, its
-  // original goes once the copy is saved, and only while it is still what was
-  // copied: written to since, here or anywhere, or given an image, it is the
-  // user's again and stays. Left, the copy goes on the same terms, and stays
-  // if the user goes to it after all.
+  // Too old, or an environment of it no longer saved: let go, both copies stay.
   useEffect(() => {
-    const unsettled = handovers.filter(({ stage }) => stage !== 'moving')
-    if (unsettled.length === 0) return
+    for (const handover of handovers) {
+      if (!liveRef.current.current(handover)) untrack(handover.copy.draftId)
+    }
+  }, [environments, handovers, untrack])
+
+  // Each original goes once its copy is saved where it went, wherever the page
+  // has gone since, and only while it is still what was copied: written to
+  // since, here or anywhere, or given an image, it is the user's again and
+  // stays. Nothing is judged from what an environment's cache says until the
+  // environment has listed its drafts since connecting.
+  useEffect(() => {
+    if (handovers.length === 0) return
     const leave: Array<() => void> = []
-    for (const handover of unsettled) {
+    for (const handover of handovers) {
+      if (!liveRef.current.current(handover)) continue
       const target = clients[handover.environmentId]
       const source = clients[handover.left.environmentId]
       if (!target || !source) continue
@@ -362,47 +383,39 @@ export function EnvironmentChoiceHost({ children }: { children: ReactNode }) {
         if (settled) return
         const state = target.getState()
         const stall = state.draftEdits[copy.draftId]?.stalled
-        const sent = state.sessions[copy.sessionId] !== undefined
-
-        if (handover.stage === 'left') {
-          if (liveRef.current.pathname === handover.arrival) return settle()
-          if (sent || neverSaved(stall)) return settle()
-          if (!listed(state) || !listed(source.getState())) return
-          const standing = standingOf(target, copy.draftId, left.text)
-          if (standing === 'waiting') return
-          if (typeof standing !== 'object') return settle()
-          // Its text must still be in the original, word for word.
-          if (selectDraftContent(source.getState(), left.draftId)?.text !== left.text) {
-            return settle()
-          }
+        // Never saved there, and saving it again as it is cannot work: one
+        // that keeps no drafts says so once connected, a draft too long once
+        // its drafts are listed. Both stay.
+        const unsaveable =
+          state.drafts[copy.draftId] === undefined &&
+          ((stall === 'unsupported' &&
+            state.connection.phase === 'connected' &&
+            !target.supports('saveDraft')) ||
+            (stall === 'too_large' && listed(state)))
+        if (unsaveable) {
           settle()
-          target.drafts?.discard(copy.draftId, { ifRevision: standing.revision })
+          tell(
+            stall === 'too_large'
+              ? `This draft is too long to save on ${there()}, so the original on ${here()} was kept`
+              : `${there()} can't save drafts, so the original on ${here()} was kept`,
+          )
           return
         }
-
-        const saved =
-          state.drafts[copy.draftId] !== undefined &&
-          selectDraftSyncStatus(state, copy.draftId) === 'synced'
-        if (!sent && !saved) {
-          if (state.drafts[copy.draftId] === undefined && neverSaved(stall)) {
-            settle()
-            tell(
-              stall === 'too_large'
-                ? `This draft is too long to save on ${there()}, so it's still on ${here()} too`
-                : `${there()} can't save drafts, so this one is still on ${here()} too`,
-            )
-            return
-          }
-          if (!listed(state) || selectDraftContent(state, copy.draftId) !== undefined) return
-          // Refused there, or deleted before it was saved: the original is all
-          // there is, and it stays.
+        if (!listed(state)) return
+        if (!copyArrived(state, copy)) {
+          if (selectDraftContent(state, copy.draftId) !== undefined) return
+          // Refused there, deleted before it was saved, or never got there:
+          // the original is all there is, and it stays.
           settle()
           // Deleted there by someone: theirs to say.
           if (state.draftTombstones[copy.draftId] !== undefined) return
+          const refused = madeHere.current.has(copy.draftId)
           const original = selectDraftContent(source.getState(), left.draftId) !== undefined
           const { navigate, pathname } = liveRef.current
           if (!original) {
-            tell(`${there()} couldn't save the copy`)
+            tell(
+              refused ? `${there()} couldn't save the copy` : `The copy on ${there()} wasn't saved`,
+            )
           } else if (pathname === handover.arrival) {
             // Its page went with it: back to the draft it was copied from.
             void navigate({
@@ -410,16 +423,25 @@ export function EnvironmentChoiceHost({ children }: { children: ReactNode }) {
               params: { draftId: left.draftId },
               replace: true,
             })
-            tell(`${there()} couldn't save this draft, so it's back on ${here()}`)
+            tell(
+              refused
+                ? `${there()} couldn't save this draft, so it's back on ${here()}`
+                : `The copy on ${there()} wasn't saved, so it's back on ${here()}`,
+            )
           } else {
-            tell(`${there()} couldn't save the copy. The draft is still on ${here()}`, {
-              action: 'Open',
-              onOpen: () =>
-                void liveRef.current.navigate({
-                  to: '/drafts/$draftId',
-                  params: { draftId: left.draftId },
-                }),
-            })
+            tell(
+              refused
+                ? `${there()} couldn't save the copy. The draft is still on ${here()}`
+                : `The copy on ${there()} wasn't saved. The draft is still on ${here()}`,
+              {
+                action: 'Open',
+                onOpen: () =>
+                  void liveRef.current.navigate({
+                    to: '/drafts/$draftId',
+                    params: { draftId: left.draftId },
+                  }),
+              },
+            )
           }
           return
         }
@@ -439,8 +461,8 @@ export function EnvironmentChoiceHost({ children }: { children: ReactNode }) {
     return () => {
       for (const stop of leave) stop()
     }
-    // `pathname`: a copy the user goes to after all is theirs.
-  }, [clients, handovers, pathname, tell, untrack])
+    // `environments`: what `current` reads.
+  }, [clients, environments, handovers, tell, untrack])
 
   const opened = useCallback(() => setOpening(null), [])
   const dismissNotice = useCallback(
