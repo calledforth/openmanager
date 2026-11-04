@@ -98,6 +98,8 @@ import {
   DraftPageContext,
   DraftPageNavigationContext,
   forgetSentDraft,
+  rememberLandingProject,
+  rememberedLandingProject,
   rememberSentDraft,
   sentDraftSession,
   type DraftPageInternals,
@@ -153,9 +155,10 @@ export interface EnvironmentApplicationOptions {
    */
   navigateDraft?: (draftId: string, options?: { replace?: boolean }) => Promise<void>
   /** True while the host shows a new-session page (on the web, `/` or
-   * `/drafts/<id>`). With no session open there, a draft stands in the most
-   * recently used project, so the composer is ready on arrival. Left false, a
-   * draft opens only when asked for. */
+   * `/drafts/<id>`). With no session open there, a draft stands in the project
+   * last picked there on this device, else the most recently used one, so the
+   * composer is ready on arrival. Left false, a draft opens only when asked
+   * for. */
   onLanding?: boolean
   /** On a host with draft pages, the draft the address names; null or
    * absent on the blank page. */
@@ -425,15 +428,31 @@ function canHostDraft(workspace: Workspace | undefined): workspace is Workspace 
   return workspace.availability ? workspace.availability === 'available' : workspace.exists
 }
 
-/** Where a landing draft opens: the project most recently worked in, else
- * the first one listed that is there to work in. */
-function landingWorkspaceFor(workspaces: Workspace[], recent: Workspace[]): string | null {
+/** Where a landing draft opens: the project last picked on this device while
+ * it is there to work in, else the one most recently worked in, else the
+ * first one listed that is there to work in. */
+function landingWorkspaceFor(
+  workspaces: Workspace[],
+  recent: Workspace[],
+  picked: string | null,
+): string | null {
+  const remembered = picked
+    ? workspaces.find((workspace) => workspace.workspaceId === picked)
+    : undefined
+  if (canHostDraft(remembered)) return remembered.workspaceId
   return (recent.find(canHostDraft) ?? workspaces.find(canHostDraft))?.workspaceId ?? null
 }
 
 /** Where a landing draft would open in this environment. */
-export function selectLandingWorkspaceId(state: EnvironmentState): string | null {
-  return landingWorkspaceFor(selectWorkspaces(state), selectRecentWorkspaces(state))
+export function selectLandingWorkspaceId(
+  state: EnvironmentState,
+  storage: DeviceStorage | null,
+): string | null {
+  return landingWorkspaceFor(
+    selectWorkspaces(state),
+    selectRecentWorkspaces(state),
+    rememberedLandingProject(state.environment?.environmentId, storage),
+  )
 }
 
 /**
@@ -549,7 +568,24 @@ function EnvironmentSessionStateProvider({
   // blank page, undefined off the new-session pages.
   const routed = navigateDraft !== undefined
   const routeDraft = onLanding ? (routed ? landingDraftId : null) : undefined
-  const landingWorkspaceId = landingWorkspaceFor(workspaces, recentWorkspaces)
+  // The project last picked here, on this device: read once per environment,
+  // then kept with each pick, so a blank page opened later goes there too.
+  const connectedEnvironmentId = useEnvironmentState(
+    (state) => state.environment?.environmentId ?? null,
+  )
+  const landingEnvironmentId = pageEnvironmentId ?? connectedEnvironmentId
+  const storedPick = useMemo(
+    () => rememberedLandingProject(landingEnvironmentId, deviceStorage),
+    [deviceStorage, landingEnvironmentId],
+  )
+  const [pick, setPick] = useState<{ environmentId: string; workspaceId: string } | null>(null)
+  const rememberedWorkspaceId =
+    pick && pick.environmentId === landingEnvironmentId ? pick.workspaceId : storedPick
+  const landingWorkspaceId = landingWorkspaceFor(
+    workspaces,
+    recentWorkspaces,
+    rememberedWorkspaceId,
+  )
   const isListed = (workspaceId: string | null): workspaceId is string =>
     workspaceId !== null && workspaces.some((workspace) => workspace.workspaceId === workspaceId)
 
@@ -670,6 +706,8 @@ function EnvironmentSessionStateProvider({
   draftWorkspaceRef.current = draftWorkspaceId
   const routeRef = useRef(routeDraft)
   routeRef.current = routeDraft
+  const landingEnvironmentRef = useRef(landingEnvironmentId)
+  landingEnvironmentRef.current = landingEnvironmentId
 
   // An address this client cannot place once the environment has listed its
   // drafts: a sent draft leads to its session, anything else to a blank page.
@@ -857,6 +895,20 @@ function EnvironmentSessionStateProvider({
     return known ? { type: 'new_session', ...known } : undefined
   }, [])
 
+  // A project the user chose for a new session: the next blank page here
+  // opens in it. Pages that open on their own (the landing, a reload, a
+  // discard's blank page) do not come through here, and so are never
+  // remembered.
+  const recordPick = useCallback(
+    (workspaceId: string) => {
+      const environmentId = landingEnvironmentRef.current
+      if (!environmentId) return
+      rememberLandingProject(environmentId, workspaceId, deviceStorage)
+      setPick({ environmentId, workspaceId })
+    },
+    [deviceStorage],
+  )
+
   const setDraftWorkspace = useCallback(
     (workspaceId: string) => {
       const current = pageRef.current
@@ -876,8 +928,9 @@ function EnvironmentSessionStateProvider({
       const moved = { ...current, sessionId, workspaceId }
       pageRef.current = moved
       setPage(moved)
+      recordPick(workspaceId)
     },
-    [client, sync],
+    [client, recordPick, sync],
   )
 
   // A blank page is never saved, so a fresh one leaves nothing behind when
@@ -1123,9 +1176,15 @@ function EnvironmentSessionStateProvider({
     },
     [commands, fail],
   )
+  // New agent in a project (the sidebar's row, Add project, the palette's
+  // expand) is a pick; a blank page opened after a discard is not, so that
+  // goes to `openDraft` directly.
   const createSession = useCallback(
-    async (workspacePath: string) => openDraftRef.current(workspacePath),
-    [],
+    async (workspacePath: string) => {
+      recordPick(workspacePath)
+      return openDraftRef.current(workspacePath)
+    },
+    [recordPick],
   )
   const renameSession = useCallback(
     async (_workspacePath: string, externalId: string, title: string | null) => {

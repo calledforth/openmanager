@@ -105,6 +105,50 @@ export function sentDraftSession(
   return sentHere.get(draftId) ?? readSent(storage)[draftId]
 }
 
+const LANDING_PROJECTS_KEY = 'openmanager.landing-projects'
+
+function readLandingProjects(storage: DeviceStorage | null): Record<string, string> {
+  try {
+    const parsed: unknown = JSON.parse(storage?.getItem(LANDING_PROJECTS_KEY) ?? '{}')
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return {}
+    return Object.fromEntries(
+      Object.entries(parsed).filter((entry): entry is [string, string] => {
+        return typeof entry[1] === 'string'
+      }),
+    )
+  } catch {
+    return {}
+  }
+}
+
+/**
+ * Remember the project the user last picked on a new-session page in an
+ * environment, so the next blank page there opens in it. Kept on this device
+ * only: project ids mean nothing on another environment.
+ */
+export function rememberLandingProject(
+  environmentId: string,
+  workspaceId: string,
+  storage: DeviceStorage | null = browserStorage(),
+) {
+  const picked = readLandingProjects(storage)
+  if (picked[environmentId] === workspaceId) return
+  picked[environmentId] = workspaceId
+  try {
+    storage?.setItem(LANDING_PROJECTS_KEY, JSON.stringify(picked))
+  } catch {
+    // Private mode or a full quota: the page opens on the most recent project.
+  }
+}
+
+/** The project last picked on a new-session page in that environment, if any. */
+export function rememberedLandingProject(
+  environmentId: string | null | undefined,
+  storage: DeviceStorage | null = browserStorage(),
+): string | null {
+  return environmentId ? (readLandingProjects(storage)[environmentId] ?? null) : null
+}
+
 /** The draft is back (its session was rolled back): its address is its own again. */
 export function forgetSentDraft(draftId: string, storage: DeviceStorage | null = browserStorage()) {
   sentHere.delete(draftId)
