@@ -52,15 +52,11 @@ import {
   otherEnvironmentsNotice,
   placeConnectionUi,
   sendBlockedReason,
-} from '../lib/connection-state'
+} from '@openmanager/environment-client/connection'
 import { isBrowserOnline, subscribeToNetworkStatus } from '../lib/browser-runtime'
 import { useConnection } from '../providers/connection-provider'
 import { useEnvironmentClients } from '../providers/environment-client-provider'
-import {
-  addressOf,
-  AddressLookupProvider,
-  useFindAddress,
-} from '../providers/address-environment'
+import { addressOf, AddressLookupProvider, useFindAddress } from '../providers/address-environment'
 import { AddWorkspaceDialog } from './add-workspace-dialog'
 import {
   ConnectionBanner,

@@ -46,7 +46,7 @@ import {
 } from '@openmanager/app-core/providers/sidebar-rows'
 import { WorkspaceIconContext } from '@openmanager/app-core/providers/view-actions'
 import { EnvironmentFailureStrip } from './connection-surfaces'
-import { environmentIsDown } from '../lib/connection-state'
+import { environmentIsDown } from '@openmanager/environment-client/connection'
 import { useAddressLookup, type Address } from '../providers/address-environment'
 import { useConnection } from '../providers/connection-provider'
 import { useEnvironmentClients } from '../providers/environment-client-provider'

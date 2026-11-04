@@ -1,0 +1,1617 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>OpenManager mobile — 01 · Sessions home + Session page</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap"
+      rel="stylesheet"
+    />
+    <style>
+      /* ── Tokens lifted from packages/app-core/src/styles/{globals,fluid}.css ── */
+      :root {
+        --font: 'Geist', 'Geist Variable', 'Segoe UI', ui-sans-serif, system-ui, sans-serif;
+        --mono: 'JetBrains Mono', ui-monospace, Consolas, monospace;
+        --float-radius: 12px;
+        --ease: cubic-bezier(0.2, 0.8, 0.2, 1);
+      }
+      .phone[data-theme='neutral'] {
+        color-scheme: dark;
+        --bg: #171717;
+        --fg: #ededed;
+        --muted: #8f8f8f;
+        --faint: #5c5c5c;
+        --rule: rgb(255 255 255 / 0.075);
+        --hover: rgb(255 255 255 / 0.06);
+        --active: rgb(255 255 255 / 0.1);
+        --surface-2: #1e1e1e;
+        --surface-3: #252525;
+        --surface-4: #2c2c2c;
+        --bubble: #363636;
+        --float-bg: color-mix(in oklab, #171717, #ededed 5%);
+        --float-shadow:
+          inset 0 1px 0 0 rgb(255 255 255 / 0.05), inset 0 0 0 1px rgb(255 255 255 / 0.035),
+          0 0 0 1px rgb(0 0 0 / 0.32), 0 2px 4px rgb(0 0 0 / 0.14),
+          0 8px 18px -4px rgb(0 0 0 / 0.22), 0 24px 56px -12px rgb(0 0 0 / 0.5);
+        --float-rest:
+          inset 0 1px 0 0 rgb(255 255 255 / 0.05), inset 0 0 0 1px rgb(255 255 255 / 0.035),
+          0 0 0 1px rgb(0 0 0 / 0.32), 0 2px 4px rgb(0 0 0 / 0.12), 0 8px 16px -8px rgb(0 0 0 / 0.2);
+        --action-bg: #e5e5e5;
+        --action-fg: #111111;
+        --glass: rgb(34 34 34 / 0.58);
+        --glass-strong: rgb(34 34 34 / 0.72);
+        --status-working: #a193ff;
+        --status-background: #6cbcf2;
+        --status-needs: #f4b942;
+        --status-question: #f47fc4;
+        --status-done: #5ed8a4;
+        --status-error: #ff6f6f;
+      }
+      .phone[data-theme='neutral-light'] {
+        color-scheme: light;
+        --bg: #fcfcfc;
+        --fg: #1a1a1a;
+        --muted: #737373;
+        --faint: #a8a8a8;
+        --rule: #ececec;
+        --hover: rgb(0 0 0 / 0.04);
+        --active: rgb(0 0 0 / 0.07);
+        --surface-2: #fcfcfc;
+        --surface-3: #ffffff;
+        --surface-4: #ffffff;
+        --bubble: #ebebeb;
+        --float-bg: #ffffff;
+        --float-shadow:
+          0 0 0 1px rgb(0 0 0 / 0.06), 0 1px 1px -0.5px rgb(0 0 0 / 0.06),
+          0 3px 3px -1.5px rgb(0 0 0 / 0.06), 0 6px 6px -3px rgb(0 0 0 / 0.06),
+          0 12px 12px -6px rgb(0 0 0 / 0.06), 0 24px 24px -12px rgb(0 0 0 / 0.06);
+        --float-rest:
+          0 0 0 1px rgb(0 0 0 / 0.06), 0 1px 1px -0.5px rgb(0 0 0 / 0.06),
+          0 3px 3px -1.5px rgb(0 0 0 / 0.06), 0 6px 6px -3px rgb(0 0 0 / 0.06);
+        --action-bg: #2a2a2a;
+        --action-fg: #f3f3f3;
+        --glass: rgb(255 255 255 / 0.6);
+        --glass-strong: rgb(255 255 255 / 0.74);
+        --status-working: #6b56e0;
+        --status-background: #1f74b0;
+        --status-needs: #b7791f;
+        --status-question: #b8337f;
+        --status-done: #12805a;
+        --status-error: #c73b3b;
+      }
+
+      /* ── Page chrome (not part of the design) ── */
+      body {
+        margin: 0;
+        background: #0b0b0b;
+        font-family: var(--font);
+        color: #bbb;
+      }
+      .board {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 36px;
+        padding: 36px;
+        align-items: flex-start;
+      }
+      .frame {
+        display: flex;
+        flex-direction: column;
+        gap: 10px;
+      }
+      .frame > .label {
+        font-size: 12px;
+        color: #777;
+        letter-spacing: 0.02em;
+      }
+      .frame > .label b {
+        color: #ccc;
+        font-weight: 500;
+      }
+
+      /* ── Phone ── */
+      .phone {
+        width: 390px;
+        height: 844px;
+        border-radius: 44px;
+        overflow: hidden;
+        position: relative;
+        background: var(--bg);
+        color: var(--fg);
+        font-family: var(--font);
+        font-size: 15px;
+        box-shadow:
+          0 0 0 10px #1c1c1c,
+          0 0 0 11px #2a2a2a,
+          0 30px 80px -20px rgb(0 0 0 / 0.8);
+        display: flex;
+        flex-direction: column;
+        -webkit-font-smoothing: antialiased;
+      }
+      .statusbar {
+        height: 54px;
+        display: flex;
+        align-items: flex-end;
+        justify-content: space-between;
+        padding: 0 34px 8px;
+        font-size: 15px;
+        font-weight: 600;
+      }
+      .statusbar .right {
+        display: flex;
+        gap: 6px;
+        align-items: center;
+        font-size: 12px;
+      }
+      .homebar {
+        position: absolute;
+        bottom: 8px;
+        left: 50%;
+        transform: translateX(-50%);
+        width: 134px;
+        height: 5px;
+        border-radius: 3px;
+        background: var(--fg);
+        opacity: 0.9;
+      }
+      .screen {
+        flex: 1;
+        display: flex;
+        flex-direction: column;
+        min-height: 0;
+      }
+
+      /* ── Header ── */
+      .header {
+        padding: 6px 20px 0;
+      }
+      .header .top {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        height: 44px;
+      }
+      .header h1 {
+        font-size: 28px;
+        font-weight: 600;
+        letter-spacing: -0.02em;
+        margin: 0;
+      }
+      .env {
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
+        margin-top: 4px;
+        font-size: 13px;
+        color: var(--muted);
+      }
+      .env .dot {
+        width: 7px;
+        height: 7px;
+        border-radius: 50%;
+        background: var(--status-done);
+      }
+      .env .route {
+        color: var(--faint);
+      }
+      /* Glass: the recipe for everything that floats over content. */
+      .glass {
+        background: var(--glass);
+        -webkit-backdrop-filter: blur(24px) saturate(1.6);
+        backdrop-filter: blur(24px) saturate(1.6);
+      }
+      .iconbtn {
+        width: 36px;
+        height: 36px;
+        border-radius: 50%;
+        display: grid;
+        place-items: center;
+        background: var(--glass);
+        -webkit-backdrop-filter: blur(18px) saturate(1.5);
+        backdrop-filter: blur(18px) saturate(1.5);
+        box-shadow: var(--float-rest);
+        color: var(--fg);
+      }
+      .iconbtn svg {
+        width: 18px;
+        height: 18px;
+      }
+      .btns {
+        display: flex;
+        gap: 10px;
+      }
+
+      /* ── Tabs ── */
+      .tabs {
+        display: flex;
+        gap: 6px;
+        padding: 14px 20px 8px;
+      }
+      .tab {
+        padding: 6px 12px;
+        border-radius: 999px;
+        font-size: 14px;
+        color: var(--muted);
+        font-weight: 500;
+      }
+      .tab.on {
+        background: var(--active);
+        color: var(--fg);
+      }
+      .tab .n {
+        color: var(--faint);
+        margin-left: 4px;
+        font-weight: 400;
+      }
+
+      /* ── List ── */
+      .list {
+        flex: 1;
+        overflow: hidden;
+        padding: 0 8px;
+      }
+      .group {
+        padding: 14px 12px 4px;
+        font-size: 12px;
+        color: var(--faint);
+        font-weight: 500;
+        letter-spacing: 0.02em;
+      }
+      .row {
+        display: flex;
+        align-items: center;
+        gap: 12px;
+        padding: 10px 12px;
+        border-radius: 12px;
+      }
+      .row.sel {
+        background: var(--active);
+      }
+      .row .mark {
+        width: 22px;
+        height: 22px;
+        flex: none;
+        display: grid;
+        place-items: center;
+      }
+      .row .body {
+        flex: 1;
+        min-width: 0;
+      }
+      .row .title {
+        font-size: 15px;
+        font-weight: 500;
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        letter-spacing: -0.005em;
+      }
+      .row .sub {
+        display: flex;
+        align-items: center;
+        gap: 6px;
+        font-size: 12.5px;
+        color: var(--muted);
+        margin-top: 2px;
+        white-space: nowrap;
+        overflow: hidden;
+      }
+      .row .sub .proj {
+        display: inline-flex;
+        align-items: center;
+        gap: 5px;
+        flex: none;
+      }
+      .row .sub .proj i {
+        width: 12px;
+        height: 12px;
+        border-radius: 3px;
+        display: inline-block;
+      }
+      .row .sub .sep {
+        color: var(--faint);
+      }
+      .row .sub code {
+        font-family: var(--mono);
+        font-size: 12px;
+      }
+      .row .age {
+        font-size: 12.5px;
+        color: var(--faint);
+        flex: none;
+      }
+      .row.child {
+        padding-left: 46px;
+        position: relative;
+      }
+      .row.child::before {
+        content: '';
+        position: absolute;
+        left: 23px;
+        top: -6px;
+        bottom: 50%;
+        width: 10px;
+        border-left: 1.5px solid var(--rule);
+        border-bottom: 1.5px solid var(--rule);
+        border-bottom-left-radius: 6px;
+      }
+
+      /* status marks */
+      .m-working {
+        width: 12px;
+        height: 12px;
+        border-radius: 50%;
+        border: 2.5px solid var(--status-working);
+        border-right-color: transparent;
+        animation: spin 1.1s linear infinite;
+      }
+      .m-background {
+        width: 12px;
+        height: 12px;
+        border-radius: 50%;
+        border: 2.5px solid var(--status-background);
+        border-right-color: transparent;
+        opacity: 0.8;
+        animation: spin 2.2s linear infinite;
+      }
+      .m-needs {
+        width: 14px;
+        height: 14px;
+        border-radius: 50%;
+        background: var(--status-needs);
+        color: #1a1a1a;
+        font-size: 10px;
+        font-weight: 700;
+        display: grid;
+        place-items: center;
+      }
+      .m-question {
+        width: 14px;
+        height: 14px;
+        border-radius: 50%;
+        background: var(--status-question);
+        color: #1a1a1a;
+        font-size: 10px;
+        font-weight: 700;
+        display: grid;
+        place-items: center;
+      }
+      .m-done {
+        width: 14px;
+        height: 14px;
+        border-radius: 50%;
+        background: var(--status-done);
+        display: grid;
+        place-items: center;
+      }
+      .m-done svg {
+        width: 9px;
+        height: 9px;
+      }
+      .m-error {
+        width: 14px;
+        height: 14px;
+        border-radius: 50%;
+        background: var(--status-error);
+        color: #1a1a1a;
+        font-size: 10px;
+        font-weight: 700;
+        display: grid;
+        place-items: center;
+      }
+      .m-idle {
+        width: 12px;
+        height: 12px;
+        border-radius: 50%;
+        border: 1.5px solid var(--faint);
+      }
+      @keyframes spin {
+        to {
+          transform: rotate(360deg);
+        }
+      }
+
+      /* ── Bottom pill nav ── */
+      .nav {
+        position: absolute;
+        left: 0;
+        right: 0;
+        bottom: 28px;
+        display: flex;
+        justify-content: center;
+        gap: 10px;
+        padding: 0 20px;
+      }
+      .pill {
+        display: flex;
+        gap: 4px;
+        padding: 6px;
+        border-radius: 999px;
+        background: var(--glass);
+        -webkit-backdrop-filter: blur(24px) saturate(1.6);
+        backdrop-filter: blur(24px) saturate(1.6);
+        box-shadow: var(--float-shadow);
+      }
+      .pill .it {
+        width: 48px;
+        height: 44px;
+        border-radius: 999px;
+        display: grid;
+        place-items: center;
+        color: var(--muted);
+        position: relative;
+      }
+      .pill .it.on {
+        background: var(--active);
+        color: var(--fg);
+      }
+      .pill .it svg {
+        width: 21px;
+        height: 21px;
+      }
+      .pill .it .badge {
+        position: absolute;
+        top: 9px;
+        right: 11px;
+        width: 7px;
+        height: 7px;
+        border-radius: 50%;
+        background: var(--status-needs);
+        box-shadow: 0 0 0 2px var(--float-bg);
+      }
+      .fab {
+        width: 56px;
+        height: 56px;
+        border-radius: 50%;
+        display: grid;
+        place-items: center;
+        background: var(--glass);
+        -webkit-backdrop-filter: blur(24px) saturate(1.6);
+        backdrop-filter: blur(24px) saturate(1.6);
+        box-shadow: var(--float-shadow);
+        color: var(--fg);
+      }
+      .fab svg {
+        width: 22px;
+        height: 22px;
+      }
+
+      /* ── Session page ── */
+      .sess .header .top {
+        height: 48px;
+      }
+      .sess .title-wrap {
+        padding: 2px 20px 0;
+      }
+      .sess .proj {
+        font-size: 12.5px;
+        color: var(--muted);
+        display: flex;
+        align-items: center;
+        gap: 6px;
+      }
+      .sess .proj i {
+        width: 12px;
+        height: 12px;
+        border-radius: 3px;
+        display: inline-block;
+      }
+      .sess h1 {
+        font-size: 22px;
+        line-height: 1.2;
+        margin: 4px 0 0;
+        font-weight: 600;
+        letter-spacing: -0.015em;
+      }
+      .chips {
+        display: flex;
+        align-items: center;
+        gap: 6px;
+        padding: 12px 20px 10px;
+        overflow: hidden;
+      }
+      .chip {
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
+        padding: 6px 10px;
+        border-radius: 999px;
+        background: var(--hover);
+        font-size: 13px;
+        color: var(--fg);
+        white-space: nowrap;
+      }
+      .phone[data-theme='neutral'] .chip {
+        background: var(--hover);
+      }
+      .chip svg {
+        width: 14px;
+        height: 14px;
+      }
+      .chip.icon {
+        padding: 6px 8px;
+      }
+      .chip .caret {
+        width: 10px;
+        height: 10px;
+        color: var(--faint);
+        transform: rotate(90deg);
+      }
+      .meter {
+        margin-left: auto;
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
+        font-size: 12px;
+        color: var(--faint);
+      }
+      .meter .bar {
+        width: 44px;
+        height: 4px;
+        border-radius: 2px;
+        background: var(--active);
+        overflow: hidden;
+      }
+      .meter .bar i {
+        display: block;
+        height: 100%;
+        width: 38%;
+        background: var(--muted);
+        border-radius: 2px;
+      }
+
+      .transcript {
+        flex: 1;
+        overflow: hidden;
+        padding: 4px 20px 0;
+        display: flex;
+        flex-direction: column;
+        gap: 14px;
+        font-size: 15px;
+        line-height: 1.55;
+      }
+      /* A weak fade only: the glass needs content behind it to read as glass. */
+      .fadeout {
+        position: absolute;
+        left: 0;
+        right: 0;
+        bottom: 0;
+        height: 150px;
+        pointer-events: none;
+        background: linear-gradient(
+          to bottom,
+          transparent,
+          color-mix(in oklab, var(--bg) 55%, transparent)
+        );
+      }
+      .status-line {
+        position: relative;
+      }
+      .transcript {
+        padding-bottom: 150px;
+      }
+      .user {
+        align-self: flex-end;
+        max-width: 86%;
+        background: var(--bubble);
+        padding: 10px 14px;
+        border-radius: 18px 18px 4px 18px;
+        font-size: 15px;
+      }
+      .asst p {
+        margin: 0 0 10px;
+      }
+      .asst p:last-child {
+        margin: 0;
+      }
+      .asst code {
+        font-family: var(--mono);
+        font-size: 13px;
+        background: var(--hover);
+        padding: 1px 5px;
+        border-radius: 4px;
+      }
+      .thought {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        font-size: 13.5px;
+        color: var(--muted);
+      }
+      .thought .chev {
+        width: 12px;
+        height: 12px;
+        color: var(--faint);
+      }
+      .work {
+        border-radius: 12px;
+        background: var(--hover);
+        padding: 8px 12px;
+      }
+      .phone[data-theme='neutral'] .work {
+        background: var(--hover);
+      }
+      .work .head {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        font-size: 13.5px;
+        color: var(--muted);
+      }
+      .work .head .chev {
+        width: 12px;
+        height: 12px;
+        transform: rotate(90deg);
+        color: var(--faint);
+      }
+      .work .head .t {
+        color: var(--faint);
+        margin-left: auto;
+        font-variant-numeric: tabular-nums;
+      }
+      .tools {
+        margin-top: 8px;
+        display: flex;
+        flex-direction: column;
+        gap: 6px;
+      }
+      .tool {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        font-size: 13px;
+        font-family: var(--mono);
+        color: var(--muted);
+      }
+      .tool .k {
+        color: var(--fg);
+        font-family: var(--font);
+        font-weight: 500;
+        font-size: 13px;
+        width: 44px;
+        flex: none;
+      }
+      .tool .p {
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        min-width: 0;
+      }
+      .tool .ok {
+        width: 6px;
+        height: 6px;
+        border-radius: 50%;
+        background: var(--status-done);
+        flex: none;
+        margin-left: auto;
+      }
+      .tool .run {
+        width: 10px;
+        height: 10px;
+        border-radius: 50%;
+        border: 2px solid var(--status-working);
+        border-right-color: transparent;
+        animation: spin 1.1s linear infinite;
+        flex: none;
+        margin-left: auto;
+      }
+      .plus {
+        color: var(--status-done);
+      }
+      .minus {
+        color: var(--status-error);
+      }
+      .shimmer {
+        display: inline-block;
+        background: linear-gradient(90deg, var(--muted) 0%, var(--fg) 50%, var(--muted) 100%);
+        background-size: 200% 100%;
+        -webkit-background-clip: text;
+        background-clip: text;
+        color: transparent;
+        animation: sweep 1.6s linear infinite;
+      }
+      @keyframes sweep {
+        from {
+          background-position: 200% 0;
+        }
+        to {
+          background-position: -200% 0;
+        }
+      }
+
+      .dock {
+        position: absolute;
+        left: 12px;
+        right: 12px;
+        bottom: 30px;
+        display: flex;
+        flex-direction: column;
+        gap: 8px;
+      }
+      .status-line {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        padding: 0 10px;
+        font-size: 12.5px;
+        color: var(--muted);
+      }
+      .status-line .m-working {
+        width: 9px;
+        height: 9px;
+        border-width: 2px;
+      }
+      .status-line .m-needs {
+        width: 11px;
+        height: 11px;
+        font-size: 8px;
+      }
+      .status-line .t {
+        margin-left: auto;
+        color: var(--faint);
+        font-variant-numeric: tabular-nums;
+      }
+      .composer {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        padding: 8px 8px 8px 14px;
+        border-radius: 26px;
+        background: var(--glass-strong);
+        -webkit-backdrop-filter: blur(28px) saturate(1.6);
+        backdrop-filter: blur(28px) saturate(1.6);
+        box-shadow: var(--float-rest);
+      }
+      .composer .ph {
+        flex: 1;
+        color: var(--faint);
+        font-size: 15px;
+      }
+      .composer .a {
+        width: 36px;
+        height: 36px;
+        border-radius: 50%;
+        display: grid;
+        place-items: center;
+        color: var(--muted);
+      }
+      .composer .a svg {
+        width: 20px;
+        height: 20px;
+      }
+      .composer .send {
+        width: 36px;
+        height: 36px;
+        border-radius: 50%;
+        display: grid;
+        place-items: center;
+        background: var(--action-bg);
+        color: var(--action-fg);
+      }
+      .composer .send svg {
+        width: 14px;
+        height: 14px;
+      }
+      .composer.prompt {
+        flex-wrap: wrap;
+        gap: 10px;
+        padding: 12px 12px 10px 14px;
+        border-radius: 22px;
+      }
+      .composer.prompt .q {
+        width: 100%;
+        font-size: 14px;
+        color: var(--fg);
+      }
+      .composer.prompt .q code {
+        font-family: var(--mono);
+        font-size: 12.5px;
+        background: var(--hover);
+        padding: 1px 5px;
+        border-radius: 4px;
+      }
+      .choices {
+        display: flex;
+        gap: 6px;
+        width: 100%;
+      }
+      .choice {
+        flex: 1;
+        text-align: center;
+        padding: 9px;
+        border-radius: 14px;
+        font-size: 14px;
+        font-weight: 500;
+        background: var(--hover);
+        color: var(--muted);
+      }
+      .choice.primary {
+        background: var(--action-bg);
+        color: var(--action-fg);
+      }
+      .choice.secondary {
+        background: var(--active);
+        color: var(--fg);
+      }
+      .jump {
+        position: absolute;
+        right: 24px;
+        bottom: 136px;
+        width: 36px;
+        height: 36px;
+        border-radius: 50%;
+        display: grid;
+        place-items: center;
+        background: var(--glass);
+        -webkit-backdrop-filter: blur(18px) saturate(1.5);
+        backdrop-filter: blur(18px) saturate(1.5);
+        box-shadow: var(--float-shadow);
+        color: var(--fg);
+      }
+      .jump svg {
+        width: 16px;
+        height: 16px;
+      }
+
+      .note {
+        max-width: 820px;
+        color: #9a9a9a;
+        font-size: 13.5px;
+        line-height: 1.6;
+        padding: 0 36px 36px;
+      }
+      .note h2 {
+        color: #ddd;
+        font-size: 15px;
+        font-weight: 600;
+        margin: 24px 0 6px;
+      }
+      .note ol {
+        padding-left: 18px;
+      }
+      .note b {
+        color: #ccc;
+        font-weight: 500;
+      }
+    </style>
+  </head>
+  <body>
+    <svg width="0" height="0" style="position: absolute">
+      <defs>
+        <symbol id="i-check" viewBox="0 0 24 24">
+          <path
+            d="M5 12.5l4.5 4.5L19 7.5"
+            fill="none"
+            stroke="#1a1a1a"
+            stroke-width="3.2"
+            stroke-linecap="round"
+            stroke-linejoin="round"
+          />
+        </symbol>
+        <symbol id="i-chev" viewBox="0 0 24 24">
+          <path
+            d="M9 6l6 6-6 6"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="2.2"
+            stroke-linecap="round"
+            stroke-linejoin="round"
+          />
+        </symbol>
+        <symbol id="i-back" viewBox="0 0 24 24">
+          <path
+            d="M15 5l-7 7 7 7"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="2.2"
+            stroke-linecap="round"
+            stroke-linejoin="round"
+          />
+        </symbol>
+        <symbol id="i-more" viewBox="0 0 24 24">
+          <circle cx="6" cy="12" r="1.8" fill="currentColor" />
+          <circle cx="12" cy="12" r="1.8" fill="currentColor" />
+          <circle cx="18" cy="12" r="1.8" fill="currentColor" />
+        </symbol>
+        <symbol id="i-search" viewBox="0 0 24 24">
+          <circle cx="11" cy="11" r="6.5" fill="none" stroke="currentColor" stroke-width="2.2" />
+          <path
+            d="M16 16l4.5 4.5"
+            stroke="currentColor"
+            stroke-width="2.2"
+            stroke-linecap="round"
+          />
+        </symbol>
+        <symbol id="i-sessions" viewBox="0 0 24 24">
+          <rect
+            x="4"
+            y="5"
+            width="16"
+            height="4"
+            rx="1.5"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="2"
+          />
+          <rect
+            x="4"
+            y="12"
+            width="16"
+            height="4"
+            rx="1.5"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="2"
+          />
+          <rect x="4" y="19" width="10" height="2" rx="1" fill="currentColor" />
+        </symbol>
+        <symbol id="i-inbox" viewBox="0 0 24 24">
+          <path
+            d="M4 13l2.2-7h11.6L20 13v5a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2z"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="2"
+            stroke-linejoin="round"
+          />
+          <path
+            d="M4 13h4.5l1.5 2.5h4l1.5-2.5H20"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="2"
+            stroke-linejoin="round"
+          />
+        </symbol>
+        <symbol id="i-gear" viewBox="0 0 24 24">
+          <circle cx="12" cy="12" r="3" fill="none" stroke="currentColor" stroke-width="2" />
+          <path
+            d="M12 2v3M12 19v3M2 12h3M19 12h3M4.9 4.9l2.1 2.1M17 17l2.1 2.1M4.9 19.1L7 17M17 7l2.1-2.1"
+            stroke="currentColor"
+            stroke-width="2"
+            stroke-linecap="round"
+          />
+        </symbol>
+        <symbol id="i-edit" viewBox="0 0 24 24">
+          <path
+            d="M4 20h4l10.5-10.5a2.1 2.1 0 0 0-3-3L5 17v3z"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="2"
+            stroke-linejoin="round"
+          />
+          <path d="M13.5 6.5l3 3" stroke="currentColor" stroke-width="2" />
+        </symbol>
+        <symbol id="i-attach" viewBox="0 0 24 24">
+          <path
+            d="M8 12.5l7.5-7.5a3.5 3.5 0 0 1 5 5L10 20.5a5.5 5.5 0 0 1-7.8-7.8L10 5"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="2"
+            stroke-linecap="round"
+          />
+        </symbol>
+        <symbol id="i-stop" viewBox="0 0 24 24">
+          <rect x="6" y="6" width="12" height="12" rx="2.5" fill="currentColor" />
+        </symbol>
+        <symbol id="i-down" viewBox="0 0 24 24">
+          <path
+            d="M12 5v13M6 12l6 6 6-6"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="2.4"
+            stroke-linecap="round"
+            stroke-linejoin="round"
+          />
+        </symbol>
+        <symbol id="i-claude" viewBox="0 0 24 24">
+          <path
+            d="M12 2.5l1.9 5.4 5.4-1.9-3.5 4.5 4.6 3.4-5.7.5.9 5.7-3.6-4.5-3.6 4.5.9-5.7-5.7-.5 4.6-3.4L4.7 6l5.4 1.9z"
+            fill="#d97757"
+          />
+        </symbol>
+        <symbol id="i-mode" viewBox="0 0 24 24">
+          <path
+            d="M4 12l4-7h8l4 7-4 7H8z"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="2"
+            stroke-linejoin="round"
+          />
+        </symbol>
+        <symbol id="i-effort" viewBox="0 0 24 24">
+          <rect x="4" y="13" width="3.5" height="7" rx="1" fill="currentColor" />
+          <rect x="10.25" y="9" width="3.5" height="11" rx="1" fill="currentColor" />
+          <rect x="16.5" y="4" width="3.5" height="16" rx="1" fill="currentColor" opacity="0.35" />
+        </symbol>
+      </defs>
+    </svg>
+
+    <div class="board">
+      <!-- ═══════════════ Sessions home · dark ═══════════════ -->
+      <div class="frame">
+        <div class="label"><b>01 · Sessions home</b> · Neutral dark</div>
+        <div class="phone" data-theme="neutral">
+          <div class="statusbar"><span>9:41</span><span class="right">●●●● ◗ ▮</span></div>
+          <div class="screen">
+            <div class="header">
+              <div class="top">
+                <h1>Sessions</h1>
+                <div class="btns">
+                  <div class="iconbtn">
+                    <svg><use href="#i-edit" /></svg>
+                  </div>
+                  <div class="iconbtn">
+                    <svg><use href="#i-more" /></svg>
+                  </div>
+                </div>
+              </div>
+              <div class="env">
+                <span class="dot"></span>laptop <span class="route">· tunnel</span>
+              </div>
+            </div>
+            <div class="tabs">
+              <div class="tab on">Active<span class="n">6</span></div>
+              <div class="tab">Settled<span class="n">12</span></div>
+              <div class="tab">Drafts<span class="n">2</span></div>
+            </div>
+            <div class="list">
+              <div class="group">Needs you</div>
+              <div class="row">
+                <div class="mark"><div class="m-needs">!</div></div>
+                <div class="body">
+                  <div class="title">Settings Environment Page Redesign</div>
+                  <div class="sub">
+                    <span class="proj"><i style="background: #4f8ff7"></i>openmanager</span
+                    ><span class="sep">·</span><span>Allow <code>pnpm test</code>?</span>
+                  </div>
+                </div>
+                <div class="age">2m</div>
+              </div>
+              <div class="row">
+                <div class="mark"><div class="m-question">?</div></div>
+                <div class="body">
+                  <div class="title">Higgsfield Soul ID API Automation</div>
+                  <div class="sub">
+                    <span class="proj"><i style="background: #e06b4f"></i>salesmaxai</span
+                    ><span class="sep">·</span><span>Asked 2 questions</span>
+                  </div>
+                </div>
+                <div class="age">14m</div>
+              </div>
+              <div class="group">Working</div>
+              <div class="row">
+                <div class="mark"><div class="m-working"></div></div>
+                <div class="body">
+                  <div class="title">Codex Integration: Tool Call Payloads</div>
+                  <div class="sub">
+                    <span class="proj"><i style="background: #4f8ff7"></i>openmanager</span
+                    ><span class="sep">·</span><span>Editing thread-service.ts</span>
+                  </div>
+                </div>
+                <div class="age">now</div>
+              </div>
+              <div class="row child">
+                <div class="mark"><div class="m-working"></div></div>
+                <div class="body">
+                  <div class="title">Review: tool payload migration</div>
+                  <div class="sub"><span>subagent · gpt-6.1-sol</span></div>
+                </div>
+                <div class="age">now</div>
+              </div>
+              <div class="row">
+                <div class="mark"><div class="m-background"></div></div>
+                <div class="body">
+                  <div class="title">Mobile Client Gap Analysis and Plan</div>
+                  <div class="sub">
+                    <span class="proj"><i style="background: #4f8ff7"></i>openmanager</span
+                    ><span class="sep">·</span><span>2 agents in the background</span>
+                  </div>
+                </div>
+                <div class="age">6m</div>
+              </div>
+              <div class="group">Done</div>
+              <div class="row">
+                <div class="mark">
+                  <div class="m-done">
+                    <svg><use href="#i-check" /></svg>
+                  </div>
+                </div>
+                <div class="body">
+                  <div class="title">Fix message flicker on send</div>
+                  <div class="sub">
+                    <span class="proj"><i style="background: #4f8ff7"></i>openmanager</span
+                    ><span class="sep">·</span><span>PR #222 opened</span>
+                  </div>
+                </div>
+                <div class="age">1h</div>
+              </div>
+              <div class="row">
+                <div class="mark"><div class="m-error">×</div></div>
+                <div class="body">
+                  <div class="title">Waiving Whop $500 Setup Fee for Users</div>
+                  <div class="sub">
+                    <span class="proj"><i style="background: #e06b4f"></i>salesmaxai</span
+                    ><span class="sep">·</span><span>Rate limited, retry in 4m</span>
+                  </div>
+                </div>
+                <div class="age">3h</div>
+              </div>
+              <div class="row">
+                <div class="mark"><div class="m-idle"></div></div>
+                <div class="body">
+                  <div class="title">Agent Browser Control With Zen Helium</div>
+                  <div class="sub">
+                    <span class="proj"><i style="background: #4f8ff7"></i>openmanager</span
+                    ><span class="sep">·</span><span>Idle</span>
+                  </div>
+                </div>
+                <div class="age">yesterday</div>
+              </div>
+              <div class="row">
+                <div class="mark"><div class="m-idle"></div></div>
+                <div class="body">
+                  <div class="title">Yo how could we build a mcp server?? or is it a webhook</div>
+                  <div class="sub">
+                    <span class="proj"><i style="background: #4f8ff7"></i>openmanager</span
+                    ><span class="sep">·</span><span>Idle</span>
+                  </div>
+                </div>
+                <div class="age">4d</div>
+              </div>
+              <div class="row">
+                <div class="mark"><div class="m-idle"></div></div>
+                <div class="body">
+                  <div class="title">Freelancer Portfolio Website Planning</div>
+                  <div class="sub">
+                    <span class="proj"><i style="background: #9b8cff"></i>ClePro</span
+                    ><span class="sep">·</span><span>Idle</span>
+                  </div>
+                </div>
+                <div class="age">5d</div>
+              </div>
+            </div>
+          </div>
+          <div class="nav">
+            <div class="pill">
+              <div class="it on">
+                <svg><use href="#i-sessions" /></svg>
+              </div>
+              <div class="it">
+                <svg><use href="#i-inbox" /></svg><span class="badge"></span>
+              </div>
+              <div class="it">
+                <svg><use href="#i-gear" /></svg>
+              </div>
+            </div>
+            <div class="fab">
+              <svg><use href="#i-search" /></svg>
+            </div>
+          </div>
+          <div class="homebar"></div>
+        </div>
+      </div>
+
+      <!-- ═══════════════ Sessions home · light ═══════════════ -->
+      <div class="frame">
+        <div class="label"><b>01 · Sessions home</b> · Neutral light</div>
+        <div class="phone" data-theme="neutral-light">
+          <div class="statusbar"><span>9:41</span><span class="right">●●●● ◗ ▮</span></div>
+          <div class="screen">
+            <div class="header">
+              <div class="top">
+                <h1>Sessions</h1>
+                <div class="btns">
+                  <div class="iconbtn">
+                    <svg><use href="#i-edit" /></svg>
+                  </div>
+                  <div class="iconbtn">
+                    <svg><use href="#i-more" /></svg>
+                  </div>
+                </div>
+              </div>
+              <div class="env">
+                <span class="dot"></span>laptop <span class="route">· tunnel</span>
+              </div>
+            </div>
+            <div class="tabs">
+              <div class="tab on">Active<span class="n">6</span></div>
+              <div class="tab">Settled<span class="n">12</span></div>
+              <div class="tab">Drafts<span class="n">2</span></div>
+            </div>
+            <div class="list">
+              <div class="group">Needs you</div>
+              <div class="row">
+                <div class="mark"><div class="m-needs">!</div></div>
+                <div class="body">
+                  <div class="title">Settings Environment Page Redesign</div>
+                  <div class="sub">
+                    <span class="proj"><i style="background: #4f8ff7"></i>openmanager</span
+                    ><span class="sep">·</span><span>Allow <code>pnpm test</code>?</span>
+                  </div>
+                </div>
+                <div class="age">2m</div>
+              </div>
+              <div class="row">
+                <div class="mark"><div class="m-question">?</div></div>
+                <div class="body">
+                  <div class="title">Higgsfield Soul ID API Automation</div>
+                  <div class="sub">
+                    <span class="proj"><i style="background: #e06b4f"></i>salesmaxai</span
+                    ><span class="sep">·</span><span>Asked 2 questions</span>
+                  </div>
+                </div>
+                <div class="age">14m</div>
+              </div>
+              <div class="group">Working</div>
+              <div class="row">
+                <div class="mark"><div class="m-working"></div></div>
+                <div class="body">
+                  <div class="title">Codex Integration: Tool Call Payloads</div>
+                  <div class="sub">
+                    <span class="proj"><i style="background: #4f8ff7"></i>openmanager</span
+                    ><span class="sep">·</span><span>Editing thread-service.ts</span>
+                  </div>
+                </div>
+                <div class="age">now</div>
+              </div>
+              <div class="row child">
+                <div class="mark"><div class="m-working"></div></div>
+                <div class="body">
+                  <div class="title">Review: tool payload migration</div>
+                  <div class="sub"><span>subagent · gpt-6.1-sol</span></div>
+                </div>
+                <div class="age">now</div>
+              </div>
+              <div class="row">
+                <div class="mark"><div class="m-background"></div></div>
+                <div class="body">
+                  <div class="title">Mobile Client Gap Analysis and Plan</div>
+                  <div class="sub">
+                    <span class="proj"><i style="background: #4f8ff7"></i>openmanager</span
+                    ><span class="sep">·</span><span>2 agents in the background</span>
+                  </div>
+                </div>
+                <div class="age">6m</div>
+              </div>
+              <div class="group">Done</div>
+              <div class="row">
+                <div class="mark">
+                  <div class="m-done">
+                    <svg><use href="#i-check" /></svg>
+                  </div>
+                </div>
+                <div class="body">
+                  <div class="title">Fix message flicker on send</div>
+                  <div class="sub">
+                    <span class="proj"><i style="background: #4f8ff7"></i>openmanager</span
+                    ><span class="sep">·</span><span>PR #222 opened</span>
+                  </div>
+                </div>
+                <div class="age">1h</div>
+              </div>
+              <div class="row">
+                <div class="mark"><div class="m-error">×</div></div>
+                <div class="body">
+                  <div class="title">Waiving Whop $500 Setup Fee for Users</div>
+                  <div class="sub">
+                    <span class="proj"><i style="background: #e06b4f"></i>salesmaxai</span
+                    ><span class="sep">·</span><span>Rate limited, retry in 4m</span>
+                  </div>
+                </div>
+                <div class="age">3h</div>
+              </div>
+              <div class="row">
+                <div class="mark"><div class="m-idle"></div></div>
+                <div class="body">
+                  <div class="title">Agent Browser Control With Zen Helium</div>
+                  <div class="sub">
+                    <span class="proj"><i style="background: #4f8ff7"></i>openmanager</span
+                    ><span class="sep">·</span><span>Idle</span>
+                  </div>
+                </div>
+                <div class="age">yesterday</div>
+              </div>
+              <div class="row">
+                <div class="mark"><div class="m-idle"></div></div>
+                <div class="body">
+                  <div class="title">Yo how could we build a mcp server?? or is it a webhook</div>
+                  <div class="sub">
+                    <span class="proj"><i style="background: #4f8ff7"></i>openmanager</span
+                    ><span class="sep">·</span><span>Idle</span>
+                  </div>
+                </div>
+                <div class="age">4d</div>
+              </div>
+              <div class="row">
+                <div class="mark"><div class="m-idle"></div></div>
+                <div class="body">
+                  <div class="title">Freelancer Portfolio Website Planning</div>
+                  <div class="sub">
+                    <span class="proj"><i style="background: #9b8cff"></i>ClePro</span
+                    ><span class="sep">·</span><span>Idle</span>
+                  </div>
+                </div>
+                <div class="age">5d</div>
+              </div>
+            </div>
+          </div>
+          <div class="nav">
+            <div class="pill">
+              <div class="it on">
+                <svg><use href="#i-sessions" /></svg>
+              </div>
+              <div class="it">
+                <svg><use href="#i-inbox" /></svg><span class="badge"></span>
+              </div>
+              <div class="it">
+                <svg><use href="#i-gear" /></svg>
+              </div>
+            </div>
+            <div class="fab">
+              <svg><use href="#i-search" /></svg>
+            </div>
+          </div>
+          <div class="homebar"></div>
+        </div>
+      </div>
+
+      <!-- ═══════════════ Session page · dark ═══════════════ -->
+      <div class="frame">
+        <div class="label"><b>02 · Session page</b> · Neutral dark · working</div>
+        <div class="phone sess" data-theme="neutral">
+          <div class="statusbar"><span>9:41</span><span class="right">●●●● ◗ ▮</span></div>
+          <div class="screen">
+            <div class="header">
+              <div class="top">
+                <div class="iconbtn">
+                  <svg><use href="#i-back" /></svg>
+                </div>
+                <div class="btns">
+                  <div class="iconbtn">
+                    <svg><use href="#i-more" /></svg>
+                  </div>
+                </div>
+              </div>
+            </div>
+            <div class="title-wrap">
+              <div class="proj"><i style="background: #4f8ff7"></i>openmanager</div>
+              <h1>Codex Integration: Tool Call Payloads</h1>
+            </div>
+            <div class="chips">
+              <div class="chip icon">
+                <svg><use href="#i-claude" /></svg>
+              </div>
+              <div class="chip">
+                Opus 5.5<svg class="caret"><use href="#i-chev" /></svg>
+              </div>
+              <div class="chip">
+                <svg><use href="#i-mode" /></svg>Agent
+              </div>
+              <div class="chip">
+                <svg><use href="#i-effort" /></svg>High
+              </div>
+              <div class="meter">
+                38%<span class="bar"><i></i></span>
+              </div>
+            </div>
+            <div class="transcript">
+              <div class="user">
+                Carry the tool payloads across the protocol, no diffs in chat, provider names as-is.
+              </div>
+              <div class="asst">
+                <div class="thought">
+                  <svg class="chev"><use href="#i-chev" /></svg>Thought for 12s
+                </div>
+              </div>
+              <div class="asst">
+                <p>
+                  The runtime already forwards <code>rawInput</code> and <code>rawOutput</code>;
+                  only <code>projectAgentEvent</code> drops them. I'll carry them through
+                  <code>turn_activity</code> and bump the protocol to v17.
+                </p>
+              </div>
+              <div class="work">
+                <div class="head">
+                  <svg class="chev"><use href="#i-chev" /></svg>4 tool calls<span class="t"
+                    >14s</span
+                  >
+                </div>
+                <div class="tools">
+                  <div class="tool">
+                    <span class="k">Read</span><span class="p">packages/protocol/src/events.ts</span
+                    ><span class="ok"></span>
+                  </div>
+                  <div class="tool">
+                    <span class="k">Read</span
+                    ><span class="p">packages/agent-runtime/src/protocol/projectAgentEvent.ts</span
+                    ><span class="ok"></span>
+                  </div>
+                  <div class="tool">
+                    <span class="k">Edit</span
+                    ><span class="p"
+                      >events.ts &nbsp;<span class="plus">+41</span>
+                      <span class="minus">−3</span></span
+                    ><span class="ok"></span>
+                  </div>
+                  <div class="tool">
+                    <span class="k">Bash</span
+                    ><span class="p">pnpm --filter @openmanager/protocol test</span
+                    ><span class="run"></span>
+                  </div>
+                </div>
+              </div>
+              <div class="asst">
+                <p><span class="shimmer">Running the protocol tests…</span></p>
+              </div>
+              <div class="asst">
+                <p>
+                  Next I'll update <code>environment-thread.ts</code> so the web rows carry the
+                  input and the outcome, then re-run the contract tests against the fixture replay.
+                </p>
+              </div>
+            </div>
+          </div>
+          <div class="fadeout"></div>
+          <div class="jump">
+            <svg><use href="#i-down" /></svg>
+          </div>
+          <div class="dock">
+            <div class="status-line">
+              <div class="m-working"></div>
+              Working<span class="t">2m 10s</span>
+            </div>
+            <div class="composer">
+              <span class="ph">Ask anything…</span>
+              <div class="a">
+                <svg><use href="#i-attach" /></svg>
+              </div>
+              <div class="send">
+                <svg><use href="#i-stop" /></svg>
+              </div>
+            </div>
+          </div>
+          <div class="homebar"></div>
+        </div>
+      </div>
+
+      <!-- ═══════════════ Session page · light · needs you ═══════════════ -->
+      <div class="frame">
+        <div class="label"><b>02 · Session page</b> · Neutral light · needs you</div>
+        <div class="phone sess" data-theme="neutral-light">
+          <div class="statusbar"><span>9:41</span><span class="right">●●●● ◗ ▮</span></div>
+          <div class="screen">
+            <div class="header">
+              <div class="top">
+                <div class="iconbtn">
+                  <svg><use href="#i-back" /></svg>
+                </div>
+                <div class="btns">
+                  <div class="iconbtn">
+                    <svg><use href="#i-more" /></svg>
+                  </div>
+                </div>
+              </div>
+            </div>
+            <div class="title-wrap">
+              <div class="proj"><i style="background: #4f8ff7"></i>openmanager</div>
+              <h1>Settings Environment Page Redesign</h1>
+            </div>
+            <div class="chips">
+              <div class="chip icon">
+                <svg><use href="#i-claude" /></svg>
+              </div>
+              <div class="chip">
+                Opus 5.5<svg class="caret"><use href="#i-chev" /></svg>
+              </div>
+              <div class="chip">
+                <svg><use href="#i-mode" /></svg>Agent
+              </div>
+              <div class="chip">
+                <svg><use href="#i-effort" /></svg>High
+              </div>
+              <div class="meter">
+                61%<span class="bar"><i style="width: 61%"></i></span>
+              </div>
+            </div>
+            <div class="transcript">
+              <div class="user">
+                Make Add Project show the default path already chosen, then let me edit it.
+              </div>
+              <div class="asst">
+                <p>
+                  I'll read the default from the environment settings and prefill the field. The
+                  browser opens at that path.
+                </p>
+              </div>
+              <div class="work">
+                <div class="head">
+                  <svg class="chev"><use href="#i-chev" /></svg>3 tool calls<span class="t"
+                    >9s</span
+                  >
+                </div>
+                <div class="tools">
+                  <div class="tool">
+                    <span class="k">Read</span
+                    ><span class="p">apps/web/src/components/add-workspace-dialog.tsx</span
+                    ><span class="ok"></span>
+                  </div>
+                  <div class="tool">
+                    <span class="k">Edit</span
+                    ><span class="p"
+                      >add-workspace-dialog.tsx &nbsp;<span class="plus">+18</span>
+                      <span class="minus">−6</span></span
+                    ><span class="ok"></span>
+                  </div>
+                  <div class="tool">
+                    <span class="k">Bash</span
+                    ><span class="p">pnpm --filter @openmanager/web test</span
+                    ><span class="ok"></span>
+                  </div>
+                </div>
+              </div>
+              <div class="asst">
+                <p>Tests pass. Want me to run the full web suite before opening the PR?</p>
+              </div>
+              <div class="asst">
+                <p>
+                  While that runs I can also prefill the device label on the pairing dialog, since
+                  the same settings read covers it.
+                </p>
+              </div>
+            </div>
+          </div>
+          <div class="fadeout"></div>
+          <div class="dock">
+            <div class="status-line" style="color: var(--status-needs)">
+              <div class="m-needs">!</div>
+              Needs you<span class="t">waiting 2m</span>
+            </div>
+            <div class="composer prompt">
+              <div class="q">Allow <code>pnpm --filter @openmanager/web test</code>?</div>
+              <div class="choices">
+                <div class="choice primary">Allow</div>
+                <div class="choice secondary">Always</div>
+                <div class="choice">Deny</div>
+              </div>
+            </div>
+          </div>
+          <div class="homebar"></div>
+        </div>
+      </div>
+    </div>
+
+    <div class="note">
+      <h2>What to react to</h2>
+      <ol>
+        <li>
+          <b>Home layout.</b> Big title, environment line under it, pill tabs Active / Settled /
+          Drafts, grouped rows (Needs you → Working → Done). Linear's shape, our content.
+        </li>
+        <li>
+          <b>Status marks.</b> Spinner ring = working (violet) / background (blue, slower); filled
+          discs = needs you (!), question (?), done (✓), error (×); hollow = idle. Colours are web's
+          <code>--basis-status-*</code>.
+        </li>
+        <li>
+          <b>Second line</b> on each row = project + a live detail (what it's doing, what it asked,
+          last outcome). Web only shows status; the phone has room for one line of "why".
+        </li>
+        <li>
+          <b>Bottom pill nav</b>: Sessions · Inbox (everything waiting on you, with a badge) ·
+          Settings, with search detached. Compose lives top-right like Linear, not in the pill.
+        </li>
+        <li>
+          <b>Session page</b>: project above the title, a chip row (provider icon · model · mode ·
+          effort) that opens pickers, context meter at the end. Transcript: user bubble as a fill,
+          reasoning as a one-line collapsed row, tool calls folded into a work group with bare rows.
+        </li>
+        <li>
+          <b>Docked composer</b> floats (float-bg + rest shadow) with a status line above it. When
+          the session needs you, the composer <i>becomes</i> the prompt: the question and the
+          provider's ordered choices replace the text field.
+        </li>
+      </ol>
+    </div>
+  </body>
+</html>

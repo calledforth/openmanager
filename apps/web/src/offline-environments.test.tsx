@@ -8,7 +8,7 @@ import {
   type WebSocketEnvironmentClientOptions,
 } from '@openmanager/environment-client'
 import type { SidebarDataValue } from '@openmanager/app-core/providers/sidebar-provider'
-import { ENVIRONMENT_STORAGE_KEY } from './lib/environment-store'
+import { ENVIRONMENT_STORAGE_KEY } from '@openmanager/environment-client/connection'
 import { idleUntilDialled, renderWebApp } from './test-utils'
 
 const { sidebar } = vi.hoisted(() => ({ sidebar: { data: null as SidebarDataValue | null } }))

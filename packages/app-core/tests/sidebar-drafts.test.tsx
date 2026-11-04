@@ -18,6 +18,7 @@ import { WorkspaceSidebar } from '../src/components/sidebar/WorkspaceSidebar'
 import { DraftDiscardNotice } from '../src/components/sidebar/DraftDiscardToast'
 import { EnvironmentApplicationProviders } from '../src/providers/environment-application'
 import { EnvironmentClientProvider } from '../src/providers/environment-client'
+import type { SubscribePageExit } from '../src/providers/device-host'
 import { DRAFT_DISCARD_UNDO_MS } from '../src/providers/environment-sidebar-drafts'
 import { useSessionState, type SessionStateValue } from '../src/providers/session-provider'
 import { useSidebarDrafts, type SidebarDraftsValue } from '../src/providers/sidebar-provider'
@@ -99,6 +100,8 @@ const probe = {} as {
   go: (route: Route) => void
   /** Show or drop the sidebar, as a phone's sheet closing does. */
   showSidebar: (shown: boolean) => void
+  /** Hand the providers how this host says its page is going. */
+  setPageExit: (subscribe: SubscribePageExit | undefined) => void
   drafts: SidebarDraftsValue | null
 }
 let navigations: string[] = []
@@ -114,8 +117,10 @@ function Capture() {
 function Host({ client, initial }: { client: MockEnvironmentClient; initial: Route }) {
   const [route, setRoute] = useState<Route>(initial)
   const [sidebarShown, showSidebar] = useState(true)
+  const [pageExit, setPageExit] = useState<{ subscribe?: SubscribePageExit }>({})
   probe.route = route
   probe.showSidebar = showSidebar
+  probe.setPageExit = (subscribe) => setPageExit({ subscribe })
   const go = (next: Route) => {
     setRoute(next)
     if ('sessionId' in next) void client.commands.openSession(next.sessionId).catch(() => undefined)
@@ -125,6 +130,7 @@ function Host({ client, initial }: { client: MockEnvironmentClient; initial: Rou
   return (
     <EnvironmentApplicationProviders
       collapsedWorkspaceStorage={null}
+      subscribePageExit={pageExit.subscribe}
       onLanding={!('sessionId' in route)}
       landingDraftId={'draftId' in route ? route.draftId : null}
       navigateSession={async (sessionId, options) => {
@@ -935,6 +941,33 @@ describe('review regressions', () => {
     } finally {
       window.removeEventListener('pagehide', hostSave)
     }
+  })
+
+  it('moves the page-exit watch to a host’s new subscriber, and keeps the discard waiting', async () => {
+    const client = createMockEnvironmentClient({ seed: SEED })
+    await parkThree(client)
+    const third = idOf(client, 'third idea')
+    await discard('third idea')
+
+    // A native host whose own lifecycle is ready only after mount hands over.
+    const host: { flush?: () => void; unsubscribed: number } = { unsubscribed: 0 }
+    await act(() =>
+      probe.setPageExit((flush) => {
+        host.flush = flush
+        return () => (host.unsubscribed += 1)
+      }),
+    )
+    expect(toast()).toBeDefined()
+    expect(selectDraftContent(client.getState(), third)?.text).toBe('third idea')
+
+    // The browser's pagehide is no longer this host's signal.
+    await act(() => window.dispatchEvent(new Event('pagehide')))
+    expect(selectDraftContent(client.getState(), third)?.text).toBe('third idea')
+
+    await act(() => host.flush!())
+    await settle(client)
+    expect(client.getState().drafts[third]).toBeUndefined()
+    expect(host.unsubscribed).toBe(0)
   })
 
   it('marks a settled session that holds unsent text', async () => {

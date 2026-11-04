@@ -7,7 +7,8 @@ sessions, token and sidebar entry.
 
 ## The stored record
 
-`apps/web/src/lib/environment-store.ts` keeps one record per environment in
+`packages/environment-client/src/connection/environment-store.ts` keeps one
+record per environment in the storage its host hands in; the web app hands in
 `localStorage` (`openmanager-environments`, version 2):
 
 ```ts

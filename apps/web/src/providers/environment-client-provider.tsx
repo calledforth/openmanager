@@ -14,10 +14,12 @@ import {
 } from '@openmanager/environment-client'
 import { EnvironmentClientProvider } from '@openmanager/app-core/providers/environment-client'
 import { environmentSocketUrl } from '../lib/environment-socket'
-import { routeHealthFromConnection } from '../lib/route-health'
+import {
+  routeHealthFromConnection,
+  type ConnectionUiState,
+} from '@openmanager/environment-client/connection'
 import { createEnvironmentCache, writeEnvironmentCache } from '../lib/environment-cache'
 import { useConnection } from './connection-provider'
-import type { ConnectionUiState } from '../lib/connection-state'
 import type { EnvironmentLink } from '../lib/environment-link'
 
 /** States that waiting does not fix. The client goes; a person decides what next. */

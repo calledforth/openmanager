@@ -36,7 +36,7 @@ import {
   useConnectionState,
   useEnvironmentClientOptional,
 } from '@openmanager/app-core/providers/environment-client'
-import type { EnvironmentRoute } from '../lib/environment-store'
+import type { EnvironmentRoute } from '@openmanager/environment-client/connection'
 import {
   forgetPairingLinks,
   madePairingLinks,

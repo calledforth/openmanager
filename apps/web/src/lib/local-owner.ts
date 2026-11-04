@@ -1,4 +1,8 @@
-import { environmentLocalOwnerUrl, isLoopbackEnvironmentEndpoint, parseEnvironmentCredential } from './environment-store'
+import {
+  environmentLocalOwnerUrl,
+  isLoopbackEnvironmentEndpoint,
+  parseEnvironmentCredential,
+} from '@openmanager/environment-client/connection'
 
 const OWNER_CREDENTIAL_PATTERN = /^omc1\.[A-Za-z0-9_-]{43}$/
 const LOCAL_OWNER_CLAIM_KEY_PATTERN = /^[A-Za-z0-9_-]{43}$/

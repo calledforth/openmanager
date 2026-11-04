@@ -15,14 +15,14 @@ import {
 } from '@openmanager/environment-client'
 import { CLIENT_LABEL_MAX_LENGTH } from '@openmanager/protocol'
 import { Button } from '@openmanager/app-core/components/fluid/ui/button'
-import { hostOf } from '../lib/connection-state'
-import { findStoredEnvironment } from '../lib/environment-store'
 import {
+  findStoredEnvironment,
   exchangePairingToken,
+  hostOf,
   pairingRejectionMessage,
   pairingRejectionReason,
   suggestDeviceLabel,
-} from '../lib/pairing'
+} from '@openmanager/environment-client/connection'
 import { useConnection } from '../providers/connection-provider'
 import { useEnvironmentClients } from '../providers/environment-client-provider'
 

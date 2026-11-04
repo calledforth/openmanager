@@ -7,7 +7,7 @@ import {
   type MockSeed,
   type WebSocketEnvironmentClientOptions,
 } from '@openmanager/environment-client'
-import { ENVIRONMENT_STORAGE_KEY } from './lib/environment-store'
+import { ENVIRONMENT_STORAGE_KEY } from '@openmanager/environment-client/connection'
 import { idleUntilDialled, renderWebApp } from './test-utils'
 
 import type {

@@ -10,7 +10,7 @@ import {
   type EnvironmentState,
   type WebSocketEnvironmentClientOptions,
 } from '@openmanager/environment-client'
-import { ENVIRONMENT_STORAGE_KEY } from '../lib/environment-store'
+import { ENVIRONMENT_STORAGE_KEY } from '@openmanager/environment-client/connection'
 import { createQueryClient } from '../query-client'
 import { addressOf, useFindAddress, type Address } from './address-environment'
 import { ConnectionProvider, useConnection } from './connection-provider'

@@ -1,6 +1,9 @@
 import { createFileRoute } from '@tanstack/react-router'
 import { ConnectionBanner, ConnectionScreen } from '../components/connection-surfaces'
-import { deriveConnectionUi, type DeriveConnectionInput } from '../lib/connection-state'
+import {
+  deriveConnectionUi,
+  type DeriveConnectionInput,
+} from '@openmanager/environment-client/connection'
 import {
   CONNECTION_STORIES,
   READY_CONNECTION_INPUT,

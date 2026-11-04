@@ -1,4 +1,4 @@
-import type { RouteFailure, RouteSearch } from './connection-state'
+import type { RouteFailure, RouteSearch } from '@openmanager/environment-client/connection'
 
 /** What the live socket on a route last said about itself. */
 export type SocketReport = { endpoint: string; connected: boolean }

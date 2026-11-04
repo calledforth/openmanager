@@ -42,10 +42,14 @@ import {
   trackAddEnvironment,
   useAddEnvironmentDraft,
 } from '../lib/add-environment-draft'
-import { connectionStatusLabel, hostOf } from '../lib/connection-state'
-import { findStoredEnvironment, type StoredEnvironment } from '../lib/environment-store'
+import {
+  connectionStatusLabel,
+  findStoredEnvironment,
+  hostOf,
+  type StoredEnvironment,
+} from '@openmanager/environment-client/connection'
 import { UI_FONTS, type UiFontId } from '../lib/fonts'
-import { pairingAppUrl } from '../lib/pairing'
+import { pairingAppUrl } from '../lib/pairing-app-url'
 import { useConnection } from '../providers/connection-provider'
 import { useEnvironmentClients } from '../providers/environment-client-provider'
 import type { AppearanceMode } from '@openmanager/app-core/providers/theme-provider'

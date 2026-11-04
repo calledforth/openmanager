@@ -18,8 +18,11 @@ import {
 } from '@openmanager/app-core/components/fluid/ui/dialog'
 import { useNow } from '@openmanager/app-core/lib/relative-time'
 import { useConnectionState } from '@openmanager/app-core/providers/environment-client'
-import { isLoopbackEnvironmentEndpoint, type EnvironmentRoute } from '../lib/environment-store'
-import { isLoopbackAppUrl } from '../lib/pairing'
+import {
+  isLoopbackEnvironmentEndpoint,
+  type EnvironmentRoute,
+  isLoopbackAppUrl,
+} from '@openmanager/environment-client/connection'
 import { forgetPairingLinks, rememberPairingLink } from '../lib/pairing-link-store'
 import { cn } from '../lib/utils'
 

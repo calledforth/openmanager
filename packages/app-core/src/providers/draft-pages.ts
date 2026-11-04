@@ -1,5 +1,7 @@
 import { createContext } from 'react'
 import type { WorkspaceComposerPreference } from '@openmanager/shared/contracts/composer-profile'
+import { browserStorage } from '../lib/browser-device'
+import type { DeviceStorage } from './device-host'
 
 /** Where a new-session draft goes: its project (none once that was removed)
  * and the id its session will get. */
@@ -58,17 +60,9 @@ const SENT_DRAFTS_LIMIT = 100
 // This tab's own sends, for a browser whose storage is unavailable.
 const sentHere = new Map<string, string>()
 
-function storage(): Storage | null {
+function readSent(storage: DeviceStorage | null): Record<string, string> {
   try {
-    return globalThis.localStorage ?? null
-  } catch {
-    return null
-  }
-}
-
-function readSent(): Record<string, string> {
-  try {
-    const parsed: unknown = JSON.parse(storage()?.getItem(SENT_DRAFTS_KEY) ?? '{}')
+    const parsed: unknown = JSON.parse(storage?.getItem(SENT_DRAFTS_KEY) ?? '{}')
     if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return {}
     return Object.fromEntries(
       Object.entries(parsed).filter((entry): entry is [string, string] => {
@@ -85,33 +79,40 @@ function readSent(): Record<string, string> {
  * address leads to the session. The environment forgets a sent draft, and
  * nothing it lists ties the two together.
  */
-export function rememberSentDraft(draftId: string, sessionId: string) {
+export function rememberSentDraft(
+  draftId: string,
+  sessionId: string,
+  storage: DeviceStorage | null = browserStorage(),
+) {
   sentHere.set(draftId, sessionId)
-  const sent = readSent()
+  const sent = readSent(storage)
   delete sent[draftId]
   sent[draftId] = sessionId
   const ids = Object.keys(sent)
   for (const id of ids.slice(0, Math.max(0, ids.length - SENT_DRAFTS_LIMIT))) delete sent[id]
   try {
-    storage()?.setItem(SENT_DRAFTS_KEY, JSON.stringify(sent))
+    storage?.setItem(SENT_DRAFTS_KEY, JSON.stringify(sent))
   } catch {
     // Private mode or a full quota: the address falls back to a blank page.
   }
 }
 
 /** The session a draft sent from this browser became, if it remembers one. */
-export function sentDraftSession(draftId: string): string | undefined {
-  return sentHere.get(draftId) ?? readSent()[draftId]
+export function sentDraftSession(
+  draftId: string,
+  storage: DeviceStorage | null = browserStorage(),
+): string | undefined {
+  return sentHere.get(draftId) ?? readSent(storage)[draftId]
 }
 
 /** The draft is back (its session was rolled back): its address is its own again. */
-export function forgetSentDraft(draftId: string) {
+export function forgetSentDraft(draftId: string, storage: DeviceStorage | null = browserStorage()) {
   sentHere.delete(draftId)
-  const sent = readSent()
+  const sent = readSent(storage)
   if (!(draftId in sent)) return
   delete sent[draftId]
   try {
-    storage()?.setItem(SENT_DRAFTS_KEY, JSON.stringify(sent))
+    storage?.setItem(SENT_DRAFTS_KEY, JSON.stringify(sent))
   } catch {
     // Private mode or a full quota: this tab has forgotten it all the same.
   }

@@ -23,6 +23,7 @@ import {
   type DraftPageInternals,
   type DraftPageTarget,
 } from './draft-pages'
+import { useDeviceStorage, type DeviceStorage } from './device-host'
 import { useEnvironmentClient, useEnvironmentState } from './environment-client'
 
 const SESSION_KEY = 'session:'
@@ -286,8 +287,12 @@ export function createEnvironmentComposerDraftStore(
  * session this client has not listed yet waits for the listing; one for
  * another environment is left alone.
  */
-function importLocalDrafts(state: EnvironmentState, sync: DraftSync) {
-  const stored = readComposerDrafts()
+function importLocalDrafts(
+  state: EnvironmentState,
+  sync: DraftSync,
+  storage: DeviceStorage | null,
+) {
+  const stored = readComposerDrafts(storage)
   const keys = Object.keys(stored)
   if (keys.length === 0) return
   const left = { ...stored }
@@ -308,15 +313,15 @@ function importLocalDrafts(state: EnvironmentState, sync: DraftSync) {
     }
   }
   if (Object.keys(left).length === keys.length) return
-  if (Object.keys(left).length === 0 && typeof localStorage !== 'undefined') {
+  if (Object.keys(left).length === 0 && storage) {
     try {
-      localStorage.removeItem(COMPOSER_DRAFTS_STORAGE_KEY)
+      storage.removeItem(COMPOSER_DRAFTS_STORAGE_KEY)
     } catch {
       // Private mode or a full quota: the next import finds them gone or kept.
     }
     return
   }
-  writeComposerDrafts(left)
+  writeComposerDrafts(left, storage)
 }
 
 /**
@@ -335,6 +340,7 @@ export function EnvironmentComposerDraftProvider({
 }) {
   const client = useEnvironmentClient()
   const sync = client.drafts
+  const storage = useDeviceStorage()
   const page = useContext(DraftPageContext)
   const picks = useContext(DraftPicksContext)
   // The store outlives renders; it reads the page's latest through these.
@@ -364,8 +370,8 @@ export function EnvironmentComposerDraftProvider({
   useEffect(() => {
     // After the listing, so an import never overwrites a draft made elsewhere.
     if (!importLocal || !sync || !listed) return
-    importLocalDrafts(client.getState(), sync)
-  }, [client, importLocal, listed, sessionCount, sync, workspaceCount])
+    importLocalDrafts(client.getState(), sync, storage)
+  }, [client, importLocal, listed, sessionCount, storage, sync, workspaceCount])
   return (
     <ComposerDraftStoreContext.Provider value={store}>
       {children}

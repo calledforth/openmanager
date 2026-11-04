@@ -17,8 +17,6 @@ import {
   type ConnectionAction,
   type ConnectionUiState,
   type OtherEnvironmentsNotice,
-} from '../lib/connection-state'
-import {
   parseEnvironmentCredential,
   parseEnvironmentEndpoint,
   routeSearchOrder,
@@ -26,9 +24,9 @@ import {
   type EnvironmentRoute,
   type RouteHealthStatus,
   type StoredEnvironment,
-} from '../lib/environment-store'
+  routeHealthLabel,
+} from '@openmanager/environment-client/connection'
 import { canClaimLocalOwner } from '../lib/local-owner'
-import { routeHealthLabel } from '../lib/route-health'
 import { cn } from '../lib/utils'
 import type { AddRouteResult } from '../providers/connection-provider'
 

@@ -3,20 +3,24 @@ import {
   JetBrainsMono_400Regular,
   JetBrainsMono_500Medium,
 } from '@expo-google-fonts/jetbrains-mono'
-import { ConvexProvider, ConvexReactClient } from 'convex/react'
-import { Stack } from 'expo-router'
+import { Stack, usePathname, useRouter } from 'expo-router'
 import * as SplashScreen from 'expo-splash-screen'
 import { StatusBar } from 'expo-status-bar'
-import { useEffect, useMemo } from 'react'
+import { useEffect, useRef } from 'react'
 import { useFonts } from 'expo-font'
-import { View } from 'react-native'
+import { GestureHandlerRootView } from 'react-native-gesture-handler'
 import { SafeAreaProvider } from 'react-native-safe-area-context'
 
 import '../../global.css'
-import { AppText } from '../components/ui/AppText'
-import { ThemeProvider, useTheme } from '../theme/ThemeProvider'
+import { DraftDiscardHost } from '../draft/DraftDiscardHost'
+import { PhoneEnvironmentProvider } from '../environment/PhoneEnvironmentProvider'
+import { pairingSession } from '../pairing/session'
+import { ThemeProvider, usePhoneTheme, useTheme } from '../theme/ThemeProvider'
+import { UpdateChecks } from '../updates/useUpdater'
 
-const convexUrl = process.env.EXPO_PUBLIC_CONVEX_URL
+// A cold deep link (a session, search) still has the tabs under it, so its
+// back control returns to them.
+export const unstable_settings = { anchor: '(tabs)' }
 
 SplashScreen.preventAutoHideAsync().catch(() => {
   // The splash screen can already be hidden during fast refresh.
@@ -24,43 +28,72 @@ SplashScreen.preventAutoHideAsync().catch(() => {
 
 function RootNavigator() {
   const { resolved } = useTheme()
+  const theme = usePhoneTheme()
 
+  // No blur target wraps the navigator: each screen is its own glass layer
+  // (see `Screen`), so a blur never draws a view it sits in.
   return (
     <>
       <StatusBar style={resolved === 'dark' ? 'light' : 'dark'} />
       <Stack
         screenOptions={{
           headerShown: false,
-          contentStyle: { backgroundColor: 'transparent' },
+          // Each screen paints the canvas itself; the navigator's own
+          // background (white, by default) must never show through.
+          contentStyle: { backgroundColor: theme.bg },
+          animation: 'fade',
         }}
       >
-        <Stack.Screen name="index" />
-        <Stack.Screen name="session/[externalId]" />
-        <Stack.Screen name="settings" options={{ presentation: 'modal' }} />
+        {/* Sessions, Inbox and Settings, with the pill nav as their tab bar. */}
+        <Stack.Screen name="(tabs)" />
+        {/* Pages slide in from the side; search, pairing and the theme preview rise. */}
+        <Stack.Screen name="session/[externalId]" options={{ animation: 'slide_from_right' }} />
+        <Stack.Screen name="draft/[draftId]" options={{ animation: 'slide_from_right' }} />
+        <Stack.Screen
+          name="environment/[environmentId]"
+          options={{ animation: 'slide_from_right' }}
+        />
+        <Stack.Screen
+          name="search"
+          options={{ presentation: 'modal', animation: 'slide_from_bottom' }}
+        />
+        <Stack.Screen
+          name="pair"
+          options={{ presentation: 'modal', animation: 'slide_from_bottom' }}
+        />
+        <Stack.Screen name="theme-preview" options={{ presentation: 'modal' }} />
       </Stack>
+      <PairingResume />
+      <DraftDiscardHost />
     </>
   )
 }
 
-function ConvexNotConfigured() {
-  return (
-    <View className="flex-1 items-center justify-center bg-background px-8">
-      <AppText variant="text-16-medium" className="mb-2 text-center text-textStrong">
-        Convex is not configured
-      </AppText>
-      <AppText variant="text-13-regular" className="text-center text-textMuted">
-        Create apps/mobile/.env from .env.example and set EXPO_PUBLIC_CONVEX_URL to your Convex
-        deployment URL, then restart the dev server.
-      </AppText>
-    </View>
-  )
+/**
+ * The environment provider remounts every screen once a client is accepted,
+ * which on a phone also resets the navigator to the sessions home. A pairing
+ * that connected (or is still connecting) when that happened brings its
+ * screen back, so its sheet is seen.
+ */
+function PairingResume() {
+  const router = useRouter()
+  const pathname = usePathname()
+  const at = useRef(pathname)
+  at.current = pathname
+  useEffect(() => {
+    // Asked once the navigator has settled: on web the address keeps the
+    // pairing screen, which then mounts by itself.
+    const timer = setTimeout(() => {
+      if (pairingSession.active() && !pairingSession.shown() && at.current !== '/pair') {
+        router.push('/pair')
+      }
+    }, 250)
+    return () => clearTimeout(timer)
+  }, [router])
+  return null
 }
 
 export default function RootLayout() {
-  const convex = useMemo(
-    () => (convexUrl ? new ConvexReactClient(convexUrl, { unsavedChangesWarning: false }) : null),
-    [],
-  )
   const [fontsLoaded, fontError] = useFonts({
     'Geist-Regular': Geist_400Regular,
     'Geist-Medium': Geist_500Medium,
@@ -81,26 +114,19 @@ export default function RootLayout() {
     return null
   }
 
-  // Missing EXPO_PUBLIC_CONVEX_URL would otherwise throw while constructing the
-  // Convex client, leaving the splash stuck with no error. Render a readable
-  // configuration screen instead of the ConvexProvider tree.
-  if (!convex) {
-    return (
-      <SafeAreaProvider>
-        <ThemeProvider>
-          <ConvexNotConfigured />
-        </ThemeProvider>
-      </SafeAreaProvider>
-    )
-  }
-
+  // The phone reaches its environment through the shared environment client;
+  // the provider owns the connection and hands the client to app-core. The
+  // gesture root lets a draft row be swiped aside to discard it.
   return (
-    <SafeAreaProvider>
-      <ConvexProvider client={convex}>
-        <ThemeProvider>
-          <RootNavigator />
-        </ThemeProvider>
-      </ConvexProvider>
-    </SafeAreaProvider>
+    <GestureHandlerRootView style={{ flex: 1 }}>
+      <UpdateChecks />
+      <SafeAreaProvider>
+        <PhoneEnvironmentProvider>
+          <ThemeProvider>
+            <RootNavigator />
+          </ThemeProvider>
+        </PhoneEnvironmentProvider>
+      </SafeAreaProvider>
+    </GestureHandlerRootView>
   )
 }

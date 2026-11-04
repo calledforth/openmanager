@@ -1,0 +1,103 @@
+import { ImageIcon } from 'phosphor-react-native'
+import { useEffect, useState } from 'react'
+import { Image } from 'react-native'
+import { useEnvironmentClientOptional, type ArtifactSource } from '@openmanager/app-core/logic'
+
+import { readAsDataUri } from '../../lib/dataUri'
+import { usePhoneTheme } from '../../theme/ThemeProvider'
+import { tap } from '../../ui/haptics'
+import { Press } from '../../ui/Press'
+import { ImageViewer } from './ImageViewer'
+
+/**
+ * The bytes of a stored image, fetched through the environment client
+ * (`fetchArtifact`) while the row is on screen. `undefined` while on their
+ * way, `null` when the environment could not give them.
+ */
+function useArtifactUri(artifact: ArtifactSource | undefined): string | null | undefined {
+  const client = useEnvironmentClientOptional()
+  const [uri, setUri] = useState<string | null | undefined>(undefined)
+  const sessionId = artifact?.sessionId
+  const draftId = artifact?.draftId
+  const artifactId = artifact?.artifactId
+  useEffect(() => {
+    if (!artifactId) return
+    if (!client?.fetchArtifact) {
+      setUri(null)
+      return
+    }
+    const controller = new AbortController()
+    setUri(undefined)
+    const target: ArtifactSource =
+      draftId !== undefined ? { draftId, artifactId } : { sessionId: sessionId!, artifactId }
+    client
+      .fetchArtifact(target, { signal: controller.signal })
+      .then(readAsDataUri)
+      .then(
+        (next) => {
+          if (!controller.signal.aborted) setUri(next)
+        },
+        () => {
+          if (!controller.signal.aborted) setUri(null)
+        },
+      )
+    return () => controller.abort()
+  }, [artifactId, client, draftId, sessionId])
+  return uri
+}
+
+/**
+ * An image in the transcript: inline bytes as they came, a stored one
+ * through `fetchArtifact`. A fill holds its place while it loads, and stays
+ * with an image glyph when it cannot be read. A tap opens it full size.
+ */
+export function ImagePart({
+  url,
+  artifact,
+  size = 160,
+}: {
+  url?: string
+  artifact?: ArtifactSource
+  size?: number
+}) {
+  const theme = usePhoneTheme()
+  const fetched = useArtifactUri(url ? undefined : artifact)
+  const uri = url ?? fetched
+  const [open, setOpen] = useState(false)
+  return (
+    <>
+      <Press
+        accessibilityRole="imagebutton"
+        accessibilityLabel="Image"
+        accessibilityHint={uri ? 'Opens the image full size' : undefined}
+        disabled={!uri}
+        onPress={() => {
+          tap()
+          setOpen(true)
+        }}
+        style={({ pressed }) => ({
+          width: size,
+          height: size,
+          borderRadius: 12,
+          overflow: 'hidden',
+          backgroundColor: theme.hover,
+          alignItems: 'center',
+          justifyContent: 'center',
+          opacity: pressed ? 0.85 : 1,
+        })}
+      >
+        {uri ? (
+          <Image
+            source={{ uri }}
+            resizeMode="cover"
+            style={{ width: size, height: size }}
+            accessibilityIgnoresInvertColors
+          />
+        ) : uri === null ? (
+          <ImageIcon size={22} color={theme.faint} />
+        ) : null}
+      </Press>
+      {open && uri ? <ImageViewer uri={uri} onClose={() => setOpen(false)} /> : null}
+    </>
+  )
+}

@@ -1,4 +1,6 @@
-import type { ProviderIconId } from '../providers/ProviderIcon'
+import { browserStorage } from '../../lib/browser-device'
+import type { DeviceStorage } from '../../providers/device-host'
+import type { ProviderIconId } from '../providers/providerIconId'
 
 export const FAVORITE_MODELS_STORAGE_KEY = 'openmanager-favorite-models'
 
@@ -28,10 +30,13 @@ export function parseFavoriteModelKey(
 }
 
 /** `storageKey` keeps a picker whose model ids mean something else (Settings' title model) apart. */
-export function readFavoriteModels(storageKey = FAVORITE_MODELS_STORAGE_KEY): FavoriteModelKey[] {
-  if (typeof localStorage === 'undefined') return []
+export function readFavoriteModels(
+  storageKey = FAVORITE_MODELS_STORAGE_KEY,
+  storage: DeviceStorage | null = browserStorage(),
+): FavoriteModelKey[] {
+  if (!storage) return []
   try {
-    const raw = localStorage.getItem(storageKey)
+    const raw = storage.getItem(storageKey)
     if (!raw) return []
     const parsed = JSON.parse(raw)
     if (!Array.isArray(parsed)) return []
@@ -47,9 +52,10 @@ export function readFavoriteModels(storageKey = FAVORITE_MODELS_STORAGE_KEY): Fa
 export function writeFavoriteModels(
   keys: readonly FavoriteModelKey[],
   storageKey = FAVORITE_MODELS_STORAGE_KEY,
+  storage: DeviceStorage | null = browserStorage(),
 ): void {
-  if (typeof localStorage === 'undefined') return
-  localStorage.setItem(storageKey, JSON.stringify([...keys]))
+  if (!storage) return
+  storage.setItem(storageKey, JSON.stringify([...keys]))
 }
 
 export function toggleFavoriteModel(

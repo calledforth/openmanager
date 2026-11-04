@@ -1,3 +1,6 @@
+import { browserStorage } from '../../lib/browser-device'
+import type { DeviceStorage } from '../../providers/device-host'
+
 export const COMPOSER_DRAFTS_STORAGE_KEY = 'openmanager-composer-drafts'
 
 // Drafts are keyed by session id, and sessions get deleted — without a cap the
@@ -21,10 +24,12 @@ function isPersistedDraft(value: unknown): value is PersistedDraft {
  * must never keep the composer from mounting — losing a draft is recoverable,
  * a composer that throws on render is not.
  */
-export function readComposerDrafts(): Record<string, PersistedDraft> {
-  if (typeof localStorage === 'undefined') return {}
+export function readComposerDrafts(
+  storage: DeviceStorage | null = browserStorage(),
+): Record<string, PersistedDraft> {
+  if (!storage) return {}
   try {
-    const raw = localStorage.getItem(COMPOSER_DRAFTS_STORAGE_KEY)
+    const raw = storage.getItem(COMPOSER_DRAFTS_STORAGE_KEY)
     if (!raw) return {}
     const parsed: unknown = JSON.parse(raw)
     if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) return {}
@@ -38,10 +43,13 @@ export function readComposerDrafts(): Record<string, PersistedDraft> {
   }
 }
 
-export function writeComposerDrafts(drafts: Record<string, PersistedDraft>): void {
-  if (typeof localStorage === 'undefined') return
+export function writeComposerDrafts(
+  drafts: Record<string, PersistedDraft>,
+  storage: DeviceStorage | null = browserStorage(),
+): void {
+  if (!storage) return
   try {
-    localStorage.setItem(COMPOSER_DRAFTS_STORAGE_KEY, JSON.stringify(drafts))
+    storage.setItem(COMPOSER_DRAFTS_STORAGE_KEY, JSON.stringify(drafts))
   } catch {
     // A quota or private-mode failure must not break typing.
   }
