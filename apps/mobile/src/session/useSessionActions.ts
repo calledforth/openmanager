@@ -27,6 +27,7 @@ export function unavailableSessionActions(
     menu: sessionMenuItems({
       mark: session ? statusMarkOf(session) : 'idle',
       settled: !!session?.settledAt,
+      pinned: !!session?.pinnedAt,
       backgroundTaskCount: session?.backgroundTaskCount ?? 0,
       unavailable: reason,
       supports: () => false,
@@ -51,6 +52,7 @@ export function useSessionActions(
   const { status } = usePhoneConnection()
   const mark = session ? statusMarkOf(session) : 'idle'
   const settled = !!session?.settledAt
+  const pinned = !!session?.pinnedAt
   const backgroundTaskCount = session?.backgroundTaskCount ?? 0
   const listed = !!session
   const unavailable =
@@ -64,19 +66,24 @@ export function useSessionActions(
       sessionMenuItems({
         mark,
         settled,
+        pinned,
         backgroundTaskCount,
         unavailable,
         supports: (command) => client.supports(command),
         settings: openSettings ? null : undefined,
       }),
     // `unavailable` follows the connection: what the client supports is known once it connects.
-    [backgroundTaskCount, client, mark, openSettings, settled, unavailable],
+    [backgroundTaskCount, client, mark, openSettings, pinned, settled, unavailable],
   )
   const run = useCallback(
     async (id: SessionMenuItemId) => {
       switch (id) {
         case 'regenerate-title':
           return client.commands.regenerateSessionTitle(sessionId)
+        case 'pin':
+          return client.commands.pinSession(sessionId, true)
+        case 'unpin':
+          return client.commands.pinSession(sessionId, false)
         case 'settle':
           return client.commands.settleSession(sessionId, true)
         case 'unsettle':

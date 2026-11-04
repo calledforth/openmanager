@@ -10,6 +10,7 @@ import {
   INSIDE_TARGET,
   type GlassTarget,
 } from '../src/ui/glass-target'
+import { createTabBarCover } from '../src/ui/tab-bar-cover'
 
 // The layers as Android lays them out, on react-native-web: the blur
 // records what it was told to draw, and the target is the view it stands for.
@@ -48,13 +49,14 @@ vi.mock('react-native-reanimated', async () => {
     useSharedValue: (value: number) => ({ value }),
     useAnimatedStyle: (style: () => object) => style(),
     withSpring: (value: number) => value,
+    withTiming: (value: number) => value,
+    Easing: { in: () => undefined, out: () => undefined, cubic: undefined },
   }
 })
 vi.mock('phosphor-react-native', () => {
   const Icon = () => null
   return { GearSixIcon: Icon, ListIcon: Icon, MagnifyingGlassIcon: Icon, TrayIcon: Icon }
 })
-
 ;(globalThis as { __DEV__?: boolean }).__DEV__ = true
 const { Glass, GlassContent, GlassLayer, GlassTargetProvider } = await import('../src/ui/Glass')
 const { Screen, TabTargetsContext } = await import('../src/ui/Screen')
@@ -258,5 +260,26 @@ describe('the tab bar', () => {
     // A tab whose screen is not drawn yet: the tint alone, never another tab's.
     await render(page(1))
     expect(blurs.slice(-2).map((blur) => blur.blurTarget)).toEqual([undefined, undefined])
+  })
+
+  it('steps aside while a sheet is open, and comes back once the last one closes', async () => {
+    const targets = createTabTargets()
+    const cover = createTabBarCover()
+    const pill = () => container.firstElementChild as HTMLElement
+    await render(<PillNav {...props(0)} targets={targets} cover={cover} />)
+    const inPlace = pill().className
+    expect(pill().style.opacity).toBe('1')
+
+    const lowerOne = cover.raise()
+    const lowerTwo = cover.raise()
+    await act(async () => undefined)
+    // Faded out, and taps go through it (pointer events off, not box-none).
+    expect(pill().style.opacity).toBe('0')
+    expect(pill().className).not.toBe(inPlace)
+    await act(async () => lowerOne())
+    expect(pill().style.opacity).toBe('0')
+    await act(async () => lowerTwo())
+    expect(pill().style.opacity).toBe('1')
+    expect(pill().className).toBe(inPlace)
   })
 })

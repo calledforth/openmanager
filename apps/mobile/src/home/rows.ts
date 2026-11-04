@@ -98,6 +98,17 @@ export function statusCountOf(session: HomeSession): number | null {
   return session.backgroundTaskCount ? session.backgroundTaskCount : null
 }
 
+/**
+ * Pinned to the top, as web's sidebar keeps it: only active work, so a
+ * session settled while pinned goes to the long tail with the rest.
+ */
+export function isPinnedSession(session: Pick<SidebarSessionEntry, 'settledAt' | 'pinnedAt'>) {
+  return !!session.pinnedAt && !session.settledAt
+}
+
+/** The group pinned sessions sit in, above every other in Active and All. */
+export const PINNED_GROUP = 'pinned'
+
 /** Active is everything the user has not settled. */
 export function isActiveSession(session: Pick<SidebarSessionEntry, 'settledAt'>): boolean {
   return !session.settledAt
@@ -169,6 +180,8 @@ interface Tree {
   rank: number
   /** Its newest activity anywhere in it, in ms; 0 when none is known. */
   newest: number
+  /** When its top row was pinned, in ms; 0 while it is not. */
+  pinned: number
 }
 
 /**
@@ -178,7 +191,9 @@ interface Tree {
  * (both ends visible, neither a root) stays visible as a top-level row,
  * as the web sidebar does. A tree is ranked by its most urgent member and
  * dated by its newest, so live work in a child is never buried under a
- * quiet parent. Display order only: no session's own state changes.
+ * quiet parent. A pinned tree sits in Pinned, above every other group,
+ * most recently pinned first, and keeps its place as others get activity.
+ * Display order only: no session's own state changes.
  */
 export function selectHomeRows({
   sessions,
@@ -230,6 +245,7 @@ export function selectHomeRows({
       rows,
       rank: Math.min(...rows.map((r) => activityRank(r.mark))),
       newest: Math.max(...rows.map((r) => time(r.session.updatedAt))),
+      pinned: isPinnedSession(root) ? time(root.pinnedAt ?? undefined) || 1 : 0,
     }
   }
   // One tree per top-level row; whatever no root reaches is a cycle, and
@@ -240,24 +256,32 @@ export function selectHomeRows({
     if (!visited.has(session.externalId)) trees.push(tree(session))
   }
   const byNewest = (a: Tree, b: Tree) => b.newest - a.newest
+  const pinned = trees.filter((t) => t.pinned).sort((a, b) => b.pinned - a.pinned || byNewest(a, b))
+  const unpinned = trees.filter((t) => !t.pinned)
+  const pinnedGroups: HomeGroup<HomeRow>[] = pinned.length
+    ? [{ key: PINNED_GROUP, label: 'Pinned', rows: pinned.flatMap((t) => t.rows) }]
+    : []
 
   if (tab === 'active') {
-    return ACTIVE_GROUPS.flatMap(({ key, label, ranks }) => {
-      const members = trees
-        .filter((t) => ranks.includes(t.rank))
-        .sort((a, b) => a.rank - b.rank || byNewest(a, b))
-      return members.length ? [{ key, label, rows: members.flatMap((t) => t.rows) }] : []
-    })
+    return [
+      ...pinnedGroups,
+      ...ACTIVE_GROUPS.flatMap(({ key, label, ranks }) => {
+        const members = unpinned
+          .filter((t) => ranks.includes(t.rank))
+          .sort((a, b) => a.rank - b.rank || byNewest(a, b))
+        return members.length ? [{ key, label, rows: members.flatMap((t) => t.rows) }] : []
+      }),
+    ]
   }
 
   const groups = new Map<string, HomeGroup<HomeRow>>()
-  for (const t of [...trees].sort(byNewest)) {
+  for (const t of [...unpinned].sort(byNewest)) {
     const label = dayLabel(t.newest || undefined, now)
     const group = groups.get(label) ?? { key: label, label, rows: [] }
     group.rows.push(...t.rows)
     groups.set(label, group)
   }
-  return [...groups.values()]
+  return [...pinnedGroups, ...groups.values()]
 }
 
 /** Drafts for the drafts tab, newest edit first, grouped by day. */
@@ -300,7 +324,7 @@ const newestOf = (rows: readonly HomeListRow[]) =>
  * holds the drafts alone; Active opens with a Drafts group above the live
  * work; All keeps its days, a draft taking its place in the day it was last
  * edited, above that day's sessions. Days run newest first by whatever is
- * newest in them.
+ * newest in them, under Pinned, which stays on top.
  */
 export function selectTabRows({
   sessions,
@@ -324,14 +348,19 @@ export function selectTabRows({
       ? [{ key: 'drafts', label: 'Drafts', rows: draftRows }, ...sessionGroups]
       : sessionGroups
   }
+  const pinnedGroups = sessionGroups.filter((group) => group.key === PINNED_GROUP)
   const byLabel = new Map<string, HomeGroup<HomeListRow>>()
   for (const group of draftGroups) byLabel.set(group.label, { ...group, rows: [...group.rows] })
   for (const group of sessionGroups) {
+    if (group.key === PINNED_GROUP) continue
     const merged = byLabel.get(group.label)
     if (merged) merged.rows.push(...group.rows)
     else byLabel.set(group.label, { ...group, rows: [...group.rows] })
   }
-  return [...byLabel.values()].sort((a, b) => newestOf(b.rows) - newestOf(a.rows))
+  return [
+    ...pinnedGroups,
+    ...[...byLabel.values()].sort((a, b) => newestOf(b.rows) - newestOf(a.rows)),
+  ]
 }
 
 /** How many sessions wait on the reader: the inbox badge. */

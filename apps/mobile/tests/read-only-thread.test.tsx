@@ -630,7 +630,7 @@ describe('the session page header on a live session', () => {
     await mountActions(client)
     await flush()
     const ids = actions!.menu.filter((item) => !item.disabledReason).map((item) => item.id)
-    expect(ids).toEqual(['rename', 'regenerate-title', 'settle'])
+    expect(ids).toEqual(['rename', 'regenerate-title', 'pin', 'settle'])
     expect(actions!.unavailable).toBeNull()
 
     await act(() => actions!.rename('Renamed'))
@@ -649,6 +649,21 @@ describe('the session page header on a live session', () => {
     await flush()
     expect(commandsOf(client)).toContain('settleSession')
     expect(actions!.menu.map((item) => item.id)).toContain('unsettle')
+  })
+
+  it('pins through the shared client and then offers to unpin it', async () => {
+    const client = replayingClient({ seed: SEED, respond: () => null })
+    await mountActions(client)
+    await flush()
+    await act(() => actions!.run('pin'))
+    await flush()
+    expect(client.calls.filter((call) => call.command === 'pinSession')).toEqual([
+      { command: 'pinSession', input: { sessionId: SESSION.sessionId, pinned: true } },
+    ])
+    expect(actions!.menu.map((item) => item.id)).toContain('unpin')
+    await act(() => actions!.run('unpin'))
+    await flush()
+    expect(actions!.menu.map((item) => item.id)).toContain('pin')
   })
 
   it('lists what the environment does not advertise as disabled, with why', async () => {

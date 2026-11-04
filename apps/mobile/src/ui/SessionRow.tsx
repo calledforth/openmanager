@@ -1,9 +1,15 @@
-import { PencilSimpleLineIcon } from 'phosphor-react-native'
+import { PencilSimpleLineIcon, PushPinIcon } from 'phosphor-react-native'
 import { View } from 'react-native'
 
 import { AppText } from '../components/ui/AppText'
 import { formatRelativeTime } from '../lib/relativeTime'
-import { statusCountOf, statusLineOf, type HomeRow, type StatusMark as Mark } from '../home/rows'
+import {
+  isPinnedSession,
+  statusCountOf,
+  statusLineOf,
+  type HomeRow,
+  type StatusMark as Mark,
+} from '../home/rows'
 import { usePhoneTheme } from '../theme/ThemeProvider'
 import type { PhoneTheme } from '../theme/tokens'
 import { ProjectChip } from './ProjectChip'
@@ -46,7 +52,8 @@ export function rowFill(
  * pressed state is the hover fill, selection the active fill, and a card at
  * rest takes its status wash or the draft fill (`rowFill`). A session whose
  * composer holds an unsent reply carries web's pen, in the draft accent,
- * beside its age. A long press opens its actions.
+ * beside its age, and a pinned one web's filled pin. A long press opens its
+ * actions.
  */
 const INDENT = 34
 
@@ -65,6 +72,7 @@ export function SessionRow({
   const { session, workspace, mark, depth } = row
   const title = session.title?.trim() || 'Untitled session'
   const unsent = Boolean(session.hasUnsentDraft)
+  const pinned = isPinnedSession(session)
   const line = session.workspaceUnavailable
     ? 'Project folder is unavailable'
     : statusLineOf(session)
@@ -76,7 +84,13 @@ export function SessionRow({
   return (
     <Press
       accessibilityRole="button"
-      accessibilityHint={unsent ? 'Has an unsent draft. Long press for actions' : 'Long press for actions'}
+      accessibilityHint={[
+        pinned ? 'Pinned.' : null,
+        unsent ? 'Has an unsent draft.' : null,
+        'Long press for actions',
+      ]
+        .filter(Boolean)
+        .join(' ')}
       onPress={() => {
         tap()
         onPress?.()
@@ -137,9 +151,7 @@ export function SessionRow({
           {title}
         </AppText>
         <View className="mt-0.5 flex-row items-center gap-1.5">
-          {workspace ? (
-            <ProjectChip name={workspace.name} workspaceId={workspace.path} />
-          ) : null}
+          {workspace ? <ProjectChip name={workspace.name} workspaceId={workspace.path} /> : null}
           {workspace && line ? (
             <AppText variant="text-12-regular" style={{ color: theme.faint }}>
               ·
@@ -165,6 +177,7 @@ export function SessionRow({
         </View>
       </View>
       <View style={{ flexDirection: 'row', alignItems: 'center', gap: 5 }}>
+        {pinned ? <PushPinIcon size={12} color={theme.muted} weight="fill" /> : null}
         {unsent ? (
           <PencilSimpleLineIcon size={13} color={theme.draft.accent} weight="bold" />
         ) : null}
