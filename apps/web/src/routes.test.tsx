@@ -108,13 +108,20 @@ async function openAddEnvironment(user: ReturnType<typeof userEvent.setup>) {
   await user.click(await screen.findByRole('button', { name: 'Add environment' }))
 }
 
-/** The saved environment marked as the one in use, by its name. */
+/**
+ * The saved environment in use, by its name: the one Settings offers to
+ * disconnect from. Only with several saved is it also marked "Current".
+ */
 function currentEnvironment() {
   const list = screen.queryByRole('list', { name: 'Saved environments' })
   if (!list) return null
   const item = within(list)
     .queryAllByRole('listitem')
-    .find((row) => row.getAttribute('aria-label') && within(row).queryByText('Current'))
+    .find(
+      (row) =>
+        row.getAttribute('aria-label') &&
+        within(row).queryByRole('button', { name: /^Disconnect from / }),
+    )
   return item?.getAttribute('aria-label') ?? null
 }
 
@@ -1212,7 +1219,10 @@ describe('web routes', () => {
 
   it('keeps saved environments when changing the selection', async () => {
     const user = userEvent.setup()
-    seedRegistry([{ environmentId: 'env-local', endpoints: ['http://127.0.0.1:43120'] }])
+    seedRegistry([
+      { environmentId: 'env-local', endpoints: ['http://127.0.0.1:43120'] },
+      { environmentId: 'env-other', label: 'Other', endpoints: ['http://127.0.0.1:43121'] },
+    ])
     vi.stubGlobal(
       'fetch',
       vi.fn(async () => ({
@@ -1231,9 +1241,45 @@ describe('web routes', () => {
     expect(
       await screen.findByRole('heading', { name: 'Select an environment' }),
     ).toBeInTheDocument()
-    expect(screen.getByText('Local environment')).toBeInTheDocument()
-    expect(storedRegistry().environments).toHaveLength(1)
+    expect(
+      screen.getByText('Connect to a saved environment, or add one by its URL.'),
+    ).toBeInTheDocument()
+    expect(storedRegistry().environments).toHaveLength(2)
     expect(storedRegistry().selectedId).toBeNull()
+  })
+
+  it('offers no other environment while the only one saved is out of reach', async () => {
+    seedRegistry([{ environmentId: 'env-local', endpoints: ['http://127.0.0.1:43120'] }])
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => ({
+        ok: false,
+        status: 403,
+        json: async () => ({ error: { code: 'auth', message: 'Origin is not allowed.' } }),
+      })),
+    )
+
+    renderWebApp('/')
+    const refused = await screen.findByText(/^127\.0\.0\.1:43120 refused this page's address/)
+    const strip = refused.closest('[role="status"]') as HTMLElement
+    expect(strip).toHaveTextContent("Can't reach Local environment")
+    expect(within(strip).getByRole('button', { name: 'Retry' })).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Switch environment' })).not.toBeInTheDocument()
+  })
+
+  it('names the only saved environment on the connect screen', async () => {
+    seedRegistry([{ environmentId: 'env-local', endpoints: ['http://127.0.0.1:43120'] }], null)
+    mockBootstrap({
+      'http://127.0.0.1:43120': { environmentId: 'env-local', label: 'Local environment' },
+    })
+
+    renderWebApp('/')
+    expect(
+      await screen.findByRole('heading', { name: 'Connect to Local environment' }),
+    ).toBeInTheDocument()
+    expect(screen.getByText('Or connect with a URL and token below.')).toBeInTheDocument()
+    expect(screen.queryByText('Select an environment')).not.toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Connect to Local environment' })).toBeInTheDocument()
   })
 
   it('starts the page over when the environment changes', async () => {

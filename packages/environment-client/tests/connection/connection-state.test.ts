@@ -532,3 +532,73 @@ describe('several environments', () => {
     )
   })
 })
+
+describe('one environment saved', () => {
+  const only = { ...READY_CONNECTION_INPUT, onlyEnvironment: true }
+  const failure = (reason: RouteFailure['reason']): RouteFailure => ({
+    reason,
+    endpoint: 'http://127.0.0.1:43120',
+    local: true,
+    tried: 1,
+  })
+  const refusedInput: DeriveConnectionInput = {
+    ...only,
+    bootstrap: { status: 'unauthorized' },
+    transport: { phase: 'closed', hasConnected: true, failure: { code: 'auth' } },
+  }
+
+  it('offers no other environment beside a fix', () => {
+    const states = [
+      deriveConnectionUi({ ...only, routeFailure: failure('route_down') }),
+      deriveConnectionUi({ ...only, routeFailure: failure('local_access_blocked') }),
+      deriveConnectionUi({
+        ...only,
+        bootstrap: { status: 'loading' },
+        transport: { phase: 'reconnecting', hasConnected: true, failure: null },
+      }),
+      deriveConnectionUi({
+        ...only,
+        bootstrap: { status: 'loading' },
+        transport: { phase: 'closed', hasConnected: true, failure: null, retriesExhausted: true },
+      }),
+      deriveConnectionUi({
+        ...only,
+        bootstrap: {
+          status: 'incompatible_protocol',
+          clientProtocolVersion: 1,
+          serverProtocolVersion: 2,
+        },
+      }),
+    ]
+    for (const state of states) {
+      expect(state.action, state.kind).toBe('retry')
+      expect(state.secondaryAction, state.kind).toBeUndefined()
+    }
+  })
+
+  it('asks to connect again after a refused token, without naming another environment', () => {
+    const refused = deriveConnectionUi(refusedInput)
+    expect(refused).toMatchObject({
+      kind: 'unauthorized',
+      surface: 'screen',
+      action: 'connect_again',
+      description:
+        'Local environment rejected this client. Update the credential. Do not keep retrying while access is denied.',
+    })
+    expect(refused.secondaryAction).toBeUndefined()
+    expect(
+      deriveConnectionUi({ ...only, routeFailure: failure('credential_rejected') }).action,
+    ).toBe('connect_again')
+  })
+
+  it('reads as before when others may be saved', () => {
+    expect(deriveConnectionUi({ ...refusedInput, onlyEnvironment: undefined })).toMatchObject({
+      action: 'change_environment',
+      description: expect.stringContaining('or choose another environment'),
+    })
+    expect(
+      deriveConnectionUi({ ...READY_CONNECTION_INPUT, routeFailure: failure('route_down') })
+        .secondaryAction,
+    ).toBe('change_environment')
+  })
+})

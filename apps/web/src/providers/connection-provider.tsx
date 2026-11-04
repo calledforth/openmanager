@@ -605,6 +605,7 @@ export function ConnectionProvider({
           connection: connectionOf(connections, record.environmentId),
           online,
           attempt,
+          onlyEnvironment: watched.length === 1,
         })
       }),
     [answers, connections, lastAnswers, online, watched],

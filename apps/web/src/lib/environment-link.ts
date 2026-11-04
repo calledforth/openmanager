@@ -86,6 +86,7 @@ export function deriveEnvironmentLink({
   connection,
   online,
   attempt,
+  onlyEnvironment,
 }: {
   record: StoredEnvironment
   endpoint: string
@@ -95,6 +96,8 @@ export function deriveEnvironmentLink({
   connection: EnvironmentConnection
   online: boolean
   attempt: number
+  /** It is the only environment saved, so what it says offers no other. */
+  onlyEnvironment?: boolean
 }): EnvironmentLink {
   const { environmentId, label, credential } = record
   const answered = answer.status === 'ready' || answer.status === 'incompatible_protocol'
@@ -125,6 +128,7 @@ export function deriveEnvironmentLink({
     network: { online },
     routeFailure: connection.routeFailure ?? undefined,
     routeSearch: socketConnected ? undefined : (connection.routeSearch ?? undefined),
+    onlyEnvironment,
   })
   return {
     environmentId,
