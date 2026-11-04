@@ -1,5 +1,6 @@
 import { cleanup, render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
+import type { ReactElement } from 'react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import {
   deriveConnectionUi,
@@ -15,6 +16,13 @@ import {
   EnvironmentConnectForm,
   EnvironmentList,
 } from './connection-surfaces'
+
+// Focus on a control inside a tooltip stalls jsdom for seconds (the tip's
+// animation), and saving a rename hands focus back to one. The tip is not
+// what these tests are about; a real browser is checked by hand.
+vi.mock('@openmanager/app-core/components/ui/Tooltip', () => ({
+  Tooltip: ({ children }: { children: ReactElement }) => children,
+}))
 
 afterEach(() => {
   cleanup()
@@ -362,6 +370,53 @@ describe('connection surfaces', () => {
     await waitFor(() =>
       expect(screen.queryByLabelText('New route to Home')).not.toBeInTheDocument(),
     )
+  })
+
+  it('renames in place from the server name, says why it failed, and hands focus back', async () => {
+    const user = userEvent.setup()
+    const rename = vi
+      .fn<(label: string) => Promise<void>>()
+      .mockRejectedValueOnce(new Error('This device needs admin access to rename the environment.'))
+      .mockResolvedValue(undefined)
+    render(
+      <EnvironmentList
+        selectedId="env-a"
+        renameTarget={(environmentId) =>
+          environmentId === 'env-a' ? { label: 'Home', rename } : undefined
+        }
+        environments={[
+          {
+            environmentId: 'env-a',
+            // As the list shows it beside a twin; the field starts from the server's name.
+            label: 'Home (WSL)',
+            routes: [route('http://127.0.0.1:43120')],
+            credential: 'token',
+          },
+          {
+            environmentId: 'env-b',
+            label: 'Elsewhere',
+            routes: [route('https://elsewhere.example')],
+            credential: 'token',
+          },
+        ]}
+      />,
+    )
+    // Only an environment that can be renamed offers it.
+    expect(screen.queryByRole('button', { name: 'Rename Elsewhere' })).not.toBeInTheDocument()
+    await user.click(screen.getByRole('button', { name: 'Rename Home (WSL)' }))
+    const field = screen.getByRole('textbox', { name: 'Environment name' })
+    expect(field).toHaveValue('Home')
+    await user.clear(field)
+    await user.type(field, 'Studio{Enter}')
+    expect(await screen.findByRole('alert')).toHaveTextContent(
+      'This device needs admin access to rename the environment.',
+    )
+    // Still editing, so it can be tried again.
+    await user.click(screen.getByRole('button', { name: 'Save' }))
+    await waitFor(() => expect(screen.queryByRole('textbox')).not.toBeInTheDocument())
+    expect(rename).toHaveBeenLastCalledWith('Studio')
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Rename Home (WSL)' })).toHaveFocus()
   })
 
   it('lists every route with its type and health, and marks the one in use', async () => {

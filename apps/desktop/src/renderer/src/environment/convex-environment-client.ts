@@ -1208,6 +1208,7 @@ export function createConvexEnvironmentClient(
     setSessionConfigOption: () => unsupported('setSessionConfigOption'),
     browseFolders: () => unsupported('browseFolders'),
     getEnvironmentSettings: () => unsupported('getEnvironmentSettings'),
+    renameEnvironment: () => unsupported('renameEnvironment'),
     setEnvironmentSettings: () => unsupported('setEnvironmentSettings'),
     listDrafts: () => unsupported('listDrafts'),
     saveDraft: () => unsupported('saveDraft'),

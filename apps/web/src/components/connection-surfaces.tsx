@@ -1,4 +1,4 @@
-import { useEffect, useState, type FormEvent, type ReactNode } from 'react'
+import { useEffect, useRef, useState, type FormEvent, type ReactNode, type Ref } from 'react'
 import { useRouter } from '@tanstack/react-router'
 import {
   CloudSlashIcon,
@@ -249,12 +249,14 @@ function IconAction({
   onClick,
   disabled,
   className,
+  ref,
 }: {
   label: string
   icon: typeof XIcon
   onClick: () => void
   disabled?: boolean
   className?: string
+  ref?: Ref<HTMLButtonElement>
 }) {
   return (
     <Tooltip content={label}>
@@ -262,6 +264,7 @@ function IconAction({
         type="button"
         variant="ghost"
         size="icon-compact"
+        ref={ref}
         aria-label={label}
         disabled={disabled}
         className={className}
@@ -489,6 +492,28 @@ export function EnvironmentList({
   const [renaming, setRenaming] = useState<string | null>(null)
   const [renameBusy, setRenameBusy] = useState(false)
   const [renameError, setRenameError] = useState<{ environmentId: string; message: string }>()
+  // Leaving the name field puts focus back on the Rename that opened it.
+  const renameButtons = useRef(new Map<string, HTMLButtonElement>())
+  // One ref callback per environment, kept: a new one each render would
+  // detach and reattach the button, and the tooltip around it keeps its
+  // trigger in state, so that would render again without end.
+  const renameRefs = useRef(new Map<string, (button: HTMLButtonElement | null) => void>())
+  const renameRef = (environmentId: string) => {
+    let ref = renameRefs.current.get(environmentId)
+    if (!ref) {
+      ref = (button) => {
+        if (button) renameButtons.current.set(environmentId, button)
+        else renameButtons.current.delete(environmentId)
+      }
+      renameRefs.current.set(environmentId, ref)
+    }
+    return ref
+  }
+  const wasRenaming = useRef<string | null>(null)
+  useEffect(() => {
+    if (wasRenaming.current && !renaming) renameButtons.current.get(wasRenaming.current)?.focus()
+    wasRenaming.current = renaming
+  }, [renaming])
 
   if (environments.length === 0) return null
   // With one saved, the one in use needs no mark.
@@ -599,6 +624,7 @@ export function EnvironmentList({
                   ) : null}
                   {target ? (
                     <IconAction
+                      ref={renameRef(environment.environmentId)}
                       label={`Rename ${environment.label}`}
                       icon={PencilSimpleIcon}
                       onClick={() => {

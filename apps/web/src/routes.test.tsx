@@ -4,13 +4,20 @@ import { act, cleanup, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { createMockEnvironmentClient } from '@openmanager/environment-client'
-import type { ComponentProps } from 'react'
+import type { ComponentProps, ReactElement } from 'react'
 import type { WebApp } from './app'
 import { closeAddEnvironment } from './lib/add-environment-draft'
 import { environmentSocketUrl } from './lib/environment-socket'
 import { ENVIRONMENT_STORAGE_KEY } from '@openmanager/environment-client/connection'
 import { CONNECTION_STORIES } from './stories/connection-states'
 import { idleUntilDialled, renderWebApp } from './test-utils'
+
+// Focus on a control inside a tooltip stalls jsdom for seconds (the tip's
+// animation), and saving a rename hands focus back to one. No test here is
+// about a tip; a real browser is checked by hand.
+vi.mock('@openmanager/app-core/components/ui/Tooltip', () => ({
+  Tooltip: ({ children }: { children: ReactElement }) => children,
+}))
 
 type WebAppProps = ComponentProps<typeof WebApp>
 
@@ -1093,6 +1100,71 @@ describe('web routes', () => {
     expect((await screen.findAllByText("Can't reach Local environment")).length).toBeGreaterThan(0)
     expect(screen.queryByText(/Connected · Local environment/)).not.toBeInTheDocument()
     expect(sockets.dialled()).toHaveLength(1)
+  })
+
+  it('renames a connected environment from Settings, everywhere at once', async () => {
+    const user = userEvent.setup()
+    seedRegistry([{ environmentId: 'env-local', endpoints: ['http://127.0.0.1:43120'] }])
+    mockBootstrap({})
+    renderWebApp('/settings')
+    await screen.findByText(/Connected · Local environment/)
+
+    const rename = await screen.findByRole('button', { name: 'Rename Local environment' })
+    await user.click(rename)
+    const field = screen.getByRole('textbox', { name: 'Environment name' })
+    // The server's own name, ready to edit.
+    expect(field).toHaveValue('Local environment')
+    await user.clear(field)
+    await user.type(field, 'Laptop (WSL){Enter}')
+
+    await screen.findByText(/Connected · Laptop \(WSL\)/)
+    expect(
+      within(screen.getByRole('list', { name: 'Saved environments' })).getByText('Laptop (WSL)'),
+    ).toBeInTheDocument()
+    expect(storedRegistry().environments[0]?.label).toBe('Laptop (WSL)')
+    // Back on the button that opened the field.
+    await waitFor(() =>
+      expect(screen.getByRole('button', { name: 'Rename Laptop (WSL)' })).toHaveFocus(),
+    )
+  })
+
+  it('says why a device without admin cannot rename the environment', async () => {
+    const user = userEvent.setup()
+    seedRegistry([{ environmentId: 'env-local', endpoints: ['http://127.0.0.1:43120'] }])
+    mockBootstrap({})
+    renderWebApp('/settings', {
+      createEnvironmentClient: (options) =>
+        idleUntilDialled(
+          createMockEnvironmentClient({
+            seed: {
+              environment: {
+                environmentId: options.environmentId ?? 'env-local',
+                name: 'Local environment',
+              },
+              authorizedClients: [
+                {
+                  clientId: 'client-phone',
+                  label: 'Phone',
+                  kind: 'paired',
+                  capabilities: ['read', 'operate', 'agent'],
+                  createdAt: '2026-01-01T00:00:00.000Z',
+                  lastSeenAt: null,
+                  expiresAt: '2027-01-01T00:00:00.000Z',
+                  connected: true,
+                },
+              ],
+            },
+          }),
+        ),
+    })
+    await user.click(await screen.findByRole('button', { name: 'Rename Local environment' }))
+    const field = screen.getByRole('textbox', { name: 'Environment name' })
+    await user.clear(field)
+    await user.type(field, 'Mine{Enter}')
+    expect(await screen.findByRole('alert')).toHaveTextContent(
+      'This device needs admin access to rename the environment.',
+    )
+    expect(storedRegistry().environments[0]?.label).toBe('Local environment')
   })
 
   it('switches route only when asked, keeping the environment, its token and the other route', async () => {

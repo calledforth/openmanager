@@ -97,7 +97,8 @@ export async function loadEnvironmentIdentity(dataDir: string): Promise<Environm
 /**
  * Give the environment a new name, keeping its ID. The record is written whole
  * to a temporary file and moved over the old one, so a crash leaves either
- * name, never half of one. Returns the record as it now reads on disk.
+ * name, never half of one. Returns the record now on disk; a failure before
+ * the move leaves the old name in place and rejects.
  */
 export async function renameEnvironmentIdentity(
   dataDir: string,
@@ -120,17 +121,19 @@ export async function renameEnvironmentIdentity(
     await unlink(temporaryPath).catch(() => undefined)
     throw error
   }
+  // From here the new name is on disk, so it is the answer whatever follows:
+  // failing now would leave the file and the running server disagreeing.
   if (process.platform !== 'win32') {
-    const directory = await open(dataDir, 'r')
     try {
-      await directory.sync()
-    } finally {
-      await directory.close()
+      const directory = await open(dataDir, 'r')
+      try {
+        await directory.sync()
+      } finally {
+        await directory.close()
+      }
+    } catch {
+      // Durability of the move only; the file already reads the new name.
     }
   }
-  const written = await readIdentity(path)
-  if (written.environmentId !== current.environmentId) {
-    throw new Error('Environment identity changed while it was being renamed.')
-  }
-  return written
+  return Object.freeze(identity)
 }
