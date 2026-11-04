@@ -67,6 +67,7 @@ const READY = {
 const CLAUDE: ProviderCatalogEntry = {
   id: 'claude',
   displayName: 'Claude Code',
+  limits: { supported: false, reading: null, refreshing: false, lastRefresh: null },
   capabilities: {
     canSetModel: true,
     canSetMode: true,

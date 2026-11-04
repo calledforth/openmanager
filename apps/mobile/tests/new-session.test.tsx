@@ -185,6 +185,7 @@ const BETA = project('beta', '2026-10-01T10:00:00.000Z')
 const CLAUDE = {
   id: 'claude',
   displayName: 'Claude Code',
+  limits: { supported: false, reading: null, refreshing: false, lastRefresh: null },
   capabilities: {
     canSetModel: true,
     canSetMode: true,

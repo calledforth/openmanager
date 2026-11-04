@@ -53,6 +53,7 @@ const THREAD = { threadId: 'thread-1', sessionId: SESSION.sessionId }
 const CLAUDE = {
   id: 'claude',
   displayName: 'Claude Code',
+  limits: { supported: false, reading: null, refreshing: false, lastRefresh: null },
   capabilities: {
     canSetModel: true,
     canSetMode: true,
