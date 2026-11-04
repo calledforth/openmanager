@@ -9,6 +9,7 @@ import {
   SERVER_SHUTDOWN_CLOSE_CODE,
   SERVER_SHUTDOWN_CLOSE_REASON,
   ProviderHealthChangedEventSchema,
+  ProviderLimitsChangedEventSchema,
   FLOW_POLICY,
   FragmentAssembler,
   ServerMessageSchema,
@@ -43,7 +44,7 @@ import { z } from 'zod'
 import { namesUnknownTurn } from '@agentpack/view/protocol'
 import { EnvironmentClientError, isEnvironmentClientError } from './errors'
 import { applyDraftList, applyDraftsUnlisted } from './draft-state'
-import { createDraftSync } from './draft-sync'
+import { createDraftSync, draftAnswersOf } from './draft-sync'
 import { placeRecord, placeTransient } from './placement'
 import {
   applyActiveSession,
@@ -56,6 +57,7 @@ import {
   applyProviderBootstrap,
   applyProviderCatalog,
   applyProviderHealth,
+  applyProviderLimits,
   applyProviderProbe,
   applyLiveNoticesCleared,
   applyRecord as applyRecordToState,
@@ -642,6 +644,7 @@ export function createWebSocketEnvironmentClient(
       capabilities: [...capabilities],
       attempt: 0,
       retriesExhausted: false,
+      caughtUp: false,
     })
     for (const flush of queued.splice(0)) flush()
     const generation = connectionGeneration
@@ -994,6 +997,13 @@ export function createWebSocketEnvironmentClient(
     if (health.success) {
       const { providerId, health: next } = health.data.payload
       store.update((state) => applyProviderHealth(state, providerId, next))
+      return
+    }
+    // Usage limits travel the same way: a current reading, broadcast.
+    const limits = ProviderLimitsChangedEventSchema.safeParse(raw)
+    if (limits.success) {
+      const { providerId, limits: next } = limits.data.payload
+      store.update((state) => applyProviderLimits(state, providerId, next))
     }
   }
 
@@ -1342,6 +1352,11 @@ export function createWebSocketEnvironmentClient(
     // per-socket, so until it lands nothing of the scope is sent at all.
     for (const subscription of [...subscriptions.values()])
       void recover(subscription).catch(() => undefined)
+    // Answered or refused, nothing more about the past is on its way.
+    const caughtUp = () => {
+      if (generation === connectionGeneration && ready) patchConnection({ caughtUp: true })
+    }
+    void recover(subscriptions.get(key)!).then(caughtUp, caughtUp)
     // The provider catalog is a current reading (models, health), not synced state.
     if (supports('getProviderCatalog')) {
       await commands.getProviderCatalog().catch(() => undefined)
@@ -1929,6 +1944,14 @@ export function createWebSocketEnvironmentClient(
       store.update((state) => applyProviderProbe(state, payload.provider))
       return payload.provider
     },
+    async refreshProviderLimits(input) {
+      const payload = await request('provider.limits.refresh', {
+        providerId: input.providerId,
+        ...(input.maxAgeMs !== undefined ? { maxAgeMs: input.maxAgeMs } : {}),
+      })
+      store.update((state) => applyProviderLimits(state, payload.providerId, payload.limits))
+      return payload.limits
+    },
     setComposerPreference: (input) =>
       composerWrite(
         'composer.preferences.set',
@@ -2010,6 +2033,7 @@ export function createWebSocketEnvironmentClient(
 
   const drafts = createDraftSync({
     store,
+    answers: draftAnswersOf(backingStore),
     commands,
     supported: () => capabilities.has(WIRE_COMMANDS.saveDraft),
   })

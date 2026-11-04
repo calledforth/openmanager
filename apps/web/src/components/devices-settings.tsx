@@ -111,17 +111,20 @@ type Confirm =
   | { kind: 'rotate' }
 
 /**
- * Every device that can reach the connected environment: its name, when it
+ * Every device that can reach the environment in context: its name, when it
  * was last seen, what it may do, and revoking it. Reading the list needs the
  * `admin` capability, which the owner holds; a device without it is told so.
  */
 export function DevicesSettingControl({
   section,
+  environmentName,
   onCredentialRotated,
   pairing,
 }: {
   /** The settings section around the control, given its description. */
   section: (body: ReactNode) => ReactNode
+  /** What the dialogs call the environment they act on. */
+  environmentName?: string
   /**
    * Save the owner's new credential; the connection redials with it. Without
    * one there is nowhere to keep a new credential, so rotating is not offered.
@@ -138,6 +141,7 @@ export function DevicesSettingControl({
     <ConnectedDevices
       client={client}
       section={section}
+      environmentName={environmentName}
       onCredentialRotated={onCredentialRotated}
       pairing={pairing}
     />
@@ -147,11 +151,13 @@ export function DevicesSettingControl({
 function ConnectedDevices({
   client,
   section,
+  environmentName,
   onCredentialRotated,
   pairing,
 }: {
   client: EnvironmentClient
   section: (body: ReactNode) => ReactNode
+  environmentName?: string
   onCredentialRotated?: (credential: string) => void
   pairing?: PairingTarget
 }) {
@@ -160,6 +166,7 @@ function ConnectedDevices({
     <DeviceList
       client={client}
       connected={connection.phase === 'connected'}
+      environmentName={environmentName}
       onCredentialRotated={onCredentialRotated}
       pairing={pairing}
     />,
@@ -180,11 +187,13 @@ function Note({ children, role }: { children: ReactNode; role?: 'alert' }) {
 function DeviceList({
   client,
   connected,
+  environmentName,
   onCredentialRotated,
   pairing,
 }: {
   client: EnvironmentClient
   connected: boolean
+  environmentName?: string
   onCredentialRotated?: (credential: string) => void
   pairing?: PairingTarget
 }) {
@@ -426,6 +435,7 @@ function DeviceList({
           onLinksChanged={links.refresh}
           grant={current.capabilities}
           environmentId={pairing.environmentId}
+          environmentName={environmentName}
           routes={pairing.routes}
           inUseEndpoint={pairing.inUseEndpoint}
           appUrl={pairing.appUrl}
@@ -434,6 +444,7 @@ function DeviceList({
       ) : null}
       <ConfirmDialog
         confirm={confirm}
+        environmentName={environmentName}
         open={confirmOpen}
         busy={busy}
         error={confirmOpen ? actionError : null}
@@ -903,25 +914,28 @@ function RenameForm({
   )
 }
 
-function copyFor(confirm: Confirm) {
+function copyFor(confirm: Confirm, environmentName: string | undefined) {
+  const to = environmentName ? ` to ${environmentName}` : ''
   switch (confirm.kind) {
     case 'revoke':
       return {
         title: `Revoke ${confirm.client.label}?`,
-        description: `${confirm.client.label} loses access now, and any connection it has open is closed. To use it again, pair it with a new link.`,
+        description: `${confirm.client.label} loses access${to} now, and any connection it has open is closed. To use it again, pair it with a new link.`,
         action: 'Revoke',
         busy: 'Revoking…',
       }
     case 'revoke_others':
       return {
         title: 'Revoke all other devices?',
-        description: `${confirm.count === 1 ? '1 device loses' : `${confirm.count} devices lose`} access now, and their open connections are closed. This device and the owner keep theirs.`,
+        description: `${confirm.count === 1 ? '1 device loses' : `${confirm.count} devices lose`} access${to} now, and their open connections are closed. This device and the owner keep theirs.`,
         action: 'Revoke all',
         busy: 'Revoking…',
       }
     case 'rotate':
       return {
-        title: 'Rotate the owner credential?',
+        title: environmentName
+          ? `Rotate the owner credential of ${environmentName}?`
+          : 'Rotate the owner credential?',
         description:
           'This browser switches to a new credential and reconnects. Anything else using the old one is disconnected; it can read the new one from the environment’s data directory.',
         action: 'Rotate',
@@ -932,6 +946,7 @@ function copyFor(confirm: Confirm) {
 
 function ConfirmDialog({
   confirm,
+  environmentName,
   open,
   busy,
   error,
@@ -939,13 +954,14 @@ function ConfirmDialog({
   onConfirm,
 }: {
   confirm: Confirm | null
+  environmentName?: string
   open: boolean
   busy: boolean
   error: string | null
   onCancel: () => void
   onConfirm: () => void
 }) {
-  const copy = confirm ? copyFor(confirm) : null
+  const copy = confirm ? copyFor(confirm, environmentName) : null
   return (
     <Dialog
       open={open}

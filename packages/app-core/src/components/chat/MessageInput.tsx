@@ -1,6 +1,10 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { usePlatformCapabilities } from '../../providers/platform-provider'
 import { useSessionState } from '../../providers/session-provider'
+import {
+  useEnvironmentAvailability,
+  useFailureNamer,
+} from '../../providers/environment-availability'
 import { useComposerState } from '../../providers/composer-provider'
 import { useActiveThreadState } from '../../providers/active-thread-provider'
 import { useQuestionStateOptional } from '../../providers/question-provider'
@@ -136,7 +140,7 @@ export function useMessageInputBinding() {
     isStreaming,
     providerImageSupport,
     catalogImageSupport,
-    sendBlockedReason,
+    sendBlockedReason: providerBlockedReason,
     planBuildModeId,
     draftKey,
   } = deriveComposerControls({
@@ -259,6 +263,10 @@ export function useMessageInputBinding() {
     currentModelName:
       modelOptions.find((model) => model.id === currentModelId)?.name ?? currentModelId,
   })
+  const availability = useEnvironmentAvailability()
+  const nameFailure = useFailureNamer()
+  // What is typed stays either way: only the send waits.
+  const sendBlockedReason = availability?.sendBlockedReason ?? providerBlockedReason
 
   // Plan execution is submitted as one ordered job: accept the review, wait
   // for the planning prompt to settle, switch mode, then start the build.
@@ -306,7 +314,8 @@ export function useMessageInputBinding() {
           onChange: questionFlow.setText,
           placeholder: 'Or type your own answer…',
           onSubmit: questionFlow.advance,
-          canSubmit: questionFlow.canAdvance,
+          // Answering is a send too.
+          canSubmit: questionFlow.canAdvance && !sendBlockedReason,
         }
       : undefined,
     attachedTop,
@@ -317,8 +326,9 @@ export function useMessageInputBinding() {
       modelImageSupport !== false &&
       modelImageSupport !== undefined,
     imageSupportMessage,
-    settingsError: composerError,
+    settingsError: composerError ? nameFailure(composerError) : composerError,
     sendBlockedReason,
+    nameFailure,
     slashCommands,
     usage,
     onModeChange: (id) => {

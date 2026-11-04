@@ -1,4 +1,4 @@
-import { useContext, useEffect, useMemo, type ReactNode } from 'react'
+import { useContext, useEffect, useMemo, useSyncExternalStore, type ReactNode } from 'react'
 import { MonitorIcon, MoonIcon, PlusIcon, SunIcon, XIcon } from '@phosphor-icons/react'
 import { createFileRoute, useNavigate } from '@tanstack/react-router'
 import { Button } from '@openmanager/app-core/components/fluid/ui/button'
@@ -14,6 +14,12 @@ import {
   describeProviderHealth,
   type ProviderHealthTone,
 } from '@openmanager/app-core/lib/provider-health-view'
+import { ComposerStateContext } from '@openmanager/app-core/providers/composer-provider'
+import { EnvironmentPlatformCapabilitiesProvider } from '@openmanager/app-core/providers/environment-application'
+import {
+  EnvironmentClientProvider,
+  useEnvironmentClientOptional,
+} from '@openmanager/app-core/providers/environment-client'
 import { PlatformCapabilitiesContext } from '@openmanager/app-core/providers/platform-provider'
 import { SessionStateContext } from '@openmanager/app-core/providers/session-provider'
 import { AddProjectStartSetting } from '../components/add-project-start-setting'
@@ -39,10 +45,13 @@ import {
 import {
   connectionStatusLabel,
   findStoredEnvironment,
+  hostOf,
+  type StoredEnvironment,
 } from '@openmanager/environment-client/connection'
 import { UI_FONTS, type UiFontId } from '../lib/fonts'
 import { pairingAppUrl } from '../lib/pairing-app-url'
 import { useConnection } from '../providers/connection-provider'
+import { useEnvironmentClients } from '../providers/environment-client-provider'
 import type { AppearanceMode } from '@openmanager/app-core/providers/theme-provider'
 import { ThemeFamilyPicker } from '../components/theme-family-picker'
 import { useTheme } from '../providers/theme-provider'
@@ -62,10 +71,17 @@ function isSettingsTab(value: unknown): value is SettingsTab {
   return SETTINGS_TABS.some((tab) => tab.id === value)
 }
 
+type SettingsSearch = { tab?: SettingsTab; environment?: string }
+
 export const Route = createFileRoute('/settings')({
   // The tab lives in the URL, so a section can be linked to and survives a reload.
-  validateSearch: (search: Record<string, unknown>): { tab?: SettingsTab } =>
-    isSettingsTab(search.tab) ? { tab: search.tab } : {},
+  // So does the environment chosen here: the page remounts when a connection
+  // comes or goes, and this choice is not the selection, which stays with the
+  // open session.
+  validateSearch: (search: Record<string, unknown>): SettingsSearch => ({
+    ...(isSettingsTab(search.tab) ? { tab: search.tab } : {}),
+    ...(typeof search.environment === 'string' ? { environment: search.environment } : {}),
+  }),
   component: SettingsPage,
 })
 
@@ -138,6 +154,148 @@ function ChoiceGroup<T extends string>({
   )
 }
 
+/**
+ * The environment this page's settings act on: the one chosen here, else the
+ * selected one. Choosing here moves nothing else.
+ */
+function useSettingsEnvironment(): StoredEnvironment | undefined {
+  const { environments, selectedId } = useConnection()
+  const { environment } = Route.useSearch()
+  return (
+    findStoredEnvironment(environments, environment) ??
+    findStoredEnvironment(environments, selectedId)
+  )
+}
+
+const NEVER = () => () => undefined
+
+/** Still on its way, so saying it isn't connected would only flash. */
+const ON_ITS_WAY: ReadonlySet<string> = new Set(['connecting', 'reconnecting', 'ready'])
+
+/** The choice itself. With one environment saved there is nothing to choose. */
+function EnvironmentChoice({
+  chosen,
+  within = false,
+}: {
+  chosen: StoredEnvironment | undefined
+  /** Inside a section of its own, rather than one headed "Applies to". */
+  within?: boolean
+}) {
+  const navigate = useNavigate()
+  const { environments, links } = useConnection()
+  const client = useEnvironmentClients().clients[chosen?.environmentId ?? '']
+  const read = () => client?.getState().connection.phase === 'connected'
+  const connected = useSyncExternalStore(client?.subscribe ?? NEVER, read, read)
+  const link = links.find((item) => item.environmentId === chosen?.environmentId)
+  const unreachable = chosen && !connected && !(link && ON_ITS_WAY.has(link.ui.kind))
+  if (environments.length < 2) return null
+  const labels = environments.map((item) => item.label)
+  // Two machines with the same host name must not read the same here: what
+  // follows can revoke a device.
+  const options = environments.map(({ environmentId, label, routes }) => ({
+    id: environmentId,
+    label:
+      labels.indexOf(label) === labels.lastIndexOf(label) || !routes[0]
+        ? label
+        : `${label} (${hostOf(routes[0].endpoint)})`,
+  }))
+  const choice = (
+    <>
+      <ChoiceGroup
+        name="settings-environment"
+        label="Applies to"
+        value={chosen?.environmentId ?? ''}
+        options={options}
+        onChange={(environment) =>
+          void navigate({
+            to: '/settings',
+            search: (previous) => ({ ...previous, environment }),
+            replace: true,
+          })
+        }
+      />
+      {unreachable ? (
+        <p className="mt-2 text-[13px] text-muted-foreground">
+          {chosen.label} isn’t connected right now.
+        </p>
+      ) : null}
+    </>
+  )
+  if (within) return choice
+  return <SettingsSection title="Applies to">{choice}</SettingsSection>
+}
+
+/**
+ * Hands the settings under it the environment they act on. The open
+ * environment's providers are already around this page and are left to speak
+ * for it; for any other, what they say about the open one is put out of reach,
+ * and only what its own client can say stands in for it.
+ */
+function EnvironmentScope({
+  environmentId,
+  children,
+}: {
+  environmentId: string | undefined
+  children: ReactNode
+}) {
+  const open = useEnvironmentClientOptional()
+  const client = useEnvironmentClients().clients[environmentId ?? ''] ?? null
+  if (client === open) return children
+  return (
+    <EnvironmentClientProvider client={client}>
+      <SessionStateContext.Provider value={null}>
+        <ComposerStateContext.Provider value={null}>
+          {client ? (
+            <EnvironmentPlatformCapabilitiesProvider>
+              {children}
+            </EnvironmentPlatformCapabilitiesProvider>
+          ) : (
+            <PlatformCapabilitiesContext.Provider value={null}>
+              {children}
+            </PlatformCapabilitiesContext.Provider>
+          )}
+        </ComposerStateContext.Provider>
+      </SessionStateContext.Provider>
+    </EnvironmentClientProvider>
+  )
+}
+
+/**
+ * Settings an environment keeps for itself, under the choice of which. Given a
+ * section, the choice sits inside it, under its heading: beside the list of
+ * environments, a second heading of its own would read as a second list.
+ */
+function EnvironmentSettings({
+  section,
+  children,
+}: {
+  section?: { title: string; description: (name: string) => string }
+  children: (environment: StoredEnvironment | undefined, name: string) => ReactNode
+}) {
+  const chosen = useSettingsEnvironment()
+  const name = chosen?.label ?? 'this environment'
+  const scoped = (
+    // By environment: nothing typed or open for one may reach the next.
+    <EnvironmentScope key={chosen?.environmentId} environmentId={chosen?.environmentId}>
+      {children(chosen, name)}
+    </EnvironmentScope>
+  )
+  if (section) {
+    return (
+      <SettingsSection title={section.title} description={section.description(name)}>
+        <EnvironmentChoice chosen={chosen} within />
+        {scoped}
+      </SettingsSection>
+    )
+  }
+  return (
+    <>
+      <EnvironmentChoice chosen={chosen} />
+      {scoped}
+    </>
+  )
+}
+
 const PROVIDER_TONE_CLASS: Record<ProviderHealthTone, string> = {
   ready: 'bg-emerald-400',
   warning: 'bg-amber-400',
@@ -150,7 +308,7 @@ const PROVIDER_TONE_CLASS: Record<ProviderHealthTone, string> = {
  * desktop settings menu. Settings also renders with no environment connected,
  * where there are no providers to describe and the section stays out.
  */
-function ProvidersPanel() {
+function ProvidersPanel({ name }: { name: string }) {
   const platform = useContext(PlatformCapabilitiesContext)
   const activeWorkspacePath = useContext(SessionStateContext)?.activeWorkspacePath ?? null
   const rows = useMemo(() => {
@@ -183,10 +341,10 @@ function ProvidersPanel() {
   }
 
   return (
-    <SettingsSection title="Providers" description="The coding agents this environment can run.">
+    <SettingsSection title="Providers" description={`The coding agents ${name} can run.`}>
       {rows.length === 0 ? (
         <p className="mt-2 text-[13px] text-muted-foreground">
-          This environment has not reported any providers.
+          {name} has not reported any providers.
         </p>
       ) : (
         <ul className="mt-3 flex flex-col gap-1">
@@ -232,14 +390,14 @@ function ProvidersPanel() {
   )
 }
 
-/** The tool that names this environment's sessions, kept by the environment. */
-function SessionTitlesSetting() {
+/** The tool that names an environment's sessions, kept by the environment. */
+function SessionTitlesSetting({ name }: { name: string }) {
   return (
     <TitleGenerationSettingControl
       section={(field) => (
         <SettingsSection
           title="Session titles"
-          description="Names each session from its first message, using a model on this environment."
+          description={`Names each session from its first message, using a model on ${name}.`}
         >
           {field}
         </SettingsSection>
@@ -347,46 +505,61 @@ function EnvironmentsPanel() {
   )
 }
 
-/** Settings the connected environment keeps for all of its clients. */
+/** Settings an environment keeps for all of its clients. */
 function ConnectedEnvironmentSettings() {
   return (
-    <AddProjectStartSetting
-      section={(field) => (
-        <SettingsSection
-          title="Add project starts in"
-          description="Where Add project opens, on every device."
-        >
-          {field}
-        </SettingsSection>
-      )}
-    />
+    <EnvironmentSettings
+      section={{
+        title: 'Add project starts in',
+        description: (name) => `Where Add project opens on ${name}, on every device.`,
+      }}
+    >
+      {() => <AddProjectStartSetting section={(field) => field} />}
+    </EnvironmentSettings>
   )
 }
 
-/** Who can reach the connected environment, kept by the environment itself. */
+/** Who can reach an environment, kept by the environment itself. */
 function DevicesPanel() {
-  const { environment, environments, inUseEndpoint, replaceCredential } = useConnection()
-  const environmentId = environment.status === 'selected' ? environment.environmentId : undefined
-  const routes = findStoredEnvironment(environments, environmentId)?.routes
+  const { selectedId, inUseEndpoint, links, replaceCredential } = useConnection()
   return (
-    <DevicesSettingControl
-      pairing={
-        environmentId && routes
-          ? { environmentId, routes, inUseEndpoint, appUrl: pairingAppUrl() }
-          : undefined
-      }
-      section={(body) => (
-        <SettingsSection
-          title="Devices"
-          description="Who can reach this environment. Revoking a device disconnects it at once."
-        >
-          {body}
-        </SettingsSection>
-      )}
-      onCredentialRotated={
-        environmentId ? (credential) => replaceCredential(environmentId, credential) : undefined
-      }
-    />
+    <EnvironmentSettings>
+      {(environment, name) => {
+        const environmentId = environment?.environmentId
+        return (
+          <DevicesSettingControl
+            environmentName={environment?.label}
+            pairing={
+              environment
+                ? {
+                    environmentId: environment.environmentId,
+                    routes: environment.routes,
+                    inUseEndpoint:
+                      environmentId === selectedId
+                        ? inUseEndpoint
+                        : (links.find((link) => link.environmentId === environmentId)?.endpoint ??
+                          null),
+                    appUrl: pairingAppUrl(),
+                  }
+                : undefined
+            }
+            section={(body) => (
+              <SettingsSection
+                title="Devices"
+                description={`Who can reach ${name}. Revoking a device disconnects it at once.`}
+              >
+                {body}
+              </SettingsSection>
+            )}
+            onCredentialRotated={
+              environmentId
+                ? (credential) => replaceCredential(environmentId, credential)
+                : undefined
+            }
+          />
+        )
+      }}
+    </EnvironmentSettings>
   )
 }
 
@@ -529,7 +702,7 @@ function NotificationsPanel() {
   return (
     <SettingsSection
       title="Session notifications"
-      description="A browser notification when a session finishes, needs your input, or stops with an error — unless it is the session you are looking at. Kept on this device only."
+      description="A browser notification when a session in any environment finishes, needs your input, or stops with an error — unless it is the session you are looking at. Kept on this device only."
     >
       <NotificationsSettingControl
         choices={(value, onChange, disabled) => (
@@ -553,10 +726,14 @@ const PANELS: Record<SettingsTab, () => ReactNode> = {
   appearance: AppearancePanel,
   notifications: NotificationsPanel,
   providers: () => (
-    <>
-      <ProvidersPanel />
-      <SessionTitlesSetting />
-    </>
+    <EnvironmentSettings>
+      {(_, name) => (
+        <>
+          <ProvidersPanel name={name} />
+          <SessionTitlesSetting name={name} />
+        </>
+      )}
+    </EnvironmentSettings>
   ),
 }
 
@@ -579,7 +756,7 @@ function SettingsPage() {
           onSelect={(index) =>
             void navigate({
               to: '/settings',
-              search: { tab: SETTINGS_TABS[index]!.id },
+              search: (previous) => ({ ...previous, tab: SETTINGS_TABS[index]!.id }),
               replace: true,
             })
           }

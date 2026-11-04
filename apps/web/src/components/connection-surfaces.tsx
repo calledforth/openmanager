@@ -1,5 +1,6 @@
 import { useEffect, useState, type FormEvent, type ReactNode } from 'react'
 import {
+  CloudSlashIcon,
   KeyIcon,
   PlugsIcon,
   PlusIcon,
@@ -15,6 +16,7 @@ import {
   connectionStatusLabel,
   type ConnectionAction,
   type ConnectionUiState,
+  type OtherEnvironmentsNotice,
   parseEnvironmentCredential,
   parseEnvironmentEndpoint,
   routeSearchOrder,
@@ -662,6 +664,67 @@ export function ConnectionBanner({
         {state.detail ? <p className="text-[12px] leading-4 text-faint">{state.detail}</p> : null}
       </div>
       <ActionButtons className="shrink-0" state={state} handlers={handlers} compact />
+    </div>
+  )
+}
+
+/**
+ * Other environments' trouble, in the topbar. Smaller than the banner, which is
+ * about the page on screen, and out of the page's way, as it may stay for days.
+ * Each environment retries on its own, so there is only something to press when
+ * waiting won't help.
+ */
+export function OtherEnvironmentsStatus({
+  notice,
+  onOpenSettings,
+}: {
+  notice: OtherEnvironmentsNotice
+  onOpenSettings: () => void
+}) {
+  return (
+    <div
+      role="status"
+      className="ml-auto flex min-w-0 shrink items-center gap-1.5 pr-1.5 pl-2 text-[12px] leading-4 text-muted-foreground"
+    >
+      <CloudSlashIcon aria-hidden className="size-3.5 shrink-0 text-faint" />
+      <span className="min-w-0 truncate" title={notice.text}>
+        {notice.text}
+      </span>
+      {notice.needsPerson ? (
+        <Button
+          type="button"
+          variant="ghost"
+          size="compact"
+          className="shrink-0 text-foreground"
+          onClick={onOpenSettings}
+        >
+          Settings
+        </Button>
+      ) : null}
+    </div>
+  )
+}
+
+/** Something asked of an environment other than the open one didn't happen. */
+export function EnvironmentFailureStrip({
+  message,
+  onDismiss,
+  className,
+}: {
+  message: string
+  onDismiss: () => void
+  className?: string
+}) {
+  return (
+    <div
+      role="alert"
+      className={cn(
+        'flex w-fit max-w-[640px] items-center gap-2 rounded-[14px] bg-float py-1 pl-3.5 pr-1 shadow-float',
+        className,
+      )}
+    >
+      <p className="min-w-0 text-[13px] leading-5 text-foreground">{message}</p>
+      <IconAction label="Dismiss" icon={XIcon} className="shrink-0" onClick={onDismiss} />
     </div>
   )
 }

@@ -230,6 +230,67 @@ export function connectionStatusLabel(state: ConnectionUiState): string {
   return `${state.title} · ${state.environmentLabel}`
 }
 
+/**
+ * As far as anyone can tell nothing reaches the environment, so what shows of it
+ * is what this browser kept. A first attempt still on its way is not this, nor
+ * is a socket riding out a blip on a route that still answers.
+ */
+const DOWN_KINDS: ReadonlySet<ConnectionKind> = new Set(['reconnecting', 'offline', 'unreachable'])
+
+export function environmentIsDown(state: ConnectionUiState): boolean {
+  return DOWN_KINDS.has(state.kind)
+}
+
+/** Why the composer holds its send while this is the open environment's state. */
+export function sendBlockedReason(state: ConnectionUiState, name: string): string | null {
+  return environmentIsDown(state)
+    ? `Can't send until ${name} is back. What you type here is kept.`
+    : null
+}
+
+/**
+ * Where a state shows, with this many environments saved. With others to get on
+ * with, a refused token or a protocol mismatch on the selected one doesn't take
+ * the page: it's the banner, and says itself who it is about. Everything else
+ * stays where it is. With one saved there is nothing else to show, so the page
+ * stays as it was.
+ */
+export function placeConnectionUi(state: ConnectionUiState, saved: number): ConnectionUiState {
+  if (saved < 2 || (state.kind !== 'unauthorized' && state.kind !== 'incompatible_protocol')) {
+    return state
+  }
+  return { ...state, title: connectionStatusLabel(state), surface: 'banner' }
+}
+
+/** A saved environment other than the one on screen. */
+export type OtherEnvironment = { label: string; state: ConnectionUiState }
+
+export type OtherEnvironmentsNotice = {
+  text: string
+  /** Waiting won't fix some of it: a person has to step in. */
+  needsPerson: boolean
+}
+
+/** One line about every other environment that has trouble, or null when none has. */
+export function otherEnvironmentsNotice(
+  others: readonly OtherEnvironment[],
+): OtherEnvironmentsNotice | null {
+  const names = (items: readonly OtherEnvironment[]) =>
+    new Intl.ListFormat('en', { type: 'conjunction' }).format(items.map(({ label }) => label))
+  const offline = others.filter(({ state }) => environmentIsDown(state))
+  const refused = others.filter(({ state }) => state.kind === 'unauthorized')
+  const mismatched = others.filter(({ state }) => state.kind === 'incompatible_protocol')
+  const parts = [
+    ...(offline.length ? [`${names(offline)} ${offline.length > 1 ? 'are' : 'is'} offline`] : []),
+    ...(refused.length ? [`${names(refused)} refused this device`] : []),
+    ...(mismatched.length
+      ? [`${names(mismatched)} ${mismatched.length > 1 ? 'need' : 'needs'} a matching version`]
+      : []),
+  ]
+  if (parts.length === 0) return null
+  return { text: parts.join(' · '), needsPerson: refused.length + mismatched.length > 0 }
+}
+
 function environmentContext(input: DeriveConnectionInput) {
   const endpoint = input.environment.status === 'selected' ? input.environment.endpoint : undefined
   const label =
@@ -241,7 +302,7 @@ function environmentContext(input: DeriveConnectionInput) {
 }
 
 /** `host:port` reads better in a sentence than the full URL. */
-function hostOf(endpoint: string): string {
+export function hostOf(endpoint: string): string {
   try {
     return new URL(endpoint).host || endpoint
   } catch {

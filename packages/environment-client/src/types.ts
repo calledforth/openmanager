@@ -24,6 +24,7 @@ import type {
   PairingLink,
   PairingRedeemResponse,
   ProviderBootstrap,
+  ProviderLimits,
   ProviderCatalogEntry,
   Session,
   SessionComposerState,
@@ -219,6 +220,13 @@ export interface ConnectionState {
    * brings it back. See `docs/connection-retry.md`.
    */
   retriesExhausted: boolean
+  /**
+   * False from a handshake until the environment's own catch-up has landed:
+   * what the sessions say until then may be from before this connection, and
+   * the catch-up can move many of them in one update. Hosts that keep no copy
+   * across connections leave it unset.
+   */
+  caughtUp?: boolean
 }
 
 /** Normalized, immutable. Every update produces a new root object. */
@@ -475,6 +483,13 @@ export interface ProbeProviderInput {
   workspaceId: string
 }
 
+export interface RefreshProviderLimitsInput {
+  providerId: string
+  /** Keep a reading younger than this. The environment holds its own floor
+   * (a minute), so asking often is cheap. */
+  maxAgeMs?: number
+}
+
 export interface SetSessionModelInput {
   sessionId: string
   modelId: string
@@ -544,6 +559,12 @@ export interface EnvironmentCommands {
   getProviderCatalog(): Promise<ProviderCatalogEntry[]>
   /** Re-checks one provider now; resolves with its entry once the probe settles. */
   probeProvider(input: ProbeProviderInput): Promise<ProviderBootstrap>
+  /**
+   * Ask the environment to read a provider's usage limits again. Resolves at
+   * once with the current state (`refreshing` while a read runs); the result
+   * lands on the provider entry when `provider_limits_changed` arrives.
+   */
+  refreshProviderLimits(input: RefreshProviderLimitsInput): Promise<ProviderLimits>
   setComposerPreference(input: SetComposerPreferenceInput): Promise<WorkspaceComposerPreference>
   /**
    * The session setters change the live session and remember the choice for
@@ -716,6 +737,11 @@ export interface DraftSync {
    * deleted if it is still empty. A discard is not held.
    */
   holdEmpty(draftId: string): () => void
+  /**
+   * Whether `holdEmpty` holds the draft: an image is on its way into it.
+   * Optional, for syncs that came before it; absent reads as none.
+   */
+  holdsImage?(draftId: string): boolean
   /**
    * Hold the draft's saves while a `session.create` sends it. `sent` is what
    * the send carries, when the composer has already emptied the draft;

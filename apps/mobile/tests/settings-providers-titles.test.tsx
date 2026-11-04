@@ -64,14 +64,23 @@ const WORKSPACE = {
   capabilities: { git: false },
   exists: true,
 }
+/** No usage limits: neither provider reports them. */
+const NO_LIMITS = { supported: false, reading: null, refreshing: false, lastRefresh: null }
 const SEED: MockSeed = {
   workspaces: [WORKSPACE],
   providers: [
-    { id: 'claude', displayName: 'Claude Code', capabilities: CAPABILITIES, health: health({}) },
+    {
+      id: 'claude',
+      displayName: 'Claude Code',
+      capabilities: CAPABILITIES,
+      health: health({}),
+      limits: NO_LIMITS,
+    },
     {
       id: 'cursor',
       displayName: 'Cursor',
       capabilities: CAPABILITIES,
+      limits: NO_LIMITS,
       health: health({
         summary: 'error',
         install: 'missing',

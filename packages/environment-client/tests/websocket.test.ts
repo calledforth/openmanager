@@ -351,6 +351,61 @@ async function connected(
 }
 
 describe('websocket environment client', () => {
+  it('has caught up only once the answer for the environment has landed, each connection', async () => {
+    const { client, socket, timers } = await connected()
+    expect(client.getState().connection).toMatchObject({ phase: 'connected', caughtUp: false })
+
+    await answerCatalog(socket)
+    await flush()
+    expect(client.getState().connection.caughtUp).toBe(true)
+
+    socket.drop()
+    timers.advance(1_000)
+    const next = FakeSocket.instances[1]!
+    next.open()
+    next.respond('protocol.handshake', bootstrap(FULL_CAPABILITIES))
+    await flush()
+    expect(client.getState().connection).toMatchObject({ phase: 'connected', caughtUp: false })
+
+    answerKept(next, lastReplay(next, 'environment')!, 'sub-env')
+    await flush()
+    expect(client.getState().connection.caughtUp).toBe(true)
+  })
+
+  it('has nothing to catch up without replay, or once a replay is refused', async () => {
+    // A plain subscribe brings live frames only: from here on, a change is news.
+    const plain = await connected(
+      FULL_CAPABILITIES.filter((name) => name !== 'subscription.replay'),
+    )
+    expect(plain.client.getState().connection.caughtUp).toBe(true)
+
+    const { client, socket } = await connected()
+    expect(client.getState().connection.caughtUp).toBe(false)
+    socket.receive({
+      type: 'error',
+      requestId: lastReplay(socket, 'environment')!.requestId,
+      error: { code: 'internal', message: 'No catch-up today.' },
+    })
+    await flush()
+    // It falls back to live frames, so nothing about the past follows.
+    expect(client.getState().connection.caughtUp).toBe(true)
+  })
+
+  it('waits for the new connection when the socket drops before the answer', async () => {
+    const { client, socket, timers } = await connected()
+    socket.drop()
+    timers.advance(1_000)
+    const next = FakeSocket.instances[1]!
+    next.open()
+    next.respond('protocol.handshake', bootstrap(FULL_CAPABILITIES))
+    await flush()
+    expect(client.getState().connection.caughtUp).toBe(false)
+
+    await answerCatalog(next)
+    await flush()
+    expect(client.getState().connection.caughtUp).toBe(true)
+  })
+
   it('retains environment data and opens restored session scopes on a new replay-capable transport', async () => {
     const state = createInitialState()
     state.environment = { environmentId: ENV, name: 'Local' }
@@ -492,6 +547,48 @@ describe('websocket environment client', () => {
     expect(client.getState().sessions[SESSION.sessionId]).toBeUndefined()
     expect(client.getState().activeSessionId).toBeNull()
     client.dispose()
+  })
+
+  it('hands what a draft save was answered with on to the client that replaces it', async () => {
+    const AT = '2026-10-24T10:00:00.000Z'
+    const target = { type: 'new_session', sessionId: 'next', workspaceId: 'w' } as const
+    const row = (revision: number, text: string) => ({
+      draftId: 'd',
+      target,
+      content: { text },
+      revision,
+      createdAt: AT,
+      updatedAt: AT,
+      updatedByClientId: null,
+    })
+    const store = createEnvironmentStore()
+    const capabilities = [...FULL_CAPABILITIES, 'draft.list', 'draft.save', 'draft.delete']
+    const first = await connected(capabilities, {}, { environmentId: ENV, store })
+    first.socket.respond('draft.list', { drafts: [], tombstones: [] })
+    await flush()
+    const save = async (revision: number, text: string) => {
+      first.client.drafts!.edit('d', target, { text })
+      first.client.drafts!.flush()
+      await flush()
+      first.socket.respond('draft.save', { draft: row(revision, text) })
+      await flush()
+    }
+    await save(1, 'mine')
+    await save(2, 'mine, last words')
+    first.client.dispose()
+
+    // Made on revision 1; revision 2 was this device's own, on the old client.
+    const second = await connected(capabilities, {}, { environmentId: ENV, store })
+    second.socket.respond('draft.list', { drafts: [row(2, 'mine, last words')], tombstones: [] })
+    await flush()
+    second.client.drafts!.discard('d', { ifRevision: 1 })
+    await flush()
+
+    expect(second.socket.last('draft.delete').payload).toMatchObject({
+      draftId: 'd',
+      ifRevision: 2,
+    })
+    second.client.dispose()
   })
 
   it('rejects a shared store without an identity or with a different identity', () => {

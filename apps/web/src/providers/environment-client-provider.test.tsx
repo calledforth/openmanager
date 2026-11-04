@@ -1118,7 +1118,7 @@ describe('WebEnvironmentClientProvider', () => {
     await waitFor(() => expect(screen.getByText('ready:client')).toBeInTheDocument())
   })
 
-  it('lets a search finish while pairing moves to another environment', async () => {
+  it('lets a search finish while the selection moves to a newly paired environment', async () => {
     seedTwoRoutes()
     let localUp = true
     let answerTunnel = (): void => undefined
@@ -1159,7 +1159,9 @@ describe('WebEnvironmentClientProvider', () => {
     act(() => notify())
     await waitFor(() => expect(askedOf(TUNNEL)).toBeGreaterThan(0))
 
+    // Pairing adds it beside the one in use; moving there is a separate choice.
     act(() => screen.getByRole('button', { name: 'pair other' }).click())
+    act(() => screen.getByRole('button', { name: 'select other' }).click())
     await waitFor(() => expect(screen.getByText(`in use: ${OTHER}`)).toBeInTheDocument())
     await waitFor(() => expect(screen.getByText('ready:client')).toBeInTheDocument())
     const asked = askedOf(OTHER)
@@ -1172,7 +1174,7 @@ describe('WebEnvironmentClientProvider', () => {
     expect(askedOf(OTHER)).toBe(asked)
   })
 
-  it('leaves a refused token behind when pairing moves to another environment', async () => {
+  it('leaves a refused token behind when the selection moves to a newly paired environment', async () => {
     seedTwoRoutes()
     vi.stubGlobal(
       'fetch',
@@ -1204,7 +1206,9 @@ describe('WebEnvironmentClientProvider', () => {
       expect(screen.getByText('reason: credential_rejected')).toBeInTheDocument(),
     )
 
+    // Pairing adds it beside the one in use; moving there is a separate choice.
     act(() => screen.getByRole('button', { name: 'pair other' }).click())
+    act(() => screen.getByRole('button', { name: 'select other' }).click())
     await waitFor(() => expect(screen.getByText(`in use: ${OTHER}`)).toBeInTheDocument())
     await waitFor(() => expect(screen.getByText('ready:client')).toBeInTheDocument())
 

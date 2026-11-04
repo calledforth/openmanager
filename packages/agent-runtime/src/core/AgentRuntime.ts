@@ -12,6 +12,7 @@ import type {
   ProviderId,
   ProviderSessionInfo,
   QuestionOutcome,
+  UsageLimitsResult,
 } from '@agentpack/contract'
 import { isRecoverableError } from '@agentpack/contract'
 import type { BackendEvent, SessionResult } from '../backends/Backend.js'
@@ -296,6 +297,7 @@ export class AgentRuntime {
       configs,
       host,
       connections: () => this.acpConnections(),
+      ...(options.claudeSdk ? { claudeSdk: options.claudeSdk } : {}),
       ...(options.timeouts ? { timeouts: options.timeouts } : {}),
       ...(options.execFile ? { execFile: options.execFile } : {}),
     })
@@ -333,6 +335,11 @@ export class AgentRuntime {
             }
             return models
           },
+          // Optional on the interface: pass it through only where it exists,
+          // or every provider would read as able to report limits.
+          ...(probe.readUsageLimits
+            ? { readUsageLimits: () => probe.readUsageLimits!() }
+            : {}),
           dispose: () => probe.dispose(),
         }
       },
@@ -644,6 +651,21 @@ export class AgentRuntime {
     } catch (error) {
       recorder.failed(error)
       throw error
+    } finally {
+      await probe.dispose()
+    }
+  }
+
+  /** A provider's plan limits, read in a throwaway, never-prompted process.
+   *
+   * Silent (no handshake events) and never borrowed from a live session: a
+   * read takes up to a minute and must not sit on a runtime a turn is using.
+   * `unsupported` for a provider whose probe has no route to its limits. */
+  async readUsageLimits(args: RuntimeRoute): Promise<UsageLimitsResult> {
+    const probe = this.probeRuntime(args, false)
+    try {
+      if (!probe.readUsageLimits) return { outcome: 'unsupported' }
+      return await probe.readUsageLimits()
     } finally {
       await probe.dispose()
     }

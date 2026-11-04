@@ -55,6 +55,8 @@ export type ProviderProbeRuntimeFactoryDeps = {
   connections: AcpTransport
   timeouts?: Partial<RuntimeTimeouts>
   execFile?: ExecFile
+  /** The SDK a Claude probe drives; the real module when absent. */
+  claudeSdk?: ClaudeSdk
 }
 
 export class ProviderSessionRuntimeFactory implements ManagedSessionRuntimeFactory {
@@ -120,6 +122,7 @@ export class ProviderProbeRuntimeFactory implements ProbeRuntimeFactory {
             config,
             host: this.deps.host,
             ...(this.deps.timeouts ? { timeouts: this.deps.timeouts } : {}),
+            ...(this.deps.claudeSdk ? { sdk: this.deps.claudeSdk } : {}),
             ...(options?.onEvent ? { onEvent: options.onEvent } : {}),
           },
         )

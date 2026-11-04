@@ -124,6 +124,8 @@ function SessionPlaceholder({
   sessionId?: string
   lookup: AddressLookup
 }) {
+  // More than one saved: what the others have is in the sidebar right now.
+  const several = useConnection().environments.length > 1
   return (
     <div className="flex min-h-0 flex-1 flex-col">
       {sessionId ? (
@@ -136,7 +138,9 @@ function SessionPlaceholder({
         <p className="max-w-md text-center text-ui-sm leading-ui-normal text-[var(--basis-text-muted)]">
           {lookup.status === 'offline'
             ? mayBeOn(lookup.offline)
-            : 'Connect to an environment to see your sessions here.'}
+            : several
+              ? 'Open a session from the sidebar.'
+              : 'Connect to an environment to see your sessions here.'}
         </p>
       </div>
     </div>

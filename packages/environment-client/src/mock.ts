@@ -1414,9 +1414,17 @@ export function createMockEnvironmentClient(
           displayName: entry.displayName,
           capabilities: entry.capabilities,
           health: entry.health,
+          limits: entry.limits,
         }
         store.update((state) => applyProviderProbe(state, provider))
         return provider
+      }),
+    // Seeded limits stand; a mock has no CLI to read them again.
+    refreshProviderLimits: (input) =>
+      run('refreshProviderLimits', input, () => {
+        const entry = store.getState().providers[input.providerId]
+        if (!entry) throw new EnvironmentClientError('not_found', 'Provider not found.')
+        return entry.limits
       }),
     setComposerPreference: (input) =>
       run('setComposerPreference', input, () => {

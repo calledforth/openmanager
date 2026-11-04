@@ -33,6 +33,7 @@ import {
 import { shouldHydrateLocalStream, shouldUseRemoteStreaming } from '../../lib/stream-continuity'
 import type { MessagePart } from '../../lib/streaming-messages-store'
 import { cn } from '../../lib/utils'
+import { useEnvironmentAvailability } from '../../providers/environment-availability'
 import { PendingPermissionFallback } from '../permissions/InlinePermissionPrompt'
 import { NewSessionLanding } from './NewSessionLanding'
 import { ScrollToEndButton } from './ScrollToEndButton'
@@ -107,6 +108,10 @@ export function ChatView() {
     acknowledgeOptimisticMessage,
     retrySend,
   } = useActiveThreadState()
+  const availability = useEnvironmentAvailability()
+  const environmentName = availability?.name
+  // A "Not sent" row's retry is a send, so it waits with the composer's.
+  const sendHeld = Boolean(availability?.sendBlockedReason)
   // State rather than a ref: the virtualizer needs the element on the render
   // after it mounts, and a ref read during render is still null then.
   const [scrollElement, setScrollElement] = useState<HTMLDivElement | null>(null)
@@ -132,7 +137,9 @@ export function ChatView() {
 
   const header = history?.failed ? (
     <div role="alert" className="py-3 text-center text-sm">
-      History could not be synchronized.{' '}
+      {environmentName
+        ? `History from ${environmentName} could not be synchronized.`
+        : 'History could not be synchronized.'}{' '}
       <button
         type="button"
         className="underline focus-visible:outline-2 focus-visible:outline-ring"
@@ -171,7 +178,7 @@ export function ChatView() {
           timelineRef={timelineRef}
           onAtEndChange={handleAtEndChange}
           onPersistedContentReady={acknowledgeOptimisticMessage}
-          onRetrySend={retrySend}
+          onRetrySend={sendHeld ? undefined : retrySend}
         />
       </div>
       <ScrollToEndButton

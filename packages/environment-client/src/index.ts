@@ -32,6 +32,7 @@ export type {
   ActivityRef,
   PendingInteraction,
   ProbeProviderInput,
+  RefreshProviderLimitsInput,
   ProviderCatalogEntry,
   ReasoningEntry,
   RedeemPairingLinkInput,

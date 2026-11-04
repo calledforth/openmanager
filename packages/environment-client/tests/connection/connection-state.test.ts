@@ -4,6 +4,11 @@ import {
   bootstrapOutcomeFromQuery,
   connectionStatusLabel,
   deriveConnectionUi,
+  environmentIsDown,
+  otherEnvironmentsNotice,
+  placeConnectionUi,
+  sendBlockedReason,
+  type ConnectionUiState,
   type DeriveConnectionInput,
   type RouteFailure,
 } from '../../src/connection/connection-state'
@@ -429,5 +434,101 @@ describe('deriveConnectionUi', () => {
       transport: { phase: 'closed', hasConnected: false, failure: { code: 'unreachable' } },
     })
     expect(ui.kind).toBe('no_environment')
+  })
+})
+
+describe('several environments', () => {
+  const refused = deriveConnectionUi({
+    ...READY_CONNECTION_INPUT,
+    bootstrap: { status: 'unauthorized' },
+    transport: { phase: 'closed', hasConnected: true, failure: { code: 'auth' } },
+  })
+  const mismatched = deriveConnectionUi({
+    ...READY_CONNECTION_INPUT,
+    bootstrap: {
+      status: 'incompatible_protocol',
+      clientProtocolVersion: 1,
+      serverProtocolVersion: 2,
+    },
+  })
+  const down = deriveConnectionUi({
+    ...READY_CONNECTION_INPUT,
+    routeFailure: { reason: 'route_down', endpoint: 'http://x:1', local: false, tried: 1 },
+  })
+  const firstTry = deriveConnectionUi({
+    ...READY_CONNECTION_INPUT,
+    bootstrap: { status: 'loading' },
+    transport: { phase: 'connecting', hasConnected: false, failure: null },
+  })
+  const ready = deriveConnectionUi(READY_CONNECTION_INPUT)
+  const of = (label: string, state: ConnectionUiState) => ({ label, state })
+
+  it('reads as down only once something says so', () => {
+    expect(environmentIsDown(down)).toBe(true)
+    expect(
+      environmentIsDown(
+        deriveConnectionUi({ ...READY_CONNECTION_INPUT, network: { online: false } }),
+      ),
+    ).toBe(true)
+    expect(environmentIsDown(ready)).toBe(false)
+    expect(environmentIsDown(firstTry)).toBe(false)
+    // These two aren't down: they have answered, and said no.
+    expect(environmentIsDown(refused)).toBe(false)
+    expect(environmentIsDown(mismatched)).toBe(false)
+  })
+
+  it('holds a send only while the environment is down, and says which', () => {
+    expect(sendBlockedReason(down, 'Laptop')).toBe(
+      "Can't send until Laptop is back. What you type here is kept.",
+    )
+    expect(sendBlockedReason(ready, 'Laptop')).toBeNull()
+    expect(sendBlockedReason(firstTry, 'Laptop')).toBeNull()
+  })
+
+  it('moves what used to take the page to the banner, named, once others are saved', () => {
+    expect(placeConnectionUi(refused, 2)).toMatchObject({
+      surface: 'banner',
+      title: 'Not authorized · Local environment',
+    })
+    expect(placeConnectionUi(mismatched, 3)).toMatchObject({
+      surface: 'banner',
+      title: 'Incompatible protocol · Local environment',
+    })
+  })
+
+  it('leaves a single environment, and everything a person is asked, where it was', () => {
+    expect(placeConnectionUi(refused, 1)).toBe(refused)
+    expect(placeConnectionUi(down, 2)).toBe(down)
+    const none = deriveConnectionUi({ ...READY_CONNECTION_INPUT, environment: { status: 'none' } })
+    expect(placeConnectionUi(none, 2)).toBe(none)
+    const offer = deriveConnectionUi({
+      ...READY_CONNECTION_INPUT,
+      routeOffer: { endpoint: 'http://x:1', label: 'Laptop' },
+    })
+    expect(placeConnectionUi(offer, 2)).toBe(offer)
+  })
+
+  it('says nothing about environments that are fine or on their way', () => {
+    expect(otherEnvironmentsNotice([])).toBeNull()
+    expect(otherEnvironmentsNotice([of('Desk', ready), of('Laptop', firstTry)])).toBeNull()
+  })
+
+  it('names every environment in trouble on one line', () => {
+    expect(otherEnvironmentsNotice([of('Laptop', down)])).toEqual({
+      text: 'Laptop is offline',
+      needsPerson: false,
+    })
+    expect(
+      otherEnvironmentsNotice([of('Laptop', down), of('Desk', ready), of('Phone', down)])?.text,
+    ).toBe('Laptop and Phone are offline')
+    expect(
+      otherEnvironmentsNotice([of('Laptop', down), of('Desk', refused), of('Phone', mismatched)]),
+    ).toEqual({
+      text: 'Laptop is offline · Desk refused this device · Phone needs a matching version',
+      needsPerson: true,
+    })
+    expect(otherEnvironmentsNotice([of('Laptop', mismatched), of('Phone', mismatched)])?.text).toBe(
+      'Laptop and Phone need a matching version',
+    )
   })
 })

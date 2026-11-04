@@ -998,6 +998,23 @@ export const MIGRATIONS: readonly Migration[] = [
       }
     },
   },
+  {
+    version: 27,
+    name: 'provider_limits',
+    up(database) {
+      // A provider's last usage-limit reading, one row each, so a restart does
+      // not blank the meter until the next read (about a minute of CLI time).
+      // `last_refresh_json` keeps the last attempt's outcome, failed ones too.
+      database.exec(`
+        CREATE TABLE IF NOT EXISTS provider_limits (
+          provider_id TEXT PRIMARY KEY NOT NULL,
+          reading_json TEXT CHECK (reading_json IS NULL OR json_valid(reading_json)),
+          last_refresh_json TEXT CHECK (last_refresh_json IS NULL OR json_valid(last_refresh_json)),
+          updated_at INTEGER NOT NULL
+        ) STRICT;
+      `)
+    },
+  },
 ]
 
 type RetainedActivityRow = {

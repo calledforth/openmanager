@@ -12,6 +12,7 @@ import type {
   ProviderBootstrap,
   ProviderCatalogEntry,
   ProviderHealth,
+  ProviderLimits,
   ScopeSnapshot,
   Session,
   SessionSummary as ProtocolSessionSummary,
@@ -1140,6 +1141,17 @@ export function applyProviderHealth(
   const provider = state.providers[providerId]
   if (!provider || sameJson(provider.health, health)) return state
   return { ...state, providers: { ...state.providers, [providerId]: { ...provider, health } } }
+}
+
+/** One provider's usage limits moved. A provider this client does not list is ignored. */
+export function applyProviderLimits(
+  state: EnvironmentState,
+  providerId: string,
+  limits: ProviderLimits,
+): EnvironmentState {
+  const provider = state.providers[providerId]
+  if (!provider || sameJson(provider.limits, limits)) return state
+  return { ...state, providers: { ...state.providers, [providerId]: { ...provider, limits } } }
 }
 
 /** A probe answers with the whole provider entry, minus the composer profile. */

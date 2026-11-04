@@ -7,6 +7,7 @@ import {
   type ErrorCode,
   type ProviderBootstrap,
   type ProviderHealth,
+  type ProviderLimits,
 } from '@openmanager/protocol/node'
 import { providers, type AgentRuntime, type ProviderConfig } from '@agentpack/runtime/node'
 import type { CommandContext } from './command-context.ts'
@@ -15,6 +16,12 @@ import type { WorkspaceRuntimeResolver } from './thread-service.ts'
 type ProviderId = keyof typeof providers
 type RuntimeHealthReport = ReturnType<AgentRuntime['health']['report']>
 const MAX_PENDING_PROBES_PER_PROVIDER = 8
+const NO_LIMITS: ProviderLimits = Object.freeze({
+  supported: false,
+  reading: null,
+  refreshing: false,
+  lastRefresh: null,
+})
 
 const errorResult = (requestId: string, code: ErrorCode, message: string) => ({
   type: 'error' as const,
@@ -30,6 +37,8 @@ export function createProviderService(
     () => undefined,
   /** Probes run in a registered workspace root; clients never name a path (D9). */
   resolveWorkspace: WorkspaceRuntimeResolver = () => undefined,
+  /** Usage limits, owned by `provider-limits.ts`; none by default. */
+  limitsOf: (providerId: ProviderId) => ProviderLimits = () => NO_LIMITS,
 ) {
   const listeners = new Set<(event: ReturnType<typeof healthEvent>) => void>()
   const previous = new Map<ProviderId, ProviderHealth>()
@@ -57,6 +66,7 @@ export function createProviderService(
       displayName: config.displayName,
       capabilities: config.capabilities,
       health: publicHealth(runtime.health.report(providerId)),
+      limits: limitsOf(providerId),
     }
   }
 

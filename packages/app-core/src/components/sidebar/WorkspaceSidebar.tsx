@@ -11,8 +11,11 @@ import { PlatformCapabilitiesContext } from '../../providers/platform-provider'
 import {
   useSidebarData,
   useSidebarDrafts,
+  useSidebarEnvironments,
   useSidebarSessions,
   type SidebarSessionEntry,
+  type SidebarSessionsByWorkspace,
+  type WorkspaceEntry,
 } from '../../providers/sidebar-provider'
 import { useSidebar } from '../fluid/ui/sidebar'
 import { WorkspaceSidebarView } from './WorkspaceSidebarView'
@@ -33,14 +36,32 @@ function useDocumentVisible(): boolean {
 
 const NO_SESSIONS: SidebarSessionEntry[] = []
 
+function sidebarWorkspace(
+  workspace: WorkspaceEntry,
+  sessions: SidebarSessionsByWorkspace,
+  environmentId: string | undefined,
+) {
+  return {
+    path: workspace.path,
+    name: workspace.name,
+    ...(environmentId ? { environmentId } : {}),
+    missing: workspace.missing,
+    availability: workspace.availability,
+    ...(workspace.git ? { git: workspace.git } : {}),
+    sessions: sessions[workspace.path] ?? NO_SESSIONS,
+  }
+}
+
 /** The view's props, read from the sidebar contract. */
 function useWorkspaceSidebarModel(closeSheet: MutableRefObject<() => void>) {
   const {
     environment,
+    activeEnvironmentId,
     workspaces: catalog,
     activeWorkspacePath,
     activeSessionId,
     addWorkspace,
+    addWorkspaceDisabled,
     selectSession,
     createSession,
     renameSession,
@@ -51,7 +72,10 @@ function useWorkspaceSidebarModel(closeSheet: MutableRefObject<() => void>) {
   } = useSidebarData()
   const sessionsByWorkspace = useSidebarSessions()
   const drafts = useSidebarDrafts()
-  const providerLabel = useContext(PlatformCapabilitiesContext)?.providerDisplayName
+  const listed = useSidebarEnvironments()
+  const others = listed?.others
+  const providerLabel =
+    useContext(PlatformCapabilitiesContext)?.providerDisplayName ?? listed?.providerDisplayName
   const visible = useDocumentVisible()
   // On a phone the sidebar is a sheet over the page: going somewhere from it
   // (a session, a draft, a new agent, Add project) closes it, so what was
@@ -81,35 +105,43 @@ function useWorkspaceSidebarModel(closeSheet: MutableRefObject<() => void>) {
   }, [acknowledgeSessionDone, activeSessionId, activeWorkspacePath, sessionsByWorkspace, visible])
 
   const workspaces = useMemo(
-    () =>
-      catalog.map((workspace) => ({
-        path: workspace.path,
-        name: workspace.name,
-        missing: workspace.missing,
-        availability: workspace.availability,
-        ...(workspace.git ? { git: workspace.git } : {}),
-        sessions: sessionsByWorkspace[workspace.path] ?? NO_SESSIONS,
-      })),
-    [catalog, sessionsByWorkspace],
+    () => [
+      ...catalog.map((workspace) =>
+        sidebarWorkspace(workspace, sessionsByWorkspace, activeEnvironmentId),
+      ),
+      ...(others ?? []).flatMap(({ environmentId, sessions, workspaces: their }) =>
+        their.map((workspace) => sidebarWorkspace(workspace, sessions, environmentId)),
+      ),
+    ],
+    [activeEnvironmentId, catalog, others, sessionsByWorkspace],
   )
 
   return {
     environmentLabel: environment?.label,
+    rowEnvironments: listed?.rowEnvironments,
+    rowsFilling: listed?.filling,
     workspaces,
+    activeEnvironmentId,
     activeWorkspacePath,
     activeSessionId,
-    onCreateSession: away((workspacePath: string) => void createSession(workspacePath)),
+    onCreateSession: away(
+      (workspacePath: string, environmentId?: string) =>
+        void createSession(workspacePath, environmentId),
+    ),
     onSelectSession: away(selectSession),
     onRenameSession: renameSession
-      ? (path: string, id: string, title: string | null) => void renameSession(path, id, title)
+      ? (path: string, id: string, title: string | null, environmentId?: string) =>
+          void renameSession(path, id, title, environmentId)
       : undefined,
     // The host shows the move at once and puts it back if this rejects.
     onSettleSession: settleSession
-      ? (path: string, id: string, settled: boolean) => settleSession(path, id, settled)
+      ? (path: string, id: string, settled: boolean, environmentId?: string) =>
+          settleSession(path, id, settled, environmentId)
       : undefined,
     // Likewise.
     onPinSession: pinSession
-      ? (path: string, id: string, pinned: boolean) => pinSession(path, id, pinned)
+      ? (path: string, id: string, pinned: boolean, environmentId?: string) =>
+          pinSession(path, id, pinned, environmentId)
       : undefined,
     onDeleteSession: (...args: Parameters<typeof deleteSession>) => void deleteSession(...args),
     ...(drafts
@@ -121,6 +153,7 @@ function useWorkspaceSidebarModel(closeSheet: MutableRefObject<() => void>) {
         }
       : {}),
     onAddWorkspace: away(() => void addWorkspace()),
+    addWorkspaceDisabled,
     providerLabel,
   }
 }

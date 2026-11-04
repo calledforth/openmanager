@@ -68,6 +68,7 @@ const OPENCODE: ProviderCatalogEntry = {
   displayName: 'OpenCode',
   capabilities: CAPABILITIES,
   health: READY,
+  limits: { supported: false, reading: null, refreshing: false, lastRefresh: null },
   profile: {
     providerId: 'opencode',
     availableModels: [
@@ -88,6 +89,7 @@ const CURSOR: ProviderCatalogEntry = {
   displayName: 'Cursor',
   capabilities: CAPABILITIES,
   health: READY,
+  limits: { supported: false, reading: null, refreshing: false, lastRefresh: null },
   profile: {
     providerId: 'cursor',
     availableModels: [{ modelId: 'composer', name: 'Composer' }],
@@ -107,6 +109,7 @@ const BROKEN_CLAUDE: ProviderCatalogEntry = {
     // A reading with nothing running only counts while its probe is fresh.
     lastProbe: { outcome: 'failed', at: new Date().toISOString(), durationMs: 5 },
   },
+  limits: { supported: false, reading: null, refreshing: false, lastRefresh: null },
   profile: {
     providerId: 'claude',
     availableModels: [{ modelId: 'default', name: 'Default' }],

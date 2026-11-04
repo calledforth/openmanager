@@ -6,7 +6,7 @@ import { noticeAnchor, useAnchorBox, useNoticeAnchor } from '../../lib/notice-an
 import { cn } from '../../lib/utils'
 import { spring } from '../fluid/lib/springs'
 import { useSidebar } from '../fluid/ui/sidebar'
-import { DRAFT_CARD_ATTRIBUTE } from './sidebar-sessions'
+import { DRAFT_CARD_ATTRIBUTE, DRAFT_CARD_ENVIRONMENT_ATTRIBUTE } from './sidebar-sessions'
 import { useSidebarDrafts, type PendingDraftDiscard } from '../../providers/sidebar-provider'
 
 /** Gap between the notice and what it rests on: the composer, or the sidebar's foot. */
@@ -38,7 +38,10 @@ function focusAfter(choice: 'undo' | 'dismiss', pending: PendingDraftDiscard) {
   const candidates = [
     ...(choice === 'undo'
       ? all(`[${DRAFT_CARD_ATTRIBUTE}]`).filter(
-          (node) => node.getAttribute(DRAFT_CARD_ATTRIBUTE) === pending.draftId,
+          (node) =>
+            node.getAttribute(DRAFT_CARD_ATTRIBUTE) === pending.draftId &&
+            (pending.environmentId === undefined ||
+              node.getAttribute(DRAFT_CARD_ENVIRONMENT_ATTRIBUTE) === pending.environmentId),
         )
       : []),
     pending.returnFocus,

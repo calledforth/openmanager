@@ -1,4 +1,4 @@
-import { useCallback, useMemo, useState, type ReactNode } from 'react'
+import { useCallback, useMemo, useState, useSyncExternalStore, type ReactNode } from 'react'
 import { Outlet, useNavigate, useRouterState } from '@tanstack/react-router'
 import {
   EnvironmentClientProvider,
@@ -6,10 +6,13 @@ import {
   useEnvironmentState,
 } from '@openmanager/app-core/providers/environment-client'
 import { EnvironmentApplicationProviders } from '@openmanager/app-core/providers/environment-application'
+import { useSessionState } from '@openmanager/app-core/providers/session-provider'
+import {
+  EnvironmentAvailabilityContext,
+  type EnvironmentAvailability,
+} from '@openmanager/app-core/providers/environment-availability'
 import { useSidebarData } from '@openmanager/app-core/providers/sidebar-provider'
 import { ProjectIcon } from '@openmanager/app-core/components/sidebar/ProjectIcon'
-import { WorkspaceSidebar } from '@openmanager/app-core/components/sidebar/WorkspaceSidebar'
-import { DraftDiscardNotice } from '@openmanager/app-core/components/sidebar/DraftDiscardToast'
 import { phosphorIcon, useIcon } from '@openmanager/app-core/components/fluid/lib/icon-context'
 import {
   CommandPalette,
@@ -21,7 +24,12 @@ import {
   requestQuickAgent,
   useQuickAgentAvailable,
 } from '@openmanager/app-core/components/command/QuickAgentPalette'
-import { ArrowsClockwiseIcon, FolderPlusIcon, NotePencilIcon } from '@phosphor-icons/react'
+import {
+  ArrowsClockwiseIcon,
+  FolderPlusIcon,
+  GaugeIcon,
+  NotePencilIcon,
+} from '@phosphor-icons/react'
 import {
   Sidebar,
   SidebarContent,
@@ -40,19 +48,33 @@ import {
   WorkspaceTile,
 } from '@openmanager/app-core/components/fluid/sidebar-app/workspace-header'
 import type { EnvironmentClient, EnvironmentState } from '@openmanager/environment-client'
+import {
+  otherEnvironmentsNotice,
+  placeConnectionUi,
+  sendBlockedReason,
+} from '@openmanager/environment-client/connection'
+import { isBrowserOnline, subscribeToNetworkStatus } from '../lib/browser-runtime'
 import { useConnection } from '../providers/connection-provider'
 import { useEnvironmentClients } from '../providers/environment-client-provider'
-import {
-  addressOf,
-  AddressLookupProvider,
-  useFindAddress,
-} from '../providers/address-environment'
+import { addressOf, AddressLookupProvider, useFindAddress } from '../providers/address-environment'
 import { AddWorkspaceDialog } from './add-workspace-dialog'
-import { ConnectionBanner, ConnectionScreen, ConnectionStatusChip } from './connection-surfaces'
-import { SessionNotifications } from './session-notifications'
+import {
+  ConnectionBanner,
+  ConnectionScreen,
+  ConnectionStatusChip,
+  OtherEnvironmentsStatus,
+} from './connection-surfaces'
+import {
+  EnvironmentFailureNotice,
+  EnvironmentsSidebarHost,
+  SidebarSource,
+} from './environments-sidebar'
+import { EnvironmentNotifications } from './session-notifications'
+import { SidebarDock } from './sidebar-dock'
 
 const NewAgentIcon = phosphorIcon(NotePencilIcon)
 const AddProjectIcon = phosphorIcon(FolderPlusIcon)
+const UsageIcon = phosphorIcon(GaugeIcon)
 const RegenerateTitleIcon = phosphorIcon(ArrowsClockwiseIcon)
 
 function isSessionPath(pathname: string) {
@@ -66,11 +88,11 @@ function NavMenu({ pathname, includeSessions }: { pathname: string; includeSessi
   const { isMobile, setOpenMobile } = useSidebar()
   const SessionsIcon = useIcon('message-circle')
   const SettingsIcon = useIcon('settings')
-  const StatesIcon = useIcon('sliders-horizontal')
+  // The connection-states playground is a dev page: ⌘K and its URL reach it.
   const items = [
     ...(includeSessions ? [{ to: '/', label: 'Sessions', icon: SessionsIcon }] : []),
+    { to: '/usage', label: 'Usage', icon: UsageIcon },
     { to: '/settings', label: 'Settings', icon: SettingsIcon },
-    { to: '/playground/connection', label: 'States', icon: StatesIcon },
   ] as const
   // Fluid's menu is a bare list; the nav keeps the shell's pages a landmark.
   return (
@@ -97,6 +119,8 @@ function NavMenu({ pathname, includeSessions }: { pathname: string; includeSessi
 
 const NO_COMMANDS: readonly CommandPaletteItemData[] = []
 
+const onlineOnServer = () => true
+
 /**
  * ⌘K with the shell's own commands on top. Settings is always there; the
  * workspace commands come in once an environment is connected.
@@ -108,6 +132,7 @@ function ShellCommandPalette({
 }) {
   const navigate = useNavigate()
   const SettingsIcon = useIcon('settings')
+  const StatesIcon = useIcon('sliders-horizontal')
   const items = useMemo<CommandPaletteItemData[]>(
     () => [
       ...commands,
@@ -119,8 +144,24 @@ function ShellCommandPalette({
         keywords: ['settings', 'preferences', 'environments', 'options'],
         onSelect: () => void navigate({ to: '/settings' }),
       },
+      {
+        value: 'go:usage',
+        label: 'Open usage',
+        icon: UsageIcon,
+        group: 'Go to',
+        keywords: ['usage', 'limits', 'quota', 'plan', 'claude'],
+        onSelect: () => void navigate({ to: '/usage' }),
+      },
+      {
+        value: 'go:states',
+        label: 'Open connection states',
+        icon: StatesIcon,
+        group: 'Go to',
+        keywords: ['states', 'playground', 'connection', 'debug'],
+        onSelect: () => void navigate({ to: '/playground/connection' }),
+      },
     ],
-    [commands, SettingsIcon, navigate],
+    [commands, SettingsIcon, StatesIcon, navigate],
   )
   return <CommandPalette commands={items} />
 }
@@ -142,16 +183,28 @@ function ConnectedOverlays({
   const {
     workspaces,
     activeWorkspacePath,
+    activeEnvironmentId,
     activeSessionId,
     addWorkspace,
     createSession,
     regenerateSessionTitle,
   } = useSidebarData()
+  // Settings can be acting on another environment behind the palette, so with
+  // several saved, Add project says whose list it adds to.
+  const { environments } = useConnection()
+  const addsTo =
+    environments.length > 1
+      ? environments.find((item) => item.environmentId === activeEnvironmentId)?.label
+      : undefined
+  const { isDraftProjectRemoved, setDraftWorkspace } = useSessionState()
   // A project just added opens as a new agent in it: adding one is the
-  // first step of working there.
+  // first step of working there. A draft waiting for a project takes it.
   const openAdded = useCallback(
-    (workspaceId: string) => void createSession(workspaceId),
-    [createSession],
+    (workspaceId: string) => {
+      if (isDraftProjectRemoved && setDraftWorkspace) setDraftWorkspace(workspaceId)
+      else void createSession(workspaceId)
+    },
+    [createSession, isDraftProjectRemoved, setDraftWorkspace],
   )
   // New agent opens the quick palette over the page; where there is none
   // (an environment that keeps no drafts) it opens a page where the
@@ -190,7 +243,7 @@ function ConnectedOverlays({
           : []),
       {
         value: 'action:add-project',
-        label: 'Add project',
+        label: addsTo ? `Add project to ${addsTo}` : 'Add project',
         icon: AddProjectIcon,
         group: 'Actions',
         keywords: ['add', 'project', 'workspace', 'folder', 'open'],
@@ -216,6 +269,7 @@ function ConnectedOverlays({
       newAgentTarget,
       createSession,
       addWorkspace,
+      addsTo,
       activeSessionId,
       regenerateSessionTitle,
     ],
@@ -265,12 +319,16 @@ function SessionTrail() {
 
 function ConnectedShell({
   client,
+  environmentId,
+  availability,
   pathname,
   landingDraftId,
   holdLandingDraft,
   children,
 }: {
   client: EnvironmentClient
+  environmentId: string | null
+  availability: EnvironmentAvailability
   pathname: string
   landingDraftId: string | null
   holdLandingDraft: boolean
@@ -289,10 +347,6 @@ function ConnectedShell({
       navigate({ to: '/drafts/$draftId', params: { draftId }, replace: options?.replace }),
     [navigate],
   )
-  const openSession = useCallback(
-    (sessionId: string) => void navigateSession(sessionId),
-    [navigateSession],
-  )
   const [addingWorkspace, setAddingWorkspace] = useState(false)
   const closeAddWorkspace = useCallback(() => setAddingWorkspace(false), [])
   // The dialog owns the round trip; the sidebar only needs to know it opened.
@@ -303,39 +357,41 @@ function ConnectedShell({
     setAddingWorkspace(true)
   }, [client])
   return (
-    <EnvironmentApplicationProviders
-      addWorkspace={addWorkspace}
-      navigateSession={navigateSession}
-      navigateDraft={navigateDraft}
-      // `/` is a blank new-session page, ready on arrival; `/drafts/<id>` is
-      // a draft's own page, which it gets with its first text or image.
-      onLanding={pathname === '/' || landingDraftId !== null}
-      landingDraftId={landingDraftId}
-      holdLandingDraft={holdLandingDraft}
-    >
-      {/* A healthy connection says nothing; trouble shows as the banner. */}
-      <WorkspaceSidebar footer={<NavMenu pathname={pathname} includeSessions={false} />} />
-      {children}
-      <ConnectedOverlays
-        client={client}
-        addingWorkspace={addingWorkspace}
-        closeAddWorkspace={closeAddWorkspace}
-      />
-      <SessionNotifications openSession={openSession} />
-      {/* Beside the sidebar, not in it: on a phone the sidebar is a modal
-          sheet that closes on the tap that reaches for Undo. */}
-      <DraftDiscardNotice />
-    </EnvironmentApplicationProviders>
+    <EnvironmentAvailabilityContext.Provider value={availability}>
+      <EnvironmentApplicationProviders
+        {...(environmentId ? { environmentId } : {})}
+        addWorkspace={addWorkspace}
+        navigateSession={navigateSession}
+        navigateDraft={navigateDraft}
+        // `/` is a blank new-session page, ready on arrival; `/drafts/<id>` is
+        // a draft's own page, which it gets with its first text or image.
+        onLanding={pathname === '/' || landingDraftId !== null}
+        landingDraftId={landingDraftId}
+        holdLandingDraft={holdLandingDraft}
+      >
+        <SidebarSource />
+        {children}
+        <ConnectedOverlays
+          client={client}
+          addingWorkspace={addingWorkspace}
+          closeAddWorkspace={closeAddWorkspace}
+        />
+      </EnvironmentApplicationProviders>
+    </EnvironmentAvailabilityContext.Provider>
   )
 }
 
 export function AppShell() {
+  const navigate = useNavigate()
   const pathname = useRouterState({ select: (state) => state.location.pathname })
   const selectedClient = useEnvironmentClientOptional()
   const { clients } = useEnvironmentClients()
   const address = useMemo(() => addressOf(pathname), [pathname])
   const lookup = useFindAddress(address)
-  const client = (lookup.owner ? clients[lookup.owner] : null) || selectedClient
+  // The owner only counts with its client in hand: the shell is keyed by, and
+  // names, the environment whose client it is given.
+  const ownerClient = lookup.owner ? clients[lookup.owner] : undefined
+  const client = ownerClient || selectedClient
   const {
     ui,
     connect,
@@ -351,7 +407,9 @@ export function AppShell() {
     environments,
     selectedId,
     inUseEndpoint,
+    links,
   } = useConnection()
+  const shellEnvironmentId = (ownerClient && lookup.owner) || selectedId
   // Pairing is how a browser with no environment gets one, so it never waits
   // behind the connect screen.
   const ungated =
@@ -368,20 +426,56 @@ export function AppShell() {
     onRemoveRoute: removeRoute,
     onCheckRoutes: checkRoutes,
   }
-  const showScreen = !ungated && ui.surface === 'screen'
-  const showBanner = !ungated && ui.surface === 'banner'
+  // Whose page this is, and how the others are doing.
+  const openId = shellEnvironmentId
+  const labelOf = (environmentId: string | null) =>
+    environments.find((item) => item.environmentId === environmentId)?.label
+  const openLabel = labelOf(openId) ?? 'this environment'
+  const openState = links.find((link) => link.environmentId === openId)?.ui
+  const blocked = openState ? sendBlockedReason(openState, openLabel) : null
+  const several = environments.length > 1
+  // With one saved the composer reads as it always has: the banner says it all.
+  const availability = useMemo<EnvironmentAvailability>(
+    () => (several ? { name: openLabel, sendBlockedReason: blocked } : { sendBlockedReason: null }),
+    [blocked, openLabel, several],
+  )
+  // With no network every environment is out of reach, and the banner already
+  // says "You're offline": naming each of them again adds nothing.
+  const online = useSyncExternalStore(subscribeToNetworkStatus, isBrowserOnline, onlineOnServer)
+  const othersNotice =
+    ungated || !online
+      ? null
+      : otherEnvironmentsNotice(
+          links
+            .filter((link) => link.environmentId !== openId)
+            .map((link) => ({
+              label: labelOf(link.environmentId) ?? link.environmentId,
+              state: link.ui,
+            })),
+        )
+
+  const placed = placeConnectionUi(ui, environments.length)
+  const showScreen = !ungated && placed.surface === 'screen'
+  const showBanner = !ungated && placed.surface === 'banner'
 
   const main = (
     <SidebarInset className="overflow-hidden">
       <SidebarInsetTopbar>
         {client && isSessionPath(pathname) ? <SessionTrail /> : null}
+        {othersNotice ? (
+          <OtherEnvironmentsStatus
+            notice={othersNotice}
+            onOpenSettings={() => void navigate({ to: '/settings' })}
+          />
+        ) : null}
       </SidebarInsetTopbar>
       {/* Floats over the page under the topbar, so the session stays where it was. */}
-      {showBanner ? (
-        <div className="pointer-events-none absolute inset-x-0 top-11 z-30 flex justify-center px-3">
-          <ConnectionBanner className="pointer-events-auto" state={ui} handlers={handlers} />
-        </div>
-      ) : null}
+      <div className="pointer-events-none absolute inset-x-0 top-11 z-30 flex flex-col items-center gap-1.5 px-3">
+        {showBanner ? (
+          <ConnectionBanner className="pointer-events-auto" state={placed} handlers={handlers} />
+        ) : null}
+        <EnvironmentFailureNotice className="pointer-events-auto" />
+      </div>
       {showScreen ? (
         <ConnectionScreen
           state={ui}
@@ -402,24 +496,18 @@ export function AppShell() {
     <SidebarProvider className="h-svh min-h-0 overflow-hidden bg-background text-foreground">
       <EnvironmentClientProvider client={client}>
         <AddressLookupProvider value={lookup}>
-          {client ? (
-            // By environment, not by client: its drafts and page state are that
-            // environment's, while a client replaced on the same environment keeps
-            // the page as it is.
-            <ConnectedShell
-              key={lookup.owner ?? selectedId}
-              client={client}
-              pathname={pathname}
-              landingDraftId={address?.kind === 'draft' ? address.id : null}
-              holdLandingDraft={address?.kind === 'draft' && lookup.status === 'searching'}
-            >
-              {main}
-            </ConnectedShell>
-          ) : (
-            <>
+          <EnvironmentNotifications openId={lookup.owner ?? selectedId} />
+          {/* Above the choice of what is open: an environment with no client
+              takes neither the sidebar nor the other environments' cards with it. */}
+          <EnvironmentsSidebarHost
+            footer={<SidebarDock pathname={pathname} />}
+            fallback={
               <Sidebar className="text-[15px]">
                 <SidebarHeader>
-                  <SidebarWorkspaceHeader name="OpenManager" tile={<WorkspaceTile>O</WorkspaceTile>} />
+                  <SidebarWorkspaceHeader
+                    name="OpenManager"
+                    tile={<WorkspaceTile>O</WorkspaceTile>}
+                  />
                 </SidebarHeader>
                 <SidebarContent>
                   <NavMenu pathname={pathname} includeSessions />
@@ -428,10 +516,30 @@ export function AppShell() {
                   <ConnectionStatusChip state={ui} />
                 </SidebarFooter>
               </Sidebar>
-              {main}
-              <ShellCommandPalette />
-            </>
-          )}
+            }
+          >
+            {client ? (
+              // By environment, not by client: its drafts and page state are that
+              // environment's, while a client replaced on the same environment keeps
+              // the page as it is.
+              <ConnectedShell
+                key={shellEnvironmentId}
+                client={client}
+                environmentId={shellEnvironmentId}
+                availability={availability}
+                pathname={pathname}
+                landingDraftId={address?.kind === 'draft' ? address.id : null}
+                holdLandingDraft={address?.kind === 'draft' && lookup.status === 'searching'}
+              >
+                {main}
+              </ConnectedShell>
+            ) : (
+              <>
+                {main}
+                <ShellCommandPalette />
+              </>
+            )}
+          </EnvironmentsSidebarHost>
         </AddressLookupProvider>
       </EnvironmentClientProvider>
     </SidebarProvider>

@@ -1,4 +1,12 @@
-import { useEffect, useRef, useState, type FormEvent, type ReactNode } from 'react'
+import {
+  useCallback,
+  useEffect,
+  useRef,
+  useState,
+  useSyncExternalStore,
+  type FormEvent,
+  type ReactNode,
+} from 'react'
 import { createFileRoute, useNavigate, useRouterState } from '@tanstack/react-router'
 import {
   parsePairingLink,
@@ -8,17 +16,15 @@ import {
 import { CLIENT_LABEL_MAX_LENGTH } from '@openmanager/protocol'
 import { Button } from '@openmanager/app-core/components/fluid/ui/button'
 import {
-  useEnvironmentClientOptional,
-  useEnvironmentState,
-} from '@openmanager/app-core/providers/environment-client'
-import {
   findStoredEnvironment,
   exchangePairingToken,
+  hostOf,
   pairingRejectionMessage,
   pairingRejectionReason,
   suggestDeviceLabel,
 } from '@openmanager/environment-client/connection'
 import { useConnection } from '../providers/connection-provider'
+import { useEnvironmentClients } from '../providers/environment-client-provider'
 
 export const Route = createFileRoute('/pair')({ component: PairPage })
 
@@ -55,7 +61,8 @@ const message = (error: unknown) => (error instanceof Error ? error.message : St
  * for the environment trades the link's token for its own at the link's
  * route and saves it; one that already has a credential redeems the link over
  * the socket it already trusts, so its credential never goes to an address a
- * link named. Either way it ends in the session list.
+ * link named. Either way it ends in the session list, on the environment it
+ * was on: an environment paired here joins the others.
  */
 function PairPage() {
   const hash = useRouterState({ select: (state) => state.location.hash })
@@ -119,7 +126,8 @@ function PairPage() {
 function PairWithLink({ payload }: { payload: PairingPayload }) {
   const navigate = useNavigate()
   const { environments, environment, selectEnvironment, addPairedEnvironment } = useConnection()
-  const client = useEnvironmentClientOptional()
+  const { clients } = useEnvironmentClients()
+  const client = clients[payload.environmentId]
   const saved = findStoredEnvironment(environments, payload.environmentId)
   // Read once: saving the new credential must not turn this into a redeem.
   const [alreadySaved] = useState(() => Boolean(saved?.credential))
@@ -181,14 +189,15 @@ function PairWithLink({ payload }: { payload: PairingPayload }) {
   }
 
   const redeem = () => {
-    if (environment.status !== 'selected' || environment.environmentId !== payload.environmentId) {
-      selectEnvironment(payload.environmentId)
-    }
+    // Its own socket is enough, and nothing needs to move for it. Selecting is
+    // what dials one that isn't up, and lets a refused token be tried again.
+    const connected = client?.getState().connection.phase === 'connected'
+    if (!connected || environment.status !== 'selected') selectEnvironment(payload.environmentId)
     setStep({ kind: 'redeeming' })
   }
 
   const busy = step.kind === 'pairing' || step.kind === 'redeeming'
-  const host = routeHost(payload.route)
+  const host = hostOf(payload.route)
   const environmentName = saved?.label
 
   return (
@@ -268,11 +277,7 @@ function PairWithLink({ payload }: { payload: PairingPayload }) {
   )
 }
 
-/**
- * Redeems the link once the socket to its environment is up. The client must
- * be the one for that environment: right after a selection changes, the
- * previous environment's client is still around for a moment.
- */
+/** Redeems the link once the socket to its environment is up. */
 function Redeem({
   client,
   token,
@@ -286,15 +291,14 @@ function Redeem({
   onDone: () => void
   onFailed: (message: string) => void
 }) {
-  const { environment } = useConnection()
-  const clientEnvironmentId = useEnvironmentState((state) => state.environment?.environmentId)
   // A client can name the environment from its cache before it has connected.
-  const connected = useEnvironmentState((state) => state.connection.phase === 'connected')
-  const ready =
-    connected &&
-    environment.status === 'selected' &&
-    environment.environmentId === environmentId &&
-    clientEnvironmentId === environmentId
+  const read = useCallback(() => {
+    const state = client.getState()
+    return (
+      state.connection.phase === 'connected' && state.environment?.environmentId === environmentId
+    )
+  }, [client, environmentId])
+  const ready = useSyncExternalStore(client.subscribe, read, read)
   const sent = useRef(false)
   const done = useRef(onDone)
   const failed = useRef(onFailed)
@@ -332,14 +336,6 @@ function StepMessage({ step }: { step: Step }) {
     )
   }
   return null
-}
-
-function routeHost(route: string): string {
-  try {
-    return new URL(route).host
-  } catch {
-    return route
-  }
 }
 
 function PairLayout({ title, children }: { title: string; children: ReactNode }) {

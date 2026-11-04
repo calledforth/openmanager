@@ -4,6 +4,7 @@ import type { StreamMessagePart } from '@openmanager/shared/lib/remote-stream-pa
 import { cn } from '../../lib/utils'
 import type { ArtifactSource, OptimisticImage } from '../../lib/attachments'
 import { partArtifact, useArtifactPreview } from '../../lib/artifact-preview'
+import { useEnvironmentAvailability } from '../../providers/environment-availability'
 import { Markdown } from '../markdown/Markdown'
 import { ImageViewer } from '../parts/GeneratedImagePart'
 import { CopyMessageButton } from './CopyMessageButton'
@@ -77,6 +78,7 @@ export function UserMessage({
   onRetry?: () => void
 }) {
   const [viewing, setViewing] = useState<number | null>(null)
+  const environmentName = useEnvironmentAvailability()?.name
   const persistedImages = (parts ?? []).flatMap((part): BubbleImage[] => {
     if (part.type !== 'image') return []
     const url = typeof part.url === 'string' ? part.url : undefined
@@ -118,7 +120,9 @@ export function UserMessage({
           {content && <Markdown>{content}</Markdown>}
           {sendError && (
             <div className="mt-2 flex items-start justify-between gap-2 rounded-md border border-red-500/25 bg-red-500/10 px-2 py-1.5 text-[11px] leading-4 text-red-500">
-              <span className="min-w-0 break-words">Not sent: {sendError}</span>
+              <span className="min-w-0 break-words">
+                {environmentName ? `Not sent to ${environmentName}` : 'Not sent'}: {sendError}
+              </span>
               {onRetry && (
                 <button
                   type="button"

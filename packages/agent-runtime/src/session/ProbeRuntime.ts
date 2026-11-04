@@ -7,6 +7,7 @@ import type {
   PromptCapabilities,
   ProviderId,
   ProviderSessionInfo,
+  UsageLimitsResult,
 } from '@agentpack/contract'
 import type { BackendEvent } from '../backends/Backend.js'
 import type { ThreadId } from './lifecycle.js'
@@ -38,6 +39,9 @@ export interface ProbeRuntime {
    * throwaway process, never in a live one. A provider whose route also
    * reaches its modes answers those alongside. */
   listModels(cwd: string): Promise<ModelCatalogListing>
+  /** The account's plan limits, read in this throwaway process. Absent for a
+   * provider with no way to report them. */
+  readUsageLimits?(): Promise<UsageLimitsResult>
   /** Always call; the process leaks otherwise. */
   dispose(): Promise<void>
 }

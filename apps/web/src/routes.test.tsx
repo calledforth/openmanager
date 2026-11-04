@@ -1249,7 +1249,8 @@ describe('web routes', () => {
 
     renderWebApp('/settings')
     await screen.findByText(/Connected · Local environment/)
-    const page = await screen.findByRole('button', { name: 'New agent' })
+    const sidebar = await screen.findByRole('button', { name: 'New agent' })
+    const page = screen.getByRole('main')
 
     await user.click(
       await screen.findByRole('button', { name: /^(Use http:\/\/127\.0\.0\.1:43121|Connect to Other)$/ }),
@@ -1258,6 +1259,8 @@ describe('web routes', () => {
     await screen.findByText(/Connected · Other/)
     // What the page held was the other environment's: drafts, launches, picks.
     expect(page).not.toBeInTheDocument()
+    // The sidebar lists every environment, so it has nothing to start over.
+    expect(sidebar).toBeInTheDocument()
   })
 
   it('does not restore a removed environment from an in-flight add', async () => {
