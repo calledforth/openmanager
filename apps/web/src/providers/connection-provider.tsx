@@ -54,6 +54,7 @@ import {
   type StoredEnvironment,
 } from '@openmanager/environment-client/connection'
 import { isBrowserOnline, subscribeToNetworkStatus } from '../lib/browser-runtime'
+import { deleteEnvironmentCache } from '../lib/environment-cache'
 import {
   connectionOf,
   dropConnection,
@@ -488,7 +489,11 @@ export function ConnectionProvider({
   // The registry as this tab last read or wrote it, to tell what other tabs
   // have saved since.
   const persistedRef = useRef(registry)
-  /** Removing an environment is the one thing that ends its connection. */
+  /**
+   * Removing an environment, here or in another tab, is the one thing that
+   * ends its connection, and the one thing that deletes what this browser
+   * kept of it (unless that holds unsent work).
+   */
   const endRemovedConnections = useCallback(
     (before: EnvironmentRegistry, after: EnvironmentRegistry) => {
       for (const { environmentId } of before.environments) {
@@ -497,6 +502,8 @@ export function ConnectionProvider({
         retryAttempts.current.delete(environmentId)
         setActiveRoute(environmentId, null)
         storeConnections(dropConnection(connectionsRef.current, environmentId))
+        // Before its client is torn down, so the client's last save is skipped.
+        void deleteEnvironmentCache(environmentId)
       }
     },
     [setActiveRoute, storeConnections],

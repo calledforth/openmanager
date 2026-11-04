@@ -248,11 +248,7 @@ describe('starting a session', () => {
     await render(
       <ThemeProvider>
         <EnvironmentClientProvider client={client}>
-          <EnvironmentApplicationProviders
-            environmentId={environmentId}
-            onLanding
-            collapsedWorkspaceStorage={null}
-          >
+          <EnvironmentApplicationProviders environmentId={environmentId} onLanding>
             <SidebarProvider persist={false}>
               <ChatWorkspace />
             </SidebarProvider>
@@ -343,7 +339,7 @@ describe('choosing from the page', () => {
       <ThemeProvider>
         <EnvironmentClientProvider client={client}>
           <EnvironmentChoiceContext.Provider value={choice}>
-            <EnvironmentApplicationProviders onLanding collapsedWorkspaceStorage={null}>
+            <EnvironmentApplicationProviders onLanding>
               <SidebarProvider persist={false}>
                 <ChatWorkspace />
               </SidebarProvider>

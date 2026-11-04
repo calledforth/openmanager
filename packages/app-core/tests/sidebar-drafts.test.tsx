@@ -129,7 +129,6 @@ function Host({ client, initial }: { client: MockEnvironmentClient; initial: Rou
   probe.go = go
   return (
     <EnvironmentApplicationProviders
-      collapsedWorkspaceStorage={null}
       subscribePageExit={pageExit.subscribe}
       onLanding={!('sessionId' in route)}
       landingDraftId={'draftId' in route ? route.draftId : null}
@@ -409,7 +408,7 @@ describe('sidebar draft cards', () => {
       root.render(
         <ThemeProvider>
           <EnvironmentClientProvider client={client}>
-            <EnvironmentApplicationProviders collapsedWorkspaceStorage={null} onLanding>
+            <EnvironmentApplicationProviders onLanding>
               <SidebarProvider persist={false}>
                 <WorkspaceSidebar />
                 <ChatWorkspace />

@@ -34,6 +34,7 @@ import { shouldHydrateLocalStream, shouldUseRemoteStreaming } from '../../lib/st
 import type { MessagePart } from '../../lib/streaming-messages-store'
 import { cn } from '../../lib/utils'
 import { useEnvironmentAvailability } from '../../providers/environment-availability'
+import { useOpenEnvironmentId } from '../../providers/environment-client'
 import { PendingPermissionFallback } from '../permissions/InlinePermissionPrompt'
 import { NewSessionLanding } from './NewSessionLanding'
 import { ScrollToEndButton } from './ScrollToEndButton'
@@ -110,6 +111,7 @@ export function ChatView() {
   } = useActiveThreadState()
   const availability = useEnvironmentAvailability()
   const environmentName = availability?.name
+  const environmentId = useOpenEnvironmentId()
   // A "Not sent" row's retry is a send, so it waits with the composer's.
   const sendHeld = Boolean(availability?.sendBlockedReason)
   // State rather than a ref: the virtualizer needs the element on the render
@@ -168,6 +170,7 @@ export function ChatView() {
         )}
       >
         <ConversationTimeline
+          environmentId={environmentId}
           sessionId={activeSessionId}
           messages={chatMessages}
           isMessagesLoading={isMessagesLoading}
@@ -190,6 +193,8 @@ export function ChatView() {
 }
 
 interface TimelineProps {
+  /** With the session, whose remembered position this list keeps. */
+  environmentId: string | null
   sessionId: string | null
   messages: TimelineMessage[]
   scrollElement: HTMLDivElement | null
@@ -264,6 +269,7 @@ function ConversationTimeline({
 }
 
 function MessageTimeline({
+  environmentId,
   sessionId,
   messages,
   scrollElement,
@@ -287,8 +293,14 @@ function MessageTimeline({
   const initialMessageIdsRef = useRef(
     new Set(messages.filter((message) => !message.isOptimistic).map(rowKeyOf)),
   )
+  // The environment this visit is in, kept through a moment where the client
+  // reports none: the position is left under the one it was read from.
+  const environmentRef = useRef(environmentId)
+  if (environmentId !== null) environmentRef.current = environmentId
   // Read once: this list instance is one visit to one session.
-  const [remembered] = useState(() => (sessionId ? recallTimelinePosition(sessionId) : undefined))
+  const [remembered] = useState(() =>
+    sessionId ? recallTimelinePosition(environmentRef.current, sessionId) : undefined,
+  )
   const [initialMeasurements] = useState(() =>
     remembered ? measurementsFromRememberedHeights(remembered.rowHeights) : undefined,
   )
@@ -530,7 +542,7 @@ function MessageTimeline({
       const offset = rowVirtualizer.scrollOffset ?? 0
       const atEnd = isVirtualizerAtEnd(rowVirtualizer)
       const anchor = atEnd ? undefined : rowVirtualizer.getVirtualItemForOffset(offset)
-      rememberTimelinePosition(sessionId, {
+      rememberTimelinePosition(environmentRef.current, sessionId, {
         atEnd,
         anchorKey: anchor ? String(anchor.key) : undefined,
         offsetWithinAnchor: anchor ? offset - anchor.start : 0,

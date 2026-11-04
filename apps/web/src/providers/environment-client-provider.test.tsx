@@ -16,7 +16,11 @@ import {
   ENVIRONMENT_STORAGE_KEY,
   WRONG_ENVIRONMENT_MESSAGE,
 } from '@openmanager/environment-client/connection'
-import { readEnvironmentCache, writeEnvironmentCache } from '../lib/environment-cache'
+import {
+  forgetRemovedEnvironments,
+  readEnvironmentCache,
+  writeEnvironmentCache,
+} from '../lib/environment-cache'
 import { createQueryClient } from '../query-client'
 import { ConnectionProvider, useConnection } from './connection-provider'
 import { WebEnvironmentClientProvider } from './environment-client-provider'
@@ -25,6 +29,7 @@ const ENDPOINT = 'http://127.0.0.1:43120'
 
 afterEach(() => {
   cleanup()
+  forgetRemovedEnvironments()
   lastClient = null
   localStorage.clear()
   vi.unstubAllGlobals()
@@ -2241,6 +2246,155 @@ describe('an environment this browser has a cache of', () => {
     await waitFor(async () =>
       expect((await readEnvironmentCache('env-other'))?.activeSessionId).toBe('typed'),
     )
+  })
+
+  const OTHER_CACHED: EnvironmentState = {
+    ...CACHED,
+    environment: { environmentId: 'env-other', name: 'Other' },
+  }
+  const UNSENT: EnvironmentState['draftEdits'] = {
+    'draft-typed': {
+      target: { type: 'new_session', workspaceId: 'workspace', sessionId: 'next' },
+      content: { text: 'not sent yet' },
+      baseRevision: 0,
+      editedAt: 1,
+    },
+  }
+  const cacheNames = async () => (await indexedDB.databases()).map((database) => database.name)
+
+  /** Both environments kept and unreachable; each client's store, by environment. */
+  async function renderCached() {
+    vi.stubGlobal('indexedDB', new IDBFactory())
+    await writeEnvironmentCache('env-local', CACHED)
+    await writeEnvironmentCache('env-other', OTHER_CACHED)
+    seedTwoEnvironments()
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => {
+        throw new TypeError('Failed to fetch')
+      }),
+    )
+    const stores = new Map<string, EnvironmentStore>()
+    renderProvider((options) => {
+      stores.set(options.environmentId!, options.store!)
+      return createFakeClient()
+    })
+    await waitFor(() => expect(stores.size).toBe(2))
+    return stores
+  }
+
+  const settleSaves = () =>
+    act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 50))
+    })
+
+  it('deletes the copy of an environment the user removes, and keeps one that cannot be reached', async () => {
+    const stores = await renderCached()
+    const removed = stores.get('env-other')!
+    // A change waiting to be saved, which tearing its client down would write.
+    removed.update((state) => ({ ...state, activeSessionId: 'typed' }))
+
+    act(() => screen.getByRole('button', { name: 'remove other' }).click())
+    await waitFor(async () =>
+      expect(await cacheNames()).not.toContain('openmanager-environment:env-other'),
+    )
+    await settleSaves()
+    expect(await cacheNames()).not.toContain('openmanager-environment:env-other')
+    // Unreachable is not removed: its copy stays.
+    expect((await readEnvironmentCache('env-local'))?.environment?.environmentId).toBe('env-local')
+
+    // Added again: a store of its own, from nothing, saved as any other.
+    act(() => screen.getByRole('button', { name: 'pair other' }).click())
+    await waitFor(() => expect(stores.get('env-other')).not.toBe(removed))
+    const again = stores.get('env-other')!
+    expect(again.getState().activeSessionId).toBeNull()
+    again.update(() => ({ ...OTHER_CACHED, activeSessionId: 'after' }))
+    window.dispatchEvent(new Event('pagehide'))
+    await waitFor(async () =>
+      expect((await readEnvironmentCache('env-other'))?.activeSessionId).toBe('after'),
+    )
+  })
+
+  it('keeps the copy of a removed environment holding an unsent draft, and adding it back restores it', async () => {
+    const stores = await renderCached()
+    stores.get('env-other')!.update((state) => ({ ...state, draftEdits: UNSENT }))
+
+    act(() => screen.getByRole('button', { name: 'remove other' }).click())
+    await settleSaves()
+    expect((await readEnvironmentCache('env-other'))?.draftEdits['draft-typed']?.content).toEqual({
+      text: 'not sent yet',
+    })
+
+    // A reload: nothing of the old store is left in memory, only what is on disk.
+    cleanup()
+    forgetRemovedEnvironments()
+    const reloaded = new Map<string, EnvironmentStore>()
+    renderProvider((options) => {
+      reloaded.set(options.environmentId!, options.store!)
+      return createFakeClient()
+    })
+    await waitFor(() => expect(reloaded.has('env-local')).toBe(true))
+    expect(reloaded.has('env-other')).toBe(false)
+    act(() => screen.getByRole('button', { name: 'pair other' }).click())
+    await waitFor(() =>
+      expect(reloaded.get('env-other')?.getState().draftEdits['draft-typed']?.content).toEqual({
+        text: 'not sent yet',
+      }),
+    )
+  })
+
+  it('deletes the copy of a removed environment whose older copy has an edit its store has since saved', async () => {
+    vi.stubGlobal('indexedDB', new IDBFactory())
+    await writeEnvironmentCache('env-local', CACHED)
+    await writeEnvironmentCache('env-other', { ...OTHER_CACHED, draftEdits: UNSENT })
+    seedTwoEnvironments()
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => {
+        throw new TypeError('Failed to fetch')
+      }),
+    )
+    const stores = new Map<string, EnvironmentStore>()
+    renderProvider((options) => {
+      stores.set(options.environmentId!, options.store!)
+      return createFakeClient()
+    })
+    await waitFor(() => expect(stores.size).toBe(2))
+    // The environment took the edit since the copy was saved: the store is clean.
+    stores.get('env-other')!.update((state) => ({ ...state, draftEdits: {} }))
+
+    act(() => screen.getByRole('button', { name: 'remove other' }).click())
+    await waitFor(async () =>
+      expect(await cacheNames()).not.toContain('openmanager-environment:env-other'),
+    )
+    await settleSaves()
+    expect(await cacheNames()).not.toContain('openmanager-environment:env-other')
+  })
+
+  it('deletes the copy of an environment another tab removed, unless it holds unsent work', async () => {
+    const stores = await renderCached()
+    stores.get('env-local')!.update((state) => ({ ...state, draftEdits: UNSENT }))
+    stores.get('env-other')!.update((state) => ({ ...state, activeSessionId: 'typed' }))
+
+    // Another tab removed both.
+    const registry = JSON.parse(localStorage.getItem(ENVIRONMENT_STORAGE_KEY)!) as {
+      environments: unknown[]
+      selectedId: string | null
+    }
+    localStorage.setItem(
+      ENVIRONMENT_STORAGE_KEY,
+      JSON.stringify({ ...registry, environments: [], selectedId: null }),
+    )
+    act(() => {
+      window.dispatchEvent(new StorageEvent('storage', { key: ENVIRONMENT_STORAGE_KEY }))
+    })
+    await waitFor(async () =>
+      expect(await cacheNames()).not.toContain('openmanager-environment:env-other'),
+    )
+    await settleSaves()
+    // Its closing save did not write it back.
+    expect(await cacheNames()).not.toContain('openmanager-environment:env-other')
+    expect((await readEnvironmentCache('env-local'))?.draftEdits['draft-typed']).toBeDefined()
   })
 
   it('stays hidden after a reload when the token was refused, until a socket gets through', async () => {

@@ -21,10 +21,7 @@ export function MockEnvironmentApp({
   return (
     <ThemeProvider>
       <EnvironmentClientProvider client={client}>
-        <EnvironmentApplicationProviders
-          addWorkspace={addWorkspace}
-          collapsedWorkspaceStorage={null}
-        >
+        <EnvironmentApplicationProviders addWorkspace={addWorkspace}>
           <SidebarProvider
             persist={false}
             className="h-screen w-screen min-w-0 overflow-hidden bg-[var(--basis-canvas-bg)] text-[var(--basis-text)]"

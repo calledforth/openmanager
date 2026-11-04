@@ -104,7 +104,7 @@ describe('the thread contract while a turn streams', () => {
       root.render(
         <ThemeProvider>
           <EnvironmentClientProvider client={client}>
-            <EnvironmentApplicationProviders collapsedWorkspaceStorage={null}>
+            <EnvironmentApplicationProviders>
               <ThreadReader />
             </EnvironmentApplicationProviders>
           </EnvironmentClientProvider>

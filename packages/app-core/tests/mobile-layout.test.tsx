@@ -82,7 +82,7 @@ describe('the sidebar sheet on a phone', () => {
       root.render(
         <ThemeProvider>
           <EnvironmentClientProvider client={client}>
-            <EnvironmentApplicationProviders collapsedWorkspaceStorage={null}>
+            <EnvironmentApplicationProviders>
               <SidebarProvider persist={false}>
                 <WorkspaceSidebar />
                 <SheetProbe />

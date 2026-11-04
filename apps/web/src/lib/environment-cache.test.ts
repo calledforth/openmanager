@@ -9,7 +9,10 @@ import {
 import { EVENT_FORMAT_VERSION, PROTOCOL_VERSION } from '@openmanager/protocol'
 import {
   createEnvironmentCache,
+  deleteEnvironmentCache,
   environmentCacheName,
+  forgetRemovedEnvironments,
+  holdsUnsentWork,
   readEnvironmentCache,
   writeEnvironmentCache,
 } from './environment-cache'
@@ -46,8 +49,26 @@ function seed(environmentId = 'env-one') {
   return state
 }
 
+/** A draft typed here that the environment has not saved yet. */
+function withUnsentDraft(state: EnvironmentState): EnvironmentState {
+  return {
+    ...state,
+    draftEdits: {
+      'draft-typed': {
+        target: { type: 'new_session', workspaceId: 'workspace', sessionId: 'next' },
+        content: { text: 'not sent yet' },
+        baseRevision: 0,
+        editedAt: 1,
+      },
+    },
+  }
+}
+
 beforeEach(() => vi.stubGlobal('indexedDB', new IDBFactory()))
-afterEach(() => vi.unstubAllGlobals())
+afterEach(() => {
+  vi.unstubAllGlobals()
+  forgetRemovedEnvironments()
+})
 
 describe('environment identity cache', () => {
   it('restores session selection and messages across a new cache instance', async () => {
@@ -92,6 +113,81 @@ describe('environment identity cache', () => {
     expect(restored.threads.thread!.outbox).toEqual([])
     expect(restored.threads.thread!.hydration).toBe('idle')
     expect(state.threads.thread!.outbox).toHaveLength(1)
+  })
+
+  it("deletes a removed environment's copy after a save on its way, and not the other's", async () => {
+    // The same domain ids in both, as with a server restored from a copy.
+    await writeEnvironmentCache('env-kept', seed('env-kept'))
+    const pending = writeEnvironmentCache('env-removed', seed('env-removed'))
+    const removal = deleteEnvironmentCache('env-removed')
+    // Its client's last save as it is torn down: not written back.
+    await writeEnvironmentCache('env-removed', seed('env-removed'))
+    await Promise.all([pending, removal])
+
+    const names = (await indexedDB.databases()).map((database) => database.name)
+    expect(names).not.toContain(environmentCacheName('env-removed'))
+    expect(names).toContain(environmentCacheName('env-kept'))
+    expect(await readEnvironmentCache('env-removed')).toBeNull()
+    expect((await readEnvironmentCache('env-kept'))!.sessions.session!.title).toBe('Cached session')
+  })
+
+  it('keeps the copy of a removed environment that holds unsent work', async () => {
+    // Held only in the copy: no store for it in this tab.
+    await writeEnvironmentCache('env-unsent', withUnsentDraft(seed('env-unsent')))
+    await deleteEnvironmentCache('env-unsent')
+    expect((await readEnvironmentCache('env-unsent'))?.draftEdits['draft-typed']?.content).toEqual({
+      text: 'not sent yet',
+    })
+
+    // Held in this tab's store: kept, and its last save still writes.
+    const cache = createEnvironmentCache()
+    const store = await cache.getStore('env-typing')
+    store.update(() => withUnsentDraft(seed('env-typing')))
+    await deleteEnvironmentCache('env-typing')
+    await writeEnvironmentCache('env-typing', store.getServerState())
+    expect(await cache.getStore('env-typing')).toBe(store)
+    expect((await readEnvironmentCache('env-typing'))?.draftEdits['draft-typed']).toBeDefined()
+  })
+
+  it("deletes a removed environment's older copy when the store loaded here is clean", async () => {
+    // The edit reached the environment after the copy was saved: the copy is stale.
+    await writeEnvironmentCache('env-stale', withUnsentDraft(seed('env-stale')))
+    const cache = createEnvironmentCache()
+    const store = await cache.getStore('env-stale')
+    store.update(() => seed('env-stale'))
+    await deleteEnvironmentCache('env-stale')
+    await writeEnvironmentCache('env-stale', store.getServerState())
+
+    const names = (await indexedDB.databases()).map((database) => database.name)
+    expect(names).not.toContain(environmentCacheName('env-stale'))
+  })
+
+  it('counts unsent drafts and held sends as unsent work, and nothing else', () => {
+    expect(holdsUnsentWork(seed())).toBe(false)
+    expect(holdsUnsentWork(withUnsentDraft(seed()))).toBe(true)
+    const held = seed()
+    held.threads.thread!.outbox = [
+      { commandId: 'held', text: 'Waiting', status: 'held', waited: true },
+    ]
+    expect(holdsUnsentWork(held)).toBe(true)
+    // A send this page made without holding it is the environment's to answer.
+    const pending = seed()
+    pending.threads.thread!.outbox = [{ commandId: 'send', text: 'Pending', status: 'pending' }]
+    expect(holdsUnsentWork(pending)).toBe(false)
+  })
+
+  it('starts an environment added again after its removal from nothing, and saves it again', async () => {
+    const cache = createEnvironmentCache()
+    const store = await cache.getStore('env-back')
+    store.update(() => seed('env-back'))
+    await writeEnvironmentCache('env-back', store.getState())
+    await deleteEnvironmentCache('env-back')
+
+    const again = await cache.getStore('env-back')
+    expect(again).not.toBe(store)
+    expect(again.getState().sessions).toEqual({})
+    await writeEnvironmentCache('env-back', seed('env-back'))
+    expect((await readEnvironmentCache('env-back'))!.sessions.session!.title).toBe('Cached session')
   })
 
   it('serializes overlapping writes and waits for the newest snapshot on reload', async () => {

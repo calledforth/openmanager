@@ -185,7 +185,7 @@ async function mount(client: MockEnvironmentClient) {
   await act(() =>
     root.render(
       <EnvironmentClientProvider client={client}>
-        <EnvironmentApplicationProviders collapsedWorkspaceStorage={null}>
+        <EnvironmentApplicationProviders>
           <Capture />
         </EnvironmentApplicationProviders>
       </EnvironmentClientProvider>,

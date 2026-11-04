@@ -86,7 +86,7 @@ function App({ client }: { client: MockEnvironmentClient }) {
   return (
     <ThemeProvider>
       <EnvironmentClientProvider client={client}>
-        <EnvironmentApplicationProviders collapsedWorkspaceStorage={null}>
+        <EnvironmentApplicationProviders>
           <SidebarProvider persist={false}>
             <WorkspaceSidebar />
             <SessionReader />
