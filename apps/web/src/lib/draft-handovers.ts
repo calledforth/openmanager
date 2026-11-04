@@ -17,9 +17,10 @@ export interface LeftDraft {
 /**
  * A draft's text copied to another environment, and the draft it was copied
  * from, from the moment of the choice until it is settled. The user asked to
- * move it, so the move always finishes, wherever the page goes meanwhile: the
+ * move it, so the move finishes wherever the page goes meanwhile: the
  * original goes once the copy is saved there, if it still says exactly what
- * was copied and has no images. The copy is never deleted here.
+ * was copied and has no images, and only while the choice is recent. The
+ * copy is never deleted here.
  */
 export interface DraftHandover {
   /** Where the copy went. */
@@ -33,21 +34,24 @@ export interface DraftHandover {
 }
 
 /**
- * Kept in this browser so a reload or a closed tab does not leave both
- * copies. Any tab that picks one up does only what the tab that made it
- * would: delete the original, on the same checks.
+ * Kept in this browser so a reload or a closed tab soon after the choice
+ * does not leave both copies. Any tab that picks one up does only what the
+ * tab that made it would: delete the original, on the same checks.
  */
 export const DRAFT_HANDOVERS_KEY = 'openmanager.draft-handovers'
 
 /**
- * How long a handover is kept. One still unsettled after a day, its
- * environments away all that time, is let go: both copies stay.
+ * How long after the choice the original may go on its own. Later, another
+ * device may have written to it offline since, and deleting it would drop
+ * that edit when it is saved: past this, the original is only ever discarded
+ * when the user says so, and a handover picked up from storage is let go,
+ * leaving both copies.
  */
-export const DRAFT_HANDOVER_MAX_AGE_MS = 24 * 60 * 60 * 1000
+export const DRAFT_HANDOVER_WINDOW_MS = 5 * 60 * 1000
 
-/** Not yet too old to act on. */
-export function isFreshDraftHandover(handover: DraftHandover, now = Date.now()) {
-  return now - handover.createdAt <= DRAFT_HANDOVER_MAX_AGE_MS
+/** Still recent enough for the original to go on its own. */
+export function isRecentDraftHandover(handover: DraftHandover, now = Date.now()) {
+  return now - handover.createdAt <= DRAFT_HANDOVER_WINDOW_MS
 }
 
 /** More than any one person moves at a time; the oldest go first. */
@@ -111,10 +115,10 @@ export function forgetDraftHandover(copyDraftId: string) {
   if (rest.length !== handovers.length) write(rest)
 }
 
-/** The handovers a page left unsettled, picked up as it loads. Old ones are let go. */
+/** The handovers a page left unsettled, picked up as it loads. Older ones are let go. */
 export function resumeDraftHandovers(now = Date.now()): DraftHandover[] {
   const kept = read()
-  const fresh = kept.filter((handover) => isFreshDraftHandover(handover, now))
+  const fresh = kept.filter((handover) => isRecentDraftHandover(handover, now))
   if (fresh.length !== kept.length) write(fresh)
   return fresh
 }

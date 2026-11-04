@@ -31,7 +31,7 @@ import {
 import { environmentIsDown } from '@openmanager/environment-client/connection'
 import {
   forgetDraftHandover,
-  isFreshDraftHandover,
+  isRecentDraftHandover,
   keepDraftHandover,
   resumeDraftHandovers,
   type DraftHandover,
@@ -59,9 +59,15 @@ type Move = {
   copy: DraftHandover['copy'] | null
 }
 
-/** Listed since it last connected: what it says of its drafts is the environment's. */
+/**
+ * Connected, caught up and its drafts listed: what it says of its drafts is
+ * the environment's. A reconnect reads connected at its handshake, before the
+ * catch-up that brings what changed while it was away.
+ */
 const listed = (state: EnvironmentState) =>
-  state.connection.phase === 'connected' && state.draftsListed
+  state.connection.phase === 'connected' &&
+  state.connection.caughtUp !== false &&
+  state.draftsListed
 
 /** Saved where it went, with nothing of its own on its way, or sent from there already. */
 const copyArrived = (state: EnvironmentState, copy: DraftHandover['copy']) =>
@@ -114,6 +120,8 @@ function standingOf(
  *   where it is, its card too, and the notice offers to discard it there.
  * - A move, once asked for, finishes wherever the page goes, a reload included.
  *   The copy is never deleted, so the original is the only thing that goes.
+ * - It goes on its own only soon after the choice. Later, another device may
+ *   have written to it offline, so the notice asks first.
  * - Where that cannot be known, both stay.
  */
 export function EnvironmentChoiceHost({ children }: { children: ReactNode }) {
@@ -156,14 +164,13 @@ export function EnvironmentChoiceHost({ children }: { children: ReactNode }) {
 
   const labelOf = (environmentId: string) =>
     environments.find((item) => item.environmentId === environmentId)?.label ?? environmentId
-  // Still worth acting on: not too old, and both its environments still
-  // saved. With none saved yet, say while a pairing previews, nothing is let go.
+  // Still worth acting on: both its environments still saved. With none
+  // saved yet, say while a pairing previews, nothing is let go.
   const current = (handover: DraftHandover) =>
-    isFreshDraftHandover(handover) &&
-    (environments.length === 0 ||
-      [handover.environmentId, handover.left.environmentId].every((environmentId) =>
-        environments.some((item) => item.environmentId === environmentId),
-      ))
+    environments.length === 0 ||
+    [handover.environmentId, handover.left.environmentId].every((environmentId) =>
+      environments.some((item) => item.environmentId === environmentId),
+    )
   const live = {
     clients,
     links,
@@ -229,15 +236,15 @@ export function EnvironmentChoiceHost({ children }: { children: ReactNode }) {
       // Already on its way, or copied and waiting to go: a second copy of its
       // text would be a second draft. A draft is known by its environment and
       // its id: another environment's draft of the same id is another draft.
+      // One past its window no longer goes on its own, so it can move again.
       const isFrom = (draft: { draftId: string; environmentId: string } | null | undefined) =>
         !!from && draft?.draftId === from.draftId && draft.environmentId === from.environmentId
-      const copying = handovers.find((handover) => isFrom(handover.left) && current(handover))
+      const copying = handovers.find(
+        (handover) => isFrom(handover.left) && current(handover) && isRecentDraftHandover(handover),
+      )
       if (copying) {
-        const there = clients[copying.environmentId]?.getState()
         tell(
-          there && listed(there) && copyArrived(there, copying.copy)
-            ? `This draft was copied to ${labelOf(copying.environmentId)}. ${labelOf(copying.left.environmentId)} still has the original`
-            : `This draft is already being copied to ${labelOf(copying.environmentId)}`,
+          `This draft is moving to ${labelOf(copying.environmentId)}. The original on ${labelOf(copying.left.environmentId)} goes once the copy is saved`,
           {
             action: 'Open the copy',
             onOpen: () =>
@@ -269,7 +276,8 @@ export function EnvironmentChoiceHost({ children }: { children: ReactNode }) {
           : null
       setOpening(workspaceId ? { environmentId, workspaceId } : null)
 
-      if (left?.text.trim() && target!.drafts) {
+      // Somewhere that keeps drafts: anywhere else, the text stays where it is.
+      if (left?.text.trim() && target!.drafts && target!.supports('saveDraft')) {
         const targetState = target!.getState()
         const copy = { draftId: crypto.randomUUID(), sessionId: crypto.randomUUID() }
         target!.drafts.edit(
@@ -339,19 +347,31 @@ export function EnvironmentChoiceHost({ children }: { children: ReactNode }) {
       return
     }
     if (copy) return
-    // Text only in whitespace, or picks alone: nothing in it to lose. Text that
-    // had nowhere to go, an environment that keeps no drafts, stays. It goes on
-    // a handover's terms: still what it was, with no save of its own on its way.
-    if (!left.text.trim()) {
-      const source = clients[left.environmentId]
-      const standing = source ? standingOf(source, left.draftId, left.text) : 'gone'
-      if (typeof standing === 'object') {
-        source?.drafts?.discard(left.draftId, { ifRevision: standing.revision })
-      }
+    if (left.text.trim()) {
+      // An environment that keeps no drafts: the text had nowhere to go, and stays.
+      tell(
+        `${labelOf(move.environmentId)} doesn't keep drafts, so this one stayed on ${labelOf(left.environmentId)}`,
+        {
+          action: 'Open it',
+          onOpen: () =>
+            void liveRef.current.navigate({
+              to: '/drafts/$draftId',
+              params: { draftId: left.draftId },
+            }),
+        },
+      )
+      return
+    }
+    // Text only in whitespace, or picks alone: nothing in it to lose. It goes
+    // on a handover's terms: still what it was, with no save of its own on its way.
+    const source = clients[left.environmentId]
+    const standing = source ? standingOf(source, left.draftId, left.text) : 'gone'
+    if (typeof standing === 'object') {
+      source?.drafts?.discard(left.draftId, { ifRevision: standing.revision })
     }
   }, [clients, discards, move, pathname, selectedId, tell])
 
-  // Too old, or an environment of it no longer saved: let go, both copies stay.
+  // An environment of it no longer saved: let go, both copies stay.
   useEffect(() => {
     for (const handover of handovers) {
       if (!liveRef.current.current(handover)) untrack(handover.copy.draftId)
@@ -362,7 +382,8 @@ export function EnvironmentChoiceHost({ children }: { children: ReactNode }) {
   // has gone since, and only while it is still what was copied: written to
   // since, here or anywhere, or given an image, it is the user's again and
   // stays. Nothing is judged from what an environment's cache says until the
-  // environment has listed its drafts since connecting.
+  // environment has caught up and listed its drafts since connecting. Past
+  // the window, the user is asked instead.
   useEffect(() => {
     if (handovers.length === 0) return
     const leave: Array<() => void> = []
@@ -382,23 +403,14 @@ export function EnvironmentChoiceHost({ children }: { children: ReactNode }) {
       const check = () => {
         if (settled) return
         const state = target.getState()
-        const stall = state.draftEdits[copy.draftId]?.stalled
-        // Never saved there, and saving it again as it is cannot work: one
-        // that keeps no drafts says so once connected, a draft too long once
-        // its drafts are listed. Both stay.
-        const unsaveable =
+        // Never saved there, and too long to be as it is: both stay.
+        if (
           state.drafts[copy.draftId] === undefined &&
-          ((stall === 'unsupported' &&
-            state.connection.phase === 'connected' &&
-            !target.supports('saveDraft')) ||
-            (stall === 'too_large' && listed(state)))
-        if (unsaveable) {
+          state.draftEdits[copy.draftId]?.stalled === 'too_large' &&
+          listed(state)
+        ) {
           settle()
-          tell(
-            stall === 'too_large'
-              ? `This draft is too long to save on ${there()}, so the original on ${here()} was kept`
-              : `${there()} can't save drafts, so the original on ${here()} was kept`,
-          )
+          tell(`This draft is too long to save on ${there()}. The original on ${here()} was kept`)
           return
         }
         if (!listed(state)) return
@@ -407,41 +419,24 @@ export function EnvironmentChoiceHost({ children }: { children: ReactNode }) {
           // Refused there, deleted before it was saved, or never got there:
           // the original is all there is, and it stays.
           settle()
-          // Deleted there by someone: theirs to say.
+          // Deleted there by someone, or the original gone too, sent or
+          // discarded elsewhere: theirs to say.
           if (state.draftTombstones[copy.draftId] !== undefined) return
-          const refused = madeHere.current.has(copy.draftId)
-          const original = selectDraftContent(source.getState(), left.draftId) !== undefined
+          if (selectDraftContent(source.getState(), left.draftId) === undefined) return
+          const message = madeHere.current.has(copy.draftId)
+            ? `${there()} couldn't save the copy. The draft is still on ${here()}`
+            : `The copy on ${there()} is gone. The draft is still on ${here()}`
           const { navigate, pathname } = liveRef.current
-          if (!original) {
-            tell(
-              refused ? `${there()} couldn't save the copy` : `The copy on ${there()} wasn't saved`,
-            )
-          } else if (pathname === handover.arrival) {
+          const toOriginal = { to: '/drafts/$draftId', params: { draftId: left.draftId } } as const
+          if (pathname === handover.arrival) {
             // Its page went with it: back to the draft it was copied from.
-            void navigate({
-              to: '/drafts/$draftId',
-              params: { draftId: left.draftId },
-              replace: true,
-            })
-            tell(
-              refused
-                ? `${there()} couldn't save this draft, so it's back on ${here()}`
-                : `The copy on ${there()} wasn't saved, so it's back on ${here()}`,
-            )
+            void navigate({ ...toOriginal, replace: true })
+            tell(message)
           } else {
-            tell(
-              refused
-                ? `${there()} couldn't save the copy. The draft is still on ${here()}`
-                : `The copy on ${there()} wasn't saved. The draft is still on ${here()}`,
-              {
-                action: 'Open',
-                onOpen: () =>
-                  void liveRef.current.navigate({
-                    to: '/drafts/$draftId',
-                    params: { draftId: left.draftId },
-                  }),
-              },
-            )
+            tell(message, {
+              action: 'Open',
+              onOpen: () => void liveRef.current.navigate(toOriginal),
+            })
           }
           return
         }
@@ -451,9 +446,30 @@ export function EnvironmentChoiceHost({ children }: { children: ReactNode }) {
         const standing = standingOf(source, left.draftId, left.text)
         if (standing === 'waiting') return
         settle()
-        if (typeof standing === 'object') {
+        if (typeof standing !== 'object') return
+        if (isRecentDraftHandover(handover)) {
           source.drafts?.discard(left.draftId, { ifRevision: standing.revision })
+          return
         }
+        // Long after the choice: another device may have written to it
+        // offline since, so the user says, and it is checked again then.
+        tell(`The copy on ${there()} is saved. Discard the original on ${here()}?`, {
+          action: 'Discard',
+          onOpen: () => {
+            const now = listed(source.getState())
+              ? standingOf(source, left.draftId, left.text)
+              : 'waiting'
+            if (typeof now === 'object') {
+              source.drafts?.discard(left.draftId, { ifRevision: now.revision })
+            } else if (now !== 'gone') {
+              tell(
+                now === 'changed'
+                  ? `The original on ${here()} has changed, so it was kept`
+                  : `The original on ${here()} isn't saved yet, so it was kept`,
+              )
+            }
+          },
+        })
       }
       leave.push(target.subscribe(check), source.subscribe(check))
       check()
