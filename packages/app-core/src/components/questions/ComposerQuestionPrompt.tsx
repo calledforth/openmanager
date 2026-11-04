@@ -89,7 +89,8 @@ function StepDots({ flow }: { flow: QuestionFlow }) {
  * anywhere, Esc dismisses the whole set.
  *
  * While the host holds sends, choices are still kept, but Submit and Dismiss
- * wait: the composer beneath says why. */
+ * wait: the composer beneath says why. An answer the environment refused
+ * says so here, with the choices kept for the same Submit to try again. */
 export function QuestionCard({ flow }: { flow: QuestionFlow }) {
   const { questions, index, drafts, question } = flow
   const shellRef = useRef<HTMLDivElement>(null)
@@ -268,6 +269,11 @@ export function QuestionCard({ flow }: { flow: QuestionFlow }) {
         </div>
       </div>
 
+      {flow.failure ? (
+        <div className={`${typographyCaption} text-amber-500`} role="alert">
+          {flow.failure}
+        </div>
+      ) : null}
       <div className="flex items-center justify-between gap-3">
         <button
           type="button"

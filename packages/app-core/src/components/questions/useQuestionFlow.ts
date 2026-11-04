@@ -1,5 +1,6 @@
 import { useCallback, useMemo, useRef, useState } from 'react'
 import type { Question, QuestionOutcome } from '@agentpack/contract'
+import { failureText, useFailureNamer } from '../../providers/environment-availability'
 import type { PendingQuestion } from '../../providers/question-provider'
 import {
   allAnswered,
@@ -30,6 +31,11 @@ export interface QuestionFlow {
    * only sending and dismissing wait.
    */
   heldReason: string | null
+  /**
+   * Why the last answer or dismissal didn't go, when the environment refused
+   * it. The choices are kept, and the same Submit or Dismiss tries again.
+   */
+  failure: string | null
   /** Whether the primary action is available right now. */
   canAdvance: boolean
   /** Whether the primary action sends the answers rather than moving on. */
@@ -73,6 +79,17 @@ export function useQuestionFlow(
   const [submitting, setSubmitting] = useState(false)
   const submittingRef = useRef(false)
   const held = heldReason !== null
+  const nameFailure = useFailureNamer()
+  const [failed, setFailed] = useState<{ requestId: string; text: string } | null>(null)
+  const requestId = pending?.requestId ?? null
+  // Said on the request it is about, and gone with it.
+  const fail = useCallback(
+    (error: unknown) => {
+      const text = failureText(error, nameFailure)
+      if (requestId && text) setFailed({ requestId, text })
+    },
+    [nameFailure, requestId],
+  )
 
   // A new request resets the flow during render, so the first paint of a new
   // question set can never show the previous one's answers.
@@ -120,16 +137,18 @@ export function useQuestionFlow(
       if (!onResolve || submittingRef.current) return
       submittingRef.current = true
       setSubmitting(true)
+      setFailed(null)
       try {
         await onResolve({ outcome: 'answered', answers: buildAnswers(questions, drafts) })
-      } catch {
-        // Whoever answers says why it didn't go; the card stays to try again.
+      } catch (error) {
+        // Nothing is thrown past the card: it stays, with the answers, and says why.
+        fail(error)
       } finally {
         submittingRef.current = false
         setSubmitting(false)
       }
     },
-    [onResolve, questions],
+    [fail, onResolve, questions],
   )
 
   /** Move on from the current question against `drafts` — passed in so an
@@ -172,8 +191,9 @@ export function useQuestionFlow(
   // Dismissing is an answer too, so it waits with the rest.
   const skip = useCallback(() => {
     if (held || !onResolve) return
-    void Promise.resolve(onResolve({ outcome: 'cancelled', reason: 'user' })).catch(() => undefined)
-  }, [held, onResolve])
+    setFailed(null)
+    void Promise.resolve(onResolve({ outcome: 'cancelled', reason: 'user' })).catch(fail)
+  }, [fail, held, onResolve])
 
   if (!pending || !question) return null
 
@@ -188,6 +208,8 @@ export function useQuestionFlow(
     submitting,
     complete,
     heldReason,
+    // Held, the reason under the composer is what's said.
+    failure: !held && failed?.requestId === pending.requestId ? failed.text : null,
     canAdvance,
     willSubmit,
     setText,

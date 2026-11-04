@@ -62,7 +62,7 @@ import {
   useRecentWorkspaces,
   useWorkspaces,
 } from './environment-client'
-import { useEnvironmentAvailability } from './environment-availability'
+import { SendHeldError, useEnvironmentAvailability } from './environment-availability'
 import {
   PlatformCapabilitiesContext,
   coordinateProviderConnection,
@@ -1784,7 +1784,7 @@ function EnvironmentActiveThreadProvider({ children }: { children: ReactNode }) 
       const state = client.getState()
       const current = state.threads[threadId]
       if (!current) return
-      if (sendHeldRef.current) throw new Error(sendHeldRef.current)
+      if (sendHeldRef.current) throw new SendHeldError(sendHeldRef.current)
       setError(null)
       try {
         await commands.respondToInteraction({ ...current.thread, response })

@@ -25,3 +25,21 @@ export function useFailureNamer(): (message: string) => string {
   const name = useEnvironmentAvailability()?.name
   return useMemo(() => (name ? (message: string) => `${name}: ${message}` : asIs), [name])
 }
+
+/**
+ * What an answer or a send throws when the host holds it. Nothing went out,
+ * and the reason is already on screen, so it isn't a failure to report.
+ */
+export class SendHeldError extends Error {
+  readonly held = true
+}
+
+export function isSendHeld(error: unknown): boolean {
+  return error instanceof SendHeldError
+}
+
+/** What a failed answer says: its message, named for the environment when there are several. */
+export function failureText(error: unknown, name: (message: string) => string): string | null {
+  if (isSendHeld(error)) return null
+  return name(error instanceof Error ? error.message : String(error))
+}

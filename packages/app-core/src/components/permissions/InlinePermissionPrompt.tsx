@@ -1,11 +1,15 @@
-import { useLayoutEffect } from 'react'
+import { useLayoutEffect, useState } from 'react'
 import type { PermissionOption } from '@agentpack/contract'
 import type { PermissionSelection } from '../../providers/permission-provider'
 import {
   usePermissionStateOptional,
   type PendingPermission,
 } from '../../providers/permission-provider'
-import { useEnvironmentAvailability } from '../../providers/environment-availability'
+import {
+  failureText,
+  useEnvironmentAvailability,
+  useFailureNamer,
+} from '../../providers/environment-availability'
 import { typographyCaption, typographyCaptionTiny } from '../../lib/typography'
 
 function formatValue(value: unknown): string | null {
@@ -44,10 +48,19 @@ function PermissionCard({
   // An answer is a send: while the host holds sends, the choices wait and say why.
   const heldReason = useEnvironmentAvailability()?.sendBlockedReason ?? null
   const held = heldReason !== null
-  // Whoever answers says why one didn't go; the card stays to try again.
+  // An answer the environment refused is said on the card it was about, which
+  // stays for another try. Nothing is thrown past it.
+  const nameFailure = useFailureNamer()
+  const [failed, setFailed] = useState<{ requestId: string; text: string } | null>(null)
+  const failure = failed?.requestId === pending.requestId ? failed.text : null
   const resolve = (selection: PermissionSelection) => {
     if (held) return
-    void Promise.resolve(onResolve(selection)).catch(() => undefined)
+    const { requestId } = pending
+    setFailed(null)
+    void Promise.resolve(onResolve(selection)).catch((error: unknown) => {
+      const text = failureText(error, nameFailure)
+      if (text) setFailed({ requestId, text })
+    })
   }
   const inputPreview = showDetails ? formatValue(pending.input) : null
   // Reject options left, allow options right; provider order kept within each group.
@@ -100,6 +113,11 @@ function PermissionCard({
           </>
         )}
       </div>
+      {failure && !heldReason ? (
+        <div className={`mt-0.5 text-right ${typographyCaptionTiny} text-amber-500`} role="alert">
+          {failure}
+        </div>
+      ) : null}
       {heldReason ? (
         <div className={`mt-0.5 text-right ${typographyCaptionTiny} text-amber-500`} role="status">
           {heldReason}
