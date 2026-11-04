@@ -19,6 +19,10 @@ import {
 } from '../src/providers/active-thread-provider'
 import { useSessionState, type SessionStateValue } from '../src/providers/session-provider'
 import { ThemeProvider } from '../src/providers/theme-provider'
+import {
+  SidebarEnvironmentsContext,
+  type SidebarEnvironmentsValue,
+} from '../src/providers/sidebar-provider'
 import { useViewActions, type ViewActions } from '../src/providers/view-actions'
 import { ChatWorkspace } from '../src/components/chat/ChatWorkspace'
 import { MockEnvironmentApp } from '../src/testing/mock-environment-app'
@@ -279,7 +283,7 @@ describe('the shared application over the environment client', () => {
     expect(container.querySelector('textarea')?.disabled).toBe(true)
   })
 
-  it('names the environment on the sidebar session rows, the landing and the project picker', async () => {
+  it('names the environment on the landing and the project picker, and on rows only beside others', async () => {
     const client = createMockEnvironmentClient({
       seed: { ...SEEDED_HISTORY, environment: { environmentId: 'env-1', name: 'devbox' } },
     })
@@ -288,10 +292,12 @@ describe('the shared application over the environment client', () => {
       [...container.querySelectorAll('span.sr-only')].filter(
         (node) => node.textContent === 'Sessions run on ',
       )
-    // Under the landing headline; the sidebar names it on each session row.
+    // Under the landing headline. With no other environment listed, a session
+    // row has no one to be told apart from, so it isn't read out on each.
     expect(labels()).toHaveLength(1)
     expect(labels()[0]!.nextElementSibling?.textContent).toBe('devbox')
-    expect(buttonWithText('First')!.textContent).toContain('First on devbox')
+    expect(buttonWithText('First')!.textContent).toContain('First')
+    expect(buttonWithText('First')!.textContent).not.toContain('on devbox')
 
     await act(() =>
       container.querySelector<HTMLButtonElement>('button[aria-haspopup="dialog"]')!.click(),
@@ -299,6 +305,32 @@ describe('the shared application over the environment client', () => {
     // The picker menu portals to the body; its footer names the environment too.
     const menu = document.body.querySelector('[role="dialog"][aria-label="Choose a project"]')
     expect(menu?.textContent).toContain('Sessions run on devbox')
+  })
+
+  it('reads the environment out on each sidebar row where others are listed', async () => {
+    const client = createMockEnvironmentClient({
+      seed: { ...SEEDED_HISTORY, environment: { environmentId: 'env-1', name: 'devbox' } },
+    })
+    const listed: SidebarEnvironmentsValue = {
+      others: [],
+      rowEnvironments: {
+        'env-1': {
+          name: 'devbox',
+          reachable: true,
+          canSettle: true,
+          canPin: true,
+          iconLookup: null,
+        },
+      },
+      filling: false,
+    }
+    await render(
+      <SidebarEnvironmentsContext.Provider value={listed}>
+        <App client={client} />
+      </SidebarEnvironmentsContext.Provider>,
+    )
+    await settle(client)
+    expect(buttonWithText('First')!.textContent).toContain('First on devbox')
   })
 
   it('shows the workspace icon the environment resolves and falls back when it has none', async () => {

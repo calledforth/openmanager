@@ -21,6 +21,18 @@ export type ConnectionAction =
   | 'connect'
   | 'retry'
   | 'change_environment'
+  /**
+   * The same as `change_environment`, for the only environment saved: the
+   * connect screen is where a new token goes, not where another machine is.
+   */
+  | 'connect_again'
+  /**
+   * The same as `change_environment`, for an address a person typed in with
+   * fewer than two environments saved: there is no other one to switch to.
+   */
+  | 'back'
+  /** Open the environments' settings, where a saved route can be changed. */
+  | 'open_settings'
   | 'confirm_route'
   | 'decline_route'
 
@@ -183,6 +195,11 @@ export type DeriveConnectionInput = {
    * it is.
    */
   autoRetry?: boolean
+  /**
+   * The selected environment is the only one saved, so nothing offers to go
+   * to another. Omitted means there may be others.
+   */
+  onlyEnvironment?: boolean
 }
 
 /**
@@ -209,6 +226,9 @@ const ACTION_LABELS: Record<ConnectionAction, string> = {
   connect: 'Connect',
   retry: 'Retry',
   change_environment: 'Switch environment',
+  connect_again: 'Connect again',
+  back: 'Back',
+  open_settings: 'Settings',
   confirm_route: 'Add route',
   decline_route: 'Cancel',
 }
@@ -298,7 +318,12 @@ function environmentContext(input: DeriveConnectionInput) {
       ? input.bootstrap.label
       : undefined) ??
     (input.environment.status === 'selected' ? input.environment.label : undefined)
-  return { endpoint, label, named: label ?? endpoint ?? 'this environment' }
+  return {
+    endpoint,
+    label,
+    named: label ?? endpoint ?? 'this environment',
+    only: input.onlyEnvironment === true,
+  }
 }
 
 /** `host:port` reads better in a sentence than the full URL. */
@@ -310,7 +335,29 @@ export function hostOf(endpoint: string): string {
   }
 }
 
-type Context = { named: string; label?: string; endpoint?: string }
+type Context = { named: string; label?: string; endpoint?: string; only?: boolean }
+
+/** Going to another environment, offered beside a fix only when there is one to go to. */
+function elsewhere({ only }: Context): Pick<ConnectionUiState, 'secondaryAction'> {
+  return only ? {} : { secondaryAction: 'change_environment' }
+}
+
+/**
+ * Beside a fix that waiting alone won't bring, for the only environment saved:
+ * its settings, where an address that changed can be put right.
+ */
+function settingsOrElsewhere(context: Context): Pick<ConnectionUiState, 'secondaryAction'> {
+  return context.only ? { secondaryAction: 'open_settings' } : elsewhere(context)
+}
+
+/**
+ * An address a person typed in, with fewer than two environments saved:
+ * leaving it goes back to the connect screen, not to another environment.
+ */
+export function typedConnectUi(state: ConnectionUiState, saved: number): ConnectionUiState {
+  if (saved >= 2 || state.secondaryAction !== 'change_environment') return state
+  return { ...state, secondaryAction: 'back' }
+}
 
 /**
  * What the environment said, shaped to sit in parentheses mid-sentence:
@@ -335,10 +382,11 @@ const TRYING = 'Trying to reconnect…'
  * named, the client is retrying, and the cause is a single short line.
  */
 function reconnectUi(
-  { label, endpoint }: Context,
+  context: Context,
   detail: string,
   extra: Partial<ConnectionUiState> = {},
 ): ConnectionUiState {
+  const { label, endpoint } = context
   return {
     kind: 'unreachable',
     surface: 'banner',
@@ -347,7 +395,7 @@ function reconnectUi(
     detail,
     retrying: true,
     action: 'retry',
-    secondaryAction: 'change_environment',
+    ...elsewhere(context),
     environmentLabel: label,
     endpoint,
     ...extra,
@@ -369,11 +417,12 @@ function routeFailureUi(failure: RouteFailure, context: Context): ConnectionUiSt
   const host = hostOf(failure.endpoint)
   const tried = triedNote(failure.tried)
   const said = aside(failure.message)
-  const reconnect = (detail: string) =>
+  const reconnect = (detail: string, extra: Partial<ConnectionUiState> = {}) =>
     reconnectUi({ ...context, endpoint: failure.endpoint }, detail, {
       reason: failure.reason,
       routesTried: failure.tried,
       shutDown: failure.stopped === true ? true : undefined,
+      ...extra,
     })
   const reason = failure.reason
   switch (reason) {
@@ -383,7 +432,7 @@ function routeFailureUi(failure: RouteFailure, context: Context): ConnectionUiSt
         surface: 'screen',
         title: 'Not authorized',
         description: `${named} rejected this client's token${said ? ` (${said})` : ''}. Every route sends the same token, so another route will not help. Connect again with a valid token, or pair this device again.`,
-        action: 'change_environment',
+        action: context.only ? 'connect_again' : 'change_environment',
         environmentLabel: label,
         endpoint: failure.endpoint,
         reason,
@@ -400,7 +449,7 @@ function routeFailureUi(failure: RouteFailure, context: Context): ConnectionUiSt
           "Allow this site to reach apps on this device in the browser's site settings, then retry.",
         detail: `This browser blocked the page from reaching ${host}${tried}`,
         action: 'retry',
-        secondaryAction: 'change_environment',
+        ...settingsOrElsewhere(context),
         environmentLabel: label,
         endpoint: failure.endpoint,
         reason,
@@ -423,6 +472,7 @@ function routeFailureUi(failure: RouteFailure, context: Context): ConnectionUiSt
         failure.local
           ? `${host} refused this page's address${said ? ` (${said})` : ''}`
           : `${host} refused this browser${said ? ` (${said})` : ''}${tried}`,
+        settingsOrElsewhere(context),
       )
     case 'wrong_environment':
       return reconnect(`A different environment answers at ${host}${tried}`)
@@ -463,7 +513,8 @@ function bootstrapDetail(bootstrap: BootstrapOutcome, host: string, message?: st
   return said || `No answer from ${host}`
 }
 
-function offlineUi(input: DeriveConnectionInput, { label, endpoint }: Context) {
+function offlineUi(input: DeriveConnectionInput, context: Context) {
+  const { label, endpoint } = context
   if (input.network?.online === false) {
     return {
       kind: 'offline',
@@ -482,7 +533,7 @@ function offlineUi(input: DeriveConnectionInput, { label, endpoint }: Context) {
     title: `Can't reach ${whom(label)}`,
     description: 'Stopped retrying.',
     action: 'retry',
-    secondaryAction: 'change_environment',
+    ...settingsOrElsewhere(context),
     environmentLabel: label,
     endpoint,
   } satisfies ConnectionUiState
@@ -540,7 +591,7 @@ export function deriveConnectionUi(input: DeriveConnectionInput): ConnectionUiSt
       title: 'Incompatible protocol',
       description: `The client and environment cannot talk to each other.${versions} Upgrade one of them, then retry.`,
       action: 'retry',
-      secondaryAction: 'change_environment',
+      ...settingsOrElsewhere(context),
       environmentLabel: label,
       endpoint,
       clientProtocolVersion,
@@ -578,8 +629,10 @@ export function deriveConnectionUi(input: DeriveConnectionInput): ConnectionUiSt
       title: 'Not authorized',
       description:
         detail ??
-        `${named} rejected this client. Update the credential or choose another environment. Do not keep retrying while access is denied.`,
-      action: 'change_environment',
+        (context.only
+          ? `${named} rejected this client's token. Connect again with a valid token, or pair this device again.`
+          : `${named} rejected this client. Update the credential or choose another environment. Do not keep retrying while access is denied.`),
+      action: context.only ? 'connect_again' : 'change_environment',
       environmentLabel: label,
       endpoint,
     }
@@ -632,7 +685,7 @@ export function deriveConnectionUi(input: DeriveConnectionInput): ConnectionUiSt
         description: 'Not retrying.',
         detail,
         action: 'retry',
-        secondaryAction: 'change_environment',
+        ...elsewhere(context),
         environmentLabel: label,
         endpoint,
       }

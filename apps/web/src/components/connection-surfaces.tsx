@@ -1,4 +1,5 @@
 import { useEffect, useState, type FormEvent, type ReactNode } from 'react'
+import { useRouter } from '@tanstack/react-router'
 import {
   CloudSlashIcon,
   KeyIcon,
@@ -45,11 +46,17 @@ export type ConnectionHandlers = {
   onChooseRoute?: (environmentId: string, endpoint: string) => void
   onRemoveRoute?: (environmentId: string, endpoint: string) => void
   onCheckRoutes?: () => void
+  /** Settings → Environments. Omitted, the router in context is asked to go there. */
+  onOpenSettings?: () => void
 }
 
 function runAction(action: ConnectionAction, handlers: ConnectionHandlers, endpoint?: string) {
   if (action === 'retry') handlers.onRetry?.()
-  if (action === 'change_environment') handlers.onChangeEnvironment?.()
+  // All three leave the environment for the connect screen.
+  if (action === 'change_environment' || action === 'connect_again' || action === 'back') {
+    handlers.onChangeEnvironment?.()
+  }
+  if (action === 'open_settings') handlers.onOpenSettings?.()
   if (action === 'confirm_route') handlers.onConfirmRoute?.()
   if (action === 'decline_route') handlers.onDeclineRoute?.()
   if (action === 'connect' && endpoint) handlers.onConnect?.(endpoint)
@@ -72,6 +79,17 @@ function ActionButtons({
    */
   compact?: boolean
 }) {
+  // Settings is a page of its own, so where nobody says how to get there, the
+  // router does. Outside one (a story, a test) there is nowhere to go.
+  const router = useRouter({ warn: false }) as ReturnType<typeof useRouter> | undefined
+  const withSettings: ConnectionHandlers = handlers.onOpenSettings
+    ? handlers
+    : {
+        ...handlers,
+        onOpenSettings: router
+          ? () => void router.navigate({ to: '/settings', search: { tab: 'environments' } })
+          : undefined,
+      }
   return (
     <div className={cn('flex flex-wrap', compact ? 'gap-1.5' : 'gap-2', className)}>
       {extra}
@@ -81,7 +99,7 @@ function ActionButtons({
           variant={compact ? 'ghost' : 'secondary'}
           size={compact ? 'compact' : undefined}
           className={compact ? 'text-foreground' : undefined}
-          onClick={() => runAction(state.action!, handlers)}
+          onClick={() => runAction(state.action!, withSettings)}
         >
           {connectionActionLabel(state.action)}
         </Button>
@@ -91,7 +109,7 @@ function ActionButtons({
           type="button"
           variant="ghost"
           size={compact ? 'compact' : undefined}
-          onClick={() => runAction(state.secondaryAction!, handlers)}
+          onClick={() => runAction(state.secondaryAction!, withSettings)}
         >
           {connectionActionLabel(state.secondaryAction)}
         </Button>
@@ -451,6 +469,8 @@ export function EnvironmentList({
   }, [onCheckRoutes])
 
   if (environments.length === 0) return null
+  // With one saved, the one in use needs no mark.
+  const several = environments.length > 1
 
   return (
     <ul className="mt-3 flex w-full flex-col gap-2 text-left" aria-label="Saved environments">
@@ -472,7 +492,7 @@ export function EnvironmentList({
                     {environment.label}
                   </span>
                 </Tooltip>
-                {selected ? (
+                {selected && several ? (
                   <span className="shrink-0 rounded bg-active px-1.5 py-px text-[11px] text-muted-foreground">
                     Current
                   </span>
@@ -573,9 +593,18 @@ export function ConnectionScreen({
   inUseEndpoint?: string | null
 }) {
   const choosingSaved = state.kind === 'no_environment' && environments.length > 0
-  const title = choosingSaved ? 'Select an environment' : state.title
+  // With one saved there is nothing to choose between: the screen is the way
+  // back to it, or to it with a new token.
+  const only = environments.length === 1 ? environments[0]! : null
+  const title = choosingSaved
+    ? only
+      ? `Connect to ${only.label}`
+      : 'Select an environment'
+    : state.title
   const description = choosingSaved
-    ? 'Connect to a saved environment, or add one by its URL.'
+    ? only
+      ? 'Or connect with a URL and token below.'
+      : 'Connect to a saved environment, or add one by its URL.'
     : state.description
 
   // The one mark a screen keeps: a refused token is a key problem.
