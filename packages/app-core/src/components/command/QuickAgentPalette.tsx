@@ -420,7 +420,9 @@ function QuickAgentNotice({
     >
       {/* A message is a sentence that has to be read whole: it wraps rather than
           trailing off. A project name is cut short instead. */}
-      <span className={notice.kind === 'message' ? 'min-w-0 py-1 pr-2' : 'truncate pr-2'}>
+      <span
+        className={notice.kind === 'message' ? 'min-w-0 break-words py-1 pr-2' : 'truncate pr-2'}
+      >
         {label}
       </span>
       {notice.onOpen ? (
