@@ -330,11 +330,13 @@ function EnvironmentsSidebar({
     hasIcons: openHasIcons,
   } = useOpenRowAbilities(openClient)
 
-  // Down is narrower than not reachable (`isEnvironmentReachable`): it is what
-  // the banner says can't be reached, and leaves out a first connection still on
-  // its way, so nothing reads offline at boot. Every one that is down is also not
-  // reachable. Compared as text: `links` is new with every report from any
-  // connection.
+  // Down is what the banner says can't be reached. It isn't the same as not
+  // reachable (`isEnvironmentReachable`, the client's word), and each leaves out
+  // a case of the other: a first connection still on its way isn't down, so
+  // nothing reads offline at boot, and with the device offline an environment
+  // is down while its socket can still read connected. So nothing is offered
+  // to start on, or sent to, an environment either one rules out. Compared as
+  // text: `links` is new with every report from any connection.
   const downKey = links
     .filter((link) => environmentIsDown(link.ui))
     .map((link) => link.environmentId)
@@ -364,7 +366,8 @@ function EnvironmentsSidebar({
       const client = clients[environmentId]
       next[environmentId] = {
         name: nameOf(environmentId),
-        reachable: reachable === true,
+        // A card that reads offline isn't one New agent hands over to.
+        reachable: reachable === true && !down.has(environmentId),
         canSettle,
         canPin,
         offline: down.has(environmentId),
@@ -511,9 +514,12 @@ function EnvironmentsSidebar({
       },
       // The open environment's providers can only open a page of their own;
       // another environment's project opens on that environment's page.
+      // One that is down isn't offered, as `choose` already leaves alone one
+      // that isn't reachable.
       createSession: async (path, environmentId) => {
-        if (environmentId && environmentId !== openId) choose?.(environmentId, null, path)
-        else await createSession(path)
+        if (environmentId && environmentId !== openId) {
+          if (!down.has(environmentId)) choose?.(environmentId, null, path)
+        } else await createSession(path)
       },
       // A row of another environment goes straight to its client.
       ...(renameSession
@@ -561,7 +567,7 @@ function EnvironmentsSidebar({
           }
         : {}),
     }
-  }, [anyPins, anySettles, askedDirectly, askRowEnvironment, choose, data, openId, opening])
+  }, [anyPins, anySettles, askedDirectly, askRowEnvironment, choose, data, down, openId, opening])
 
   // The cards are the same array while no card changed: the sidebar reads a
   // new one as a card having changed.
@@ -594,17 +600,28 @@ function EnvironmentsSidebar({
       },
       discardDraft: (draftId, options) => {
         const other = elsewhere(options?.environmentId)
-        if (!other) {
-          discardDraft(draftId, options)
-          return
-        }
-        // Its delete would wait in that client's queue, as any command would.
-        const refusal = refusalFor(options!.environmentId!, 'discard a draft')
+        // Its delete would wait in that client's queue, as any command would,
+        // and go out once it's back. Refused the same for the open
+        // environment's own drafts, with others saved; with one, as before.
+        const asked = other ? options!.environmentId! : several ? openId : null
+        const refusal = asked ? refusalFor(asked, 'discard a draft') : null
         if (refusal) reportFailure(refusal)
+        else if (!other) discardDraft(draftId, options)
         else if (other.client) discards.begin(other.client, draftId, options)
       },
     }
-  }, [discards, elsewhere, openDrafts, opening, others, pending, refusalFor, reportFailure])
+  }, [
+    discards,
+    elsewhere,
+    openDrafts,
+    openId,
+    opening,
+    others,
+    pending,
+    refusalFor,
+    reportFailure,
+    several,
+  ])
 
   const platformValue = useMemo(() => {
     if (!platform || !several) return platform
