@@ -805,6 +805,27 @@ describe('with one environment saved', () => {
     expect(await screen.findByRole('heading', { name: 'Not authorized' })).toBeInTheDocument()
     await waitFor(() => expect(screen.queryByRole('button', { name: /Desk chat/ })).toBeNull())
     expect(screen.getByRole('button', { name: 'Sessions' })).toBeInTheDocument()
+    // The way forward is the connect screen, and nothing says there are others.
+    expect(screen.getByRole('button', { name: 'Connect again' })).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Switch environment' })).toBeNull()
+  })
+
+  it('reads no environment name out on its cards', async () => {
+    saved('desk')
+    answering()
+    renderApp('/')
+    const { button } = await cardOf(/Desk chat/)
+    expect(button).not.toHaveAccessibleName(/ on Desk/)
+  })
+
+  it('says a session it cannot open is on the one environment, without a maybe', async () => {
+    saved('desk')
+    answering({ desk: false })
+    renderApp('/sessions/nobody-has-this')
+
+    expect(
+      await screen.findByText('This session is on Desk, which is offline.'),
+    ).toBeInTheDocument()
   })
 
   it('shows the banner alone when it is down, and no marks on its cards', async () => {
@@ -816,6 +837,8 @@ describe('with one environment saved', () => {
     const { card } = await cardOf(/Desk chat/)
     expect(card.queryByText('· offline')).toBeNull()
     expect(screen.queryByText('Desk is offline')).toBeNull()
+    expect(screen.getByRole('button', { name: 'Retry' })).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Switch environment' })).toBeNull()
   })
 
   it('leaves the composer as it is on main when it is down', async () => {

@@ -111,8 +111,12 @@ function ConnectedSessionWorkspace({ sessionId }: { sessionId?: string }) {
   return <ChatWorkspace connectionProblem={ui.kind !== 'ready'} />
 }
 
-/** Names who cannot be asked: one of them may have what the address names. */
-function mayBeOn(offline: readonly string[]) {
+/**
+ * Names who cannot be asked: one of them may have what the address names.
+ * With one saved there is nowhere else it could be.
+ */
+function mayBeOn(offline: readonly string[], several: boolean) {
+  if (!several && offline.length === 1) return `This session is on ${offline[0]}, which is offline.`
   const names = new Intl.ListFormat('en', { type: 'disjunction' }).format(offline)
   return `This session may be on ${names}, which ${offline.length > 1 ? 'are' : 'is'} offline.`
 }
@@ -137,7 +141,7 @@ function SessionPlaceholder({
       <div className="flex min-h-0 flex-1 items-center justify-center px-6">
         <p className="max-w-md text-center text-ui-sm leading-ui-normal text-[var(--basis-text-muted)]">
           {lookup.status === 'offline'
-            ? mayBeOn(lookup.offline)
+            ? mayBeOn(lookup.offline, several)
             : several
               ? 'Open a session from the sidebar.'
               : 'Connect to an environment to see your sessions here.'}

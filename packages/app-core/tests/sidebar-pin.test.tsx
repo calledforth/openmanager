@@ -207,3 +207,11 @@ describe('a host that cannot keep pins', () => {
     expect(container.querySelector('button[aria-label="Pin to top"]')).toBeNull()
   })
 })
+
+describe('a sidebar with one environment', () => {
+  it('reads no environment name out on its cards', async () => {
+    await mount()
+    expect(cards().length).toBeGreaterThan(0)
+    for (const card of cards()) expect(card.textContent).not.toContain('on Mock environment')
+  })
+})

@@ -117,7 +117,9 @@ function useWorkspaceSidebarModel(closeSheet: MutableRefObject<() => void>) {
   )
 
   return {
-    environmentLabel: environment?.label,
+    // Read out on every row only where rows are on more than one environment.
+    // A host that lists no others names none.
+    environmentLabel: listed ? environment?.label : undefined,
     rowEnvironments: listed?.rowEnvironments,
     rowsFilling: listed?.filling,
     workspaces,
