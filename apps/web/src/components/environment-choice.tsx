@@ -155,7 +155,8 @@ export function EnvironmentChoiceHost({ children }: { children: ReactNode }) {
           copy.draftId,
           {
             type: 'new_session',
-            // Its most recent project; one whose folder is gone says so on the page.
+            // Where its new-session page opens: the project last picked there,
+            // else its most recent; one whose folder is gone says so on the page.
             workspaceId:
               selectLandingWorkspaceId(targetState) ?? targetState.workspaceOrder[0] ?? null,
             sessionId: copy.sessionId,

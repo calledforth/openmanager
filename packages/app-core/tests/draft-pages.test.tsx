@@ -13,12 +13,19 @@ import {
 } from '@openmanager/environment-client'
 import type { Workspace } from '@openmanager/protocol'
 import { EnvironmentClientProvider, useEnvironmentState } from '../src/providers/environment-client'
-import { EnvironmentApplicationProviders } from '../src/providers/environment-application'
+import {
+  EnvironmentApplicationProviders,
+  selectLandingWorkspaceId,
+} from '../src/providers/environment-application'
 import { useActiveThreadState } from '../src/providers/active-thread-provider'
 import { useComposerState, type ComposerStateValue } from '../src/providers/composer-provider'
 import { useSessionState, type SessionStateValue } from '../src/providers/session-provider'
 import { ThemeProvider } from '../src/providers/theme-provider'
-import { rememberSentDraft, sentDraftSession } from '../src/providers/draft-pages'
+import {
+  rememberLandingProject,
+  rememberSentDraft,
+  sentDraftSession,
+} from '../src/providers/draft-pages'
 import { useSidebarDrafts, type SidebarDraftsValue } from '../src/providers/sidebar-provider'
 import {
   DraftLaunchContext,
@@ -1001,5 +1008,96 @@ describe('draft pages', () => {
       expect(composer().value).toBe('')
       expect(contentOf(client, first)?.text).toBe('h')
     })
+  })
+})
+
+describe('the project a new session page opens on', () => {
+  const remembered = () =>
+    JSON.parse(globalThis.localStorage.getItem('openmanager.landing-projects') ?? '{}') as Record<
+      string,
+      string
+    >
+  const reload = async (client: MockEnvironmentClient, initial: Route = { draftId: null }) => {
+    await act(() => root.unmount())
+    root = createRoot(container)
+    await mount(client, initial)
+  }
+
+  it('opens on the project last picked in that environment, after a reload too', async () => {
+    const client = createMockEnvironmentClient({ seed: SEED })
+    await mount(client)
+    // Nothing picked yet: the most recent project.
+    expect(probe.session.activeWorkspacePath).toBe(ALPHA.workspaceId)
+
+    await act(() => probe.session.setDraftWorkspace!(BETA.workspaceId))
+    expect(remembered()).toEqual({ 'mock-environment': BETA.workspaceId })
+
+    // A written draft sent off: the next blank page opens in the pick, not
+    // in the project that just saw activity.
+    await type('in beta')
+    await settle(client)
+    await act(() => probe.go({ draftId: null }))
+    await settle(client)
+    expect(composer().value).toBe('')
+    expect(probe.session.activeWorkspacePath).toBe(BETA.workspaceId)
+
+    await reload(client)
+    expect(probe.session.activeWorkspacePath).toBe(BETA.workspaceId)
+    expect(selectLandingWorkspaceId(client.getState())).toBe(BETA.workspaceId)
+  })
+
+  it('remembers a pick for each environment on its own', async () => {
+    rememberLandingProject('other-environment', BETA.workspaceId)
+    const client = createMockEnvironmentClient({ seed: SEED })
+    await mount(client)
+    // Another environment's pick means nothing here.
+    expect(probe.session.activeWorkspacePath).toBe(ALPHA.workspaceId)
+
+    await act(() => probe.session.setDraftWorkspace!(ALPHA.workspaceId))
+    expect(remembered()).toEqual({
+      'other-environment': BETA.workspaceId,
+      'mock-environment': ALPHA.workspaceId,
+    })
+
+    const other = createMockEnvironmentClient({
+      seed: { ...SEED, environment: { environmentId: 'other-environment', name: 'Other' } },
+    })
+    await reload(other)
+    expect(probe.session.activeWorkspacePath).toBe(BETA.workspaceId)
+  })
+
+  it('falls back to the most recent project when the one picked is gone or unavailable', async () => {
+    rememberLandingProject('mock-environment', BETA.workspaceId)
+    const missing = createMockEnvironmentClient({
+      seed: {
+        ...SEED,
+        workspaces: [ALPHA, { ...BETA, exists: false, availability: 'missing' }],
+      },
+    })
+    await mount(missing)
+    expect(probe.session.activeWorkspacePath).toBe(ALPHA.workspaceId)
+
+    const removed = createMockEnvironmentClient({ seed: { ...SEED, workspaces: [ALPHA] } })
+    await reload(removed)
+    expect(probe.session.activeWorkspacePath).toBe(ALPHA.workspaceId)
+    // The pick is kept: the project can come back.
+    expect(remembered()).toEqual({ 'mock-environment': BETA.workspaceId })
+  })
+
+  it('does not remember the project a page opened on by itself', async () => {
+    const client = createMockEnvironmentClient({ seed: SEED })
+    await mount(client)
+    await type('hello')
+    await settle(client)
+    const draftId = probe.session.newSessionDraftId!
+    // A reload by its address, and a discard that leaves for a blank page.
+    await reload(client, { draftId })
+    expect(probe.session.newSessionDraftId).toBe(draftId)
+    await act(() => probe.sidebarDrafts!.discardDraft(draftId))
+    await act(() => probe.sidebarDrafts!.confirmDiscard())
+    await settle(client)
+    expect(pathOf(probe.route)).toBe('/')
+    expect(probe.session.activeWorkspacePath).toBe(ALPHA.workspaceId)
+    expect(globalThis.localStorage.getItem('openmanager.landing-projects')).toBeNull()
   })
 })
