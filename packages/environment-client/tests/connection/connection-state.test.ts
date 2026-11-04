@@ -39,6 +39,21 @@ describe('deriveConnectionUi', () => {
     expect(ui).toMatchObject({ kind: 'ready', surface: 'none' })
   })
 
+  it('names the saved environment by its saved name, and an unknown answer by its own', () => {
+    const endpoint = 'http://127.0.0.1:43120'
+    const renamed = deriveConnectionUi({
+      ...READY_CONNECTION_INPUT,
+      // Renamed since bootstrap answered: the saved name is the newer one.
+      environment: { status: 'selected', endpoint, environmentId: 'env-local', label: 'Laptop' },
+    })
+    expect(renamed.environmentLabel).toBe('Laptop')
+    const elsewhere = deriveConnectionUi({
+      ...READY_CONNECTION_INPUT,
+      environment: { status: 'selected', endpoint, environmentId: 'env-other', label: 'Laptop' },
+    })
+    expect(elsewhere.environmentLabel).toBe('Local environment')
+  })
+
   it('prefers protocol mismatch over a later unreachable transport', () => {
     const ui = deriveConnectionUi({
       environment: {

@@ -93,6 +93,7 @@ function EnvironmentHost({
   createClient,
   reportRouteHealth,
   forgetSocket,
+  noteEnvironmentName,
   publish,
   noteCacheRead,
 }: {
@@ -102,6 +103,7 @@ function EnvironmentHost({
   createClient: typeof createWebSocketEnvironmentClient
   reportRouteHealth: Connection['reportRouteHealth']
   forgetSocket: Connection['forgetSocket']
+  noteEnvironmentName: Connection['noteEnvironmentName']
   publish: (environmentId: string, client: EnvironmentClient | null) => void
   noteCacheRead: (environmentId: string) => void
 }) {
@@ -182,9 +184,15 @@ function EnvironmentHost({
       // that route. The store notifies on every event; only a changed connection
       // is worth reading.
       let seen: unknown
+      let named: string | undefined
       const unsubscribe = next.subscribe(() => {
         show()
-        const { connection } = next.getState()
+        const { connection, environment } = next.getState()
+        // Only what the environment says live: the cached name may be older.
+        if (connection.phase === 'connected' && environment && environment.name !== named) {
+          named = environment.name
+          noteEnvironmentName(environmentId, environment.name)
+        }
         if (connection === seen) return
         seen = connection
         const report = routeHealthFromConnection(connection)
@@ -220,6 +228,7 @@ function EnvironmentHost({
     forgetSocket,
     needsPerson,
     noteCacheRead,
+    noteEnvironmentName,
     publish,
     reportRouteHealth,
     wrongEnvironment,
@@ -257,7 +266,8 @@ export function WebEnvironmentClientProvider({
   children: ReactNode
   createClient?: typeof createWebSocketEnvironmentClient
 }) {
-  const { environment, links, reportRouteHealth, forgetSocket } = useConnection()
+  const { environment, links, reportRouteHealth, forgetSocket, noteEnvironmentName } =
+    useConnection()
   const cache = useRef<EnvironmentCache | null>(null)
   if (!cache.current) cache.current = createEnvironmentCache()
   const [clients, setClients] = useState<Readonly<Record<string, EnvironmentClient>>>({})
@@ -296,6 +306,7 @@ export function WebEnvironmentClientProvider({
           createClient={createClient}
           reportRouteHealth={reportRouteHealth}
           forgetSocket={forgetSocket}
+          noteEnvironmentName={noteEnvironmentName}
           publish={publish}
           noteCacheRead={noteCacheRead}
         />

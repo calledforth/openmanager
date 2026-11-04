@@ -5,6 +5,7 @@ import {
   AccessDeniedErrorSchema,
   AccessGrantSchema,
   ClientCommandSchemas,
+  EnvironmentNameCommandSchemas,
   COMMAND_ACCESS,
   ComposerCommandSchemas,
   DraftCommandSchemas,
@@ -37,6 +38,7 @@ describe('command access mapping', () => {
       ...Object.keys(DraftCommandSchemas),
       ...Object.keys(PairingCommandSchemas),
       ...Object.keys(ClientCommandSchemas),
+      ...Object.keys(EnvironmentNameCommandSchemas),
     ].sort()
     expect(Object.keys(COMMAND_ACCESS).sort()).toEqual(commandNames)
   })

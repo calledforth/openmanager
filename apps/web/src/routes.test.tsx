@@ -82,7 +82,8 @@ function trackSockets() {
         seed: {
           environment: {
             environmentId: options.environmentId ?? 'env-local',
-            name: 'Environment',
+            // What the stand-in bootstrap answers: one server, one name.
+            name: 'Local environment',
           },
         },
       }),

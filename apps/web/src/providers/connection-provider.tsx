@@ -34,6 +34,7 @@ import {
   adoptPersistedEnvironments,
   ENVIRONMENT_STORAGE_KEY,
   setStoredCredential,
+  setStoredLabel,
   setStoredRouteHealth,
   setStoredTokenRefused,
   upsertStoredEnvironment,
@@ -194,6 +195,11 @@ type ConnectionValue = {
    * when it rotates its credential. The connection redials with it.
    */
   replaceCredential: (environmentId: string, credential: string) => void
+  /**
+   * Save the name a connected environment now goes by. Its client calls this
+   * whenever the name it holds changes, a rename on any device included.
+   */
+  noteEnvironmentName: (environmentId: string, label: string) => void
   /**
    * Save the credential a pairing exchange answered with, reached through the
    * link's route, and connect to it beside whatever is connected already. It
@@ -1325,6 +1331,15 @@ export function ConnectionProvider({
     [tokenChanged, update],
   )
 
+  // A live connection heard the environment's name: from its handshake, or a
+  // rename on any device. Saved, so every list and card reads it now.
+  const noteEnvironmentName = useCallback(
+    (environmentId: string, label: string) => {
+      update((current) => setStoredLabel(current, environmentId, label))
+    },
+    [update],
+  )
+
   const addPairedEnvironment = useCallback(
     (input: { environmentId: string; endpoint: string; label: string; credential: string }) => {
       const endpoint = parseEnvironmentEndpoint(input.endpoint)
@@ -1412,6 +1427,7 @@ export function ConnectionProvider({
       confirmRoute,
       declineRoute,
       replaceCredential,
+      noteEnvironmentName,
       addPairedEnvironment,
       links,
     }),
@@ -1436,6 +1452,7 @@ export function ConnectionProvider({
       confirmRoute,
       declineRoute,
       replaceCredential,
+      noteEnvironmentName,
       addPairedEnvironment,
       links,
     ],

@@ -38,6 +38,7 @@ import {
   type Thread,
   type TransientEvent,
   UploadResultSchema,
+  EnvironmentChangedEventSchema,
   EnvironmentPlatformSchema,
   WorkspaceUnavailableDetailsSchema,
 } from '@openmanager/protocol'
@@ -1003,6 +1004,13 @@ export function createWebSocketEnvironmentClient(
     if (health.success) {
       const { providerId, health: next } = health.data.payload
       store.update((state) => applyProviderHealth(state, providerId, next))
+      return
+    }
+    // A new name for the environment: a current reading, broadcast to all.
+    const renamed = EnvironmentChangedEventSchema.safeParse(raw)
+    if (renamed.success) {
+      const { environment } = renamed.data.payload
+      store.update((state) => applyEnvironment(state, environment))
       return
     }
     // Usage limits travel the same way: a current reading, broadcast.
@@ -2004,6 +2012,11 @@ export function createWebSocketEnvironmentClient(
     },
     async setEnvironmentSettings(patch) {
       return (await request('environment.settings.set', { settings: patch })).settings
+    },
+    async renameEnvironment(label) {
+      const { environment } = await request('environment.rename', { label })
+      store.update((state) => applyEnvironment(state, environment))
+      return environment
     },
     async listDrafts() {
       const payload = await request('draft.list', null)

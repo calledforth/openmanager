@@ -3,6 +3,7 @@ import { useRouter } from '@tanstack/react-router'
 import {
   CloudSlashIcon,
   KeyIcon,
+  PencilSimpleIcon,
   PlugsIcon,
   PlusIcon,
   PushPinSimpleIcon,
@@ -27,10 +28,12 @@ import {
   type StoredEnvironment,
   routeHealthLabel,
 } from '@openmanager/environment-client/connection'
+import { ENVIRONMENT_NAME_MAX_LENGTH } from '@openmanager/protocol'
 import { platformBeside } from '../lib/environment-names'
 import { canClaimLocalOwner } from '../lib/local-owner'
 import { cn } from '../lib/utils'
 import type { AddRouteResult } from '../providers/connection-provider'
+import { RenameForm } from './rename-form'
 
 // Tend's connect field: borderless, sits on the hover tint and darkens on focus.
 const fieldClass =
@@ -435,10 +438,20 @@ function AddRouteControl({
   )
 }
 
+/**
+ * How to rename one environment: the name it goes by now, as its server has
+ * it, and the call that asks the server for a new one.
+ */
+export type EnvironmentRenameTarget = {
+  label: string
+  rename: (label: string) => Promise<void>
+}
+
 export function EnvironmentList({
   environments,
   selectedId,
   inUseEndpoint,
+  renameTarget,
   onSelect,
   onRemove,
   onDisconnect,
@@ -454,6 +467,11 @@ export function EnvironmentList({
    * first route in search order, which is where a connection starts.
    */
   inUseEndpoint?: string | null
+  /**
+   * Offers "Rename" on each environment it answers for: one that is
+   * connected now, on a server that can be renamed.
+   */
+  renameTarget?: (environmentId: string) => EnvironmentRenameTarget | undefined
   onSelect?: (environmentId: string) => void
   onRemove?: (environmentId: string) => void
   /** Leave the selected environment without forgetting it. */
@@ -468,10 +486,33 @@ export function EnvironmentList({
   useEffect(() => {
     onCheckRoutes?.()
   }, [onCheckRoutes])
+  const [renaming, setRenaming] = useState<string | null>(null)
+  const [renameBusy, setRenameBusy] = useState(false)
+  const [renameError, setRenameError] = useState<{ environmentId: string; message: string }>()
 
   if (environments.length === 0) return null
   // With one saved, the one in use needs no mark.
   const several = environments.length > 1
+
+  const saveName = async (
+    environmentId: string,
+    target: EnvironmentRenameTarget,
+    label: string,
+  ) => {
+    setRenameBusy(true)
+    setRenameError(undefined)
+    try {
+      await target.rename(label)
+      setRenaming(null)
+    } catch (error) {
+      setRenameError({
+        environmentId,
+        message: error instanceof Error ? error.message : "Couldn't rename the environment.",
+      })
+    } finally {
+      setRenameBusy(false)
+    }
+  }
 
   return (
     <ul className="mt-3 flex w-full flex-col gap-2 text-left" aria-label="Saved environments">
@@ -480,6 +521,10 @@ export function EnvironmentList({
         // Where this environment's connection is, or would start.
         const current =
           (selected ? inUseEndpoint : undefined) ?? routeSearchOrder(environment)[0]!.endpoint
+        const target = renameTarget?.(environment.environmentId)
+        const editing = target && renaming === environment.environmentId
+        const failure =
+          renameError?.environmentId === environment.environmentId ? renameError.message : undefined
         return (
           <li
             key={environment.environmentId}
@@ -487,64 +532,99 @@ export function EnvironmentList({
             className="flex flex-col rounded-lg bg-hover/70 p-1.5"
           >
             <div className="flex min-h-8 items-center gap-2 pl-2.5">
-              <p className="flex min-w-0 flex-1 items-center gap-2">
-                <Tooltip content={environment.environmentId}>
-                  <span className="truncate text-[13px] font-medium text-foreground">
-                    {environment.label}
-                  </span>
-                </Tooltip>
-                {platformBeside(environment) ? (
-                  <span className="shrink-0 rounded bg-active px-1.5 py-px text-[11px] text-muted-foreground">
-                    <span className="sr-only">Runs on </span>
-                    {platformBeside(environment)}
-                  </span>
-                ) : null}
-                {selected && several ? (
-                  <span className="shrink-0 rounded bg-active px-1.5 py-px text-[11px] text-muted-foreground">
-                    Current
-                  </span>
-                ) : null}
-                <span className="sr-only">
-                  {environment.credential ? 'Client token saved' : 'No client token'}
-                </span>
-                {environment.credential ? null : (
-                  <Tooltip content="No client token saved: pair this browser, or add the environment again with its token.">
-                    <KeyIcon
-                      aria-hidden
-                      className="size-3.5 shrink-0 text-[var(--basis-session-cube-needs)]"
-                    />
+              {editing ? (
+                <RenameForm
+                  // The server's own name, without what this list adds to tell twins apart.
+                  label={target.label}
+                  fieldLabel="Environment name"
+                  maxLength={ENVIRONMENT_NAME_MAX_LENGTH}
+                  busy={renameBusy}
+                  onCancel={() => {
+                    setRenaming(null)
+                    setRenameError(undefined)
+                  }}
+                  onSave={(label) => void saveName(environment.environmentId, target, label)}
+                />
+              ) : (
+                <p className="flex min-w-0 flex-1 items-center gap-2">
+                  <Tooltip content={environment.environmentId}>
+                    <span className="truncate text-[13px] font-medium text-foreground">
+                      {environment.label}
+                    </span>
                   </Tooltip>
-                )}
-              </p>
-              <div className="flex shrink-0 items-center">
-                {onSelect && !selected ? (
-                  <Button
-                    type="button"
-                    variant="secondary"
-                    size="compact"
-                    className="mr-1"
-                    aria-label={`Connect to ${environment.label}`}
-                    onClick={() => onSelect(environment.environmentId)}
-                  >
-                    Connect
-                  </Button>
-                ) : null}
-                {onDisconnect && selected ? (
-                  <IconAction
-                    label={`Disconnect from ${environment.label}`}
-                    icon={PlugsIcon}
-                    onClick={onDisconnect}
-                  />
-                ) : null}
-                {onRemove ? (
-                  <IconAction
-                    label={`Remove ${environment.label}`}
-                    icon={TrashIcon}
-                    onClick={() => onRemove(environment.environmentId)}
-                  />
-                ) : null}
-              </div>
+                  {platformBeside(environment) ? (
+                    <span className="shrink-0 rounded bg-active px-1.5 py-px text-[11px] text-muted-foreground">
+                      <span className="sr-only">Runs on </span>
+                      {platformBeside(environment)}
+                    </span>
+                  ) : null}
+                  {selected && several ? (
+                    <span className="shrink-0 rounded bg-active px-1.5 py-px text-[11px] text-muted-foreground">
+                      Current
+                    </span>
+                  ) : null}
+                  <span className="sr-only">
+                    {environment.credential ? 'Client token saved' : 'No client token'}
+                  </span>
+                  {environment.credential ? null : (
+                    <Tooltip content="No client token saved: pair this browser, or add the environment again with its token.">
+                      <KeyIcon
+                        aria-hidden
+                        className="size-3.5 shrink-0 text-[var(--basis-session-cube-needs)]"
+                      />
+                    </Tooltip>
+                  )}
+                </p>
+              )}
+              {editing ? null : (
+                <div className="flex shrink-0 items-center">
+                  {onSelect && !selected ? (
+                    <Button
+                      type="button"
+                      variant="secondary"
+                      size="compact"
+                      className="mr-1"
+                      aria-label={`Connect to ${environment.label}`}
+                      onClick={() => onSelect(environment.environmentId)}
+                    >
+                      Connect
+                    </Button>
+                  ) : null}
+                  {onDisconnect && selected ? (
+                    <IconAction
+                      label={`Disconnect from ${environment.label}`}
+                      icon={PlugsIcon}
+                      onClick={onDisconnect}
+                    />
+                  ) : null}
+                  {target ? (
+                    <IconAction
+                      label={`Rename ${environment.label}`}
+                      icon={PencilSimpleIcon}
+                      onClick={() => {
+                        setRenameError(undefined)
+                        setRenaming(environment.environmentId)
+                      }}
+                    />
+                  ) : null}
+                  {onRemove ? (
+                    <IconAction
+                      label={`Remove ${environment.label}`}
+                      icon={TrashIcon}
+                      onClick={() => onRemove(environment.environmentId)}
+                    />
+                  ) : null}
+                </div>
+              )}
             </div>
+            {failure ? (
+              <p
+                role="alert"
+                className="px-2.5 pt-1 text-[12px] text-[var(--basis-session-cube-needs)]"
+              >
+                {failure}
+              </p>
+            ) : null}
             <ul className="mt-0.5 flex flex-col" aria-label={`Routes to ${environment.label}`}>
               {environment.routes.map((route) => (
                 <RouteRow

@@ -630,6 +630,26 @@ export function setStoredCredential(
   }
 }
 
+/**
+ * Take the name an environment now goes by, as after it was renamed. Routes,
+ * token and selection are untouched. Returns the registry unchanged for an
+ * unknown environment or a name it already has.
+ */
+export function setStoredLabel(
+  registry: EnvironmentRegistry,
+  environmentId: string,
+  label: string,
+): EnvironmentRegistry {
+  const existing = findStoredEnvironment(registry.environments, environmentId)
+  if (!existing || !label.trim()) return registry
+  const parsed = parseLabel(label)
+  if (parsed === existing.label) return registry
+  return {
+    ...registry,
+    environments: replaceEnvironment(registry, { ...existing, label: parsed }),
+  }
+}
+
 /** Note whether the socket refused the environment's token. */
 export function setStoredTokenRefused(
   registry: EnvironmentRegistry,

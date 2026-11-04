@@ -1099,6 +1099,28 @@ describe('websocket environment client', () => {
     expect(socket.sent.some((message) => message.name === 'environment.get')).toBe(false)
   })
 
+  it('names the platform from the handshake, and takes a rename broadcast to every socket', async () => {
+    const { client, socket } = await connected(
+      FULL_CAPABILITIES.filter((name) => name !== 'environment.get'),
+      { label: 'devbox', platform: 'wsl' },
+    )
+    expect(client.getState().environment).toEqual({
+      environmentId: ENV,
+      name: 'devbox',
+      platform: 'wsl',
+    })
+    socket.receive({
+      type: 'event',
+      name: 'environment.changed',
+      payload: { environment: { environmentId: ENV, name: 'Laptop', platform: 'wsl' } },
+    })
+    expect(client.getState().environment).toEqual({
+      environmentId: ENV,
+      name: 'Laptop',
+      platform: 'wsl',
+    })
+  })
+
   it('seeds providers and their health from the handshake', async () => {
     const { client, socket } = await connected(FULL_CAPABILITIES, { providers: [BARE_PROVIDER] })
     expect(selectProviderCatalog(client.getState())).toEqual([BARE_PROVIDER])
