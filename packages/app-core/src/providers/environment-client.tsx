@@ -53,6 +53,15 @@ export function useEnvironmentClientOptional(): EnvironmentClient | null {
   return useContext(EnvironmentClientContext)
 }
 
+const subscribeToNothing = () => () => undefined
+
+/** The open environment's id; null until it is known, or with no environment at all. */
+export function useOpenEnvironmentId(): string | null {
+  const client = useEnvironmentClientOptional()
+  const read = () => client?.getState().environment?.environmentId ?? null
+  return useSyncExternalStore(client?.subscribe ?? subscribeToNothing, read, read)
+}
+
 export function useEnvironmentCommands() {
   return useEnvironmentClient().commands
 }

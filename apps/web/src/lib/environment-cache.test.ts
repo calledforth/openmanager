@@ -9,6 +9,7 @@ import {
 import { EVENT_FORMAT_VERSION, PROTOCOL_VERSION } from '@openmanager/protocol'
 import {
   createEnvironmentCache,
+  deleteEnvironmentCache,
   environmentCacheName,
   readEnvironmentCache,
   writeEnvironmentCache,
@@ -92,6 +93,36 @@ describe('environment identity cache', () => {
     expect(restored.threads.thread!.outbox).toEqual([])
     expect(restored.threads.thread!.hydration).toBe('idle')
     expect(state.threads.thread!.outbox).toHaveLength(1)
+  })
+
+  it("deletes a removed environment's copy after a save on its way, and not the other's", async () => {
+    // The same domain ids in both, as with a server restored from a copy.
+    await writeEnvironmentCache('env-kept', seed('env-kept'))
+    const pending = writeEnvironmentCache('env-removed', seed('env-removed'))
+    const removal = deleteEnvironmentCache('env-removed')
+    // Its client's last save as it is torn down: not written back.
+    await writeEnvironmentCache('env-removed', seed('env-removed'))
+    await Promise.all([pending, removal])
+
+    const names = (await indexedDB.databases()).map((database) => database.name)
+    expect(names).not.toContain(environmentCacheName('env-removed'))
+    expect(names).toContain(environmentCacheName('env-kept'))
+    expect(await readEnvironmentCache('env-removed')).toBeNull()
+    expect((await readEnvironmentCache('env-kept'))!.sessions.session!.title).toBe('Cached session')
+  })
+
+  it('starts an environment added again after its removal from nothing, and saves it again', async () => {
+    const cache = createEnvironmentCache()
+    const store = await cache.getStore('env-back')
+    store.update(() => seed('env-back'))
+    await writeEnvironmentCache('env-back', store.getState())
+    await deleteEnvironmentCache('env-back')
+
+    const again = await cache.getStore('env-back')
+    expect(again).not.toBe(store)
+    expect(again.getState().sessions).toEqual({})
+    await writeEnvironmentCache('env-back', seed('env-back'))
+    expect((await readEnvironmentCache('env-back'))!.sessions.session!.title).toBe('Cached session')
   })
 
   it('serializes overlapping writes and waits for the newest snapshot on reload', async () => {

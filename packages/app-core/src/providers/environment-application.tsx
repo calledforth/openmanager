@@ -108,7 +108,6 @@ import {
 import {
   SidebarDataContext,
   SidebarSessionsContext,
-  toggleCollapsedWorkspace,
   type SidebarDataValue,
   type SidebarEnvironment,
   type SidebarSessionsByWorkspace,
@@ -135,11 +134,10 @@ import { providerHealthReportFromWire } from '../lib/provider-health-view'
 import { DEFAULT_PROVIDER_ID, availableProviderIds } from './draft-provider'
 import { groupSidebarSessions, reuseUnchanged, toWorkspaceEntry } from './sidebar-rows'
 
-const COLLAPSED_WORKSPACES_KEY = 'openmanager.sidebar.collapsed-workspaces'
-
 /** Stable identity: an inline callback here re-renders every message row. */
 const noop = () => undefined
 const EMPTY_LIST: never[] = []
+const NO_COLLAPSED_WORKSPACES: string[] = []
 
 export interface EnvironmentApplicationOptions {
   /** How this host lets the user add a workspace; absent means it cannot. */
@@ -167,8 +165,8 @@ export interface EnvironmentApplicationOptions {
    * nothing: its page waits rather than giving up the address. */
   holdLandingDraft?: boolean
   /**
-   * What this device remembers for itself: folded sidebar rows, where a sent
-   * draft's address leads, composer drafts kept before the environment did.
+   * What this device remembers for itself: where a sent draft's address
+   * leads, composer drafts kept before the environment did.
    * Defaults to the browser's `localStorage`; `null` keeps nothing.
    */
   storage?: DeviceStorage | null
@@ -181,8 +179,6 @@ export interface EnvironmentApplicationOptions {
    * environment refuses to start one rather than start it on that machine.
    */
   environmentId?: string
-  /** Where folded sidebar rows are remembered. Defaults to `storage`. */
-  collapsedWorkspaceStorage?: Pick<DeviceStorage, 'getItem' | 'setItem'> | null
   /** Host actions for views (child sessions, icons, uploads). */
   viewActions?: Omit<ViewActions, 'activeSessionId'>
 }
@@ -219,7 +215,7 @@ export function EnvironmentApplicationProviders({
         >
           <EnvironmentComposerStateProvider>
             <EnvironmentComposerDraftProvider>
-              <EnvironmentSidebarDataProvider storage={options.collapsedWorkspaceStorage}>
+              <EnvironmentSidebarDataProvider>
                 <EnvironmentActiveThreadProvider>
                   <EnvironmentInteractionProviders>
                     <EnvironmentViewActions actions={options.viewActions}>
@@ -716,7 +712,9 @@ function EnvironmentSessionStateProvider({
   // the environment for it, and leads on to `/` if it has gone since.
   const draftsListed = useEnvironmentState(selectDraftsListed)
   const sentSessionId =
-    pagePending && shown ? sentDraftSession(shown.draftId, deviceStorage) : undefined
+    pagePending && shown
+      ? sentDraftSession(landingEnvironmentId, shown.draftId, deviceStorage)
+      : undefined
   const sentSessionKnown = useEnvironmentState((state) =>
     sentSessionId ? state.sessions[sentSessionId] !== undefined : false,
   )
@@ -730,7 +728,12 @@ function EnvironmentSessionStateProvider({
     if (redirectedRef.current !== routeDraft) redirectedRef.current = null
     if (!pageUnusable || !pageDraftId || selectedSessionId !== null) return
     if (pageConsumed && consumedSessionId) {
-      rememberSentDraft(pageDraftId, consumedSessionId, deviceStorage)
+      rememberSentDraft(
+        landingEnvironmentRef.current,
+        pageDraftId,
+        consumedSessionId,
+        deviceStorage,
+      )
     }
     if (!routed || !navigateSession) {
       // No address to follow: a blank page takes its place, in its project.
@@ -809,7 +812,7 @@ function EnvironmentSessionStateProvider({
     if (!movedOn && retiredState !== 'restored') return
     setRetired(null)
     if (movedOn) return
-    forgetSentDraft(retired.draftId, deviceStorage)
+    forgetSentDraft(landingEnvironmentRef.current, retired.draftId, deviceStorage)
     if (routeDraft !== retired.draftId) {
       void navigateDraft?.(retired.draftId, { replace: true }).catch(noop)
     }
@@ -1099,7 +1102,7 @@ function EnvironmentSessionStateProvider({
       if (draft) {
         client.drafts?.endLaunch(draft.draftId, 'sent')
         claimedRef.current.delete(draft.draftId)
-        rememberSentDraft(draft.draftId, session.sessionId, deviceStorage)
+        rememberSentDraft(environmentId, draft.draftId, session.sessionId, deviceStorage)
       }
       // The user moved on, while its images uploaded or the session was
       // being created: do not pull the view back to it, nor take the page
@@ -1310,28 +1313,10 @@ function EnvironmentSessionStateProvider({
 }
 
 // ---------------------------------------------------------------------------
-// Sidebar data: the catalog, grouped; folded rows remembered in storage.
+// Sidebar data: the catalog, grouped.
 // ---------------------------------------------------------------------------
 
-function readCollapsed(storage: EnvironmentApplicationOptions['collapsedWorkspaceStorage']) {
-  try {
-    const raw = storage?.getItem(COLLAPSED_WORKSPACES_KEY)
-    const parsed: unknown = raw ? JSON.parse(raw) : []
-    return Array.isArray(parsed)
-      ? parsed.filter((item): item is string => typeof item === 'string')
-      : []
-  } catch {
-    return []
-  }
-}
-
-function EnvironmentSidebarDataProvider({
-  storage: storageOption,
-  children,
-}: {
-  storage?: EnvironmentApplicationOptions['collapsedWorkspaceStorage']
-  children: ReactNode
-}) {
+function EnvironmentSidebarDataProvider({ children }: { children: ReactNode }) {
   const client = useEnvironmentClient()
   const session = useContext(SessionStateContext)!
   const environmentState = useEnvironmentState((state) => state.environment)
@@ -1339,25 +1324,6 @@ function EnvironmentSidebarDataProvider({
   const recentWorkspaces = useRecentWorkspaces()
   const sessions = useSessionList()
   const connection = useConnectionState()
-  const deviceStorage = useDeviceStorage()
-  const storage = storageOption === undefined ? deviceStorage : storageOption
-  const [collapsedWorkspacePaths, setCollapsed] = useState<string[]>(() => readCollapsed(storage))
-
-  const toggleWorkspaceCollapsed = useCallback(
-    (workspacePath: string) => {
-      setCollapsed((prev) => {
-        const next = toggleCollapsedWorkspace(prev, workspacePath)
-        try {
-          storage?.setItem(COLLAPSED_WORKSPACES_KEY, JSON.stringify(next))
-        } catch {
-          /* best effort */
-        }
-        return next
-      })
-    },
-    [storage],
-  )
-
   const activeEnvironmentId = environmentState?.environmentId
   const environment = useMemo<SidebarEnvironment | undefined>(() => {
     const label = environmentState?.name.trim()
@@ -1445,8 +1411,9 @@ function EnvironmentSidebarDataProvider({
       isWorkspacesLoading,
       activeWorkspacePath: session.activeWorkspacePath,
       activeSessionId: session.activeSessionId,
-      collapsedWorkspacePaths,
-      toggleWorkspaceCollapsed,
+      // Folding project rows is the desktop sidebar's; none fold here.
+      collapsedWorkspacePaths: NO_COLLAPSED_WORKSPACES,
+      toggleWorkspaceCollapsed: noop,
       addWorkspace: session.addWorkspace,
       removeWorkspace: session.removeWorkspace,
       selectSession: session.selectSession,
@@ -1470,7 +1437,6 @@ function EnvironmentSidebarDataProvider({
       session.regenerateSessionTitle,
       canAcknowledge,
       acknowledgeSessionDone,
-      collapsedWorkspacePaths,
       environment,
       isWorkspacesLoading,
       recentEntries,
@@ -1482,7 +1448,6 @@ function EnvironmentSidebarDataProvider({
       session.deleteSession,
       session.removeWorkspace,
       session.selectSession,
-      toggleWorkspaceCollapsed,
       workspaceEntries,
     ],
   )

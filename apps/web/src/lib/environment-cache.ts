@@ -28,6 +28,8 @@ interface CachedDocument {
 }
 const STATE_STORE = 'state'
 const writes = new Map<string, Promise<void>>()
+/** Removed by the user: nothing is saved for them until they are added again. */
+const removed = new Set<string>()
 
 /** URLs and credentials never participate in the cache namespace or payload. */
 export function environmentCacheName(environmentId: string): string {
@@ -140,9 +142,15 @@ export function writeEnvironmentCache(
   environmentId: string,
   state: EnvironmentState,
 ): Promise<void> {
-  if (state.environment?.environmentId !== environmentId) return Promise.resolve()
+  if (state.environment?.environmentId !== environmentId || removed.has(environmentId)) {
+    return Promise.resolve()
+  }
+  return queue(environmentId, () => persistEnvironmentCache(environmentId, state))
+}
+
+function queue(environmentId: string, run: () => Promise<void>): Promise<void> {
   const previous = writes.get(environmentId) ?? Promise.resolve()
-  const next = previous.then(() => persistEnvironmentCache(environmentId, state))
+  const next = previous.then(run)
   writes.set(environmentId, next)
   void next.finally(() => {
     if (writes.get(environmentId) === next) writes.delete(environmentId)
@@ -150,11 +158,40 @@ export function writeEnvironmentCache(
   return next
 }
 
+/**
+ * The user removed this environment: delete what this browser kept of it,
+ * after any save already on its way. The save its client makes as it goes is
+ * skipped, so the copy is not written back. Only for an explicit removal: an
+ * environment that cannot be reached keeps its copy, which may hold the only
+ * copy of unsent drafts.
+ */
+export function deleteEnvironmentCache(environmentId: string): Promise<void> {
+  removed.add(environmentId)
+  return queue(
+    environmentId,
+    () =>
+      new Promise<void>((resolve) => {
+        try {
+          const request = globalThis.indexedDB.deleteDatabase(environmentCacheName(environmentId))
+          request.onsuccess = () => resolve()
+          request.onerror = () => resolve()
+          // Waits for open connections to close; each operation here closes its own.
+          request.onblocked = () => undefined
+        } catch {
+          // Private mode or an unavailable IndexedDB: there is nothing kept to delete.
+          resolve()
+        }
+      }),
+  )
+}
+
 /** One store per identity, including while its route is being verified. */
 export function createEnvironmentCache() {
   const stores = new Map<string, Promise<EnvironmentStore>>()
   return {
     getStore(environmentId: string): Promise<EnvironmentStore> {
+      // Added again after a removal: it starts from nothing, and is saved again.
+      if (removed.delete(environmentId)) stores.delete(environmentId)
       let store = stores.get(environmentId)
       if (!store) {
         store = readEnvironmentCache(environmentId).then((state) =>

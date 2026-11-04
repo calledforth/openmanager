@@ -308,7 +308,7 @@ function QuickAgentThread({
         if (kept) {
           client.drafts?.endLaunch(kept.draftId, 'sent')
           // Its address, if it was ever opened as a page, leads to the session.
-          rememberSentDraft(kept.draftId, created.session.sessionId)
+          rememberSentDraft(environmentId, kept.draftId, created.session.sessionId)
         }
         draftLaunched(launch)
         setStarting(false)

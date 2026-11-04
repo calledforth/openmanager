@@ -930,7 +930,7 @@ describe('the shared application over the environment client', () => {
     await render(
       <ThemeProvider>
         <EnvironmentClientProvider client={client}>
-          <EnvironmentApplicationProviders collapsedWorkspaceStorage={null}>
+          <EnvironmentApplicationProviders>
             <ChatWorkspace />
             <Probe />
           </EnvironmentApplicationProviders>
@@ -985,7 +985,7 @@ describe('the shared application over the environment client', () => {
     await render(
       <ThemeProvider>
         <EnvironmentClientProvider client={client}>
-          <EnvironmentApplicationProviders collapsedWorkspaceStorage={null}>
+          <EnvironmentApplicationProviders>
             <ChatWorkspace />
             <Probe />
           </EnvironmentApplicationProviders>
@@ -1042,7 +1042,7 @@ describe('the shared application over the environment client', () => {
     await render(
       <ThemeProvider>
         <EnvironmentClientProvider client={client}>
-          <EnvironmentApplicationProviders collapsedWorkspaceStorage={null}>
+          <EnvironmentApplicationProviders>
             <ChatWorkspace />
             <Probe />
           </EnvironmentApplicationProviders>
@@ -1085,7 +1085,7 @@ describe('the shared application over the environment client', () => {
     await render(
       <ThemeProvider>
         <EnvironmentClientProvider client={client}>
-          <EnvironmentApplicationProviders collapsedWorkspaceStorage={null}>
+          <EnvironmentApplicationProviders>
             <ChatWorkspace />
             <Probe />
           </EnvironmentApplicationProviders>
@@ -1137,7 +1137,7 @@ describe('the shared application over the environment client', () => {
     await render(
       <ThemeProvider>
         <EnvironmentClientProvider client={client}>
-          <EnvironmentApplicationProviders collapsedWorkspaceStorage={null}>
+          <EnvironmentApplicationProviders>
             <ChatWorkspace />
             <Probe />
           </EnvironmentApplicationProviders>
@@ -1178,7 +1178,7 @@ describe('the shared application over the environment client', () => {
     await render(
       <ThemeProvider>
         <EnvironmentClientProvider client={client}>
-          <EnvironmentApplicationProviders collapsedWorkspaceStorage={null}>
+          <EnvironmentApplicationProviders>
             <Probe />
           </EnvironmentApplicationProviders>
         </EnvironmentClientProvider>
@@ -1191,10 +1191,7 @@ describe('the shared application over the environment client', () => {
     await render(
       <ThemeProvider>
         <EnvironmentClientProvider client={createMockEnvironmentClient({ seed: SEEDED_HISTORY })}>
-          <EnvironmentApplicationProviders
-            collapsedWorkspaceStorage={null}
-            viewActions={{ uploadAttachments: hostUpload }}
-          >
+          <EnvironmentApplicationProviders viewActions={{ uploadAttachments: hostUpload }}>
             <Probe />
           </EnvironmentApplicationProviders>
         </EnvironmentClientProvider>
@@ -1223,7 +1220,7 @@ describe('the shared application over the environment client', () => {
     await render(
       <ThemeProvider>
         <EnvironmentClientProvider client={client}>
-          <EnvironmentApplicationProviders collapsedWorkspaceStorage={null}>
+          <EnvironmentApplicationProviders>
             <ChatWorkspace />
             <Probe />
           </EnvironmentApplicationProviders>
@@ -1437,7 +1434,7 @@ describe('the shared application over the environment client', () => {
     await render(
       <ThemeProvider>
         <EnvironmentClientProvider client={client}>
-          <EnvironmentApplicationProviders collapsedWorkspaceStorage={null}>
+          <EnvironmentApplicationProviders>
             <Probe />
           </EnvironmentApplicationProviders>
         </EnvironmentClientProvider>
@@ -1759,7 +1756,7 @@ describe('the new-session landing', () => {
     const tree = (landing: boolean) => (
       <ThemeProvider>
         <EnvironmentClientProvider client={client}>
-          <EnvironmentApplicationProviders collapsedWorkspaceStorage={null} onLanding={landing}>
+          <EnvironmentApplicationProviders onLanding={landing}>
             <ChatWorkspace />
             <Probe />
           </EnvironmentApplicationProviders>

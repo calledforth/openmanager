@@ -135,7 +135,6 @@ function Host({ client }: { client: MockEnvironmentClient }) {
   })
   return (
     <EnvironmentApplicationProviders
-      collapsedWorkspaceStorage={null}
       onLanding={'draftId' in route}
       landingDraftId={'draftId' in route ? route.draftId : null}
       navigateSession={async (sessionId) => {

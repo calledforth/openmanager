@@ -20,17 +20,33 @@ export interface TimelinePosition {
 const MAX_REMEMBERED_SESSIONS = 100
 const positions = new Map<string, TimelinePosition>()
 
-export function rememberTimelinePosition(sessionId: string, position: TimelinePosition): void {
-  positions.delete(sessionId)
-  positions.set(sessionId, position)
+/**
+ * By environment as well as session: a server restored from a copy of
+ * another's database holds the same session ids. Null on a host without
+ * environments.
+ */
+const positionKey = (environmentId: string | null, sessionId: string) =>
+  JSON.stringify([environmentId, sessionId])
+
+export function rememberTimelinePosition(
+  environmentId: string | null,
+  sessionId: string,
+  position: TimelinePosition,
+): void {
+  const key = positionKey(environmentId, sessionId)
+  positions.delete(key)
+  positions.set(key, position)
   if (positions.size > MAX_REMEMBERED_SESSIONS) {
     const oldest = positions.keys().next().value
     if (oldest !== undefined) positions.delete(oldest)
   }
 }
 
-export function recallTimelinePosition(sessionId: string): TimelinePosition | undefined {
-  return positions.get(sessionId)
+export function recallTimelinePosition(
+  environmentId: string | null,
+  sessionId: string,
+): TimelinePosition | undefined {
+  return positions.get(positionKey(environmentId, sessionId))
 }
 
 export function forgetTimelinePositions(): void {

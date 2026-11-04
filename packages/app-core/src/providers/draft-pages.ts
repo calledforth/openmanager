@@ -60,6 +60,16 @@ const SENT_DRAFTS_LIMIT = 100
 // This tab's own sends, for a browser whose storage is unavailable.
 const sentHere = new Map<string, string>()
 
+/**
+ * A sent draft's entry, by its environment as well: a server restored from a
+ * copy of another's database holds the same draft ids. Entries from before
+ * environments were part of it are under the draft id alone; they are still
+ * read, for whichever environment asks.
+ */
+function sentKey(environmentId: string | null | undefined, draftId: string): string {
+  return environmentId ? JSON.stringify([environmentId, draftId]) : draftId
+}
+
 function readSent(storage: DeviceStorage | null): Record<string, string> {
   try {
     const parsed: unknown = JSON.parse(storage?.getItem(SENT_DRAFTS_KEY) ?? '{}')
@@ -80,16 +90,20 @@ function readSent(storage: DeviceStorage | null): Record<string, string> {
  * nothing it lists ties the two together.
  */
 export function rememberSentDraft(
+  environmentId: string | null | undefined,
   draftId: string,
   sessionId: string,
   storage: DeviceStorage | null = browserStorage(),
 ) {
-  sentHere.set(draftId, sessionId)
+  const key = sentKey(environmentId, draftId)
+  sentHere.set(key, sessionId)
   const sent = readSent(storage)
+  delete sent[key]
+  // An entry from before environments counted is this one, now kept by its environment.
   delete sent[draftId]
-  sent[draftId] = sessionId
-  const ids = Object.keys(sent)
-  for (const id of ids.slice(0, Math.max(0, ids.length - SENT_DRAFTS_LIMIT))) delete sent[id]
+  sent[key] = sessionId
+  const keys = Object.keys(sent)
+  for (const id of keys.slice(0, Math.max(0, keys.length - SENT_DRAFTS_LIMIT))) delete sent[id]
   try {
     storage?.setItem(SENT_DRAFTS_KEY, JSON.stringify(sent))
   } catch {
@@ -99,10 +113,13 @@ export function rememberSentDraft(
 
 /** The session a draft sent from this browser became, if it remembers one. */
 export function sentDraftSession(
+  environmentId: string | null | undefined,
   draftId: string,
   storage: DeviceStorage | null = browserStorage(),
 ): string | undefined {
-  return sentHere.get(draftId) ?? readSent(storage)[draftId]
+  const key = sentKey(environmentId, draftId)
+  const sent = readSent(storage)
+  return sentHere.get(key) ?? sent[key] ?? sent[draftId]
 }
 
 const LANDING_PROJECTS_KEY = 'openmanager.landing-projects'
@@ -150,10 +167,16 @@ export function rememberedLandingProject(
 }
 
 /** The draft is back (its session was rolled back): its address is its own again. */
-export function forgetSentDraft(draftId: string, storage: DeviceStorage | null = browserStorage()) {
-  sentHere.delete(draftId)
+export function forgetSentDraft(
+  environmentId: string | null | undefined,
+  draftId: string,
+  storage: DeviceStorage | null = browserStorage(),
+) {
+  const key = sentKey(environmentId, draftId)
+  sentHere.delete(key)
   const sent = readSent(storage)
-  if (!(draftId in sent)) return
+  if (!(key in sent) && !(draftId in sent)) return
+  delete sent[key]
   delete sent[draftId]
   try {
     storage?.setItem(SENT_DRAFTS_KEY, JSON.stringify(sent))

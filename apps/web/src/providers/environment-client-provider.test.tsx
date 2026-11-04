@@ -16,7 +16,11 @@ import {
   ENVIRONMENT_STORAGE_KEY,
   WRONG_ENVIRONMENT_MESSAGE,
 } from '@openmanager/environment-client/connection'
-import { readEnvironmentCache, writeEnvironmentCache } from '../lib/environment-cache'
+import {
+  createEnvironmentCache,
+  readEnvironmentCache,
+  writeEnvironmentCache,
+} from '../lib/environment-cache'
 import { createQueryClient } from '../query-client'
 import { ConnectionProvider, useConnection } from './connection-provider'
 import { WebEnvironmentClientProvider } from './environment-client-provider'
@@ -862,9 +866,7 @@ describe('WebEnvironmentClientProvider', () => {
 
     connection = { phase: 'closed', failure: { code: 'auth', message: 'Token revoked.' } }
     act(() => notify())
-    await waitFor(() =>
-      expect(screen.getByText('reason: credential_rejected')).toBeInTheDocument(),
-    )
+    await waitFor(() => expect(screen.getByText('reason: credential_rejected')).toBeInTheDocument())
     const dialled = client.connect.mock.calls.length
     act(() => screen.getByRole('button', { name: 'remove other' }).click())
     await act(async () => {
@@ -994,9 +996,7 @@ describe('WebEnvironmentClientProvider', () => {
 
     connection = { phase: 'closed', failure: { code: 'auth', message: 'Token revoked.' } }
     act(() => notify())
-    await waitFor(() =>
-      expect(screen.getByText('reason: credential_rejected')).toBeInTheDocument(),
-    )
+    await waitFor(() => expect(screen.getByText('reason: credential_rejected')).toBeInTheDocument())
 
     act(() => screen.getByRole('button', { name: 'select other' }).click())
 
@@ -1202,9 +1202,7 @@ describe('WebEnvironmentClientProvider', () => {
 
     connection = { phase: 'closed', failure: { code: 'auth', message: 'Token revoked.' } }
     act(() => notify())
-    await waitFor(() =>
-      expect(screen.getByText('reason: credential_rejected')).toBeInTheDocument(),
-    )
+    await waitFor(() => expect(screen.getByText('reason: credential_rejected')).toBeInTheDocument())
 
     // Pairing adds it beside the one in use; moving there is a separate choice.
     act(() => screen.getByRole('button', { name: 'pair other' }).click())
@@ -1874,7 +1872,10 @@ describe('what may open a socket', () => {
 
     // The socket drops and its own backoff would dial the same address again.
     answering = 'env-other'
-    script.connection = { phase: 'reconnecting', failure: { code: 'unavailable', message: 'Closed.' } }
+    script.connection = {
+      phase: 'reconnecting',
+      failure: { code: 'unavailable', message: 'Closed.' },
+    }
     script.tell()
 
     await waitFor(() => expect(client.dispose).toHaveBeenCalled())
@@ -1966,7 +1967,8 @@ describe('what may open a socket', () => {
     const { createClient, dials, clients } = trackDials()
     renderProvider(createClient)
     await waitFor(() => expect(dials).toHaveLength(2))
-    const other = clients[createClient.mock.calls.findIndex(([o]) => o.environmentId === 'env-other')]!
+    const other =
+      clients[createClient.mock.calls.findIndex(([o]) => o.environmentId === 'env-other')]!
 
     const registry = JSON.parse(localStorage.getItem(ENVIRONMENT_STORAGE_KEY)!) as {
       environments: Array<{ environmentId: string }>
@@ -2044,9 +2046,11 @@ describe('what may open a socket', () => {
     renderProvider(() => client)
     await waitFor(() => expect(screen.getByText('ready:client')).toBeInTheDocument())
     const saved = () =>
-      (JSON.parse(localStorage.getItem(ENVIRONMENT_STORAGE_KEY)!) as {
-        environments: Array<{ tokenRefused?: boolean }>
-      }).environments[0]!.tokenRefused
+      (
+        JSON.parse(localStorage.getItem(ENVIRONMENT_STORAGE_KEY)!) as {
+          environments: Array<{ tokenRefused?: boolean }>
+        }
+      ).environments[0]!.tokenRefused
 
     script.connection = { phase: 'closed', failure: { code: 'auth', message: 'Revoked.' } }
     script.tell()
@@ -2241,6 +2245,50 @@ describe('an environment this browser has a cache of', () => {
     await waitFor(async () =>
       expect((await readEnvironmentCache('env-other'))?.activeSessionId).toBe('typed'),
     )
+  })
+
+  it('deletes the copy of an environment the user removes, and keeps one that cannot be reached', async () => {
+    vi.stubGlobal('indexedDB', new IDBFactory())
+    await writeEnvironmentCache('env-local', CACHED)
+    await writeEnvironmentCache('env-other', {
+      ...CACHED,
+      environment: { environmentId: 'env-other', name: 'Other' },
+    })
+    seedTwoEnvironments()
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => {
+        throw new TypeError('Failed to fetch')
+      }),
+    )
+    const stores = new Map<string, EnvironmentStore>()
+    renderProvider((options) => {
+      stores.set(options.environmentId!, options.store!)
+      return createFakeClient()
+    })
+    await waitFor(() => expect(stores.size).toBe(2))
+    // A change waiting to be saved, which tearing its client down would write.
+    stores.get('env-other')!.update((state) => ({ ...state, activeSessionId: 'typed' }))
+
+    act(() => screen.getByRole('button', { name: 'remove other' }).click())
+    await waitFor(async () => {
+      const names = (await indexedDB.databases()).map((database) => database.name)
+      expect(names).not.toContain('openmanager-environment:env-other')
+    })
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 50))
+    })
+    expect(await readEnvironmentCache('env-other')).toBeNull()
+    // Unreachable is not removed: its copy stays.
+    expect((await readEnvironmentCache('env-local'))?.environment?.environmentId).toBe('env-local')
+
+    // Added again later: saved as any other.
+    await createEnvironmentCache().getStore('env-other')
+    await writeEnvironmentCache('env-other', {
+      ...CACHED,
+      environment: { environmentId: 'env-other', name: 'Other' },
+    })
+    expect(await readEnvironmentCache('env-other')).not.toBeNull()
   })
 
   it('stays hidden after a reload when the token was refused, until a socket gets through', async () => {
