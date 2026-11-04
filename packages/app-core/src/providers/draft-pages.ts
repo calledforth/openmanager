@@ -210,14 +210,17 @@ export function rememberedLandingProject(
 export function forgetSentDraft(
   environmentId: string | null | undefined,
   draftId: string,
+  sessionId: string,
   storage: DeviceStorage | null = browserStorage(),
 ) {
   const key = sentKey(environmentId, draftId)
   sentHere.delete(key)
   const sent = readSent(storage)
-  if (!(key in sent) && !(draftId in sent)) return
+  // An entry from before environments counted goes only if it is this same send.
+  const legacy = sent[draftId] === sessionId
+  if (!(key in sent) && !legacy) return
   delete sent[key]
-  delete sent[draftId]
+  if (legacy) delete sent[draftId]
   try {
     storage?.setItem(SENT_DRAFTS_KEY, JSON.stringify(sent))
   } catch {

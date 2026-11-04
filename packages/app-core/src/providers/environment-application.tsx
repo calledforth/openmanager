@@ -816,7 +816,12 @@ function EnvironmentSessionStateProvider({
     if (!movedOn && retiredState !== 'restored') return
     setRetired(null)
     if (movedOn) return
-    forgetSentDraft(landingEnvironmentRef.current, retired.draftId, deviceStorage)
+    forgetSentDraft(
+      landingEnvironmentRef.current,
+      retired.draftId,
+      retired.sessionId,
+      deviceStorage,
+    )
     if (routeDraft !== retired.draftId) {
       void navigateDraft?.(retired.draftId, { replace: true }).catch(noop)
     }

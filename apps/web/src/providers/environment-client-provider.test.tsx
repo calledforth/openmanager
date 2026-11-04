@@ -2325,13 +2325,50 @@ describe('an environment this browser has a cache of', () => {
       text: 'not sent yet',
     })
 
-    stores.delete('env-other')
+    // A reload: nothing of the old store is left in memory, only what is on disk.
+    cleanup()
+    forgetRemovedEnvironments()
+    const reloaded = new Map<string, EnvironmentStore>()
+    renderProvider((options) => {
+      reloaded.set(options.environmentId!, options.store!)
+      return createFakeClient()
+    })
+    await waitFor(() => expect(reloaded.has('env-local')).toBe(true))
+    expect(reloaded.has('env-other')).toBe(false)
     act(() => screen.getByRole('button', { name: 'pair other' }).click())
     await waitFor(() =>
-      expect(stores.get('env-other')?.getState().draftEdits['draft-typed']?.content).toEqual({
+      expect(reloaded.get('env-other')?.getState().draftEdits['draft-typed']?.content).toEqual({
         text: 'not sent yet',
       }),
     )
+  })
+
+  it('deletes the copy of a removed environment whose older copy has an edit its store has since saved', async () => {
+    vi.stubGlobal('indexedDB', new IDBFactory())
+    await writeEnvironmentCache('env-local', CACHED)
+    await writeEnvironmentCache('env-other', { ...OTHER_CACHED, draftEdits: UNSENT })
+    seedTwoEnvironments()
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => {
+        throw new TypeError('Failed to fetch')
+      }),
+    )
+    const stores = new Map<string, EnvironmentStore>()
+    renderProvider((options) => {
+      stores.set(options.environmentId!, options.store!)
+      return createFakeClient()
+    })
+    await waitFor(() => expect(stores.size).toBe(2))
+    // The environment took the edit since the copy was saved: the store is clean.
+    stores.get('env-other')!.update((state) => ({ ...state, draftEdits: {} }))
+
+    act(() => screen.getByRole('button', { name: 'remove other' }).click())
+    await waitFor(async () =>
+      expect(await cacheNames()).not.toContain('openmanager-environment:env-other'),
+    )
+    await settleSaves()
+    expect(await cacheNames()).not.toContain('openmanager-environment:env-other')
   })
 
   it('deletes the copy of an environment another tab removed, unless it holds unsent work', async () => {

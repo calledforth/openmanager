@@ -1224,7 +1224,7 @@ describe('sent drafts', () => {
     expect(sentDraftSession('env-a', 'same-draft', storage)).toBe('session-a')
     expect(sentDraftSession('env-b', 'same-draft', storage)).toBe('session-b')
 
-    forgetSentDraft('env-a', 'same-draft', storage)
+    forgetSentDraft('env-a', 'same-draft', 'session-a', storage)
     // Not sent here any more: the other environment's send is the one left.
     expect(sentDraftSession('env-a', 'same-draft', storage)).toBe('session-b')
     expect(sentDraftSession('env-b', 'same-draft', storage)).toBe('session-b')
@@ -1251,11 +1251,14 @@ describe('sent drafts', () => {
     })
   })
 
-  it('reads an entry from before environments counted until it is forgotten', () => {
+  it('reads an entry from before environments counted until that same send is forgotten', () => {
     const storage = memory()
     storage.setItem('openmanager.sent-drafts', JSON.stringify({ 'old-draft': 'session-old' }))
     expect(sentDraftSession('env-a', 'old-draft', storage)).toBe('session-old')
-    forgetSentDraft('env-a', 'old-draft', storage)
+    // Another send of that draft id rolled back: not this entry's.
+    forgetSentDraft('env-a', 'old-draft', 'session-other', storage)
+    expect(sentDraftSession('env-a', 'old-draft', storage)).toBe('session-old')
+    forgetSentDraft('env-a', 'old-draft', 'session-old', storage)
     expect(sentDraftSession('env-a', 'old-draft', storage)).toBeUndefined()
   })
 })

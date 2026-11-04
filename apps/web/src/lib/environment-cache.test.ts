@@ -149,6 +149,19 @@ describe('environment identity cache', () => {
     expect((await readEnvironmentCache('env-typing'))?.draftEdits['draft-typed']).toBeDefined()
   })
 
+  it("deletes a removed environment's older copy when the store loaded here is clean", async () => {
+    // The edit reached the environment after the copy was saved: the copy is stale.
+    await writeEnvironmentCache('env-stale', withUnsentDraft(seed('env-stale')))
+    const cache = createEnvironmentCache()
+    const store = await cache.getStore('env-stale')
+    store.update(() => seed('env-stale'))
+    await deleteEnvironmentCache('env-stale')
+    await writeEnvironmentCache('env-stale', store.getServerState())
+
+    const names = (await indexedDB.databases()).map((database) => database.name)
+    expect(names).not.toContain(environmentCacheName('env-stale'))
+  })
+
   it('counts unsent drafts and held sends as unsent work, and nothing else', () => {
     expect(holdsUnsentWork(seed())).toBe(false)
     expect(holdsUnsentWork(withUnsentDraft(seed()))).toBe(true)

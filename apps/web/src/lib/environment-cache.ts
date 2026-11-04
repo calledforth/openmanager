@@ -184,10 +184,13 @@ export function holdsUnsentWork(state: EnvironmentState): boolean {
 /**
  * The environment was removed, in this tab or another: delete what this
  * browser kept of it, after any save already on its way. Never while it holds
- * unsent work, here or in the kept copy: that is the only copy of it, and
- * adding the environment back restores it. Otherwise the save its client
- * makes as it goes is skipped, so the copy is not written back. Only for a
- * removal: an environment that cannot be reached keeps its copy.
+ * unsent work: that is the only copy of it, and adding the environment back
+ * restores it. A store loaded in this tab decides alone, since the kept copy
+ * may be older than it (an edit since saved by the environment would be sent
+ * again over newer text); the kept copy decides only where no store is
+ * loaded. Otherwise the save its client makes as it goes is skipped, so the
+ * copy is not written back. Only for a removal: an environment that cannot be
+ * reached keeps its copy.
  */
 export function deleteEnvironmentCache(environmentId: string): Promise<void> {
   const store = live.get(environmentId)
@@ -196,8 +199,10 @@ export function deleteEnvironmentCache(environmentId: string): Promise<void> {
   removed.add(environmentId)
   live.delete(environmentId)
   return queue(environmentId, async () => {
-    const kept = await readStoredCache(environmentId)
-    if (kept && holdsUnsentWork(kept)) return
+    if (!store) {
+      const kept = await readStoredCache(environmentId)
+      if (kept && holdsUnsentWork(kept)) return
+    }
     await new Promise<void>((resolve) => {
       try {
         const request = globalThis.indexedDB.deleteDatabase(environmentCacheName(environmentId))
