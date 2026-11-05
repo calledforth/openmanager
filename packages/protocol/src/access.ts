@@ -11,6 +11,7 @@ import {
 import { ProofCommandSchemas } from './commands.js'
 import { ComposerCommandSchemas } from './composer.js'
 import { ErrorEnvelopeSchema } from './envelopes.js'
+import { ENVIRONMENT_RENAME_CAPABILITY, EnvironmentNameCommandSchemas } from './environment-name.js'
 import { ProtocolErrorSchema } from './errors.js'
 import { HEARTBEAT_CAPABILITY } from './heartbeat.js'
 import { PROVIDER_LIMITS_REFRESH_CAPABILITY, PROVIDER_PROBE_CAPABILITY } from './providers.js'
@@ -57,6 +58,7 @@ export type CommandName =
   | keyof typeof DraftCommandSchemas
   | keyof typeof PairingCommandSchemas
   | keyof typeof ClientCommandSchemas
+  | keyof typeof EnvironmentNameCommandSchemas
   | ReplayCommand['name']
 
 /**
@@ -127,6 +129,9 @@ export const COMMAND_ACCESS = Object.freeze({
   [CLIENT_REVOKE_OTHERS_CAPABILITY]: 'admin',
   // The service also requires the caller to be the owner itself.
   [CLIENT_OWNER_ROTATE_CAPABILITY]: 'admin',
+  // The machine's name is what every paired device reads it by, so naming it
+  // is the owner's kind of change, as naming a device is.
+  [ENVIRONMENT_RENAME_CAPABILITY]: 'admin',
 } as const satisfies Record<CommandName, AccessCapability | null>)
 
 /**

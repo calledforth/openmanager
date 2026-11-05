@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState, type FormEvent, type ReactNode } from 'react'
+import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react'
 import {
   CheckIcon,
   CloudIcon,
@@ -44,6 +44,7 @@ import {
 } from '../lib/pairing-link-store'
 import { cn } from '../lib/utils'
 import { formatRemaining, PairDeviceDialog, type ShownPairingLink } from './pair-device-dialog'
+import { RenameForm } from './rename-form'
 
 const KIND_ICONS: Record<AuthorizedClient['kind'], IconComponent> = {
   owner: phosphorIcon(DesktopIcon),
@@ -91,10 +92,6 @@ export function omittedNote(omitted: number, includesThisDevice: boolean): strin
 }
 
 const message = (error: unknown) => (error instanceof Error ? error.message : String(error))
-
-// The same quiet fill as the other settings fields.
-const fieldClass =
-  'h-7 min-w-0 flex-1 rounded-md bg-hover px-2 text-[13px] text-foreground outline-none transition-colors duration-100 placeholder:text-faint focus:bg-active disabled:opacity-60'
 
 /** What a pairing link needs to know about the environment it opens. */
 export type PairingTarget = {
@@ -792,6 +789,8 @@ function DeviceRow({
         {renaming ? (
           <RenameForm
             label={device.label}
+            fieldLabel="Device name"
+            maxLength={CLIENT_LABEL_MAX_LENGTH}
             busy={busy}
             onCancel={onCancelRename}
             onSave={onRename}
@@ -861,56 +860,6 @@ function Tag({ children }: { children: ReactNode }) {
     <span className="shrink-0 rounded px-1.5 py-px text-[11px] text-muted-foreground bg-active">
       {children}
     </span>
-  )
-}
-
-function RenameForm({
-  label,
-  busy,
-  onCancel,
-  onSave,
-}: {
-  label: string
-  busy: boolean
-  onCancel: () => void
-  onSave: (label: string) => void
-}) {
-  const [value, setValue] = useState(label)
-  const trimmed = value.trim()
-  const submit = (event: FormEvent<HTMLFormElement>) => {
-    event.preventDefault()
-    if (!trimmed) return
-    if (trimmed === label) onCancel()
-    else onSave(trimmed)
-  }
-  return (
-    <form className="flex items-center gap-1.5" onSubmit={submit}>
-      <input
-        type="text"
-        aria-label="Device name"
-        autoComplete="off"
-        spellCheck={false}
-        // Focus belongs in the field the person just asked to edit.
-        autoFocus
-        maxLength={CLIENT_LABEL_MAX_LENGTH}
-        className={fieldClass}
-        value={value}
-        disabled={busy}
-        onChange={(event) => setValue(event.target.value)}
-        onKeyDown={(event) => {
-          if (event.key === 'Escape') {
-            event.preventDefault()
-            onCancel()
-          }
-        }}
-      />
-      <Button type="submit" variant="secondary" size="compact" disabled={busy || !trimmed}>
-        {busy ? 'Saving…' : 'Save'}
-      </Button>
-      <Button type="button" variant="ghost" size="compact" disabled={busy} onClick={onCancel}>
-        Cancel
-      </Button>
-    </form>
   )
 }
 

@@ -29,7 +29,35 @@ export const SubscriptionScopeSchema = z.discriminatedUnion('type', [
   ThreadScopeSchema,
 ])
 
-export const EnvironmentSchema = z.object({ environmentId: EntityIdSchema, name: z.string() })
+/**
+ * The kind of machine an environment runs on. WSL is its own kind: a Windows
+ * host and a WSL distro on it report the same hostname, and this is what tells
+ * them apart.
+ */
+export const ENVIRONMENT_PLATFORMS = ['windows', 'wsl', 'linux', 'macos'] as const
+export const EnvironmentPlatformSchema = z.enum(ENVIRONMENT_PLATFORMS)
+export type EnvironmentPlatform = z.infer<typeof EnvironmentPlatformSchema>
+
+const ENVIRONMENT_PLATFORM_NAMES: Record<EnvironmentPlatform, string> = {
+  windows: 'Windows',
+  wsl: 'WSL',
+  linux: 'Linux',
+  macos: 'macOS',
+}
+
+/** A platform as people read it, e.g. "WSL"; undefined for one this client does not know. */
+export function environmentPlatformName(platform: unknown): string | undefined {
+  return EnvironmentPlatformSchema.safeParse(platform).success
+    ? ENVIRONMENT_PLATFORM_NAMES[platform as EnvironmentPlatform]
+    : undefined
+}
+
+export const EnvironmentSchema = z.object({
+  environmentId: EntityIdSchema,
+  name: z.string(),
+  /** Absent from older servers; a platform this client does not know reads as absent. */
+  platform: EnvironmentPlatformSchema.optional().catch(undefined),
+})
 /**
  * A folder registered on the environment. `path` is the canonical on-disk
  * root as the environment resolved it; clients display it but still address

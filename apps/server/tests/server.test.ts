@@ -13,6 +13,7 @@ import {
   PROTOCOL_VERSION,
 } from '@openmanager/protocol/node'
 import type { AuditEvent } from '../src/audit.js'
+import { detectEnvironmentPlatform } from '../src/platform.js'
 import { startServer } from '../src/server.js'
 import { createLogger } from '../src/logger.js'
 import { SERVER_CAPABILITIES } from '../src/server.js'
@@ -75,6 +76,7 @@ describe('headless listener', () => {
     const expected = {
       environmentId: first.identity.environmentId,
       label: first.identity.label,
+      platform: detectEnvironmentPlatform(),
       protocolVersion: PROTOCOL_VERSION,
       capabilities: SERVER_CAPABILITIES,
       instanceId: expect.any(String),
@@ -216,6 +218,7 @@ describe('headless listener', () => {
     expect(await response.json()).toEqual({
       environmentId: server.identity.environmentId,
       label: server.identity.label,
+      platform: detectEnvironmentPlatform(),
       protocolVersion: PROTOCOL_VERSION,
       capabilities: SERVER_CAPABILITIES,
       instanceId: expect.any(String),

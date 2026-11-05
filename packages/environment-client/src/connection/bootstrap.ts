@@ -1,4 +1,9 @@
-import { evaluateBootstrap, PROTOCOL_VERSION, type BootstrapResponse } from '@openmanager/protocol'
+import {
+  EnvironmentPlatformSchema,
+  evaluateBootstrap,
+  PROTOCOL_VERSION,
+  type BootstrapResponse,
+} from '@openmanager/protocol'
 import type { BootstrapOutcome } from './connection-state'
 import { environmentBootstrapUrl, isLoopbackEnvironmentEndpoint } from './environment-store'
 
@@ -66,12 +71,14 @@ export function interpretBootstrapResponse(input: {
         serverProtocolVersion: state.serverProtocolVersion,
         environmentId: state.bootstrap.environmentId,
         label: readOptionalLabel(state.bootstrap),
+        ...readOptionalPlatform(state.bootstrap),
       }
     }
     return {
       status: 'ready',
       environmentId: state.bootstrap.environmentId,
       label: readOptionalLabel(state.bootstrap),
+      ...readOptionalPlatform(state.bootstrap),
       protocolVersion: state.bootstrap.protocolVersion,
     }
   } catch {
@@ -81,6 +88,12 @@ export function interpretBootstrapResponse(input: {
       cause: 'invalid',
     }
   }
+}
+
+/** Older servers say nothing, and a platform this client has no name for is nothing too. */
+function readOptionalPlatform(bootstrap: BootstrapResponse) {
+  const parsed = EnvironmentPlatformSchema.safeParse(bootstrap.platform)
+  return parsed.success ? { platform: parsed.data } : {}
 }
 
 function readOptionalLabel(bootstrap: BootstrapResponse): string | undefined {

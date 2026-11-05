@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto'
-import { link, mkdir, open, readFile, unlink } from 'node:fs/promises'
+import { link, mkdir, open, readFile, rename, unlink } from 'node:fs/promises'
 import { hostname } from 'node:os'
 import { join } from 'node:path'
 import { z } from 'zod'
@@ -92,4 +92,48 @@ export async function loadEnvironmentIdentity(dataDir: string): Promise<Environm
   } finally {
     await unlink(temporaryPath)
   }
+}
+
+/**
+ * Give the environment a new name, keeping its ID. The record is written whole
+ * to a temporary file and moved over the old one, so a crash leaves either
+ * name, never half of one. Returns the record now on disk; a failure before
+ * the move leaves the old name in place and rejects.
+ */
+export async function renameEnvironmentIdentity(
+  dataDir: string,
+  current: EnvironmentIdentity,
+  label: string,
+): Promise<EnvironmentIdentity> {
+  const identity = IdentitySchema.parse({ ...current, label })
+  const path = join(dataDir, 'identity.json')
+  const temporaryPath = join(dataDir, `.identity-${randomUUID()}.tmp`)
+  const file = await open(temporaryPath, 'wx', 0o600)
+  try {
+    try {
+      await file.writeFile(`${JSON.stringify(identity, null, 2)}\n`, 'utf8')
+      await file.sync()
+    } finally {
+      await file.close()
+    }
+    await rename(temporaryPath, path)
+  } catch (error) {
+    await unlink(temporaryPath).catch(() => undefined)
+    throw error
+  }
+  // From here the new name is on disk, so it is the answer whatever follows:
+  // failing now would leave the file and the running server disagreeing.
+  if (process.platform !== 'win32') {
+    try {
+      const directory = await open(dataDir, 'r')
+      try {
+        await directory.sync()
+      } finally {
+        await directory.close()
+      }
+    } catch {
+      // Durability of the move only; the file already reads the new name.
+    }
+  }
+  return Object.freeze(identity)
 }

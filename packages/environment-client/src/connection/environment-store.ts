@@ -1,3 +1,5 @@
+import { EnvironmentPlatformSchema, type EnvironmentPlatform } from '@openmanager/protocol'
+
 export const ENVIRONMENT_STORAGE_KEY = 'openmanager-environments'
 export const LEGACY_ENVIRONMENT_STORAGE_KEY = 'openmanager-environment'
 export const DEFAULT_ENVIRONMENT_LABEL = 'Unnamed environment'
@@ -66,6 +68,11 @@ export type EnvironmentRoute = {
 export type StoredEnvironment = {
   environmentId: string
   label: string
+  /**
+   * The kind of machine the environment last said it runs on. Absent until a
+   * server that reports it has answered.
+   */
+  platform?: EnvironmentPlatform
   /** Never empty, sorted by priority. */
   routes: EnvironmentRoute[]
   credential: string
@@ -204,6 +211,11 @@ function parseEnvironmentId(raw: unknown): string | null {
   return environmentId
 }
 
+function parsePlatform(raw: unknown): { platform?: EnvironmentPlatform } {
+  const parsed = EnvironmentPlatformSchema.safeParse(raw)
+  return parsed.success ? { platform: parsed.data } : {}
+}
+
 function parseLabel(raw: unknown): string {
   if (typeof raw !== 'string') return DEFAULT_ENVIRONMENT_LABEL
   const label = raw.trim().slice(0, 128)
@@ -313,6 +325,7 @@ export function parseStoredEnvironment(input: unknown): StoredEnvironment | null
   return {
     environmentId,
     label: parseLabel(record.label),
+    ...parsePlatform(record.platform),
     routes,
     credential,
     ...(appOrigin ? { appOrigin } : {}),
@@ -401,6 +414,8 @@ export function upsertStoredEnvironment(
     environmentId: string
     endpoint: string
     label?: string
+    /** Omitted keeps what is saved: an older server says nothing either way. */
+    platform?: EnvironmentPlatform
     credential?: string
     /** What reaching the endpoint just showed. Omitted leaves its health alone. */
     health?: RouteHealthReport
@@ -432,6 +447,7 @@ export function upsertStoredEnvironment(
         ...keptRefusal,
         environmentId,
         label: input.label !== undefined ? parseLabel(input.label) : existing.label,
+        ...parsePlatform(input.platform ?? existing.platform),
         routes:
           input.keepOrder && known
             ? existing.routes.map((item) =>
@@ -445,6 +461,7 @@ export function upsertStoredEnvironment(
     : {
         environmentId,
         label: parseLabel(input.label),
+        ...parsePlatform(input.platform),
         routes: preferRoute([], endpoint, input.health, now),
         credential,
       }
@@ -610,6 +627,26 @@ export function setStoredCredential(
       ...withoutTokenRefusal(existing),
       credential: parsed,
     }),
+  }
+}
+
+/**
+ * Take the name an environment now goes by, as after it was renamed. Routes,
+ * token and selection are untouched. Returns the registry unchanged for an
+ * unknown environment or a name it already has.
+ */
+export function setStoredLabel(
+  registry: EnvironmentRegistry,
+  environmentId: string,
+  label: string,
+): EnvironmentRegistry {
+  const existing = findStoredEnvironment(registry.environments, environmentId)
+  if (!existing || !label.trim()) return registry
+  const parsed = parseLabel(label)
+  if (parsed === existing.label) return registry
+  return {
+    ...registry,
+    environments: replaceEnvironment(registry, { ...existing, label: parsed }),
   }
 }
 

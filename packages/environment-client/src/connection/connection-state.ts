@@ -1,3 +1,5 @@
+import type { EnvironmentPlatform } from '@openmanager/protocol'
+
 /**
  * Connection UI is derived from environment selection, the bootstrap
  * response, and transport status. Timeouts never invent a state on their own.
@@ -52,6 +54,7 @@ export type BootstrapOutcome =
       status: 'ready'
       environmentId: string
       label?: string
+      platform?: EnvironmentPlatform
       protocolVersion: number
     }
   | {
@@ -60,6 +63,7 @@ export type BootstrapOutcome =
       serverProtocolVersion: number
       environmentId?: string
       label?: string
+      platform?: EnvironmentPlatform
     }
   | { status: 'unauthorized'; message?: string }
   | {
@@ -313,11 +317,20 @@ export function otherEnvironmentsNotice(
 
 function environmentContext(input: DeriveConnectionInput) {
   const endpoint = input.environment.status === 'selected' ? input.environment.endpoint : undefined
+  const answered =
+    input.bootstrap.status === 'ready' || input.bootstrap.status === 'incompatible_protocol'
+      ? input.bootstrap
+      : undefined
+  const selected = input.environment.status === 'selected' ? input.environment : undefined
+  // The saved name when the answer is from the saved environment: it follows a
+  // rename at once, where the answer holds the name from when it was asked.
+  // An address that has not said which environment it is goes by its answer.
   const label =
-    (input.bootstrap.status === 'ready' || input.bootstrap.status === 'incompatible_protocol'
-      ? input.bootstrap.label
+    (selected?.environmentId && selected.environmentId === answered?.environmentId
+      ? selected.label
       : undefined) ??
-    (input.environment.status === 'selected' ? input.environment.label : undefined)
+    answered?.label ??
+    selected?.label
   return {
     endpoint,
     label,

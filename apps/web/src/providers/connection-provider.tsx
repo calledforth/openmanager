@@ -34,6 +34,7 @@ import {
   adoptPersistedEnvironments,
   ENVIRONMENT_STORAGE_KEY,
   setStoredCredential,
+  setStoredLabel,
   setStoredRouteHealth,
   setStoredTokenRefused,
   upsertStoredEnvironment,
@@ -55,6 +56,7 @@ import {
 } from '@openmanager/environment-client/connection'
 import { isBrowserOnline, subscribeToNetworkStatus } from '../lib/browser-runtime'
 import { deleteEnvironmentCache } from '../lib/environment-cache'
+import { withDisplayLabels } from '../lib/environment-names'
 import {
   connectionOf,
   dropConnection,
@@ -123,6 +125,11 @@ export type AddRouteResult = { ok: true } | { ok: false; message: string }
 type ConnectionValue = {
   ui: ConnectionUiState
   environment: EnvironmentSelection
+  /**
+   * The saved environments, each `label` the name to show: the server's, with
+   * its platform added when another saved environment has the same one
+   * (`withDisplayLabels`). Never written back.
+   */
   environments: StoredEnvironment[]
   selectedId: string | null
   /**
@@ -189,6 +196,11 @@ type ConnectionValue = {
    */
   replaceCredential: (environmentId: string, credential: string) => void
   /**
+   * Save the name a connected environment now goes by. Its client calls this
+   * whenever the name it holds changes, a rename on any device included.
+   */
+  noteEnvironmentName: (environmentId: string, label: string) => void
+  /**
    * Save the credential a pairing exchange answered with, reached through the
    * link's route, and connect to it beside whatever is connected already. It
    * is selected only if nothing is. Returns false, saving nothing, when the
@@ -251,10 +263,12 @@ function inUseFor(
 }
 
 function toSelection(
-  registry: EnvironmentRegistry,
+  saved: EnvironmentRegistry,
   pending: PendingConnect | null,
   activeRoutes: ActiveRoutes,
 ): EnvironmentSelection {
+  // Named as every other list names it.
+  const registry = { ...saved, environments: withDisplayLabels(saved.environments) }
   if (pending) {
     // No identity until the address has answered for itself. A record that
     // has this address only says what used to be there; lending its ID to the
@@ -780,6 +794,7 @@ export function ConnectionProvider({
           environmentId,
           endpoint,
           label: answer.label,
+          platform: answer.platform,
           health: { status: 'available' },
           // A saved route the client picked by itself is not a choice, so the
           // person's order stays. Nor does an answer change what is selected.
@@ -838,6 +853,7 @@ export function ConnectionProvider({
         environmentId: answeredId,
         endpoint,
         label: connectAnswer.label,
+        platform: connectAnswer.platform,
         credential: pending.credential,
         health: fresh ? { status: 'available' } : undefined,
       }),
@@ -1315,6 +1331,15 @@ export function ConnectionProvider({
     [tokenChanged, update],
   )
 
+  // A live connection heard the environment's name: from its handshake, or a
+  // rename on any device. Saved, so every list and card reads it now.
+  const noteEnvironmentName = useCallback(
+    (environmentId: string, label: string) => {
+      update((current) => setStoredLabel(current, environmentId, label))
+    },
+    [update],
+  )
+
   const addPairedEnvironment = useCallback(
     (input: { environmentId: string; endpoint: string; label: string; credential: string }) => {
       const endpoint = parseEnvironmentEndpoint(input.endpoint)
@@ -1376,11 +1401,15 @@ export function ConnectionProvider({
     return () => window.removeEventListener('storage', onStorage)
   }, [endRemovedConnections, preview, tokenChanged])
 
+  const shownEnvironments = useMemo(
+    () => withDisplayLabels(registry.environments),
+    [registry.environments],
+  )
   const value = useMemo(
     () => ({
       ui,
       environment,
-      environments: registry.environments,
+      environments: shownEnvironments,
       selectedId: registry.selectedId,
       inUseEndpoint,
       connect,
@@ -1398,13 +1427,14 @@ export function ConnectionProvider({
       confirmRoute,
       declineRoute,
       replaceCredential,
+      noteEnvironmentName,
       addPairedEnvironment,
       links,
     }),
     [
       ui,
       environment,
-      registry.environments,
+      shownEnvironments,
       registry.selectedId,
       inUseEndpoint,
       connect,
@@ -1422,6 +1452,7 @@ export function ConnectionProvider({
       confirmRoute,
       declineRoute,
       replaceCredential,
+      noteEnvironmentName,
       addPairedEnvironment,
       links,
     ],

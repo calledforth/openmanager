@@ -55,6 +55,7 @@ export function ProjectPicker({
   recentWorkspaces,
   activeWorkspace,
   environmentLabel,
+  environmentPlatform,
   onSelect,
   onAddWorkspace,
   variant = 'title',
@@ -64,6 +65,7 @@ export function ProjectPicker({
   /** Null when the open draft has no project: the picker asks for one. */
   activeWorkspace: WorkspaceEntry | null
   environmentLabel?: string
+  environmentPlatform?: string
   onSelect: (workspacePath: string) => void
   onAddWorkspace: () => void
   /** `title` is the landing's headline control; `chip` a property chip, as
@@ -197,7 +199,11 @@ export function ProjectPicker({
           </CommandMenuList>
           {environmentLabel && (
             <div className="flex h-8 shrink-0 items-center px-3 text-[11px] text-muted-foreground">
-              <EnvironmentLabel label={environmentLabel} className="min-w-0 text-[11px]" />
+              <EnvironmentLabel
+                label={environmentLabel}
+                platform={environmentPlatform}
+                className="min-w-0 text-[11px]"
+              />
             </div>
           )}
         </CommandMenu>

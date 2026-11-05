@@ -2,6 +2,7 @@ import {
   ClientResponseSchemas,
   ComposerResponseSchemas,
   DraftResponseSchemas,
+  EnvironmentNameResponseSchemas,
   FilesystemResponseSchemas,
   PairingResponseSchemas,
   ProofResponseSchemas,
@@ -48,6 +49,7 @@ export const WIRE_COMMANDS = {
   browseFolders: 'filesystem.browse',
   getEnvironmentSettings: 'environment.settings.get',
   setEnvironmentSettings: 'environment.settings.set',
+  renameEnvironment: 'environment.rename',
   listDrafts: 'draft.list',
   saveDraft: 'draft.save',
   deleteDraft: 'draft.delete',
@@ -109,6 +111,9 @@ export const WIRE_RESPONSES = {
   ),
   'environment.settings.set': payload(
     FilesystemResponseSchemas['environment.settings.set'].shape.payload,
+  ),
+  'environment.rename': payload(
+    EnvironmentNameResponseSchemas['environment.rename'].shape.payload,
   ),
   'draft.list': payload(DraftResponseSchemas['draft.list'].shape.payload),
   'draft.save': payload(DraftResponseSchemas['draft.save'].shape.payload),

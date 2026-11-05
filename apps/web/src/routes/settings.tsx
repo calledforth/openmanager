@@ -21,6 +21,8 @@ import {
   useEnvironmentClientOptional,
 } from '@openmanager/app-core/providers/environment-client'
 import { PlatformCapabilitiesContext } from '@openmanager/app-core/providers/platform-provider'
+import { isEnvironmentReachable } from '@openmanager/app-core/providers/sidebar-rows'
+import { EnvironmentClientError } from '@openmanager/environment-client'
 import { SessionStateContext } from '@openmanager/app-core/providers/session-provider'
 import { AddProjectStartSetting } from '../components/add-project-start-setting'
 import { DevicesSettingControl } from '../components/devices-settings'
@@ -33,6 +35,7 @@ import {
   EnvironmentConnectForm,
   EnvironmentList,
   RouteOfferPrompt,
+  type EnvironmentRenameTarget,
 } from '../components/connection-surfaces'
 import {
   closeAddEnvironment,
@@ -423,6 +426,30 @@ function EnvironmentsPanel() {
     confirmRoute,
     declineRoute,
   } = useConnection()
+  const { clients } = useEnvironmentClients()
+  // Connected, on a server that knows the command: the name comes from the
+  // server itself, and the server is who renames.
+  const renameTarget = (environmentId: string): EnvironmentRenameTarget | undefined => {
+    const client = clients[environmentId]
+    if (!client?.supports('renameEnvironment') || !isEnvironmentReachable(client)) return undefined
+    const label = client.getState().environment?.name
+    if (!label) return undefined
+    return {
+      label,
+      rename: async (next) => {
+        try {
+          await client.commands.renameEnvironment(next)
+        } catch (error) {
+          if (error instanceof EnvironmentClientError && error.code === 'capability_missing') {
+            throw new Error('This device needs admin access to rename the environment.', {
+              cause: error,
+            })
+          }
+          throw error
+        }
+      },
+    }
+  }
   // Kept above this page, which remounts when connecting drops the old client.
   const draft = useAddEnvironmentDraft()
   // With nothing saved the form is the whole point of the section.
@@ -449,6 +476,7 @@ function EnvironmentsPanel() {
           environments={environments}
           selectedId={selectedId}
           inUseEndpoint={inUseEndpoint}
+          renameTarget={renameTarget}
           onSelect={selectEnvironment}
           onRemove={removeEnvironment}
           onDisconnect={changeEnvironment}

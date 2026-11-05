@@ -584,6 +584,12 @@ export interface EnvironmentCommands {
   getEnvironmentSettings(): Promise<EnvironmentSettings>
   /** A patch: settings left out keep their value. Resolves with all of them. */
   setEnvironmentSettings(patch: EnvironmentSettingsPatch): Promise<EnvironmentSettings>
+  /**
+   * Give the environment a new name; every connected device hears it. The
+   * environment trims it and refuses a blank one. Needs `admin`. Resolves
+   * with the environment as it now reads, already in `state.environment`.
+   */
+  renameEnvironment(label: string): Promise<Environment>
   /** Every draft the environment keeps; replaces the held ones. */
   listDrafts(): Promise<DraftList>
   /**

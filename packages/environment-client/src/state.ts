@@ -1322,7 +1322,8 @@ export function applyEnvironment(
     (current &&
       environment &&
       current.environmentId === environment.environmentId &&
-      current.name === environment.name)
+      current.name === environment.name &&
+      current.platform === environment.platform)
   ) {
     return state
   }

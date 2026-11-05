@@ -30,6 +30,7 @@ import {
   setStoredCredential,
   setStoredRouteHealth,
   setStoredTokenRefused,
+  setStoredLabel,
   upsertStoredEnvironment,
   writeEnvironmentRegistry,
   clearEnvironmentRegistry,
@@ -168,6 +169,26 @@ describe('upsertStoredEnvironment', () => {
       route(TUNNEL, 1, { health: { status: 'available', changedAt: NOW.toISOString() } }),
     ])
     expect(next.environments[0]!.label).toBe('Studio')
+  })
+
+  it('keeps the platform the server reports, and keeps it when a later answer says nothing', () => {
+    const added = upsertStoredEnvironment(EMPTY_REGISTRY, {
+      environmentId: 'env-local',
+      endpoint: LOCAL,
+      label: 'Laptop',
+      platform: 'wsl',
+    })!
+    expect(added.environments[0]!.platform).toBe('wsl')
+    const again = upsertStoredEnvironment(added, {
+      environmentId: 'env-local',
+      endpoint: LOCAL,
+      label: 'Laptop',
+    })!
+    expect(again.environments[0]!.platform).toBe('wsl')
+    expect(parseStoredEnvironment(again.environments[0])?.platform).toBe('wsl')
+    expect(
+      parseStoredEnvironment({ ...again.environments[0], platform: 'plan9' })?.platform,
+    ).toBeUndefined()
   })
 
   it('inserts a new record keyed by environment ID, with one route', () => {
@@ -779,5 +800,32 @@ describe('app origin on a stored environment', () => {
         appOrigin: 'ftp://nope',
       }),
     ).not.toHaveProperty('appOrigin')
+  })
+})
+
+describe('setStoredLabel', () => {
+  it('takes a new name and leaves routes, token and selection alone', () => {
+    const saved = upsertStoredEnvironment(EMPTY_REGISTRY, {
+      environmentId: 'env-local',
+      endpoint: LOCAL,
+      label: 'DESKTOP-1',
+      credential: 'token-1',
+    })!
+    const renamed = setStoredLabel(saved, 'env-local', '  Laptop (WSL)  ')
+    expect(renamed).toEqual({
+      ...saved,
+      environments: [{ ...saved.environments[0]!, label: 'Laptop (WSL)' }],
+    })
+  })
+
+  it('returns the registry itself for the same name, a blank one, or an unknown environment', () => {
+    const saved = upsertStoredEnvironment(EMPTY_REGISTRY, {
+      environmentId: 'env-local',
+      endpoint: LOCAL,
+      label: 'Laptop',
+    })!
+    expect(setStoredLabel(saved, 'env-local', 'Laptop')).toBe(saved)
+    expect(setStoredLabel(saved, 'env-local', '   ')).toBe(saved)
+    expect(setStoredLabel(saved, 'env-other', 'Desk')).toBe(saved)
   })
 })

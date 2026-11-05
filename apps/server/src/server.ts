@@ -21,6 +21,7 @@ import {
   CLIENT_RENAME_CAPABILITY,
   CLIENT_REVOKE_CAPABILITY,
   CLIENT_REVOKE_OTHERS_CAPABILITY,
+  ENVIRONMENT_RENAME_CAPABILITY,
   FILESYSTEM_BROWSE_CAPABILITY,
   PROTOCOL_VERSION,
   SESSION_CREATE_EXPLICIT_CAPABILITY,
@@ -61,7 +62,9 @@ import {
   GRANT_CHANGED_CLOSE_REASON,
 } from './pairing.ts'
 import { createClientService, type ClientSockets } from './client-service.ts'
+import { createEnvironmentNameService } from './environment-name.ts'
 import { loadEnvironmentIdentity } from './identity.ts'
+import { detectEnvironmentPlatform } from './platform.ts'
 import {
   evaluateLocalOwnerAccess,
   evaluateLocalOwnerRouteAccess,
@@ -145,6 +148,7 @@ export const SERVER_CAPABILITIES = [
   CLIENT_REVOKE_CAPABILITY,
   CLIENT_REVOKE_OTHERS_CAPABILITY,
   CLIENT_OWNER_ROTATE_CAPABILITY,
+  ENVIRONMENT_RENAME_CAPABILITY,
 ]
 
 /** A loopback-only listener exposing public liveness and connection discovery. */
@@ -162,7 +166,15 @@ export async function startServer(config: ServerConfig) {
   // Behind the tunnel every request is from loopback; budgets follow the
   // device Cloudflare names instead, apart from local traffic.
   const budgetKey = createBudgetKey(config.tunnel?.hostname)
-  const identity = await loadEnvironmentIdentity(config.dataDir)
+  // Replaced whole when the environment is renamed: everything below reads
+  // its name when it needs it, never a copy taken at boot.
+  let identity = await loadEnvironmentIdentity(config.dataDir)
+  const platform = detectEnvironmentPlatform()
+  const environmentRecord = () => ({
+    environmentId: identity.environmentId,
+    name: identity.label,
+    ...(platform ? { platform } : {}),
+  })
   const audit = createAuditLog(log, { dataDir: config.dataDir })
   const environmentSettings = openEnvironmentSettings(config.dataDir)
   const filesystem = createFilesystemService({ settings: environmentSettings })
@@ -341,7 +353,7 @@ export async function startServer(config: ServerConfig) {
       .map(({ id }) => id)
   const replayReader = createReplayReader(eventDatabase, {
     epoch: eventEpoch,
-    environment: () => ({ environmentId: identity.environmentId, name: identity.label }),
+    environment: environmentRecord,
     workspaces: () => workspaces.list(),
     log,
   })
@@ -556,6 +568,7 @@ export async function startServer(config: ServerConfig) {
       instanceId,
       environmentId: identity.environmentId,
       label: identity.label,
+      ...(platform ? { platform } : {}),
       protocolVersion: PROTOCOL_VERSION,
       capabilities: SERVER_CAPABILITIES,
       providers: providerService.snapshot(),
@@ -758,6 +771,16 @@ export async function startServer(config: ServerConfig) {
     response.end('Not found\n')
   }
   let clientSockets: ClientSockets | undefined
+  const environmentName = createEnvironmentNameService({
+    dataDir: config.dataDir,
+    identity: () => identity,
+    setIdentity: (next) => {
+      identity = next
+    },
+    environment: environmentRecord,
+    broadcast: (event) => deliveries.enqueue({ kind: 'broadcast', event }),
+    log,
+  })
   const clientService = createClientService({
     clients,
     sockets: () => {
@@ -806,6 +829,7 @@ export async function startServer(config: ServerConfig) {
       drafts.dispatch(command, context) ??
       pairing.dispatch(command, context) ??
       clientService.dispatch(command, context) ??
+      environmentName.dispatch(command) ??
       composerService.dispatch(command, context),
     onConnectionsChanged: () => clientService.announce(),
     drainDeliveries: () => deliveries.drain(),
@@ -886,7 +910,9 @@ export async function startServer(config: ServerConfig) {
   }
   let closePromise: Promise<void> | undefined
   return {
-    identity,
+    get identity() {
+      return identity
+    },
     get owner() {
       return owner
     },

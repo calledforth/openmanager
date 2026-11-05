@@ -1,6 +1,7 @@
 import {
   ACCESS_CAPABILITIES,
   ClientLabelSchema,
+  EnvironmentNameSchema,
   ComposerCommandSchemas,
   DRAFT_CHANGED_MESSAGE,
   DRAFT_DELETED_MESSAGE,
@@ -1667,6 +1668,21 @@ export function createMockEnvironmentClient(
           ...Object.fromEntries(Object.entries(patch).filter(([, value]) => value !== undefined)),
         }
         return { ...environmentSettings }
+      }),
+    renameEnvironment: (label) =>
+      run('renameEnvironment', { label }, () => {
+        requireAdmin()
+        const parsed = EnvironmentNameSchema.safeParse(label)
+        if (!parsed.success) {
+          throw new EnvironmentClientError(
+            'validation',
+            parsed.error.issues[0]?.message ?? 'Invalid rename.',
+          )
+        }
+        const current = store.getState().environment ?? environment
+        const renamed = { ...current, name: parsed.data }
+        store.update((state) => applyEnvironment(state, renamed))
+        return renamed
       }),
   }
 
