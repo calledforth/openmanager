@@ -6,7 +6,7 @@ import {
   type EnvironmentState,
 } from '@openmanager/environment-client'
 
-import type { SessionWatchNative } from '../modules/session-watch'
+import type { NotificationPermissionResponse, SessionWatchNative } from '../modules/session-watch'
 import type { AppActivity, AppActivitySource } from '../src/environment/controller'
 import { sessionOnPath } from '../src/notifications/notices'
 import { createSessionWatch, NOTIFICATIONS_STORAGE_KEY } from '../src/notifications/watch'
@@ -47,14 +47,14 @@ function fakeClient(rows: Row[], connection: Partial<ConnectionState> = LIVE) {
   }
 }
 
-function fakeNative(overrides: Partial<SessionWatchNative> = {}) {
+function fakeNative() {
   let enabled = true
   let watching = false
   const native = {
     notificationsEnabled: vi.fn(() => enabled),
-    requestPermission: vi.fn(async () => {
+    requestPermission: vi.fn(async (): Promise<NotificationPermissionResponse> => {
       enabled = true
-      return { status: 'granted' as const, granted: true, canAskAgain: true }
+      return { status: 'granted', granted: true, canAskAgain: true }
     }),
     openSettings: vi.fn(),
     isWatching: vi.fn(() => watching),
@@ -67,8 +67,7 @@ function fakeNative(overrides: Partial<SessionWatchNative> = {}) {
     }),
     notify: vi.fn(),
     cancel: vi.fn(),
-    ...overrides,
-  }
+  } satisfies SessionWatchNative
   return {
     native,
     deny: () => {
