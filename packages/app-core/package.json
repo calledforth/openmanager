@@ -13,6 +13,7 @@
     "./lib/fonts": "./src/lib/fonts.ts",
     "./lib/provider-health-view": "./src/lib/provider-health-view.ts",
     "./lib/relative-time": "./src/lib/relative-time.ts",
+    "./lib/session-notices": "./src/lib/session-notices.ts",
     "./lib/shiki": "./src/lib/shiki.ts",
     "./lib/stream-continuity": "./src/lib/stream-continuity.ts",
     "./lib/streaming-messages-store": "./src/lib/streaming-messages-store.ts",
