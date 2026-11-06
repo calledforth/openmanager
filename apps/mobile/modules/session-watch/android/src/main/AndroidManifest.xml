@@ -1,0 +1,16 @@
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+  <!-- Session notices. Asked for at runtime on Android 13 and later. -->
+  <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+  <!-- The watch: a foreground service that keeps the environment's socket open
+       while the app is in the background, and the CPU awake for its beats. -->
+  <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+  <uses-permission android:name="android.permission.FOREGROUND_SERVICE_REMOTE_MESSAGING" />
+  <uses-permission android:name="android.permission.WAKE_LOCK" />
+
+  <application>
+    <service
+      android:name=".SessionWatchService"
+      android:exported="false"
+      android:foregroundServiceType="remoteMessaging" />
+  </application>
+</manifest>

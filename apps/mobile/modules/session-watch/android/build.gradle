@@ -1,0 +1,20 @@
+plugins {
+  id 'com.android.library'
+  id 'expo-module-gradle-plugin'
+}
+
+group = 'com.openmanager.mobile'
+version = '0.1.0'
+
+android {
+  namespace "expo.modules.sessionwatch"
+  defaultConfig {
+    versionCode 1
+    versionName '0.1.0'
+  }
+}
+
+dependencies {
+  // The watch is a React Native headless JS task service.
+  implementation 'com.facebook.react:react-android'
+}

@@ -18,6 +18,7 @@ import { suggestPhoneLabel } from '../../pairing/device-label'
 import { AppearanceSection } from '../../settings/AppearanceSection'
 import { EnvironmentCard } from '../../settings/EnvironmentCard'
 import { environmentCards } from '../../settings/environments'
+import { NotificationsSection } from '../../settings/NotificationsSection'
 import { SettingsRow } from '../../settings/SettingsRow'
 import { usePhoneTheme } from '../../theme/ThemeProvider'
 import { UpdateRow } from '../../updates/UpdateRow'
@@ -34,9 +35,8 @@ const PHONE_NAME = suggestPhoneLabel({ modelName: Device.modelName, osName: Devi
  * Settings, the third tab, as the mockup's Settings frame: environments
  * first, as cards (the one the phone connects to says "here" and carries the
  * live state in the shared words; each opens its page, where its devices,
- * pairing links, providers and session titles live). Then appearance, and
- * this phone. Notifications are left out: the phone has no notification
- * setting yet, and a row that does nothing is not shown.
+ * pairing links, providers and session titles live). Then appearance,
+ * session notifications, and this phone.
  */
 export default function SettingsScreen() {
   const router = useRouter()
@@ -86,6 +86,8 @@ export default function SettingsScreen() {
 
             <SectionLabel>Appearance</SectionLabel>
             <AppearanceSection />
+
+            <NotificationsSection />
 
             <SectionLabel>This phone</SectionLabel>
             <SettingsRow

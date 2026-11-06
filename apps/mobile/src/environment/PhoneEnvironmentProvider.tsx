@@ -17,6 +17,7 @@ import {
   type PhoneConnectionController,
   type PhoneConnectionState,
 } from './controller'
+import { sessionWatch } from '../notifications'
 import { phoneStorage, subscribePhonePageExit } from '../storage'
 import { landingOf } from './landing-route'
 import { appActivity, deviceNetwork } from './lifecycle'
@@ -34,7 +35,8 @@ function phoneController(): PhoneConnectionController {
   if (!controller) {
     controller = createPhoneConnectionController({
       storage: phoneStorage,
-      activity: appActivity,
+      // Turned-on session notices keep the connection in the background.
+      activity: sessionWatch.activity(appActivity),
       network: deviceNetwork,
       // React Native's own socket and fetch. Passed explicitly so nothing
       // depends on which globals a later polyfill replaces. Reads go through
@@ -49,6 +51,8 @@ function phoneController(): PhoneConnectionController {
         requestId: () => globalThis.crypto.randomUUID(),
       },
     })
+    sessionWatch.attach(controller)
+    void sessionWatch.start()
   }
   return controller
 }
@@ -134,6 +138,7 @@ export function PhoneEnvironmentProvider({ children }: { children: ReactNode }) 
   const landing = landingOf(pathname)
   useLayoutEffect(() => {
     navigation.arrived(pathname)
+    sessionWatch.arrived(pathname)
   }, [pathname])
 
   useEffect(() => {
