@@ -1,6 +1,10 @@
 import { memo, useMemo, type ReactNode } from 'react'
 import { View } from 'react-native'
-import { groupActivityParts, type ActivitySummary } from '@openmanager/shared/lib/activity-groups'
+import {
+  groupActivityParts,
+  type ActivityNode,
+  type ActivitySummary,
+} from '@openmanager/shared/lib/activity-groups'
 import type {
   ArtifactSource,
   FailurePart,
@@ -11,7 +15,7 @@ import type {
 import { countRender } from '../../session/render-probe'
 import { usePhoneTheme } from '../../theme/ThemeProvider'
 import { AppText } from '../ui/AppText'
-import { ImagePart } from './ImagePart'
+import { ImageGroup, useTranscriptWidth, type GalleryImage } from './ImageGroup'
 import { TextPart } from './TextPart'
 import { ThinkingPart } from './ThinkingPart'
 import { ToolRow, type ToolPartData } from './ToolRow'
@@ -21,9 +25,10 @@ import { WorkGroup } from './WorkGroup'
 
 // After web's `MessageParts`: parts deduplicated by id, runs of consecutive
 // tool calls folded into one work group with web's own summary wording
-// (`groupActivityParts`), and every part memoised by identity. The shared
-// projection hands an unchanged part back as the same object on every event,
-// so a streamed token re-renders the one part it changed.
+// (`groupActivityParts`), runs of consecutive images drawn as one gallery,
+// and every part memoised by identity. The shared projection hands an
+// unchanged part back as the same object on every event, so a streamed token
+// re-renders the one part it changed.
 
 type Part = MessagePart
 
@@ -33,6 +38,45 @@ function getPartKey(part: Part, index: number): string {
   if (callId) return callId
   if (part.type === 'tool') return `tool:${String(part.tool ?? 'unknown')}:${index}`
   return `${part.type}:${index}`
+}
+
+/** What an image part shows and how to read it. */
+function galleryImage(part: Part): GalleryImage {
+  return {
+    id: part.id,
+    url: typeof part.url === 'string' ? part.url : undefined,
+    artifact: part.artifact as ArtifactSource | undefined,
+    name: typeof part.name === 'string' ? part.name : undefined,
+  }
+}
+
+type ImagesRun = { kind: 'images'; key: string; images: GalleryImage[] }
+type Node = ActivityNode<Part> | ImagesRun
+
+/**
+ * Consecutive images as one gallery rather than a card each, as web draws
+ * them: a tool that returns a dozen screenshots does not push the reply
+ * apart by a screen per picture.
+ */
+function withImageRuns(nodes: readonly ActivityNode<Part>[]): Node[] {
+  const out: Node[] = []
+  for (let index = 0; index < nodes.length; index += 1) {
+    const node = nodes[index]!
+    if (node.kind !== 'part' || node.part.type !== 'image') {
+      out.push(node)
+      continue
+    }
+    const key = getPartKey(node.part, index)
+    const images = [galleryImage(node.part)]
+    while (index + 1 < nodes.length) {
+      const next = nodes[index + 1]!
+      if (next.kind !== 'part' || next.part.type !== 'image') break
+      images.push(galleryImage(next.part))
+      index += 1
+    }
+    out.push({ kind: 'images', key, images })
+  }
+  return out
 }
 
 /** A note the transcript keeps without a row of its own, in the environment's words. */
@@ -45,7 +89,7 @@ function NoteRow({ children }: { children: string }) {
   )
 }
 
-function renderPart(part: Part, isStreaming: boolean | undefined): ReactNode {
+function renderPart(part: Part, isStreaming: boolean | undefined, width: number): ReactNode {
   switch (part.type) {
     case 'text': {
       if (part.synthetic || part.ignored) return null
@@ -54,14 +98,9 @@ function renderPart(part: Part, isStreaming: boolean | undefined): ReactNode {
     case 'tool':
       return <ToolRow part={part as unknown as ToolPartData} />
     case 'image':
-      return (
-        <View style={{ paddingVertical: 4 }}>
-          <ImagePart
-            url={typeof part.url === 'string' ? part.url : undefined}
-            artifact={part.artifact as ArtifactSource | undefined}
-          />
-        </View>
-      )
+      // A run of images is gathered into one gallery before it gets here; one
+      // on its own is a gallery of one.
+      return <ImageGroup images={[galleryImage(part)]} width={width} />
     case 'reasoning': {
       const partTime =
         part.time && typeof part.time === 'object'
@@ -119,7 +158,14 @@ const PartNode = memo(function PartNode({
   isStreaming?: boolean
 }) {
   countRender('PartNode')
-  return renderPart(part, isStreaming)
+  const width = useTranscriptWidth()
+  return renderPart(part, isStreaming, width)
+})
+
+/** A run of images as one gallery; the run is rebuilt only when the parts change. */
+const ImagesNode = memo(function ImagesNode({ images }: { images: GalleryImage[] }) {
+  const width = useTranscriptWidth()
+  return <ImageGroup images={images} width={width} />
 })
 
 const SUMMARY_FIELDS = [
@@ -178,7 +224,8 @@ function dedupe(parts: readonly Part[]): Part[] {
 /**
  * A turn's parts in the order they happened. `flat` lays tool calls out as
  * bare rows (inside a settled turn's own work group, so no fold sits in a
- * fold); otherwise each run of calls is its own work group.
+ * fold); otherwise each run of calls is its own work group. Either way a run
+ * of images is one gallery.
  */
 export const MessageParts = memo(function MessageParts({
   parts,
@@ -192,27 +239,24 @@ export const MessageParts = memo(function MessageParts({
   countRender('MessageParts')
   const deduped = useMemo(() => dedupe(parts), [parts])
   const nodes = useMemo(
-    () => (flat ? null : groupActivityParts(deduped as Part[])),
+    () =>
+      withImageRuns(
+        flat
+          ? deduped.map((part): ActivityNode<Part> => ({ kind: 'part', part }))
+          : groupActivityParts(deduped as Part[]),
+      ),
     [deduped, flat],
   )
 
   if (deduped.length === 0) return null
 
-  if (!nodes) {
-    return (
-      <View style={{ gap: 6 }}>
-        {deduped.map((part, index) => (
-          <PartNode key={getPartKey(part, index)} part={part} isStreaming={isStreaming} />
-        ))}
-      </View>
-    )
-  }
-
   return (
-    <View style={{ gap: 10 }}>
+    <View style={{ gap: flat ? 6 : 10 }}>
       {nodes.map((node, index) =>
         node.kind === 'part' ? (
           <PartNode key={getPartKey(node.part, index)} part={node.part} isStreaming={isStreaming} />
+        ) : node.kind === 'images' ? (
+          <ImagesNode key={node.key} images={node.images} />
         ) : (
           <ActivityGroupNode
             key={node.id}
