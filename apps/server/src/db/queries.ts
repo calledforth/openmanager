@@ -27,6 +27,7 @@ export const THREAD_IN_SESSION_SQL = `
   WHERE thread_id = ? AND session_id = ?`
 
 export const THREAD_LISTING_SQL = 'SELECT listing_json FROM threads WHERE thread_id = ?'
+export const THREAD_QUEUE_SQL = 'SELECT queue_json FROM threads WHERE thread_id = ?'
 
 /** Threads of a session in creation order; the first step of session history. */
 export const THREADS_FOR_SESSION_SQL = `
@@ -70,8 +71,9 @@ export const INTERACTION_IN_THREAD_SQL = `
 export const USER_MESSAGE_FOR_TURN_SQL = `
   SELECT message_id, thread_id, turn_id, role, ordinal
   FROM messages
-  WHERE turn_id = ? AND role = 'user'
-  LIMIT 1`
+  WHERE turn_id = ?1 AND role = 'user'
+    -- The prompt, not a message steered into the turn later.
+    AND ordinal = (SELECT MIN(ordinal) FROM messages WHERE turn_id = ?1 AND role = 'user')`
 
 /** Replay: durable events for a scope strictly after a cursor sequence, bounded. */
 export const EVENTS_AFTER_CURSOR_SQL = `

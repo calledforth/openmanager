@@ -114,6 +114,7 @@ export const scopeSnapshots: ScopeSnapshot[] = [
       ],
       interactions: [],
       listing: {},
+      queue: { items: [], pausedBy: null },
     },
   },
 ]

@@ -158,14 +158,45 @@ type ActiveTurn = {
   /** Who began it. A `background` turn is one the CLI started by itself after
    * a background task settled: nobody awaits it, so it opens on the first
    * assistant frame that arrives with no turn in flight and closes on the
-   * result that ends it. See `claude-background.ts`. */
-  kind: 'user' | 'background'
+   * result that ends it. See `claude-background.ts`. A `steered` turn is one
+   * the CLI began for a steered message that missed the turn it was sent
+   * into: a user's message, but one nobody awaits. */
+  kind: 'user' | 'background' | 'steered'
   sessionId: string
   state: 'dispatched' | 'completing'
   settle: (error?: unknown) => void
   /** Resolves when this turn leaves the state machine, however it leaves. */
   done: Promise<void>
 }
+
+/** A message sent into a running turn, until the CLI takes it or gives it back.
+ * Keyed in `steers` by the `uuid` it was stamped with, which is how the CLI's
+ * `command_lifecycle` frames name it. */
+type PendingSteer = {
+  /** The caller's id for it, which every steer event carries. */
+  steerId: string
+  /** The turn it was sent into. */
+  turnId: string
+}
+
+/** The `command_lifecycle` frame (`msg_lifecycle_v1`): one async user message
+ * moving through the CLI's command queue. Not in the SDK's message union. */
+type CommandLifecycle = {
+  type: 'command_lifecycle'
+  command_uuid: string
+  state: 'queued' | 'started' | 'completed' | 'cancelled' | (string & {})
+}
+
+function commandLifecycle(message: SDKMessage): CommandLifecycle | undefined {
+  const frame = message as unknown as Partial<CommandLifecycle>
+  return frame.type === 'command_lifecycle' && typeof frame.command_uuid === 'string'
+    ? (frame as CommandLifecycle)
+    : undefined
+}
+
+/** The CLI capability that makes a steer observable: without lifecycle frames
+ * nothing says when, or whether, the CLI took the message. */
+const MESSAGE_LIFECYCLE_CAPABILITY = 'msg_lifecycle_v1'
 
 /** One Claude Code subprocess, one transcript, one thread.
  *
@@ -198,6 +229,10 @@ export class ClaudeSessionRuntime implements ManagedSessionRuntime {
   private exitSettlement: Promise<SessionRuntimeExit> | undefined
   private spawned = false
   private turn: ActiveTurn | undefined
+  /** Steered messages the CLI holds and has neither started nor dropped. */
+  private readonly steers = new Map<string, PendingSteer>()
+  /** What the CLI's last `system/init` advertised. */
+  private cliCapabilities = new Set<string>()
   /** Every background task the CLI last reported as live. */
   private backgroundTasks: BackgroundTask[] = []
   /** The roster as this runtime last announced it, which lags the one above
@@ -375,6 +410,8 @@ export class ClaudeSessionRuntime implements ManagedSessionRuntime {
   get busy(): boolean {
     return (
       this.turn?.kind === 'background' ||
+      this.turn?.kind === 'steered' ||
+      this.steers.size > 0 ||
       this.backgroundTasks.length > 0 ||
       this.announcedBackgroundTasks.length > 0
     )
@@ -699,6 +736,17 @@ export class ClaudeSessionRuntime implements ManagedSessionRuntime {
       void this.settleExit(unobservedExit())
       return
     }
+    const lifecycle = commandLifecycle(message)
+    if (lifecycle) {
+      this.noteCommandLifecycle(lifecycle)
+      return
+    }
+    if (message.type === 'system' && message.subtype === 'init') {
+      const advertised = (message as { capabilities?: unknown }).capabilities
+      this.cliCapabilities = new Set(
+        Array.isArray(advertised) ? advertised.filter((item) => typeof item === 'string') : [],
+      )
+    }
     const backgroundTasks = claudeBackgroundTasks(message)
     if (backgroundTasks) {
       this.noteBackgroundTasks(message.session_id, backgroundTasks)
@@ -836,7 +884,7 @@ export class ClaudeSessionRuntime implements ManagedSessionRuntime {
     desiredConfig?: DesiredSessionConfig
   }): Promise<void> {
     const sessionId = await this.ready()
-    if (this.turn?.kind === 'user')
+    if (this.turn?.kind === 'user' || this.turn?.kind === 'steered')
       throw new Error(
         `${this.providerId} already has a turn in flight on thread ${this.threadIdValue}`,
       )
@@ -899,6 +947,140 @@ export class ClaudeSessionRuntime implements ManagedSessionRuntime {
     return turn.done.then(() => undefined)
   }
 
+  /** Add a message to the turn in flight.
+   *
+   * Sent as an async user message with `priority: 'next'`, which the CLI folds
+   * into the running turn at its next tool boundary: the agent reads it there
+   * and carries on in the same turn, which ends with one result. (`'now'` is
+   * not a steer: it ends the running turn at that boundary and starts a new
+   * one. Both probed on Agent SDK 0.3.220.)
+   *
+   * Resolves once the message is with the CLI. What happens next is reported
+   * as events naming `steerId`: `steer_delivered` when the CLI takes it into
+   * the turn, `steer_turn_started` when that turn ended first and the CLI
+   * began one of its own for it, `steer_withdrawn` when it was given back
+   * unread. Exactly one of them follows. Refused, and nothing sent, when no
+   * user's turn is in flight or the CLI cannot report what becomes of it. */
+  async steer(args: { prompt: PromptInput; steerId: string }): Promise<void> {
+    const turn = this.turn
+    if (!turn || turn.kind === 'background' || turn.state !== 'dispatched')
+      throw new Error(`${this.providerId} has no turn to steer on thread ${this.threadIdValue}`)
+    if (!this.cliCapabilities.has(MESSAGE_LIFECYCLE_CAPABILITY))
+      throw new Error(`${this.providerId} cannot report what becomes of a steered message`)
+    // Converted before anything is recorded, as a prompt is: an unsupported
+    // block refuses the steer instead of leaving it pending forever.
+    const content = claudePromptContent(args.prompt)
+    const input = this.usableInput()
+    const uuid = crypto.randomUUID()
+    this.steers.set(uuid, { steerId: args.steerId, turnId: turn.id })
+    try {
+      input.push({
+        type: 'user',
+        uuid: uuid as SDKUserMessage['uuid'],
+        priority: 'next',
+        message: { role: 'user', content },
+        parent_tool_use_id: null,
+        session_id: turn.sessionId,
+      } as SDKUserMessage)
+    } catch (error) {
+      this.steers.delete(uuid)
+      throw error instanceof Error ? error : new Error(errorMessage(error))
+    }
+  }
+
+  /** Follow a steered message through the CLI's command queue.
+   *
+   * `started` is the moment the CLI took it. Inside the turn it was sent into,
+   * that is the fold: the message now sits at this point of the turn. With
+   * that turn over, the CLI is starting a turn of its own for it, which is
+   * opened here with the message's uuid as its id, so the result that ends it
+   * (`user_message_uuid`) is recognised as that turn's. `cancelled` is the CLI
+   * dropping it. Frames for messages that are not steers (our prompts, the
+   * CLI's own) are of no interest. */
+  private noteCommandLifecycle(frame: CommandLifecycle): void {
+    const steer = this.steers.get(frame.command_uuid)
+    if (!steer) return
+    if (frame.state === 'cancelled') {
+      this.steers.delete(frame.command_uuid)
+      this.emitSteer('steer_withdrawn', steer)
+      return
+    }
+    if (frame.state !== 'started') return
+    this.steers.delete(frame.command_uuid)
+    const turn = this.turn
+    if (turn && turn.kind !== 'background' && turn.state === 'dispatched') {
+      // Folded into the user's turn in flight. Only ever the one it was sent
+      // into: the host never starts a prompt while a steer is pending.
+      this.emitSteer('steer_delivered', steer)
+      return
+    }
+    // A background turn is no longer the CLI's business once a user's message
+    // runs, exactly as when a prompt supersedes it.
+    this.supersedeBackgroundTurn()
+    const sessionId = this.sessionIdValue ?? turn?.sessionId ?? ''
+    this.openTurn(sessionId, 'steered', frame.command_uuid)
+    this.emitSteer('steer_turn_started', steer)
+  }
+
+  private emitSteer(
+    event: 'steer_delivered' | 'steer_turn_started' | 'steer_withdrawn',
+    steer: PendingSteer,
+  ): void {
+    this.emit(
+      routeEvent(this.route(), this.sessionIdValue, 'lifecycle', event, {
+        steerId: steer.steerId,
+      }),
+    )
+  }
+
+  /** Take back every steer the CLI still holds for `turnId` (or for any turn).
+   *
+   * One the CLI drops is reported withdrawn here, or by its `cancelled` frame
+   * if that comes first; the event is emitted once either way. One it had
+   * already dequeued is left alone: its `started` frame says where it went. A
+   * CLI that cannot cancel leaves them all to their frames. */
+  private async withdrawSteers(turnId?: string): Promise<void> {
+    const query = this.query
+    const cancel = query?.cancelAsyncMessage?.bind(query)
+    if (!cancel) return
+    const pending = [...this.steers].filter(([, steer]) => !turnId || steer.turnId === turnId)
+    await Promise.all(
+      pending.map(async ([uuid, steer]) => {
+        let cancelled = false
+        try {
+          cancelled = await withTimeout(
+            cancel(uuid),
+            this.timeouts.controlRequestMs,
+            () =>
+              new RpcTimeoutError(
+                this.providerId,
+                'cancelAsyncMessage',
+                this.timeouts.controlRequestMs,
+              ),
+          )
+        } catch (error) {
+          this.host.log({
+            scope: 'claude',
+            level: 'warn',
+            message: 'Could not take back a steered message',
+            data: { steerId: steer.steerId, error: errorMessage(error) },
+          })
+          return
+        }
+        if (!cancelled || !this.steers.has(uuid)) return
+        this.steers.delete(uuid)
+        this.emitSteer('steer_withdrawn', steer)
+      }),
+    )
+  }
+
+  /** Report every steer still held as given back: the process that held them is gone. */
+  private dropSteers(): void {
+    const pending = [...this.steers.values()]
+    this.steers.clear()
+    for (const steer of pending) this.emitSteer('steer_withdrawn', steer)
+  }
+
   /** The input stream, proving it can still be written to.
    *
    * Separate from `assertUsable` because the queue closing and the phase
@@ -915,7 +1097,11 @@ export class ClaudeSessionRuntime implements ManagedSessionRuntime {
   /** Move `idle -> dispatched`. The returned promise is what `prompt()` hands
    * its caller, and only `completeTurn` (with a matching terminal result) or
    * an exit may settle it. */
-  private openTurn(sessionId: string, kind: ActiveTurn['kind']): ActiveTurn {
+  private openTurn(
+    sessionId: string,
+    kind: ActiveTurn['kind'],
+    id: string = crypto.randomUUID(),
+  ): ActiveTurn {
     let settle!: (error?: unknown) => void
     const done = new Promise<void>((resolve, reject) => {
       settle = (error?: unknown) => (error === undefined ? resolve() : reject(error))
@@ -924,7 +1110,7 @@ export class ClaudeSessionRuntime implements ManagedSessionRuntime {
     // exit can reject it first; without this the rejection is unhandled.
     done.catch(() => undefined)
     const turn: ActiveTurn = {
-      id: crypto.randomUUID(),
+      id,
       kind,
       sessionId,
       state: 'dispatched',
@@ -1094,6 +1280,7 @@ export class ClaudeSessionRuntime implements ManagedSessionRuntime {
       )
       turn.settle(new Error(message))
       void this.publishContextUsage(completed.sessionId)
+      void this.withdrawSteers(turn.id)
       return
     }
     // Emitted here rather than by the translator: only a result the state
@@ -1113,6 +1300,11 @@ export class ClaudeSessionRuntime implements ManagedSessionRuntime {
     // implemented by an older CLI must not delay the turn's settlement, and a
     // missing context meter is a cosmetic loss next to a wedged prompt queue.
     void this.publishContextUsage(completed.sessionId)
+    // A steer the turn ended without taking would otherwise sit in the CLI's
+    // queue until something else woke it (a stopped turn's sat for 15 s and
+    // more in the probe). One already dequeued is starting a turn of its own,
+    // and its `started` frame opens it.
+    void this.withdrawSteers(turn.id)
   }
 
   /** `usage_update` — how full the context window is, straight from the only
@@ -1189,8 +1381,14 @@ export class ClaudeSessionRuntime implements ManagedSessionRuntime {
     const query = this.query
     const turn = this.turn
     if (!query) return
+    // Steers first. Stop must not leave a message in the CLI's queue to run
+    // later by surprise, and once the interrupt lands the CLI's drain loop
+    // starts whatever it still holds at once: taking them back afterwards
+    // loses that race (the SDK's own note on the interrupt receipt).
+    await this.withdrawSteers()
+    let receipt: unknown
     try {
-      await withTimeout(
+      receipt = await withTimeout(
         query.interrupt(),
         this.timeouts.controlRequestMs,
         () => new RpcTimeoutError(this.providerId, 'interrupt', this.timeouts.controlRequestMs),
@@ -1204,6 +1402,11 @@ export class ClaudeSessionRuntime implements ManagedSessionRuntime {
       )
       throw error instanceof Error ? error : new Error(errorMessage(error))
     }
+    // A steer that was mid-fold when the first pass ran survives the
+    // interrupt and is listed here; one more pass takes back what it can.
+    const survivors = (receipt as { still_queued?: unknown } | undefined)?.still_queued
+    if (Array.isArray(survivors) && survivors.some((uuid) => this.steers.has(String(uuid))))
+      await this.withdrawSteers()
     if (!turn) return
     const outcome = await Promise.race([
       turn.done.then(
@@ -1951,6 +2154,7 @@ export class ClaudeSessionRuntime implements ManagedSessionRuntime {
     const expected = this.stopRequest !== undefined
     this.phaseValue = 'exited'
     this.failActiveTurn(cause ?? new Error(`${this.providerId} exited before the turn completed`))
+    this.dropSteers()
     // Background tasks are children of this process and went with it.
     this.stoppedBackgroundTasks.clear()
     this.backgroundTasks = []

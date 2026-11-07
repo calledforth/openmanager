@@ -99,7 +99,13 @@ import {
 // their age), `provider_limits_changed` is broadcast, and
 // `provider.limits.refresh` reads them again. A v21 client's strict provider
 // entry refuses the new field.
-export const PROTOCOL_VERSION = 22 as const
+// v23: a chat holds messages back while a turn runs (`queue.add`,
+// `queue.remove`, `queue.resume`), and a message can join the running turn
+// (`turn.steer`, gated by the provider's `canSteer`). The queue travels as
+// `thread.queue.updated` and in the thread snapshot's `queue`, which a v22
+// client's snapshot drops; a v22 client's strict capabilities refuse
+// `canSteer`. A steered message is a user `message.delta` inside the turn.
+export const PROTOCOL_VERSION = 23 as const
 
 export const ProtocolVersionSchema = z.number().int().positive().max(Number.MAX_SAFE_INTEGER)
 export const CapabilitySchema = MessageNameSchema

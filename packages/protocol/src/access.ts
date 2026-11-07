@@ -107,6 +107,11 @@ export const COMMAND_ACCESS = Object.freeze({
   [DRAFT_DELETE_CAPABILITY]: 'operate',
   'turn.send': 'agent',
   'turn.interrupt': 'agent',
+  // A queued or steered message reaches the agent, as a send does.
+  'queue.add': 'agent',
+  'queue.remove': 'agent',
+  'queue.resume': 'agent',
+  'turn.steer': 'agent',
   // Ends work the agent is doing, exactly as an interrupt does.
   'session.background.stop': 'agent',
   'interaction.respond': 'agent',

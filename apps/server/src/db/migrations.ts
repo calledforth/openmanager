@@ -1015,6 +1015,22 @@ export const MIGRATIONS: readonly Migration[] = [
       `)
     },
   },
+  {
+    version: 28,
+    name: 'thread_queue',
+    up(database) {
+      // The messages a chat holds back while a turn runs, as the last
+      // `thread.queue.updated` stated them: the whole queue, one row per
+      // thread, so a restart keeps it and the snapshot reads it in one go.
+      const threadColumns = database.prepare('PRAGMA table_info(threads)').all() as {
+        name: string
+      }[]
+      if (!threadColumns.some((column) => column.name === 'queue_json')) {
+        database.exec(`ALTER TABLE threads ADD COLUMN queue_json TEXT
+          CHECK (queue_json IS NULL OR json_valid(queue_json))`)
+      }
+    },
+  },
 ]
 
 type RetainedActivityRow = {

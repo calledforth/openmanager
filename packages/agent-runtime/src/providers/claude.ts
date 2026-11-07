@@ -33,6 +33,9 @@ export const claude: ClaudeProviderConfig = {
     // `query.interrupt()`, backed by the watchdog that replaces the runtime
     // when the interrupt produces neither a result nor an exit.
     canCancelPrompt: true,
+    // An async user message with `priority: 'next'` joins the running turn at
+    // its next tool boundary (probed on Agent SDK 0.3.220).
+    canSteer: true,
     // The probe reads the full catalog off the `initialize` response, so
     // commands are known before any session exists — unlike ACP, where they
     // only ever arrive as a `session/update` on a live session.
