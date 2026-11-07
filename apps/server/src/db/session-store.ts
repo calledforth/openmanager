@@ -27,6 +27,7 @@ import {
   type TurnFailureReason,
   type TurnStart,
   EMPTY_THREAD_QUEUE,
+  QueuedMessageSchema,
   ThreadQueueSchema,
   type ThreadQueue,
 } from '@openmanager/protocol/node'
@@ -368,10 +369,19 @@ export function readThreadQueue(
   const row = database.prepare(THREAD_QUEUE_SQL).get(threadId) as
     { queue_json: string | null } | undefined
   if (!row?.queue_json) return EMPTY_THREAD_QUEUE
-  const parsed = ThreadQueueSchema.safeParse(JSON.parse(row.queue_json))
-  if (parsed.success) return parsed.data
-  log?.('warn', 'a stored chat queue does not parse; reading it as empty', { threadId })
-  return EMPTY_THREAD_QUEUE
+  // Item by item, and past today's cap: a message that does not read is
+  // dropped with a log line, never the whole queue.
+  const stored = JSON.parse(row.queue_json) as { items?: unknown; pausedBy?: unknown }
+  const pausedBy = ThreadQueueSchema.shape.pausedBy.safeParse(stored.pausedBy)
+  const items = (Array.isArray(stored.items) ? stored.items : []).flatMap((item) => {
+    const parsed = QueuedMessageSchema.safeParse(item)
+    if (!parsed.success) {
+      log?.('warn', 'a stored queued message does not read; skipping it', { threadId })
+      return []
+    }
+    return [parsed.data]
+  })
+  return { items, pausedBy: pausedBy.success ? pausedBy.data : 'failure' }
 }
 
 /** What the provider last listed for this chat, if the thread exists and it has. */

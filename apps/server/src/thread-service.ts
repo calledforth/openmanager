@@ -2059,6 +2059,11 @@ export function createThreadService(
     if (threadBusy(record)) {
       return errorResult(requestId, 'conflict', 'A turn is already in progress.')
     }
+    // The provider may start a steered message it still holds as its next
+    // turn; a prompt started now could be credited with it.
+    if (record.queue.items.some((item) => item.delivery === 'steering')) {
+      return errorResult(requestId, 'conflict', 'A message is still with the agent.')
+    }
     // The rows may hold a turn no process runs: one whose recovery failed at
     // boot. A second turn beside it would leave the thread with two open.
     if (options.database) {
@@ -2243,7 +2248,12 @@ export function createThreadService(
   const knownQueueItem = (record: ThreadRecord, commandId: string) =>
     record.queue.items.some((item) => item.queueItemId === commandId) ||
     record.commandTurns.has(commandId) ||
-    findPersistedTurn(record.session.sessionId, record.thread.threadId, commandId) !== undefined
+    // A delivered steer is a user message carrying the message's id.
+    record.messages.some((message) => message.messageId === commandId) ||
+    findPersistedTurn(record.session.sessionId, record.thread.threadId, commandId) !== undefined ||
+    (options.database !== undefined &&
+      options.database.prepare('SELECT 1 FROM messages WHERE message_id = ?').get(commandId) !==
+        undefined)
 
   /**
    * Run the next queued message, when nothing holds the thread and nothing
@@ -2277,8 +2287,8 @@ export function createThreadService(
       queueItemId: next.queueItemId,
       reason: result.error.message,
     })
-    // Busy is not a failure: whatever holds the thread drains it when it ends.
-    if (result.error.code === 'conflict') return
+    // `threadBusy` was checked above, so a conflict here is a turn the rows
+    // hold open with nothing running it: waiting would wait forever.
     writeQueue(record, { items: record.queue.items, pausedBy: 'failure' })
   }
 
@@ -2286,8 +2296,9 @@ export function createThreadService(
    * What a turn's end does to the queue. A completed turn lets the next
    * message run. A stopped, failed or restart-cut turn pauses a queue that
    * has anything in it, and Stop never sends the next message by surprise.
-   * A provider that ended that way holds nothing any more, so a message it
-   * had for steering comes back as queued.
+   * A message the provider holds for steering stays `steering`: only the
+   * provider can say it gave it back (`steer_withdrawn`, which its exit also
+   * sends), and guessing would let a resume send it a second time.
    */
   const settleQueue = (
     record: ThreadRecord,
@@ -2309,12 +2320,8 @@ export function createThreadService(
       : ended === 'turn.interrupted'
         ? 'stop'
         : 'failure'
-    writeQueue(record, {
-      items: queue.items.map((item) =>
-        item.delivery === 'steering' ? { ...item, delivery: 'queued' as const } : item,
-      ),
-      pausedBy,
-    })
+    if (queue.pausedBy === pausedBy) return
+    writeQueue(record, { items: queue.items, pausedBy })
   }
 
   /** The prompt the provider reads for a message: its text and its images. */
@@ -2374,15 +2381,14 @@ export function createThreadService(
   }
 
   /** The user message a queued one becomes, inside `turnId`. */
-  const messageOf = (
-    record: ThreadRecord,
-    item: QueuedMessage,
-    turnId: string,
-  ): Message | undefined => {
-    const attachments = readAttachments(record, 'steer', item.artifactIds, false)
-    if ('type' in attachments) return undefined
+  const messageOf = (record: ThreadRecord, item: QueuedMessage, turnId: string): Message => {
+    const read = readAttachments(record, 'steer', item.artifactIds, false)
+    // The agent read the message either way; images whose files went
+    // missing since leave the words on the record rather than nothing.
+    const attachments = 'type' in read ? { content: [] } : read
     return {
-      messageId: randomUUID(),
+      // The message's own id, so a retried send of it finds it here.
+      messageId: item.queueItemId,
       threadId: record.thread.threadId,
       turnId,
       role: 'user',
@@ -2455,7 +2461,9 @@ export function createThreadService(
       startedAt: event.timestamp,
       ...(item ? { commandId: item.queueItemId } : {}),
     }
-    const userMessage = item ? messageOf(record, item, turn.turnId) : undefined
+    const userMessage = item
+      ? { ...messageOf(record, item, turn.turnId), messageId: randomUUID() }
+      : undefined
     if (!item || !userMessage) {
       // A message this queue no longer has: the turn is still the provider's
       // to run, and its output needs somewhere to go.
@@ -3456,6 +3464,8 @@ export function createThreadService(
           !!active &&
           active.turn.turnId === input.turnId &&
           active.promptStarted === true &&
+          // A turn the provider began by itself has no prompt to add to.
+          active.userMessage !== undefined &&
           !active.interruptRequested &&
           !record.cancellation &&
           !record.pendingBuild
@@ -3760,6 +3770,8 @@ export function createThreadService(
             record.pendingBuild = true
             entry.result = proposing.completion!.then(() => {
               record.pendingBuild = false
+              // Whatever happens to the build, the queue is no longer held.
+              queueMicrotask(() => drain(record))
               if (
                 threads.get(threadId) !== record ||
                 proposing.turn.state !== 'completed' ||

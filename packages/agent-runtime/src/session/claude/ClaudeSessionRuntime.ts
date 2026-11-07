@@ -198,6 +198,10 @@ function commandLifecycle(message: SDKMessage): CommandLifecycle | undefined {
  * nothing says when, or whether, the CLI took the message. */
 const MESSAGE_LIFECYCLE_CAPABILITY = 'msg_lifecycle_v1'
 
+/** How long Stop waits for the CLI to give a steer back. The control request
+ * answers in milliseconds; past this the CLI is wedged and gets replaced. */
+const STEER_TAKE_BACK_MS = 5_000
+
 /** One Claude Code subprocess, one transcript, one thread.
  *
  * The shape mirrors `AcpSessionRuntimeImpl` because everything above this
@@ -888,6 +892,12 @@ export class ClaudeSessionRuntime implements ManagedSessionRuntime {
       throw new Error(
         `${this.providerId} already has a turn in flight on thread ${this.threadIdValue}`,
       )
+    // A steer the CLI still holds may start next; a prompt now could be
+    // credited with it. The host waits for its fate before prompting.
+    if (this.steers.size > 0)
+      throw new Error(
+        `${this.providerId} still holds a steered message on thread ${this.threadIdValue}`,
+      )
     if (args.desiredConfig) await this.applyDesiredConfig(args.desiredConfig)
     // Converted BEFORE `prompt_started` is emitted and before a turn is opened.
     // An unsupported block throws here, which fails `prompt()` visibly; doing it
@@ -967,6 +977,10 @@ export class ClaudeSessionRuntime implements ManagedSessionRuntime {
       throw new Error(`${this.providerId} has no turn to steer on thread ${this.threadIdValue}`)
     if (!this.cliCapabilities.has(MESSAGE_LIFECYCLE_CAPABILITY))
       throw new Error(`${this.providerId} cannot report what becomes of a steered message`)
+    // Without a way to take a steer back, Stop could not keep its promise
+    // that nothing runs later by surprise.
+    if (!this.query?.cancelAsyncMessage)
+      throw new Error(`${this.providerId} cannot take back a steered message`)
     // Converted before anything is recorded, as a prompt is: an unsupported
     // block refuses the steer instead of leaving it pending forever.
     const content = claudePromptContent(args.prompt)
@@ -1037,32 +1051,35 @@ export class ClaudeSessionRuntime implements ManagedSessionRuntime {
    *
    * One the CLI drops is reported withdrawn here, or by its `cancelled` frame
    * if that comes first; the event is emitted once either way. One it had
-   * already dequeued is left alone: its `started` frame says where it went. A
-   * CLI that cannot cancel leaves them all to their frames. */
+   * already dequeued is left alone: its `started` frame says where it went.
+   *
+   * A take-back that fails leaves the CLI holding a message nobody can see
+   * the fate of, which would freeze the chat's queue behind it. A CLI that
+   * cannot answer a control request is wedged anyway, so the runtime is
+   * replaced, and its exit gives every held steer back (`dropSteers`). The
+   * bound is short because Stop waits on it: the CLI answers in milliseconds. */
   private async withdrawSteers(turnId?: string): Promise<void> {
     const query = this.query
     const cancel = query?.cancelAsyncMessage?.bind(query)
     if (!cancel) return
     const pending = [...this.steers].filter(([, steer]) => !turnId || steer.turnId === turnId)
+    const boundMs = Math.min(this.timeouts.controlRequestMs, STEER_TAKE_BACK_MS)
+    let failed = false
     await Promise.all(
       pending.map(async ([uuid, steer]) => {
         let cancelled = false
         try {
           cancelled = await withTimeout(
             cancel(uuid),
-            this.timeouts.controlRequestMs,
-            () =>
-              new RpcTimeoutError(
-                this.providerId,
-                'cancelAsyncMessage',
-                this.timeouts.controlRequestMs,
-              ),
+            boundMs,
+            () => new RpcTimeoutError(this.providerId, 'cancelAsyncMessage', boundMs),
           )
         } catch (error) {
+          failed = true
           this.host.log({
             scope: 'claude',
             level: 'warn',
-            message: 'Could not take back a steered message',
+            message: 'Could not take back a steered message; replacing the runtime',
             data: { steerId: steer.steerId, error: errorMessage(error) },
           })
           return
@@ -1072,6 +1089,7 @@ export class ClaudeSessionRuntime implements ManagedSessionRuntime {
         this.emitSteer('steer_withdrawn', steer)
       }),
     )
+    if (failed && !this.exitSettlement) await this.stop({ reason: 'restart' })
   }
 
   /** Report every steer still held as given back: the process that held them is gone. */

@@ -565,10 +565,15 @@ export async function startServer(config: ServerConfig) {
   }
   try {
     threadService.forgetStaleBackgroundWork()
-    threadService.pauseQueuesAfterRestart()
   } catch (error) {
     // Left for the next start; a stale "running" is wrong but harmless.
     log('error', 'stale background work was not cleared', { reason: String(error) })
+  }
+  try {
+    threadService.pauseQueuesAfterRestart()
+  } catch (error) {
+    // A queue left unpaused still waits: nothing drains until a turn ends.
+    log('error', 'chat queues were not paused after the restart', { reason: String(error) })
   }
   onRuntimeEvent = (event) => {
     if (event.event === 'usage_limits_update') providerLimits.observe(event.providerId, event.data)

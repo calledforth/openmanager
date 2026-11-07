@@ -445,6 +445,70 @@ describe('steering', () => {
     expect(chat.runtime.prompt).toHaveBeenCalledTimes(1)
   })
 
+  it('keeps a steer the provider holds out of reach after Stop, until the provider says', async () => {
+    const chat = await setup()
+    const sent = chat.send('Build it')
+    await chat.started(0)
+    chat.dispatch('turn.steer', {
+      ...chat.thread,
+      turnId: sent.turn.turnId,
+      text: 'Also lint',
+      commandId: 's-1',
+    })
+    chat.dispatch('turn.interrupt', { ...chat.thread, turnId: sent.turn.turnId })
+    await vi.waitFor(() => expect(chat.queue().pausedBy).toBe('stop'))
+    // No guess: it stays the provider's, so a resume cannot send it twice.
+    expect(chat.queue().items).toMatchObject([{ queueItemId: 's-1', delivery: 'steering' }])
+    chat.dispatch('queue.resume', chat.thread)
+    await Promise.resolve()
+    expect(chat.runtime.prompt).toHaveBeenCalledTimes(1)
+    // Nor can a send start a turn the provider's next one could be credited with.
+    expect(
+      chat.dispatch('turn.send', { ...chat.thread, text: 'Other', commandId: 'other' }),
+    ).toMatchObject({
+      type: 'error',
+      error: { code: 'conflict' },
+    })
+    chat.emit({ category: 'lifecycle', event: 'steer_withdrawn', data: { steerId: 's-1' } })
+    expect((await chat.started(1)).prompt.text).toBe('Also lint')
+  })
+
+  it('answers a retried steer it already delivered, without sending it again', async () => {
+    const chat = await setup()
+    const sent = chat.send('Build it')
+    await chat.started(0)
+    const steer = {
+      ...chat.thread,
+      turnId: sent.turn.turnId,
+      text: 'Skip the docs',
+      commandId: 's-1',
+    }
+    chat.dispatch('turn.steer', steer)
+    await vi.waitFor(() => expect(chat.runtime.steer).toHaveBeenCalledTimes(1))
+    chat.emit(
+      { category: 'lifecycle', event: 'steer_delivered', data: { steerId: 's-1' } },
+      'assistant-0',
+    )
+    expect(chat.dispatch('turn.steer', steer)).toMatchObject({ type: 'response' })
+    expect(
+      chat.dispatch('queue.add', { ...chat.thread, text: 'Skip the docs', commandId: 's-1' }),
+    ).toMatchObject({
+      type: 'response',
+    })
+    expect(chat.queue().items).toEqual([])
+    expect(chat.runtime.steer).toHaveBeenCalledTimes(1)
+  })
+
+  it('queues a steer aimed at a turn the provider began by itself', async () => {
+    const chat = await setup()
+    chat.emit({ category: 'lifecycle', event: 'background_turn_started', data: {} }, 'background-1')
+    const turnId = chat.state().turns[0]!.turnId
+    expect(
+      chat.dispatch('turn.steer', { ...chat.thread, turnId, text: 'Hi', commandId: 's-1' }),
+    ).toMatchObject({ payload: { outcome: 'queued' } })
+    expect(chat.runtime.steer).not.toHaveBeenCalled()
+  })
+
   it('puts a steer back in line when the provider cannot take it', async () => {
     const chat = await setup()
     const sent = chat.send('Build it')

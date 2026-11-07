@@ -1806,7 +1806,9 @@ function EnvironmentActiveThreadProvider({ children }: { children: ReactNode }) 
       const turn = selectActiveTurn(client.getState())
       const steering =
         action === 'steer' && turn?.threadId === current.threadId && client.supports('steerTurn')
-      const key = JSON.stringify([current.threadId, steering, text, artifactIds])
+      // The words alone: a retry after a lost answer keeps the id whether it
+      // is steered or queued now, and images re-uploaded get new ids.
+      const key = JSON.stringify([current.threadId, text])
       const commandId =
         unsentFollowUp.current?.key === key
           ? unsentFollowUp.current.commandId

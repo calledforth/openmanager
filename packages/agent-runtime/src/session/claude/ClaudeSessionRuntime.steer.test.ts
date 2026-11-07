@@ -160,6 +160,31 @@ describe('ClaudeSessionRuntime steering', () => {
     await turn.catch(() => undefined)
   })
 
+  it('holds a prompt back while a steer is still with the CLI', async () => {
+    const { runtime, sdk, turn, first } = await runningTurn()
+    const sent = await steer(runtime, sdk.last, 'Late')
+    sdk.last.heldCommands.delete(sent.uuid!)
+    sdk.last.emitResult({ userMessageUuid: first })
+    await turn
+    await expect(runtime.prompt({ prompt: { text: 'Next', blocks: [] } })).rejects.toThrow(
+      /still holds a steered message/,
+    )
+  })
+
+  it('replaces a CLI that cannot give a steer back, which gives it back', async () => {
+    const { runtime, events, sdk, turn } = await runningTurn()
+    await steer(runtime, sdk.last, 'Stuck')
+    sdk.last.cancelAsyncMessage = async () => {
+      throw new Error('wedged')
+    }
+    await runtime.cancel().catch(() => undefined)
+    await turn.catch(() => undefined)
+    await vi.waitFor(() =>
+      expect(steerEvents(events)).toEqual([['steer_withdrawn', 'steer:Stuck']]),
+    )
+    expect(runtime.phase).toBe('exited')
+  })
+
   it('gives every held steer back when the process dies', async () => {
     const { runtime, events, sdk, turn } = await runningTurn()
     await steer(runtime, sdk.last, 'One')
