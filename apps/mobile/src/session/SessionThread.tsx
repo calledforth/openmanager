@@ -1,5 +1,6 @@
 import { LinearGradient } from 'expo-linear-gradient'
 import { ArrowClockwiseIcon, ArrowDownIcon, WarningCircleIcon } from 'phosphor-react-native'
+import type { IconProps } from 'phosphor-react-native'
 import {
   memo,
   useCallback,
@@ -9,6 +10,7 @@ import {
   useRef,
   useState,
   useSyncExternalStore,
+  type ComponentType,
   type ReactNode,
 } from 'react'
 import {
@@ -40,8 +42,9 @@ import { ChildSessionCards } from './ChildSessionCards'
 import { countRender } from './render-probe'
 import { createScrollFollower, flingsDown, flingsUp, MAINTAIN_POSITION } from './scroll-anchor'
 import { DockSlotContext, ReadOnlyBar, SessionDock, type DockSlot } from './SessionDock'
-import { HEADER_ROW, SessionHeader, SessionHeaderBar } from './SessionHeader'
-import { SessionMenu } from './SessionMenu'
+import { HEADER_ROW, HeaderSpace, SessionHeaderBar } from './SessionHeader'
+import { SessionMenu, type MenuItem } from './SessionMenu'
+import type { SessionMenuItemId } from './session-menu'
 import type { StatusLineView } from './status-line'
 import { TAIL_ROWS, useTailWindow } from './tail-window'
 import { rowTextLength } from './thread-rows'
@@ -54,6 +57,18 @@ const DOCK_ESTIMATE = 96
 const ROW_GAP_BOTTOM = 18
 /** A page shows by this long after its first rows even if it never reported its end. */
 const LANDING_LIMIT_MS = 400
+/** Above the row, under the status bar: the header's own gap (`SessionHeaderBar`). */
+const HEADER_TOP = 6
+
+/** An action a page adds to the title's menu, after the session's own: a draft's Discard. */
+export interface HeaderAction {
+  id: string
+  label: string
+  icon: ComponentType<IconProps>
+  /** Throws work away: drawn in the error tone. */
+  destructive?: boolean
+  run: () => void
+}
 
 /**
  * The scroll view's own scroll to the end, which lands on the content's true
@@ -158,12 +173,12 @@ export interface SessionThreadProps {
   onRetry?: () => void
   /** The sessions it delegated to, as cards at the end of its transcript. */
   childSessions?: readonly HomeSession[]
-  /** What the ⋯ menu and the title can ask the environment; null leaves the ⋯ out. */
+  /** What the title's menu can ask the environment; null lists none of the session's items. */
   actions?: SessionActions | null
   /** What an empty, ready transcript shows: a new session's landing. */
   empty?: ReactNode
-  /** A button in the header's corner where there is no ⋯ menu: a draft's Discard. */
-  headerAction?: ReactNode
+  /** The page's own items in the title's menu, after the session's: a draft's Discard. */
+  headerActions?: readonly HeaderAction[]
   /**
    * The composer: a layer over the whole page that draws the dock (through
    * `DockSlotContext`) and whatever it opens. Without one the dock holds the
@@ -173,18 +188,20 @@ export interface SessionThreadProps {
 }
 
 const NO_CHILDREN: readonly HomeSession[] = []
+const NO_ACTIONS: readonly HeaderAction[] = []
 const HIDDEN = { opacity: 0 }
 
 /**
- * A session's page: back, project and title; the transcript, newest at the
- * bottom, running under the glass dock with a soft fade; the dock with the
- * status line and the slot the composer will take (the read-only bar until
- * then). The reader's place is theirs: the list follows the end only while
- * they are at it, and a glass button brings them back when they scroll up.
+ * A session's page: Back and the title capsule (project under the title,
+ * its menu behind a tap); the transcript, newest at the bottom, running
+ * under the glass dock with a soft fade; the dock with the status line and
+ * the slot the composer will take (the read-only bar until then). The
+ * reader's place is theirs: the list follows the end only while they are at
+ * it, and a glass button brings them back when they scroll up.
  *
- * One `Screen`: the header's words and the transcript are its content, what
- * its glass blurs; the header's buttons, the jump-to-latest button, the dock,
- * the composer's layers and the ⋯ menu float beside it, over it.
+ * One `Screen`: the transcript is its content, what its glass blurs; the
+ * header's glass, the jump-to-latest button, the dock, the composer's layers
+ * and the title's menu float beside it, over it.
  */
 export const SessionThread = memo(function SessionThread({
   title,
@@ -199,7 +216,7 @@ export const SessionThread = memo(function SessionThread({
   childSessions = NO_CHILDREN,
   actions = null,
   empty,
-  headerAction,
+  headerActions = NO_ACTIONS,
   composer,
 }: SessionThreadProps) {
   countRender('SessionThread')
@@ -212,6 +229,32 @@ export const SessionThread = memo(function SessionThread({
   const [landed, setLanded] = useState(false)
   const [dockHeight, setDockHeight] = useState(DOCK_ESTIMATE)
   const chrome = useSessionChrome(actions, title)
+  // The title's menu: the session's items, then the page's own.
+  const menuItems = useMemo<MenuItem[]>(
+    () => [
+      ...chrome.menu,
+      ...headerActions.map(({ id, label, icon, destructive }) => ({
+        id,
+        label,
+        icon,
+        destructive,
+        disabledReason: null,
+      })),
+    ],
+    [chrome.menu, headerActions],
+  )
+  const chooseItem = useCallback(
+    (id: string) => {
+      const own = headerActions.find((action) => action.id === id)
+      if (own) {
+        chrome.closeMenu()
+        own.run()
+        return
+      }
+      chrome.choose(id as SessionMenuItemId)
+    },
+    [chrome, headerActions],
+  )
 
   // Follows the end while the reader is at it; see scroll-anchor.ts.
   const [follower] = useState(() =>
@@ -315,17 +358,16 @@ export const SessionThread = memo(function SessionThread({
         <View style={{ flex: 1 }} {...coveredBySheet(covered)}>
           <SessionHeaderBar
             topInset={insets.top}
-            onMenu={actions ? chrome.openMenu : undefined}
-            action={headerAction}
+            title={title}
+            project={project}
+            projectId={projectId}
+            note={chrome.note}
+            editing={chrome.editing}
+            onCommitTitle={chrome.commitTitle}
+            onOpen={menuItems.length > 0 ? chrome.openMenu : undefined}
           />
           <GlassContent>
-            <SessionHeader
-              title={title}
-              project={project}
-              projectId={projectId}
-              topInset={insets.top}
-              chrome={chrome}
-            />
+            <HeaderSpace topInset={insets.top} />
 
             <View className="flex-1">
               {messages.length === 0 && empty && !problem && phase === 'ready' ? (
@@ -443,10 +485,10 @@ export const SessionThread = memo(function SessionThread({
 
         {chrome.menuOpen ? (
           <SessionMenu
-            items={chrome.menu}
+            items={menuItems}
             note={actions?.unavailable ?? null}
-            top={insets.top + 6 + HEADER_ROW}
-            onChoose={chrome.choose}
+            top={insets.top + HEADER_TOP + HEADER_ROW}
+            onChoose={chooseItem}
             onClose={chrome.closeMenu}
           />
         ) : null}

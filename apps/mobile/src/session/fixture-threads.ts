@@ -4,13 +4,15 @@
  * that state would show: one working (a live turn with a thought, a run of
  * tools and its words so far), one waiting on a permission, one finished
  * (code, a table, a thought with text), one left running in the background,
- * one failed, and a 200-message thread
- * for measuring the list. The working one starts from the recorded live run
- * (`recorded-thread.ts`). Only for the fixture; nothing here reaches a server.
+ * one failed, one of pictures sent and returned (one, two, three, four, ten
+ * at a time), and a 200-message thread for measuring the list. The working
+ * one starts from the recorded live run (`recorded-thread.ts`). Only for the
+ * fixture; nothing here reaches a server.
  */
 import type { ContentBlock, Turn } from '@openmanager/protocol'
 import type { ThreadState } from '@openmanager/environment-client'
 
+import { fixturePng } from './fixture-images'
 import { RECORDED_THREAD } from './recorded-thread'
 
 type Message = ThreadState['messages'][number]
@@ -58,13 +60,19 @@ class ThreadBuilder {
     return this
   }
 
-  message(turnId: string, messageId: string, role: Message['role'], body: string) {
+  message(
+    turnId: string,
+    messageId: string,
+    role: Message['role'],
+    body: string,
+    pictures: readonly ContentBlock[] = [],
+  ) {
     this.state.messages.push({
       messageId,
       threadId: this.threadId,
       turnId,
       role,
-      content: text(body),
+      content: [...(body ? text(body) : []), ...pictures],
     })
     this.place({ kind: 'message', id: messageId, turnId })
     return this
@@ -369,5 +377,56 @@ export function longThread(now: number, turns = 100): ThreadState {
           : `Turn ${index + 1}: ${PARAGRAPH}\n\n- kept the keys stable\n- memoised the row`,
       )
   }
+  return b.state
+}
+
+/** The pictures' shapes, in turn: wide, tall, square, wide again. */
+const SHAPES: ReadonlyArray<readonly [number, number]> = [
+  [180, 120],
+  [120, 180],
+  [150, 150],
+  [200, 120],
+]
+const drawn = new Map<number, ContentBlock>()
+
+/** The `n`th fixture picture, drawn once, as an inline image block. */
+function picture(n: number): ContentBlock {
+  let block = drawn.get(n)
+  if (!block) {
+    const [width, height] = SHAPES[n % SHAPES.length]!
+    block = { type: 'image', mimeType: 'image/png', data: fixturePng(width, height, (n * 47) % 360, n) }
+    drawn.set(n, block)
+  }
+  return block
+}
+
+const pictures = (from: number, count: number) =>
+  Array.from({ length: count }, (_, i) => picture(from + i))
+
+/**
+ * Three settled turns of pictures: references sent four, one and two at a
+ * time; variants returned one, three and ten at a time.
+ */
+export function imagesThread(now: number): ThreadState {
+  const b = new ThreadBuilder('s-soul-id')
+  const t1 = 'turn-i1'
+  b.turn(t1, 'completed', now - 1_900_000, now - 1_840_000)
+    .message(t1, 'i-user-1', 'user', 'Match this reference — the soul ID avatar grid.', pictures(0, 4))
+    .thought(t1, 'i-thought-1', 'Four references: a consistent palette, soft discs, one band across.')
+    .message(
+      t1,
+      'i-a1',
+      'assistant',
+      'First pass at the avatar, from the four references.',
+      pictures(4, 1),
+    )
+  const t2 = 'turn-i2'
+  b.turn(t2, 'completed', now - 1_500_000, now - 1_430_000)
+    .message(t2, 'i-user-2', 'user', 'Closer to this crop.', pictures(5, 1))
+    .message(t2, 'i-a2', 'assistant', 'Three variants at that crop.', pictures(6, 3))
+  const t3 = 'turn-i3'
+  b.turn(t3, 'completed', now - 900_000, now - 780_000)
+    .message(t3, 'i-user-3', 'user', 'Both of these, then give me the full set.', pictures(9, 2))
+    .message(t3, 'i-a3', 'assistant', 'All ten variants from the two picks.', pictures(11, 10))
   return b.state
 }
