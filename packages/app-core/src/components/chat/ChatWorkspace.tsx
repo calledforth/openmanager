@@ -4,6 +4,7 @@ import { ChatView } from './ChatView'
 import { FloatingChatComposer } from './FloatingChatComposer'
 import { MessageInput } from './MessageInput'
 import { SessionBackgroundTasks } from './BackgroundTasksPill'
+import { SessionQueuedMessages } from './QueuedMessages'
 import { SessionLaunchPill } from './SessionLaunchPill'
 import { SyncingPill } from './SyncingPill'
 import { useState, type ReactNode } from 'react'
@@ -192,6 +193,7 @@ function ChatWorkspaceContent({ connectionProblem }: { connectionProblem: boolea
             <SessionLaunchPill />
             <SyncingPill connectionProblem={connectionProblem} />
             <SessionBackgroundTasks />
+            <SessionQueuedMessages />
             <MessageInput />
           </div>
         </FloatingChatComposer>

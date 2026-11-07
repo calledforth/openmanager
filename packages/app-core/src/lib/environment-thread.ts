@@ -4,6 +4,7 @@ import type { ContentBlock, Message, Turn } from '@openmanager/protocol'
 import {
   resendablePrompt,
   selectActiveThread,
+  selectTurnPrompt,
   shallowEqualArray,
   type EnvironmentClient,
   type EnvironmentState,
@@ -24,7 +25,8 @@ import type {
 
 /**
  * Projection of a normalized environment thread into what the chat timeline
- * renders: one row per user prompt, one row per assistant turn, each with the
+ * renders: one row per user prompt, one row per assistant turn (split where
+ * the user steered a message into it, see `projectTurn`), each with the
  * persisted body the row reads through `messageContentStore` and the live
  * snapshot it reads through the streaming store.
  *
@@ -272,7 +274,8 @@ function projectTurn(
   const actionable = latest && failure !== undefined
   // A background turn has no prompt to send again. An older failure says so
   // truthfully too; `actionable` is what keeps its button off.
-  const resendable = failure !== undefined && resendablePrompt(messages, turn.turnId) !== undefined
+  const resendable =
+    failure !== undefined && resendablePrompt(messages, turn.turnId, order) !== undefined
   const userRowKeys = new Map<string, string | undefined>()
   for (const message of messages) {
     if (message.role === 'user') {
@@ -299,9 +302,9 @@ function projectTurn(
   const userSources = new Map<string, Message>()
   let sequenceNum = sequenceStart
   const settled = isTurnSettled(turn)
+  const sessionId = thread.thread.sessionId
 
-  for (const message of messages) {
-    if (message.role !== 'user') continue
+  const pushUserRow = (message: Message) => {
     userSources.set(message.messageId, message)
     const rowKey = userRowKeys.get(message.messageId)
     // Linear, but over the handful of rows one turn produces.
@@ -312,10 +315,10 @@ function projectTurn(
     if (reused && reused.message.sequenceNum === sequenceNum && reused.message.rowKey === rowKey) {
       entries.push(reused)
       sequenceNum += 1
-      continue
+      return
     }
     const content = contentText(message.content)
-    const parts = imageParts(message, thread.thread.sessionId)
+    const parts = imageParts(message, sessionId)
     entries.push({
       message: {
         externalId: message.messageId,
@@ -330,8 +333,24 @@ function projectTurn(
     sequenceNum += 1
   }
 
+  // The prompt opens the turn. A message the user steered into the turn is a
+  // user message of it too, and shows where the order places it: between
+  // what the agent did before it and after it. One the order does not place
+  // (a page from an environment that keeps no order) keeps the old layout,
+  // under the prompt.
+  const prompt = selectTurnPrompt(messages, turn.turnId, order)
+  const placedUsers = new Set<string>()
+  for (const ref of order) {
+    if (ref.kind === 'message' && ref.id !== prompt?.messageId) placedUsers.add(ref.id)
+  }
+  const usersById = new Map<string, Message>()
+  for (const message of messages) {
+    if (message.role !== 'user') continue
+    if (message === prompt || !placedUsers.has(message.messageId)) pushUserRow(message)
+    else usersById.set(message.messageId, message)
+  }
+
   const assistantMessages = messages.filter((message) => message.role === 'assistant')
-  const sessionId = thread.thread.sessionId
   // A long turn places hundreds of entries; looking each one up by scanning
   // would make every streamed event quadratic in the turn's length.
   const reasoningById = new Map(reasoning.map((entry) => [entry.messageId, entry]))
@@ -342,11 +361,22 @@ function projectTurn(
   // it led to, the text that followed. Anything the order does not place (a
   // page from an environment that keeps no order) falls back to the grouped
   // layout, reasoning first and text last, so the answer still ends the turn.
+  //
+  // A steered message splits the agent's side into segments, each a row of
+  // its own: the work and text before the message, then the rest after it.
+  type Segment = { after: Message | null; parts: MessagePart[]; texts: Message[] }
+  const segments: Segment[] = [{ after: null, parts: [], texts: [] }]
   const placed = new Set<string>()
-  const parts: MessagePart[] = []
   for (const ref of order) {
     const key = `${ref.kind}:${ref.id}`
     if (placed.has(key)) continue
+    const steered = ref.kind === 'message' ? usersById.get(ref.id) : undefined
+    if (steered) {
+      placed.add(key)
+      segments.push({ after: steered, parts: [], texts: [] })
+      continue
+    }
+    const segment = segments.at(-1)!
     let placedParts: MessagePart[] | undefined
     if (ref.kind === 'reasoning') {
       const entry = reasoningById.get(ref.id)
@@ -359,22 +389,26 @@ function projectTurn(
       placedParts = notice ? [noticePart(notice)] : undefined
     } else {
       const message = assistantById.get(ref.id)
+      if (message) segment.texts.push(message)
       placedParts = message ? textParts(message, sessionId) : undefined
     }
     if (!placedParts) continue
     placed.add(key)
-    parts.push(...placedParts)
+    segment.parts.push(...placedParts)
   }
-  parts.push(
+  const last = segments.at(-1)!
+  const unplacedTexts = assistantMessages.filter(
+    (message) => !placed.has(`message:${message.messageId}`),
+  )
+  last.texts.push(...unplacedTexts)
+  last.parts.push(
     ...reasoning
       .filter((entry) => !placed.has(`reasoning:${entry.messageId}`))
       .map((entry) => reasoningPart(entry, settled)),
     ...tools
       .filter((tool) => !placed.has(`tool:${tool.toolCallId}`))
       .map((tool) => toolPart(tool, sessionId)),
-    ...assistantMessages
-      .filter((message) => !placed.has(`message:${message.messageId}`))
-      .flatMap((message) => textParts(message, sessionId)),
+    ...unplacedTexts.flatMap((message) => textParts(message, sessionId)),
     ...notices
       .filter((notice) => !placed.has(`notice:${notice.noticeId}`))
       .map((notice) => noticePart(notice)),
@@ -382,31 +416,59 @@ function projectTurn(
     ...(liveNotice ? [noticePart(liveNotice, true)] : []),
     ...(failure ? [failurePart(turn.turnId, failure, actionable, resendable)] : []),
   )
-  if (parts.length > 0 || !settled) {
+
+  const runtime = turnRuntime(turn)
+  let firstRow = true
+  segments.forEach((segment, index) => {
+    if (segment.after) pushUserRow(segment.after)
+    const isLast = index === segments.length - 1
+    // A running turn's last segment shows even empty: the agent is working on it.
+    if (segment.parts.length === 0 && (settled || !isLast)) return
     // Each run is its own message; the plain-text fallback keeps them as paragraphs.
-    const content = assistantMessages
+    const content = segment.texts
       .map((message) => contentText(message.content))
       .filter((text) => text.length > 0)
       .join('\n\n')
-    const runtime = turnRuntime(turn)
+    // The first segment keeps the turn's own key, so the common turn (nothing
+    // steered) never changes it; a later one is keyed by the message it follows.
+    const rowKey = segment.after
+      ? `turn:${turn.turnId}:assistant:${segment.after.messageId}`
+      : `turn:${turn.turnId}:assistant`
+    // How long the turn ran labels where it ended; that nobody prompted it,
+    // where it began.
+    const rowRuntime = segmentRuntime(runtime, firstRow, isLast)
+    firstRow = false
     entries.push({
       // Tokens change the row's body, which it reads from the stores; the row
       // the timeline lists is the same row, so the list does not change. Its
-      // id is the turn's until the reply's first message names it; the row on
-      // screen stays the turn's throughout.
+      // id is the segment's until its first message names it; the row on
+      // screen stays the segment's throughout.
       message: rowMessage(previous, {
-        externalId: assistantMessages[0]?.messageId ?? `turn:${turn.turnId}:assistant`,
-        rowKey: `turn:${turn.turnId}:assistant`,
+        externalId: segment.texts[0]?.messageId ?? rowKey,
+        rowKey,
         role: 'assistant',
         isFinal: settled,
         sequenceNum,
       }),
-      content: { content, parts, ...(runtime ? { runtime } : {}) },
-      streaming: { content, parts, hasCompleteHistory: true },
+      content: { content, parts: segment.parts, ...(rowRuntime ? { runtime: rowRuntime } : {}) },
+      streaming: { content, parts: segment.parts, hasCompleteHistory: true },
     })
-  }
+    sequenceNum += 1
+  })
 
   return { deps, entries, userSources }
+}
+
+/** The part of a turn's runtime one of its segments shows. */
+function segmentRuntime(
+  runtime: TurnRuntimeMetadata | undefined,
+  first: boolean,
+  last: boolean,
+): TurnRuntimeMetadata | undefined {
+  if (!runtime || (first && last)) return runtime
+  const { unprompted, ...timing } = runtime
+  const shown = { ...(last ? timing : {}), ...(first && unprompted ? { unprompted } : {}) }
+  return Object.keys(shown).length > 0 ? shown : undefined
 }
 
 /**

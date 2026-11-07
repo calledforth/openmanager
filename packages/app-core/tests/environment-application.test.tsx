@@ -651,6 +651,189 @@ describe('the shared application over the environment client', () => {
     expect(client.getState().threads[THREAD.threadId]?.turns.at(-1)?.state).toBe('interrupted')
   })
 
+  describe('while a turn runs', () => {
+    // A chip that leaves plays its exit; the test reads the screen after it.
+    beforeEach(() => {
+      MotionGlobalConfig.skipAnimations = true
+    })
+    afterEach(() => {
+      MotionGlobalConfig.skipAnimations = false
+    })
+    const STEERING_PROVIDER = (canSteer: boolean) => ({
+      id: 'claude',
+      displayName: 'Claude Code',
+      capabilities: {
+        canSetModel: true,
+        canSetMode: true,
+        canSetConfigOption: true,
+        canDeleteSession: false,
+        canLoadSession: true,
+        canListSessions: false,
+        canCancelPrompt: true,
+        canSteer,
+        supportsPlans: false,
+        supportsAvailableCommands: false,
+        supportsUsage: false,
+        supportsPermissionRequests: true,
+        supportsAuthentication: false,
+        supportsThoughtStreaming: false,
+        supportsSubtasks: false,
+        supportsExtensions: false,
+        supportsQuestions: false,
+      },
+      health: {
+        summary: 'ready' as const,
+        available: true,
+        refreshing: false,
+        install: 'installed' as const,
+        auth: 'authenticated' as const,
+        runtime: { state: 'running' as const, liveProcesses: 1, activeTurns: 0 },
+        lastProbe: null,
+        update: 'current' as const,
+      },
+      limits: { supported: false, reading: null, refreshing: false, lastRefresh: null },
+    })
+    const running = async (canSteer: boolean, options: { holdSteering?: boolean } = {}) => {
+      const client = createMockEnvironmentClient({
+        seed: {
+          ...SEEDED_HISTORY,
+          providers: [STEERING_PROVIDER(canSteer)],
+          sessions: SEEDED_HISTORY.sessions!.map((entry) => ({ ...entry, providerId: 'claude' })),
+          activeSessionId: SESSION.sessionId,
+        },
+        respond: () => null,
+        ...options,
+      })
+      await render(<App client={client} />)
+      const { turn } = await act(() => client.commands.sendTurn({ ...THREAD, text: 'working' }))
+      await settle(client)
+      return { client, turnId: turn.turnId }
+    }
+    const pressEnter = (init: KeyboardEventInit = {}) =>
+      act(() => {
+        container
+          .querySelector('textarea')!
+          .dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, ...init }))
+      })
+    const thread = (client: MockEnvironmentClient) => client.getState().threads[THREAD.threadId]!
+    const followUpCalls = (client: MockEnvironmentClient) =>
+      client.calls.filter((call) =>
+        ['queueMessage', 'steerTurn', 'removeQueuedMessage', 'resumeQueue'].includes(call.command),
+      )
+
+    it('queues on Enter: the composer clears, a chip shows it, and no row is echoed', async () => {
+      const { client, turnId } = await running(false)
+      // Stop alone until there is something to send.
+      expect(button('Queue')).toBeNull()
+      await type('then run the tests')
+      expect(button('Queue')).not.toBeNull()
+      expect(button('Stop')).not.toBeNull()
+      await pressEnter()
+      await settle(client)
+
+      expect(client.calls.filter((call) => call.command === 'sendTurn')).toHaveLength(1)
+      expect(followUpCalls(client).at(-1)).toMatchObject({
+        command: 'queueMessage',
+        input: { ...THREAD, text: 'then run the tests' },
+      })
+      expect(container.querySelector('textarea')!.value).toBe('')
+      expect(thread(client).outbox).toEqual([])
+      const chips = container.querySelector('[aria-label="Queued messages"]')
+      expect(chips?.textContent).toContain('then run the tests')
+      expect(occurrences('then run the tests')).toBe(1)
+
+      // It runs as the next turn when this one completes, and the chip goes.
+      await act(() => client.completeTurn({ ...THREAD, turnId }))
+      await settle(client)
+      expect(container.querySelector('[aria-label="Queued messages"]')).toBeNull()
+      expect(thread(client).turns.at(-1)).toMatchObject({ state: 'running' })
+      expect(occurrences('then run the tests')).toBe(1)
+    })
+
+    it('removes a queued message through the environment', async () => {
+      const { client } = await running(false)
+      await type('never mind')
+      await pressEnter()
+      await settle(client)
+      await act(() => button('Remove “never mind”')!.click())
+      await settle(client)
+      expect(followUpCalls(client).at(-1)).toMatchObject({ command: 'removeQueuedMessage' })
+      expect(thread(client).queue.items).toEqual([])
+      expect(container.querySelector('[aria-label="Queued messages"]')).toBeNull()
+    })
+
+    it('says why a stopped queue waits, and resumes it', async () => {
+      const { client } = await running(false)
+      await type('after that')
+      await pressEnter()
+      await settle(client)
+      await act(() => button('Stop')!.click())
+      await settle(client)
+      expect(container.textContent).toContain('Paused: you stopped the turn')
+      // Stop never sends the next message.
+      expect(thread(client).turns.at(-1)?.state).toBe('interrupted')
+
+      await act(() => buttonWithText('Resume')!.click())
+      await settle(client)
+      expect(container.textContent).not.toContain('Paused:')
+      expect(thread(client).turns.at(-1)).toMatchObject({ state: 'running' })
+    })
+
+    it('steers on Enter when this device chose it, and queues on Mod+Enter', async () => {
+      globalThis.localStorage.setItem('openmanager-enter-while-running', 'steer')
+      const { client, turnId } = await running(true, { holdSteering: true })
+      await type('use the other file')
+      expect(button('Steer')).not.toBeNull()
+      await pressEnter()
+      await settle(client)
+      expect(followUpCalls(client).at(-1)).toMatchObject({
+        command: 'steerTurn',
+        input: { ...THREAD, turnId, text: 'use the other file' },
+      })
+      expect(container.textContent).toContain('Joins at the next step')
+      // Already with the agent: nothing to take back.
+      expect(button('Remove “use the other file”')).toBeNull()
+
+      await type('and then this')
+      await pressEnter({ ctrlKey: true })
+      await settle(client)
+      expect(followUpCalls(client).at(-1)).toMatchObject({
+        command: 'queueMessage',
+        input: { text: 'and then this' },
+      })
+
+      // Taken into the turn: it shows in the transcript, after the agent's work so far.
+      await act(() => client.deliverSteering(THREAD))
+      await settle(client)
+      expect(container.textContent).not.toContain('Joins at the next step')
+      expect(occurrences('use the other file')).toBe(1)
+    })
+
+    it('queues when the provider cannot steer, whatever this device chose', async () => {
+      globalThis.localStorage.setItem('openmanager-enter-while-running', 'steer')
+      const { client } = await running(false)
+      await type('later')
+      expect(button('Steer')).toBeNull()
+      await pressEnter({ metaKey: true })
+      await settle(client)
+      expect(followUpCalls(client).at(-1)).toMatchObject({ command: 'queueMessage' })
+    })
+
+    it('puts the words back with the reason when the queue refuses them', async () => {
+      const { client } = await running(false)
+      for (let index = 0; index < 20; index += 1) {
+        await act(() =>
+          client.commands.queueMessage({ ...THREAD, text: `m${index}`, commandId: `q${index}` }),
+        )
+      }
+      await type('one too many')
+      await pressEnter()
+      await settle(client)
+      expect(container.querySelector('textarea')!.value).toBe('one too many')
+      expect(container.textContent).toContain('A chat holds up to 20 messages at a time.')
+    })
+  })
+
   it('answers a permission request from the fallback card', async () => {
     const client = createMockEnvironmentClient({
       seed: { ...SEEDED_HISTORY, activeSessionId: SESSION.sessionId },
@@ -1268,6 +1451,7 @@ describe('the shared application over the environment client', () => {
         canLoadSession: true,
         canListSessions: false,
         canCancelPrompt: true,
+        canSteer: false,
         supportsPlans: false,
         supportsAvailableCommands: true,
         supportsUsage: true,

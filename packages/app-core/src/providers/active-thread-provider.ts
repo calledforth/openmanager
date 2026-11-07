@@ -35,6 +35,30 @@ export interface SendRefused {
   refused: string
 }
 
+/**
+ * What the open chat can do with a message while it is busy: hold it for the
+ * next turn (`queue`), or add it to the running one (`steer`). Neither echoes
+ * the message: the chat's queue shows it, as the environment states it.
+ * Each rejects with the environment's reason, so the composer keeps the words.
+ */
+export interface ThreadFollowUps {
+  /**
+   * A message sent now cannot start a turn of its own: one runs, or queued
+   * messages are still running one after another. The composer queues or
+   * steers it; otherwise it sends as usual.
+   */
+  busy: boolean
+  /** The running turn takes messages: its provider can steer, and so can the host. */
+  canSteer: boolean
+  queue: (content: string, attachments?: UploadedImageAttachment[]) => Promise<void>
+  /** Queued instead when the turn has ended or cannot take it; the environment decides. */
+  steer: (content: string, attachments?: UploadedImageAttachment[]) => Promise<void>
+  /** Take a waiting message out before it runs. Rejects when it is already sent. */
+  removeQueued: (queueItemId: string) => Promise<void>
+  /** Let a paused queue run again. */
+  resume: () => Promise<void>
+}
+
 /** The persisted record of the thread on screen, plus whether this client drives it. */
 export interface ActiveThreadDetails {
   externalId: string
@@ -152,6 +176,11 @@ export interface ActiveThreadStateValue {
   /** Send a failed message again under its own id. Hosts without a retryable
    * send leave this out and the failed row shows the reason only. */
   retrySend?: (commandId: string) => Promise<void>
+  /**
+   * Holding messages back and steering them into a running turn. Absent where
+   * the host has no chat queue: there a message sent mid-turn is a plain send.
+   */
+  followUps?: ThreadFollowUps
   abortSession: (externalId: string) => Promise<void>
   resolvePermission: (
     sessionExternalId: string,

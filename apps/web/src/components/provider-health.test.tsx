@@ -28,6 +28,7 @@ const CAPABILITIES: ProviderCatalogEntry['capabilities'] = {
   canLoadSession: true,
   canListSessions: true,
   canCancelPrompt: true,
+  canSteer: false,
   supportsPlans: false,
   supportsAvailableCommands: false,
   supportsUsage: false,

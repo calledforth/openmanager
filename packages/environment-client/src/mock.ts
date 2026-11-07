@@ -11,6 +11,7 @@ import {
   PAIRING_TOKEN_LENGTH,
   PairingTokenSchema,
   ProofEventSchemas,
+  THREAD_QUEUE_MAX,
   ProofCommandSchemas,
   ProviderCatalogEntrySchema,
   WorkspaceComposerPreferenceSchema,
@@ -28,8 +29,10 @@ import {
   type PairingRejectionReason,
   type ProofEvent,
   type ProviderCatalogEntry,
+  type QueuedMessage,
   type Session,
   type Thread,
+  type ThreadQueue,
   type Turn,
   type DurableTurnNotice,
   type TransientTurnNotice,
@@ -73,6 +76,7 @@ import type {
   EnvironmentCommandName,
   EnvironmentCommands,
   EnvironmentState,
+  QueueMessageInput,
   SendTurnInput,
   SessionStatus,
   ThreadTarget,
@@ -87,6 +91,8 @@ export interface MockSeedSession {
   threads?: Thread[]
   turns?: Turn[]
   messages?: Message[]
+  /** What the chat already holds back, by thread id. */
+  queues?: Record<string, ThreadQueue>
 }
 
 export interface MockSeed {
@@ -156,6 +162,12 @@ export interface MockEnvironmentClientOptions {
   latencyMs?: number
   now?: () => string
   nextId?: () => string
+  /**
+   * Leave a steered message `steering` until `deliverSteering` hands it to
+   * the turn, so a test can see it wait. By default the provider takes it at
+   * once, as at the agent's next step.
+   */
+  holdSteering?: boolean
 }
 
 export interface MockTurnTarget extends ThreadTarget {
@@ -198,6 +210,11 @@ export interface MockEnvironmentClient extends EnvironmentClient {
   notice(target: MockTurnTarget, notice: MockNotice<TransientTurnNotice>): void
   /** A durable notice, placed in the turn where it lands. */
   recordNotice(target: MockTurnTarget, notice: MockNotice<DurableTurnNotice>): void
+  /**
+   * The provider takes the chat's steered messages into its running turn: each
+   * becomes a user message of that turn and leaves the queue.
+   */
+  deliverSteering(target: ThreadTarget): void
   setConnection(patch: Partial<ConnectionState>): void
   /** A chat's catch-up started or ended, as a transport says. */
   setCatchingUp(threadId: string, catchingUp: boolean): void
@@ -470,6 +487,14 @@ export function createMockEnvironmentClient(
           announceRecency(session.workspaceId)
         }
       }
+    }
+    // Last, once the session says the turn is over: the next one may start now.
+    if (
+      parsed.name === 'turn.completed' ||
+      parsed.name === 'turn.interrupted' ||
+      parsed.name === 'turn.failed'
+    ) {
+      afterTurnEnded(parsed)
     }
   }
 
@@ -837,6 +862,24 @@ export function createMockEnvironmentClient(
     })
   }
 
+  /** What a user message says: its text, then the images it names. */
+  const promptContent = (input: { text: string; artifactIds?: string[] }): Message['content'] => [
+    ...(input.text ? [{ type: 'text' as const, text: input.text }] : []),
+    ...[...new Set(input.artifactIds ?? [])].map((artifactId, index) => {
+      const blob = artifacts[artifactId]
+      if (!blob) {
+        throw new EnvironmentClientError('not_found', 'Artifact not found in this session.')
+      }
+      return {
+        type: 'artifact' as const,
+        artifactId,
+        mimeType: blob.type || 'application/octet-stream',
+        name: `image-${index + 1}`,
+        sizeBytes: blob.size,
+      }
+    }),
+  ]
+
   const startTurn = (input: SendTurnInput & { commandId: string }) => {
     const replayed = startedCommands.get(commandKey(input, input.commandId))
     // A retry is answered from what the first send started, and changes nothing.
@@ -857,22 +900,7 @@ export function createMockEnvironmentClient(
       threadId: input.threadId,
       turnId: turn.turnId,
       role: 'user',
-      content: [
-        ...(input.text ? [{ type: 'text' as const, text: input.text }] : []),
-        ...[...new Set(input.artifactIds ?? [])].map((artifactId, index) => {
-          const blob = artifacts[artifactId]
-          if (!blob) {
-            throw new EnvironmentClientError('not_found', 'Artifact not found in this session.')
-          }
-          return {
-            type: 'artifact' as const,
-            artifactId,
-            mimeType: blob.type || 'application/octet-stream',
-            name: `image-${index + 1}`,
-            sizeBytes: blob.size,
-          }
-        }),
-      ],
+      content: promptContent(input),
     }
     const started: TurnStart = { turn, userMessage, commandId: input.commandId }
     startedCommands.set(commandKey(input, input.commandId), started)
@@ -882,6 +910,176 @@ export function createMockEnvironmentClient(
     const chunks = respond ? respond(context) : null
     if (chunks) scriptReply(context, chunks)
     return started
+  }
+
+  // -------------------------------------------------------------------------
+  // The chat queue, played as the environment plays it: a message sent while a
+  // turn runs waits, and runs as the next turn when that turn completes. A
+  // stopped or failed turn pauses it until it is resumed. A steered message
+  // waits as `steering` until the provider takes it into the running turn.
+  // -------------------------------------------------------------------------
+
+  /** Each chat's queue as the environment holds it; clients hear it whole. */
+  const queues = new Map<string, ThreadQueue>()
+  for (const [threadId, thread] of Object.entries(store.getState().threads)) {
+    if (thread.queue.items.length > 0 || thread.queue.pausedBy) queues.set(threadId, thread.queue)
+  }
+  /** Ids of messages already sent: run as a turn, or taken into one. */
+  const sentQueueItems = new Set<string>()
+  const queueOf = (threadId: string): ThreadQueue =>
+    queues.get(threadId) ?? { items: [], pausedBy: null }
+  const writeQueue = (target: ThreadTarget, queue: ThreadQueue) => {
+    queues.set(target.threadId, queue)
+    emit({ ...base(), name: 'thread.queue.updated', scope: threadScope(target), payload: queue })
+  }
+  const activeTurnOf = (threadId: string) =>
+    store
+      .getState()
+      .threads[threadId]?.turns.find((turn) => turn.state === 'running' || turn.state === 'waiting')
+  const parseFollowUp = (name: 'queue.add' | 'turn.steer', payload: unknown) => {
+    const parsed = ProofCommandSchemas[name].safeParse({
+      type: 'command',
+      requestId: 'mock-queue',
+      name,
+      payload,
+    })
+    if (!parsed.success) throw new EnvironmentClientError('validation', `Invalid ${name} request.`)
+  }
+
+  /**
+   * Hold a message back, as the environment does, or start it at once in a
+   * chat with nothing running and nothing waiting. A repeat of an id finds
+   * the message where it is. Answers where the message now is.
+   */
+  const enqueue = (
+    input: QueueMessageInput & { commandId: string },
+    delivery: QueuedMessage['delivery'],
+  ): QueuedMessage['delivery'] => {
+    requireThread(input)
+    const queue = queueOf(input.threadId)
+    const held = queue.items.find((item) => item.queueItemId === input.commandId)
+    if (held) return held.delivery
+    if (sentQueueItems.has(input.commandId)) return 'queued'
+    // Checked now, not when its turn comes: a message the turn could not run
+    // is refused while the user still has it.
+    promptContent(input)
+    if (!activeTurnOf(input.threadId) && queue.items.length === 0 && !queue.pausedBy) {
+      sentQueueItems.add(input.commandId)
+      startTurn({
+        sessionId: input.sessionId,
+        threadId: input.threadId,
+        text: input.text,
+        commandId: input.commandId,
+        ...(input.artifactIds?.length ? { artifactIds: input.artifactIds } : {}),
+      })
+      return 'queued'
+    }
+    if (queue.items.length >= THREAD_QUEUE_MAX) {
+      throw new EnvironmentClientError(
+        'conflict',
+        `A chat holds up to ${THREAD_QUEUE_MAX} messages at a time.`,
+      )
+    }
+    // The selection it runs with is the session's own as it was sent.
+    const composer = store.getState().sessions[input.sessionId]?.composer
+    const item: QueuedMessage = {
+      queueItemId: input.commandId,
+      text: input.text,
+      ...(input.artifactIds?.length ? { artifactIds: [...input.artifactIds] } : {}),
+      settings: {
+        ...(composer?.modelId !== undefined ? { modelId: composer.modelId } : {}),
+        ...(composer?.configValues !== undefined ? { configValues: composer.configValues } : {}),
+      },
+      delivery,
+      createdAt: now(),
+    }
+    writeQueue(input, { ...queue, items: [...queue.items, item] })
+    return delivery
+  }
+
+  /** The next message runs, when the queue drains and nothing else runs. */
+  const drainQueue = (target: ThreadTarget) => {
+    const queue = queueOf(target.threadId)
+    const next = queue.items[0]
+    if (!next || queue.pausedBy || activeTurnOf(target.threadId)) return
+    writeQueue(target, { ...queue, items: queue.items.slice(1) })
+    sentQueueItems.add(next.queueItemId)
+    // It runs with what it was sent with, not with what the composer shows now.
+    const composer = store.getState().sessions[target.sessionId]?.composer
+    const { modelId, configValues } = next.settings
+    if (
+      (modelId !== undefined && modelId !== composer?.modelId) ||
+      (configValues !== undefined &&
+        JSON.stringify(configValues) !== JSON.stringify(composer?.configValues))
+    ) {
+      writeSessionComposer(target.sessionId, next.settings)
+    }
+    try {
+      startTurn({
+        ...target,
+        text: next.text,
+        commandId: next.queueItemId,
+        ...(next.artifactIds?.length ? { artifactIds: next.artifactIds } : {}),
+      })
+    } catch {
+      // It could not start: back at the front, and the queue waits for the user.
+      sentQueueItems.delete(next.queueItemId)
+      const after = queueOf(target.threadId)
+      writeQueue(target, { items: [next, ...after.items], pausedBy: 'failure' })
+    }
+  }
+
+  /**
+   * A turn ended. A steered message the provider never took goes back to
+   * waiting where it was; then a completed turn lets the queue drain, and a
+   * stopped or failed one pauses it.
+   */
+  const afterTurnEnded = (
+    event: Extract<ProofEvent, { name: 'turn.completed' | 'turn.interrupted' | 'turn.failed' }>,
+  ) => {
+    if (event.scope.type !== 'thread') return
+    const target = { sessionId: event.scope.sessionId, threadId: event.scope.threadId }
+    const queue = queues.get(target.threadId)
+    if (!queue || queue.items.length === 0) return
+    const items = queue.items.map((item) =>
+      item.delivery === 'steering' ? { ...item, delivery: 'queued' as const } : item,
+    )
+    const pausedBy =
+      event.name === 'turn.completed'
+        ? queue.pausedBy
+        : event.name === 'turn.failed'
+          ? 'failure'
+          : event.payload.reason === 'server_restarted'
+            ? 'restart'
+            : 'stop'
+    if (pausedBy !== queue.pausedBy || items.some((item, index) => item !== queue.items[index])) {
+      writeQueue(target, { items, pausedBy })
+    }
+    drainQueue(target)
+  }
+
+  /** The provider takes every steered message of the chat into its running turn. */
+  const deliverSteering = (target: ThreadTarget) => {
+    const queue = queues.get(target.threadId)
+    const steering = queue?.items.filter((item) => item.delivery === 'steering') ?? []
+    const turn = activeTurnOf(target.threadId)
+    if (!queue || steering.length === 0 || !turn) return
+    for (const item of steering) {
+      const messageId = nextId()
+      for (const content of promptContent(item)) {
+        emit({
+          ...base(),
+          name: 'message.delta',
+          scope: threadScope(target),
+          payload: { messageId, turnId: turn.turnId, role: 'user', content },
+        })
+      }
+      sentQueueItems.add(item.queueItemId)
+    }
+    writeQueue(target, {
+      ...queue,
+      items: queue.items.filter((item) => item.delivery !== 'steering'),
+    })
   }
 
   /** The environment's draft rows; a deleted one keeps its revision as a tombstone. */
@@ -1369,6 +1567,53 @@ export function createMockEnvironmentClient(
           payload: { turnId: input.turnId, reason: 'user' },
         })
       }),
+    queueMessage: (input) => {
+      const send = { ...input, commandId: input.commandId ?? nextId() }
+      return run('queueMessage', send, () => {
+        parseFollowUp('queue.add', followUpPayload(send))
+        enqueue(send, 'queued')
+        return { queueItemId: send.commandId }
+      })
+    },
+    removeQueuedMessage: (input) =>
+      run('removeQueuedMessage', input, () => {
+        requireThread(input)
+        const queue = queueOf(input.threadId)
+        const item = queue.items.find((each) => each.queueItemId === input.queueItemId)
+        if (!item && sentQueueItems.has(input.queueItemId)) {
+          throw new EnvironmentClientError('conflict', 'This message has already been sent.')
+        }
+        if (!item) throw new EnvironmentClientError('not_found', 'That message is not queued.')
+        if (item.delivery === 'steering') {
+          throw new EnvironmentClientError('conflict', 'This message is already with the agent.')
+        }
+        writeQueue(input, { ...queue, items: queue.items.filter((each) => each !== item) })
+      }),
+    resumeQueue: (input) =>
+      run('resumeQueue', input, () => {
+        requireThread(input)
+        const queue = queueOf(input.threadId)
+        if (queue.pausedBy) writeQueue(input, { ...queue, pausedBy: null })
+        drainQueue(input)
+      }),
+    steerTurn: (input) => {
+      const send = { ...input, commandId: input.commandId ?? nextId() }
+      return run('steerTurn', send, () => {
+        parseFollowUp('turn.steer', { ...followUpPayload(send), turnId: send.turnId })
+        const session = store.getState().sessions[send.sessionId]
+        const provider = catalog.find((entry) => entry.id === session?.providerId)
+        // Steered only into the turn named, while it runs, by a provider that
+        // can; otherwise it waits for its own turn, as the environment does.
+        const steerable =
+          provider?.capabilities.canSteer === true &&
+          activeTurnOf(send.threadId)?.turnId === send.turnId
+        const delivery = enqueue(send, steerable ? 'steering' : 'queued')
+        if (delivery === 'steering' && !options.holdSteering) {
+          schedule(() => deliverSteering(send), chunkDelayMs)
+        }
+        return { queueItemId: send.commandId, outcome: delivery }
+      })
+    },
     respondToInteraction: (input) =>
       run('respondToInteraction', input, () => {
         const thread = requireThread(input)
@@ -1839,6 +2084,10 @@ export function createMockEnvironmentClient(
         payload: { noticeId: nextId(), ...notice, turnId: target.turnId },
       })
     },
+    deliverSteering: (target) => {
+      requireThread(target)
+      deliverSteering(target)
+    },
     setConnection: (patch) => store.update((state) => applyConnection(state, patch)),
     setCatchingUp: (threadId, catchingUp) =>
       store.update((state) => applyCatchingUp(state, threadId, catchingUp)),
@@ -1924,6 +2173,7 @@ function seedState(
             messages: (entry.messages ?? []).filter(
               (message) => message.threadId === thread.threadId,
             ),
+            ...(entry.queues?.[thread.threadId] ? { queue: entry.queues[thread.threadId]! } : {}),
           },
         },
       }
@@ -1944,6 +2194,15 @@ function seedState(
   if (seed?.activeSessionId) state = applyActiveSession(state, seed.activeSessionId)
   return state
 }
+
+/** A queued or steered message as `queue.add` and `turn.steer` name it. */
+const followUpPayload = (input: QueueMessageInput & { commandId: string }) => ({
+  sessionId: input.sessionId,
+  threadId: input.threadId,
+  text: input.text,
+  commandId: input.commandId,
+  ...(input.artifactIds?.length ? { artifactIds: input.artifactIds } : {}),
+})
 
 /** The providers an environment of this product can run, for a mock seeded with no catalog. */
 const MOCK_RUNNABLE_PROVIDERS: readonly string[] = ['opencode', 'cursor', 'claude']

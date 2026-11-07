@@ -112,6 +112,7 @@ export const BARE_PROVIDER: ProviderCatalogEntry = {
     canLoadSession: true,
     canListSessions: true,
     canCancelPrompt: true,
+    canSteer: false,
     supportsPlans: false,
     supportsAvailableCommands: false,
     supportsUsage: false,

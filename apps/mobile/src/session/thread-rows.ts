@@ -92,15 +92,21 @@ export function rowTextLength(
 
 /**
  * The turn an assistant row answers, from the row key the shared projection
- * gives a turn's reply (`turn:<turnId>:assistant`); null for any other row.
+ * gives a turn's reply: `turn:<turnId>:assistant`, or, for the part of the
+ * reply after a message the user steered into the turn,
+ * `turn:<turnId>:assistant:<messageId>`. Null for any other row.
  */
 export function turnIdOf(message: Pick<UIMessage, 'rowKey' | 'role'>): string | null {
   const key = message.rowKey
   if (message.role !== 'assistant' || !key) return null
   const prefix = 'turn:'
-  const suffix = ':assistant'
-  if (!key.startsWith(prefix) || !key.endsWith(suffix)) return null
-  const turnId = key.slice(prefix.length, key.length - suffix.length)
+  const marker = ':assistant'
+  if (!key.startsWith(prefix)) return null
+  const at = key.indexOf(marker, prefix.length)
+  if (at === -1) return null
+  const rest = key.slice(at + marker.length)
+  if (rest !== '' && !rest.startsWith(':')) return null
+  const turnId = key.slice(prefix.length, at)
   return turnId || null
 }
 

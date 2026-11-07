@@ -1,5 +1,5 @@
 import { foldProtocolEvent, placeActivity } from '@agentpack/view/protocol'
-import { sameScope, unpackComposerListings } from '@openmanager/protocol'
+import { EMPTY_THREAD_QUEUE, sameScope, unpackComposerListings } from '@openmanager/protocol'
 import type {
   BackgroundTask,
   ComposerListing,
@@ -18,6 +18,7 @@ import type {
   SessionSummary as ProtocolSessionSummary,
   SubscriptionScope,
   Thread,
+  ThreadQueue,
   Turn,
   TurnStart,
   TurnStarted,
@@ -25,6 +26,7 @@ import type {
   WorkspaceComposerPreference,
 } from '@openmanager/protocol'
 import type {
+  ActivityRef,
   ConnectionState,
   EnvironmentState,
   OutboxEntry,
@@ -92,6 +94,7 @@ export function createThreadState(
     order: [],
     interactions: [],
     listing: {},
+    queue: EMPTY_THREAD_QUEUE,
     liveNotices: [],
     outbox: [],
     hydration,
@@ -537,6 +540,12 @@ export function applyEvent(state: EnvironmentState, event: ProofEvent): Environm
         const listing = share(current.listing, { ...current.listing, ...event.payload })
         return listing === current.listing ? current : { ...current, listing }
       })
+    case 'thread.queue.updated':
+      // The whole queue every time: replaced, so a repeat changes nothing.
+      return patchThread(state, thread, (current) => {
+        const queue = share(current.queue, event.payload)
+        return queue === current.queue ? current : { ...current, queue }
+      })
     default:
       return state
   }
@@ -552,7 +561,7 @@ export function applyEvent(state: EnvironmentState, event: ProofEvent): Environm
  *   of sessions that no longer exist go, with their cursors.
  * - **Session:** its summary and its thread list.
  * - **Thread:** turns, messages, reasoning, tools, notices, order, pending
- *   requests and listing. The client's own echoes are settled against it; live
+ *   requests, listing and queue. The client's own echoes are settled against it; live
  *   notices start over (the transport places held transients after it).
  *
  * The scope's cursor moves here too, in the same update as what it describes.
@@ -592,7 +601,7 @@ export function applySnapshot(state: EnvironmentState, snapshot: ScopeSnapshot):
     ...createThreadState(share(existing.thread, thread), 'ready'),
     // Which messages were this client's echoes is the client's own
     // knowledge, settled by the turns the snapshot holds.
-    ...reconcileOutbox(existing, snapshotState.turns, snapshotState.messages),
+    ...reconcileOutbox(existing, snapshotState.turns, snapshotState.messages, snapshotState.order),
     cursor: share(existing.cursor, snapshot.cursor),
     turns: shareById(existing.turns, snapshotState.turns, (item) => item.turnId),
     messages,
@@ -611,6 +620,7 @@ export function applySnapshot(state: EnvironmentState, snapshot: ScopeSnapshot):
       (item) => item.interaction.interactionId,
     ),
     listing: share(existing.listing, snapshotState.listing),
+    queue: share(existing.queue, snapshotState.queue),
   }
   return { ...withThread, threads: { ...withThread.threads, [thread.threadId]: replaced } }
 }
@@ -838,6 +848,7 @@ function reconcileOutbox(
   current: ThreadState,
   turns: readonly Turn[],
   messages: readonly Message[],
+  order: readonly ActivityRef[],
 ): Pick<ThreadState, 'outbox' | 'confirmedEchoes'> {
   const unchanged = {
     outbox: current.outbox,
@@ -850,9 +861,8 @@ function reconcileOutbox(
   const outbox = current.outbox.filter((entry) => {
     const turn = started.get(entry.commandId)
     if (!turn) return true
-    const prompt = messages.find(
-      (message) => message.turnId === turn.turnId && message.role === 'user',
-    )
+    // The prompt, not a message steered into the turn after it.
+    const prompt = selectTurnPrompt(messages, turn.turnId, order)
     if (prompt) confirmedEchoes[prompt.messageId] = entry.commandId
     return false
   })
@@ -1466,12 +1476,42 @@ export function selectActiveThread(state: EnvironmentState): ThreadState | null 
   return state.activeThreadId ? (state.threads[state.activeThreadId] ?? null) : null
 }
 
+/**
+ * The message a turn was sent with: its first user message. A message steered
+ * into the turn is a user message of it too, written later, so where `order`
+ * places them decides; without an order, the first one held.
+ */
+export function selectTurnPrompt(
+  messages: readonly Message[],
+  turnId: string,
+  order?: readonly ActivityRef[],
+): Message | undefined {
+  const prompts = messages.filter((message) => message.turnId === turnId && message.role === 'user')
+  if (prompts.length < 2 || !order) return prompts[0]
+  let first = prompts[0]!
+  let firstAt = placeOf(order, first.messageId)
+  for (const message of prompts.slice(1)) {
+    const at = placeOf(order, message.messageId)
+    if (at < firstAt) {
+      first = message
+      firstAt = at
+    }
+  }
+  return first
+}
+
+const placeOf = (order: readonly ActivityRef[], messageId: string) => {
+  const index = order.findIndex((ref) => ref.kind === 'message' && ref.id === messageId)
+  return index === -1 ? Number.POSITIVE_INFINITY : index
+}
+
 /** The prompt a turn was sent with, as a retry would send it again. */
 export function resendablePrompt(
   messages: readonly Message[],
   turnId: string,
+  order?: readonly ActivityRef[],
 ): { text: string; artifactIds: string[] } | undefined {
-  const prompt = messages.find((message) => message.turnId === turnId && message.role === 'user')
+  const prompt = selectTurnPrompt(messages, turnId, order)
   if (!prompt) return undefined
   const text = prompt.content.map((block) => (block.type === 'text' ? block.text : '')).join('')
   const artifactIds = prompt.content.flatMap((block) =>
@@ -1525,6 +1565,18 @@ export function selectPendingInteractions(
 ): PendingInteraction[] {
   if (threadId) return state.threads[threadId]?.interactions ?? []
   return Object.values(state.threads).flatMap((thread) => thread.interactions)
+}
+
+/**
+ * What a chat holds back, as the environment last said: the open chat's by
+ * default. Empty for a chat not held, and for a copy cached before chats had
+ * a queue, until its snapshot arrives.
+ */
+export function selectThreadQueue(
+  state: EnvironmentState,
+  threadId: string | null = state.activeThreadId,
+): ThreadQueue {
+  return (threadId && state.threads[threadId]?.queue) || EMPTY_THREAD_QUEUE
 }
 
 export function selectConnection(state: EnvironmentState): ConnectionState {

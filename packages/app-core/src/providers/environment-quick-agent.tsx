@@ -349,6 +349,8 @@ function QuickAgentThread({
       error,
       sendMessage,
       retrySend: undefined,
+      // A new agent has no turn running to queue behind or steer.
+      followUps: undefined,
       abortSession: resolved,
       buildPlan: resolved,
     }),

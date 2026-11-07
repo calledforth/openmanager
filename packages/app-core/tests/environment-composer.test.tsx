@@ -53,6 +53,7 @@ const CAPABILITIES = {
   canLoadSession: true,
   canListSessions: true,
   canCancelPrompt: true,
+  canSteer: false,
   supportsPlans: false,
   supportsAvailableCommands: false,
   supportsUsage: false,
