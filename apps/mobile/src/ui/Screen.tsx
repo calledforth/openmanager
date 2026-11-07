@@ -51,7 +51,9 @@ export function ScreenBar({
       }}
     >
       {/* The left cluster may run the row (a title beside Back); the right keeps its size. */}
-      <View style={{ flex: 1, minWidth: 0, flexDirection: 'row', alignItems: 'center' }}>{left}</View>
+      <View style={{ flex: 1, minWidth: 0, flexDirection: 'row', alignItems: 'center' }}>
+        {left}
+      </View>
       <View>{right}</View>
     </View>
   )

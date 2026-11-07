@@ -92,7 +92,11 @@ describe('status marks', () => {
 
 describe('the two views', () => {
   it('keeps settled sessions out of All and in Settled, every session in one of them', () => {
-    const all = selectHomeRows({ sessions: FIXTURE_SESSIONS, workspaces: FIXTURE_WORKSPACES, tab: 'all' })
+    const all = selectHomeRows({
+      sessions: FIXTURE_SESSIONS,
+      workspaces: FIXTURE_WORKSPACES,
+      tab: 'all',
+    })
     const settled = selectHomeRows({
       sessions: FIXTURE_SESSIONS,
       workspaces: FIXTURE_WORKSPACES,
@@ -276,7 +280,11 @@ describe('All', () => {
   })
 
   it('nests a child under its parent and never starts a group with one', () => {
-    const all = selectHomeRows({ sessions: FIXTURE_SESSIONS, workspaces: FIXTURE_WORKSPACES, tab: 'all' })
+    const all = selectHomeRows({
+      sessions: FIXTURE_SESSIONS,
+      workspaces: FIXTURE_WORKSPACES,
+      tab: 'all',
+    })
     const rows = all.find((g) => g.key === 'working')!.rows
     const parent = rows.findIndex((r) => r.session.externalId === 's-tool-payloads')
     expect(rows[parent + 1]!.session.externalId).toBe('s-tool-payloads-tests')
@@ -289,7 +297,12 @@ describe('All', () => {
     const rows = selectHomeRows({
       sessions: [
         session({ externalId: 'root', status: 'running', updatedAt: at }),
-        session({ externalId: 'child', parentExternalId: 'root', status: 'running', updatedAt: at }),
+        session({
+          externalId: 'child',
+          parentExternalId: 'root',
+          status: 'running',
+          updatedAt: at,
+        }),
         session({
           externalId: 'grandchild',
           parentExternalId: 'child',
@@ -371,7 +384,11 @@ describe('drafts', () => {
   it('opens All with the draft cards, newest edit first, above Pinned', () => {
     const rows = selectTabRows({
       sessions: [
-        session({ externalId: 'pin', updatedAt: local(2026, 10, 21), pinnedAt: local(2026, 10, 21) }),
+        session({
+          externalId: 'pin',
+          updatedAt: local(2026, 10, 21),
+          pinnedAt: local(2026, 10, 21),
+        }),
         session({ externalId: 'a', status: 'running', updatedAt: local(2026, 10, 21) }),
       ],
       drafts: [
@@ -423,7 +440,9 @@ describe('environments', () => {
   it('counts the environments the rows span, ignoring rows that name none', () => {
     expect(countEnvironments([])).toBe(0)
     expect(countEnvironments([session({}), session({})])).toBe(0)
-    expect(countEnvironments([session({ environment: desktop }), session({ environment: desktop })])).toBe(1)
+    expect(
+      countEnvironments([session({ environment: desktop }), session({ environment: desktop })]),
+    ).toBe(1)
     expect(
       countEnvironments([
         session({ environment: desktop }),

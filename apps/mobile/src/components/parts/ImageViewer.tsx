@@ -392,7 +392,9 @@ export function ImageViewer({
     >
       <StatusBar style="light" />
       <GestureHandlerRootView style={{ flex: 1 }}>
-        <Animated.View style={[StyleSheet.absoluteFill, { backgroundColor: '#000' }, backdropStyle]} />
+        <Animated.View
+          style={[StyleSheet.absoluteFill, { backgroundColor: '#000' }, backdropStyle]}
+        />
         <GestureDetector gesture={gesture}>
           <Animated.View style={[StyleSheet.absoluteFill, stripStyle]}>
             {mounted.map(({ image, at }) => (

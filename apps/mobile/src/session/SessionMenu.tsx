@@ -47,8 +47,7 @@ const ICONS: Record<SessionMenuItemId, ComponentType<IconProps>> = {
   'session-settings': GearSixIcon,
 }
 
-const iconOf = (item: MenuItem) =>
-  item.icon ?? ICONS[item.id as SessionMenuItemId] ?? DotsThreeIcon
+const iconOf = (item: MenuItem) => item.icon ?? ICONS[item.id as SessionMenuItemId] ?? DotsThreeIcon
 
 /** The popover fades in and out: short, eased, on the UI thread. */
 const MENU_IN = FadeIn.duration(160).easing(Easing.out(Easing.quad))

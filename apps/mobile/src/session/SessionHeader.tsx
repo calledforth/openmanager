@@ -102,7 +102,7 @@ function SecondLine({
   if (!project) return null
   return (
     <View style={{ flexDirection: 'row', alignItems: 'center', gap: 5 }}>
-      <ProjectMark workspaceId={projectId} name={project} size={10} />
+      <ProjectMark workspaceId={projectId} size={10} />
       <Text numberOfLines={1} style={[LINE_STYLE, { color: theme.muted, flexShrink: 1 }]}>
         {project}
       </Text>

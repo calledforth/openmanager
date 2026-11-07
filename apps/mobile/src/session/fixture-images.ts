@@ -79,8 +79,8 @@ export function fixturePng(width: number, height: number, hue: number, seed: num
   const top = hsl(hue, 0.5, 0.32)
   const bottom = hsl((hue + 28) % 360, 0.6, 0.58)
   const disc = hsl((hue + 12) % 360, 0.7, 0.8)
-  const cx = width * (0.3 + 0.4 * ((seed * 7) % 5) / 4)
-  const cy = height * (0.3 + 0.4 * ((seed * 3) % 5) / 4)
+  const cx = width * (0.3 + (0.4 * ((seed * 7) % 5)) / 4)
+  const cy = height * (0.3 + (0.4 * ((seed * 3) % 5)) / 4)
   const radius = Math.min(width, height) * 0.22
   for (let y = 0; y < height; y += 1) {
     const row = y * (1 + width * 3)
@@ -108,7 +108,14 @@ export function fixturePng(width: number, height: number, hue: number, seed: num
   }
   const header = Uint8Array.from([...u32(width), ...u32(height), 8, 2, 0, 0, 0])
   const png = Uint8Array.from([
-    0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a,
+    0x89,
+    0x50,
+    0x4e,
+    0x47,
+    0x0d,
+    0x0a,
+    0x1a,
+    0x0a,
     ...chunk('IHDR', header),
     ...chunk('IDAT', storedZlib(raw)),
     ...chunk('IEND', new Uint8Array(0)),

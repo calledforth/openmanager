@@ -57,7 +57,9 @@ export const ImageGroup = memo(function ImageGroup({
   }, [])
   const onNaturalSize = useCallback((w: number, h: number) => {
     const next = cardRatio(w, h)
-    setRatio((previous) => (previous !== null && Math.abs(previous - next) < 0.05 ? previous : next))
+    setRatio((previous) =>
+      previous !== null && Math.abs(previous - next) < 0.05 ? previous : next,
+    )
   }, [])
 
   const count = images.length

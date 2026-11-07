@@ -97,7 +97,8 @@ export function useImageSource(image: Pick<GalleryImage, 'url' | 'artifact'>): I
   if (!key) return UNREADABLE
   const cached = cache.get(key)
   if (cached !== undefined) return { uri: cached, failed: false }
-  if (fetched?.key === key) return fetched.uri === null ? UNREADABLE : { uri: fetched.uri, failed: false }
+  if (fetched?.key === key)
+    return fetched.uri === null ? UNREADABLE : { uri: fetched.uri, failed: false }
   return WAITING
 }
 

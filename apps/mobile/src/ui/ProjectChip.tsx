@@ -25,11 +25,7 @@ export function ProjectChip({
   return (
     <View className="flex-row items-center gap-1.5" style={{ flexShrink: 1 }}>
       <ProjectMark workspaceId={workspaceId} size={size} color={color} />
-      <AppText
-        variant="text-12-regular"
-        numberOfLines={1}
-        style={{ color, flexShrink: 1 }}
-      >
+      <AppText variant="text-12-regular" numberOfLines={1} style={{ color, flexShrink: 1 }}>
         {name}
       </AppText>
     </View>

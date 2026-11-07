@@ -61,7 +61,12 @@ export function DraftDiscardToast() {
       entering={NOTICE_IN}
       exiting={NOTICE_OUT}
       pointerEvents="box-none"
-      style={{ position: 'absolute', left: 16, right: 16, bottom: homeDockClearance(insets.bottom) }}
+      style={{
+        position: 'absolute',
+        left: 16,
+        right: 16,
+        bottom: homeDockClearance(insets.bottom),
+      }}
     >
       <Glass
         strength="strong"

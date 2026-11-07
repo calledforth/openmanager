@@ -338,9 +338,7 @@ export function tabCounts(sessions: readonly HomeSession[]) {
  * on a row only when they span more than one; a row that says nothing of
  * its environment (a host that knows one alone) counts for none.
  */
-export function countEnvironments(
-  rows: readonly { environment?: HomeEnvironmentRef }[],
-): number {
+export function countEnvironments(rows: readonly { environment?: HomeEnvironmentRef }[]): number {
   const ids = new Set<string>()
   for (const row of rows) if (row.environment) ids.add(row.environment.environmentId)
   return ids.size

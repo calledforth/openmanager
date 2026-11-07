@@ -394,7 +394,11 @@ function picture(n: number): ContentBlock {
   let block = drawn.get(n)
   if (!block) {
     const [width, height] = SHAPES[n % SHAPES.length]!
-    block = { type: 'image', mimeType: 'image/png', data: fixturePng(width, height, (n * 47) % 360, n) }
+    block = {
+      type: 'image',
+      mimeType: 'image/png',
+      data: fixturePng(width, height, (n * 47) % 360, n),
+    }
     drawn.set(n, block)
   }
   return block
@@ -411,8 +415,18 @@ export function imagesThread(now: number): ThreadState {
   const b = new ThreadBuilder('s-soul-id')
   const t1 = 'turn-i1'
   b.turn(t1, 'completed', now - 1_900_000, now - 1_840_000)
-    .message(t1, 'i-user-1', 'user', 'Match this reference — the soul ID avatar grid.', pictures(0, 4))
-    .thought(t1, 'i-thought-1', 'Four references: a consistent palette, soft discs, one band across.')
+    .message(
+      t1,
+      'i-user-1',
+      'user',
+      'Match this reference — the soul ID avatar grid.',
+      pictures(0, 4),
+    )
+    .thought(
+      t1,
+      'i-thought-1',
+      'Four references: a consistent palette, soft discs, one band across.',
+    )
     .message(
       t1,
       'i-a1',
