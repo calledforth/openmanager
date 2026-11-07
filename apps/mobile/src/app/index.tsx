@@ -1,7 +1,7 @@
 import { useRouter } from 'expo-router'
 import { DesktopIcon, PlusIcon, QrCodeIcon } from 'phosphor-react-native'
 import { useCallback, useMemo, useRef, useState } from 'react'
-import { LayoutAnimation, SectionList, Text, View, type SectionListRenderItem } from 'react-native'
+import { LayoutAnimation, SectionList, View, type SectionListRenderItem } from 'react-native'
 import { useSafeAreaInsets } from 'react-native-safe-area-context'
 import { useSidebarDrafts } from '@openmanager/app-core/providers/sidebar-provider'
 
@@ -25,7 +25,7 @@ import { ActionButton } from '../pairing/ActionButton'
 import { ConnectionPanel } from '../settings/ConnectionPanel'
 import { usePhoneTheme } from '../theme/ThemeProvider'
 import { UpdateNotice } from '../updates/UpdateRow'
-import { FadeOut, SectionLabel } from '../ui/chrome'
+import { FadeOut, PageTitle, SectionLabel } from '../ui/chrome'
 import { DraftRow } from '../ui/DraftRow'
 import { GlassContent } from '../ui/Glass'
 import { HomeDock } from '../ui/HomeDock'
@@ -207,17 +207,7 @@ export default function SessionsHome() {
             justifyContent: 'space-between',
           }}
         >
-          <Text
-            accessibilityRole="header"
-            style={{
-              fontFamily: 'Geist-SemiBold',
-              fontSize: 22,
-              letterSpacing: -0.3,
-              color: theme.fg,
-            }}
-          >
-            Sessions
-          </Text>
+          <PageTitle>Sessions</PageTitle>
           <SegmentedTabs
             className="flex-row gap-1"
             tabs={[

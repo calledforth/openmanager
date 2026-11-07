@@ -9,7 +9,7 @@ import {
   PlusIcon,
   QrCodeIcon,
 } from 'phosphor-react-native'
-import { ScrollView, Text, View } from 'react-native'
+import { ScrollView, View } from 'react-native'
 import { useSafeAreaInsets } from 'react-native-safe-area-context'
 
 import { AppText } from '../components/ui/AppText'
@@ -24,7 +24,7 @@ import { SettingsRow } from '../settings/SettingsRow'
 import { usePhoneTheme } from '../theme/ThemeProvider'
 import { UpdateRow } from '../updates/UpdateRow'
 import { useCheckOnFocus } from '../updates/useUpdater'
-import { FadeOut, SectionLabel } from '../ui/chrome'
+import { FadeOut, PageTitle, SectionLabel } from '../ui/chrome'
 import { GlassContent } from '../ui/Glass'
 import { useGoBack } from '../ui/goBack'
 import { IconButton } from '../ui/IconButton'
@@ -71,18 +71,7 @@ export default function SettingsScreen() {
       <GlassContent style={{ paddingTop: insets.top + 6 }}>
         <View style={{ paddingHorizontal: 20 }}>
           <View style={{ height: 44 }} />
-          <Text
-            accessibilityRole="header"
-            style={{
-              marginTop: 6,
-              fontFamily: 'Geist-SemiBold',
-              fontSize: 22,
-              letterSpacing: -0.3,
-              color: theme.fg,
-            }}
-          >
-            Settings
-          </Text>
+          <PageTitle style={{ marginTop: 6 }}>Settings</PageTitle>
         </View>
         <View className="flex-1">
           <ScrollView

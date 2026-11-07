@@ -1,45 +1,27 @@
 import { LinearGradient } from 'expo-linear-gradient'
 import type { ReactNode } from 'react'
-import { Text, View, type StyleProp, type ViewStyle } from 'react-native'
+import { Text, View, type StyleProp, type TextStyle, type ViewStyle } from 'react-native'
 import { withAlpha } from '@openmanager/app-core/lib/theme-tokens'
 
 import { AppText } from '../components/ui/AppText'
 import { usePhoneTheme } from '../theme/ThemeProvider'
 
-/** The big title of a top-level screen. */
-export function BigTitle({
-  title,
-  count,
-  trailing,
-}: {
-  title: string
-  count?: number
-  trailing?: ReactNode
-}) {
+/**
+ * The title of a top-level page (the home, Settings): one compact line, so
+ * the views or the controls beside it share its row.
+ */
+export function PageTitle({ children, style }: { children: string; style?: StyleProp<TextStyle> }) {
   const theme = usePhoneTheme()
   return (
-    <View className="px-5">
-      <View className="flex-row items-center justify-between" style={{ height: 44 }}>
-        <View className="flex-row items-baseline gap-2.5">
-          <Text
-            style={{
-              fontFamily: 'Geist-SemiBold',
-              fontSize: 28,
-              letterSpacing: -0.5,
-              color: theme.fg,
-            }}
-          >
-            {title}
-          </Text>
-          {count !== undefined ? (
-            <AppText variant="text-14-medium" style={{ color: theme.faint }}>
-              {count}
-            </AppText>
-          ) : null}
-        </View>
-        <View className="flex-row gap-2.5">{trailing}</View>
-      </View>
-    </View>
+    <Text
+      accessibilityRole="header"
+      style={[
+        { fontFamily: 'Geist-SemiBold', fontSize: 22, letterSpacing: -0.3, color: theme.fg },
+        style,
+      ]}
+    >
+      {children}
+    </Text>
   )
 }
 
