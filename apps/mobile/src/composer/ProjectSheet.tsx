@@ -394,7 +394,7 @@ export function ProjectSheet({
       title={entry.name}
       detail={entry.path}
       on={entry.path === source.current}
-      icon={<ProjectMark workspaceId={entry.path} name={entry.name} size={16} />}
+      icon={<ProjectMark workspaceId={entry.path} size={16} />}
       disabledReason={unavailable(entry)}
       onPress={() => pick(entry)}
     />

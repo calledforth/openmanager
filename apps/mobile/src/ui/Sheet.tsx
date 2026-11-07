@@ -1,4 +1,4 @@
-import { useContext, useEffect, useRef, type ReactNode, type RefObject } from 'react'
+import { useEffect, useRef, type ReactNode, type RefObject } from 'react'
 import { BackHandler, Pressable, StyleSheet, View } from 'react-native'
 import Animated, {
   Easing,
@@ -12,7 +12,6 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context'
 import { usePhoneTheme } from '../theme/ThemeProvider'
 import { focusAccessibility } from './a11y-focus'
 import { Glass } from './Glass'
-import { TabBarCoverContext } from './tab-bar-cover'
 
 /**
  * The one motion every sheet uses: the scrim fades, the sheet rises from the
@@ -37,10 +36,8 @@ export const SCRIM_OUT = FadeOut.duration(160)
  * `initialFocus` when it opens and back to `returnFocus` when it closes.
  * With `onBack`, Android's Back button is that (Cancel, say) and goes no
  * further while the sheet is open; VoiceOver's escape gesture is `onBack`,
- * else `onDismiss`.
- *
- * Opened from a tab, it covers the tab bar: the pill steps aside while the
- * sheet is up, so it never sits over the sheet's last rows.
+ * else `onDismiss`. Opened from the home, it rises over the dock, which
+ * sits in the same layer under it.
  */
 export function Sheet({
   onDismiss,
@@ -61,8 +58,6 @@ export function Sheet({
   const back = useRef(onBack)
   back.current = onBack
   const handlesBack = onBack !== undefined
-  const cover = useContext(TabBarCoverContext)
-  useEffect(() => cover?.raise(), [cover])
   useEffect(() => {
     if (!handlesBack) return
     const subscription = BackHandler.addEventListener('hardwareBackPress', () => {

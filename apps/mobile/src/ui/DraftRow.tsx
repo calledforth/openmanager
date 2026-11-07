@@ -14,6 +14,7 @@ import ReanimatedSwipeable, {
 import { AppText } from '../components/ui/AppText'
 import type { HomeDraftRow } from '../home/rows'
 import { usePhoneTheme } from '../theme/ThemeProvider'
+import { EnvironmentTag, LineDot } from './EnvironmentTag'
 import { ProjectChip } from './ProjectChip'
 import { ProviderMark } from './ProviderMark'
 import { shortAge } from './SessionRow'
@@ -33,14 +34,17 @@ const DISCARD_WIDTH = 92
  * Swiped to the left it shows Discard, which hides the row and offers it
  * back for a moment (the shared discard, as web's ✕ on a draft card). A
  * screen reader finds the same as one of the row's actions. A draft being
- * sent is the send's, and has no Discard.
+ * sent is the send's, and has no Discard. With `showEnvironment` the line
+ * ends with where it is saved, for a home spanning more than one.
  */
 export function DraftRow({
   row,
+  showEnvironment = false,
   onPress,
   onDiscard,
 }: {
   row: HomeDraftRow
+  showEnvironment?: boolean
   onPress?: () => void
   onDiscard?: () => void
 }) {
@@ -48,7 +52,14 @@ export function DraftRow({
   const swipeable = useRef<SwipeableMethods>(null)
   const { draft } = row
   const discard = draft.sending ? undefined : onDiscard
-  const body = <DraftRowBody row={row} onPress={onPress} onDiscard={discard} />
+  const body = (
+    <DraftRowBody
+      row={row}
+      showEnvironment={showEnvironment}
+      onPress={onPress}
+      onDiscard={discard}
+    />
+  )
   if (!discard) return body
   return (
     <ReanimatedSwipeable
@@ -93,15 +104,18 @@ export function DraftRow({
 
 function DraftRowBody({
   row,
+  showEnvironment,
   onPress,
   onDiscard,
 }: {
   row: HomeDraftRow
+  showEnvironment: boolean
   onPress?: () => void
   onDiscard?: () => void
 }) {
   const theme = usePhoneTheme()
   const { draft, workspace } = row
+  const environment = showEnvironment ? draft.environment : undefined
   const state = draft.sending
     ? 'sending'
     : draft.unsynced
@@ -159,11 +173,7 @@ function DraftRowBody({
         </AppText>
         <View className="mt-0.5 flex-row items-center gap-1.5">
           {workspace ? <ProjectChip name={workspace.name} workspaceId={workspace.path} /> : null}
-          {workspace ? (
-            <AppText variant="text-12-regular" style={{ color: theme.faint }}>
-              ·
-            </AppText>
-          ) : null}
+          {workspace ? <LineDot /> : null}
           <ProviderMark providerId={draft.providerId} size={13} />
           {state === 'unsynced' ? (
             <View
@@ -186,6 +196,12 @@ function DraftRowBody({
             >
               {state === 'sending' ? 'Sending' : images(draft.imageCount)}
             </AppText>
+          ) : null}
+          {environment ? (
+            <>
+              <LineDot />
+              <EnvironmentTag environment={environment} />
+            </>
           ) : null}
         </View>
       </View>

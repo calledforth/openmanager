@@ -135,7 +135,7 @@ describe('the home source over the shared sidebar providers', () => {
       [OTHER]: [entry({ externalId: 'orphan', parentExternalId: 'unlisted' })],
     }
     const { sessions, workspaces } = homeSourceOf(inputs(byWorkspace))
-    const active = selectHomeRows({ sessions, workspaces, tab: 'active', now: NOW })
+    const active = selectHomeRows({ sessions, workspaces, tab: 'all' })
     // The waiting child ranks its whole tree under Needs you.
     expect(active[0]!.label).toBe('Needs you')
     expect(active[0]!.rows.map((row) => [row.session.externalId, row.depth])).toEqual([
@@ -143,7 +143,7 @@ describe('the home source over the shared sidebar providers', () => {
       ['child', 1],
     ])
     // A child whose parent is not listed stands on its own.
-    const all = selectHomeRows({ sessions, workspaces, tab: 'all', now: NOW })
+    const all = selectHomeRows({ sessions, workspaces, tab: 'all' })
     const orphan = all
       .flatMap((group) => group.rows)
       .find((row) => row.session.externalId === 'orphan')
@@ -156,7 +156,7 @@ describe('the home source over the shared sidebar providers', () => {
     }
     const { sessions, workspaces } = homeSourceOf(inputs(byWorkspace))
     expect(sessions[0]).toMatchObject({ workspaceUnavailable: true, workspacePath: GONE })
-    const [group] = selectHomeRows({ sessions, workspaces, tab: 'all', now: NOW })
+    const [group] = selectHomeRows({ sessions, workspaces, tab: 'all' })
     expect(group!.rows[0]!.workspace).toMatchObject({ name: 'gone', availability: 'missing' })
   })
 
@@ -165,8 +165,8 @@ describe('the home source over the shared sidebar providers', () => {
     const { sessions, workspaces } = homeSourceOf(inputs(byWorkspace))
     expect(sessions[0]!.title).toBeUndefined()
     expect(sessions[0]!.updatedAt).toBeUndefined()
-    const groups = selectHomeRows({ sessions, workspaces, tab: 'all', now: NOW })
-    expect(groups.map((group) => group.label)).toEqual(['Earlier'])
+    const groups = selectHomeRows({ sessions, workspaces, tab: 'all' })
+    expect(groups.map((group) => group.label)).toEqual(['Recent'])
   })
 
   it('serves the shared draft cards as they are', () => {
@@ -193,13 +193,9 @@ describe('the home source over the shared sidebar providers', () => {
     ]
     const source = homeSourceOf(inputs({}, { drafts }))
     expect(source.drafts).toBe(drafts)
-    expect(tabCounts(source.sessions, source.drafts)).toEqual({ all: 0, active: 0, drafts: 2 })
-    const [group] = selectDraftRows({
-      drafts: source.drafts,
-      workspaces: source.workspaces,
-      now: NOW,
-    })
-    expect(group!.rows.map((row) => row.workspace?.name ?? null)).toEqual(['repo', null])
+    expect(tabCounts(source.sessions)).toEqual({ all: 0, settled: 0 })
+    const rows = selectDraftRows({ drafts: source.drafts, workspaces: source.workspaces })
+    expect(rows.map((row) => row.workspace?.name ?? null)).toEqual(['repo', null])
   })
 
   it('has no drafts on a host that serves none', () => {

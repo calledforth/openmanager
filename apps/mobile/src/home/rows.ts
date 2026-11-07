@@ -1,6 +1,6 @@
 /**
- * The sessions home, as rows: which status mark a session shows, which tab it
- * belongs to, and how the list groups and orders. Pure, so it is tested
+ * The sessions home, as rows: which status mark a session shows, which view
+ * it belongs to, and how the list groups and orders. Pure, so it is tested
  * without React Native, and shaped on the sidebar's shared session and draft
  * entries so the environment providers slot in unchanged.
  */
@@ -14,17 +14,25 @@ import type {
   WorkspaceEntry,
 } from '@openmanager/app-core/providers/sidebar-provider'
 
-export type HomeTab = 'all' | 'active' | 'drafts'
+/** All is what is unsettled; Settled is the long tail. */
+export type HomeTab = 'all' | 'settled'
 
 /** One glyph per state: the web sidebar's tones, plus the ring at rest. */
 export type StatusMark = SessionBusyTone | 'idle'
 
-export interface HomeSession extends SidebarSessionEntry {
-  workspacePath: string
+/** The environment a row runs on, for a home that spans more than one. */
+export interface HomeEnvironmentRef {
+  environmentId: string
+  label: string
 }
 
-/** A draft card exactly as the shared sidebar serves it. */
-export type HomeDraft = SidebarDraft
+export interface HomeSession extends SidebarSessionEntry {
+  workspacePath: string
+  environment?: HomeEnvironmentRef
+}
+
+/** A draft card exactly as the shared sidebar serves it, with where it is saved. */
+export type HomeDraft = SidebarDraft & { environment?: HomeEnvironmentRef }
 
 export interface HomeRow {
   kind: 'session'
@@ -43,7 +51,8 @@ export interface HomeDraftRow {
 
 export interface HomeGroup<Row> {
   key: string
-  label: string
+  /** The small caps heading above the rows; null for a list with none. */
+  label: string | null
   rows: Row[]
 }
 
@@ -106,20 +115,19 @@ export function isPinnedSession(session: Pick<SidebarSessionEntry, 'settledAt' |
   return !!session.pinnedAt && !session.settledAt
 }
 
-/** The group pinned sessions sit in, above every other in Active and All. */
+/** The group pinned sessions sit in, above every other in All. */
 export const PINNED_GROUP = 'pinned'
+
+/** The group the draft cards sit in, above everything in All. */
+export const DRAFTS_GROUP = 'drafts'
+
+/** The one group of the Settled view, with no heading. */
+export const SETTLED_GROUP = 'settled'
 
 /** Active is everything the user has not settled. */
 export function isActiveSession(session: Pick<SidebarSessionEntry, 'settledAt'>): boolean {
   return !session.settledAt
 }
-
-const DAY_MS = 24 * 60 * 60 * 1000
-
-// Built once: an Intl formatter is costly to create and cheap to reuse.
-const weekday = new Intl.DateTimeFormat(undefined, { weekday: 'long' })
-const month = new Intl.DateTimeFormat(undefined, { month: 'long' })
-const monthYear = new Intl.DateTimeFormat(undefined, { month: 'long', year: 'numeric' })
 
 /** An ISO time or epoch ms as ms; null when it is missing or unreadable. */
 function msOf(at: string | number | undefined): number | null {
@@ -128,28 +136,13 @@ function msOf(at: string | number | undefined): number | null {
   return Number.isFinite(ms) && ms > 0 ? ms : null
 }
 
-/**
- * Today, Yesterday, the weekday within the week, "Earlier this month", the
- * month within the year, else the month and the year.
- */
-export function dayLabel(at: string | number | undefined, now: Date): string {
-  const ms = msOf(at)
-  if (ms === null) return 'Earlier'
-  const then = new Date(ms)
-  const startOfToday = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime()
-  const startOfThat = new Date(then.getFullYear(), then.getMonth(), then.getDate()).getTime()
-  const days = Math.round((startOfToday - startOfThat) / DAY_MS)
-  if (days <= 0) return 'Today'
-  if (days === 1) return 'Yesterday'
-  if (days < 7) return weekday.format(then)
-  if (then.getFullYear() !== now.getFullYear()) return monthYear.format(then)
-  if (then.getMonth() === now.getMonth()) return 'Earlier this month'
-  return month.format(then)
-}
-
 const time = (at: string | number | undefined) => msOf(at) ?? 0
 
-/** Live work first (needs you before working), then the newest. */
+/**
+ * What a session asks of the reader, as a rank: waiting on you, then live
+ * work, then what failed (something to act on), then what finished since you
+ * looked (something to read), then the rest.
+ */
 function activityRank(mark: StatusMark): number {
   switch (mark) {
     case 'needs':
@@ -161,17 +154,24 @@ function activityRank(mark: StatusMark): number {
       return 2
     case 'error':
       return 3
-    default:
+    case 'done':
       return 4
+    default:
+      return 5
   }
 }
 
-/** The Active tab's groups, most urgent first; a tree lands by its most urgent member. */
-const ACTIVE_GROUPS: { key: string; label: string; ranks: readonly number[] }[] = [
+/**
+ * All's groups, most urgent first; a tree lands by its most urgent member.
+ * These are what the inbox listed (needs you, failed, done since you looked)
+ * in the one place, so nothing waits on a second screen.
+ */
+const ALL_GROUPS: { key: string; label: string; ranks: readonly number[] }[] = [
   { key: 'needs', label: 'Needs you', ranks: [0] },
   { key: 'working', label: 'Working', ranks: [1, 2] },
   { key: 'failed', label: 'Failed', ranks: [3] },
-  { key: 'recent', label: 'Recent', ranks: [4] },
+  { key: 'done', label: 'Done', ranks: [4] },
+  { key: 'recent', label: 'Recent', ranks: [5] },
 ]
 
 interface Tree {
@@ -185,29 +185,32 @@ interface Tree {
 }
 
 /**
- * Sessions as the home lists them for a tab. Children sit under their parent,
- * one level deeper per generation, in their own order, and never start a
- * group. A parent the tab can't show makes its child top-level; a cycle
- * (both ends visible, neither a root) stays visible as a top-level row,
- * as the web sidebar does. A tree is ranked by its most urgent member and
- * dated by its newest, so live work in a child is never buried under a
- * quiet parent. A pinned tree sits in Pinned, above every other group,
- * most recently pinned first, and keeps its place as others get activity.
+ * Sessions as the home lists them for a view. Children sit under their
+ * parent, one level deeper per generation, in their own order, and never
+ * start a group. A parent the view can't show makes its child top-level; a
+ * cycle (both ends visible, neither a root) stays visible as a top-level
+ * row, as the web sidebar does. A tree is ranked by its most urgent member
+ * and dated by its newest, so live work in a child is never buried under a
+ * quiet parent.
+ *
+ * All: Pinned first (most recently pinned first, keeping its place as
+ * others get activity), then Needs you, Working, Failed, Done, Recent, each
+ * newest first. Settled: one flat list, newest first, with no heading.
  * Display order only: no session's own state changes.
  */
 export function selectHomeRows({
   sessions,
   workspaces,
   tab,
-  now = new Date(),
 }: {
   sessions: readonly HomeSession[]
   workspaces: readonly WorkspaceEntry[]
-  tab: Exclude<HomeTab, 'drafts'>
-  now?: Date
+  tab: HomeTab
 }): HomeGroup<HomeRow>[] {
   const byPath = new Map(workspaces.map((workspace) => [workspace.path, workspace]))
-  const visible = tab === 'active' ? sessions.filter(isActiveSession) : sessions
+  const visible = sessions.filter((session) =>
+    tab === 'all' ? isActiveSession(session) : !isActiveSession(session),
+  )
   const ids = new Set(visible.map((session) => session.externalId))
   const roots: HomeSession[] = []
   const children = new Map<string, HomeSession[]>()
@@ -256,128 +259,91 @@ export function selectHomeRows({
     if (!visited.has(session.externalId)) trees.push(tree(session))
   }
   const byNewest = (a: Tree, b: Tree) => b.newest - a.newest
+
+  if (tab === 'settled') {
+    const rows = [...trees].sort(byNewest).flatMap((t) => t.rows)
+    return rows.length ? [{ key: SETTLED_GROUP, label: null, rows }] : []
+  }
+
   const pinned = trees.filter((t) => t.pinned).sort((a, b) => b.pinned - a.pinned || byNewest(a, b))
   const unpinned = trees.filter((t) => !t.pinned)
   const pinnedGroups: HomeGroup<HomeRow>[] = pinned.length
     ? [{ key: PINNED_GROUP, label: 'Pinned', rows: pinned.flatMap((t) => t.rows) }]
     : []
-
-  if (tab === 'active') {
-    return [
-      ...pinnedGroups,
-      ...ACTIVE_GROUPS.flatMap(({ key, label, ranks }) => {
-        const members = unpinned
-          .filter((t) => ranks.includes(t.rank))
-          .sort((a, b) => a.rank - b.rank || byNewest(a, b))
-        return members.length ? [{ key, label, rows: members.flatMap((t) => t.rows) }] : []
-      }),
-    ]
-  }
-
-  const groups = new Map<string, HomeGroup<HomeRow>>()
-  for (const t of [...unpinned].sort(byNewest)) {
-    const label = dayLabel(t.newest || undefined, now)
-    const group = groups.get(label) ?? { key: label, label, rows: [] }
-    group.rows.push(...t.rows)
-    groups.set(label, group)
-  }
-  return [...pinnedGroups, ...groups.values()]
+  return [
+    ...pinnedGroups,
+    ...ALL_GROUPS.flatMap(({ key, label, ranks }) => {
+      const members = unpinned
+        .filter((t) => ranks.includes(t.rank))
+        .sort((a, b) => a.rank - b.rank || byNewest(a, b))
+      return members.length ? [{ key, label, rows: members.flatMap((t) => t.rows) }] : []
+    }),
+  ]
 }
 
-/** Drafts for the drafts tab, newest edit first, grouped by day. */
+/** The draft cards, newest edit first. */
 export function selectDraftRows({
   drafts,
   workspaces,
-  now = new Date(),
 }: {
   drafts: readonly HomeDraft[]
   workspaces: readonly WorkspaceEntry[]
-  now?: Date
-}): HomeGroup<HomeDraftRow>[] {
+}): HomeDraftRow[] {
   // A workspace's id is its path, as the shared sidebar places draft cards.
   const byPath = new Map(workspaces.map((workspace) => [workspace.path, workspace]))
-  const groups = new Map<string, HomeGroup<HomeDraftRow>>()
-  for (const draft of [...drafts].sort((a, b) => b.editedAt - a.editedAt)) {
-    const label = dayLabel(draft.editedAt, now)
-    const group = groups.get(label) ?? { key: label, label, rows: [] }
-    group.rows.push({
+  return [...drafts]
+    .sort((a, b) => b.editedAt - a.editedAt)
+    .map((draft) => ({
       kind: 'draft',
       draft,
       workspace: draft.workspaceId === null ? undefined : byPath.get(draft.workspaceId),
-    })
-    groups.set(label, group)
-  }
-  return [...groups.values()]
+    }))
 }
 
-/** A row of any tab: a session, or a draft. */
+/** A row of either view: a session, or a draft. */
 export type HomeListRow = HomeRow | HomeDraftRow
 
-const newestOf = (rows: readonly HomeListRow[]) =>
-  Math.max(
-    0,
-    ...rows.map((row) => (row.kind === 'draft' ? row.draft.editedAt : time(row.session.updatedAt))),
-  )
-
 /**
- * A tab's rows, drafts included, as the web sidebar lists them: Drafts
- * holds the drafts alone; Active opens with a Drafts group above the live
- * work; All keeps its days, a draft taking its place in the day it was last
- * edited, above that day's sessions. Days run newest first by whatever is
- * newest in them, under Pinned, which stays on top.
+ * A view's rows: All opens with the draft cards, as the web sidebar's Drafts
+ * section sits above Active, then the session groups; Settled is the
+ * sessions alone.
  */
 export function selectTabRows({
   sessions,
   drafts,
   workspaces,
   tab,
-  now = new Date(),
 }: {
   sessions: readonly HomeSession[]
   drafts: readonly HomeDraft[]
   workspaces: readonly WorkspaceEntry[]
   tab: HomeTab
-  now?: Date
 }): HomeGroup<HomeListRow>[] {
-  const draftGroups = selectDraftRows({ drafts, workspaces, now })
-  if (tab === 'drafts') return draftGroups
-  const sessionGroups = selectHomeRows({ sessions, workspaces, tab, now })
-  if (tab === 'active') {
-    const draftRows = draftGroups.flatMap((group) => group.rows)
-    return draftRows.length
-      ? [{ key: 'drafts', label: 'Drafts', rows: draftRows }, ...sessionGroups]
-      : sessionGroups
-  }
-  const pinnedGroups = sessionGroups.filter((group) => group.key === PINNED_GROUP)
-  const byLabel = new Map<string, HomeGroup<HomeListRow>>()
-  for (const group of draftGroups) byLabel.set(group.label, { ...group, rows: [...group.rows] })
-  for (const group of sessionGroups) {
-    if (group.key === PINNED_GROUP) continue
-    const merged = byLabel.get(group.label)
-    if (merged) merged.rows.push(...group.rows)
-    else byLabel.set(group.label, { ...group, rows: [...group.rows] })
-  }
-  return [
-    ...pinnedGroups,
-    ...[...byLabel.values()].sort((a, b) => newestOf(b.rows) - newestOf(a.rows)),
-  ]
+  const sessionGroups = selectHomeRows({ sessions, workspaces, tab })
+  if (tab === 'settled') return sessionGroups
+  const draftRows = selectDraftRows({ drafts, workspaces })
+  return draftRows.length
+    ? [{ key: DRAFTS_GROUP, label: 'Drafts', rows: draftRows }, ...sessionGroups]
+    : sessionGroups
 }
 
-/** How many sessions wait on the reader: the inbox badge. */
-export function countNeedsYou(sessions: readonly HomeSession[]): number {
-  return sessions.filter((session) => {
-    const mark = statusMarkOf(session)
-    return mark === 'needs' || mark === 'question'
-  }).length
+/** Counts for the view labels: sessions only, since All's drafts are cards, not sessions. */
+export function tabCounts(sessions: readonly HomeSession[]) {
+  const all = sessions.filter(isActiveSession).length
+  return { all, settled: sessions.length - all }
 }
 
-/** Counts for the tab labels. */
-export function tabCounts(sessions: readonly HomeSession[], drafts: readonly HomeDraft[]) {
-  return {
-    all: sessions.length,
-    active: sessions.filter(isActiveSession).length,
-    drafts: drafts.length,
-  }
+/**
+ * How many environments the rows come from. The home names an environment
+ * on a row only when they span more than one; a row that says nothing of
+ * its environment (a host that knows one alone) counts for none.
+ */
+export function countEnvironments(
+  rows: readonly { environment?: HomeEnvironmentRef }[],
+): number {
+  const ids = new Set<string>()
+  for (const row of rows) if (row.environment) ids.add(row.environment.environmentId)
+  return ids.size
 }
 
 /**

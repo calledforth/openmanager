@@ -182,7 +182,7 @@ function ProjectRow({
         backgroundColor: pressed ? theme.hover : 'transparent',
       })}
     >
-      <ProjectMark workspaceId={path} name={name} size={24} />
+      <ProjectMark workspaceId={path} size={24} />
       <AppText variant="text-14-medium" style={{ color: theme.fg, flex: 1 }}>
         {name}
       </AppText>
