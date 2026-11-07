@@ -54,6 +54,8 @@ import {
   type SlashCommandItem,
 } from './slashCommands'
 import { ProviderModelPicker, type ProviderModelGroup } from './ProviderModelPicker'
+import { CommandMenuShortcut } from '../fluid/ui/command-menu'
+import type { FollowUpAction } from './enterWhileRunning'
 
 export type { ProviderModelGroup }
 
@@ -364,6 +366,13 @@ export interface MessageInputViewProps {
   showModeControl: boolean
   showModelControl: boolean
   isStreaming: boolean
+  /**
+   * The chat is busy (a turn runs, or queued messages are running): a message
+   * sent now waits or joins the turn. `enter` is what Enter and the send
+   * button do; `alternate` is the other, on Mod+Enter and the send button's
+   * menu, or null when the turn cannot take a message. Absent, a send is a send.
+   */
+  whileBusy?: { enter: FollowUpAction; alternate: FollowUpAction | null }
   isAwaitingPlanReview?: boolean
   /** Takes the composer over as some other feature's text field — today, the
    * free-text answer of a pending question. The draft is owned by the caller,
@@ -390,7 +399,13 @@ export interface MessageInputViewProps {
    * `attachments` are images still to upload; `kept` are images the draft
    * already holds on the environment, uploaded when they were attached.
    */
-  onSend: (text: string, attachments: DraftImageAttachment[], kept?: KeptImage[]) => Promise<void>
+  onSend: (
+    text: string,
+    attachments: DraftImageAttachment[],
+    kept?: KeptImage[],
+    /** While the chat is busy: what to do with the message instead of sending it. */
+    action?: FollowUpAction,
+  ) => Promise<void>
   onAbort: () => void
   /**
    * Store one image now, for the open draft. Given, and where the draft store
@@ -424,6 +439,7 @@ export function useMessageInputController({
   effortConfigId = 'effort',
   currentEffort,
   isAwaitingPlanReview = false,
+  whileBusy,
   textOverride,
   draftKey,
   imageUploadEnabled,
@@ -865,7 +881,8 @@ export function useMessageInputController({
     addFiles(Array.from(event.dataTransfer.files))
   }
 
-  const send = async () => {
+  /** Send what the box holds; while the chat is busy, `action` picks queue or steer over Enter's. */
+  const send = async (action?: FollowUpAction) => {
     if (textOverride) {
       if (textOverride.canSubmit) textOverride.onSubmit()
       return
@@ -913,7 +930,12 @@ export function useMessageInputController({
       keepsImages ? restoreImages : undefined,
     )
     try {
-      await onSend(trimmed, keepsImages ? NO_ATTACHMENTS : attachments, kept)
+      await onSend(
+        trimmed,
+        keepsImages ? NO_ATTACHMENTS : attachments,
+        kept,
+        whileBusy ? (action ?? whileBusy.enter) : undefined,
+      )
       release?.()
       // Sent: the transcript reads them from the session now. A failed send
       // keeps them, for the draft it puts back.
@@ -976,7 +998,9 @@ export function useMessageInputController({
     }
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault()
-      void send()
+      // While the chat is busy, Mod+Enter does the other of queue and steer.
+      const alternate = whileBusy && (e.metaKey || e.ctrlKey) ? whileBusy.alternate : null
+      void send(alternate ?? undefined)
     }
   }
 
@@ -1081,6 +1105,7 @@ export function MessageInputView(props: MessageInputViewProps) {
     showModeControl,
     showModelControl,
     isStreaming,
+    whileBusy,
     isAwaitingPlanReview,
     textOverride,
     attachedTop,
@@ -1130,6 +1155,7 @@ export function MessageInputView(props: MessageInputViewProps) {
     draftStore,
     sendActive,
     send,
+    hasContent,
   } = useMessageInputController(props)
 
   return (
@@ -1328,7 +1354,7 @@ export function MessageInputView(props: MessageInputViewProps) {
                 <Tooltip content="Request plan changes">
                   <button
                     type="button"
-                    onClick={send}
+                    onClick={() => void send()}
                     disabled={!sendActive}
                     aria-label="Request plan changes"
                     className={cn(
@@ -1347,16 +1373,36 @@ export function MessageInputView(props: MessageInputViewProps) {
                 </Tooltip>
               </>
             ) : isStreaming ? (
-              <Tooltip content="Stop" shortcut="Esc">
-                <button
-                  type="button"
-                  onClick={onAbort}
-                  aria-label="Stop"
-                  className="inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-[var(--basis-surface-hover)] text-[var(--basis-text-muted)] transition-colors hover:bg-red-500/10 hover:text-red-400"
-                >
-                  <SquareIcon className="h-2.5 w-2.5" weight="fill" />
-                </button>
-              </Tooltip>
+              <>
+                {/* Only with something to send: Stop alone says a turn runs. */}
+                {whileBusy && (hasContent || sending) ? (
+                  <FollowUpSendButton
+                    whileBusy={whileBusy}
+                    active={sendActive}
+                    sending={sending}
+                    onSend={(action) => void send(action)}
+                  />
+                ) : null}
+                <Tooltip content="Stop" shortcut="Esc">
+                  <button
+                    type="button"
+                    onClick={onAbort}
+                    aria-label="Stop"
+                    className="inline-flex h-6 w-6 shrink-0 cursor-pointer items-center justify-center rounded-full bg-[var(--basis-surface-hover)] text-[var(--basis-text-muted)] transition-colors hover:bg-red-500/10 hover:text-red-400"
+                  >
+                    <SquareIcon className="h-2.5 w-2.5" weight="fill" />
+                  </button>
+                </Tooltip>
+              </>
+            ) : whileBusy ? (
+              // Busy but not streaming (a request waits on the user, or queued
+              // messages are running): the send button queues or steers.
+              <FollowUpSendButton
+                whileBusy={whileBusy}
+                active={sendActive}
+                sending={sending}
+                onSend={(action) => void send(action)}
+              />
             ) : (
               <Tooltip
                 content={sendActive ? (isPlan ? 'Start planning' : 'Send') : undefined}
@@ -1364,7 +1410,7 @@ export function MessageInputView(props: MessageInputViewProps) {
               >
                 <button
                   type="button"
-                  onClick={send}
+                  onClick={() => void send()}
                   disabled={!sendActive}
                   aria-label={isPlan ? 'Start planning' : 'Send'}
                   className={cn(
@@ -1385,6 +1431,113 @@ export function MessageInputView(props: MessageInputViewProps) {
           </div>
         </div>
       </div>
+    </div>
+  )
+}
+
+const FOLLOW_UP: Record<FollowUpAction, { label: string; description: string }> = {
+  queue: { label: 'Queue', description: 'Runs when this turn ends' },
+  steer: { label: 'Steer', description: 'Joins this turn at the next step' },
+}
+
+/** A tip naming the action and its keys, the way the model picker's does. */
+function ActionTip({ label, keys }: { label: string; keys: string }) {
+  return (
+    <span className="flex items-center gap-2">
+      {label}
+      <CommandMenuShortcut keys={keys} className="ml-0" />
+    </span>
+  )
+}
+
+/**
+ * Send while the chat is busy: the button does what Enter does (queue or
+ * steer), and, when the turn can take a message, a menu beside it offers both,
+ * the other being Mod+Enter.
+ */
+function FollowUpSendButton({
+  whileBusy,
+  active,
+  sending,
+  onSend,
+}: {
+  whileBusy: { enter: FollowUpAction; alternate: FollowUpAction | null }
+  active: boolean
+  sending: boolean
+  onSend: (action: FollowUpAction) => void
+}) {
+  const { enter, alternate } = whileBusy
+  const sections = useMemo<SearchableMenuSection[]>(
+    () => [
+      {
+        id: 'follow-up',
+        options: ([enter, ...(alternate ? [alternate] : [])] as FollowUpAction[]).map((action) => ({
+          id: action,
+          label: FOLLOW_UP[action].label,
+          description: FOLLOW_UP[action].description,
+        })),
+      },
+    ],
+    [alternate, enter],
+  )
+  return (
+    <div className="flex shrink-0 items-center">
+      {alternate ? (
+        <SearchableMenu
+          sections={sections}
+          value={enter}
+          onSelect={(id) => onSend(id as FollowUpAction)}
+          disabled={!active}
+          placement="above"
+          align="end"
+          minWidth={220}
+          aria-label="Send options"
+          trigger={({ ref, open, toggle, disabled }) => (
+            <Tooltip
+              content={
+                open ? undefined : <ActionTip label={FOLLOW_UP[alternate].label} keys="mod+enter" />
+              }
+            >
+              <button
+                ref={ref}
+                type="button"
+                onClick={toggle}
+                disabled={disabled}
+                aria-label="Send options"
+                aria-haspopup="menu"
+                aria-expanded={open}
+                className={cn(
+                  'inline-flex h-6 w-4 shrink-0 cursor-pointer items-center justify-center rounded-full text-[var(--basis-text-faint)] transition-colors hover:text-[var(--basis-text)] disabled:cursor-default disabled:hover:text-[var(--basis-text-faint)]',
+                  open && 'text-[var(--basis-text)]',
+                )}
+              >
+                <CaretDownIcon size={10} weight="bold" />
+              </button>
+            </Tooltip>
+          )}
+        />
+      ) : null}
+      <Tooltip
+        content={active ? <ActionTip label={FOLLOW_UP[enter].label} keys="enter" /> : undefined}
+      >
+        <button
+          type="button"
+          onClick={() => onSend(enter)}
+          disabled={!active}
+          aria-label={FOLLOW_UP[enter].label}
+          className={cn(
+            btnSend,
+            'cursor-pointer disabled:cursor-default',
+            !active && '!bg-[var(--basis-surface-hover)] !text-[var(--basis-text-faint)]',
+          )}
+        >
+          {sending ? (
+            <CircleNotchIcon size={13} className="animate-spin" />
+          ) : (
+            <ArrowUpIcon size={14} />
+          )}
+        </button>
+      </Tooltip>
     </div>
   )
 }

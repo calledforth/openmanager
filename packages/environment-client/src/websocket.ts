@@ -92,6 +92,7 @@ import type {
   EnvironmentClient,
   EnvironmentCommandName,
   EnvironmentCommands,
+  QueueMessageInput,
   WorkspaceComposerPreference,
 } from './types'
 import {
@@ -267,6 +268,15 @@ const TERMINAL_CODES: ReadonlySet<ErrorCode> = new Set([
 ])
 
 const randomId = () => globalThis.crypto.randomUUID()
+
+/** A queued or steered message as `queue.add` and `turn.steer` name it; the id is required there. */
+const followUpPayload = (input: QueueMessageInput) => ({
+  sessionId: input.sessionId,
+  threadId: input.threadId,
+  text: input.text,
+  commandId: input.commandId ?? randomId(),
+  ...(input.artifactIds?.length ? { artifactIds: input.artifactIds } : {}),
+})
 
 /**
  * The HTTP address of a route on the environment behind `socketUrl`. The
@@ -1912,6 +1922,25 @@ export function createWebSocketEnvironmentClient(
     },
     async interruptTurn(input) {
       await request('turn.interrupt', input)
+    },
+    // Not sends: nothing is echoed and the outbox is not touched. A queued
+    // message may wait minutes for its turn, and what shows it meanwhile is
+    // the chat's queue, as the environment states it (`thread.queue.updated`).
+    async queueMessage(input) {
+      return await request('queue.add', followUpPayload(input))
+    },
+    async removeQueuedMessage(input) {
+      await request('queue.remove', {
+        sessionId: input.sessionId,
+        threadId: input.threadId,
+        queueItemId: input.queueItemId,
+      })
+    },
+    async resumeQueue(input) {
+      await request('queue.resume', { sessionId: input.sessionId, threadId: input.threadId })
+    },
+    async steerTurn(input) {
+      return await request('turn.steer', { ...followUpPayload(input), turnId: input.turnId })
     },
     async respondToInteraction(input) {
       if (input.build && !capabilities.has(PLAN_BUILD_CAPABILITY)) {

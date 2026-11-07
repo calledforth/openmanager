@@ -68,6 +68,7 @@ export function applyLegacyHistory(
         .filter((item) => item.threadId === thread.threadId)
         .map((item) => ({ turnId, interaction: item.interaction })),
       listing: {},
+      queue: { items: [], pausedBy: null },
     },
   } as ScopeSnapshot
   return applySnapshot(state, snapshot)

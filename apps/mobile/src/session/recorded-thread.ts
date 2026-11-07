@@ -144,4 +144,5 @@ export const RECORDED_THREAD: ThreadState = {
   outbox: [],
   hydration: 'ready',
   listing: {},
+  queue: { items: [], pausedBy: null },
 }

@@ -9,7 +9,7 @@ function thread(patch: Partial<ReturnType<typeof createThreadState>> = {}) {
 }
 
 describe('projectThread', () => {
-  it('renders one user row and one assistant row per turn, in turn order', () => {
+  it('renders a turn as its prompt and the reply, in turn order', () => {
     const state = thread({
       turns: [
         { turnId: 't1', threadId: THREAD.threadId, state: 'completed' },
@@ -423,6 +423,128 @@ describe('projectThread', () => {
     expect(thinking.messages[0]).toMatchObject({ externalId: 'turn:t1:assistant' })
     expect(answering.messages[0]).toMatchObject({ externalId: 'a1' })
     expect(answering.messages[0]!.rowKey).toBe(thinking.messages[0]!.rowKey)
+  })
+
+  describe('a message steered into a running turn', () => {
+    const user = (messageId: string, text: string) => ({
+      messageId,
+      threadId: THREAD.threadId,
+      turnId: 't1',
+      role: 'user' as const,
+      content: [{ type: 'text' as const, text }],
+    })
+    const reply = (messageId: string, text: string) => ({
+      ...user(messageId, text),
+      role: 'assistant' as const,
+    })
+    const ref = (kind: 'message' | 'tool', id: string) => ({ kind, id, turnId: 't1' })
+    const before = (state: 'running' | 'completed' = 'running') =>
+      thread({
+        turns: [
+          {
+            turnId: 't1',
+            threadId: THREAD.threadId,
+            state,
+            startedAt: '2026-11-07T10:00:00.000Z',
+            ...(state === 'completed' ? { finishedAt: '2026-11-07T10:00:30.000Z' } : {}),
+          },
+        ],
+        messages: [user('u1', 'fix it'), reply('a1', 'Looking.')],
+        tools: [{ toolCallId: 'tool-1', turnId: 't1', title: 'Read', status: 'completed' }],
+        order: [ref('message', 'u1'), ref('message', 'a1'), ref('tool', 'tool-1')],
+      })
+    const steered = (state: 'running' | 'completed' = 'running', base = before(state)) => {
+      return {
+        ...base,
+        // Held after the reply that follows it: the order, not the list, places it.
+        messages: [
+          ...base.messages,
+          reply('a2', 'Done, in the other file.'),
+          user('u2', 'use the other file'),
+        ],
+        order: [...base.order, ref('message', 'u2'), ref('message', 'a2')],
+      }
+    }
+
+    it('shows at its place, between what the agent did before it and after it', () => {
+      const projection = projectThread(steered())
+      expect(
+        projection.messages.map((message) => [message.rowKey ?? message.externalId, message.role]),
+      ).toEqual([
+        ['u1', 'user'],
+        ['turn:t1:assistant', 'assistant'],
+        ['u2', 'user'],
+        ['turn:t1:assistant:u2', 'assistant'],
+      ])
+      expect(projection.messages.map((message) => message.sequenceNum)).toEqual([0, 1, 2, 3])
+      expect(projection.byId.get('a1')?.content.parts?.map((part) => part.id)).toEqual([
+        'a1',
+        'tool-1',
+      ])
+      expect(projection.byId.get('u2')?.content.content).toBe('use the other file')
+      expect(projection.byId.get('a2')?.content).toMatchObject({
+        content: 'Done, in the other file.',
+        parts: [{ type: 'text', id: 'a2' }],
+      })
+    })
+
+    it('keeps the reply before it on the row it was on', () => {
+      const base = before()
+      const first = projectThread(base)
+      const next = projectThread(steered('running', base), first)
+      const row = (projection: typeof first) =>
+        projection.messages.find((message) => message.rowKey === 'turn:t1:assistant')
+      expect(row(next)?.externalId).toBe(row(first)?.externalId)
+      expect(row(next)?.sequenceNum).toBe(row(first)?.sequenceNum)
+      expect(next.messages[0]).toBe(first.messages[0])
+    })
+
+    it('shows the agent still working after it, with nothing said yet', () => {
+      const base = before()
+      const projection = projectThread({
+        ...base,
+        messages: [...base.messages, user('u2', 'also this')],
+        order: [...base.order, ref('message', 'u2')],
+      })
+      expect(projection.messages.map((message) => message.rowKey ?? message.externalId)).toEqual([
+        'u1',
+        'turn:t1:assistant',
+        'u2',
+        'turn:t1:assistant:u2',
+      ])
+      expect(projection.messages.at(-1)).toMatchObject({ isFinal: false })
+    })
+
+    it('labels only the row the turn ended on with how long it ran', () => {
+      const projection = projectThread(steered('completed'))
+      expect(projection.byId.get('a1')?.content.runtime).toBeUndefined()
+      expect(projection.byId.get('a2')?.content.runtime).toEqual({
+        startedAt: Date.parse('2026-11-07T10:00:00.000Z'),
+        completedAt: Date.parse('2026-11-07T10:00:30.000Z'),
+      })
+    })
+
+    it('says a turn failed on the row it ended on', () => {
+      const base = steered()
+      const projection = projectThread({
+        ...base,
+        turns: [
+          {
+            ...base.turns[0]!,
+            state: 'failed',
+            failure: { reason: 'provider_error', message: 'boom' },
+          },
+        ],
+      })
+      expect(projection.byId.get('a2')?.content.parts?.at(-1)).toMatchObject({
+        type: 'failure',
+        resendable: true,
+      })
+      expect(projection.byId.get('a1')?.content.parts?.map((part) => part.type)).toEqual([
+        'text',
+        'tool',
+      ])
+    })
   })
 
   it('surfaces a failed turn on its assistant row', () => {

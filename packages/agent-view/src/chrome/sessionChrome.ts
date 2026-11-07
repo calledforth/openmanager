@@ -94,6 +94,7 @@ const NO_CAPABILITIES: ProviderCapabilities = {
   canLoadSession: false,
   canListSessions: false,
   canCancelPrompt: false,
+  canSteer: false,
   supportsPlans: false,
   supportsAvailableCommands: false,
   supportsUsage: false,

@@ -395,6 +395,11 @@ export function projectAgentEvent(
     case 'extension_request':
     case 'extension_resolved':
     case 'extension_notification':
+    // A steered message's fate: the host records it from its own queue, which
+    // holds the message, and opens a steered message's own turn itself.
+    case 'steer_delivered':
+    case 'steer_turn_started':
+    case 'steer_withdrawn':
       return null
   }
 }

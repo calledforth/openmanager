@@ -16,6 +16,7 @@ import {
 } from './domains.js'
 import { WorkspaceComposerPreferenceSchema } from './composer.js'
 import { CursorSchema } from './replay.js'
+import { QUEUED_MESSAGE_ARTIFACTS_MAX } from './queue.js'
 
 const command = <N extends string, P extends z.ZodType>(name: N, payload: P) =>
   CommandEnvelopeSchema.extend({ name: z.literal(name), payload })
@@ -27,6 +28,17 @@ const TurnTextSchema = z.string().min(1)
 const EmptyPayloadSchema = z.null()
 const SessionTargetSchema = z.object({ sessionId: EntityIdSchema })
 const ThreadTargetSchema = z.object({ sessionId: EntityIdSchema, threadId: EntityIdSchema })
+/** A message for later: what `turn.send` takes, with the id required. */
+const QueuedSendFields = ThreadTargetSchema.extend({
+  text: z.string(),
+  commandId: EntityIdSchema,
+  artifactIds: z.array(EntityIdSchema).max(QUEUED_MESSAGE_ARTIFACTS_MAX).optional(),
+})
+const carriesContent = <S extends z.ZodType<{ text: string; artifactIds?: string[] }>>(schema: S) =>
+  schema.refine((send) => send.text.length > 0 || (send.artifactIds?.length ?? 0) > 0, {
+    message: 'A message needs text or an attachment.',
+    path: ['text'],
+  })
 
 export const ProofCommandSchemas = {
   'environment.get': command('environment.get', EmptyPayloadSchema),
@@ -145,6 +157,28 @@ export const ProofCommandSchemas = {
     'turn.interrupt',
     ThreadTargetSchema.extend({ turnId: EntityIdSchema }),
   ),
+  // Holds a message back until the running turn ends, then runs it as the next
+  // turn with the composer selection it was sent with. `commandId` becomes the
+  // queued message's id and its turn's `commandId`, so a retry finds either.
+  // The chat's queue reaches every client as `thread.queue.updated`. Sent to a
+  // chat with nothing running and nothing waiting, it starts the turn at once.
+  'queue.add': command('queue.add', carriesContent(QueuedSendFields)),
+  // Takes a message out of the queue before it runs. A message already sent,
+  // or already with the provider (`steering`), is a `conflict`.
+  'queue.remove': command(
+    'queue.remove',
+    ThreadTargetSchema.extend({ queueItemId: EntityIdSchema }),
+  ),
+  // Lets a paused queue drain again: at once when nothing is running.
+  'queue.resume': command('queue.resume', ThreadTargetSchema),
+  // Adds a message to the running turn `turnId`: the provider takes it at the
+  // agent's next step. Until then it waits in the queue as `steering`. When
+  // that turn has ended, or its provider cannot steer (`canSteer`), the
+  // message is queued instead, and the answer says which happened.
+  'turn.steer': command(
+    'turn.steer',
+    carriesContent(QueuedSendFields.extend({ turnId: EntityIdSchema })),
+  ),
   // One resolve command for approvals, questions and plans; `response.kind`
   // says which. `commandId` makes it retryable the way a send is: a repeat of
   // the id that settled the interaction succeeds, while any other answer to a
@@ -186,6 +220,10 @@ export const ProofCommandSchema = z.discriminatedUnion('name', [
   ProofCommandSchemas['session.background.stop'],
   ProofCommandSchemas['turn.send'],
   ProofCommandSchemas['turn.interrupt'],
+  ProofCommandSchemas['queue.add'],
+  ProofCommandSchemas['queue.remove'],
+  ProofCommandSchemas['queue.resume'],
+  ProofCommandSchemas['turn.steer'],
   ProofCommandSchemas['interaction.respond'],
   ProofCommandSchemas['subscription.subscribe'],
   ProofCommandSchemas['subscription.unsubscribe'],
@@ -236,6 +274,12 @@ export const ProofResponseSchemas = {
   'session.background.stop': response(z.null()),
   'turn.send': response(TurnStartSchema),
   'turn.interrupt': response(z.object({ turnId: EntityIdSchema })),
+  'queue.add': response(z.object({ queueItemId: EntityIdSchema })),
+  'queue.remove': response(z.null()),
+  'queue.resume': response(z.null()),
+  'turn.steer': response(
+    z.object({ queueItemId: EntityIdSchema, outcome: z.enum(['steering', 'queued']) }),
+  ),
   'interaction.respond': response(z.null()),
   'subscription.subscribe': response(
     z.object({ subscriptionId: EntityIdSchema, scope: SubscriptionScopeSchema }),

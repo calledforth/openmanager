@@ -16,6 +16,7 @@ const DIGESTS: Record<number, string> = {
   2: 'e78efd375337c4e2b90f6bcffce9b1f4618173def70e6804f7ef0c96c004a909',
   3: 'aacc3c1f5b28c3841fa17ad267ac201198a6f90c27e0d5c6ab67167d590b6f1b',
   4: '0fb7c5196f015ddbd89fe0f77c9fbd745c82d9f590f14ddfaaf089ff2fdaba50',
+  5: '77248c02e83232f830b7a1109488cd10d8e729144cc55896fb627d58fcb45050',
 }
 
 function digest(): string {

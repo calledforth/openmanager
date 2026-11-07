@@ -18,6 +18,7 @@ import { cn } from '../../lib/utils'
 import { composerFrame } from './chatComposerStyles'
 import { MessageInputView, type MessageInputViewProps } from './MessageInputView'
 import { composerImageSupportMessage, deriveComposerControls } from './composerControls'
+import { useEnterWhileRunning, type FollowUpAction } from './enterWhileRunning'
 import type {
   DraftImageAttachment,
   KeptImage,
@@ -99,7 +100,9 @@ export function useMessageInputBinding() {
     abortSession,
     activeThread,
     buildPlan: submitBuildPlan,
+    followUps,
   } = useActiveThreadState()
+  const [enterWhileRunning] = useEnterWhileRunning()
   const { uploadAttachments, discardAttachments, getModelImageSupport } = useViewActions()
   const questionState = useQuestionStateOptional()
   const pendingQuestion = questionState?.pendingQuestion ?? null
@@ -209,6 +212,7 @@ export function useMessageInputBinding() {
     text: string,
     drafts: DraftImageAttachment[],
     kept: KeptImage[] = [],
+    action?: FollowUpAction,
   ) => {
     // Questions never reach here: while one is pending the composer is replaced
     // by the question prompt, which resolves it through its own submit.
@@ -252,7 +256,11 @@ export function useMessageInputBinding() {
     try {
       // A kept image is already the environment's, held for this draft: it
       // goes by its id, wherever the draft has moved since it was attached.
-      await sendMessage(text, [...kept.map(keptAttachment), ...uploaded])
+      const images = [...kept.map(keptAttachment), ...uploaded]
+      // While the chat is busy the message waits, or joins the running turn.
+      // Refused, it throws, and the composer puts the words back with why.
+      if (action && followUps) await followUps[action](text, images)
+      else await sendMessage(text, images)
     } catch (error) {
       if (uploaded.length && discardAttachments) {
         await discardAttachments(uploaded).catch(() => undefined)
@@ -290,6 +298,21 @@ export function useMessageInputBinding() {
   // three share one floating card.
   const attachedTop = planEntries.length > 0 || !!questionFlow
 
+  // While the chat is busy, Enter does what this device chose, and the other
+  // is a shortcut away. Steering needs a turn that can take it; without one,
+  // both queue. A plan under review or a question takes the box over instead.
+  const steerable = followUps?.canSteer === true
+  const enter: FollowUpAction = enterWhileRunning === 'steer' && steerable ? 'steer' : 'queue'
+  const alternate: FollowUpAction | null = steerable
+    ? enter === 'queue'
+      ? 'steer'
+      : 'queue'
+    : null
+  const whileBusy =
+    followUps?.busy && activeSessionId && !pendingPlan && !questionFlow
+      ? { enter, alternate }
+      : undefined
+
   const viewProps: MessageInputViewProps = {
     disabled,
     pendingDraftSessionStart,
@@ -312,6 +335,7 @@ export function useMessageInputBinding() {
     showModeControl,
     showModelControl,
     isStreaming,
+    ...(whileBusy ? { whileBusy } : {}),
     isAwaitingPlanReview: !!pendingPlan,
     textOverride: questionFlow
       ? {

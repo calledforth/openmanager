@@ -137,6 +137,36 @@ export const proofCommands = [
   },
   {
     type: 'command',
+    requestId: 'r-q1',
+    name: 'queue.add',
+    payload: { sessionId: 'session-1', threadId: 'thread-1', text: 'Next', commandId: 'q-1' },
+  },
+  {
+    type: 'command',
+    requestId: 'r-q2',
+    name: 'queue.remove',
+    payload: { sessionId: 'session-1', threadId: 'thread-1', queueItemId: 'q-1' },
+  },
+  {
+    type: 'command',
+    requestId: 'r-q3',
+    name: 'queue.resume',
+    payload: { sessionId: 'session-1', threadId: 'thread-1' },
+  },
+  {
+    type: 'command',
+    requestId: 'r-q4',
+    name: 'turn.steer',
+    payload: {
+      sessionId: 'session-1',
+      threadId: 'thread-1',
+      turnId: 'turn-1',
+      text: 'Also check the tests',
+      commandId: 'q-2',
+    },
+  },
+  {
+    type: 'command',
     requestId: 'r-8',
     name: 'interaction.respond',
     payload: {
@@ -243,6 +273,14 @@ export const proofResponses = {
     payload: { turn, userMessage: { ...userMessage, content: [...userMessage.content] } },
   },
   'turn.interrupt': { type: 'response', requestId: 'r-7', payload: { turnId: 'turn-1' } },
+  'queue.add': { type: 'response', requestId: 'r-q1', payload: { queueItemId: 'q-1' } },
+  'queue.remove': { type: 'response', requestId: 'r-q2', payload: null },
+  'queue.resume': { type: 'response', requestId: 'r-q3', payload: null },
+  'turn.steer': {
+    type: 'response',
+    requestId: 'r-q4',
+    payload: { queueItemId: 'q-2', outcome: 'steering' },
+  },
   'interaction.respond': { type: 'response', requestId: 'r-8', payload: null },
   'subscription.subscribe': {
     type: 'response',
@@ -379,6 +417,31 @@ export const proofEvents = [
     },
   },
   { ...base, name: 'thread.created', scope: sessionScope, payload: { thread } },
+  {
+    ...base,
+    name: 'thread.queue.updated',
+    scope: threadScope,
+    payload: {
+      items: [
+        {
+          queueItemId: 'q-1',
+          text: 'Next',
+          settings: { modelId: 'claude-sonnet-5', configValues: { effort: 'high' } },
+          delivery: 'queued',
+          createdAt: '2026-11-07T10:00:00.000Z',
+        },
+        {
+          queueItemId: 'q-2',
+          text: 'Also check the tests',
+          artifactIds: ['artifact-1'],
+          settings: {},
+          delivery: 'steering',
+          createdAt: '2026-11-07T10:00:01.000Z',
+        },
+      ],
+      pausedBy: null,
+    },
+  },
   {
     ...base,
     name: 'thread.listing.updated',

@@ -32,6 +32,7 @@ import {
   WorkspaceComposerPreferenceSchema,
 } from './composer.js'
 import { DraftSchema, DraftTombstoneSchema } from './drafts.js'
+import { ThreadQueueSchema } from './queue.js'
 
 const event = <N extends string, S extends z.ZodType, P extends z.ZodType>(
   name: N,
@@ -53,7 +54,7 @@ const event = <N extends string, S extends z.ZodType, P extends z.ZodType>(
  * replay floor at boot, so no stored event is replayed in a form this
  * version cannot state (docs/sync-foundations.md §4.7.7).
  */
-export const EVENT_FORMAT_VERSION = 4 as const
+export const EVENT_FORMAT_VERSION = 5 as const
 
 /** A turn's state once an interaction event is applied: still asking, or running again. */
 export const InteractionTurnStateSchema = z.enum(['running', 'waiting'])
@@ -184,6 +185,12 @@ export const ProofEventSchemas = {
     ThreadScopeSchema,
     ComposerListingSchema,
   ),
+  /**
+   * The whole of a chat's queue after any change: a message added, removed,
+   * handed to the provider, given back or run, or the queue paused or resumed.
+   * Whole, so applying one twice is safe and the newest wins.
+   */
+  'thread.queue.updated': event('thread.queue.updated', ThreadScopeSchema, ThreadQueueSchema),
   'turn.started': event(
     'turn.started',
     ThreadScopeSchema,
@@ -310,6 +317,7 @@ export const ProofEventSchema = z.discriminatedUnion('name', [
   ProofEventSchemas['draft.deleted'],
   ProofEventSchemas['thread.created'],
   ProofEventSchemas['thread.listing.updated'],
+  ProofEventSchemas['thread.queue.updated'],
   ProofEventSchemas['turn.started'],
   ProofEventSchemas['turn.completed'],
   ProofEventSchemas['turn.interrupted'],

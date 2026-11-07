@@ -26,6 +26,10 @@ import {
   type Turn,
   type TurnFailureReason,
   type TurnStart,
+  EMPTY_THREAD_QUEUE,
+  QueuedMessageSchema,
+  ThreadQueueSchema,
+  type ThreadQueue,
 } from '@openmanager/protocol/node'
 import {
   ALL_SESSIONS_SQL,
@@ -36,6 +40,7 @@ import {
   PENDING_INTERACTIONS_FOR_THREAD_SQL,
   THREAD_IN_SESSION_SQL,
   THREAD_LISTING_SQL,
+  THREAD_QUEUE_SQL,
   THREADS_FOR_SESSION_SQL,
   TURN_ACTIVITY_FOR_THREAD_SQL,
   TURN_FOR_COMMAND_ID_SQL,
@@ -65,6 +70,8 @@ export interface ThreadState {
   interactions: Array<{ turnId: string; interaction: Interaction }>
   /** What the provider offers this chat. */
   listing: ComposerListing
+  /** The messages the chat holds back. */
+  queue: ThreadQueue
 }
 
 type SessionRow = {
@@ -345,7 +352,36 @@ export function readThreadState(
     order,
     interactions,
     listing: readThreadListing(database, query.threadId, log) ?? {},
+    queue: readThreadQueue(database, query.threadId, log),
   }
+}
+
+/**
+ * The messages a chat holds back, as its last `thread.queue.updated` said.
+ * A row that no longer parses (a format this build does not know) reads as an
+ * empty queue and is logged, rather than refusing the whole chat.
+ */
+export function readThreadQueue(
+  database: DatabaseSync,
+  threadId: string,
+  log?: Logger,
+): ThreadQueue {
+  const row = database.prepare(THREAD_QUEUE_SQL).get(threadId) as
+    { queue_json: string | null } | undefined
+  if (!row?.queue_json) return EMPTY_THREAD_QUEUE
+  // Item by item, and past today's cap: a message that does not read is
+  // dropped with a log line, never the whole queue.
+  const stored = JSON.parse(row.queue_json) as { items?: unknown; pausedBy?: unknown }
+  const pausedBy = ThreadQueueSchema.shape.pausedBy.safeParse(stored.pausedBy)
+  const items = (Array.isArray(stored.items) ? stored.items : []).flatMap((item) => {
+    const parsed = QueuedMessageSchema.safeParse(item)
+    if (!parsed.success) {
+      log?.('warn', 'a stored queued message does not read; skipping it', { threadId })
+      return []
+    }
+    return [parsed.data]
+  })
+  return { items, pausedBy: pausedBy.success ? pausedBy.data : 'failure' }
 }
 
 /** What the provider last listed for this chat, if the thread exists and it has. */

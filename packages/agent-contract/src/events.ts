@@ -24,6 +24,16 @@ export type AgentEventName =
    * background task finished and the agent woke to act on the result. It ends
    * with the same `prompt_completed` (or terminal error) a prompted turn does. */
   | 'background_turn_started'
+  /** A message sent into a running turn (`steer`) was taken by the provider:
+   * the agent reads it at its next step, inside that same turn. */
+  | 'steer_delivered'
+  /** The turn a steered message was sent into ended before the provider took
+   * it, so the provider began a turn of its own for it. It ends with the same
+   * `prompt_completed` (or terminal error) a prompted turn does. */
+  | 'steer_turn_started'
+  /** The provider gave a steered message back unread: the turn was stopped, or
+   * the process went away. It will not run unless it is sent again. */
+  | 'steer_withdrawn'
   | 'prompt_completed'
   | 'user_message_chunk'
   | 'agent_message_chunk'
@@ -552,6 +562,13 @@ export type AgentEvent = AgentEventBase &
         event: 'background_turn_started'
         sessionId: string
         data: Record<string, never>
+      }
+    | {
+        category: 'lifecycle'
+        event: 'steer_delivered' | 'steer_turn_started' | 'steer_withdrawn'
+        sessionId: string
+        /** The id the caller gave the message when it steered it. */
+        data: { steerId: string }
       }
     | {
         category: 'lifecycle'

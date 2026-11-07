@@ -96,6 +96,9 @@ export interface SessionRuntime {
     desiredConfig?: DesiredSessionConfig
   }): Promise<void>
   cancel(): Promise<void>
+  /** Add a message to the turn in flight; see `ClaudeSessionRuntime.steer`.
+   * Absent on providers that cannot (`canSteer` false). */
+  steer?(args: { prompt: PromptInput; steerId: string }): Promise<void>
 
   /** True while the provider has work of its own under way that no caller is
    * awaiting: background tasks, or a turn it began by itself. Such work lives
