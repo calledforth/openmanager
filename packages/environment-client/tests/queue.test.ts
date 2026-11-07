@@ -37,8 +37,8 @@ describe('thread queue state', () => {
     const twice = applyEvent(once, queueEvent({ items: [queued('q1', 'next')], pausedBy: null }))
     expect(twice).toBe(once)
 
-    const paused = applyEvent(twice, queueEvent({ items: [], pausedBy: 'stop' }))
-    expect(selectThreadQueue(paused, THREAD.threadId)).toEqual({ items: [], pausedBy: 'stop' })
+    const paused = applyEvent(twice, queueEvent({ items: [], pausedBy: 'failure' }))
+    expect(selectThreadQueue(paused, THREAD.threadId)).toEqual({ items: [], pausedBy: 'failure' })
   })
 
   it('takes the queue from the thread snapshot, and keeps it through a reload', () => {
@@ -159,7 +159,7 @@ describe('mock queue', () => {
     expect(thread.turns).toEqual([expect.objectContaining({ state: 'running', commandId: 'q1' })])
   })
 
-  it('pauses on a stop or a failure, and drains again only when resumed', async () => {
+  it('runs the next message on a stop, pauses on a failure, and drains again when resumed', async () => {
     const client = createMockEnvironmentClient({ seed, respond: null })
     const turnId = await runningTurn(client)
     await client.commands.queueMessage({ ...THREAD, text: 'a', commandId: 'q1' })
@@ -167,21 +167,20 @@ describe('mock queue', () => {
 
     await client.commands.interruptTurn({ ...THREAD, turnId })
     const thread = () => client.getState().threads[THREAD.threadId]!
-    expect(thread().queue.pausedBy).toBe('stop')
-    expect(thread().queue.items).toHaveLength(2)
-    expect(thread().turns).toHaveLength(1)
+    expect(thread().queue).toEqual({
+      items: [expect.objectContaining({ queueItemId: 'q2' })],
+      pausedBy: null,
+    })
+    const next = thread().turns.at(-1)!
+    expect(next).toMatchObject({ state: 'running', commandId: 'q1' })
 
-    await client.commands.removeQueuedMessage({ ...THREAD, queueItemId: 'q2' })
-    expect(thread().queue.items.map((item) => item.queueItemId)).toEqual(['q1'])
+    client.failTurn({ ...THREAD, turnId: next.turnId }, 'provider_error', 'Boom')
+    expect(thread().queue.pausedBy).toBe('failure')
+    expect(thread().queue.items.map((item) => item.queueItemId)).toEqual(['q2'])
 
     await client.commands.resumeQueue(THREAD)
     expect(thread().queue).toEqual({ items: [], pausedBy: null })
-    const resumed = thread().turns.at(-1)!
-    expect(resumed).toMatchObject({ state: 'running', commandId: 'q1' })
-
-    await client.commands.queueMessage({ ...THREAD, text: 'c', commandId: 'q3' })
-    client.failTurn({ ...THREAD, turnId: resumed.turnId }, 'provider_error', 'Boom')
-    expect(thread().queue.pausedBy).toBe('failure')
+    expect(thread().turns.at(-1)).toMatchObject({ state: 'running', commandId: 'q2' })
 
     // A message already sent can no longer be taken out.
     await expect(
@@ -244,11 +243,10 @@ describe('mock queue', () => {
     const running = await runningTurn(claude)
     await claude.commands.steerTurn({ ...THREAD, turnId: running, text: 'y', commandId: 's2' })
     claude.interruptTurn({ ...THREAD, turnId: running })
-    // Given back: it waits for its own turn, and the stop holds the queue.
-    expect(claude.getState().threads[THREAD.threadId]!.queue).toEqual({
-      items: [expect.objectContaining({ queueItemId: 's2', delivery: 'queued' })],
-      pausedBy: 'stop',
-    })
+    // Given back: it runs as the next turn.
+    const thread = claude.getState().threads[THREAD.threadId]!
+    expect(thread.queue).toEqual({ items: [], pausedBy: null })
+    expect(thread.turns.at(-1)).toMatchObject({ state: 'running', commandId: 's2' })
   })
 
   it('refuses the queue commands where the environment does not offer them', async () => {

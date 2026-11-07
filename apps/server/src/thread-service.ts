@@ -268,6 +268,12 @@ type ThreadRecord = {
    * failed. See `writeQueue`.
    */
   queue: ThreadQueue
+  /**
+   * Steered messages the provider gave back that still wait at the front of
+   * the queue, so the next one given back lines up behind them. See
+   * `givenBackFirst`.
+   */
+  givenBackSteers?: Set<string>
   status: SessionStatus
   updatedAt: number
   /** In-memory mode only; with SQLite the row is the single source. */
@@ -308,6 +314,27 @@ type SessionOpenPosition = { environment: Cursor; session: Cursor }
 
 type Loaded =
   { refused: LoadRefusal } | { session: SessionSummary; threads: Thread[]; at: SessionOpenPosition }
+
+/**
+ * A queue with the steered messages `returning` picks given back as `queued`.
+ * They were meant for the running turn, so they move ahead of every message
+ * that was only queued, keeping their order. `ahead` names steers given back
+ * earlier that already wait at the front.
+ */
+function givenBackFirst(
+  items: readonly QueuedMessage[],
+  ahead: ReadonlySet<string>,
+  returning: (item: QueuedMessage) => boolean,
+): QueuedMessage[] {
+  const front: QueuedMessage[] = []
+  const rest: QueuedMessage[] = []
+  for (const item of items) {
+    if (returning(item)) front.push({ ...item, delivery: 'queued' })
+    else if (ahead.has(item.queueItemId)) front.push(item)
+    else rest.push(item)
+  }
+  return [...front, ...rest]
+}
 
 const errorResult = (requestId: string, code: ErrorCode, message: string, details?: unknown) => ({
   type: 'error' as const,
@@ -2293,12 +2320,13 @@ export function createThreadService(
   }
 
   /**
-   * What a turn's end does to the queue. A completed turn lets the next
-   * message run. A stopped, failed or restart-cut turn pauses a queue that
-   * has anything in it, and Stop never sends the next message by surprise.
-   * A message the provider holds for steering stays `steering`: only the
-   * provider can say it gave it back (`steer_withdrawn`, which its exit also
-   * sends), and guessing would let a resume send it a second time.
+   * What a turn's end does to the queue. A completed or stopped turn lets the
+   * next message run: Stop ends this turn, not the plan the user queued
+   * behind it. A failed or restart-cut turn pauses a queue that has anything
+   * in it. A message the provider holds for steering stays `steering`: only
+   * the provider can say it gave it back (`steer_withdrawn`, which its exit
+   * also sends), and guessing would let a resume send it a second time; once
+   * given back it runs first.
    */
   const settleQueue = (
     record: ThreadRecord,
@@ -2311,15 +2339,11 @@ export function createThreadService(
     if (record.activeTurn) return
     const queue = record.queue
     if (queue.items.length === 0) return
-    if (ended === 'turn.completed') {
+    if (ended === 'turn.completed' || (ended === 'turn.interrupted' && !restarted)) {
       drain(record)
       return
     }
-    const pausedBy: ThreadQueuePause = restarted
-      ? 'restart'
-      : ended === 'turn.interrupted'
-        ? 'stop'
-        : 'failure'
+    const pausedBy: ThreadQueuePause = restarted ? 'restart' : 'failure'
     if (queue.pausedBy === pausedBy) return
     writeQueue(record, { items: queue.items, pausedBy })
   }
@@ -2365,19 +2389,28 @@ export function createThreadService(
       .catch(giveBack)
   }
 
-  /** A steered message is back in line: the provider never took it. */
+  /**
+   * A steered message is back in line: the provider never took it. It was
+   * meant for the running turn, so it runs before anything that was only
+   * queued, behind the steers given back before it.
+   */
   const returnSteer = (record: ThreadRecord, queueItemId: string) => {
     if (threads.get(record.thread.threadId) !== record) return
     const item = record.queue.items.find((entry) => entry.queueItemId === queueItemId)
     if (!item || item.delivery !== 'steering') return
-    const committed = writeQueue(record, {
-      items: record.queue.items.map((entry) =>
-        entry === item ? { ...entry, delivery: 'queued' as const } : entry,
+    const ahead = new Set(
+      [...(record.givenBackSteers ?? [])].filter((id) =>
+        record.queue.items.some((entry) => entry.queueItemId === id),
       ),
+    )
+    const committed = writeQueue(record, {
+      items: givenBackFirst(record.queue.items, ahead, (entry) => entry === item),
       pausedBy: record.queue.pausedBy,
     })
+    if (!committed) return
+    record.givenBackSteers = ahead.add(queueItemId)
     // The turn it was for may have ended while the provider still held it.
-    if (committed) queueMicrotask(() => drain(record))
+    queueMicrotask(() => drain(record))
   }
 
   /** The user message a queued one becomes, inside `turnId`. */
@@ -2700,9 +2733,7 @@ export function createThreadService(
               threadId: row.thread_id,
             },
             payload: {
-              items: queue.items.map((item) =>
-                item.delivery === 'steering' ? { ...item, delivery: 'queued' as const } : item,
-              ),
+              items: givenBackFirst(queue.items, new Set(), (item) => item.delivery === 'steering'),
               pausedBy: queue.pausedBy ?? 'restart',
             },
           }),
@@ -3627,6 +3658,9 @@ export function createThreadService(
             })
             .finally(() => {
               record.cancellation = undefined
+              // The turn's end found the thread still busy with this stop;
+              // the next message runs now that it is not.
+              drain(record)
             })
         }
         return ProofResponseSchemas['turn.interrupt'].parse({

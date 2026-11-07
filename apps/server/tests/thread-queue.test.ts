@@ -95,6 +95,9 @@ async function setup() {
   await service.resolveRuntimeSession(created.session.sessionId)
 
   let seq = 0
+  // Provider events follow the real clock the service stamps its own turns
+  // with, so turns the provider starts sort after the ones sent before them.
+  const clock = Date.now()
   const emit = (
     event: Pick<RuntimeEvent, 'category' | 'event'> & { data: unknown },
     messageId?: string,
@@ -106,7 +109,7 @@ async function setup() {
       sessionId: 'provider-session',
       id: `event-${++seq}`,
       seq,
-      timestamp: new Date(Date.UTC(2026, 10, 7, 10, 0, seq)).toISOString(),
+      timestamp: new Date(clock + seq * 1000).toISOString(),
       ...(messageId ? { messageId } : {}),
       ...event,
     } as RuntimeEvent)
@@ -242,20 +245,16 @@ describe('a chat queue', () => {
     expect((await chat.started(2)).prompt.text).toBe('Now')
   })
 
-  it('pauses on Stop and moves only when resumed', async () => {
+  it('runs the next message when the turn is stopped', async () => {
     const chat = await setup()
     const sent = chat.send('One')
     await chat.started(0)
     chat.dispatch('queue.add', { ...chat.thread, text: 'Two', commandId: 'q-2' })
+    chat.dispatch('queue.add', { ...chat.thread, text: 'Three', commandId: 'q-3' })
     chat.dispatch('turn.interrupt', { ...chat.thread, turnId: sent.turn.turnId })
-    await vi.waitFor(() => expect(chat.queue().pausedBy).toBe('stop'))
-    await Promise.resolve()
-    expect(chat.runtime.prompt).toHaveBeenCalledTimes(1)
-    expect(chat.queue().items.map((item) => item.queueItemId)).toEqual(['q-2'])
-
-    expect(chat.dispatch('queue.resume', chat.thread)).toMatchObject({ type: 'response' })
     expect((await chat.started(1)).prompt.text).toBe('Two')
-    expect(chat.queue()).toEqual({ items: [], pausedBy: null })
+    expect(chat.queue()).toMatchObject({ items: [{ queueItemId: 'q-3' }], pausedBy: null })
+    expect(chat.state().turns.map((turn) => turn.state)).toEqual(['interrupted', 'running'])
   })
 
   it('pauses when a turn fails', async () => {
@@ -268,7 +267,12 @@ describe('a chat queue', () => {
       'assistant-0',
     )
     await vi.waitFor(() => expect(chat.queue().pausedBy).toBe('failure'))
+    await Promise.resolve()
     expect(chat.runtime.prompt).toHaveBeenCalledTimes(1)
+
+    expect(chat.dispatch('queue.resume', chat.thread)).toMatchObject({ type: 'response' })
+    expect((await chat.started(1)).prompt.text).toBe('Two')
+    expect(chat.queue()).toEqual({ items: [], pausedBy: null })
   })
 
   it('removes a waiting message, and refuses one already sent', async () => {
@@ -311,7 +315,11 @@ describe('a chat queue', () => {
     rebooted.events.flush()
     const queue = readThreadState(chat.database, chat.thread)!.queue
     expect(queue.pausedBy).toBe('restart')
-    expect(queue.items.map((item) => item.delivery)).toEqual(['queued', 'queued'])
+    // The steer comes back ahead of the message that was only queued.
+    expect(queue.items.map((item) => [item.queueItemId, item.delivery])).toEqual([
+      ['q-3', 'queued'],
+      ['q-2', 'queued'],
+    ])
     // Nothing ran by itself; a resume runs the first.
     expect(rebooted.runtime.prompt).not.toHaveBeenCalled()
     rebooted.service.dispatch({
@@ -321,7 +329,7 @@ describe('a chat queue', () => {
       payload: chat.thread,
     })
     await vi.waitFor(() => expect(rebooted.runtime.prompt).toHaveBeenCalledTimes(1))
-    expect(rebooted.runtime.prompt.mock.calls[0]![0].prompt.text).toBe('Two')
+    expect(rebooted.runtime.prompt.mock.calls[0]![0].prompt.text).toBe('And three')
   })
 })
 
@@ -455,10 +463,19 @@ describe('steering', () => {
       text: 'Also lint',
       commandId: 's-1',
     })
+    chat.dispatch('queue.add', { ...chat.thread, text: 'Then docs', commandId: 'q-2' })
     chat.dispatch('turn.interrupt', { ...chat.thread, turnId: sent.turn.turnId })
-    await vi.waitFor(() => expect(chat.queue().pausedBy).toBe('stop'))
-    // No guess: it stays the provider's, so a resume cannot send it twice.
-    expect(chat.queue().items).toMatchObject([{ queueItemId: 's-1', delivery: 'steering' }])
+    await vi.waitFor(() => expect(chat.state().turns[0]?.state).toBe('interrupted'))
+    await Promise.resolve()
+    // No guess: it stays the provider's, so neither the stop's drain nor a
+    // resume can send it twice, and the message queued behind it waits.
+    expect(chat.queue()).toMatchObject({
+      items: [
+        { queueItemId: 's-1', delivery: 'steering' },
+        { queueItemId: 'q-2', delivery: 'queued' },
+      ],
+      pausedBy: null,
+    })
     chat.dispatch('queue.resume', chat.thread)
     await Promise.resolve()
     expect(chat.runtime.prompt).toHaveBeenCalledTimes(1)
@@ -471,6 +488,26 @@ describe('steering', () => {
     })
     chat.emit({ category: 'lifecycle', event: 'steer_withdrawn', data: { steerId: 's-1' } })
     expect((await chat.started(1)).prompt.text).toBe('Also lint')
+    expect(chat.queue()).toMatchObject({ items: [{ queueItemId: 'q-2' }], pausedBy: null })
+  })
+
+  it('runs steers given back ahead of messages that were only queued, in order', async () => {
+    const chat = await setup()
+    const sent = chat.send('Build it')
+    await chat.started(0)
+    chat.dispatch('queue.add', { ...chat.thread, text: 'Then docs', commandId: 'q-1' })
+    for (const [commandId, text] of [
+      ['s-1', 'Also lint'],
+      ['s-2', 'And test'],
+    ]) {
+      chat.dispatch('turn.steer', { ...chat.thread, turnId: sent.turn.turnId, text, commandId })
+    }
+    chat.dispatch('turn.interrupt', { ...chat.thread, turnId: sent.turn.turnId })
+    await vi.waitFor(() => expect(chat.state().turns[0]?.state).toBe('interrupted'))
+    chat.emit({ category: 'lifecycle', event: 'steer_withdrawn', data: { steerId: 's-1' } })
+    chat.emit({ category: 'lifecycle', event: 'steer_withdrawn', data: { steerId: 's-2' } })
+    expect((await chat.started(1)).prompt.text).toBe('Also lint')
+    expect(chat.queue().items.map((item) => item.queueItemId)).toEqual(['s-2', 'q-1'])
   })
 
   it('answers a retried steer it already delivered, without sending it again', async () => {

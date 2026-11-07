@@ -21,7 +21,6 @@ import { modelLabel } from './modelLabel'
 
 /** Why a queue waits for the user, as its header says it. */
 export const QUEUE_PAUSE_REASON: Record<ThreadQueuePause, string> = {
-  stop: 'you stopped the turn',
   failure: 'the turn failed',
   restart: 'the server restarted',
 }

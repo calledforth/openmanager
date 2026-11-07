@@ -914,8 +914,8 @@ export function createMockEnvironmentClient(
 
   // -------------------------------------------------------------------------
   // The chat queue, played as the environment plays it: a message sent while a
-  // turn runs waits, and runs as the next turn when that turn completes. A
-  // stopped or failed turn pauses it until it is resumed. A steered message
+  // turn runs waits, and runs as the next turn when that turn completes or is
+  // stopped. A failed turn pauses it until it is resumed. A steered message
   // waits as `steering` until the provider takes it into the running turn.
   // -------------------------------------------------------------------------
 
@@ -1031,8 +1031,8 @@ export function createMockEnvironmentClient(
 
   /**
    * A turn ended. A steered message the provider never took goes back to
-   * waiting where it was; then a completed turn lets the queue drain, and a
-   * stopped or failed one pauses it.
+   * waiting where it was; then a completed or stopped turn lets the queue
+   * drain, and a failed or restart-cut one pauses it.
    */
   const afterTurnEnded = (
     event: Extract<ProofEvent, { name: 'turn.completed' | 'turn.interrupted' | 'turn.failed' }>,
@@ -1041,17 +1041,19 @@ export function createMockEnvironmentClient(
     const target = { sessionId: event.scope.sessionId, threadId: event.scope.threadId }
     const queue = queues.get(target.threadId)
     if (!queue || queue.items.length === 0) return
-    const items = queue.items.map((item) =>
-      item.delivery === 'steering' ? { ...item, delivery: 'queued' as const } : item,
-    )
+    // Given back, a steered message runs ahead of those that were only queued.
+    const items = [
+      ...queue.items
+        .filter((item) => item.delivery === 'steering')
+        .map((item) => ({ ...item, delivery: 'queued' as const })),
+      ...queue.items.filter((item) => item.delivery !== 'steering'),
+    ]
     const pausedBy =
-      event.name === 'turn.completed'
-        ? queue.pausedBy
-        : event.name === 'turn.failed'
-          ? 'failure'
-          : event.payload.reason === 'server_restarted'
-            ? 'restart'
-            : 'stop'
+      event.name === 'turn.failed'
+        ? 'failure'
+        : event.name === 'turn.interrupted' && event.payload.reason === 'server_restarted'
+          ? 'restart'
+          : queue.pausedBy
     if (pausedBy !== queue.pausedBy || items.some((item, index) => item !== queue.items[index])) {
       writeQueue(target, { items, pausedBy })
     }

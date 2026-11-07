@@ -762,16 +762,29 @@ describe('the shared application over the environment client', () => {
       expect(container.querySelector('[aria-label="Queued messages"]')).toBeNull()
     })
 
-    it('says why a stopped queue waits, and resumes it', async () => {
+    it('runs the next queued message when the turn is stopped', async () => {
       const { client } = await running(false)
       await type('after that')
       await pressEnter()
       await settle(client)
       await act(() => button('Stop')!.click())
       await settle(client)
-      expect(container.textContent).toContain('Paused: you stopped the turn')
-      // Stop never sends the next message.
-      expect(thread(client).turns.at(-1)?.state).toBe('interrupted')
+      expect(container.textContent).not.toContain('Paused:')
+      const turns = thread(client).turns
+      expect(turns.at(-2)?.state).toBe('interrupted')
+      expect(turns.at(-1)).toMatchObject({ state: 'running' })
+      expect(container.querySelector('[aria-label="Queued messages"]')).toBeNull()
+    })
+
+    it('says why a failed queue waits, and resumes it', async () => {
+      const { client, turnId } = await running(false)
+      await type('after that')
+      await pressEnter()
+      await settle(client)
+      await act(() => client.failTurn({ ...THREAD, turnId }, 'provider_error', 'Boom'))
+      await settle(client)
+      expect(container.textContent).toContain('Paused: the turn failed')
+      expect(thread(client).turns.at(-1)?.state).toBe('failed')
 
       await act(() => buttonWithText('Resume')!.click())
       await settle(client)

@@ -44,12 +44,11 @@ export const QueuedMessageSchema = z.strictObject({
 })
 
 /**
- * Why a queue is not draining. `stop`: the user stopped the turn, and Stop
- * never sends the next message by surprise. `failure`: the turn failed, or the
- * next message could not start. `restart`: the server restarted with messages
- * waiting, and the turn it cut short counts as stopped.
+ * Why a queue is not draining. Stop is not a reason: it ends the running turn,
+ * and the next message runs. `failure`: the turn failed, or the next message
+ * could not start. `restart`: the server restarted with messages waiting.
  */
-export const ThreadQueuePauseSchema = z.enum(['stop', 'failure', 'restart'])
+export const ThreadQueuePauseSchema = z.enum(['failure', 'restart'])
 
 /** The messages a chat holds back, in the order they will run. */
 export const ThreadQueueSchema = z.strictObject({
