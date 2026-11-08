@@ -137,6 +137,13 @@ export default function SessionsHome() {
   // its next step, says why the list is empty.
   const showConnection = source.kind === 'environment' && view.ui.kind !== 'ready'
   const [tab, setTab] = useState<HomeTab>('all')
+  // A view opens at its top: the list is the same element for both views,
+  // and would otherwise keep the place the other was scrolled to.
+  const list = useRef<SectionList<ListRow, ListSection>>(null)
+  const changeTab = useCallback((next: HomeTab) => {
+    list.current?.getScrollResponder()?.scrollTo({ y: 0, animated: false })
+    setTab(next)
+  }, [])
   // Null on a host without draft cards and in the sample home.
   const sidebarDrafts = useSidebarDrafts()
   const discardDraft = source.kind === 'environment' ? sidebarDrafts?.discardDraft : undefined
@@ -215,11 +222,12 @@ export default function SessionsHome() {
               { key: 'settled', label: 'Settled', count: counts.settled || undefined },
             ]}
             value={tab}
-            onChange={setTab}
+            onChange={changeTab}
           />
         </View>
         <View className="flex-1">
           <SectionList
+            ref={list}
             className="flex-1"
             sections={sections}
             keyExtractor={keyOf}
