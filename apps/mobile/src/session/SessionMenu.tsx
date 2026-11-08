@@ -10,8 +10,8 @@ import {
   StopCircleIcon,
   type IconProps,
 } from 'phosphor-react-native'
-import type { ComponentType } from 'react'
-import { Pressable, StyleSheet, View } from 'react-native'
+import { useEffect, useRef, type ComponentType } from 'react'
+import { BackHandler, Pressable, StyleSheet, View } from 'react-native'
 import Animated, { Easing, FadeIn, FadeOut } from 'react-native-reanimated'
 
 import { AppText } from '../components/ui/AppText'
@@ -123,8 +123,9 @@ function MenuNote({ text }: { text: string }) {
 
 /**
  * The page's actions, opened from the title: a glass popover under the
- * header's capsule, over the page. A tap outside closes it. Items it cannot
- * do from here stay listed, dimmed, with why, and do not respond.
+ * header's capsule, over the page. A tap outside, or Android's Back, closes
+ * it. Items it cannot do from here stay listed, dimmed, with why, and do not
+ * respond.
  */
 export function SessionMenu({
   items,
@@ -141,6 +142,16 @@ export function SessionMenu({
   onChoose: (id: string) => void
   onClose: () => void
 }) {
+  // Android's Back closes the menu and goes no further while it is open.
+  const close = useRef(onClose)
+  close.current = onClose
+  useEffect(() => {
+    const subscription = BackHandler.addEventListener('hardwareBackPress', () => {
+      close.current()
+      return true
+    })
+    return () => subscription.remove()
+  }, [])
   return (
     <Animated.View
       entering={MENU_IN}
