@@ -1,9 +1,9 @@
 import { ArrowUUpLeftIcon, TrashIcon, XIcon } from 'phosphor-react-native'
-import { useEffect, useRef } from 'react'
+import { useContext, useEffect, useRef } from 'react'
 import { AccessibilityInfo, View } from 'react-native'
 import Animated, { Easing, FadeIn, FadeOut } from 'react-native-reanimated'
 import { useSafeAreaInsets } from 'react-native-safe-area-context'
-import { useSidebarDrafts } from '@openmanager/app-core/providers/sidebar-provider'
+import { DraftDiscardsContext } from '@openmanager/app-core/providers/environment-sidebar-drafts'
 
 import { AppText } from '../components/ui/AppText'
 import { usePhoneTheme } from '../theme/ThemeProvider'
@@ -23,14 +23,21 @@ export function pillNavClearance(bottomInset: number) {
 
 /**
  * "Draft discarded" with Undo, floating over the home just above the pill
- * nav while the discard waits out its window (the shared
- * `EnvironmentSidebarDraftsProvider` keeps the clock and makes the delete).
+ * nav while the discard waits out its window (the shared `useDraftDiscards`,
+ * one for every environment, keeps the clock and makes the delete).
  * A finger on Undo holds the window open; ✕ lets the discard go now. With a
  * screen reader on, the window is held until one of the two is chosen, and
  * focus goes to Undo, as web's keyboard discard does.
  */
 export function DraftDiscardToast() {
-  const drafts = useSidebarDrafts()
+  // The one window every environment's draft cards share.
+  const discards = useContext(DraftDiscardsContext)
+  const drafts = discards && {
+    pendingDiscard: discards.pending,
+    holdDiscard: discards.hold,
+    undoDiscard: discards.undo,
+    confirmDiscard: discards.confirm,
+  }
   const insets = useSafeAreaInsets()
   const theme = usePhoneTheme()
   const undoRef = useRef<View>(null)

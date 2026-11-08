@@ -9,10 +9,10 @@ import {
   QrCodeIcon,
 } from 'phosphor-react-native'
 import { ScrollView, View } from 'react-native'
+import { PROTOCOL_VERSION } from '@openmanager/protocol'
 import { useSafeAreaInsets } from 'react-native-safe-area-context'
 
 import { AppText } from '../../components/ui/AppText'
-import { phoneConnectionView } from '../../environment/connection-ui'
 import { usePhoneConnection } from '../../environment/PhoneEnvironmentProvider'
 import { suggestPhoneLabel } from '../../pairing/device-label'
 import { AppearanceSection } from '../../settings/AppearanceSection'
@@ -33,8 +33,8 @@ const PHONE_NAME = suggestPhoneLabel({ modelName: Device.modelName, osName: Devi
 
 /**
  * Settings, the third tab, as the mockup's Settings frame: environments
- * first, as cards (the one the phone connects to says "here" and carries the
- * live state in the shared words; each opens its page, where its devices,
+ * first, as cards (each carries its own live state in the shared words, the
+ * phone being connected to every one at once; each opens its page, where its devices,
  * pairing links, providers and session titles live). Then appearance,
  * session notifications, and this phone.
  */
@@ -43,12 +43,22 @@ export default function SettingsScreen() {
   const insets = useSafeAreaInsets()
   const theme = usePhoneTheme()
   const connection = usePhoneConnection()
-  const cards = environmentCards(connection, phoneConnectionView(connection))
-  const { client, environment } = connection.protocol
+  const cards = environmentCards(connection)
+  // This phone's protocol, and any other an environment answered with (its
+  // page says which).
+  const others = [
+    ...new Set(
+      Object.values(connection.links).flatMap(({ protocol }) =>
+        protocol.environment !== null && protocol.environment !== protocol.client
+          ? [protocol.environment]
+          : [],
+      ),
+    ),
+  ]
   const protocol =
-    environment === null || environment === client
-      ? `${client}`
-      : `${client} (environment ${environment})`
+    others.length === 0
+      ? `${PROTOCOL_VERSION}`
+      : `${PROTOCOL_VERSION} (environment ${others.join(', ')})`
   const version = Constants.expoConfig?.version ?? '—'
   const paired = connection.environments.filter((item) => item.paired).length
   useFocusEffect(useCheckOnFocus())

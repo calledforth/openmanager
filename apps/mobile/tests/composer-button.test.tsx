@@ -30,9 +30,11 @@ vi.mock('../src/theme/ThemeProvider', () => {
   const theme = new Proxy({}, { get: (_target, key) => (key === 'status' ? ink : '#888888') })
   return { usePhoneTheme: () => theme }
 })
-const connection = { status: 'connected' } as unknown as PhoneConnectionState
+const connection = { loaded: true, activity: 'active' } as unknown as PhoneConnectionState
 vi.mock('../src/environment/PhoneEnvironmentProvider', () => ({
   usePhoneConnection: () => connection,
+  // The page's environment is connected: its composer may send.
+  usePageConnectionStatus: () => 'connected',
 }))
 
 const { useLiveComposerModel } = await import('../src/composer/useLiveComposerModel')

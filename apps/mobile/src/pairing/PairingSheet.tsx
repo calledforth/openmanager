@@ -3,7 +3,8 @@ import type { ReactNode } from 'react'
 import { ActivityIndicator, View } from 'react-native'
 
 import { AppText } from '../components/ui/AppText'
-import { connectedRoute, endpointHost, selectedEnvironment } from '../environment/connected-route'
+import { connectedRoute, endpointHost } from '../environment/connected-route'
+import { statusOf } from '../environment/controller'
 import type { PhoneConnectionState, PhoneConnectionStatus } from '../environment/controller'
 import { ROUTE_KIND_LABELS } from '../environment/route-order'
 import { usePhoneTheme } from '../theme/ThemeProvider'
@@ -157,8 +158,7 @@ function SheetBody({
         (item) => item.environmentId === paired.environmentId,
       )
       const label = environment?.label ?? 'your computer'
-      const onIt = selectedEnvironment(state)?.environmentId === paired.environmentId
-      const route = onIt ? connectedRoute(state) : null
+      const route = connectedRoute(state, paired.environmentId)
       return (
         <>
           <Result
@@ -175,7 +175,7 @@ function SheetBody({
               value={
                 route
                   ? `${endpointHost(route.endpoint)} · ${ROUTE_KIND_LABELS[route.kind]}`
-                  : STATUS_WORDS[onIt ? state.status : 'connecting']
+                  : STATUS_WORDS[statusOf(state, paired.environmentId)]
               }
               mono={Boolean(route)}
               dot={route ? theme.status.done : theme.faint}

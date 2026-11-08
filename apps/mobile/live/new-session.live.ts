@@ -10,6 +10,7 @@ import {
   type WebSocketConstructor,
 } from '@openmanager/environment-client'
 import { exchangePairingToken } from '@openmanager/environment-client/connection'
+import { linkOf, statusOf } from '../src/environment/controller'
 import type {
   AppActivity,
   PhoneConnectionController,
@@ -112,7 +113,7 @@ describe('a new session from the phone, live', () => {
     const { EnvironmentApplicationProviders, EnvironmentClientProvider, useSessionState } =
       await import('@openmanager/app-core/logic')
     const { createPhoneConnectionController } = await import('../src/environment/controller')
-    const { landingOf } = await import('../src/environment/landing-route')
+    const { draftHref, landingOf, sessionOnPath } = await import('../src/environment/landing-route')
     const { createPhoneNavigation } = await import('../src/environment/navigation')
     const { useLiveComposerModel } = await import('../src/composer/useLiveComposerModel')
     const { ThreadBridge } = await import('../src/composer/thread-port')
@@ -159,14 +160,17 @@ describe('a new session from the phone, live', () => {
       credential: paired.credential,
       appOrigin: APP_ORIGIN,
     })
-    await until('connected', () => controller.getState().status === 'connected')
-    const client = controller.getState().client as EnvironmentClient
+    await until(
+      'connected',
+      () => statusOf(controller.getState(), paired.environmentId) === 'connected',
+    )
+    const client = linkOf(controller.getState(), paired.environmentId)!.client as EnvironmentClient
 
     let model: ComposerModel | null = null
     let projects: ProjectSource | null = null
     let draftOpen = false
     let projectPath: string | null = null
-    let path = '/draft/new'
+    let path = ''
     let replyRows = 0
     const moves: string[] = []
     // The session's page, as the route mounts it once the launch lands there.
@@ -184,22 +188,31 @@ describe('a new session from the phone, live', () => {
       projectPath = session.activeWorkspacePath
       return createElement(ThreadBridge, { port: composer.port })
     }
+    // Every page here is the paired environment's; its blank new-session page.
+    const environmentId = paired.environmentId
+    const blank = draftHref(environmentId, null)
     // The phone's root, over an in-memory address in place of expo-router.
     function Root() {
-      const [address, setAddress] = useState('/draft/new')
+      const [address, setAddress] = useState<string>(blank)
       const [navigation] = useState(() =>
-        createPhoneNavigation({
-          push: (href) => (moves.push(`push ${href}`), setAddress(href)),
-          replace: (href) => (moves.push(`replace ${href}`), setAddress(href)),
-          setParams: (params) => (
-            moves.push(`setParams ${JSON.stringify(params)}`),
-            setAddress(`/draft/${params.draftId}`)
-          ),
-        }),
+        createPhoneNavigation(
+          {
+            push: (href) => (moves.push(`push ${href}`), setAddress(href)),
+            replace: (href) => (moves.push(`replace ${href}`), setAddress(href)),
+            setParams: (params) => (
+              moves.push(`setParams ${JSON.stringify(params)}`),
+              setAddress(
+                draftHref(environmentId, params.draftId === 'new' ? null : params.draftId!),
+              )
+            ),
+          },
+          { environmentId },
+        ),
       )
       useLayoutEffect(() => navigation.arrived(address), [address, navigation])
       path = address
       const landing = landingOf(address)
+      const onSession = sessionOnPath(address)
       return createElement(EnvironmentClientProvider, {
         client,
         children: createElement(EnvironmentApplicationProviders, {
@@ -210,10 +223,8 @@ describe('a new session from the phone, live', () => {
           landingDraftId: landing.draftId,
           children: landing.onLanding
             ? createElement(Page)
-            : address.startsWith('/session/')
-              ? createElement(SessionPage, {
-                  sessionId: decodeURIComponent(address.slice('/session/'.length)),
-                })
+            : onSession
+              ? createElement(SessionPage, { sessionId: onSession.sessionId })
               : null,
         }),
       })
@@ -266,11 +277,11 @@ describe('a new session from the phone, live', () => {
 
     since = Date.now() - started
     await act(async () => model!.setText('Reply with exactly the word pong.'))
-    await wait('draft address', () => path.startsWith('/draft/') && path !== '/draft/new')
+    await wait('draft address', () => landingOf(path).draftId !== null)
     await wait('send enabled', () => model!.primary.kind === 'send' && model!.primary.enabled)
     await act(async () => model!.send())
-    await wait('landed on the session', () => path.startsWith('/session/'), 120_000)
-    const sessionId = decodeURIComponent(path.slice('/session/'.length))
+    await wait('landed on the session', () => sessionOnPath(path) !== null, 120_000)
+    const sessionId = sessionOnPath(path)!.sessionId
     note('sent', { sent: sentSince(since), moves, sessionId })
     expect(sentSince(since)).toContain('session.create')
     // The session's page opens it (the launch only selected it), so the reply streams in.

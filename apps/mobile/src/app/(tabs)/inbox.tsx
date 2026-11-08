@@ -5,7 +5,8 @@ import { SectionList, View, type SectionListRenderItem } from 'react-native'
 import { useSafeAreaInsets } from 'react-native-safe-area-context'
 
 import { AppText } from '../../components/ui/AppText'
-import { statusMarkOf, type HomeRow } from '../../home/rows'
+import { statusMarkOf, type HomeRow, type HomeSession } from '../../home/rows'
+import { sessionRowHref } from '../../environment/landing-route'
 import { useHomeSource } from '../../home/source'
 import { SessionActionsSheet } from '../../session/SessionActionsSheet'
 import { useTitleEnvironment } from '../../settings/title-environment'
@@ -15,6 +16,10 @@ import { GlassContent } from '../../ui/Glass'
 import { Screen } from '../../ui/Screen'
 import { SegmentedTabs } from '../../ui/SegmentedTabs'
 import { SessionRow } from '../../ui/SessionRow'
+
+/** Ids are only unique within one environment. */
+const sessionKeyOf = (session: HomeSession) =>
+  `${session.environment?.environmentId ?? ''}:${session.externalId}`
 
 type InboxTab = 'needs' | 'done' | 'failed'
 type InboxSection = { key: string; label: string; data: HomeRow[] }
@@ -81,7 +86,7 @@ export default function Inbox() {
 
   const [actionsId, setActionsId] = useState<string | null>(null)
   const actionsRow = useMemo<HomeRow | null>(() => {
-    const session = actionsId ? sessions.find((s) => s.externalId === actionsId) : undefined
+    const session = actionsId ? sessions.find((s) => sessionKeyOf(s) === actionsId) : undefined
     if (!session) return null
     return {
       kind: 'session',
@@ -97,8 +102,8 @@ export default function Inbox() {
     ({ item }) => (
       <SessionRow
         row={item}
-        onPress={() => router.push(`/session/${encodeURIComponent(item.session.externalId)}`)}
-        onLongPress={() => setActionsId(item.session.externalId)}
+        onPress={() => router.push(sessionRowHref(item.session) as never)}
+        onLongPress={() => setActionsId(sessionKeyOf(item.session))}
       />
     ),
     [router],
@@ -148,7 +153,7 @@ export default function Inbox() {
             <SectionList
               className="flex-1"
               sections={sections[tab]}
-              keyExtractor={(row) => row.session.externalId}
+              keyExtractor={(row) => sessionKeyOf(row.session)}
               renderItem={renderItem}
               renderSectionHeader={({ section }) => <SectionLabel>{section.label}</SectionLabel>}
               stickySectionHeadersEnabled={false}

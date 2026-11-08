@@ -1,10 +1,10 @@
 import { useEffect, useMemo, useRef } from 'react'
 import { TextInput, View } from 'react-native'
-import { useEnvironmentClientOptional } from '@openmanager/app-core/logic'
 
 import { ShimmerText } from '../components/chat/ShimmerText'
 import { AppText } from '../components/ui/AppText'
 import { statusLineOf, type HomeRow } from '../home/rows'
+import { EnvironmentPage } from '../environment/PhoneEnvironmentProvider'
 import { useHomeSource } from '../home/source'
 import { usePhoneTheme } from '../theme/ThemeProvider'
 import { tap } from '../ui/haptics'
@@ -30,10 +30,16 @@ const untitled = (title: string | undefined) => title?.trim() || 'Untitled sessi
  * the environment answers: it closes on success, and says why on failure.
  */
 export function SessionActionsSheet({ row, onClose }: { row: HomeRow; onClose: () => void }) {
-  const client = useEnvironmentClientOptional()
   const { kind } = useHomeSource()
-  if (client && kind === 'environment') return <LiveActions row={row} onClose={onClose} />
-  return <UnavailableActions row={row} onClose={onClose} />
+  const environmentId = row.session.environment?.environmentId
+  const unavailable = <UnavailableActions row={row} onClose={onClose} />
+  if (kind !== 'environment' || !environmentId) return unavailable
+  // Through the row's own environment, whatever else is connected.
+  return (
+    <EnvironmentPage environmentId={environmentId} fallback={unavailable}>
+      <LiveActions row={row} onClose={onClose} />
+    </EnvironmentPage>
+  )
 }
 
 function LiveActions({ row, onClose }: { row: HomeRow; onClose: () => void }) {

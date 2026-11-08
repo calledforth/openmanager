@@ -26,7 +26,7 @@ async function connect(h: Harness) {
   await flush()
   h.socket().accept()
   await flush()
-  expect(h.state().status).toBe('connected')
+  expect(h.status()).toBe('connected')
 }
 
 /**
@@ -49,7 +49,7 @@ describe('connection states in the shared words', () => {
     const h = harness()
     await h.controller.start()
     await flush()
-    expect(h.state().status).toBe('connecting')
+    expect(h.status()).toBe('connecting')
     const v = view(h)
     expect(v.ui).toMatchObject({
       kind: 'connecting',
@@ -81,7 +81,7 @@ describe('connection states in the shared words', () => {
     h.answers.set(LAN, silent)
     h.socket().drop(1006)
     await flush()
-    expect(h.state().status).toBe('waiting')
+    expect(h.status()).toBe('waiting')
     const v = view(h)
     expect(v.ui).toMatchObject({
       kind: 'unreachable',
@@ -114,7 +114,7 @@ describe('connection states in the shared words', () => {
     h.answers.set(LAN, new Promise<BootstrapOutcome>(() => undefined))
     h.timers.advance(1000)
     await flush()
-    expect(h.state().status).toBe('searching')
+    expect(h.status()).toBe('searching')
     expect(view(h).ui).toMatchObject({ kind: 'unreachable', title: "Can't reach Studio" })
   })
 
@@ -175,12 +175,16 @@ describe('connection states in the shared words', () => {
     h.socket().open()
     h.socket().drop(4401, 'unauthorized')
     await flush()
-    expect(h.state().status).toBe('unauthorized')
+    expect(h.status()).toBe('unauthorized')
     const v = view(h)
     expect(v.ui).toMatchObject({ kind: 'unauthorized', title: 'Not authorized' })
     expect(v.ui.description).toContain('pair this device again')
-    expect(v.next).toEqual(['pair_again', 'switch_environment'])
+    // No "switch environment": the other saved environment is already
+    // connected on its own, so going to it fixes nothing about this one.
+    expect(v.next).toEqual(['pair_again'])
     expect(v.tone).toBe('error')
+    // The other environment's view is its own (its route never answered).
+    expect(phoneConnectionView(h.state(), OTHER_ENV).ui.kind).toBe('unreachable')
   })
 
   it('a revoked token forgotten: pairing again is the only step, whatever the routes say', async () => {
@@ -194,8 +198,8 @@ describe('connection states in the shared words', () => {
     const environment = h.state().environments[0]!
     expect(environment.paired).toBe(false)
     expect(view(h).next).toEqual(['pair_again'])
-    const [card] = environmentCards(h.state(), view(h))
-    expect(card).toMatchObject({ words: 'Needs pairing again', tone: 'error' })
+    const [card] = environmentCards(h.state())
+    expect(card).toMatchObject({ words: 'Needs pairing again', tone: 'error', pill: 'here' })
   })
 
   it('a protocol mismatch at bootstrap: names both versions', async () => {
@@ -248,7 +252,7 @@ describe('connection states in the shared words', () => {
 })
 
 describe('the environment list', () => {
-  it('marks the selected environment, its route in use, and the others by what the phone last learned', async () => {
+  it('marks the default environment and its route in use, and reads every other one live', async () => {
     const h = harness({
       registry: {
         selectedId: 'env-studio',
@@ -261,17 +265,20 @@ describe('the environment list', () => {
     })
     await connect(h)
     const v = view(h)
-    const cards = environmentCards(h.state(), v)
-    expect(cards.map((card) => [card.label, card.selected])).toEqual([
-      ['Studio', true],
-      ['Studio', false],
+    const cards = environmentCards(h.state())
+    expect(cards.map((card) => [card.label, card.selected, card.pill])).toEqual([
+      ['Studio', true, 'default'],
+      ['Studio', false, null],
     ])
     expect(cards[0]).toMatchObject({
       tone: 'ok',
       route: { kind: 'lan', host: '192.168.1.20:43120' },
     })
-    // Never checked: no route health to show, so its first route and no words.
-    expect(cards[1]).toMatchObject({ tone: 'idle', words: null, route: { kind: 'tunnel' } })
+    // The other is connected to on its own: its route did not answer, so
+    // its card reads its own live state rather than what was last learned.
+    expect(h.status(OTHER_ENV)).toBe('waiting')
+    expect(cards[1]).toMatchObject({ tone: 'warn', route: null })
+    expect(cards[1]!.words).toContain('other.example.com')
 
     const rows = routeRows(h.state().environments[0]!, v.route?.endpoint ?? null)
     // Local network first, as the phone asks them.

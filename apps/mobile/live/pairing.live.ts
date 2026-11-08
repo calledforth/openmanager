@@ -9,6 +9,8 @@ import {
 } from '@openmanager/environment-client'
 import {
   createPhoneConnectionController,
+  linkOf,
+  statusOf,
   type AppActivity,
   type PhoneNetwork,
 } from '../src/environment/controller'
@@ -165,7 +167,7 @@ describe('phone pairing, live', () => {
       // ---- a fresh install pairs by link --------------------------------------
       const phone = freshPhone()
       await phone.controller.start()
-      expect(phone.controller.getState().status).toBe('no_environment')
+      expect(statusOf(phone.controller.getState(), environmentId)).toBe('no_environment')
       const first = await makeLink(LAN)
       const read = readPairingLink(first.url)
       if (!read.ok) throw new Error('link did not read')
@@ -202,19 +204,23 @@ describe('phone pairing, live', () => {
       expect(saved?.appOrigin).toBe(APP_ORIGIN)
       expect(token).toBeTruthy()
 
-      await until('connected', () => phone.controller.getState().status === 'connected')
+      await until(
+        'connected',
+        () => statusOf(phone.controller.getState(), environmentId) === 'connected',
+      )
       const state = phone.controller.getState()
+      const link = linkOf(state, environmentId)!
       note('connected', {
-        status: state.status,
-        endpoint: state.endpoint,
-        socketOrigin: state.socketOrigin,
-        route: connectedRoute(state),
+        status: link.status,
+        endpoint: link.endpoint,
+        socketOrigin: link.socketOrigin,
+        route: connectedRoute(state, environmentId),
         label: state.environments[0]?.label,
         dials: dials.length,
         opens: opens.length,
         warnings: phone.warnings,
       })
-      expect(state.socketOrigin).toEqual({ origin: APP_ORIGIN, from: 'app' })
+      expect(link.socketOrigin).toEqual({ origin: APP_ORIGIN, from: 'app' })
       expect(opens.length).toBeGreaterThan(0)
       expect(phone.warnings).toEqual([])
 

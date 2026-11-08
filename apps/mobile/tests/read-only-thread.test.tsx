@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { act } from 'react'
+import { act, useLayoutEffect } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import {
@@ -15,15 +15,19 @@ import {
   type MockSeed,
 } from '@openmanager/environment-client'
 
+import { useEnvironmentScope } from '@openmanager/app-core/providers/environment-scope'
+
 import type { PhoneConnectionState } from '../src/environment/controller'
+
+const ENV_ID = 'env-1'
 
 // The phone's connection, as the controller would report a paired, connected
 // environment; the real one needs React Native's runtime.
 const CONNECTION = {
-  status: 'connected',
+  loaded: true,
   environments: [
     {
-      environmentId: 'env-1',
+      environmentId: ENV_ID,
       label: 'Desk',
       routes: [
         {
@@ -37,14 +41,32 @@ const CONNECTION = {
       appOrigin: 'https://app.example.test',
     },
   ],
-  selectedId: 'env-1',
-  endpoint: 'http://192.168.1.4:43120',
+  selectedId: ENV_ID,
+  links: {
+    [ENV_ID]: {
+      environmentId: ENV_ID,
+      status: 'connected',
+      endpoint: 'http://192.168.1.4:43120',
+      client: {},
+    },
+  },
   activity: 'active',
+  network: { online: true },
 } as unknown as PhoneConnectionState
-vi.mock('../src/environment/PhoneEnvironmentProvider', () => ({
-  usePhoneConnection: () => CONNECTION,
-}))
+vi.mock('../src/environment/PhoneEnvironmentProvider', async () => {
+  const { createScopeRegistry } = await import('../src/environment/scopes')
+  return {
+    usePhoneConnection: () => CONNECTION,
+    usePageConnectionStatus: () => 'connected',
+    usePageEnvironmentId: () => ENV_ID,
+    useEnvironmentLabel: () => 'Desk',
+    // The home reads each environment's providers through this registry;
+    // `ScopePublisher` below hands it the test's, as the real provider does.
+    environmentScopes: createScopeRegistry(),
+  }
+})
 
+const { environmentScopes } = await import('../src/environment/PhoneEnvironmentProvider')
 const { useReadOnlySession } = await import('../src/session/useReadOnlySession')
 const { useHomeSource } = await import('../src/home/source')
 const { threadRowsOf } = await import('../src/session/thread-rows')
@@ -124,6 +146,15 @@ function HomeProbe() {
   home = useHomeSource()
   return null
 }
+/** Hands the providers' scope to the home, as the phone's provider does for each environment. */
+function ScopePublisher() {
+  const scope = useEnvironmentScope()
+  useLayoutEffect(() => {
+    environmentScopes.set(ENV_ID, scope)
+    return () => environmentScopes.delete(ENV_ID, scope)
+  }, [scope])
+  return null
+}
 const everything = <T,>(state: T) => state
 function Probe({ sessionId, focused = true }: { sessionId: string; focused?: boolean }) {
   const view = useReadOnlySession(sessionId, { focused })
@@ -181,6 +212,7 @@ function mount(client: MockEnvironmentClient, pages: Pages) {
       <EnvironmentClientProvider client={client}>
         {/* As the phone mounts them: draft pages are what turn the draft cards on. */}
         <EnvironmentApplicationProviders storage={null} navigateDraft={navigateDraft}>
+          <ScopePublisher />
           <HomeProbe />
           {stack.map((page) => (
             <Probe key={page.id} sessionId={page.id} focused={page.focused} />

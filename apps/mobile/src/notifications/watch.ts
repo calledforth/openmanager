@@ -23,7 +23,8 @@ import type {
   AppActivitySource,
   PhoneConnectionState,
 } from '../environment/controller'
-import { catchUp, sessionLink, sessionOnPath, type Watched } from './notices'
+import { sessionOnPath, type SessionAddress } from '../environment/landing-route'
+import { catchUp, sessionLink, type Watched } from './notices'
 
 export const NOTIFICATIONS_STORAGE_KEY = 'openmanager.notifications'
 
@@ -60,7 +61,7 @@ export interface SessionWatchPorts {
 }
 
 export interface ConnectionSource {
-  getState(): Pick<PhoneConnectionState, 'client' | 'selectedId'>
+  getState(): Pick<PhoneConnectionState, 'links'>
   subscribe(listener: () => void): () => void
 }
 
@@ -76,12 +77,21 @@ export interface SessionWatch {
   openSettings(): void
   /** The controller's activity: never `background` while the watch runs. */
   activity(base: AppActivitySource): AppActivitySource
-  /** Watch the sessions of whichever client the connection holds. */
+  /** Watch the sessions of every client the connection holds, one per environment. */
   attach(connection: ConnectionSource): () => void
-  /** The page in front changed (`/session/<id>` is that session's). */
+  /** The page in front changed (`/session/<environment>/<id>` is that session's). */
   arrived(pathname: string): void
   /** The headless task the watch's service runs: it lasts until the watch stops. */
   task(): Promise<void>
+}
+
+/** Whether the page in front is this session's, in this environment. */
+function shows(onScreen: SessionAddress | null, environmentId: string, sessionId: string) {
+  return (
+    onScreen !== null &&
+    onScreen.sessionId === sessionId &&
+    (onScreen.environmentId === null || onScreen.environmentId === environmentId)
+  )
 }
 
 export function createSessionWatch(ports: SessionWatchPorts): SessionWatch {
@@ -97,7 +107,7 @@ export function createSessionWatch(ports: SessionWatchPorts): SessionWatch {
   }
   let started = false
   let endTask: (() => void) | null = null
-  let onScreen: string | null = null
+  let onScreen: SessionAddress | null = null
   const watched = new Map<string, Watched>()
 
   const set = (patch: Partial<SessionNoticesState>) => {
@@ -174,10 +184,15 @@ export function createSessionWatch(ports: SessionWatchPorts): SessionWatch {
     if (!native.notificationsEnabled()) return
     const looking = appState.current() === 'active'
     for (const { sessionId, title, body } of notices) {
-      if (looking && onScreen === sessionId) continue
+      if (looking && shows(onScreen, environmentId, sessionId)) continue
       try {
         // Keyed by the session: a newer notice for it replaces the older.
-        native.notify(`${environmentId}:${sessionId}`, title, body, sessionLink(sessionId))
+        native.notify(
+          `${environmentId}:${sessionId}`,
+          title,
+          body,
+          sessionLink(environmentId, sessionId),
+        )
       } catch (cause) {
         log('Session notices: a notice was not shown', cause)
       }
@@ -272,33 +287,45 @@ export function createSessionWatch(ports: SessionWatchPorts): SessionWatch {
     },
 
     attach(connection) {
-      let current: { client: EnvironmentClient; leave: () => void } | null = null
+      // Every environment's client, each watched on its own.
+      const following = new Map<string, { client: EnvironmentClient; leave: () => void }>()
       const follow = () => {
-        const { client, selectedId } = connection.getState()
-        if (current?.client === client) return
-        current?.leave()
-        current = null
-        if (!client || !selectedId) return
-        const look = () => post(selectedId, client)
-        look()
-        current = { client, leave: client.subscribe(look) }
+        const { links } = connection.getState()
+        for (const [environmentId, current] of [...following]) {
+          if (links[environmentId]?.client === current.client) continue
+          current.leave()
+          following.delete(environmentId)
+        }
+        for (const [environmentId, link] of Object.entries(links)) {
+          const client = link.client
+          if (!client || following.has(environmentId)) continue
+          const look = () => post(environmentId, client)
+          look()
+          following.set(environmentId, { client, leave: client.subscribe(look) })
+        }
+        // A removed environment's sessions are no longer watched or remembered.
+        for (const environmentId of [...watched.keys()]) {
+          if (!links[environmentId]) watched.delete(environmentId)
+        }
       }
       follow()
       const stop = connection.subscribe(follow)
       return () => {
         stop()
-        current?.leave()
-        current = null
+        for (const current of following.values()) current.leave()
+        following.clear()
       }
     },
 
     arrived(pathname) {
       onScreen = sessionOnPath(pathname)
       if (onScreen === null || !native) return
-      // Its notice has been seen now.
-      for (const environmentId of watched.keys()) {
+      const { environmentId: shown, sessionId } = onScreen
+      // Its notice has been seen now. An old address, with no environment in
+      // it, is taken to be about the session wherever it is.
+      for (const environmentId of shown === null ? watched.keys() : [shown]) {
         try {
-          native.cancel(`${environmentId}:${onScreen}`)
+          native.cancel(`${environmentId}:${sessionId}`)
         } catch {
           // Nothing to take away.
         }

@@ -30,8 +30,8 @@ export function useTitleEnvironment(
       connected: source.connected,
     }
   }
-  const view = phoneConnectionView(state)
-  const card = environmentCards(state, view).find(
+  const view = phoneConnectionView(state, environment.environmentId)
+  const card = environmentCards(state).find(
     (item) => item.environmentId === environment.environmentId,
   )
   if (!card) return null

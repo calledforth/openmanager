@@ -12,7 +12,6 @@ import { GestureHandlerRootView } from 'react-native-gesture-handler'
 import { SafeAreaProvider } from 'react-native-safe-area-context'
 
 import '../../global.css'
-import { DraftDiscardHost } from '../draft/DraftDiscardHost'
 import { PhoneEnvironmentProvider } from '../environment/PhoneEnvironmentProvider'
 import { pairingSession } from '../pairing/session'
 import { ThemeProvider, usePhoneTheme, useTheme } from '../theme/ThemeProvider'
@@ -47,6 +46,15 @@ function RootNavigator() {
         {/* Sessions, Inbox and Settings, with the pill nav as their tab bar. */}
         <Stack.Screen name="(tabs)" />
         {/* Pages slide in from the side; search, pairing and the theme preview rise. */}
+        <Stack.Screen
+          name="session/[environmentId]/[externalId]"
+          options={{ animation: 'slide_from_right' }}
+        />
+        <Stack.Screen
+          name="draft/[environmentId]/[draftId]"
+          options={{ animation: 'slide_from_right' }}
+        />
+        {/* Addresses from before environments were in them: each moves to its environment's. */}
         <Stack.Screen name="session/[externalId]" options={{ animation: 'slide_from_right' }} />
         <Stack.Screen name="draft/[draftId]" options={{ animation: 'slide_from_right' }} />
         <Stack.Screen
@@ -64,7 +72,6 @@ function RootNavigator() {
         <Stack.Screen name="theme-preview" options={{ presentation: 'modal' }} />
       </Stack>
       <PairingResume />
-      <DraftDiscardHost />
     </>
   )
 }

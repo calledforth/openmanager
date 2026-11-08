@@ -26,38 +26,55 @@ export function draftDiscardable(
   return state.drafts[draftId] !== undefined || edit !== undefined
 }
 
+/** A draft, by its environment: ids are only unique within one. */
+export type DraftRef = { environmentId: string; draftId: string }
+
 export interface DiscardHandoff {
   /** Discard this draft once it is off screen. A later request replaces it. */
-  request(draftId: string): void
+  request(draft: DraftRef): void
   /**
-   * Make the waiting discard if its draft is no longer on screen. Null
-   * `discard` (no environment that keeps drafts): the request is dropped.
+   * Make the waiting discard if it is this environment's and its draft is no
+   * longer on screen. Null `discard` (an environment that keeps no drafts):
+   * that environment's request is dropped. Another environment's waits for
+   * that environment's own host.
    */
-  settle(onScreenDraftId: string | null, discard: ((draftId: string) => void) | null): void
-  waiting(): string | null
+  settle(
+    environmentId: string,
+    onScreenDraftId: string | null,
+    discard: ((draftId: string) => void) | null,
+  ): void
+  waiting(): DraftRef | null
   subscribe(listener: () => void): () => void
 }
 
 export function createDiscardHandoff(): DiscardHandoff {
-  let waiting: string | null = null
+  let waiting: DraftRef | null = null
   const listeners = new Set<() => void>()
-  const set = (next: string | null) => {
-    if (waiting === next) return
+  const set = (next: DraftRef | null) => {
+    if (
+      waiting === next ||
+      (waiting &&
+        next &&
+        waiting.environmentId === next.environmentId &&
+        waiting.draftId === next.draftId)
+    ) {
+      return
+    }
     waiting = next
     for (const listener of [...listeners]) listener()
   }
   return {
-    request: (draftId) => set(draftId),
-    settle(onScreenDraftId, discard) {
-      const draftId = waiting
-      if (draftId === null) return
+    request: (draft) => set(draft),
+    settle(environmentId, onScreenDraftId, discard) {
+      const draft = waiting
+      if (draft === null || draft.environmentId !== environmentId) return
       if (!discard) {
         set(null)
         return
       }
-      if (onScreenDraftId === draftId) return
+      if (onScreenDraftId === draft.draftId) return
       set(null)
-      discard(draftId)
+      discard(draft.draftId)
     },
     waiting: () => waiting,
     subscribe(listener) {
@@ -69,5 +86,5 @@ export function createDiscardHandoff(): DiscardHandoff {
   }
 }
 
-/** The app's one handoff, from the draft page to `DraftDiscardHost`. */
+/** The app's one handoff, from a draft page to its environment's `DraftDiscardHost`. */
 export const discardHandoff = createDiscardHandoff()

@@ -23,7 +23,7 @@ import {
 } from '@openmanager/app-core/logic'
 import { selectActiveTurn, type EnvironmentState } from '@openmanager/environment-client'
 
-import { usePhoneConnection } from '../environment/PhoneEnvironmentProvider'
+import { usePageConnectionStatus } from '../environment/PhoneEnvironmentProvider'
 import { choiceLabel, primaryAction, type ComposerModel } from './model'
 import { effortChoicesOf, modeChoicesOf, picksOf } from './controls-view'
 import { useThreadPort, type ThreadPort } from './thread-port'
@@ -95,7 +95,7 @@ export function useLiveComposerModel(sessionId: string | null): {
   port: ThreadPort
 } {
   const client = useEnvironmentClient()
-  const { status: connection } = usePhoneConnection()
+  const connection = usePageConnectionStatus()
   const session = useSessionState()
   const { activeSessionId, activeWorkspacePath, beginDraftTurn, failTurn } = session
   const isDraft = sessionId === null

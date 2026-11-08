@@ -24,7 +24,7 @@ async function connect(h: ReturnType<typeof harness>) {
   await flush()
   h.socket().accept()
   await flush()
-  expect(h.state().status).toBe('connected')
+  expect(h.status()).toBe('connected')
 }
 
 describe('phone connection controller', () => {
@@ -38,13 +38,13 @@ describe('phone connection controller', () => {
       })
       await h.controller.start()
       await flush()
-      expect(h.state().status).toBe('searching')
+      expect(h.status()).toBe('searching')
       expect(h.probes.sort()).toEqual([LAN, TUNNEL].sort())
       expect(h.sockets()).toHaveLength(0)
 
       lan.resolve(ready())
       await flush()
-      expect(h.state()).toMatchObject({ status: 'connecting', endpoint: LAN })
+      expect(h.link()).toMatchObject({ status: 'connecting', endpoint: LAN })
       expect(h.socket().url).toBe('ws://192.168.1.20:43120/ws')
     })
 
@@ -52,7 +52,7 @@ describe('phone connection controller', () => {
       const h = harness({ routes: [LAN, TUNNEL], answers: { [LAN]: silent, [TUNNEL]: ready() } })
       await h.controller.start()
       await flush()
-      expect(h.state()).toMatchObject({ status: 'connecting', endpoint: TUNNEL })
+      expect(h.link()).toMatchObject({ status: 'connecting', endpoint: TUNNEL })
       expect(h.socket().url).toBe('wss://studio.example.com/ws')
       const routes = savedDocument(h).environments[0]!.routes
       expect(routes.find((route) => route.endpoint === LAN)?.health.status).toBe('unreachable')
@@ -68,7 +68,7 @@ describe('phone connection controller', () => {
       })
       await h.controller.start()
       await flush()
-      expect(h.state().endpoint).toBe(TUNNEL)
+      expect(h.link().endpoint).toBe(TUNNEL)
       expect(h.sockets().map((socket) => socket.url)).toEqual(['wss://studio.example.com/ws'])
     })
   })
@@ -79,7 +79,7 @@ describe('phone connection controller', () => {
       await h.controller.start()
       await flush()
       expect(h.probes).toEqual([LAN])
-      expect(h.state()).toMatchObject({
+      expect(h.link()).toMatchObject({
         status: 'connecting',
         endpoint: LAN,
         bootstrap: { status: 'ready', environmentId: ENV, protocolVersion: PROTOCOL_VERSION },
@@ -99,12 +99,12 @@ describe('phone connection controller', () => {
         instanceId: 'instance-1',
       })
       await flush()
-      expect(h.state()).toMatchObject({
+      expect(h.link()).toMatchObject({
         status: 'connected',
         connection: { phase: 'connected', hasConnected: true },
       })
-      expect(h.state().client).not.toBeNull()
-      expect(h.state().client!.getState().connection.phase).toBe('connected')
+      expect(h.link().client).not.toBeNull()
+      expect(h.link().client!.getState().connection.phase).toBe('connected')
     })
 
     it('stops before any socket when the bootstrap answers in another protocol version', async () => {
@@ -117,7 +117,7 @@ describe('phone connection controller', () => {
       const h = harness({ answers: { [LAN]: mismatch } })
       await h.controller.start()
       await flush()
-      expect(h.state()).toMatchObject({
+      expect(h.link()).toMatchObject({
         status: 'incompatible_protocol',
         protocol: { client: PROTOCOL_VERSION, environment: PROTOCOL_VERSION + 1 },
         client: null,
@@ -140,7 +140,7 @@ describe('phone connection controller', () => {
       expect(h.probes).toEqual([LAN, LAN])
       h.socket().accept()
       await flush()
-      expect(h.state().status).toBe('connected')
+      expect(h.status()).toBe('connected')
     })
 
     it('latches when the handshake itself refuses the protocol version', async () => {
@@ -159,7 +159,7 @@ describe('phone connection controller', () => {
         },
       })
       await flush()
-      expect(h.state()).toMatchObject({ status: 'incompatible_protocol', client: null })
+      expect(h.link()).toMatchObject({ status: 'incompatible_protocol', client: null })
       h.timers.advance(10 * 60_000)
       await flush()
       // One bootstrap read for the version that refused, then nothing.
@@ -206,7 +206,7 @@ describe('phone connection controller', () => {
       await flush()
       older.resolve(mismatch(98))
       await flush()
-      expect(h.state().protocol).toEqual({ client: PROTOCOL_VERSION, environment: 99 })
+      expect(h.link().protocol).toEqual({ client: PROTOCOL_VERSION, environment: 99 })
     })
 
     it('shows the version the environment speaks after a handshake refusal', async () => {
@@ -232,7 +232,7 @@ describe('phone connection controller', () => {
         },
       })
       await flush()
-      expect(h.state()).toMatchObject({
+      expect(h.link()).toMatchObject({
         status: 'incompatible_protocol',
         protocol: { client: PROTOCOL_VERSION, environment: 99 },
         bootstrap: { status: 'incompatible_protocol', serverProtocolVersion: 99 },
@@ -269,7 +269,7 @@ describe('phone connection controller', () => {
       h.activity.set('background')
       await flush()
       expect(inFlight.aborted).toBe(true)
-      expect(h.state().status).toBe('incompatible_protocol')
+      expect(h.status()).toBe('incompatible_protocol')
       // Its late answer is not shown.
       read.resolve({
         status: 'incompatible_protocol',
@@ -278,7 +278,7 @@ describe('phone connection controller', () => {
         environmentId: ENV,
       })
       await flush()
-      expect(h.state().protocol.environment).toBeNull()
+      expect(h.link().protocol.environment).toBeNull()
 
       h.answers.set(LAN, {
         status: 'incompatible_protocol',
@@ -289,7 +289,7 @@ describe('phone connection controller', () => {
       h.activity.set('active')
       await flush()
       expect(h.probes).toEqual([LAN, LAN, LAN])
-      expect(h.state()).toMatchObject({
+      expect(h.link()).toMatchObject({
         status: 'incompatible_protocol',
         protocol: { client: PROTOCOL_VERSION, environment: 99 },
       })
@@ -313,7 +313,7 @@ describe('phone connection controller', () => {
       h.network.set({ online: false })
       await flush()
       expect(inFlight.aborted).toBe(true)
-      expect(h.state().status).toBe('incompatible_protocol')
+      expect(h.status()).toBe('incompatible_protocol')
     })
   })
 
@@ -347,7 +347,7 @@ describe('phone connection controller', () => {
         await h.controller.start()
         await new Promise((resolve) => setTimeout(resolve, 200))
         await flush()
-        expect(h.state()).toMatchObject({ status: 'connecting', endpoint: TUNNEL })
+        expect(h.link()).toMatchObject({ status: 'connecting', endpoint: TUNNEL })
         // One bootstrap request each; no no-cors follow-up after the timeout.
         expect(calls.filter((call) => call.url.startsWith(LAN))).toEqual([
           { url: `${LAN}/bootstrap`, mode: undefined },
@@ -362,12 +362,12 @@ describe('phone connection controller', () => {
     it('holds: closes the socket, stops every timer and asks nothing', async () => {
       const h = harness()
       await connect(h)
-      const client = h.state().client
+      const client = h.link().client
       const socket = h.socket()
 
       h.activity.set('background')
       await flush()
-      expect(h.state().status).toBe('held')
+      expect(h.status()).toBe('held')
       expect(socket.closedWith).toEqual({ code: 1000, reason: 'client_disconnect' })
       // Heartbeat and retry timers are all gone.
       expect(h.timers.pending()).toBe(0)
@@ -376,13 +376,13 @@ describe('phone connection controller', () => {
       expect(h.probes).toEqual([LAN])
       expect(h.sockets()).toHaveLength(1)
       // Views keep the client and what it holds.
-      expect(h.state().client).toBe(client)
+      expect(h.link().client).toBe(client)
     })
 
     it('reconnects on its own when the app comes back, on the same client', async () => {
       const h = harness()
       await connect(h)
-      const client = h.state().client
+      const client = h.link().client
 
       h.activity.set('background')
       await flush()
@@ -390,31 +390,31 @@ describe('phone connection controller', () => {
       await flush()
       expect(h.probes).toEqual([LAN, LAN])
       expect(h.sockets()).toHaveLength(2)
-      expect(h.state().status).toBe('connecting')
+      expect(h.status()).toBe('connecting')
       h.socket().accept()
       await flush()
-      expect(h.state().status).toBe('connected')
-      expect(h.state().client).toBe(client)
+      expect(h.status()).toBe('connected')
+      expect(h.link().client).toBe(client)
     })
 
     it('comes back on the tunnel when the phone has left the LAN', async () => {
       const h = harness({ routes: [LAN, TUNNEL], answers: { [LAN]: ready(), [TUNNEL]: ready() } })
       await connect(h)
-      expect(h.state().endpoint).toBe(LAN)
-      const client = h.state().client
+      expect(h.link().endpoint).toBe(LAN)
+      const client = h.link().client
 
       h.activity.set('background')
       h.answers.set(LAN, silent)
       h.activity.set('active')
       await flush()
-      expect(h.state()).toMatchObject({ status: 'connecting', endpoint: TUNNEL })
+      expect(h.link()).toMatchObject({ status: 'connecting', endpoint: TUNNEL })
       // Same environment, new route: views keep reading the same store.
-      expect(h.state().client).not.toBeNull()
+      expect(h.link().client).not.toBeNull()
       h.socket().accept()
       await flush()
-      expect(h.state().status).toBe('connected')
-      expect(h.state().client).not.toBe(client)
-      expect(h.state().client!.getState()).toBe(client!.getState())
+      expect(h.status()).toBe('connected')
+      expect(h.link().client).not.toBe(client)
+      expect(h.link().client!.getState()).toBe(client!.getState())
     })
 
     it('treats iOS inactive as still on screen: the socket stays', async () => {
@@ -423,7 +423,7 @@ describe('phone connection controller', () => {
       // The adapter maps `inactive` to `active`, so the source never changes.
       h.activity.set('active')
       await flush()
-      expect(h.state().status).toBe('connected')
+      expect(h.status()).toBe('connected')
       expect(h.sockets()).toHaveLength(1)
     })
 
@@ -431,7 +431,7 @@ describe('phone connection controller', () => {
       const h = harness({ answers: { [LAN]: silent } })
       await h.controller.start()
       await flush()
-      expect(h.state().status).toBe('waiting')
+      expect(h.status()).toBe('waiting')
       h.activity.set('background')
       await flush()
       h.timers.advance(10 * 60_000)
@@ -448,7 +448,7 @@ describe('phone connection controller', () => {
 
       h.network.set({ online: false })
       await flush()
-      expect(h.state().status).toBe('offline')
+      expect(h.status()).toBe('offline')
       expect(socket.closedWith?.code).toBe(1000)
       h.timers.advance(10 * 60_000)
       await flush()
@@ -459,7 +459,7 @@ describe('phone connection controller', () => {
       expect(h.probes).toEqual([LAN, LAN])
       h.socket().accept()
       await flush()
-      expect(h.state().status).toBe('connected')
+      expect(h.status()).toBe('connected')
     })
 
     it('reopens once the closing socket has closed when the network blinks', async () => {
@@ -469,37 +469,37 @@ describe('phone connection controller', () => {
       const first = h.socket()
       h.network.set({ online: false })
       await flush()
-      expect(h.state().status).toBe('offline')
+      expect(h.status()).toBe('offline')
       // Back before the close handshake finished: the client still reads
       // connected, but that socket is going away.
       h.network.set({ online: true })
       await flush()
-      expect(h.state().status).toBe('connecting')
+      expect(h.status()).toBe('connecting')
       expect(h.sockets()).toHaveLength(1)
       first.finishClose()
       await flush()
       expect(h.sockets()).toHaveLength(2)
       h.socket().accept()
       await flush()
-      expect(h.state().status).toBe('connected')
-      expect(h.state().attempt).toBe(0)
+      expect(h.status()).toBe('connected')
+      expect(h.link().attempt).toBe(0)
     })
 
     it('reopens once the closing socket has closed when the app comes straight back', async () => {
       const h = harness()
       await connect(h)
       FakeSocket.deferClose = true
-      const client = h.state().client
+      const client = h.link().client
       h.activity.set('background')
       h.activity.set('active')
       await flush()
-      expect(h.state().status).toBe('connecting')
+      expect(h.status()).toBe('connecting')
       h.socket().finishClose()
       await flush()
       expect(h.sockets()).toHaveLength(2)
       h.socket().accept()
       await flush()
-      expect(h.state()).toMatchObject({ status: 'connected', client })
+      expect(h.link()).toMatchObject({ status: 'connected', client })
     })
 
     it('does not count a socket that dropped with the network as a failure', async () => {
@@ -509,7 +509,7 @@ describe('phone connection controller', () => {
       // The OS tears the socket down after the app was told the network went.
       h.socket().drop(1006)
       await flush()
-      expect(h.state()).toMatchObject({ status: 'offline', attempt: 0, retryAt: null })
+      expect(h.link()).toMatchObject({ status: 'offline', attempt: 0, retryAt: null })
     })
   })
 
@@ -522,7 +522,7 @@ describe('phone connection controller', () => {
       socket.open()
       socket.drop(4401, 'unauthorized')
       await flush()
-      expect(h.state()).toMatchObject({
+      expect(h.link()).toMatchObject({
         status: 'unauthorized',
         client: null,
         routeFailure: { reason: 'credential_rejected', endpoint: LAN, tried: 1 },
@@ -541,7 +541,7 @@ describe('phone connection controller', () => {
       await flush()
       expect(h.probes).toHaveLength(probes)
       expect(h.sockets()).toHaveLength(1)
-      expect(h.state().status).toBe('unauthorized')
+      expect(h.status()).toBe('unauthorized')
     })
 
     it('tries again once when a person asks, and latches again if still refused', async () => {
@@ -551,7 +551,7 @@ describe('phone connection controller', () => {
       h.socket().open()
       h.socket().drop(4401, 'revoked')
       await flush()
-      expect(h.state().status).toBe('unauthorized')
+      expect(h.status()).toBe('unauthorized')
 
       h.controller.retry()
       await flush()
@@ -559,7 +559,7 @@ describe('phone connection controller', () => {
       h.socket().open()
       h.socket().drop(4401, 'revoked')
       await flush()
-      expect(h.state().status).toBe('unauthorized')
+      expect(h.status()).toBe('unauthorized')
       h.timers.advance(60 * 60_000)
       await flush()
       expect(h.sockets()).toHaveLength(2)
@@ -578,13 +578,13 @@ describe('phone connection controller', () => {
       // The old token is refused while the new token's search is still out.
       old.drop(4401, 'revoked')
       await flush()
-      expect(h.state().status).toBe('searching')
+      expect(h.status()).toBe('searching')
       lan.resolve(ready())
       await flush()
       expect(h.socket().protocols).toEqual(['openmanager.v1', `openmanager.auth.${fresh}`])
       h.socket().accept()
       await flush()
-      expect(h.state().status).toBe('connected')
+      expect(h.status()).toBe('connected')
     })
 
     it('connects with a new token once one is saved for the environment', async () => {
@@ -601,7 +601,7 @@ describe('phone connection controller', () => {
       expect(h.socket().protocols).toEqual(['openmanager.v1', `openmanager.auth.${fresh}`])
       h.socket().accept()
       await flush()
-      expect(h.state().status).toBe('connected')
+      expect(h.status()).toBe('connected')
       await h.controller.flush()
       expect(h.storage.secret(ENV)).toBe(fresh)
     })
@@ -628,7 +628,7 @@ describe('phone connection controller', () => {
       lan.resolve(silent)
       await flush()
       expect(h.probes).toEqual([LAN, TUNNEL, LAN])
-      expect(h.state().status).toBe('held')
+      expect(h.status()).toBe('held')
     })
 
     it('stops the probes still in flight once a search has its answer', async () => {
@@ -639,7 +639,7 @@ describe('phone connection controller', () => {
       })
       await h.controller.start()
       await flush()
-      expect(h.state()).toMatchObject({ status: 'connecting', endpoint: LAN })
+      expect(h.link()).toMatchObject({ status: 'connecting', endpoint: LAN })
       const tunnelProbe = h.signals[h.probes.indexOf(TUNNEL)]!
       expect(tunnelProbe.aborted).toBe(true)
       tunnel.resolve(ready())
@@ -658,7 +658,7 @@ describe('phone connection controller', () => {
       await flush()
       expect(first.aborted).toBe(true)
       // The newer search ran to its answer and dialled.
-      expect(h.state()).toMatchObject({ status: 'connecting', endpoint: LAN })
+      expect(h.link()).toMatchObject({ status: 'connecting', endpoint: LAN })
       lan.resolve(ready())
       await flush()
       expect(h.sockets()).toHaveLength(1)
@@ -673,7 +673,7 @@ describe('phone connection controller', () => {
       })
       await h.controller.start()
       await flush()
-      expect(h.state()).toMatchObject({
+      expect(h.link()).toMatchObject({
         status: 'waiting',
         attempt: 1,
         retryAt: h.timers.now() + 1000,
@@ -685,14 +685,14 @@ describe('phone connection controller', () => {
       h.timers.advance(1)
       await flush()
       expect(h.probes).toHaveLength(2)
-      expect(h.state().retryAt).toBe(h.timers.now() + 2000)
+      expect(h.link().retryAt).toBe(h.timers.now() + 2000)
       h.timers.advance(2000)
       await flush()
-      expect(h.state().retryAt).toBe(h.timers.now() + 4000)
+      expect(h.link().retryAt).toBe(h.timers.now() + 4000)
       h.timers.advance(4000)
       await flush()
       // The last delay repeats.
-      expect(h.state().retryAt).toBe(h.timers.now() + 4000)
+      expect(h.link().retryAt).toBe(h.timers.now() + 4000)
       expect(h.probes).toHaveLength(4)
     })
 
@@ -702,14 +702,14 @@ describe('phone connection controller', () => {
       await flush()
       h.socket().drop(1006)
       await flush()
-      expect(h.state()).toMatchObject({ status: 'waiting', attempt: 1 })
+      expect(h.link()).toMatchObject({ status: 'waiting', attempt: 1 })
       expect(h.sockets()).toHaveLength(1)
       h.timers.advance(1000)
       await flush()
       expect(h.sockets()).toHaveLength(2)
       h.socket().drop(1006)
       await flush()
-      expect(h.state().retryAt).toBe(h.timers.now() + 2000)
+      expect(h.link().retryAt).toBe(h.timers.now() + 2000)
     })
 
     it('takes the tunnel when a stale LAN route answers bootstrap but its socket fails', async () => {
@@ -723,7 +723,7 @@ describe('phone connection controller', () => {
       expect(h.socket().url).toBe('ws://192.168.1.20:43120/ws')
       h.socket().drop(1006)
       await flush()
-      expect(h.state().status).toBe('waiting')
+      expect(h.status()).toBe('waiting')
 
       h.timers.advance(1000)
       await flush()
@@ -732,7 +732,7 @@ describe('phone connection controller', () => {
       expect(h.socket().url).toBe('wss://studio.example.com/ws')
       h.socket().accept()
       await flush()
-      expect(h.state()).toMatchObject({ status: 'connected', endpoint: TUNNEL })
+      expect(h.link()).toMatchObject({ status: 'connected', endpoint: TUNNEL })
     })
 
     it('still asks a route whose socket failed when nothing else answers, and forgets it on return', async () => {
@@ -769,12 +769,12 @@ describe('phone connection controller', () => {
       h.answers.set(LAN, lan.promise)
       h.socket().drop(1006)
       await flush()
-      expect(h.state().status).toBe('searching')
+      expect(h.status()).toBe('searching')
       // Only the route in use is asked while it may just have blinked.
       expect(h.probes).toEqual([LAN, TUNNEL, LAN])
       lan.resolve(ready())
       await flush()
-      expect(h.state()).toMatchObject({ status: 'connecting', endpoint: LAN, attempt: 0 })
+      expect(h.link()).toMatchObject({ status: 'connecting', endpoint: LAN, attempt: 0 })
     })
   })
 
@@ -805,11 +805,8 @@ describe('phone connection controller', () => {
       await connect(h)
       h.controller.removeEnvironment(ENV)
       await h.controller.flush()
-      expect(h.state()).toMatchObject({
-        status: 'no_environment',
-        client: null,
-        environments: [],
-      })
+      expect(h.status()).toBe('no_environment')
+      expect(h.state()).toMatchObject({ links: {}, environments: [], selectedId: null })
       expect(h.storage.secret(ENV)).toBeNull()
       expect(savedDocument(h).environments).toEqual([])
       expect(h.socket().closedWith?.reason).toBe('client_disposed')
@@ -821,7 +818,7 @@ describe('phone connection controller', () => {
       const h = harness({ registry: { selectedId: null, environments: [] }, credentials: {} })
       await h.controller.start()
       await flush()
-      expect(h.state().status).toBe('no_environment')
+      expect(h.status()).toBe('no_environment')
       expect(h.probes).toEqual([])
 
       h.controller.saveEnvironment({
@@ -834,32 +831,193 @@ describe('phone connection controller', () => {
       expect(h.probes).toEqual([LAN])
       h.socket().accept()
       await flush()
-      expect(h.state()).toMatchObject({ status: 'connected', selectedId: ENV })
+      expect(h.status()).toBe('connected')
+      expect(h.state().selectedId).toBe(ENV)
     })
+  })
 
-    it('switching environments closes the old client and opens one for the new', async () => {
+  describe('several saved environments', () => {
+    const OTHER_TOKEN = 'o'.repeat(43)
+    const LAN_WS = 'ws://192.168.1.20:43120/ws'
+    const TUNNEL_WS = 'wss://studio.example.com/ws'
+
+    /** `ENV` on the LAN and `OTHER_ENV` behind the tunnel, both with a token. */
+    function twoEnvironments(
+      answers: Record<string, BootstrapOutcome | Promise<BootstrapOutcome>> = {
+        [LAN]: ready(),
+        [TUNNEL]: ready(OTHER_ENV, 'Other'),
+      },
+    ) {
       const registry = registryWith([LAN])
       registry.environments.push({
         ...registryWith([TUNNEL], OTHER_ENV).environments[0]!,
         label: 'Other',
       })
-      const h = harness({
+      return harness({
         registry,
-        credentials: { [ENV]: TOKEN, [OTHER_ENV]: 'o'.repeat(43) },
-        answers: { [LAN]: ready(), [TUNNEL]: ready(OTHER_ENV, 'Other') },
+        credentials: { [ENV]: TOKEN, [OTHER_ENV]: OTHER_TOKEN },
+        answers,
       })
-      await connect(h)
-      const first = h.socket()
-      const firstClient = h.state().client
+    }
+
+    /** The latest socket dialled to `url`; each environment's route has its own. */
+    const socketTo = (h: ReturnType<typeof harness>, url: string) =>
+      h
+        .sockets()
+        .filter((socket) => socket.url === url)
+        .at(-1)!
+
+    /** Start, and accept the socket each environment opened. */
+    async function connectBoth(h: ReturnType<typeof harness>) {
+      await h.controller.start()
+      await flush()
+      socketTo(h, LAN_WS).accept()
+      socketTo(h, TUNNEL_WS).accept(OTHER_ENV)
+      await flush()
+      expect(h.status(ENV)).toBe('connected')
+      expect(h.status(OTHER_ENV)).toBe('connected')
+    }
+
+    it('connects to every one at once, each on its own link with its own client and token', async () => {
+      const h = twoEnvironments()
+      await h.controller.start()
+      await flush()
+      expect(h.probes.sort()).toEqual([LAN, TUNNEL].sort())
+      expect(
+        h
+          .sockets()
+          .map((socket) => socket.url)
+          .sort(),
+      ).toEqual([LAN_WS, TUNNEL_WS].sort())
+      expect(socketTo(h, LAN_WS).protocols).toEqual(['openmanager.v1', `openmanager.auth.${TOKEN}`])
+      expect(socketTo(h, TUNNEL_WS).protocols).toEqual([
+        'openmanager.v1',
+        `openmanager.auth.${OTHER_TOKEN}`,
+      ])
+      expect(h.link(ENV)).toMatchObject({ status: 'connecting', endpoint: LAN })
+      expect(h.link(OTHER_ENV)).toMatchObject({ status: 'connecting', endpoint: TUNNEL })
+
+      socketTo(h, LAN_WS).accept()
+      socketTo(h, TUNNEL_WS).accept(OTHER_ENV)
+      await flush()
+      expect(h.link(ENV).client).not.toBeNull()
+      expect(h.link(OTHER_ENV).client).not.toBeNull()
+      expect(h.link(ENV).client).not.toBe(h.link(OTHER_ENV).client)
+      expect(h.link(ENV).client!.getState()).not.toBe(h.link(OTHER_ENV).client!.getState())
+      expect(h.state().selectedId).toBe(ENV)
+    })
+
+    it('picking another environment changes only where new sessions go; both stay connected', async () => {
+      const h = twoEnvironments()
+      await connectBoth(h)
+      const first = socketTo(h, LAN_WS)
+      const firstClient = h.link(ENV).client
+      const otherClient = h.link(OTHER_ENV).client
 
       h.controller.selectEnvironment(OTHER_ENV)
       await flush()
-      expect(first.closedWith?.reason).toBe('client_disposed')
-      expect(h.state()).toMatchObject({ selectedId: OTHER_ENV, endpoint: TUNNEL, client: null })
-      h.socket().accept(OTHER_ENV)
+      expect(h.state().selectedId).toBe(OTHER_ENV)
+      expect(first.closedWith).toBeNull()
+      expect(h.sockets()).toHaveLength(2)
+      expect(h.link(ENV)).toMatchObject({ status: 'connected', client: firstClient })
+      expect(h.link(OTHER_ENV)).toMatchObject({ status: 'connected', client: otherClient })
+      await h.controller.flush()
+      expect(savedDocument(h).selectedId).toBe(OTHER_ENV)
+    })
+
+    it('one that nothing reaches waits on its own while the other stays connected', async () => {
+      const h = twoEnvironments({ [LAN]: ready(), [TUNNEL]: silent })
+      await h.controller.start()
       await flush()
-      expect(h.state().status).toBe('connected')
-      expect(h.state().client).not.toBe(firstClient)
+      socketTo(h, LAN_WS).accept()
+      await flush()
+      expect(h.sockets().map((socket) => socket.url)).toEqual([LAN_WS])
+      expect(h.link(ENV)).toMatchObject({ status: 'connected', routeFailure: null })
+      expect(h.link(OTHER_ENV)).toMatchObject({
+        status: 'waiting',
+        client: null,
+        attempt: 1,
+        routeFailure: { reason: 'route_down', endpoint: TUNNEL },
+      })
+      const client = h.link(ENV).client
+
+      // Its retries are its own: the connected one is not asked again.
+      h.timers.advance(1000)
+      await flush()
+      expect(h.probes.filter((probe) => probe === TUNNEL)).toHaveLength(2)
+      expect(h.probes.filter((probe) => probe === LAN)).toHaveLength(1)
+      expect(h.link(ENV)).toMatchObject({ status: 'connected', client })
+      expect(socketTo(h, LAN_WS).closedWith).toBeNull()
+
+      // When its route answers, it connects beside the other.
+      h.answers.set(TUNNEL, ready(OTHER_ENV, 'Other'))
+      h.timers.advance(2000)
+      await flush()
+      socketTo(h, TUNNEL_WS).accept(OTHER_ENV)
+      await flush()
+      expect(h.status(OTHER_ENV)).toBe('connected')
+      expect(h.link(ENV)).toMatchObject({ status: 'connected', client })
+    })
+
+    it('a refused token latches one link only, and retrying it redials only that one', async () => {
+      const h = twoEnvironments()
+      await connectBoth(h)
+      const client = h.link(ENV).client
+      const sockets = h.sockets().length
+
+      socketTo(h, TUNNEL_WS).drop(4401, 'unauthorized')
+      await flush()
+      expect(h.link(OTHER_ENV)).toMatchObject({ status: 'unauthorized', client: null })
+      expect(h.link(ENV)).toMatchObject({ status: 'connected', client })
+      expect(socketTo(h, LAN_WS).closedWith).toBeNull()
+
+      h.controller.retry(OTHER_ENV)
+      await flush()
+      expect(h.sockets()).toHaveLength(sockets + 1)
+      expect(h.socket().url).toBe(TUNNEL_WS)
+      expect(h.link(ENV)).toMatchObject({ status: 'connected', client })
+    })
+
+    it('removing one closes only its link, and new sessions move to the one that stays', async () => {
+      const h = twoEnvironments()
+      await connectBoth(h)
+      const lan = socketTo(h, LAN_WS)
+      const tunnel = socketTo(h, TUNNEL_WS)
+      const otherClient = h.link(OTHER_ENV).client
+      expect(h.state().selectedId).toBe(ENV)
+
+      h.controller.removeEnvironment(ENV)
+      await h.controller.flush()
+      expect(lan.closedWith?.reason).toBe('client_disposed')
+      expect(tunnel.closedWith).toBeNull()
+      expect(Object.keys(h.state().links)).toEqual([OTHER_ENV])
+      expect(h.status(ENV)).toBe('no_environment')
+      expect(h.link(OTHER_ENV)).toMatchObject({ status: 'connected', client: otherClient })
+      expect(h.state().selectedId).toBe(OTHER_ENV)
+      expect(h.state().environments.map((item) => item.environmentId)).toEqual([OTHER_ENV])
+      expect(h.storage.secret(ENV)).toBeNull()
+      expect(h.storage.secret(OTHER_ENV)).toBe(OTHER_TOKEN)
+      expect(savedDocument(h).selectedId).toBe(OTHER_ENV)
+
+      // Nothing of the removed one is asked again, whatever the other does.
+      const probes = h.probes.filter((probe) => probe === LAN).length
+      h.timers.advance(60_000)
+      await flush()
+      expect(h.probes.filter((probe) => probe === LAN)).toHaveLength(probes)
+      expect(h.sockets().filter((socket) => socket.url === LAN_WS)).toHaveLength(1)
+    })
+
+    it('removing the one new sessions did not go to leaves that choice alone', async () => {
+      const h = twoEnvironments()
+      await connectBoth(h)
+      const client = h.link(ENV).client
+      h.controller.removeEnvironment(OTHER_ENV)
+      await h.controller.flush()
+      expect(socketTo(h, TUNNEL_WS).closedWith?.reason).toBe('client_disposed')
+      expect(socketTo(h, LAN_WS).closedWith).toBeNull()
+      expect(Object.keys(h.state().links)).toEqual([ENV])
+      expect(h.link(ENV)).toMatchObject({ status: 'connected', client })
+      expect(h.state().selectedId).toBe(ENV)
     })
   })
 

@@ -21,10 +21,15 @@ export type StatusMark = SessionBusyTone | 'idle'
 
 export interface HomeSession extends SidebarSessionEntry {
   workspacePath: string
+  /** The environment it is on; ids are only unique within one. Absent on fixture rows. */
+  environment?: { environmentId: string; label: string }
 }
 
-/** A draft card exactly as the shared sidebar serves it. */
-export type HomeDraft = SidebarDraft
+/** A draft card exactly as the shared sidebar serves it, with the environment it is on. */
+export type HomeDraft = SidebarDraft & {
+  /** The environment it is on; ids are only unique within one. Absent on fixture rows. */
+  environment?: { environmentId: string; label: string }
+}
 
 export interface HomeRow {
   kind: 'session'

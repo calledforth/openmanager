@@ -20,9 +20,11 @@ import type { ComposerModel } from '../src/composer/model'
 
 // The phone's connection, as the controller would report a paired, connected
 // environment; the real one needs React Native's runtime.
-const connection = { status: 'connected' } as unknown as PhoneConnectionState
+const connection = { loaded: true, activity: 'active' } as unknown as PhoneConnectionState
 vi.mock('../src/environment/PhoneEnvironmentProvider', () => ({
   usePhoneConnection: () => connection,
+  // The page's environment is connected: its composer may send.
+  usePageConnectionStatus: () => 'connected',
 }))
 // The photo library is the system's picker; the tests hand LibraryPick their own.
 vi.mock('expo-image-picker', () => ({ launchImageLibraryAsync: vi.fn() }))
