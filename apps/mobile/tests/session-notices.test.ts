@@ -8,7 +8,7 @@ import {
 
 import type { NotificationPermissionResponse, SessionWatchNative } from '../modules/session-watch'
 import type { AppActivity, AppActivitySource } from '../src/environment/controller'
-import { sessionOnPath } from '../src/notifications/notices'
+import { sessionOnPath } from '../src/environment/landing-route'
 import { createSessionWatch, NOTIFICATIONS_STORAGE_KEY } from '../src/notifications/watch'
 import { notificationsRow } from '../src/settings/notifications'
 
@@ -107,7 +107,7 @@ function setup(options: { saved?: string | null; appState?: string } = {}) {
 
 function connectTo(watch: ReturnType<typeof createSessionWatch>, client: EnvironmentClient) {
   watch.attach({
-    getState: () => ({ client, selectedId: 'env-1' }),
+    getState: () => ({ links: { 'env-1': { client } as never } }),
     subscribe: () => () => {},
   })
 }
@@ -196,7 +196,7 @@ describe('session notices on the phone', () => {
     // First sight is not news.
     expect(native.notify).not.toHaveBeenCalled()
 
-    watch.arrived('/session/c')
+    watch.arrived('/session/env-1/c')
     fake.set([
       { sessionId: 'a', title: 'Alpha', status: 'idle' },
       { sessionId: 'b', title: 'Beta', status: 'waiting' },
@@ -208,13 +208,13 @@ describe('session notices on the phone', () => {
       'env-1:a',
       'Alpha',
       'Finished',
-      'openmanager://session/a',
+      'openmanager://session/env-1/a',
     )
     expect(native.notify).toHaveBeenCalledWith(
       'env-1:b',
       'Beta',
       'Needs your input',
-      'openmanager://session/b',
+      'openmanager://session/env-1/b',
     )
   })
 
@@ -223,14 +223,14 @@ describe('session notices on the phone', () => {
     await watch.start()
     const fake = fakeClient([{ sessionId: 'a', title: 'Alpha', status: 'running' }])
     connectTo(watch, fake.client)
-    watch.arrived('/session/a')
+    watch.arrived('/session/env-1/a')
     moveTo('background')
     fake.set([{ sessionId: 'a', title: 'Alpha', status: 'error' }])
     expect(native.notify).toHaveBeenCalledWith(
       'env-1:a',
       'Alpha',
       'Stopped with an error',
-      'openmanager://session/a',
+      'openmanager://session/env-1/a',
     )
   })
 
@@ -247,7 +247,7 @@ describe('session notices on the phone', () => {
     const { watch, native } = setup({ saved: 'on' })
     await watch.start()
     connectTo(watch, fakeClient([{ sessionId: 'a', status: 'running' }]).client)
-    watch.arrived('/session/a')
+    watch.arrived('/session/env-1/a')
     expect(native.cancel).toHaveBeenCalledWith('env-1:a')
   })
 
@@ -265,9 +265,77 @@ describe('session notices on the phone', () => {
     expect(ended).toBe(true)
   })
 
-  it('reads the session a path shows', () => {
-    expect(sessionOnPath('/session/abc')).toBe('abc')
-    expect(sessionOnPath('/session/a%20b')).toBe('a b')
-    expect(sessionOnPath('/draft/abc')).toBeNull()
+  it('reads the session a path shows, and its environment', () => {
+    expect(sessionOnPath('/session/env-1/abc')).toEqual({
+      environmentId: 'env-1',
+      sessionId: 'abc',
+    })
+    expect(sessionOnPath('/session/env%201/a%20b')).toEqual({
+      environmentId: 'env 1',
+      sessionId: 'a b',
+    })
+    // An address from before environments were in it.
+    expect(sessionOnPath('/session/abc')).toEqual({ environmentId: null, sessionId: 'abc' })
+    expect(sessionOnPath('/draft/env-1/abc')).toBeNull()
+  })
+
+  describe('with several environments', () => {
+    function connectBoth(
+      watch: ReturnType<typeof createSessionWatch>,
+      links: Record<string, { client: EnvironmentClient | null }>,
+    ) {
+      const listeners = new Set<() => void>()
+      let current = links
+      watch.attach({
+        getState: () => ({ links: current as never }),
+        subscribe: (listener) => {
+          listeners.add(listener)
+          return () => listeners.delete(listener)
+        },
+      })
+      return (next: Record<string, { client: EnvironmentClient | null }>) => {
+        current = next
+        for (const listener of [...listeners]) listener()
+      }
+    }
+
+    it('notifies from every environment, each keyed and linked to its own', async () => {
+      const { watch, native } = setup({ saved: 'on' })
+      await watch.start()
+      const studio = fakeClient([{ sessionId: 'a', title: 'Studio A', status: 'running' }])
+      const laptop = fakeClient([{ sessionId: 'a', title: 'Laptop A', status: 'running' }])
+      connectBoth(watch, { 'env-1': { client: studio.client }, 'env-2': { client: laptop.client } })
+      // The same id on screen in one environment is not the other's session.
+      watch.arrived('/session/env-1/a')
+      studio.set([{ sessionId: 'a', title: 'Studio A', status: 'idle' }])
+      laptop.set([{ sessionId: 'a', title: 'Laptop A', status: 'idle' }])
+      expect(native.notify.mock.calls).toEqual([
+        ['env-2:a', 'Laptop A', 'Finished', 'openmanager://session/env-2/a'],
+      ])
+    })
+
+    it('opening a session takes away only its own environment’s notice', async () => {
+      const { watch, native } = setup({ saved: 'on' })
+      await watch.start()
+      const studio = fakeClient([{ sessionId: 'a', status: 'running' }])
+      const laptop = fakeClient([{ sessionId: 'a', status: 'running' }])
+      connectBoth(watch, { 'env-1': { client: studio.client }, 'env-2': { client: laptop.client } })
+      watch.arrived('/session/env-2/a')
+      expect(native.cancel.mock.calls).toEqual([['env-2:a']])
+    })
+
+    it('stops watching an environment whose client is gone, and picks up one that arrives', async () => {
+      const { watch, native } = setup({ saved: 'on' })
+      await watch.start()
+      const studio = fakeClient([{ sessionId: 'a', title: 'A', status: 'running' }])
+      const laptop = fakeClient([{ sessionId: 'b', title: 'B', status: 'running' }])
+      const move = connectBoth(watch, { 'env-1': { client: studio.client } })
+      move({ 'env-2': { client: laptop.client } })
+      studio.set([{ sessionId: 'a', title: 'A', status: 'idle' }])
+      laptop.set([{ sessionId: 'b', title: 'B', status: 'idle' }])
+      expect(native.notify.mock.calls).toEqual([
+        ['env-2:b', 'B', 'Finished', 'openmanager://session/env-2/b'],
+      ])
+    })
   })
 })

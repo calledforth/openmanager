@@ -14,8 +14,10 @@ import {
 import { exchangePairingToken } from '@openmanager/environment-client/connection'
 import {
   createPhoneConnectionController,
+  linkOf,
+  statusOf,
   type AppActivity,
-  type PhoneConnectionState,
+  type PhoneConnectionStatus,
   type PhoneNetwork,
 } from '../src/environment/controller'
 import {
@@ -315,26 +317,28 @@ describe('phone connection, live', () => {
       },
     })
     cleanups.push(() => controller.dispose())
-    let last: PhoneConnectionState['status'] | undefined
+    let last: PhoneConnectionStatus | undefined
     controller.subscribe(() => {
-      const state = controller.getState()
-      if (state.status === last) return
-      last = state.status
+      const whole = controller.getState()
+      const status = statusOf(whole, paired.environmentId)
+      if (status === last) return
+      last = status
+      const state = linkOf(whole, paired.environmentId)
       note('status', {
-        status: state.status,
-        endpoint: state.endpoint,
-        bootstrap: state.bootstrap.status,
-        protocol: state.protocol,
-        connection: state.connection
+        status,
+        endpoint: state?.endpoint ?? null,
+        bootstrap: state?.bootstrap.status ?? null,
+        protocol: state?.protocol ?? null,
+        connection: state?.connection
           ? { phase: state.connection.phase, failure: state.connection.failure?.code ?? null }
           : null,
-        routeFailure: state.routeFailure?.reason ?? null,
-        socketOrigin: state.socketOrigin,
-        client: state.client ? 'published' : null,
+        routeFailure: state?.routeFailure?.reason ?? null,
+        socketOrigin: state?.socketOrigin ?? null,
+        client: state?.client ? 'published' : null,
       })
     })
     await controller.start()
-    expect(controller.getState().status).toBe('no_environment')
+    expect(statusOf(controller.getState(), paired.environmentId)).toBe('no_environment')
     controller.saveEnvironment({
       environmentId: paired.environmentId,
       endpoint: LAN,
@@ -346,22 +350,26 @@ describe('phone connection, live', () => {
     if (EXPECT_REFUSED) {
       await until(
         'a refused upgrade',
-        () => socketCount > 0 && controller.getState().status === 'waiting',
+        () =>
+          socketCount > 0 && statusOf(controller.getState(), paired.environmentId) === 'waiting',
       )
       note('refused', {
-        status: controller.getState().status,
-        connection: controller.getState().connection,
-        attempt: controller.getState().attempt,
-        socketOrigin: controller.getState().socketOrigin,
+        status: statusOf(controller.getState(), paired.environmentId),
+        connection: linkOf(controller.getState(), paired.environmentId)?.connection,
+        attempt: linkOf(controller.getState(), paired.environmentId)?.attempt,
+        socketOrigin: linkOf(controller.getState(), paired.environmentId)?.socketOrigin,
         warnings: warnings.length,
       })
-      expect(controller.getState().socketOrigin?.from).toBe('route')
+      expect(linkOf(controller.getState(), paired.environmentId)?.socketOrigin?.from).toBe('route')
       expect(warnings).toHaveLength(1)
       return
     }
 
-    await until('connected', () => controller.getState().status === 'connected')
-    const state = controller.getState()
+    await until(
+      'connected',
+      () => statusOf(controller.getState(), paired.environmentId) === 'connected',
+    )
+    const state = linkOf(controller.getState(), paired.environmentId)!
     expect(state.socketOrigin).toEqual({ origin: APP_ORIGIN, from: 'app' })
     expect(warnings).toEqual([])
     expect(state.bootstrap).toMatchObject({ status: 'ready', protocolVersion: PROTOCOL_VERSION })
@@ -421,34 +429,46 @@ describe('phone connection, live', () => {
     // ---- background, and back --------------------------------------------
     const socketsBefore = socketCount
     activity.set('background')
-    await until('held', () => controller.getState().status === 'held')
+    await until('held', () => statusOf(controller.getState(), paired.environmentId) === 'held')
     await new Promise((resolve) => setTimeout(resolve, 3000))
     note('held.quiet', {
       newSockets: socketCount - socketsBefore,
-      status: controller.getState().status,
+      status: statusOf(controller.getState(), paired.environmentId),
     })
     expect(socketCount).toBe(socketsBefore)
     const back = Date.now()
     activity.set('active')
-    await until('connected after foreground', () => controller.getState().status === 'connected')
+    await until(
+      'connected after foreground',
+      () => statusOf(controller.getState(), paired.environmentId) === 'connected',
+    )
     note('foreground.reconnected', {
       ms: Date.now() - back,
-      sameClient: controller.getState().client === client,
+      sameClient: linkOf(controller.getState(), paired.environmentId)?.client === client,
       sessionStillThere: Boolean(client.getState().sessions[sessionId]),
     })
-    expect(controller.getState().client).toBe(client)
+    expect(linkOf(controller.getState(), paired.environmentId)?.client).toBe(client)
 
     // ---- the network goes, and comes back --------------------------------
     network.set({ online: false })
-    await until('offline', () => controller.getState().status === 'offline')
+    await until(
+      'offline',
+      () => statusOf(controller.getState(), paired.environmentId) === 'offline',
+    )
     const online = Date.now()
     network.set({ online: true })
-    await until('connected after network', () => controller.getState().status === 'connected')
+    await until(
+      'connected after network',
+      () => statusOf(controller.getState(), paired.environmentId) === 'connected',
+    )
     note('network.reconnected', { ms: Date.now() - online })
 
     // ---- the owner revokes the phone: one 4401, then nothing --------------
     await owner.commands.revokeAuthorizedClient(paired.clientId)
-    await until('unauthorized', () => controller.getState().status === 'unauthorized')
+    await until(
+      'unauthorized',
+      () => statusOf(controller.getState(), paired.environmentId) === 'unauthorized',
+    )
     const socketsAtRevoke = socketCount
     activity.set('background')
     activity.set('active')
@@ -457,8 +477,8 @@ describe('phone connection, live', () => {
     await new Promise((resolve) => setTimeout(resolve, 5000))
     await controller.flush()
     note('revoked.latched', {
-      status: controller.getState().status,
-      routeFailure: controller.getState().routeFailure,
+      status: statusOf(controller.getState(), paired.environmentId),
+      routeFailure: linkOf(controller.getState(), paired.environmentId)?.routeFailure,
       newSockets: socketCount - socketsAtRevoke,
       paired: controller.getState().environments[0]?.paired,
       secureStoreHasToken: storage.secret(paired.environmentId) !== null,
@@ -466,7 +486,7 @@ describe('phone connection, live', () => {
     })
     expect(storage.secret(paired.environmentId)).toBeNull()
     expect(controller.getState().environments[0]?.paired).toBe(false)
-    expect(controller.getState().status).toBe('unauthorized')
+    expect(statusOf(controller.getState(), paired.environmentId)).toBe('unauthorized')
     expect(socketCount).toBe(socketsAtRevoke)
   })
 })

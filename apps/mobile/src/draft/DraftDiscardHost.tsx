@@ -4,10 +4,11 @@ import { useSidebarDrafts } from '@openmanager/app-core/providers/sidebar-provid
 import { discardHandoff } from './discard-handoff'
 
 /**
- * Makes the discard a draft page asked for once that page has gone
- * (`discardHandoff`). Rendered once, inside the environment's providers.
+ * Makes the discard a draft page of this environment asked for once that
+ * page has gone (`discardHandoff`). Rendered once per environment, inside
+ * that environment's providers.
  */
-export function DraftDiscardHost() {
+export function DraftDiscardHost({ environmentId }: { environmentId: string }) {
   const drafts = useSidebarDrafts()
   const waiting = useSyncExternalStore(
     discardHandoff.subscribe,
@@ -17,7 +18,7 @@ export function DraftDiscardHost() {
   const openDraftId = drafts?.openDraftId ?? null
   const discard = drafts?.discardDraft ?? null
   useEffect(() => {
-    discardHandoff.settle(openDraftId, discard)
-  }, [discard, openDraftId, waiting])
+    discardHandoff.settle(environmentId, openDraftId, discard)
+  }, [discard, environmentId, openDraftId, waiting])
   return null
 }

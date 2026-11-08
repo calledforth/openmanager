@@ -93,7 +93,7 @@ export default function PairScreen() {
   const idle = pairing.phase.kind === 'idle'
   // Nothing is used before the phone has read what it saved: an exchange
   // uses the link up, and its answer must have somewhere to go.
-  const ready = idle && labelRead.ok && state.status !== 'starting'
+  const ready = idle && labelRead.ok && state.loaded
   // The camera reports a code on every frame it sees it: one read per pairing.
   const scanned = useRef(false)
   useEffect(() => {

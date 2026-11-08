@@ -18,7 +18,7 @@ async function connect(h: Harness) {
   await flush()
   h.socket().accept()
   await flush()
-  expect(h.state().status).toBe('connected')
+  expect(h.status()).toBe('connected')
 }
 
 /** Cloudflare's answer for a hostname whose tunnel has no connector running. */
@@ -39,7 +39,7 @@ describe('recovers without a person', () => {
   it('airplane mode on, then off', async () => {
     const h = harness()
     await connect(h)
-    const client = h.state().client
+    const client = h.link().client
 
     h.network.set({ online: false })
     await flush()
@@ -59,7 +59,7 @@ describe('recovers without a person', () => {
     await flush()
     expect(reads(h)).toMatchObject({ kind: 'ready', route: { endpoint: LAN, kind: 'lan' } })
     // The same client: what the screens show was kept through the gap.
-    expect(h.state().client).toBe(client)
+    expect(h.link().client).toBe(client)
   })
 
   it('the tunnel goes down, then comes back', async () => {
@@ -83,7 +83,7 @@ describe('recovers without a person', () => {
     h.timers.advance(2000)
     await flush()
     expect(h.probes.length).toBeGreaterThanOrEqual(3)
-    expect(h.state().status).toBe('waiting')
+    expect(h.status()).toBe('waiting')
 
     // The tunnel is back.
     h.answers.set(TUNNEL, ready())
@@ -110,7 +110,7 @@ describe('recovers without a person', () => {
     h.answers.set(LAN, ready())
     h.timers.advance(1000)
     await flush()
-    expect(h.state().status).toBe('connecting')
+    expect(h.status()).toBe('connecting')
     h.socket().accept()
     await flush()
     expect(reads(h)).toMatchObject({ kind: 'ready', route: { endpoint: LAN } })
@@ -129,7 +129,7 @@ describe('recovers without a person', () => {
     await flush()
     h.network.set({ online: true })
     await flush()
-    expect(h.state()).toMatchObject({ status: 'connecting', endpoint: TUNNEL })
+    expect(h.link()).toMatchObject({ status: 'connecting', endpoint: TUNNEL })
     h.socket().accept()
     await flush()
     expect(reads(h)).toMatchObject({ kind: 'ready', route: { endpoint: TUNNEL, kind: 'tunnel' } })
@@ -156,7 +156,7 @@ describe('recovers without a person', () => {
     h.answers.set(LAN, silent)
     h.socket().drop(1006)
     await flush()
-    expect(h.state()).toMatchObject({ status: 'connecting', endpoint: TUNNEL })
+    expect(h.link()).toMatchObject({ status: 'connecting', endpoint: TUNNEL })
     h.socket().accept()
     await flush()
     expect(reads(h)).toMatchObject({ kind: 'ready', route: { endpoint: TUNNEL } })

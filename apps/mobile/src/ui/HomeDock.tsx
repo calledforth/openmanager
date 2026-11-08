@@ -4,6 +4,8 @@ import type { ReactNode } from 'react'
 import { Text, View, type StyleProp, type ViewStyle } from 'react-native'
 import { useSafeAreaInsets } from 'react-native-safe-area-context'
 
+import { newSessionHref } from '../environment/landing-route'
+import { usePhoneConnectionController } from '../environment/PhoneEnvironmentProvider'
 import { usePhoneTheme } from '../theme/ThemeProvider'
 import { Glass, type GlassStrength } from './Glass'
 import { tap } from './haptics'
@@ -39,6 +41,7 @@ const WIDE: StyleProp<ViewStyle> = {
 export function HomeDock() {
   const theme = usePhoneTheme()
   const router = useRouter()
+  const controller = usePhoneConnectionController()
   const insets = useSafeAreaInsets()
   return (
     <View
@@ -62,7 +65,8 @@ export function HomeDock() {
         label="New chat"
         shape={WIDE}
         strength="strong"
-        onPress={() => router.push('/draft/new')}
+        // In the environment new sessions go to, read at the press.
+        onPress={() => router.push(newSessionHref(controller.getState().selectedId) as never)}
       >
         <NotePencilIcon size={21} color={theme.fg} />
         <Text

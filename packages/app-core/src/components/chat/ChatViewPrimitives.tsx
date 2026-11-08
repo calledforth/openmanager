@@ -2,6 +2,7 @@ import { type ReactNode } from 'react'
 import { MessageParts } from '../parts/MessageParts'
 import { TurnWorkGroup } from '../parts/TurnWorkGroup'
 import {
+  assistantCopyText,
   partitionSettledTurnParts,
   settledTurnLabel,
   UNPROMPTED_TURN_LABEL,
@@ -15,6 +16,7 @@ import { SessionBusyLoader } from '../sidebar/SessionBusyLoader'
 import { CopyMessageButton } from './CopyMessageButton'
 
 export { UserMessage } from './UserMessage'
+export { assistantCopyText } from '../parts/turn-work-group'
 
 type MessagePart = StreamMessagePart
 
@@ -36,26 +38,6 @@ export function ChatLoadingSkeleton() {
       <SessionBusyLoader tone="working" style={{ width: 22, height: 22, gap: 3.5 }} />
     </div>
   )
-}
-
-/**
- * What the copy button under a reply copies: the answer text the reader sees, without tool
- * calls, reasoning or hidden parts. A settled turn with collapsed work copies only the answer
- * below it. Empty while the turn streams, so no button shows.
- */
-export function assistantCopyText(
-  content: string,
-  isFinal: boolean | undefined,
-  parts: MessagePart[] | undefined,
-): string {
-  if (isFinal !== true) return ''
-  if (!parts?.length) return content.trim()
-  const { workParts, finalParts } = partitionSettledTurnParts(parts)
-  return (workParts.length > 0 ? finalParts : parts)
-    .filter((part) => part.type === 'text' && !part.synthetic && !part.ignored)
-    .map((part) => (typeof part.text === 'string' ? part.text.trim() : ''))
-    .filter(Boolean)
-    .join('\n\n')
 }
 
 export function AssistantMessage({

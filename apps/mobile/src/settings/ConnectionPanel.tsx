@@ -1,10 +1,5 @@
 import { useRouter } from 'expo-router'
-import {
-  ArrowClockwiseIcon,
-  ArrowsLeftRightIcon,
-  QrCodeIcon,
-  WifiSlashIcon,
-} from 'phosphor-react-native'
+import { ArrowClockwiseIcon, QrCodeIcon, WifiSlashIcon } from 'phosphor-react-native'
 import { useState } from 'react'
 import { Linking, Platform, View } from 'react-native'
 import Animated, { FadeIn } from 'react-native-reanimated'
@@ -28,8 +23,7 @@ const WORDS_IN = FadeIn.duration(180)
 /**
  * Where the connection stands when it is not simply connected: the shared
  * derivation's title, words and cause, the controller's retry countdown, and
- * the next steps as rows (try now, pair again, switch environment, network
- * settings). The same panel sits on the environment's page and on the
+ * the next steps as rows (try now, pair again, network settings). The same panel sits on the environment's page and on the
  * sessions home. The countdown ticks in its own small component, so a tick
  * renders only its line.
  */
@@ -44,7 +38,8 @@ export function ConnectionPanel({ view }: { view: PhoneConnectionView }) {
   const run = (step: PhoneNextStep) => {
     switch (step) {
       case 'retry':
-        controller.retry()
+        // This environment's connection only: every other keeps its own.
+        controller.retry(view.environmentId ?? undefined)
         return
       case 'pair':
         router.push('/pair')
@@ -57,9 +52,6 @@ export function ConnectionPanel({ view }: { view: PhoneConnectionView }) {
             ? { pathname: '/pair', params: { again: view.environmentId } }
             : '/pair',
         )
-        return
-      case 'switch_environment':
-        router.navigate('/settings')
         return
       case 'network_settings':
         void openNetworkSettings(Platform.OS, Linking).then((opened) => {
@@ -130,8 +122,6 @@ function NextStepIcon({ step }: { step: PhoneNextStep }) {
     case 'pair':
     case 'pair_again':
       return <QrCodeIcon size={17} color={theme.fg} />
-    case 'switch_environment':
-      return <ArrowsLeftRightIcon size={17} color={theme.fg} />
     case 'network_settings':
       return <WifiSlashIcon size={17} color={theme.fg} />
   }

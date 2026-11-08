@@ -58,6 +58,26 @@ export function partitionSettledTurnParts(parts: readonly StreamMessagePart[]): 
   }
 }
 
+/**
+ * What the copy button under a reply copies: the answer text the reader sees, without tool
+ * calls, reasoning or hidden parts. A settled turn with collapsed work copies only the answer
+ * below it. Empty while the turn streams, so no button shows.
+ */
+export function assistantCopyText(
+  content: string,
+  isFinal: boolean | undefined,
+  parts: readonly StreamMessagePart[] | undefined,
+): string {
+  if (isFinal !== true) return ''
+  if (!parts?.length) return content.trim()
+  const { workParts, finalParts } = partitionSettledTurnParts(parts)
+  return (workParts.length > 0 ? finalParts : parts)
+    .filter((part) => part.type === 'text' && !part.synthetic && !part.ignored)
+    .map((part) => (typeof part.text === 'string' ? part.text.trim() : ''))
+    .filter(Boolean)
+    .join('\n\n')
+}
+
 const LIFTED_NOTICE_KINDS = new Set(['compacted', 'model_fallback', 'refusal', 'usage_warning'])
 
 function noticeKind(part: StreamMessagePart): string {

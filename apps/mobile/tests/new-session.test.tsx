@@ -22,14 +22,19 @@ import type { ComposerModel } from '../src/composer/model'
 import type { ProjectSource } from '../src/composer/ProjectSheet'
 
 const connection = {
-  status: 'connected',
+  loaded: true,
   environments: [],
   selectedId: null,
-  endpoint: null,
+  links: {},
   activity: 'active',
+  network: { online: true },
 } as unknown as PhoneConnectionState
 vi.mock('../src/environment/PhoneEnvironmentProvider', () => ({
   usePhoneConnection: () => connection,
+  // Every page here is `env-1`'s (`E` below), and it is connected.
+  usePageEnvironmentId: () => 'env-1',
+  useEnvironmentLabel: () => 'Desk',
+  usePageConnectionStatus: () => 'connected',
 }))
 
 const { useLiveComposerModel, draftSendBlocked } =
@@ -38,8 +43,15 @@ const { ThreadBridge } = await import('../src/composer/thread-port')
 const { pressPrimary } = await import('../src/composer/model')
 const { useProjectSource } = await import('../src/draft/useProjectSource')
 const { useReadOnlySession } = await import('../src/session/useReadOnlySession')
-const { landingOf, draftHref, sessionHref } = await import('../src/environment/landing-route')
+const { landingOf, draftHref, sessionHref, sessionOnPath, sessionRowHref, draftRowHref } =
+  await import('../src/environment/landing-route')
 const { createPhoneNavigation, ARRIVAL_TIMEOUT_MS } = await import('../src/environment/navigation')
+
+/** The environment every page in these tests belongs to. */
+const E = 'env-1'
+const BLANK = draftHref(E, null)
+const draftPage = (draftId: string) => draftHref(E, draftId)
+const sessionPage = (sessionId: string) => sessionHref(E, sessionId)
 const { svgOfDataUrl } = await import('../src/ui/project-icon')
 const { DraftDiscardHost } = await import('../src/draft/DraftDiscardHost')
 const { discardHandoff } = await import('../src/draft/discard-handoff')
@@ -47,17 +59,62 @@ const { DRAFT_SYNC_EXPLANATION } = await import('@openmanager/app-core/logic')
 const { useSidebarDrafts } = await import('@openmanager/app-core/providers/sidebar-provider')
 
 describe('the landing, by address', () => {
+  const OFF = { onLanding: false, environmentId: null, draftId: null }
+
   it('reads the blank page, a draft page, and everything else', () => {
-    expect(landingOf('/draft/new')).toEqual({ onLanding: true, draftId: null })
-    expect(landingOf('/draft/d%201')).toEqual({ onLanding: true, draftId: 'd 1' })
-    expect(landingOf('/draft/abc/')).toEqual({ onLanding: true, draftId: 'abc' })
-    expect(landingOf('/')).toEqual({ onLanding: false, draftId: null })
-    expect(landingOf('/session/s1')).toEqual({ onLanding: false, draftId: null })
-    expect(landingOf('/draft/')).toEqual({ onLanding: false, draftId: null })
-    expect(landingOf('/draft/a/b')).toEqual({ onLanding: false, draftId: null })
-    expect(draftHref(null)).toBe('/draft/new')
-    expect(draftHref('d 1')).toBe('/draft/d%201')
-    expect(sessionHref('s/1')).toBe('/session/s%2F1')
+    expect(landingOf('/draft/env-1/new')).toEqual({
+      onLanding: true,
+      environmentId: 'env-1',
+      draftId: null,
+    })
+    expect(landingOf('/draft/env%201/d%201')).toEqual({
+      onLanding: true,
+      environmentId: 'env 1',
+      draftId: 'd 1',
+    })
+    expect(landingOf('/draft/env-1/abc/')).toEqual({
+      onLanding: true,
+      environmentId: 'env-1',
+      draftId: 'abc',
+    })
+    expect(landingOf('/')).toEqual(OFF)
+    expect(landingOf('/session/env-1/s1')).toEqual(OFF)
+    expect(landingOf('/draft/')).toEqual(OFF)
+    expect(landingOf('/draft/env-1/')).toEqual(OFF)
+    // An address from before environments were in it is no landing: its
+    // page moves it to its environment's address first.
+    expect(landingOf('/draft/new')).toEqual(OFF)
+    expect(landingOf('/draft/abc')).toEqual(OFF)
+    expect(landingOf('/draft/a/b/c')).toEqual(OFF)
+  })
+
+  it('writes every address as its environment’s own', () => {
+    expect(draftHref('env-1', null)).toBe('/draft/env-1/new')
+    expect(draftHref('env 1', 'd 1')).toBe('/draft/env%201/d%201')
+    expect(sessionHref('env-1', 's/1')).toBe('/session/env-1/s%2F1')
+    expect(sessionHref('a/b', 's1')).toBe('/session/a%2Fb/s1')
+    // Written and read back.
+    expect(landingOf(draftHref('a/b', 'c/d'))).toEqual({
+      onLanding: true,
+      environmentId: 'a/b',
+      draftId: 'c/d',
+    })
+    expect(sessionOnPath(sessionHref('a/b', 'c/d'))).toEqual({
+      environmentId: 'a/b',
+      sessionId: 'c/d',
+    })
+  })
+
+  it('opens a listed row through its own environment, and the fixture’s at its old address', () => {
+    const on = { environmentId: 'env-2' }
+    expect(sessionRowHref({ externalId: 's 1', environment: on })).toBe('/session/env-2/s%201')
+    expect(draftRowHref({ draftId: 'd/1', environment: on })).toBe('/draft/env-2/d%2F1')
+    // The same ids on another environment are other pages.
+    expect(sessionRowHref({ externalId: 's 1', environment: { environmentId: 'env-1' } })).toBe(
+      '/session/env-1/s%201',
+    )
+    expect(sessionRowHref({ externalId: 'fixture' })).toBe('/session/fixture')
+    expect(draftRowHref({ draftId: 'fixture' })).toBe('/draft/fixture')
   })
 })
 
@@ -77,8 +134,8 @@ function fakeRouter() {
 describe('the phone navigation', () => {
   it('turns the blank page into its draft in place, and answers once the address reads it', async () => {
     const { moves, router } = fakeRouter()
-    const navigation = createPhoneNavigation(router)
-    navigation.arrived('/draft/new')
+    const navigation = createPhoneNavigation(router, { environmentId: E })
+    navigation.arrived(BLANK)
     let settled = false
     const claimed = navigation.navigateDraft('d1', { replace: true }).then(() => {
       settled = true
@@ -86,62 +143,80 @@ describe('the phone navigation', () => {
     expect(moves).toEqual(['setParams {"draftId":"d1"}'])
     await Promise.resolve()
     expect(settled).toBe(false)
-    navigation.arrived('/draft/d1')
+    navigation.arrived(draftPage('d1'))
     await claimed
     expect(settled).toBe(true)
   })
 
   it('replaces the draft page with its session, and pushes from anywhere else', async () => {
     const { moves, router } = fakeRouter()
-    const navigation = createPhoneNavigation(router)
-    navigation.arrived('/draft/d1')
+    const navigation = createPhoneNavigation(router, { environmentId: E })
+    navigation.arrived(draftPage('d1'))
     const sent = navigation.navigateSession('s1', { replace: true })
-    navigation.arrived('/session/s1')
+    navigation.arrived(sessionPage('s1'))
     await sent
     const blank = navigation.navigateSession(null)
-    navigation.arrived('/draft/new')
+    navigation.arrived(BLANK)
     await blank
     const draft = navigation.navigateDraft('d2')
-    navigation.arrived('/draft/d2')
+    navigation.arrived(draftPage('d2'))
     await draft
-    expect(moves).toEqual(['replace /session/s1', 'push /draft/new', 'push /draft/d2'])
+    expect(moves).toEqual([
+      'replace /session/env-1/s1',
+      'push /draft/env-1/new',
+      'push /draft/env-1/d2',
+    ])
   })
 
   it('a blank page asked for on a draft page is that page, and nothing moves to where it is', async () => {
     const { moves, router } = fakeRouter()
-    const navigation = createPhoneNavigation(router)
-    navigation.arrived('/draft/d1')
+    const navigation = createPhoneNavigation(router, { environmentId: E })
+    navigation.arrived(draftPage('d1'))
     const blank = navigation.navigateSession(null, { replace: true })
-    navigation.arrived('/draft/new')
+    navigation.arrived(BLANK)
     await blank
     await navigation.navigateDraft('d1', { replace: true }).catch(() => undefined)
     expect(moves[0]).toBe('setParams {"draftId":"new"}')
     // Already there: answered at once, with no second move.
-    navigation.arrived('/draft/d1')
+    navigation.arrived(draftPage('d1'))
     await navigation.navigateDraft('d1')
     expect(moves).toHaveLength(2)
+  })
+
+  it('treats another environment’s new-session page as somewhere else', async () => {
+    const { moves, router } = fakeRouter()
+    const navigation = createPhoneNavigation(router, { environmentId: E })
+    // The other environment's blank page is in front: not this one's landing.
+    navigation.arrived(draftHref('env-2', null))
+    const draft = navigation.navigateDraft('d1', { replace: true })
+    navigation.arrived(draftPage('d1'))
+    await draft
+    expect(moves).toEqual(['replace /draft/env-1/d1'])
   })
 
   it('opens no session in place of a page the reader has left', async () => {
     const { moves, router } = fakeRouter()
     const stayed: string[] = []
-    const navigation = createPhoneNavigation(router, { stayed: (id) => stayed.push(id) })
+    const navigation = createPhoneNavigation(router, {
+      environmentId: E,
+      stayed: (id) => stayed.push(id),
+    })
     navigation.arrived('/')
     await navigation.navigateSession('s1', { replace: true })
     expect(moves).toEqual([])
     expect(stayed).toEqual(['s1'])
     // Asked for outright (not in a page's place), it still opens.
     const pushed = navigation.navigateSession('s2')
-    navigation.arrived('/session/s2')
+    navigation.arrived(sessionPage('s2'))
     await pushed
-    expect(moves).toEqual(['push /session/s2'])
+    expect(moves).toEqual(['push /session/env-1/s2'])
   })
 
   it('settles a navigation the address never reaches', async () => {
     vi.useFakeTimers()
     try {
       const { router } = fakeRouter()
-      const navigation = createPhoneNavigation(router)
+      const navigation = createPhoneNavigation(router, { environmentId: E })
       navigation.arrived('/')
       let settled = false
       void navigation.navigateSession('s1').then(() => {
@@ -282,7 +357,7 @@ function SessionPage({ sessionId }: { sessionId: string }) {
  * the landing read from it; at `/session/<id>`, the session page's hook.
  */
 function Host({ client, moves }: { client: MockEnvironmentClient; moves: string[] }) {
-  const [path, setPath] = useState('/draft/new')
+  const [path, setPath] = useState<string>(BLANK)
   const [navigation] = useState(() =>
     createPhoneNavigation(
       {
@@ -296,10 +371,11 @@ function Host({ client, moves }: { client: MockEnvironmentClient; moves: string[
         },
         setParams: (params) => {
           moves.push(`setParams ${JSON.stringify(params)}`)
-          setPath(draftHref(params.draftId === 'new' ? null : params.draftId!))
+          setPath(draftHref(E, params.draftId === 'new' ? null : params.draftId!))
         },
       },
       {
+        environmentId: E,
         stayed: (sessionId) => {
           moves.push(`stayed ${sessionId}`)
           if (client.getState().activeSessionId === sessionId) client.setActiveSession(null)
@@ -311,9 +387,7 @@ function Host({ client, moves }: { client: MockEnvironmentClient; moves: string[
   probe.path = path
   probe.go = setPath
   const landing = landingOf(path)
-  const sessionId = path.startsWith('/session/')
-    ? decodeURIComponent(path.slice('/session/'.length))
-    : null
+  const sessionId = sessionOnPath(path)?.sessionId ?? null
   return (
     <EnvironmentClientProvider client={client}>
       <EnvironmentApplicationProviders
@@ -326,7 +400,7 @@ function Host({ client, moves }: { client: MockEnvironmentClient; moves: string[
         {landing.onLanding ? <Probe /> : null}
         {sessionId ? <SessionPage key={sessionId} sessionId={sessionId} /> : null}
         <DraftsProbe />
-        <DraftDiscardHost />
+        <DraftDiscardHost environmentId={E} />
       </EnvironmentApplicationProviders>
     </EnvironmentClientProvider>
   )
@@ -427,7 +501,7 @@ describe('a new session from the phone', () => {
     const draftId = probe.session.newSessionDraftId!
     expect(draftId).toBeTruthy()
     expect(moves).toEqual([`setParams {"draftId":"${draftId}"}`])
-    expect(probe.path).toBe(`/draft/${draftId}`)
+    expect(probe.path).toBe(draftPage(draftId))
     expect(probe.model.text).toBe('Fix the flaky test')
 
     // Another project, picked from the sheet: the text goes with it.
@@ -455,8 +529,8 @@ describe('a new session from the phone', () => {
     })
     const sessionId = created!.sessionId as string
     expect(client.getState().sessions[sessionId]?.workspaceId).toBe(BETA.workspaceId)
-    expect(moves.at(-1)).toBe(`replace /session/${sessionId}`)
-    expect(probe.path).toBe(`/session/${sessionId}`)
+    expect(moves.at(-1)).toBe(`replace ${sessionPage(sessionId)}`)
+    expect(probe.path).toBe(sessionPage(sessionId))
 
     // The session's page opens it, though the launch already made it the
     // client's active one: only an open subscribes it, so the reply arrives.
@@ -499,7 +573,7 @@ describe('a new session from the phone', () => {
     expect(moves.at(-1)).toBe(`stayed ${sessionId}`)
     // No page holds it, so the client does not either; the next compose is a fresh page.
     expect(client.getState().activeSessionId).toBeNull()
-    await act(async () => probe.go('/draft/new'))
+    await act(async () => probe.go(BLANK))
     await settle(client)
     expect(probe.session.isSessionDraftOpen).toBe(true)
     expect(probe.model.text).toBe('')
@@ -592,7 +666,7 @@ describe('a new session from the phone', () => {
     })
     // Back to the home, then a new session: draft B, in the landing project.
     await act(async () => probe.go('/'))
-    await act(async () => probe.go('/draft/new'))
+    await act(async () => probe.go(BLANK))
     await act(async () => probe.model.setText('Draft B'))
     await act(() => adding)
     await settle(client)
@@ -653,7 +727,7 @@ describe('drafts on the phone', () => {
     const draftId = probe.session.newSessionDraftId!
 
     // The page asks, then goes back: nothing is discarded while it is in front.
-    await act(async () => discardHandoff.request(draftId))
+    await act(async () => discardHandoff.request({ environmentId: E, draftId }))
     expect(probe.drafts?.pendingDiscard).toBeNull()
     await act(async () => probe.go('/'))
     await settle(client)

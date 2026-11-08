@@ -6,8 +6,13 @@ import {
 } from '@openmanager/environment-client/connection'
 
 import { endpointHost } from '../environment/connected-route'
-import type { PhoneConnectionView, PhoneConnectionTone } from '../environment/connection-ui'
-import type { PhoneConnectionState, PhoneEnvironment } from '../environment/controller'
+import {
+  phoneConnectionView,
+  type PhoneConnectionReading,
+  type PhoneConnectionTone,
+  type PhoneConnectionView,
+} from '../environment/connection-ui'
+import type { PhoneEnvironment } from '../environment/controller'
 import {
   ROUTE_KIND_LABELS,
   phoneRouteOrder,
@@ -37,12 +42,17 @@ export type RouteRowView = {
 export type EnvironmentCardView = {
   environmentId: string
   label: string
-  /** The environment the phone connects to. */
+  /** The one new sessions go to unless another is picked. */
   selected: boolean
+  /**
+   * The word on its card: `here` with one environment saved, as before;
+   * with several, `default` on the one new sessions go to. Null otherwise.
+   */
+  pill: 'here' | 'default' | null
   /** The phone holds a token for it. */
   paired: boolean
   tone: PhoneConnectionTone
-  /** The route in use (selected and connected), else the one the phone would ask first. */
+  /** The route in use, while connected. */
   route: { kind: RouteKind; host: string } | null
   /** A short line when there is no route in use to show: the state, in the shared words. */
   words: string | null
@@ -132,57 +142,29 @@ export function pageStatusWords(view: PhoneConnectionView): string {
 export const ROUTE_ORDER_NOTE =
   'Usually this device and the local network first, then the rest. After a drop the route in use is tried again first, and one that just failed waits about a minute.'
 
-const HEALTH_TONES: Record<RouteHealthStatus, PhoneConnectionTone> = {
-  available: 'ok',
-  unknown: 'idle',
-  unreachable: 'warn',
-  unauthorized: 'error',
-}
-
 /**
- * The Settings cards, one per saved environment, in the saved order. The
- * selected one reads the live connection; the others, which the phone is not
- * connected to, show the last thing it learned about their first route.
+ * The Settings cards, one per saved environment, in the saved order, each
+ * reading its own live connection: every saved environment is connected at
+ * once. `selected` is the one new sessions go to.
  */
-export function environmentCards(
-  state: PhoneConnectionState,
-  view: PhoneConnectionView,
-): EnvironmentCardView[] {
+export function environmentCards(state: PhoneConnectionReading): EnvironmentCardView[] {
   return state.environments.map((environment) => {
+    const view = phoneConnectionView(state, environment.environmentId)
+    const words = environment.paired ? shortConnectionWords(view) : 'Needs pairing again'
+    const shown = view.route
+      ? { kind: view.route.kind, host: endpointHost(view.route.endpoint) }
+      : null
     const selected = environment.environmentId === state.selectedId
-    const routes = routeRows(environment, selected ? (view.route?.endpoint ?? null) : null)
-    if (selected) {
-      const words = environment.paired ? shortConnectionWords(view) : 'Needs pairing again'
-      const shown = view.route
-        ? { kind: view.route.kind, host: endpointHost(view.route.endpoint) }
-        : null
-      return {
-        environmentId: environment.environmentId,
-        label: environment.label,
-        selected,
-        paired: environment.paired,
-        tone: environment.paired ? view.tone : 'error',
-        route: shown,
-        words: shown ? null : words,
-        since: null,
-      }
-    }
-    // The route that last answered, else the first the phone would ask.
-    const first = routes.find((route) => route.health === 'available') ?? routes[0]
     return {
       environmentId: environment.environmentId,
       label: environment.label,
       selected,
+      pill: !selected ? null : state.environments.length > 1 ? 'default' : 'here',
       paired: environment.paired,
-      tone: environment.paired ? (first ? HEALTH_TONES[first.health] : 'idle') : 'error',
-      route:
-        first && first.health !== 'unreachable' ? { kind: first.kind, host: first.host } : null,
-      words: !environment.paired
-        ? 'Needs pairing again'
-        : first && first.health === 'unreachable'
-          ? first.healthWords
-          : null,
-      since: environment.paired && first?.health === 'unreachable' ? first.changedAt : null,
+      tone: environment.paired ? view.tone : 'error',
+      route: shown,
+      words: shown ? null : words,
+      since: null,
     }
   })
 }

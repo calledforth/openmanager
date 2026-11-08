@@ -24,7 +24,6 @@ import {
   routeHealthFromConnection,
   searchRoutes,
   selectStoredEnvironment,
-  selectedStoredEnvironment,
   setStoredRouteHealth,
   upsertStoredEnvironment,
   writeEnvironmentRegistry,
@@ -71,13 +70,14 @@ export interface NetworkSource {
 }
 
 /**
- * Where the connection stands. The phone's own, not the web's
+ * Where one environment's connection stands. The phone's own, not the web's
  * `ConnectionUiState`: there is no browser here to block a loopback address
  * or hide a gateway's answer, and the words a person reads are the
  * connection screens' to choose, from this state.
  *
- * - `starting`: reading what the phone saved.
- * - `no_environment`: nothing saved, or nothing selected.
+ * - `starting`: reading what the phone saved (the whole phone, before any
+ *   environment is known).
+ * - `no_environment`: nothing saved (the whole phone).
  * - `searching`: asking the environment's saved routes, local network first.
  * - `connecting`: a route answered as this environment, in this protocol; the
  *   socket is opening and shaking hands.
@@ -102,6 +102,9 @@ export type PhoneConnectionStatus =
   | 'offline'
   | 'unauthorized'
   | 'incompatible_protocol'
+
+/** Where one saved environment's own connection stands. */
+export type PhoneLinkStatus = Exclude<PhoneConnectionStatus, 'starting' | 'no_environment'>
 
 /** A saved environment as views see it: everything but the token. */
 export type PhoneEnvironment = {
@@ -135,11 +138,15 @@ export type ConnectionStorage = Pick<PhoneStorage, 'registry' | 'hydrate' | 'flu
  */
 export type SocketOrigin = { origin: string | null; from: 'app' | 'route' }
 
-export type PhoneConnectionState = {
-  status: PhoneConnectionStatus
-  environments: readonly PhoneEnvironment[]
-  selectedId: string | null
-  /** The route the socket uses, or last used, for the selected environment. */
+/**
+ * One saved environment's connection. Each saved environment has its own,
+ * with its own route search, token, retries and refusals: one that is down
+ * or refused this phone leaves every other as it was.
+ */
+export type PhoneLinkState = {
+  environmentId: string
+  status: PhoneLinkStatus
+  /** The route the socket uses, or last used. */
   endpoint: string | null
   /** What that route answered at `GET /bootstrap`. */
   bootstrap: BootstrapOutcome
@@ -152,8 +159,6 @@ export type PhoneConnectionState = {
    * answered with. They are equal once a route has answered `ready`.
    */
   protocol: { client: number; environment: number | null }
-  activity: AppActivity
-  network: PhoneNetwork
   /** Consecutive failed searches and sockets since the last reset. */
   attempt: number
   /** When the next search starts on its own (ms since the epoch), while `waiting`. */
@@ -164,9 +169,26 @@ export type PhoneConnectionState = {
    * The client views read and send through, once the environment has accepted
    * its socket. It stays through a background hold, a network gap and a
    * change of route, so views keep what they show; it goes when the token is
-   * refused, the protocol does not match, or the environment changes.
+   * refused, the protocol does not match, or the environment is removed.
    */
   client: EnvironmentClient | null
+}
+
+export type PhoneConnectionState = {
+  /** The saved registry has been read. Before that nothing is known, not even that nothing is saved. */
+  loaded: boolean
+  /** Every saved environment, in the saved order. */
+  environments: readonly PhoneEnvironment[]
+  /**
+   * The environment a new session goes to unless another is picked: the one
+   * last paired or picked. Every saved environment is connected, whatever
+   * this is. `null` only with nothing saved.
+   */
+  selectedId: string | null
+  /** Each saved environment's own connection, by environment ID. */
+  links: Readonly<Record<string, PhoneLinkState>>
+  activity: AppActivity
+  network: PhoneNetwork
 }
 
 export type SaveEnvironmentInput = {
@@ -206,16 +228,17 @@ export type AddRouteInput = {
 export interface PhoneConnectionController {
   getState(): PhoneConnectionState
   subscribe(listener: () => void): () => void
-  /** Read the saved registry and connect to the selected environment. */
+  /** Read the saved registry and connect to every saved environment. */
   start(): Promise<void>
-  /** Make a saved environment the one to connect to. */
+  /** Make a saved environment the one new sessions go to. Connects nothing: every one already is. */
   selectEnvironment(environmentId: string): void
   /**
    * Save an environment this phone now holds a token for (a pairing answered)
-   * and connect to it. The endpoint becomes its first route.
+   * and connect to it, beside every other. The endpoint becomes its first
+   * route, and it becomes the one new sessions go to.
    */
   saveEnvironment(input: SaveEnvironmentInput): void
-  /** Forget an environment, its routes and its token. */
+  /** Forget an environment, its routes and its token, and close its connection only. */
   removeEnvironment(environmentId: string): void
   /** Where an address stands against the saved registry; never carries a token. */
   classifyRoute(input: {
@@ -230,9 +253,9 @@ export interface PhoneConnectionController {
   checkRoute(endpoint: string): Promise<BootstrapOutcome>
   /**
    * Add an address a person agreed to (`RouteStanding.sendsSavedCredential`)
-   * to a saved environment as its last choice of route, select that
-   * environment and search again. `false` when the environment is not saved
-   * or already has the address.
+   * to a saved environment as its last choice of route, and search its
+   * routes again. `false` when the environment is not saved or already has
+   * the address.
    */
   addRoute(input: AddRouteInput): boolean
   /**
@@ -242,8 +265,11 @@ export interface PhoneConnectionController {
    * `false` when there was nothing to fill.
    */
   fillAppOrigin(input: { environmentId: string; appOrigin: string }): boolean
-  /** A person asked to try again: clears a refusal and searches at once. */
-  retry(): void
+  /**
+   * A person asked to try again: clears that environment's refusal and
+   * searches its routes at once. With no environment named, every one.
+   */
+  retry(environmentId?: string): void
   /** Resolves once every registry write handed in so far has finished. */
   flush(): Promise<void>
   dispose(): void
@@ -323,7 +349,6 @@ const CANCELLED: BootstrapOutcome = {
 const IDLE: BootstrapOutcome = { status: 'idle' }
 
 type Transport = {
-  environmentId: string
   endpoint: string
   credential: string
   /** The app origin the socket was dialled with, `null` for the route's own. */
@@ -345,7 +370,6 @@ type Transport = {
 }
 
 type Latch = {
-  environmentId: string
   status: 'unauthorized' | 'incompatible_protocol'
   /**
    * For a socket's protocol refusal: the route whose bootstrap is asked for
@@ -361,6 +385,21 @@ type Latch = {
 
 type Wake = 'start' | 'select' | 'retry' | 'foreground' | 'online' | 'activity' | 'timer' | 'socket'
 
+/** One saved environment's connection, as the controller drives it. */
+type Link = {
+  /** The one place that decides what this connection does next. */
+  wake(reason: Wake): void
+  /** Start over from zero: the retry delays and the failed sockets forgotten. */
+  restart(reason: Wake): void
+  /** A person asked: the refusal is let go. */
+  clearLatch(): void
+  /** Close and forget the socket and its client, so the next dial makes a new one. */
+  retire(): void
+  /** The saved token or app origin changed: a socket on the old one is retired. */
+  saved(environment: StoredEnvironment): void
+  dispose(): void
+}
+
 function view(registry: EnvironmentRegistry): PhoneEnvironment[] {
   return registry.environments.map((environment) => ({
     environmentId: environment.environmentId,
@@ -371,25 +410,47 @@ function view(registry: EnvironmentRegistry): PhoneEnvironment[] {
   }))
 }
 
+/** The one new sessions go to: the saved choice, else the first saved. */
+function defaultOf(registry: EnvironmentRegistry): string | null {
+  return registry.selectedId ?? registry.environments[0]?.environmentId ?? null
+}
+
+function freshLink(environmentId: string): PhoneLinkState {
+  return {
+    environmentId,
+    status: 'searching',
+    endpoint: null,
+    bootstrap: IDLE,
+    routeFailure: null,
+    connection: null,
+    protocol: { client: PROTOCOL_VERSION, environment: null },
+    attempt: 0,
+    retryAt: null,
+    socketOrigin: null,
+    client: null,
+  }
+}
+
 /**
- * The phone's connection controller: one per app. It picks the selected
- * environment from the saved registry, searches its routes local network
- * first with the shared `searchRoutes`, opens one environment client on the
- * route that answered, and follows the phone's lifecycle: it holds (closes the
- * socket and stops every timer) while the app is in the background or the
- * device is offline, and searches again the moment the app is back on screen
- * or the network returns.
+ * The phone's connection controller: one per app. It connects to every
+ * saved environment at once, each on its own link: each searches its own
+ * routes local network first with the shared `searchRoutes`, opens one
+ * environment client on the route that answered, retries on its own delays
+ * and latches on its own refusals. Every link follows the phone's lifecycle:
+ * it holds (closes the socket and stops every timer) while the app is in the
+ * background or the device is offline, and searches again the moment the app
+ * is back on screen or the network returns.
  *
- * The controller is the only thing that retries. The environment client is
+ * The controller is the only thing that retries. Each environment client is
  * created with `maxAttempts: 0`, so a dropped socket comes back here instead
  * of redialling the same route on its own: the next attempt may need another
  * route (the phone left the LAN), and in the background it must not happen at
  * all.
  *
  * What it records is this device's own: which routes answered, the label an
- * environment gave, which environment is selected. Everything the environment
- * owns arrives through the client's snapshots and events and is never
- * written, merged or guessed at here.
+ * environment gave, which environment new sessions go to. Everything an
+ * environment owns arrives through its client's snapshots and events and is
+ * never written, merged or guessed at here.
  */
 export function createPhoneConnectionController(
   options: PhoneConnectionOptions,
@@ -405,28 +466,6 @@ export function createPhoneConnectionController(
   const probeTimeoutMs = options.probeTimeoutMs ?? PROBE_TIMEOUT_MS
   const socketFailureCooldownMs =
     options.socketFailureCooldownMs ?? PHONE_SOCKET_FAILURE_COOLDOWN_MS
-  /** Routes whose socket failed soon after their bootstrap answered, and when. */
-  const socketFailures = new Map<string, number>()
-  /**
-   * The phone's search order with each route whose socket failed within the
-   * cooldown moved behind the others. Moved, not dropped: when nothing else
-   * answers it is still asked.
-   */
-  const demoteFailedSockets = (environment: StoredEnvironment): StoredEnvironment => {
-    const ordered = phoneSearchOrder(environment)
-    const failed = (endpoint: string) => {
-      const at = socketFailures.get(endpoint)
-      return at !== undefined && now() - at < socketFailureCooldownMs
-    }
-    if (!ordered.routes.some((route) => failed(route.endpoint))) return ordered
-    return {
-      ...ordered,
-      routes: [
-        ...ordered.routes.filter((route) => !failed(route.endpoint)),
-        ...ordered.routes.filter((route) => failed(route.endpoint)),
-      ],
-    }
-  }
   const warn = options.warn ?? ((message: string) => console.warn(message))
   const probeRoute =
     options.probe ??
@@ -438,22 +477,6 @@ export function createPhoneConnectionController(
         signal: withDeadline(signal, probeTimeoutMs),
         loopbackAccessDenied: noLoopbackGate,
       }))
-  /**
-   * The shared search, every probe tied to `signal`. Once the search is
-   * cancelled (hold, offline, another search, dispose) a probe in flight is
-   * aborted, and the routes `searchRoutes` would ask after it are answered
-   * at once without a request.
-   */
-  const search = (
-    environment: StoredEnvironment,
-    signal: AbortSignal,
-    first?: string,
-  ): Promise<RouteSearchResult> =>
-    searchRoutes(demoteFailedSockets(environment), {
-      first,
-      probe: (endpoint) =>
-        signal.aborted ? Promise.resolve(CANCELLED) : probeRoute(endpoint, signal),
-    })
 
   let registry: EnvironmentRegistry = EMPTY_REGISTRY
   /** Environments already reported as dialling without an app origin. */
@@ -463,42 +486,29 @@ export function createPhoneConnectionController(
   let disposed = false
   let activity = options.activity.current()
   let network = options.network.current()
-  let latch: Latch | null = null
   /** The wait before asking the storage to load again, while there is one. */
   let hydrateWait: { resolve: () => void; timer: unknown } | null = null
-  /** The bootstrap read explaining a socket's protocol refusal, while in flight. */
-  let refusalRead: AbortController | null = null
-  /** The bootstrap read deciding whether to forget a refused token, while in flight. */
-  let rejectionCheck: AbortController | null = null
-  let searchGeneration = 0
-  let searchAbort: AbortController | null = null
-  let retryTimer: unknown = null
-  let attempt = 0
-  let transport: Transport | null = null
+  const links = new Map<string, Link>()
   const stores = new Map<string, EnvironmentStore>()
   const releases: Array<() => void> = []
   const listeners = new Set<() => void>()
 
   let state: PhoneConnectionState = {
-    status: 'starting',
+    loaded: false,
     environments: [],
     selectedId: null,
-    endpoint: null,
-    bootstrap: IDLE,
-    routeFailure: null,
-    connection: null,
-    protocol: { client: PROTOCOL_VERSION, environment: null },
+    links: {},
     activity,
     network,
-    attempt: 0,
-    retryAt: null,
-    socketOrigin: null,
-    client: null,
   }
 
-  const set = (patch: Partial<PhoneConnectionState>) => {
+  const tell = () => {
+    for (const listener of [...listeners]) listener()
+  }
+
+  const set = (patch: Partial<Omit<PhoneConnectionState, 'links'>>) => {
     let changed = false
-    for (const key of Object.keys(patch) as Array<keyof PhoneConnectionState>) {
+    for (const key of Object.keys(patch) as Array<keyof typeof patch>) {
       if (state[key] !== patch[key]) {
         changed = true
         break
@@ -506,10 +516,24 @@ export function createPhoneConnectionController(
     }
     if (!changed) return
     state = { ...state, ...patch }
-    for (const listener of [...listeners]) listener()
+    tell()
   }
 
-  const selected = () => selectedStoredEnvironment(registry)
+  /** One environment's connection state, changed only where `patch` differs. */
+  const setLink = (environmentId: string, patch: Partial<PhoneLinkState>) => {
+    const current = state.links[environmentId]
+    if (!current) return
+    let changed = false
+    for (const key of Object.keys(patch) as Array<keyof PhoneLinkState>) {
+      if (current[key] !== patch[key]) {
+        changed = true
+        break
+      }
+    }
+    if (!changed) return
+    state = { ...state, links: { ...state.links, [environmentId]: { ...current, ...patch } } }
+    tell()
+  }
 
   /**
    * The whole registry, credentials included, to the phone's storage, which
@@ -520,45 +544,8 @@ export function createPhoneConnectionController(
   const commit = (next: EnvironmentRegistry) => {
     if (next === registry) return
     registry = next
-    set({ environments: view(next), selectedId: next.selectedId })
+    set({ environments: view(next), selectedId: defaultOf(next) })
     writeEnvironmentRegistry(next, options.storage.registry)
-  }
-
-  /**
-   * After a refused token has latched: forget the token, but only once it is
-   * certain that its own environment refused it (`revoked`, or `unknown` and
-   * the same address still answers as this environment). Compare-and-clear:
-   * a token saved since then is left alone. The latch holds either way.
-   *
-   * The `unknown` case asks the route's bootstrap. Like every other request
-   * it stops for a hold or a network gap and is asked again on return, while
-   * the latch it belongs to holds and nothing has been decided.
-   */
-  const checkRejection = () => {
-    const refusal = latch
-    const pending = refusal?.confirmRejection
-    if (!refusal || !pending || rejectionCheck) return
-    const abort = new AbortController()
-    rejectionCheck = abort
-    void confirmCredentialRejected({
-      refusal: pending.refusal,
-      environmentId: refusal.environmentId,
-      endpoint: pending.endpoint,
-      probe: (route) => probeRoute(route, abort.signal),
-    }).then((confirmed) => {
-      if (rejectionCheck === abort) rejectionCheck = null
-      if (abort.signal.aborted || disposed || latch !== refusal) return
-      // Decided: kept (no answer, another environment) or forgotten.
-      delete refusal.confirmRejection
-      if (confirmed) {
-        commit(forgetRejectedCredential(registry, refusal.environmentId, pending.rejected))
-      }
-    })
-  }
-
-  const cancelRejectionCheck = () => {
-    rejectionCheck?.abort()
-    rejectionCheck = null
   }
 
   /** What reaching a route showed. Repeating the same report writes nothing. */
@@ -573,197 +560,6 @@ export function createPhoneConnectionController(
       stores.set(environmentId, store)
     }
     return store
-  }
-
-  const clearRetry = () => {
-    if (retryTimer !== null) timers.clearTimeout(retryTimer)
-    retryTimer = null
-  }
-
-  const cancelSearch = () => {
-    searchGeneration += 1
-    searchAbort?.abort()
-    searchAbort = null
-  }
-
-  /** Close and forget the socket's client. Views keep it only with `keepClient`. */
-  const dropTransport = (keepClient = false) => {
-    const current = transport
-    if (!current) {
-      if (!keepClient) set({ client: null, connection: null })
-      return
-    }
-    transport = null
-    current.unsubscribe()
-    current.client.dispose()
-    if (!keepClient) set({ client: null, connection: null })
-  }
-
-  /** Close the socket but keep the client, its store and what views show. */
-  const quiet = () => {
-    cancelSearch()
-    clearRetry()
-    const current = transport
-    if (!current) return
-    const phase = current.client.getState().connection.phase
-    if (phase !== 'closed' && phase !== 'idle') current.closing = true
-    current.reopen = false
-    current.client.disconnect()
-  }
-
-  const scheduleRetry = () => {
-    clearRetry()
-    const delay = retryDelays[Math.min(attempt, retryDelays.length - 1)]!
-    attempt += 1
-    retryTimer = timers.setTimeout(() => {
-      retryTimer = null
-      wake('timer')
-    }, delay)
-    set({ status: 'waiting', attempt, retryAt: now() + delay })
-  }
-
-  const cancelRefusalRead = () => {
-    refusalRead?.abort()
-    refusalRead = null
-  }
-
-  const latchOn = (
-    environmentId: string,
-    status: Latch['status'],
-    patch: Partial<PhoneConnectionState> = {},
-    readVersionFrom?: string,
-  ) => {
-    cancelRefusalRead()
-    cancelRejectionCheck()
-    latch = { environmentId, status, ...(readVersionFrom ? { readVersionFrom } : {}) }
-    cancelSearch()
-    clearRetry()
-    dropTransport()
-    set({ status, retryAt: null, ...patch })
-  }
-
-  const onConnection = (current: Transport) => {
-    if (transport !== current || disposed) return
-    const connection = current.client.getState().connection
-    if (connection === current.seen) return
-    current.seen = connection
-    set({ connection })
-    const { environmentId, endpoint } = current
-
-    if (current.closing) {
-      // A close the controller asked for says nothing about the route.
-      if (connection.phase !== 'closed' && connection.phase !== 'idle') return
-      current.closing = false
-      current.connectedAt = null
-      if (current.reopen) {
-        current.reopen = false
-        set({ status: 'connecting' })
-        current.client.connect()
-      }
-      return
-    }
-
-    if (connection.phase === 'connected') {
-      current.connectedAt = now()
-      socketFailures.delete(endpoint)
-      recordHealth(environmentId, endpoint, { status: 'available' })
-      set({
-        status: 'connected',
-        client: current.client,
-        routeFailure: null,
-        retryAt: null,
-        protocol: { client: PROTOCOL_VERSION, environment: PROTOCOL_VERSION },
-      })
-      return
-    }
-
-    const failure = connection.failure
-    if (failure?.code === 'auth') {
-      // The environment refused the token (4401, or a handshake refusal).
-      // Every route carries the same token, so no route is asked again and
-      // nothing redials until a person acts.
-      recordHealth(environmentId, endpoint, { status: 'unauthorized', message: failure.message })
-      latchOn(environmentId, 'unauthorized', {
-        routeFailure: {
-          reason: 'credential_rejected',
-          endpoint,
-          local: isLoopbackEnvironmentEndpoint(endpoint),
-          tried: 1,
-          ...(failure.message ? { message: failure.message } : {}),
-        },
-      })
-      const refusal = credentialRefusalOf(failure)
-      if (refusal && current.credential && latch) {
-        latch.confirmRejection = { endpoint, rejected: current.credential, refusal }
-        checkRejection()
-      }
-      return
-    }
-    if (failure?.code === 'protocol_incompatible' || failure?.code === 'capability_missing') {
-      latchOn(
-        environmentId,
-        'incompatible_protocol',
-        { protocol: { client: PROTOCOL_VERSION, environment: null } },
-        endpoint,
-      )
-      readRefusedVersion()
-      return
-    }
-
-    // A socket that closed for any other reason. A deliberate close (hold,
-    // offline) reads `closed` with no failure and is not one.
-    if (connection.phase !== 'closed' || !connection.retriesExhausted || !failure) return
-    if (activity === 'background' || !network.online) return
-    const report = routeHealthFromConnection(connection)
-    if (report) recordHealth(environmentId, endpoint, report)
-    const stable = current.connectedAt !== null && now() - current.connectedAt >= stableAfterMs
-    current.connectedAt = null
-    if (stable) {
-      // A connection that had been up for a while dropped: start over at
-      // once, asking the route in use first in case it only blinked.
-      attempt = 0
-      wake('socket')
-      return
-    }
-    // It failed while opening, or soon after: back off before asking again,
-    // so a route that answers bootstrap but refuses the socket cannot spin,
-    // and ask the other routes before this one next time.
-    socketFailures.set(endpoint, now())
-    scheduleRetry()
-  }
-
-  /**
-   * The socket's refusal carries no version the client keeps, so the route's
-   * bootstrap is asked for the version the environment speaks now. Only its
-   * own answer is shown, and only while the latch it explains still holds.
-   * Like every other request it stops for a hold or a network gap; it is
-   * asked again when the app is back, while the version is still unknown.
-   */
-  const readRefusedVersion = () => {
-    // This refusal's own latch: a retry that is refused again makes a new
-    // one, and this answer must not overwrite that one's.
-    const refusal = latch
-    const endpoint = refusal?.readVersionFrom
-    if (!refusal || !endpoint || refusalRead) return
-    const { environmentId } = refusal
-    const abort = new AbortController()
-    refusalRead = abort
-    void probeRoute(endpoint, abort.signal).then((outcome) => {
-      if (refusalRead === abort) refusalRead = null
-      if (abort.signal.aborted || disposed || latch !== refusal) return
-      if (outcome.status === 'unreachable') return
-      // Answered: asked no more for this refusal, whatever the answer was.
-      delete refusal.readVersionFrom
-      if (outcome.status !== 'incompatible_protocol') return
-      if (outcome.environmentId && outcome.environmentId !== environmentId) return
-      set({
-        bootstrap: outcome,
-        protocol: {
-          client: outcome.clientProtocolVersion,
-          environment: outcome.serverProtocolVersion,
-        },
-      })
-    })
   }
 
   /**
@@ -788,235 +584,561 @@ export function createPhoneConnectionController(
     return { appOrigin: null, socketOrigin: { origin, from: 'route' } as SocketOrigin }
   }
 
-  const dial = (environment: StoredEnvironment, endpoint: string) => {
-    const credential = environment.credential
-    const current = transport
-    const { appOrigin, socketOrigin } = socketOriginFor(environment, endpoint)
-    if (
-      current &&
-      current.environmentId === environment.environmentId &&
-      current.endpoint === endpoint &&
-      current.credential === credential &&
-      current.appOrigin === appOrigin
-    ) {
-      if (current.closing) {
-        // The socket closed for the hold is still closing; open again once it has.
-        current.reopen = true
-        set({ status: 'connecting' })
-        return
-      }
-      if (current.client.getState().connection.phase === 'connected') {
-        set({ status: 'connected', client: current.client })
-        return
-      }
-      set({ status: 'connecting' })
-      current.client.connect()
-      return
+  /** One environment's connection: everything the phone does to reach it. */
+  const createLink = (environmentId: string): Link => {
+    /** Routes whose socket failed soon after their bootstrap answered, and when. */
+    const socketFailures = new Map<string, number>()
+    let latch: Latch | null = null
+    /** The bootstrap read explaining a socket's protocol refusal, while in flight. */
+    let refusalRead: AbortController | null = null
+    /** The bootstrap read deciding whether to forget a refused token, while in flight. */
+    let rejectionCheck: AbortController | null = null
+    let searchGeneration = 0
+    let searchAbort: AbortController | null = null
+    let retryTimer: unknown = null
+    let attempt = 0
+    let transport: Transport | null = null
+    let gone = false
+
+    const own = () => state.links[environmentId]!
+    const setOwn = (patch: Partial<PhoneLinkState>) => {
+      if (!gone) setLink(environmentId, patch)
     }
-    // A different route to the same environment keeps the client views
-    // already read from: the store carries over, and so does what they show.
-    const keepClient = current?.environmentId === environment.environmentId && state.client !== null
-    dropTransport(keepClient)
-    set({ socketOrigin })
-    const { WebSocket: NativeSocket, ...rest } = options.transport ?? {}
-    const BaseSocket =
-      NativeSocket ?? (globalThis.WebSocket as unknown as NativeWebSocketConstructor | undefined)
-    let client: EnvironmentClient
-    try {
-      client = createClient({
-        url: environmentSocketUrl(endpoint),
-        credential: credential || undefined,
-        environmentId: environment.environmentId,
-        store: storeFor(environment.environmentId),
-        reconnect: { maxAttempts: 0 },
-        ...rest,
-        // With no app origin the native default goes out: the route's own.
-        ...(BaseSocket
-          ? {
-              WebSocket: appOrigin
-                ? withSocketOrigin(BaseSocket, appOrigin)
-                : (BaseSocket as unknown as WebSocketConstructor),
-            }
-          : {}),
+    const saved = () => findStoredEnvironment(registry.environments, environmentId)
+
+    /**
+     * The phone's search order with each route whose socket failed within the
+     * cooldown moved behind the others. Moved, not dropped: when nothing else
+     * answers it is still asked.
+     */
+    const demoteFailedSockets = (environment: StoredEnvironment): StoredEnvironment => {
+      const ordered = phoneSearchOrder(environment)
+      const failed = (endpoint: string) => {
+        const at = socketFailures.get(endpoint)
+        return at !== undefined && now() - at < socketFailureCooldownMs
+      }
+      if (!ordered.routes.some((route) => failed(route.endpoint))) return ordered
+      return {
+        ...ordered,
+        routes: [
+          ...ordered.routes.filter((route) => !failed(route.endpoint)),
+          ...ordered.routes.filter((route) => failed(route.endpoint)),
+        ],
+      }
+    }
+
+    /**
+     * The shared search, every probe tied to `signal`. Once the search is
+     * cancelled (hold, offline, another search, dispose) a probe in flight is
+     * aborted, and the routes `searchRoutes` would ask after it are answered
+     * at once without a request.
+     */
+    const search = (
+      environment: StoredEnvironment,
+      signal: AbortSignal,
+      first?: string,
+    ): Promise<RouteSearchResult> =>
+      searchRoutes(demoteFailedSockets(environment), {
+        first,
+        probe: (endpoint) =>
+          signal.aborted ? Promise.resolve(CANCELLED) : probeRoute(endpoint, signal),
       })
-    } catch {
-      // No socket could be made at all (no WebSocket on this runtime). Retried
-      // like a socket that failed while opening.
-      if (keepClient) set({ client: null, connection: null })
-      scheduleRetry()
-      return
-    }
-    const next: Transport = {
-      environmentId: environment.environmentId,
-      endpoint,
-      credential,
-      appOrigin,
-      client,
-      seen: undefined,
-      connectedAt: null,
-      closing: false,
-      reopen: false,
-      unsubscribe: () => undefined,
-    }
-    transport = next
-    next.unsubscribe = client.subscribe(() => onConnection(next))
-    set({ status: 'connecting', ...(keepClient ? { client } : {}) })
-    client.connect()
-    onConnection(next)
-  }
 
-  const runSearch = async (environment: StoredEnvironment, first?: string) => {
-    cancelSearch()
-    const generation = searchGeneration
-    const abort = new AbortController()
-    searchAbort = abort
-    set({ status: 'searching', retryAt: null })
-    let result: RouteSearchResult
-    try {
-      result = await search(environment, abort.signal, first)
-    } catch {
-      // A probe never throws by contract; one that does is no answer.
-      result = {
-        found: null,
-        probes: [],
-        failure: {
-          reason: 'route_down',
-          endpoint: environment.routes[0]!.endpoint,
-          local: false,
-          tried: environment.routes.length,
-        },
+    /**
+     * After a refused token has latched: forget the token, but only once it
+     * is certain that its own environment refused it (`revoked`, or `unknown`
+     * and the same address still answers as this environment).
+     * Compare-and-clear: a token saved since then is left alone. The latch
+     * holds either way.
+     *
+     * The `unknown` case asks the route's bootstrap. Like every other request
+     * it stops for a hold or a network gap and is asked again on return,
+     * while the latch it belongs to holds and nothing has been decided.
+     */
+    const checkRejection = () => {
+      const refusal = latch
+      const pending = refusal?.confirmRejection
+      if (!refusal || !pending || rejectionCheck) return
+      const abort = new AbortController()
+      rejectionCheck = abort
+      void confirmCredentialRejected({
+        refusal: pending.refusal,
+        environmentId,
+        endpoint: pending.endpoint,
+        probe: (route) => probeRoute(route, abort.signal),
+      }).then((confirmed) => {
+        if (rejectionCheck === abort) rejectionCheck = null
+        if (abort.signal.aborted || disposed || gone || latch !== refusal) return
+        // Decided: kept (no answer, another environment) or forgotten.
+        delete refusal.confirmRejection
+        if (confirmed) {
+          commit(forgetRejectedCredential(registry, environmentId, pending.rejected))
+        }
+      })
+    }
+
+    const cancelRejectionCheck = () => {
+      rejectionCheck?.abort()
+      rejectionCheck = null
+    }
+
+    const clearRetry = () => {
+      if (retryTimer !== null) timers.clearTimeout(retryTimer)
+      retryTimer = null
+    }
+
+    const cancelSearch = () => {
+      searchGeneration += 1
+      searchAbort?.abort()
+      searchAbort = null
+    }
+
+    /** Close and forget the socket's client. Views keep it only with `keepClient`. */
+    const dropTransport = (keepClient = false) => {
+      const current = transport
+      if (!current) {
+        if (!keepClient) setOwn({ client: null, connection: null })
+        return
       }
+      transport = null
+      current.unsubscribe()
+      current.client.dispose()
+      if (!keepClient) setOwn({ client: null, connection: null })
     }
-    // The search may answer while routes behind the one it took are still
-    // being asked; those answers are not needed, so their requests stop.
-    abort.abort()
-    if (searchAbort === abort) searchAbort = null
-    if (generation !== searchGeneration || disposed) return
-    const environmentId = environment.environmentId
-    for (const probe of result.probes) {
-      if (probe.known) continue
-      const report = routeHealthFromBootstrap(probe.outcome, environmentId)
-      if (report) recordHealth(environmentId, probe.endpoint, report)
-    }
-    const latest = selected()
-    if (!latest || latest.environmentId !== environmentId) return
 
-    if (result.found === null) {
-      // Nothing answers. A client that was connected keeps its store and
-      // what views show; its socket stays closed until a route answers.
-      transport?.client.disconnect()
-      set({ routeFailure: result.failure, bootstrap: result.probes[0]?.outcome ?? IDLE })
+    /** Close the socket but keep the client, its store and what views show. */
+    const quiet = () => {
+      cancelSearch()
+      clearRetry()
+      const current = transport
+      if (!current) return
+      const phase = current.client.getState().connection.phase
+      if (phase !== 'closed' && phase !== 'idle') current.closing = true
+      current.reopen = false
+      current.client.disconnect()
+    }
+
+    const scheduleRetry = () => {
+      clearRetry()
+      const delay = retryDelays[Math.min(attempt, retryDelays.length - 1)]!
+      attempt += 1
+      retryTimer = timers.setTimeout(() => {
+        retryTimer = null
+        wake('timer')
+      }, delay)
+      setOwn({ status: 'waiting', attempt, retryAt: now() + delay })
+    }
+
+    const cancelRefusalRead = () => {
+      refusalRead?.abort()
+      refusalRead = null
+    }
+
+    const latchOn = (
+      status: Latch['status'],
+      patch: Partial<PhoneLinkState> = {},
+      readVersionFrom?: string,
+    ) => {
+      cancelRefusalRead()
+      cancelRejectionCheck()
+      latch = { status, ...(readVersionFrom ? { readVersionFrom } : {}) }
+      cancelSearch()
+      clearRetry()
+      dropTransport()
+      setOwn({ status, retryAt: null, ...patch })
+    }
+
+    const onConnection = (current: Transport) => {
+      if (transport !== current || disposed || gone) return
+      const connection = current.client.getState().connection
+      if (connection === current.seen) return
+      current.seen = connection
+      setOwn({ connection })
+      const { endpoint } = current
+
+      if (current.closing) {
+        // A close the controller asked for says nothing about the route.
+        if (connection.phase !== 'closed' && connection.phase !== 'idle') return
+        current.closing = false
+        current.connectedAt = null
+        if (current.reopen) {
+          current.reopen = false
+          setOwn({ status: 'connecting' })
+          current.client.connect()
+        }
+        return
+      }
+
+      if (connection.phase === 'connected') {
+        current.connectedAt = now()
+        socketFailures.delete(endpoint)
+        recordHealth(environmentId, endpoint, { status: 'available' })
+        setOwn({
+          status: 'connected',
+          client: current.client,
+          routeFailure: null,
+          retryAt: null,
+          protocol: { client: PROTOCOL_VERSION, environment: PROTOCOL_VERSION },
+        })
+        return
+      }
+
+      const failure = connection.failure
+      if (failure?.code === 'auth') {
+        // The environment refused the token (4401, or a handshake refusal).
+        // Every route carries the same token, so no route is asked again and
+        // nothing redials until a person acts.
+        recordHealth(environmentId, endpoint, {
+          status: 'unauthorized',
+          message: failure.message,
+        })
+        latchOn('unauthorized', {
+          routeFailure: {
+            reason: 'credential_rejected',
+            endpoint,
+            local: isLoopbackEnvironmentEndpoint(endpoint),
+            tried: 1,
+            ...(failure.message ? { message: failure.message } : {}),
+          },
+        })
+        const refusal = credentialRefusalOf(failure)
+        if (refusal && current.credential && latch) {
+          latch.confirmRejection = { endpoint, rejected: current.credential, refusal }
+          checkRejection()
+        }
+        return
+      }
+      if (failure?.code === 'protocol_incompatible' || failure?.code === 'capability_missing') {
+        latchOn(
+          'incompatible_protocol',
+          { protocol: { client: PROTOCOL_VERSION, environment: null } },
+          endpoint,
+        )
+        readRefusedVersion()
+        return
+      }
+
+      // A socket that closed for any other reason. A deliberate close (hold,
+      // offline) reads `closed` with no failure and is not one.
+      if (connection.phase !== 'closed' || !connection.retriesExhausted || !failure) return
+      if (activity === 'background' || !network.online) return
+      const report = routeHealthFromConnection(connection)
+      if (report) recordHealth(environmentId, endpoint, report)
+      const stable = current.connectedAt !== null && now() - current.connectedAt >= stableAfterMs
+      current.connectedAt = null
+      if (stable) {
+        // A connection that had been up for a while dropped: start over at
+        // once, asking the route in use first in case it only blinked.
+        attempt = 0
+        wake('socket')
+        return
+      }
+      // It failed while opening, or soon after: back off before asking again,
+      // so a route that answers bootstrap but refuses the socket cannot spin,
+      // and ask the other routes before this one next time.
+      socketFailures.set(endpoint, now())
       scheduleRetry()
-      return
     }
 
-    const found = result.found
-    const outcome = result.probes.find((probe) => probe.endpoint === found)!.outcome
-    if (outcome.status === 'incompatible_protocol') {
-      latchOn(environmentId, 'incompatible_protocol', {
+    /**
+     * The socket's refusal carries no version the client keeps, so the route's
+     * bootstrap is asked for the version the environment speaks now. Only its
+     * own answer is shown, and only while the latch it explains still holds.
+     * Like every other request it stops for a hold or a network gap; it is
+     * asked again when the app is back, while the version is still unknown.
+     */
+    const readRefusedVersion = () => {
+      // This refusal's own latch: a retry that is refused again makes a new
+      // one, and this answer must not overwrite that one's.
+      const refusal = latch
+      const endpoint = refusal?.readVersionFrom
+      if (!refusal || !endpoint || refusalRead) return
+      const abort = new AbortController()
+      refusalRead = abort
+      void probeRoute(endpoint, abort.signal).then((outcome) => {
+        if (refusalRead === abort) refusalRead = null
+        if (abort.signal.aborted || disposed || gone || latch !== refusal) return
+        if (outcome.status === 'unreachable') return
+        // Answered: asked no more for this refusal, whatever the answer was.
+        delete refusal.readVersionFrom
+        if (outcome.status !== 'incompatible_protocol') return
+        if (outcome.environmentId && outcome.environmentId !== environmentId) return
+        setOwn({
+          bootstrap: outcome,
+          protocol: {
+            client: outcome.clientProtocolVersion,
+            environment: outcome.serverProtocolVersion,
+          },
+        })
+      })
+    }
+
+    const dial = (environment: StoredEnvironment, endpoint: string) => {
+      const credential = environment.credential
+      const current = transport
+      const { appOrigin, socketOrigin } = socketOriginFor(environment, endpoint)
+      if (
+        current &&
+        current.endpoint === endpoint &&
+        current.credential === credential &&
+        current.appOrigin === appOrigin
+      ) {
+        if (current.closing) {
+          // The socket closed for the hold is still closing; open again once it has.
+          current.reopen = true
+          setOwn({ status: 'connecting' })
+          return
+        }
+        if (current.client.getState().connection.phase === 'connected') {
+          setOwn({ status: 'connected', client: current.client })
+          return
+        }
+        setOwn({ status: 'connecting' })
+        current.client.connect()
+        return
+      }
+      // A different route to the same environment keeps the client views
+      // already read from: the store carries over, and so does what they show.
+      const keepClient = current !== null && own().client !== null
+      dropTransport(keepClient)
+      setOwn({ socketOrigin })
+      const { WebSocket: NativeSocket, ...rest } = options.transport ?? {}
+      const BaseSocket =
+        NativeSocket ?? (globalThis.WebSocket as unknown as NativeWebSocketConstructor | undefined)
+      let client: EnvironmentClient
+      try {
+        client = createClient({
+          url: environmentSocketUrl(endpoint),
+          credential: credential || undefined,
+          environmentId,
+          store: storeFor(environmentId),
+          reconnect: { maxAttempts: 0 },
+          ...rest,
+          // With no app origin the native default goes out: the route's own.
+          ...(BaseSocket
+            ? {
+                WebSocket: appOrigin
+                  ? withSocketOrigin(BaseSocket, appOrigin)
+                  : (BaseSocket as unknown as WebSocketConstructor),
+              }
+            : {}),
+        })
+      } catch {
+        // No socket could be made at all (no WebSocket on this runtime).
+        // Retried like a socket that failed while opening.
+        if (keepClient) setOwn({ client: null, connection: null })
+        scheduleRetry()
+        return
+      }
+      const next: Transport = {
+        endpoint,
+        credential,
+        appOrigin,
+        client,
+        seen: undefined,
+        connectedAt: null,
+        closing: false,
+        reopen: false,
+        unsubscribe: () => undefined,
+      }
+      transport = next
+      next.unsubscribe = client.subscribe(() => onConnection(next))
+      setOwn({ status: 'connecting', ...(keepClient ? { client } : {}) })
+      client.connect()
+      onConnection(next)
+    }
+
+    const runSearch = async (environment: StoredEnvironment, first?: string) => {
+      cancelSearch()
+      const generation = searchGeneration
+      const abort = new AbortController()
+      searchAbort = abort
+      setOwn({ status: 'searching', retryAt: null })
+      let result: RouteSearchResult
+      try {
+        result = await search(environment, abort.signal, first)
+      } catch {
+        // A probe never throws by contract; one that does is no answer.
+        result = {
+          found: null,
+          probes: [],
+          failure: {
+            reason: 'route_down',
+            endpoint: environment.routes[0]!.endpoint,
+            local: false,
+            tried: environment.routes.length,
+          },
+        }
+      }
+      // The search may answer while routes behind the one it took are still
+      // being asked; those answers are not needed, so their requests stop.
+      abort.abort()
+      if (searchAbort === abort) searchAbort = null
+      if (generation !== searchGeneration || disposed || gone) return
+      for (const probe of result.probes) {
+        if (probe.known) continue
+        const report = routeHealthFromBootstrap(probe.outcome, environmentId)
+        if (report) recordHealth(environmentId, probe.endpoint, report)
+      }
+      const latest = saved()
+      if (!latest) return
+
+      if (result.found === null) {
+        // Nothing answers. A client that was connected keeps its store and
+        // what views show; its socket stays closed until a route answers.
+        transport?.client.disconnect()
+        setOwn({ routeFailure: result.failure, bootstrap: result.probes[0]?.outcome ?? IDLE })
+        scheduleRetry()
+        return
+      }
+
+      const found = result.found
+      const outcome = result.probes.find((probe) => probe.endpoint === found)!.outcome
+      if (outcome.status === 'incompatible_protocol') {
+        latchOn('incompatible_protocol', {
+          endpoint: found,
+          bootstrap: outcome,
+          routeFailure: null,
+          protocol: {
+            client: outcome.clientProtocolVersion,
+            environment: outcome.serverProtocolVersion,
+          },
+        })
+        return
+      }
+      if (outcome.status !== 'ready') return
+      // The label is the environment's own answer; the route stays where the
+      // person put it in their order, since the search picked it, not them.
+      const labelled = upsertStoredEnvironment(
+        registry,
+        { environmentId, endpoint: found, label: outcome.label, keepOrder: true },
+        new Date(now()),
+      )
+      const relabelled = labelled?.environments.find((item) => item.environmentId === environmentId)
+      if (labelled && relabelled && relabelled.label !== latest.label) {
+        // A label is no choice of where new sessions go.
+        commit({ ...labelled, selectedId: registry.selectedId })
+      }
+      setOwn({
         endpoint: found,
         bootstrap: outcome,
         routeFailure: null,
-        protocol: {
-          client: outcome.clientProtocolVersion,
-          environment: outcome.serverProtocolVersion,
-        },
+        protocol: { client: PROTOCOL_VERSION, environment: outcome.protocolVersion },
       })
-      return
+      dial(saved() ?? latest, found)
     }
-    if (outcome.status !== 'ready') return
-    // The label is the environment's own answer; the route stays where the
-    // person put it in their order, since the search picked it, not them.
-    const labelled = upsertStoredEnvironment(
-      registry,
-      { environmentId, endpoint: found, label: outcome.label, keepOrder: true },
-      new Date(now()),
-    )
-    const relabelled = labelled?.environments.find((item) => item.environmentId === environmentId)
-    if (labelled && relabelled && relabelled.label !== latest.label) {
-      commit({ ...labelled, selectedId: registry.selectedId })
-    }
-    set({
-      endpoint: found,
-      bootstrap: outcome,
-      routeFailure: null,
-      protocol: { client: PROTOCOL_VERSION, environment: outcome.protocolVersion },
-    })
-    dial(selected() ?? latest, found)
-  }
 
-  /** The one place that decides what to do next. */
-  const wake = (reason: Wake) => {
-    if (!loaded || disposed) return
-    clearRetry()
-    const environment = selected()
-    if (!environment) {
-      cancelSearch()
+    function wake(reason: Wake) {
+      if (!loaded || disposed || gone) return
+      clearRetry()
+      const environment = saved()
+      if (!environment) return
+      if (latch) {
+        cancelSearch()
+        if (activity === 'background' || !network.online) {
+          cancelRefusalRead()
+          cancelRejectionCheck()
+        } else {
+          readRefusedVersion()
+          checkRejection()
+        }
+        setOwn({ status: latch.status, retryAt: null })
+        return
+      }
       cancelRefusalRead()
       cancelRejectionCheck()
-      latch = null
-      dropTransport()
-      set({
-        status: 'no_environment',
-        endpoint: null,
-        bootstrap: IDLE,
-        routeFailure: null,
-        retryAt: null,
-      })
-      return
+      if (activity === 'background') {
+        quiet()
+        setOwn({ status: 'held', retryAt: null })
+        return
+      }
+      if (!network.online) {
+        quiet()
+        setOwn({ status: 'offline', retryAt: null })
+        return
+      }
+      const current = transport
+      if (
+        current &&
+        current.credential === environment.credential &&
+        environment.routes.some((route) => route.endpoint === current.endpoint) &&
+        !current.closing &&
+        current.client.getState().connection.phase === 'connected'
+      ) {
+        // Already connected on a route this environment still has.
+        cancelSearch()
+        setOwn({ status: 'connected', retryAt: null })
+        return
+      }
+      void runSearch(environment, reason === 'socket' ? current?.endpoint : undefined)
     }
-    if (latch && latch.environmentId === environment.environmentId) {
-      cancelSearch()
-      if (activity === 'background' || !network.online) {
+
+    return {
+      wake,
+      restart(reason) {
+        attempt = 0
+        socketFailures.clear()
+        setOwn({ attempt: 0 })
+        wake(reason)
+      },
+      clearLatch() {
+        latch = null
+      },
+      retire() {
+        dropTransport()
+      },
+      saved(environment) {
+        // A socket on the token or the app origin being replaced is retired
+        // now: left open while the new search runs, a late refusal of the old
+        // token would latch the new one as refused, and a socket that stays up
+        // would keep the old origin.
+        if (
+          transport &&
+          (transport.credential !== environment.credential ||
+            transport.appOrigin !== (environment.appOrigin ?? null))
+        ) {
+          dropTransport()
+        }
+        latch = null
+      },
+      dispose() {
+        if (gone) return
+        cancelSearch()
         cancelRefusalRead()
         cancelRejectionCheck()
-      } else {
-        readRefusedVersion()
-        checkRejection()
-      }
-      set({ status: latch.status, retryAt: null })
-      return
+        clearRetry()
+        dropTransport()
+        latch = null
+        gone = true
+      },
     }
-    cancelRefusalRead()
-    cancelRejectionCheck()
-    latch = null
-    if (activity === 'background') {
-      quiet()
-      set({ status: 'held', retryAt: null })
-      return
-    }
-    if (!network.online) {
-      quiet()
-      set({ status: 'offline', retryAt: null })
-      return
-    }
-    const current = transport
-    if (
-      current &&
-      current.environmentId === environment.environmentId &&
-      current.credential === environment.credential &&
-      environment.routes.some((route) => route.endpoint === current.endpoint) &&
-      !current.closing &&
-      current.client.getState().connection.phase === 'connected'
-    ) {
-      // Already connected on a route this environment still has.
-      cancelSearch()
-      set({ status: 'connected', retryAt: null })
-      return
-    }
-    void runSearch(environment, reason === 'socket' ? current?.endpoint : undefined)
   }
 
-  /**
-   * Lifecycle and network changes that start over count from zero, and forget
-   * which sockets failed: on another network, or at a person's request, every
-   * route deserves its place again.
-   */
-  const restart = (reason: Wake) => {
-    attempt = 0
-    socketFailures.clear()
-    set({ attempt: 0 })
-    wake(reason)
+  /** A link for a saved environment that has none yet, started. */
+  const open = (environmentId: string) => {
+    if (links.has(environmentId)) return links.get(environmentId)!
+    state = { ...state, links: { ...state.links, [environmentId]: freshLink(environmentId) } }
+    tell()
+    const link = createLink(environmentId)
+    links.set(environmentId, link)
+    link.restart('start')
+    return link
+  }
+
+  /** Close one environment's link and forget its state. */
+  const close = (environmentId: string) => {
+    const link = links.get(environmentId)
+    if (!link) return
+    links.delete(environmentId)
+    link.dispose()
+    const rest = { ...state.links }
+    delete rest[environmentId]
+    state = { ...state, links: rest }
+    tell()
+  }
+
+  const everyLink = (run: (link: Link) => void) => {
+    for (const link of [...links.values()]) run(link)
   }
 
   return {
@@ -1036,16 +1158,19 @@ export function createPhoneConnectionController(
           activity = next
           set({ activity: next })
           if (next === previous) return
-          if (next === 'background') wake('activity')
-          else restart('foreground')
+          // Lifecycle changes that start over count from zero, and forget
+          // which sockets failed: on another network, or back on screen,
+          // every route deserves its place again.
+          everyLink((link) =>
+            next === 'background' ? link.wake('activity') : link.restart('foreground'),
+          )
         }),
         options.network.subscribe((next) => {
           const previous = network
           network = next
           set({ network: next })
           if (next.online === previous.online) return
-          if (!next.online) wake('activity')
-          else restart('online')
+          everyLink((link) => (next.online ? link.restart('online') : link.wake('activity')))
         }),
       )
       // Read whatever changed while subscribing.
@@ -1074,24 +1199,17 @@ export function createPhoneConnectionController(
       registry = saved
       loaded = true
       set({
+        loaded: true,
         environments: view(saved),
-        selectedId: saved.selectedId,
+        selectedId: defaultOf(saved),
         activity,
         network,
       })
-      restart('start')
+      for (const environment of saved.environments) open(environment.environmentId)
     },
     selectEnvironment(environmentId) {
       if (!loaded || disposed) return
-      const next = selectStoredEnvironment(registry, environmentId)
-      if (next.selectedId !== environmentId) return
-      if (transport && transport.environmentId !== environmentId) dropTransport()
-      if (registry.selectedId !== environmentId) {
-        set({ endpoint: null, bootstrap: IDLE, routeFailure: null })
-      }
-      latch = null
-      commit(next)
-      restart('select')
+      commit(selectStoredEnvironment(registry, environmentId))
     },
     saveEnvironment(input) {
       if (!loaded || disposed) return
@@ -1112,42 +1230,38 @@ export function createPhoneConnectionController(
         new Date(now()),
       )
       if (!next) throw new Error('That environment address or ID is not valid.')
-      // A socket on another environment, or on this one with the token or the
-      // app origin being replaced, is retired now: left open while the new
-      // search runs, a late refusal of the old token would latch the new one
-      // as refused, and a socket that stays up would keep the old origin.
-      const saved = findStoredEnvironment(next.environments, input.environmentId)
-      if (saved?.appOrigin) warnedOrigin.delete(input.environmentId)
-      if (
-        transport &&
-        (transport.environmentId !== input.environmentId ||
-          transport.credential !== saved?.credential ||
-          transport.appOrigin !== (saved?.appOrigin ?? null))
-      ) {
-        dropTransport()
-      }
-      if (registry.selectedId !== input.environmentId) {
-        set({ endpoint: null, bootstrap: IDLE, routeFailure: null })
-      }
-      latch = null
+      const saved = findStoredEnvironment(next.environments, input.environmentId)!
+      if (saved.appOrigin) warnedOrigin.delete(input.environmentId)
+      const link = links.get(input.environmentId)
+      link?.saved(saved)
       commit(next)
-      restart('select')
+      if (link) link.restart('select')
+      else open(input.environmentId)
     },
     removeEnvironment(environmentId) {
       if (!loaded || disposed) return
-      if (transport?.environmentId === environmentId) dropTransport()
+      close(environmentId)
       stores.delete(environmentId)
-      if (latch?.environmentId === environmentId) latch = null
-      const wasSelected = registry.selectedId === environmentId
       warnedOrigin.delete(environmentId)
-      commit(removeStoredEnvironment(registry, environmentId))
-      if (wasSelected) set({ endpoint: null, bootstrap: IDLE, routeFailure: null })
-      restart('select')
+      let next = removeStoredEnvironment(registry, environmentId)
+      // New sessions go to another saved one, if there is one.
+      const first = next.environments[0]
+      if (next.selectedId === null && first) {
+        next = selectStoredEnvironment(next, first.environmentId)
+      }
+      commit(next)
     },
-    retry() {
+    retry(environmentId) {
       if (!loaded || disposed) return
-      latch = null
-      restart('retry')
+      const run = (link: Link) => {
+        link.clearLatch()
+        link.restart('retry')
+      }
+      if (environmentId === undefined) everyLink(run)
+      else {
+        const link = links.get(environmentId)
+        if (link) run(link)
+      }
     },
     classifyRoute(input) {
       const found = classifyDiscoveredRoute(registry, input)
@@ -1170,15 +1284,16 @@ export function createPhoneConnectionController(
       const saved = findStoredEnvironment(registry.environments, input.environmentId)
       if (!appOrigin || !saved || saved.appOrigin) return false
       warnedOrigin.delete(input.environmentId)
+      const link = links.get(input.environmentId)
       // A socket dialled with the route's own origin is retired for the app's.
-      if (transport?.environmentId === input.environmentId) dropTransport()
+      link?.retire()
       commit({
         ...registry,
         environments: registry.environments.map((item) =>
           item === saved ? { ...saved, appOrigin } : item,
         ),
       })
-      if (registry.selectedId === input.environmentId) restart('select')
+      link?.restart('select')
       return true
     },
     addRoute(input) {
@@ -1188,6 +1303,7 @@ export function createPhoneConnectionController(
       if (next === registry) return false
       const appOrigin = input.appOrigin ? parseAppOrigin(input.appOrigin) : null
       const saved = findStoredEnvironment(next.environments, environmentId)
+      const link = links.get(environmentId)
       if (appOrigin && saved && !saved.appOrigin) {
         next = {
           ...next,
@@ -1197,15 +1313,11 @@ export function createPhoneConnectionController(
         }
         warnedOrigin.delete(environmentId)
         // A socket dialled with the route's own origin is retired for the app's.
-        if (transport?.environmentId === environmentId) dropTransport()
+        link?.retire()
       }
-      if (registry.selectedId !== environmentId) {
-        if (transport && transport.environmentId !== environmentId) dropTransport()
-        set({ endpoint: null, bootstrap: IDLE, routeFailure: null })
-        latch = null
-      }
-      commit(selectStoredEnvironment(next, environmentId))
-      restart('select')
+      commit(next)
+      // A refused token stays refused: a new address carries the same one.
+      link?.restart('select')
       return true
     },
     flush: () => options.storage.flush(),
@@ -1216,13 +1328,31 @@ export function createPhoneConnectionController(
         timers.clearTimeout(hydrateWait.timer)
         hydrateWait.resolve()
       }
-      cancelSearch()
-      cancelRefusalRead()
-      cancelRejectionCheck()
-      clearRetry()
       for (const release of releases.splice(0)) release()
-      dropTransport()
+      everyLink((link) => link.dispose())
+      links.clear()
       listeners.clear()
     },
   }
+}
+
+/** One environment's connection, when that environment is saved. */
+export function linkOf(
+  state: Pick<PhoneConnectionState, 'links'>,
+  environmentId: string | null | undefined,
+): PhoneLinkState | null {
+  return environmentId ? (state.links[environmentId] ?? null) : null
+}
+
+/**
+ * Where an environment's connection stands, the whole phone's state folded
+ * in: `starting` before the registry is read, `no_environment` for one that
+ * is not saved.
+ */
+export function statusOf(
+  state: Pick<PhoneConnectionState, 'loaded' | 'links'>,
+  environmentId: string | null | undefined,
+): PhoneConnectionStatus {
+  if (!state.loaded) return 'starting'
+  return linkOf(state, environmentId)?.status ?? 'no_environment'
 }

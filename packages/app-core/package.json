@@ -27,6 +27,7 @@
     "./providers/environment-application": "./src/providers/environment-application.tsx",
     "./providers/environment-availability": "./src/providers/environment-availability.ts",
     "./providers/environment-client": "./src/providers/environment-client.tsx",
+    "./providers/environment-scope": "./src/providers/environment-scope.tsx",
     "./providers/environment-sidebar-drafts": "./src/providers/environment-sidebar-drafts.tsx",
     "./providers/fluid-provider": "./src/providers/fluid-provider.tsx",
     "./providers/permission-provider": "./src/providers/permission-provider.tsx",

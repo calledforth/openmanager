@@ -15,6 +15,7 @@ import {
 } from 'react'
 import {
   FlatList,
+  Keyboard,
   KeyboardAvoidingView,
   Platform,
   View,
@@ -36,9 +37,13 @@ import { usePhoneTheme } from '../theme/ThemeProvider'
 import { FadeOut as BottomFade } from '../ui/chrome'
 import { coveredBySheet } from '../ui/a11y-focus'
 import { GlassContent } from '../ui/Glass'
+import { tap } from '../ui/haptics'
 import { IconButton } from '../ui/IconButton'
 import { Screen } from '../ui/Screen'
 import { ChildSessionCards } from './ChildSessionCards'
+import { MessageActionsContext, type MessageActions } from './message-actions'
+import type { MessageTarget } from './message-text'
+import { MessageSheet } from './MessageSheet'
 import { countRender } from './render-probe'
 import { createScrollFollower, flingsDown, flingsUp, MAINTAIN_POSITION } from './scroll-anchor'
 import { DockSlotContext, ReadOnlyBar, SessionDock, type DockSlot } from './SessionDock'
@@ -339,6 +344,21 @@ export const SessionThread = memo(function SessionThread({
   const bottomInset = Math.max(insets.bottom, 12) + 8
   // A composer sheet, popover or the camera over the page.
   const [covered, setCovered] = useState(false)
+  // The message a long press opened the actions of; the sheet is the page's,
+  // over everything, as the ⋯ menu is.
+  const [held, setHeld] = useState<MessageTarget | null>(null)
+  const messageActions = useMemo<MessageActions>(
+    () => ({
+      open(target) {
+        tap()
+        // Selecting wants the room the keyboard takes.
+        Keyboard.dismiss()
+        setHeld(target)
+      },
+    }),
+    [],
+  )
+  const closeHeld = useCallback(() => setHeld(null), [])
   const dockSlot = useMemo<DockSlot>(
     () => ({ status, above, bottomInset, onHeight: onDockHeight, onCovered: setCovered }),
     [above, bottomInset, onDockHeight, status],
@@ -355,7 +375,7 @@ export const SessionThread = memo(function SessionThread({
     <KeyboardAvoidingView style={{ flex: 1 }} behavior="padding">
       <Screen>
         {/* Hidden from a screen reader while a composer layer covers it, as under a sheet. */}
-        <View style={{ flex: 1 }} {...coveredBySheet(covered)}>
+        <View style={{ flex: 1 }} {...coveredBySheet(covered || held !== null)}>
           <SessionHeaderBar
             topInset={insets.top}
             title={title}
@@ -396,32 +416,34 @@ export const SessionThread = memo(function SessionThread({
                   ) : null}
                 </View>
               ) : (
-                <FlatList
-                  key={opening}
-                  ref={listRef}
-                  data={rows}
-                  style={landed ? undefined : HIDDEN}
-                  keyExtractor={keyOf}
-                  renderItem={renderRow}
-                  ListFooterComponent={footer}
-                  maintainVisibleContentPosition={MAINTAIN_POSITION}
-                  onScroll={onScroll}
-                  onScrollBeginDrag={onDragStart}
-                  onScrollEndDrag={onDragEnd}
-                  onMomentumScrollEnd={onMomentumEnd}
-                  onContentSizeChange={onContentSize}
-                  onLayout={onListLayout}
-                  scrollEventThrottle={32}
-                  contentContainerStyle={contentStyle}
-                  initialNumToRender={TAIL_ROWS}
-                  maxToRenderPerBatch={4}
-                  updateCellsBatchingPeriod={50}
-                  windowSize={7}
-                  scrollsToTop={false}
-                  keyboardShouldPersistTaps="handled"
-                  keyboardDismissMode={Platform.OS === 'ios' ? 'interactive' : 'on-drag'}
-                  showsVerticalScrollIndicator={false}
-                />
+                <MessageActionsContext.Provider value={messageActions}>
+                  <FlatList
+                    key={opening}
+                    ref={listRef}
+                    data={rows}
+                    style={landed ? undefined : HIDDEN}
+                    keyExtractor={keyOf}
+                    renderItem={renderRow}
+                    ListFooterComponent={footer}
+                    maintainVisibleContentPosition={MAINTAIN_POSITION}
+                    onScroll={onScroll}
+                    onScrollBeginDrag={onDragStart}
+                    onScrollEndDrag={onDragEnd}
+                    onMomentumScrollEnd={onMomentumEnd}
+                    onContentSizeChange={onContentSize}
+                    onLayout={onListLayout}
+                    scrollEventThrottle={32}
+                    contentContainerStyle={contentStyle}
+                    initialNumToRender={TAIL_ROWS}
+                    maxToRenderPerBatch={4}
+                    updateCellsBatchingPeriod={50}
+                    windowSize={7}
+                    scrollsToTop={false}
+                    keyboardShouldPersistTaps="handled"
+                    keyboardDismissMode={Platform.OS === 'ios' ? 'interactive' : 'on-drag'}
+                    showsVerticalScrollIndicator={false}
+                  />
+                </MessageActionsContext.Provider>
               )}
 
               {/* The transcript's top edge eases under the header rather than cutting off. */}
@@ -482,6 +504,8 @@ export const SessionThread = memo(function SessionThread({
         {composer ? (
           <DockSlotContext.Provider value={dockSlot}>{composer}</DockSlotContext.Provider>
         ) : null}
+
+        {held ? <MessageSheet target={held} onClose={closeHeld} /> : null}
 
         {chrome.menuOpen ? (
           <SessionMenu

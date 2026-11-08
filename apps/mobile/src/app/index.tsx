@@ -3,22 +3,24 @@ import { DesktopIcon, PlusIcon, QrCodeIcon } from 'phosphor-react-native'
 import { useCallback, useMemo, useRef, useState } from 'react'
 import { LayoutAnimation, SectionList, View, type SectionListRenderItem } from 'react-native'
 import { useSafeAreaInsets } from 'react-native-safe-area-context'
-import { useSidebarDrafts } from '@openmanager/app-core/providers/sidebar-provider'
 
 import { AppText } from '../components/ui/AppText'
 import { DraftDiscardToast } from '../draft/DraftDiscard'
 import {
   countEnvironments,
+  homeSessionKey,
   listShapeOf,
   selectTabRows,
   statusMarkOf,
   tabCounts,
   type HomeListRow,
   type HomeRow,
+  type HomeSession,
   type HomeTab,
 } from '../home/rows'
 import { SessionActionsSheet } from '../session/SessionActionsSheet'
 import { phoneConnectionView } from '../environment/connection-ui'
+import { draftRowHref, sessionRowHref } from '../environment/landing-route'
 import { usePhoneConnection } from '../environment/PhoneEnvironmentProvider'
 import { useHomeSource } from '../home/source'
 import { ActionButton } from '../pairing/ActionButton'
@@ -96,8 +98,13 @@ function PairFirst({ again, onPair }: { again: string | null; onPair: () => void
   )
 }
 
+/** Ids are only unique within one environment: a row's key names its environment too. */
 const keyOf = (row: ListRow) =>
-  row.kind === 'draft' ? `draft:${row.draft.draftId}` : `session:${row.session.externalId}`
+  row.kind === 'draft'
+    ? `draft:${row.draft.environment?.environmentId ?? ''}:${row.draft.draftId}`
+    : `session:${sessionKeyOf(row.session)}`
+
+const sessionKeyOf = (session: HomeSession) => homeSessionKey(session)
 
 /**
  * Rows coming, going or changing places (a sent draft's card leaving and
@@ -130,7 +137,7 @@ export default function SessionsHome() {
   const insets = useSafeAreaInsets()
   const theme = usePhoneTheme()
   const source = useHomeSource()
-  const { environment, needsPairing, workspaces, sessions, drafts } = source
+  const { environment, environments, needsPairing, workspaces, sessions, drafts } = source
   const connection = usePhoneConnection()
   const view = phoneConnectionView(connection)
   // Not connected and nothing to show yet: the connection's own state, with
@@ -144,9 +151,8 @@ export default function SessionsHome() {
     list.current?.getScrollResponder()?.scrollTo({ y: 0, animated: false })
     setTab(next)
   }, [])
-  // Null on a host without draft cards and in the sample home.
-  const sidebarDrafts = useSidebarDrafts()
-  const discardDraft = source.kind === 'environment' ? sidebarDrafts?.discardDraft : undefined
+  // Through each card's own environment; absent in the sample home.
+  const discardDraft = source.kind === 'environment' ? source.discardDraft : undefined
 
   const counts = useMemo(() => tabCounts(sessions), [sessions])
   const showEnvironment = useMemo(
@@ -155,12 +161,12 @@ export default function SessionsHome() {
   )
   const sections = useMemo<ListSection[]>(
     () =>
-      selectTabRows({ sessions, drafts, workspaces, tab }).map((group) => ({
+      selectTabRows({ sessions, drafts, workspaces, environments, tab }).map((group) => ({
         key: group.key,
         label: group.label,
         data: group.rows,
       })),
-    [sessions, drafts, workspaces, tab],
+    [sessions, drafts, workspaces, environments, tab],
   )
   useRowsMove(tab, listShapeOf(sections, keyOf))
 
@@ -168,16 +174,20 @@ export default function SessionsHome() {
   // listing while the sheet is up, so a rename shows in it as it lands.
   const [actionsId, setActionsId] = useState<string | null>(null)
   const actionsRow = useMemo<HomeRow | null>(() => {
-    const session = actionsId ? sessions.find((s) => s.externalId === actionsId) : undefined
+    const session = actionsId ? sessions.find((s) => sessionKeyOf(s) === actionsId) : undefined
     if (!session) return null
+    // Its project from its own environment's list: two can hold the same path.
+    const projects =
+      environments.find((item) => item.environmentId === session.environment?.environmentId)
+        ?.workspaces ?? workspaces
     return {
       kind: 'session',
       session,
-      workspace: workspaces.find((w) => w.path === session.workspacePath),
+      workspace: projects.find((w) => w.path === session.workspacePath),
       mark: statusMarkOf(session),
       depth: 0,
     }
-  }, [actionsId, sessions, workspaces])
+  }, [actionsId, environments, sessions, workspaces])
   const closeActions = useCallback(() => setActionsId(null), [])
 
   const renderItem = useCallback<SectionListRenderItem<ListRow, ListSection>>(
@@ -186,15 +196,15 @@ export default function SessionsHome() {
         <DraftRow
           row={item}
           showEnvironment={showEnvironment}
-          onPress={() => router.push(`/draft/${encodeURIComponent(item.draft.draftId)}`)}
-          {...(discardDraft ? { onDiscard: () => discardDraft(item.draft.draftId) } : {})}
+          onPress={() => router.push(draftRowHref(item.draft) as never)}
+          {...(discardDraft ? { onDiscard: () => discardDraft(item.draft) } : {})}
         />
       ) : (
         <SessionRow
           row={item}
           showEnvironment={showEnvironment}
-          onPress={() => router.push(`/session/${encodeURIComponent(item.session.externalId)}`)}
-          onLongPress={() => setActionsId(item.session.externalId)}
+          onPress={() => router.push(sessionRowHref(item.session) as never)}
+          onLongPress={() => setActionsId(sessionKeyOf(item.session))}
         />
       ),
     [discardDraft, router, showEnvironment],

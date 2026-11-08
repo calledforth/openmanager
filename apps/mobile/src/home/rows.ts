@@ -17,6 +17,45 @@ import type {
 /** All is what is unsettled; Settled is the long tail. */
 export type HomeTab = 'all' | 'settled'
 
+/** One environment's projects, as the home source lists them per environment. */
+export interface EnvironmentProjects {
+  environmentId: string
+  workspaces: readonly WorkspaceEntry[]
+}
+
+/**
+ * A session row's key: its environment and its id, since ids are only
+ * unique within one environment. `id` names another session of the same
+ * environment (its parent, say).
+ */
+export function homeSessionKey(session: HomeSession, id: string = session.externalId): string {
+  return `${session.environment?.environmentId ?? ''}
+${id}`
+}
+
+/**
+ * A row's project, looked up in its own environment's projects: two
+ * environments can hold the same path. A row with no environment (the
+ * sample home, a host that knows one), or one whose environment lists
+ * nothing yet, is looked up in `workspaces`.
+ */
+function projectLookup(
+  workspaces: readonly WorkspaceEntry[],
+  environments: readonly EnvironmentProjects[] | undefined,
+) {
+  const byPath = new Map(workspaces.map((workspace) => [workspace.path, workspace]))
+  const own = new Map(
+    (environments ?? []).map((environment) => [
+      environment.environmentId,
+      new Map(environment.workspaces.map((workspace) => [workspace.path, workspace])),
+    ]),
+  )
+  return (environment: HomeEnvironmentRef | undefined, path: string) => {
+    const mine = environment ? own.get(environment.environmentId) : undefined
+    return mine ? mine.get(path) : byPath.get(path)
+  }
+}
+
 /** One glyph per state: the web sidebar's tones, plus the ring at rest. */
 export type StatusMark = SessionBusyTone | 'idle'
 
@@ -28,6 +67,7 @@ export interface HomeEnvironmentRef {
 
 export interface HomeSession extends SidebarSessionEntry {
   workspacePath: string
+  /** The environment it is on; ids are only unique within one. Absent on fixture rows. */
   environment?: HomeEnvironmentRef
 }
 
@@ -201,24 +241,31 @@ interface Tree {
 export function selectHomeRows({
   sessions,
   workspaces,
+  environments,
   tab,
 }: {
   sessions: readonly HomeSession[]
   workspaces: readonly WorkspaceEntry[]
+  /** Each environment's own projects, where a row's is looked up. */
+  environments?: readonly EnvironmentProjects[]
   tab: HomeTab
 }): HomeGroup<HomeRow>[] {
-  const byPath = new Map(workspaces.map((workspace) => [workspace.path, workspace]))
+  const projectOf = projectLookup(workspaces, environments)
   const visible = sessions.filter((session) =>
     tab === 'all' ? isActiveSession(session) : !isActiveSession(session),
   )
-  const ids = new Set(visible.map((session) => session.externalId))
+  // Ids are only unique within one environment: a parent is its own environment's.
+  const ids = new Set(visible.map((session) => homeSessionKey(session)))
   const roots: HomeSession[] = []
   const children = new Map<string, HomeSession[]>()
   for (const session of visible) {
-    if (session.parentExternalId && ids.has(session.parentExternalId)) {
-      const list = children.get(session.parentExternalId) ?? []
+    const parent = session.parentExternalId
+      ? homeSessionKey(session, session.parentExternalId)
+      : null
+    if (parent && ids.has(parent)) {
+      const list = children.get(parent) ?? []
       list.push(session)
-      children.set(session.parentExternalId, list)
+      children.set(parent, list)
     } else {
       roots.push(session)
     }
@@ -226,20 +273,19 @@ export function selectHomeRows({
   const row = (session: HomeSession, depth: number): HomeRow => ({
     kind: 'session',
     session,
-    workspace: byPath.get(session.workspacePath),
+    workspace: projectOf(session.environment, session.workspacePath),
     mark: statusMarkOf(session),
     depth,
   })
   const byRecent = (a: HomeSession, b: HomeSession) => time(b.updatedAt) - time(a.updatedAt)
   const visited = new Set<string>()
   const subtree = (session: HomeSession, depth: number): HomeRow[] => {
-    if (visited.has(session.externalId)) return []
-    visited.add(session.externalId)
+    const key = homeSessionKey(session)
+    if (visited.has(key)) return []
+    visited.add(key)
     return [
       row(session, depth),
-      ...(children.get(session.externalId) ?? [])
-        .sort(byRecent)
-        .flatMap((child) => subtree(child, depth + 1)),
+      ...(children.get(key) ?? []).sort(byRecent).flatMap((child) => subtree(child, depth + 1)),
     ]
   }
   const tree = (root: HomeSession): Tree => {
@@ -256,7 +302,7 @@ export function selectHomeRows({
   const trees: Tree[] = []
   for (const root of roots) trees.push(tree(root))
   for (const session of visible) {
-    if (!visited.has(session.externalId)) trees.push(tree(session))
+    if (!visited.has(homeSessionKey(session))) trees.push(tree(session))
   }
   const byNewest = (a: Tree, b: Tree) => b.newest - a.newest
 
@@ -285,18 +331,21 @@ export function selectHomeRows({
 export function selectDraftRows({
   drafts,
   workspaces,
+  environments,
 }: {
   drafts: readonly HomeDraft[]
   workspaces: readonly WorkspaceEntry[]
+  environments?: readonly EnvironmentProjects[]
 }): HomeDraftRow[] {
   // A workspace's id is its path, as the shared sidebar places draft cards.
-  const byPath = new Map(workspaces.map((workspace) => [workspace.path, workspace]))
+  const projectOf = projectLookup(workspaces, environments)
   return [...drafts]
     .sort((a, b) => b.editedAt - a.editedAt)
     .map((draft) => ({
       kind: 'draft',
       draft,
-      workspace: draft.workspaceId === null ? undefined : byPath.get(draft.workspaceId),
+      workspace:
+        draft.workspaceId === null ? undefined : projectOf(draft.environment, draft.workspaceId),
     }))
 }
 
@@ -312,16 +361,18 @@ export function selectTabRows({
   sessions,
   drafts,
   workspaces,
+  environments,
   tab,
 }: {
   sessions: readonly HomeSession[]
   drafts: readonly HomeDraft[]
   workspaces: readonly WorkspaceEntry[]
+  environments?: readonly EnvironmentProjects[]
   tab: HomeTab
 }): HomeGroup<HomeListRow>[] {
-  const sessionGroups = selectHomeRows({ sessions, workspaces, tab })
+  const sessionGroups = selectHomeRows({ sessions, workspaces, environments, tab })
   if (tab === 'settled') return sessionGroups
-  const draftRows = selectDraftRows({ drafts, workspaces })
+  const draftRows = selectDraftRows({ drafts, workspaces, environments })
   return draftRows.length
     ? [{ key: DRAFTS_GROUP, label: 'Drafts', rows: draftRows }, ...sessionGroups]
     : sessionGroups
