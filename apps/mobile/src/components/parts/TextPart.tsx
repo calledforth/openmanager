@@ -10,6 +10,7 @@ import Markdown, {
   type RenderRules,
 } from 'react-native-markdown-display'
 
+import { MessageLongPress, useMessageRow } from '../../session/message-actions'
 import { countRender } from '../../session/render-probe'
 import type { PhoneTheme } from '../../theme/tokens'
 import { usePhoneTheme } from '../../theme/ThemeProvider'
@@ -20,29 +21,39 @@ import { buildMarkdownStyles } from './markdownStyles'
 /** The library's blocks end with the newline the parser leaves on them. */
 const trimEnd = (content: string) => (content.endsWith('\n') ? content.slice(0, -1) : content)
 
-const RULES: RenderRules = {
-  // The library's root takes a new key on every render, which would remount
-  // the whole block however little changed.
-  body: (_node, children, _parent, styles) => (
-    <View key="body" style={styles._VIEW_SAFE_body}>
-      {children}
-    </View>
-  ),
-  // Every run of text is selectable, so a reader can copy from a reply: the
-  // library's own rule draws a plain Text.
-  textgroup: (node, children, _parent, styles) => (
-    <Text key={node.key} selectable style={styles.textgroup}>
-      {children}
-    </Text>
-  ),
-  fence: (node) => (
-    <CodeBlock
-      key={node.key}
-      code={trimEnd(node.content)}
-      info={(node as unknown as { sourceInfo?: string }).sourceInfo}
-    />
-  ),
-  code_block: (node) => <CodeBlock key={node.key} code={trimEnd(node.content)} />,
+/**
+ * The phone's rules over the library's. `selectable` text is for markdown
+ * outside the transcript (a plan in its sheet): in a transcript row a long
+ * press opens the message's actions instead (`message-actions.tsx`), whose
+ * select-text sheet selects across the whole message, which these per-run
+ * text views cannot.
+ */
+function rulesOf(selectable: boolean): RenderRules {
+  return {
+    // The library's root takes a new key on every render, which would remount
+    // the whole block however little changed.
+    body: (_node, children, _parent, styles) => (
+      <View key="body" style={styles._VIEW_SAFE_body}>
+        {children}
+      </View>
+    ),
+    textgroup: (node, children, _parent, styles) => (
+      <Text key={node.key} selectable={selectable} style={styles.textgroup}>
+        {children}
+      </Text>
+    ),
+    fence: (node) => (
+      <CodeBlock
+        key={node.key}
+        code={trimEnd(node.content)}
+        info={(node as unknown as { sourceInfo?: string }).sourceInfo}
+        selectable={selectable}
+      />
+    ),
+    code_block: (node) => (
+      <CodeBlock key={node.key} code={trimEnd(node.content)} selectable={selectable} />
+    ),
+  }
 }
 
 // The library builds a markdown-it, a style sheet and a renderer for every
@@ -83,15 +94,20 @@ function mergedStyles(style: Styles): Styles {
   return StyleSheet.create(merged) as Styles
 }
 
-const RENDERERS = new WeakMap<PhoneTheme, AstRenderer>()
+const RENDERERS = new WeakMap<PhoneTheme, Map<boolean, AstRenderer>>()
 
-/** One renderer per theme, shared by every block of text. */
-function rendererFor(theme: PhoneTheme): AstRenderer {
-  let renderer = RENDERERS.get(theme)
+/** One renderer per theme and kind of text, shared by every block of text. */
+function rendererFor(theme: PhoneTheme, selectable: boolean): AstRenderer {
+  let forTheme = RENDERERS.get(theme)
+  if (!forTheme) {
+    forTheme = new Map()
+    RENDERERS.set(theme, forTheme)
+  }
+  let renderer = forTheme.get(selectable)
   if (!renderer) {
     const Renderer = AstRenderer as unknown as new (...args: unknown[]) => AstRenderer
     renderer = new Renderer(
-      { ...renderRules, ...RULES },
+      { ...renderRules, ...rulesOf(selectable) },
       mergedStyles(buildMarkdownStyles(theme)),
       undefined,
       null,
@@ -100,7 +116,7 @@ function rendererFor(theme: PhoneTheme): AstRenderer {
       'https://',
       false,
     )
-    RENDERERS.set(theme, renderer)
+    forTheme.set(selectable, renderer)
   }
   return renderer
 }
@@ -109,7 +125,7 @@ function rendererFor(theme: PhoneTheme): AstRenderer {
 const STABLE_PROPS = { markdownit: MARKDOWN_IT } as object
 
 /** The library's parser with a renderer that hands the parsed tree back. */
-const parseTree = parser as unknown as (
+export const parseTree = parser as unknown as (
   source: string,
   renderer: (nodes: ASTNode[]) => ASTNode[],
   markdownIt: unknown,
@@ -144,22 +160,34 @@ function astOf(text: string, live: boolean): ASTNode[] {
 }
 
 /** One top-level block of markdown, left alone once it is finished. */
-const MarkdownBlock = memo(function MarkdownBlock({ text, live }: { text: string; live: boolean }) {
+const MarkdownBlock = memo(function MarkdownBlock({
+  text,
+  live,
+  selectable,
+}: {
+  text: string
+  live: boolean
+  selectable: boolean
+}) {
   countRender('MarkdownBlock')
   const theme = usePhoneTheme()
   const ast = useMemo(() => astOf(text, live), [text, live])
   return (
-    <Markdown renderer={rendererFor(theme)} {...STABLE_PROPS}>
+    <Markdown renderer={rendererFor(theme, selectable)} {...STABLE_PROPS}>
       {/* A parsed tree is drawn as it is (the library's own path for an array). */}
       {ast as unknown as string}
     </Markdown>
   )
 })
 
+/** A message's markdown, parsed whole, for its select-text sheet (`message-text.ts`). */
+export const parseMessage = (text: string): ASTNode[] => parseTree(text, keyByPlace, MARKDOWN_IT)
+
 /**
  * Assistant markdown with the theme's styles and highlighted code fences,
  * block by block (`markdown-blocks.ts`): a streamed token re-renders only the
- * block it lands in, and a reply settling re-renders only its last.
+ * block it lands in, and a reply settling re-renders only its last. In a
+ * transcript row, held to open the message's actions.
  */
 export const TextPart = memo(function TextPart({
   text,
@@ -170,17 +198,18 @@ export const TextPart = memo(function TextPart({
   live?: boolean
 }) {
   countRender('TextPart')
+  const inRow = useMessageRow() !== null
   const [scanner] = useState(createMarkdownScanner)
   const { closed, tail } = useMemo(() => scanner.read(text), [scanner, text])
 
   if (!text) return null
 
   return (
-    <View>
+    <MessageLongPress>
       {closed.map((block, index) => (
-        <MarkdownBlock key={index} text={block} live={false} />
+        <MarkdownBlock key={index} text={block} live={false} selectable={!inRow} />
       ))}
-      <MarkdownBlock key={closed.length} text={tail} live={live} />
-    </View>
+      <MarkdownBlock key={closed.length} text={tail} live={live} selectable={!inRow} />
+    </MessageLongPress>
   )
 })
