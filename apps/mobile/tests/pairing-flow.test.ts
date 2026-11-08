@@ -124,7 +124,7 @@ describe('pairing a fresh install: link, exchange, store', () => {
   it('trades the token at the link route and saves token, route, label and app origin', async () => {
     const h = freshInstall()
     await h.controller.start()
-    expect(h.state().status).toBe('no_environment')
+    expect(h.status()).toBe('no_environment')
     const link = read(linkTo(LAN))
     expect(planPairing(link, h.controller)).toEqual({ kind: 'exchange' })
 
@@ -180,7 +180,7 @@ describe('pairing a fresh install: link, exchange, store', () => {
     expect(connectedRoute(h.state())).toBeNull()
     socket.accept()
     await flush()
-    expect(h.state().status).toBe('connected')
+    expect(h.status()).toBe('connected')
     expect(connectedRoute(h.state())).toEqual({ endpoint: LAN, kind: 'lan' })
     expect(h.state().environments[0]?.label).toBe('Studio')
   })
@@ -399,7 +399,7 @@ describe('a link for an environment the phone already knows', () => {
     joinRoute(read(linkTo(TUNNEL)), h.controller)
     await h.controller.flush()
     expect(h.storage.document()!.environments[0]!.appOrigin).toBe('https://desk.example.test')
-    expect(h.state().status).toBe('connected')
+    expect(h.status()).toBe('connected')
   })
 
   it('redeems a link for a known address over the phone’s own socket, never at the route', async () => {
@@ -468,7 +468,7 @@ describe('a link for an environment the phone already knows', () => {
     })
     await h.controller.start()
     await flush()
-    expect(h.state().status).toBe('incompatible_protocol')
+    expect(h.status()).toBe('incompatible_protocol')
     // The environment was updated since; the link is scanned once.
     h.answers.set(LAN, ready())
     const redeemed = redeemLink(read(linkTo(LAN)), h.controller, { timers: h.timers })
@@ -513,7 +513,7 @@ describe('a link for an environment the phone already knows', () => {
     await flush()
     h.socket().drop(4401, 'revoked')
     await flush()
-    expect(h.state().status).toBe('unauthorized')
+    expect(h.status()).toBe('unauthorized')
     const sockets = h.sockets().length
     const probes = h.probes.length
     // The planner exchanges a link for a refused environment instead.
@@ -575,7 +575,7 @@ describe('a link for an environment the phone already knows', () => {
     expect(h.storage.document()!.environments[0]!.appOrigin).toBe(APP)
   })
 
-  it('selects a different saved environment to redeem over its connection', async () => {
+  it('redeems over the named environment’s own connection, whichever one new sessions go to', async () => {
     const h = harness({
       registry: {
         selectedId: OTHER_ENV,
@@ -591,16 +591,26 @@ describe('a link for an environment the phone already knows', () => {
     await flush()
     const redeemed = redeemLink(read(linkTo(LAN)), h.controller, { timers: h.timers })
     await flush()
-    expect(h.state().selectedId).toBe(ENV)
-    h.socket().accept(ENV, ['connection.heartbeat', 'pairing.redeem'])
+    // Every saved environment is connected on its own; the link's one needs
+    // no selecting, and where new sessions go is left as it was.
+    expect(h.state().selectedId).toBe(OTHER_ENV)
+    // The link fills the missing app origin, which retires the first socket
+    // for one dialled with it: the latest socket to that route is the live one.
+    const socket = h
+      .sockets()
+      .filter((item) => item.url === 'ws://192.168.1.20:43120/ws')
+      .at(-1)!
+    socket.accept(ENV, ['connection.heartbeat', 'pairing.redeem'])
     await flush()
-    h.socket().respond('pairing.redeem', {
+    expect(socket.last('pairing.redeem').payload).toEqual({ token: PAIRING_TOKEN })
+    socket.respond('pairing.redeem', {
       clientId: 'client-phone',
       clientLabel: 'Pixel 9',
       grant: ['read'],
       grantChanged: false,
     })
     expect((await redeemed).ok).toBe(true)
+    expect(h.state().selectedId).toBe(OTHER_ENV)
   })
 })
 
@@ -609,5 +619,5 @@ async function connect(h: ReturnType<typeof harness>) {
   await flush()
   h.socket().accept()
   await flush()
-  expect(h.state().status).toBe('connected')
+  expect(h.status()).toBe('connected')
 }

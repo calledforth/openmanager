@@ -61,18 +61,7 @@ export function catchUp(
   return notices
 }
 
-/** The session a phone path shows (`/session/<id>`), if it shows one. */
-export function sessionOnPath(pathname: string): string | null {
-  const match = /^\/session\/([^/?#]+)/.exec(pathname)
-  if (!match) return null
-  try {
-    return decodeURIComponent(match[1]!)
-  } catch {
-    return match[1]!
-  }
-}
-
-/** The link a notice opens: the session's page, in the app. */
-export function sessionLink(sessionId: string): string {
-  return `openmanager://session/${encodeURIComponent(sessionId)}`
+/** The link a notice opens: the session's page, in its environment, in the app. */
+export function sessionLink(environmentId: string, sessionId: string): string {
+  return `openmanager://session/${encodeURIComponent(environmentId)}/${encodeURIComponent(sessionId)}`
 }

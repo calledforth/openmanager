@@ -3,6 +3,7 @@ import { memo } from 'react'
 import { View } from 'react-native'
 import type { ArtifactSource, MessagePart, OptimisticImage } from '@openmanager/app-core/logic'
 
+import { MessageLongPress } from '../../session/message-actions'
 import { usePhoneTheme } from '../../theme/ThemeProvider'
 import { ImagePart } from '../parts/ImagePart'
 import { AppText } from '../ui/AppText'
@@ -55,7 +56,8 @@ export const UserMessage = memo(function UserMessage({
         </View>
       ) : null}
       {content ? (
-        <View
+        // Held, the message's actions: copy it, or select from it.
+        <MessageLongPress
           style={{
             maxWidth: '86%',
             backgroundColor: theme.bubble,
@@ -68,11 +70,7 @@ export const UserMessage = memo(function UserMessage({
             ...(isQueued && !sendError ? { opacity: 0.6 } : null),
           }}
         >
-          <AppText
-            variant="chat-user"
-            selectable
-            style={{ color: theme.fg, fontSize: 15, lineHeight: 22 }}
-          >
+          <AppText variant="chat-user" style={{ color: theme.fg, fontSize: 15, lineHeight: 22 }}>
             {content}
           </AppText>
           {isQueued && !sendError ? (
@@ -83,7 +81,7 @@ export const UserMessage = memo(function UserMessage({
               </AppText>
             </View>
           ) : null}
-        </View>
+        </MessageLongPress>
       ) : null}
       {sendError ? (
         <View className="max-w-[86%] flex-row items-center gap-1">

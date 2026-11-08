@@ -31,7 +31,7 @@ export function EnvironmentCard({
   return (
     <Press
       accessibilityRole="button"
-      accessibilityLabel={`${card.label}${card.selected ? ', in use' : ''}${meta ? `, ${meta}` : ''}`}
+      accessibilityLabel={`${card.label}${card.pill === 'here' ? ', in use' : card.pill === 'default' ? ', new sessions go here' : ''}${meta ? `, ${meta}` : ''}`}
       onPress={() => {
         tap()
         onPress()
@@ -56,7 +56,7 @@ export function EnvironmentCard({
         >
           {card.label}
         </AppText>
-        {card.selected ? <Pill tone="strong">here</Pill> : null}
+        {card.pill ? <Pill tone="strong">{card.pill}</Pill> : null}
         <CaretRightIcon size={14} color={theme.faint} />
       </View>
       <Animated.View

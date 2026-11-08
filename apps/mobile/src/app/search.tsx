@@ -7,6 +7,7 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context'
 import { AppText } from '../components/ui/AppText'
 import { statusMarkOf, type HomeRow } from '../home/rows'
 import { matchesTerms, searchTerms } from '../home/search'
+import { sessionRowHref } from '../environment/landing-route'
 import { useHomeSource } from '../home/source'
 import { usePhoneTheme } from '../theme/ThemeProvider'
 import { SectionLabel } from '../ui/chrome'
@@ -106,11 +107,9 @@ export default function Search() {
                 </SectionLabel>
                 {hits.sessions.map((row) => (
                   <SessionRow
-                    key={row.session.externalId}
+                    key={`${row.session.environment?.environmentId ?? ''}:${row.session.externalId}`}
                     row={row}
-                    onPress={() =>
-                      router.replace(`/session/${encodeURIComponent(row.session.externalId)}`)
-                    }
+                    onPress={() => router.replace(sessionRowHref(row.session) as never)}
                   />
                 ))}
               </View>

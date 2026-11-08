@@ -3,7 +3,6 @@ import { DesktopIcon, NotePencilIcon, PlusIcon, QrCodeIcon } from 'phosphor-reac
 import { useCallback, useMemo, useRef, useState } from 'react'
 import { LayoutAnimation, SectionList, View, type SectionListRenderItem } from 'react-native'
 import { useSafeAreaInsets } from 'react-native-safe-area-context'
-import { useSidebarDrafts } from '@openmanager/app-core/providers/sidebar-provider'
 
 import { AppText } from '../../components/ui/AppText'
 import { DraftDiscardToast } from '../../draft/DraftDiscard'
@@ -14,10 +13,12 @@ import {
   tabCounts,
   type HomeListRow,
   type HomeRow,
+  type HomeSession,
   type HomeTab,
 } from '../../home/rows'
 import { SessionActionsSheet } from '../../session/SessionActionsSheet'
 import { phoneConnectionView } from '../../environment/connection-ui'
+import { draftRowHref, newSessionHref, sessionRowHref } from '../../environment/landing-route'
 import { usePhoneConnection } from '../../environment/PhoneEnvironmentProvider'
 import { useHomeSource } from '../../home/source'
 import { ActionButton } from '../../pairing/ActionButton'
@@ -94,8 +95,14 @@ function PairFirst({ again, onPair }: { again: string | null; onPair: () => void
   )
 }
 
+/** Ids are only unique within one environment: a row's key names its environment too. */
 const keyOf = (row: ListRow) =>
-  row.kind === 'draft' ? `draft:${row.draft.draftId}` : `session:${row.session.externalId}`
+  row.kind === 'draft'
+    ? `draft:${row.draft.environment?.environmentId ?? ''}:${row.draft.draftId}`
+    : `session:${sessionKeyOf(row.session)}`
+
+const sessionKeyOf = (session: HomeSession) =>
+  `${session.environment?.environmentId ?? ''}:${session.externalId}`
 
 /**
  * Rows coming, going or changing places (a sent draft leaving Drafts and its
@@ -133,9 +140,8 @@ export default function SessionsHome() {
   // its next step, says why the list is empty.
   const showConnection = source.kind === 'environment' && view.ui.kind !== 'ready'
   const [tab, setTab] = useState<HomeTab>('all')
-  // Null on a host without draft cards and in the sample home.
-  const sidebarDrafts = useSidebarDrafts()
-  const discardDraft = source.kind === 'environment' ? sidebarDrafts?.discardDraft : undefined
+  // Through each card's own environment; absent in the sample home.
+  const discardDraft = source.kind === 'environment' ? source.discardDraft : undefined
 
   const counts = useMemo(() => tabCounts(sessions, drafts), [sessions, drafts])
   const sections = useMemo<ListSection[]>(
@@ -153,7 +159,7 @@ export default function SessionsHome() {
   // listing while the sheet is up, so a rename shows in it as it lands.
   const [actionsId, setActionsId] = useState<string | null>(null)
   const actionsRow = useMemo<HomeRow | null>(() => {
-    const session = actionsId ? sessions.find((s) => s.externalId === actionsId) : undefined
+    const session = actionsId ? sessions.find((s) => sessionKeyOf(s) === actionsId) : undefined
     if (!session) return null
     return {
       kind: 'session',
@@ -170,14 +176,14 @@ export default function SessionsHome() {
       item.kind === 'draft' ? (
         <DraftRow
           row={item}
-          onPress={() => router.push(`/draft/${encodeURIComponent(item.draft.draftId)}`)}
-          {...(discardDraft ? { onDiscard: () => discardDraft(item.draft.draftId) } : {})}
+          onPress={() => router.push(draftRowHref(item.draft) as never)}
+          {...(discardDraft ? { onDiscard: () => discardDraft(item.draft) } : {})}
         />
       ) : (
         <SessionRow
           row={item}
-          onPress={() => router.push(`/session/${encodeURIComponent(item.session.externalId)}`)}
-          onLongPress={() => setActionsId(item.session.externalId)}
+          onPress={() => router.push(sessionRowHref(item.session) as never)}
+          onLongPress={() => setActionsId(sessionKeyOf(item.session))}
         />
       ),
     [discardDraft, router],
@@ -191,7 +197,10 @@ export default function SessionsHome() {
         top={insets.top + 6}
         height={44}
         right={
-          <IconButton label="New session" onPress={() => router.push('/draft/new')}>
+          <IconButton
+            label="New session"
+            onPress={() => router.push(newSessionHref(connection.selectedId) as never)}
+          >
             <NotePencilIcon size={18} color={theme.fg} />
           </IconButton>
         }

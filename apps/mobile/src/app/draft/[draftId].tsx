@@ -1,24 +1,22 @@
 import { useLocalSearchParams } from 'expo-router'
-import { useEnvironmentClientOptional } from '@openmanager/app-core/logic'
 
-import { DraftPage } from '../../draft/DraftPage'
+import { LegacyRedirect } from '../../environment/legacy-route'
 import { BLANK_DRAFT } from '../../environment/landing-route'
 import { useHomeSource } from '../../home/source'
 import { DraftPagePlaceholder } from '../../ui/DraftPagePlaceholder'
 
 /**
- * A new session: the blank page the compose button opens (`/draft/new`), or
- * a draft's own page (`/draft/<id>`), from its row on the home's Drafts tab
- * or from a blank page's first text. One route for both, so the blank page
- * becomes its draft's in place, keyboard up. Which draft it shows is the
- * shared session state's to say, from the address.
+ * A new-session address from before environments were part of it
+ * (`/draft/new`, `/draft/<id>`). It moves to the address of the environment
+ * that holds the draft, or for a blank page the one new sessions go to. The
+ * sample home's cards open here too.
  */
-export default function DraftScreen() {
+export default function LegacyDraftRoute() {
   const { draftId } = useLocalSearchParams<{ draftId: string }>()
   const { kind } = useHomeSource()
-  const client = useEnvironmentClientOptional()
-  if (kind === 'fixture' || !client) {
-    return <DraftPagePlaceholder draftId={draftId === BLANK_DRAFT ? undefined : draftId} />
-  }
-  return <DraftPage />
+  const id = String(draftId ?? BLANK_DRAFT)
+  const shown = id === BLANK_DRAFT ? undefined : id
+  const placeholder = <DraftPagePlaceholder draftId={shown} />
+  if (kind === 'fixture') return placeholder
+  return <LegacyRedirect kind="draft" id={id} waiting={placeholder} none={placeholder} />
 }

@@ -25,7 +25,7 @@ describe("the controller on the phone's storage", () => {
       loaded = true
     }
     const starting = h.controller.start()
-    expect(h.state().status).toBe('starting')
+    expect(h.status()).toBe('starting')
     await starting
     expect(loaded).toBe(true)
     expect(h.state().environments.map((environment) => environment.environmentId)).toEqual([ENV])
@@ -44,7 +44,7 @@ describe("the controller on the phone's storage", () => {
     }
     const starting = h.controller.start()
     await flush()
-    expect(h.state().status).toBe('starting')
+    expect(h.status()).toBe('starting')
     expect(h.warnings).toHaveLength(1)
     h.timers.advance(1000)
     await flush()
@@ -52,7 +52,7 @@ describe("the controller on the phone's storage", () => {
     h.timers.advance(2000)
     await starting
     await flush()
-    expect(h.state().status).toBe('connecting')
+    expect(h.status()).toBe('connecting')
   })
 
   it('saves a pairing whole: token to SecureStore, app origin and routes to AsyncStorage', async () => {
@@ -110,7 +110,7 @@ describe('a refused token', () => {
     h.socket().drop(4401, 'revoked')
     await flush()
     await h.controller.flush()
-    expect(h.state()).toMatchObject({
+    expect(h.link()).toMatchObject({
       status: 'unauthorized',
       routeFailure: { reason: 'credential_rejected' },
     })
@@ -131,7 +131,7 @@ describe('a refused token', () => {
     // One confirmation probe, at the address that refused it.
     expect(h.probes).toEqual([LAN, LAN])
     expect(h.storage.secret(ENV)).toBeNull()
-    expect(h.state().status).toBe('unauthorized')
+    expect(h.status()).toBe('unauthorized')
   })
 
   it('is kept when an unknown refusal comes from an address that is now another environment', async () => {
@@ -144,7 +144,7 @@ describe('a refused token', () => {
     await flush()
     await h.controller.flush()
     expect(h.storage.secret(ENV)).toBe(TOKEN)
-    expect(h.state()).toMatchObject({ status: 'unauthorized' })
+    expect(h.link()).toMatchObject({ status: 'unauthorized' })
     expect(h.state().environments[0]!.paired).toBe(true)
   })
 
@@ -193,7 +193,7 @@ describe('a refused token', () => {
     await h.controller.flush()
     expect(h.probes).toEqual([LAN, LAN, LAN])
     expect(h.storage.secret(ENV)).toBeNull()
-    expect(h.state().status).toBe('unauthorized')
+    expect(h.status()).toBe('unauthorized')
 
     // Decided: a later return asks nothing.
     h.activity.set('background')
@@ -214,7 +214,7 @@ describe('a refused token', () => {
     h.controller.removeEnvironment(ENV)
     await flush()
     expect(inFlight.aborted).toBe(true)
-    expect(h.state().status).toBe('no_environment')
+    expect(h.status()).toBe('no_environment')
   })
 
   it('is kept on a handshake auth refusal that is not the revocation close', async () => {
@@ -230,7 +230,7 @@ describe('a refused token', () => {
     })
     await flush()
     await h.controller.flush()
-    expect(h.state().status).toBe('unauthorized')
+    expect(h.status()).toBe('unauthorized')
     expect(h.storage.secret(ENV)).toBe(TOKEN)
   })
 })

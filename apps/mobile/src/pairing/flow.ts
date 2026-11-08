@@ -4,7 +4,7 @@ import {
   pairingRejectionReason,
 } from '@openmanager/environment-client/connection'
 
-import type { PhoneConnectionController } from '../environment/controller'
+import { linkOf, type PhoneConnectionController } from '../environment/controller'
 import type { PairingFailure } from './failures'
 import type { PairingLinkRead } from './link'
 
@@ -70,8 +70,7 @@ const PAIR: PairingIntent = { kind: 'pair' }
  * confirmed to be the one that refused it), but it must not be sent again.
  */
 export function credentialRefused(controller: PairingController, environmentId: string): boolean {
-  const state = controller.getState()
-  return state.selectedId === environmentId && state.status === 'unauthorized'
+  return linkOf(controller.getState(), environmentId)?.status === 'unauthorized'
 }
 
 /**
@@ -91,7 +90,7 @@ export function mayRedeem(
   const saved = state.environments.find((item) => item.environmentId === environmentId)
   if (!saved?.paired || credentialRefused(controller, environmentId)) return false
   if (intent.kind === 'repair' && intent.environmentId === environmentId) {
-    return state.selectedId === environmentId && state.status === 'connected'
+    return linkOf(state, environmentId)?.status === 'connected'
   }
   return true
 }
@@ -169,7 +168,7 @@ export async function exchangeLink(
   const timeoutMs = options.timeoutMs ?? EXCHANGE_TIMEOUT_MS
   // The token is used up by the exchange; with the registry not loaded yet
   // its answer could not be saved, so nothing is sent.
-  if (controller.getState().status === 'starting') {
+  if (!controller.getState().loaded) {
     return fail({
       kind: 'unexpected',
       detail: 'The phone is still loading. Try again in a moment.',
@@ -323,16 +322,20 @@ export function connectedClient(
       resolve(client)
     }
     const read = () => {
-      const state = controller.getState()
-      if (state.selectedId !== environmentId) return
-      if (state.status === 'unauthorized' || state.status === 'incompatible_protocol') {
+      const link = linkOf(controller.getState(), environmentId)
+      // Not saved (removed meanwhile): nothing will connect.
+      if (!link) {
         finish(null)
         return
       }
-      // The controller's client is made for the selected environment only
-      // (it refuses a handshake from any other), and goes when the selection
-      // changes, so a connected client here is that environment's.
-      if (state.status === 'connected' && state.client) finish(state.client)
+      if (link.status === 'unauthorized' || link.status === 'incompatible_protocol') {
+        finish(null)
+        return
+      }
+      // Each link's client is made for its own environment only (it refuses
+      // a handshake from any other), so a connected client here is that
+      // environment's.
+      if (link.status === 'connected' && link.client) finish(link.client)
     }
     unsubscribe = controller.subscribe(read)
     read()
@@ -368,13 +371,12 @@ export async function redeemLink(
   // A refused token is never sent again to redeem: the link is exchanged
   // instead (`planPairing`). Reached anyway, the redeem gives up at once.
   if (credentialRefused(controller, environmentId)) return fail({ kind: 'not_connected', label })
-  const stopped = state.status === 'incompatible_protocol' || state.status === 'waiting'
-  if (state.selectedId !== environmentId) controller.selectEnvironment(environmentId)
-  else if (stopped) {
+  const status = linkOf(state, environmentId)?.status
+  if (status === 'incompatible_protocol' || status === 'waiting') {
     // A person asked to use the link: stopped or backing off, the connection
     // is asked again now rather than read as stopped from before. Filling an
     // origin searches again but keeps a latch; this clears it.
-    controller.retry()
+    controller.retry(environmentId)
   }
   // Otherwise filling the origin (if it was missing) already searched again.
   const client = await connectedClient(controller, environmentId, options)

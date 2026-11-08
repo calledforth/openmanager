@@ -28,7 +28,16 @@ function tokenColor(kind: CodeTokenKind, theme: PhoneTheme): string {
  * A fenced block of code on a fill: highlighted line by line, scrolled
  * sideways rather than wrapped, its language named in the corner.
  */
-export const CodeBlock = memo(function CodeBlock({ code, info }: { code: string; info?: string }) {
+export const CodeBlock = memo(function CodeBlock({
+  code,
+  info,
+  selectable = false,
+}: {
+  code: string
+  info?: string
+  /** Outside the transcript; in a row a long press opens the message's actions. */
+  selectable?: boolean
+}) {
   const theme = usePhoneTheme()
   const lines = useMemo(() => highlightCode(code, info), [code, info])
   const language = languageLabel(info)
@@ -59,7 +68,7 @@ export const CodeBlock = memo(function CodeBlock({ code, info }: { code: string;
         }}
       >
         <Text
-          selectable
+          selectable={selectable}
           style={{ fontFamily: MONO, fontSize: 12.5, lineHeight: 19, color: theme.fg }}
         >
           {lines.map((tokens, row) => (

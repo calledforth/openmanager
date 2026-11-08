@@ -16,7 +16,7 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context'
 
 import { AppText } from '../components/ui/AppText'
 import { phoneConnectionView, type PhoneConnectionView } from '../environment/connection-ui'
-import type { PhoneEnvironment } from '../environment/controller'
+import { linkOf, type PhoneEnvironment } from '../environment/controller'
 import {
   usePhoneConnection,
   usePhoneConnectionController,
@@ -53,8 +53,8 @@ const WORDS_IN = FadeIn.duration(180)
 /**
  * One saved environment: where the phone stands with it, its routes in the
  * order the phone asks them (the one in use marked, each with what the phone
- * last learned about it), adding a route (the pairing screen), switching to
- * it, and forgetting it. Everything here is this phone's own record; nothing
+ * last learned about it), adding a route (the pairing screen), and
+ * forgetting it, which closes its connection only. Everything here is this phone's own record; nothing
  * the environment owns is shown or changed.
  */
 export function EnvironmentScreen({ environmentId }: { environmentId: string }) {
@@ -77,10 +77,11 @@ export function EnvironmentScreen({ environmentId }: { environmentId: string }) 
     return ref
   }, [])
   const environment = state.environments.find((item) => item.environmentId === environmentId)
-  // The environment's own client, while it is the one this phone is on: its
-  // devices, links, providers and settings can only be read over it.
-  const appClient = useEnvironmentClientOptional()
-  const client = state.selectedId === environmentId && environment ? appClient : null
+  // The environment's own client (the page is under its providers once the
+  // phone holds one): its devices, links, providers and settings can only be
+  // read over it.
+  const ownClient = useEnvironmentClientOptional()
+  const client = environment ? ownClient : null
   const [admin, adminState] = useDeviceAdmin(client, environmentId)
   const [titles, titlesState] = useTitleSetting(
     client?.supports('getEnvironmentSettings') ? client : null,
@@ -106,12 +107,12 @@ export function EnvironmentScreen({ environmentId }: { environmentId: string }) 
     )
   }
 
-  const selected = state.selectedId === environmentId
-  const view = phoneConnectionView(state)
-  const inUse = selected ? (view.route?.endpoint ?? null) : null
+  const view = phoneConnectionView(state, environmentId)
+  const endpoint = linkOf(state, environmentId)?.endpoint ?? null
+  const inUse = view.route?.endpoint ?? null
   const routes = routeRows(environment, inUse)
   const pairingRoute = defaultPairingRoute(environment.routes, inUse)
-  const canKeepCredential = selected && state.endpoint !== null
+  const canKeepCredential = endpoint !== null
   const close = () => {
     admin?.clearActionError()
     setSheet(null)
@@ -120,7 +121,7 @@ export function EnvironmentScreen({ environmentId }: { environmentId: string }) 
   return (
     <Page
       title={environment.label}
-      sub={<EnvironmentSubLine environment={environment} selected={selected} view={view} />}
+      sub={<EnvironmentSubLine environment={environment} view={view} />}
       onBack={goBack}
       overlay={
         sheet?.kind === 'forget' ? (
@@ -132,11 +133,9 @@ export function EnvironmentScreen({ environmentId }: { environmentId: string }) 
             onCancel={() => setSheet(null)}
             onConfirm={() => {
               setSheet(null)
+              // Closes this environment's connection only; every other stays.
               controller.removeEnvironment(environmentId)
-              // Forgetting the one in use leaves the phone on another, or on
-              // none: either way the sessions home is where that shows.
-              if (selected) router.navigate('/')
-              else goBack()
+              goBack()
             }}
           />
         ) : sheet?.kind === 'titles' ? (
@@ -163,34 +162,17 @@ export function EnvironmentScreen({ environmentId }: { environmentId: string }) 
             onRotated={(credential) => {
               // The socket closes once the new credential is sent; saving it
               // redials with it. Never shown, never logged.
-              if (state.endpoint) {
-                controller.saveEnvironment({
-                  environmentId,
-                  endpoint: state.endpoint,
-                  credential,
-                })
+              if (endpoint) {
+                controller.saveEnvironment({ environmentId, endpoint, credential })
               }
             }}
           />
         ) : null
       }
     >
-      {selected && (view.ui.kind !== 'ready' || !environment.paired) ? (
+      {view.ui.kind !== 'ready' || !environment.paired ? (
         <View style={{ paddingHorizontal: 4, paddingTop: 6 }}>
           <ConnectionPanel view={view} />
-        </View>
-      ) : null}
-      {!selected ? (
-        <View style={{ paddingTop: 6 }}>
-          <SettingsRow
-            icon={<ArrowsLeftRightIcon size={17} color={theme.fg} />}
-            title="Use this environment"
-            sub="The phone connects to one environment at a time"
-            onPress={() => {
-              controller.selectEnvironment(environmentId)
-              router.navigate('/')
-            }}
-          />
         </View>
       ) : null}
 
@@ -265,9 +247,7 @@ export function EnvironmentScreen({ environmentId }: { environmentId: string }) 
           variant="text-12-regular"
           style={{ color: theme.muted, paddingLeft: 56, paddingRight: 12, paddingTop: 14 }}
         >
-          {selected
-            ? 'Its devices, providers and session titles show once the phone is connected.'
-            : 'Use this environment to see its devices, providers and session titles.'}
+          Its devices, providers and session titles show once the phone is connected.
         </AppText>
       ) : null}
 
@@ -286,18 +266,15 @@ export function EnvironmentScreen({ environmentId }: { environmentId: string }) 
 
 function EnvironmentSubLine({
   environment,
-  selected,
   view,
 }: {
   environment: PhoneEnvironment
-  selected: boolean
   view: PhoneConnectionView
 }) {
   const theme = usePhoneTheme()
   if (!environment.paired) {
     return <SubLine color={theme.status.error} words="Needs pairing again" />
   }
-  if (!selected) return <SubLine color={theme.faint} words="Not in use on this phone" />
   return <SubLine color={toneColor(theme, view.tone)} words={pageStatusWords(view)} />
 }
 
