@@ -153,9 +153,7 @@ export function NewSessionHead({
             backgroundColor: pressed ? theme.active : theme.hover,
           })}
         >
-          {workspace ? (
-            <ProjectMark workspaceId={workspace.path} name={workspace.name} size={14} />
-          ) : null}
+          {workspace ? <ProjectMark workspaceId={workspace.path} size={14} /> : null}
           <AppText
             variant="text-16-medium"
             numberOfLines={1}

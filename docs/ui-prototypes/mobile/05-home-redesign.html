@@ -1,0 +1,1372 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>OpenManager mobile — 05 · Home redesign (no inbox, no days, bottom dock)</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap"
+      rel="stylesheet"
+    />
+    <style>
+      /* ── Tokens lifted from packages/app-core/src/styles/{globals,fluid}.css ── */
+      :root {
+        --font: 'Geist', 'Geist Variable', 'Segoe UI', ui-sans-serif, system-ui, sans-serif;
+        --mono: 'JetBrains Mono', ui-monospace, Consolas, monospace;
+        --ease: cubic-bezier(0.2, 0.8, 0.2, 1);
+      }
+      .phone[data-theme='neutral'] {
+        color-scheme: dark;
+        --bg: #171717;
+        --fg: #ededed;
+        --muted: #8f8f8f;
+        --faint: #5c5c5c;
+        --rule: rgb(255 255 255 / 0.075);
+        --hover: rgb(255 255 255 / 0.06);
+        --active: rgb(255 255 255 / 0.1);
+        --float-bg: color-mix(in oklab, #171717, #ededed 5%);
+        --float-shadow:
+          inset 0 1px 0 0 rgb(255 255 255 / 0.05), inset 0 0 0 1px rgb(255 255 255 / 0.035),
+          0 0 0 1px rgb(0 0 0 / 0.32), 0 2px 4px rgb(0 0 0 / 0.14),
+          0 8px 18px -4px rgb(0 0 0 / 0.22), 0 24px 56px -12px rgb(0 0 0 / 0.5);
+        --float-rest:
+          inset 0 1px 0 0 rgb(255 255 255 / 0.05), inset 0 0 0 1px rgb(255 255 255 / 0.035),
+          0 0 0 1px rgb(0 0 0 / 0.32), 0 2px 4px rgb(0 0 0 / 0.12), 0 8px 16px -8px rgb(0 0 0 / 0.2);
+        --action-bg: #e5e5e5;
+        --action-fg: #111111;
+        --glass: rgb(34 34 34 / 0.58);
+        --glass-strong: rgb(34 34 34 / 0.72);
+        --status-working: #a193ff;
+        --status-background: #6cbcf2;
+        --status-needs: #f4b942;
+        --status-question: #f47fc4;
+        --status-done: #5ed8a4;
+        --status-error: #ff6f6f;
+        --status-done-wash: color-mix(in srgb, var(--status-done) 13%, transparent);
+        --status-error-wash: color-mix(in srgb, var(--status-error) 12%, transparent);
+        --draft: #4f8ff7;
+        --draft-fill: color-mix(in oklab, var(--draft) 6.5%, transparent);
+        --draft-hover: color-mix(in oklab, var(--draft) 10%, transparent);
+      }
+      .phone[data-theme='neutral-light'] {
+        color-scheme: light;
+        --bg: #fcfcfc;
+        --fg: #1a1a1a;
+        --muted: #737373;
+        --faint: #a8a8a8;
+        --rule: #ececec;
+        --hover: rgb(0 0 0 / 0.04);
+        --active: rgb(0 0 0 / 0.07);
+        --float-bg: #ffffff;
+        --float-shadow:
+          0 0 0 1px rgb(0 0 0 / 0.06), 0 1px 1px -0.5px rgb(0 0 0 / 0.06),
+          0 3px 3px -1.5px rgb(0 0 0 / 0.06), 0 6px 6px -3px rgb(0 0 0 / 0.06),
+          0 12px 12px -6px rgb(0 0 0 / 0.06), 0 24px 24px -12px rgb(0 0 0 / 0.06);
+        --float-rest:
+          0 0 0 1px rgb(0 0 0 / 0.06), 0 1px 1px -0.5px rgb(0 0 0 / 0.06),
+          0 3px 3px -1.5px rgb(0 0 0 / 0.06), 0 6px 6px -3px rgb(0 0 0 / 0.06);
+        --action-bg: #2a2a2a;
+        --action-fg: #f3f3f3;
+        --glass: rgb(255 255 255 / 0.6);
+        --glass-strong: rgb(255 255 255 / 0.74);
+        --status-working: #6b56e0;
+        --status-background: #1f74b0;
+        --status-needs: #b7791f;
+        --status-question: #b8337f;
+        --status-done: #12805a;
+        --status-error: #c73b3b;
+        --status-done-wash: #e3f6ec;
+        --status-error-wash: #fde7e7;
+        --draft: #1f6feb;
+        --draft-fill: color-mix(in oklab, var(--draft) 6.5%, transparent);
+        --draft-hover: color-mix(in oklab, var(--draft) 10%, transparent);
+      }
+
+      /* ── Page chrome (not part of the design) ── */
+      body {
+        margin: 0;
+        background: #0b0b0b;
+        font-family: var(--font);
+        color: #bbb;
+      }
+      .board {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 36px;
+        padding: 36px;
+        align-items: flex-start;
+      }
+      .frame {
+        display: flex;
+        flex-direction: column;
+        gap: 10px;
+      }
+      .frame > .label {
+        font-size: 12px;
+        color: #777;
+        letter-spacing: 0.02em;
+        max-width: 390px;
+        line-height: 1.5;
+      }
+      .frame > .label b {
+        color: #ccc;
+        font-weight: 500;
+      }
+
+      /* ── Phone ── */
+      .phone {
+        width: 390px;
+        height: 844px;
+        border-radius: 44px;
+        overflow: hidden;
+        position: relative;
+        background: var(--bg);
+        color: var(--fg);
+        font-family: var(--font);
+        font-size: 15px;
+        box-shadow:
+          0 0 0 10px #1c1c1c,
+          0 0 0 11px #2a2a2a,
+          0 30px 80px -20px rgb(0 0 0 / 0.8);
+        display: flex;
+        flex-direction: column;
+        -webkit-font-smoothing: antialiased;
+      }
+      .statusbar {
+        height: 54px;
+        display: flex;
+        align-items: flex-end;
+        justify-content: space-between;
+        padding: 0 34px 8px;
+        font-size: 15px;
+        font-weight: 600;
+      }
+      .statusbar .right {
+        display: flex;
+        gap: 6px;
+        align-items: center;
+        font-size: 12px;
+      }
+      .homebar {
+        position: absolute;
+        bottom: 8px;
+        left: 50%;
+        transform: translateX(-50%);
+        width: 134px;
+        height: 5px;
+        border-radius: 3px;
+        background: var(--fg);
+        opacity: 0.9;
+      }
+      .screen {
+        flex: 1;
+        display: flex;
+        flex-direction: column;
+        min-height: 0;
+      }
+
+      /* ── Header: one 44px row, the title at the left and the two views at the right.
+             No environment line: with one environment it was context, not news; with
+             two, each row says where it runs. ── */
+      .header {
+        padding: 6px 20px 0;
+      }
+      .header .top {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        height: 44px;
+      }
+      .header h1 {
+        font-size: 22px;
+        font-weight: 600;
+        letter-spacing: -0.015em;
+        margin: 0;
+      }
+      .views {
+        display: flex;
+        gap: 4px;
+      }
+      .tab {
+        padding: 6px 12px;
+        border-radius: 999px;
+        font-size: 14px;
+        color: var(--muted);
+        font-weight: 500;
+        display: inline-flex;
+        align-items: center;
+        gap: 4px;
+      }
+      .tab.on {
+        background: var(--active);
+        color: var(--fg);
+      }
+      .tab .n {
+        color: var(--faint);
+        font-weight: 400;
+      }
+      .tab .needs {
+        margin-left: 2px;
+        min-width: 16px;
+        height: 16px;
+        padding: 0 4px;
+        border-radius: 8px;
+        background: var(--status-needs);
+        color: #1a1a1a;
+        font-size: 10px;
+        font-weight: 600;
+        display: grid;
+        place-items: center;
+        line-height: 1;
+      }
+
+      /* ── List ── */
+      .list {
+        flex: 1;
+        overflow: hidden;
+        padding: 2px 8px 0;
+      }
+      .group {
+        padding: 12px 12px 4px;
+        font-size: 11px;
+        color: var(--faint);
+        font-weight: 500;
+        letter-spacing: 0.03em;
+        text-transform: uppercase;
+      }
+      .group:first-child {
+        padding-top: 6px;
+      }
+      .row {
+        display: flex;
+        align-items: center;
+        gap: 12px;
+        padding: 10px 12px;
+        border-radius: 14px;
+        margin: 1px 0;
+      }
+      .row.sel {
+        background: var(--active);
+      }
+      .row.wash-done {
+        background: var(--status-done-wash);
+      }
+      .row.wash-error {
+        background: var(--status-error-wash);
+      }
+      .row.draft {
+        background: var(--draft-fill);
+      }
+      .row.unsent {
+        background: var(--draft-fill);
+      }
+      .row.dim {
+        opacity: 0.6;
+      }
+      .row .mark {
+        width: 22px;
+        height: 22px;
+        flex: none;
+        display: grid;
+        place-items: center;
+      }
+      .row .mark svg {
+        width: 16px;
+        height: 16px;
+      }
+      .row .body {
+        flex: 1;
+        min-width: 0;
+      }
+      .row .title {
+        font-size: 14px;
+        font-weight: 500;
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        letter-spacing: -0.005em;
+      }
+      .row.draft .title {
+        font-weight: 400;
+      }
+      .row .sub {
+        display: flex;
+        align-items: center;
+        gap: 6px;
+        font-size: 12px;
+        color: var(--muted);
+        margin-top: 2px;
+        white-space: nowrap;
+        overflow: hidden;
+      }
+      .row .sub .proj {
+        display: inline-flex;
+        align-items: center;
+        gap: 5px;
+        flex: none;
+      }
+      /* The folder is the fallback for a project with no declared icon, as web's sidebar. */
+      .row .sub .proj svg {
+        width: 12px;
+        height: 12px;
+        color: var(--muted);
+      }
+      .row .sub .proj img {
+        width: 12px;
+        height: 12px;
+        border-radius: 2px;
+      }
+      .row .sub .sep {
+        color: var(--faint);
+      }
+      .row .sub .st {
+        font-weight: 500;
+        min-width: 0;
+        overflow: hidden;
+        text-overflow: ellipsis;
+      }
+      .row .sub .st.idle {
+        font-weight: 400;
+      }
+      .row .sub .st.needs {
+        color: var(--status-needs);
+      }
+      .row .sub .st.question {
+        color: var(--status-question);
+      }
+      .row .sub .st.working {
+        color: var(--status-working);
+      }
+      .row .sub .st.background {
+        color: var(--status-background);
+      }
+      .row .sub .st.done {
+        color: var(--status-done);
+      }
+      .row .sub .st.error {
+        color: var(--status-error);
+      }
+      .row .sub .st .n {
+        opacity: 0.75;
+        font-weight: 400;
+        font-variant-numeric: tabular-nums;
+      }
+      /* Where it runs: only when the rows span two environments. Faint, last, and
+         the first thing to give way when the line is short of room. */
+      .row .sub .envl {
+        display: inline-flex;
+        align-items: center;
+        gap: 4px;
+        color: var(--faint);
+        min-width: 0;
+        flex: 0 2 auto;
+        overflow: hidden;
+      }
+      .row .sub .envl svg {
+        width: 11px;
+        height: 11px;
+        flex: none;
+      }
+      .row .sub .envl span {
+        overflow: hidden;
+        text-overflow: ellipsis;
+      }
+      .row .sub .chip {
+        padding: 1px 7px;
+        border-radius: 999px;
+        background: var(--hover);
+        font-size: 11px;
+        font-weight: 500;
+        color: var(--status-needs);
+      }
+      .row .sub .prov {
+        width: 13px;
+        height: 13px;
+        flex: none;
+      }
+      .row .end {
+        display: flex;
+        align-items: center;
+        gap: 5px;
+        flex: none;
+      }
+      .row .end svg {
+        width: 12px;
+        height: 12px;
+      }
+      .row .age {
+        font-size: 12px;
+        color: var(--faint);
+        flex: none;
+      }
+      .row.child {
+        padding-left: 46px;
+        position: relative;
+      }
+      .row.child::before {
+        content: '';
+        position: absolute;
+        left: 23px;
+        top: -6px;
+        bottom: 50%;
+        width: 10px;
+        border-left: 1.5px solid var(--rule);
+        border-bottom: 1.5px solid var(--rule);
+        border-bottom-left-radius: 6px;
+      }
+
+      /* status marks */
+      .m-working {
+        width: 12px;
+        height: 12px;
+        border-radius: 50%;
+        border: 2.5px solid var(--status-working);
+        border-right-color: transparent;
+        animation: spin 1.1s linear infinite;
+      }
+      .m-background {
+        width: 12px;
+        height: 12px;
+        border-radius: 50%;
+        border: 2.5px solid var(--status-background);
+        border-right-color: transparent;
+        opacity: 0.8;
+        animation: spin 2.2s linear infinite;
+      }
+      .m-needs,
+      .m-question,
+      .m-error,
+      .m-done {
+        width: 14px;
+        height: 14px;
+        border-radius: 50%;
+        color: #1a1a1a;
+        font-size: 10px;
+        font-weight: 700;
+        display: grid;
+        place-items: center;
+      }
+      .m-needs {
+        background: var(--status-needs);
+      }
+      .m-question {
+        background: var(--status-question);
+      }
+      .m-error {
+        background: var(--status-error);
+      }
+      .m-done {
+        background: var(--status-done);
+      }
+      .m-done svg {
+        width: 9px;
+        height: 9px;
+      }
+      .m-idle {
+        width: 12px;
+        height: 12px;
+        border-radius: 50%;
+        border: 1.5px solid var(--faint);
+      }
+      .m-draft {
+        color: var(--draft);
+      }
+      .m-cloudoff {
+        color: var(--status-needs);
+      }
+      @keyframes spin {
+        to {
+          transform: rotate(360deg);
+        }
+      }
+
+      /* ── Bottom dock: Settings · New chat · Search. Three glass pieces where the pill
+             was, the frequent two under the thumb, settings beside them since it is the
+             only other top-level place. ── */
+      .dock {
+        position: absolute;
+        left: 0;
+        right: 0;
+        bottom: 28px;
+        display: flex;
+        justify-content: center;
+        align-items: center;
+        gap: 10px;
+        padding: 0 20px;
+      }
+      .fab {
+        width: 56px;
+        height: 56px;
+        border-radius: 50%;
+        display: grid;
+        place-items: center;
+        background: var(--glass);
+        -webkit-backdrop-filter: blur(24px) saturate(1.6);
+        backdrop-filter: blur(24px) saturate(1.6);
+        box-shadow: var(--float-shadow);
+        color: var(--fg);
+      }
+      .fab svg {
+        width: 22px;
+        height: 22px;
+      }
+      .fab.quiet {
+        color: var(--muted);
+      }
+      .newchat {
+        height: 56px;
+        padding: 0 24px 0 20px;
+        border-radius: 999px;
+        display: inline-flex;
+        align-items: center;
+        gap: 9px;
+        background: var(--glass-strong);
+        -webkit-backdrop-filter: blur(28px) saturate(1.6);
+        backdrop-filter: blur(28px) saturate(1.6);
+        box-shadow: var(--float-shadow);
+        color: var(--fg);
+        font-size: 15px;
+        font-weight: 500;
+        letter-spacing: -0.005em;
+      }
+      .newchat svg {
+        width: 21px;
+        height: 21px;
+      }
+      /* A weak fade only: the glass needs content behind it to read as glass. */
+      .fadeout {
+        position: absolute;
+        left: 0;
+        right: 0;
+        bottom: 0;
+        height: 150px;
+        pointer-events: none;
+        background: linear-gradient(
+          to bottom,
+          transparent,
+          color-mix(in oklab, var(--bg) 55%, transparent)
+        );
+      }
+
+      /* empty state */
+      .empty {
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        padding: 96px 40px 0;
+        text-align: center;
+      }
+      .empty .tile {
+        width: 56px;
+        height: 56px;
+        border-radius: 18px;
+        background: var(--hover);
+        display: grid;
+        place-items: center;
+        margin-bottom: 12px;
+        color: var(--muted);
+      }
+      .empty .tile svg {
+        width: 26px;
+        height: 26px;
+      }
+      .empty .t {
+        font-size: 16px;
+        font-weight: 500;
+      }
+      .empty .b {
+        font-size: 13px;
+        color: var(--muted);
+        margin-top: 4px;
+        line-height: 1.45;
+      }
+
+      .note {
+        max-width: 860px;
+        color: #9a9a9a;
+        font-size: 13.5px;
+        line-height: 1.6;
+        padding: 0 36px 36px;
+      }
+      .note h2 {
+        color: #ddd;
+        font-size: 15px;
+        font-weight: 600;
+        margin: 24px 0 6px;
+      }
+      .note ol,
+      .note ul {
+        padding-left: 18px;
+      }
+      .note b {
+        color: #ccc;
+        font-weight: 500;
+      }
+    </style>
+  </head>
+  <body>
+    <svg width="0" height="0" style="position: absolute">
+      <defs>
+        <symbol id="i-check" viewBox="0 0 24 24">
+          <path
+            d="M5 12.5l4.5 4.5L19 7.5"
+            fill="none"
+            stroke="#1a1a1a"
+            stroke-width="3.2"
+            stroke-linecap="round"
+            stroke-linejoin="round"
+          />
+        </symbol>
+        <symbol id="i-search" viewBox="0 0 24 24">
+          <circle cx="11" cy="11" r="6.5" fill="none" stroke="currentColor" stroke-width="2.2" />
+          <path
+            d="M16 16l4.5 4.5"
+            stroke="currentColor"
+            stroke-width="2.2"
+            stroke-linecap="round"
+          />
+        </symbol>
+        <symbol id="i-gear" viewBox="0 0 24 24">
+          <circle cx="12" cy="12" r="3" fill="none" stroke="currentColor" stroke-width="2" />
+          <path
+            d="M12 2v3M12 19v3M2 12h3M19 12h3M4.9 4.9l2.1 2.1M17 17l2.1 2.1M4.9 19.1L7 17M17 7l2.1-2.1"
+            stroke="currentColor"
+            stroke-width="2"
+            stroke-linecap="round"
+          />
+        </symbol>
+        <!-- phosphor NotePencil -->
+        <symbol id="i-newchat" viewBox="0 0 24 24">
+          <path
+            d="M12.5 4.5H6a1.5 1.5 0 0 0-1.5 1.5v12A1.5 1.5 0 0 0 6 19.5h12a1.5 1.5 0 0 0 1.5-1.5v-6.5"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="2"
+            stroke-linecap="round"
+            stroke-linejoin="round"
+          />
+          <path
+            d="M17.7 3.3a1.9 1.9 0 0 1 2.7 2.7L12 14.4l-3.6.9.9-3.6z"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="2"
+            stroke-linejoin="round"
+          />
+        </symbol>
+        <!-- phosphor FolderSimple -->
+        <symbol id="i-folder" viewBox="0 0 24 24">
+          <path
+            d="M3 7.5V18a1.5 1.5 0 0 0 1.5 1.5h15A1.5 1.5 0 0 0 21 18V9a1.5 1.5 0 0 0-1.5-1.5H11L8.5 5H4.5A1.5 1.5 0 0 0 3 6.5z"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="2"
+            stroke-linejoin="round"
+          />
+        </symbol>
+        <!-- phosphor HardDrives -->
+        <symbol id="i-drives" viewBox="0 0 24 24">
+          <rect
+            x="3"
+            y="4"
+            width="18"
+            height="7"
+            rx="1.5"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="2"
+          />
+          <rect
+            x="3"
+            y="13"
+            width="18"
+            height="7"
+            rx="1.5"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="2"
+          />
+          <circle cx="17" cy="7.5" r="1.2" fill="currentColor" />
+          <circle cx="17" cy="16.5" r="1.2" fill="currentColor" />
+        </symbol>
+        <!-- phosphor PushPin (fill) -->
+        <symbol id="i-pin" viewBox="0 0 24 24">
+          <path
+            d="M15.3 2.8l5.9 5.9-1.4 1.4-.9-.3-3.3 3.3.4 3.8-1.5 1.5-3.6-3.6L5 20.7 3.3 19l5.9-5.9-3.6-3.6 1.5-1.5 3.8.4 3.3-3.3-.3-.9z"
+            fill="currentColor"
+          />
+        </symbol>
+        <!-- phosphor PencilSimpleLine (bold) -->
+        <symbol id="i-pencil" viewBox="0 0 24 24">
+          <path
+            d="M4 20.5h16"
+            stroke="currentColor"
+            stroke-width="2.4"
+            stroke-linecap="round"
+          />
+          <path
+            d="M14.6 4.4l3 3L8.5 16.5H5.5v-3z"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="2.4"
+            stroke-linejoin="round"
+          />
+        </symbol>
+        <!-- phosphor CloudSlash -->
+        <symbol id="i-cloudoff" viewBox="0 0 24 24">
+          <path
+            d="M7.5 18.5h9a4 4 0 0 0 .9-7.9A6 6 0 0 0 7 9.5"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="2"
+            stroke-linecap="round"
+          />
+          <path
+            d="M5.3 10.7A3.5 3.5 0 0 0 7.5 18.5"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="2"
+            stroke-linecap="round"
+          />
+          <path d="M4 4l16 16" stroke="currentColor" stroke-width="2" stroke-linecap="round" />
+        </symbol>
+        <symbol id="i-image" viewBox="0 0 24 24">
+          <rect
+            x="3.5"
+            y="4.5"
+            width="17"
+            height="15"
+            rx="2"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="2"
+          />
+          <path
+            d="M4 16l4.5-4.5 4 4 2.5-2.5L20 17.5"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="2"
+            stroke-linejoin="round"
+          />
+          <circle cx="15.5" cy="9" r="1.5" fill="currentColor" />
+        </symbol>
+        <symbol id="i-plus" viewBox="0 0 24 24">
+          <path
+            d="M12 5v14M5 12h14"
+            stroke="currentColor"
+            stroke-width="2.2"
+            stroke-linecap="round"
+          />
+        </symbol>
+        <symbol id="i-claude" viewBox="0 0 24 24">
+          <path
+            d="M12 2.5l1.9 5.4 5.4-1.9-3.5 4.5 4.6 3.4-5.7.5.9 5.7-3.6-4.5-3.6 4.5.9-5.7-5.7-.5 4.6-3.4L4.7 6l5.4 1.9z"
+            fill="#d97757"
+          />
+        </symbol>
+        <symbol id="i-opencode" viewBox="0 0 24 24">
+          <rect x="4" y="4" width="16" height="16" rx="3" fill="none" stroke="currentColor" stroke-width="2" />
+          <path d="M9 9l-2.5 3L9 15M15 9l2.5 3L15 15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" />
+        </symbol>
+      </defs>
+    </svg>
+
+    <div class="board">
+      <!-- ═══════════════ A · All · dark · one environment ═══════════════ -->
+      <div class="frame">
+        <div class="label">
+          <b>A · Home, All</b> · Neutral dark · one environment. Drafts are cards on top (the
+          web sidebar's Drafts section), then Pinned, Needs you, Working, Done, Failed, Recent.
+          No day labels. The inbox's three lists are the marks, washes and this order.
+        </div>
+        <div class="phone" data-theme="neutral">
+          <div class="statusbar"><span>9:41</span><span class="right">●●●● ◗ ▮</span></div>
+          <div class="screen">
+            <div class="header">
+              <div class="top">
+                <h1>Sessions</h1>
+                <div class="views">
+                  <div class="tab on">All<span class="n">9</span></div>
+                  <div class="tab">Settled<span class="n">14</span></div>
+                </div>
+              </div>
+            </div>
+            <div class="list">
+              <div class="group">Drafts</div>
+              <div class="row draft">
+                <div class="mark m-draft"><svg><use href="#i-pencil" /></svg></div>
+                <div class="body">
+                  <div class="title">Add a retry to the upload ticket when the socket drops mid-PUT</div>
+                  <div class="sub">
+                    <span class="proj"><svg><use href="#i-folder" /></svg>openmanager</span
+                    ><span class="sep">·</span><svg class="prov"><use href="#i-claude" /></svg>
+                  </div>
+                </div>
+                <div class="age">2m</div>
+              </div>
+              <div class="row draft">
+                <div class="mark m-cloudoff"><svg><use href="#i-cloudoff" /></svg></div>
+                <div class="body">
+                  <div class="title">Why does the sidebar remount when the theme flips?</div>
+                  <div class="sub">
+                    <span class="proj"><svg><use href="#i-folder" /></svg>openmanager</span
+                    ><span class="sep">·</span><svg class="prov"><use href="#i-claude" /></svg
+                    ><span class="chip">Not synced</span>
+                  </div>
+                </div>
+                <div class="age">3h</div>
+              </div>
+
+              <div class="group">Pinned</div>
+              <div class="row">
+                <div class="mark"><div class="m-background"></div></div>
+                <div class="body">
+                  <div class="title">Mobile Client Gap Analysis and Plan</div>
+                  <div class="sub">
+                    <span class="proj"><svg><use href="#i-folder" /></svg>openmanager</span
+                    ><span class="sep">·</span><span class="st background">Background <span class="n">· 2</span></span>
+                  </div>
+                </div>
+                <div class="end">
+                  <svg style="color: var(--muted)"><use href="#i-pin" /></svg>
+                  <span class="age">6m</span>
+                </div>
+              </div>
+
+              <div class="group">Needs you</div>
+              <div class="row">
+                <div class="mark"><div class="m-needs">!</div></div>
+                <div class="body">
+                  <div class="title">Settings Environment Page Redesign</div>
+                  <div class="sub">
+                    <span class="proj"><svg><use href="#i-folder" /></svg>openmanager</span
+                    ><span class="sep">·</span><span class="st needs">Needs input</span>
+                  </div>
+                </div>
+                <div class="age">4m</div>
+              </div>
+              <div class="row">
+                <div class="mark"><div class="m-question">?</div></div>
+                <div class="body">
+                  <div class="title">Higgsfield Soul ID API Automation</div>
+                  <div class="sub">
+                    <span class="proj"><svg><use href="#i-folder" /></svg>ClePro</span
+                    ><span class="sep">·</span><span class="st question">Has a question</span>
+                  </div>
+                </div>
+                <div class="age">12m</div>
+              </div>
+
+              <div class="group">Working</div>
+              <div class="row">
+                <div class="mark"><div class="m-working"></div></div>
+                <div class="body">
+                  <div class="title">Codex Integration: Tool Call Payloads</div>
+                  <div class="sub">
+                    <span class="proj"><svg><use href="#i-folder" /></svg>openmanager</span
+                    ><span class="sep">·</span><span class="st working">Working</span>
+                  </div>
+                </div>
+                <div class="age">now</div>
+              </div>
+              <div class="row child">
+                <div class="mark"><div class="m-working"></div></div>
+                <div class="body">
+                  <div class="title">Contract tests for turn_activity</div>
+                  <div class="sub">
+                    <span class="proj"><svg><use href="#i-folder" /></svg>openmanager</span
+                    ><span class="sep">·</span><span class="st working">Working</span>
+                  </div>
+                </div>
+                <div class="age">1m</div>
+              </div>
+
+              <div class="group">Done</div>
+              <div class="row wash-done">
+                <div class="mark"><div class="m-done"><svg><use href="#i-check" /></svg></div></div>
+                <div class="body">
+                  <div class="title">Pricing page copy, three tiers</div>
+                  <div class="sub">
+                    <span class="proj"><img alt="" src="data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'><rect width='24' height='24' rx='6' fill='%23e06b4f'/><path d='M7 15l4-6 4 6' stroke='white' stroke-width='2.4' fill='none' stroke-linecap='round' stroke-linejoin='round'/></svg>" />salesmaxai</span
+                    ><span class="sep">·</span><span class="st done">Done</span>
+                  </div>
+                </div>
+                <div class="age">1h</div>
+              </div>
+
+              <div class="group">Failed</div>
+              <div class="row wash-error">
+                <div class="mark"><div class="m-error">×</div></div>
+                <div class="body">
+                  <div class="title">Sync foundations: convergence harness</div>
+                  <div class="sub">
+                    <span class="proj"><svg><use href="#i-folder" /></svg>openmanager</span
+                    ><span class="sep">·</span><span class="st error">Failed</span>
+                  </div>
+                </div>
+                <div class="age">3h</div>
+              </div>
+
+              <div class="group">Recent</div>
+              <div class="row unsent">
+                <div class="mark"><div class="m-idle"></div></div>
+                <div class="body">
+                  <div class="title">Freelancer Portfolio Site</div>
+                  <div class="sub">
+                    <span class="proj"><svg><use href="#i-folder" /></svg>ClePro</span>
+                  </div>
+                </div>
+                <div class="end">
+                  <svg style="color: var(--draft)"><use href="#i-pencil" /></svg>
+                  <span class="age">1d</span>
+                </div>
+              </div>
+              <div class="row">
+                <div class="mark"><div class="m-idle"></div></div>
+                <div class="body">
+                  <div class="title">Agent Browser Control With Zen Helium</div>
+                  <div class="sub">
+                    <span class="proj"><svg><use href="#i-folder" /></svg>openmanager</span>
+                  </div>
+                </div>
+                <div class="age">2d</div>
+              </div>
+              <div class="row">
+                <div class="mark"><div class="m-idle"></div></div>
+                <div class="body">
+                  <div class="title">Yo how could we build a mcp server?? or is it a webhook</div>
+                  <div class="sub">
+                    <span class="proj"><svg><use href="#i-folder" /></svg>openmanager</span>
+                  </div>
+                </div>
+                <div class="age">4d</div>
+              </div>
+            </div>
+          </div>
+          <div class="fadeout"></div>
+          <div class="dock">
+            <div class="fab quiet"><svg><use href="#i-gear" /></svg></div>
+            <div class="newchat"><svg><use href="#i-newchat" /></svg>New chat</div>
+            <div class="fab"><svg><use href="#i-search" /></svg></div>
+          </div>
+          <div class="homebar"></div>
+        </div>
+      </div>
+
+      <!-- ═══════════════ B · All · light · two environments ═══════════════ -->
+      <div class="frame">
+        <div class="label">
+          <b>B · Home, All</b> · Neutral light · two environments paired. Each row ends with
+          where it runs (web's faint <i>EnvironmentLabel</i>), last on the line so it is the
+          first thing to truncate. With one environment this label is simply absent (frame A).
+        </div>
+        <div class="phone" data-theme="neutral-light">
+          <div class="statusbar"><span>9:41</span><span class="right">●●●● ◗ ▮</span></div>
+          <div class="screen">
+            <div class="header">
+              <div class="top">
+                <h1>Sessions</h1>
+                <div class="views">
+                  <div class="tab on">All<span class="n">11</span></div>
+                  <div class="tab">Settled<span class="n">21</span></div>
+                </div>
+              </div>
+            </div>
+            <div class="list">
+              <div class="group">Drafts</div>
+              <div class="row draft">
+                <div class="mark m-draft"><svg><use href="#i-pencil" /></svg></div>
+                <div class="body">
+                  <div class="title">Add a retry to the upload ticket when the socket drops mid-PUT</div>
+                  <div class="sub">
+                    <span class="proj"><svg><use href="#i-folder" /></svg>openmanager</span
+                    ><span class="sep">·</span><svg class="prov"><use href="#i-claude" /></svg
+                    ><span class="sep">·</span
+                    ><span class="envl"><svg><use href="#i-drives" /></svg><span>laptop</span></span>
+                  </div>
+                </div>
+                <div class="age">2m</div>
+              </div>
+              <div class="row draft">
+                <div class="mark m-draft"><svg><use href="#i-image" /></svg></div>
+                <div class="body">
+                  <div class="title">Match this reference — the soul ID avatar grid</div>
+                  <div class="sub">
+                    <span class="proj"><svg><use href="#i-folder" /></svg>ClePro</span
+                    ><span class="sep">·</span><svg class="prov" style="color: var(--muted)"><use href="#i-opencode" /></svg
+                    ><span>2 images</span><span class="sep">·</span
+                    ><span class="envl"><svg><use href="#i-drives" /></svg><span>WSL · ubuntu</span></span>
+                  </div>
+                </div>
+                <div class="age">1d</div>
+              </div>
+
+              <div class="group">Pinned</div>
+              <div class="row">
+                <div class="mark"><div class="m-background"></div></div>
+                <div class="body">
+                  <div class="title">Mobile Client Gap Analysis and Plan</div>
+                  <div class="sub">
+                    <span class="proj"><svg><use href="#i-folder" /></svg>openmanager</span
+                    ><span class="sep">·</span><span class="st background">Background <span class="n">· 2</span></span
+                    ><span class="sep">·</span
+                    ><span class="envl"><svg><use href="#i-drives" /></svg><span>laptop</span></span>
+                  </div>
+                </div>
+                <div class="end">
+                  <svg style="color: var(--muted)"><use href="#i-pin" /></svg>
+                  <span class="age">6m</span>
+                </div>
+              </div>
+
+              <div class="group">Needs you</div>
+              <div class="row">
+                <div class="mark"><div class="m-needs">!</div></div>
+                <div class="body">
+                  <div class="title">Settings Environment Page Redesign</div>
+                  <div class="sub">
+                    <span class="proj"><svg><use href="#i-folder" /></svg>openmanager</span
+                    ><span class="sep">·</span><span class="st needs">Needs input</span
+                    ><span class="sep">·</span
+                    ><span class="envl"><svg><use href="#i-drives" /></svg><span>laptop</span></span>
+                  </div>
+                </div>
+                <div class="age">4m</div>
+              </div>
+              <div class="row">
+                <div class="mark"><div class="m-question">?</div></div>
+                <div class="body">
+                  <div class="title">Nightly convergence harness: summarise drift</div>
+                  <div class="sub">
+                    <span class="proj"><svg><use href="#i-folder" /></svg>openmanager</span
+                    ><span class="sep">·</span><span class="st question">Has a question</span
+                    ><span class="sep">·</span
+                    ><span class="envl"><svg><use href="#i-drives" /></svg><span>WSL · ubuntu</span></span>
+                  </div>
+                </div>
+                <div class="age">9m</div>
+              </div>
+
+              <div class="group">Working</div>
+              <div class="row">
+                <div class="mark"><div class="m-working"></div></div>
+                <div class="body">
+                  <div class="title">Codex Integration: Tool Call Payloads</div>
+                  <div class="sub">
+                    <span class="proj"><svg><use href="#i-folder" /></svg>openmanager</span
+                    ><span class="sep">·</span><span class="st working">Working</span
+                    ><span class="sep">·</span
+                    ><span class="envl"><svg><use href="#i-drives" /></svg><span>laptop</span></span>
+                  </div>
+                </div>
+                <div class="age">now</div>
+              </div>
+              <div class="row child">
+                <div class="mark"><div class="m-working"></div></div>
+                <div class="body">
+                  <div class="title">Contract tests for turn_activity</div>
+                  <div class="sub">
+                    <span class="proj"><svg><use href="#i-folder" /></svg>openmanager</span
+                    ><span class="sep">·</span><span class="st working">Working</span
+                    ><span class="sep">·</span
+                    ><span class="envl"><svg><use href="#i-drives" /></svg><span>laptop</span></span>
+                  </div>
+                </div>
+                <div class="age">1m</div>
+              </div>
+              <div class="row">
+                <div class="mark"><div class="m-working"></div></div>
+                <div class="body">
+                  <div class="title">MCP server for the ticket queue</div>
+                  <div class="sub">
+                    <span class="proj"><svg><use href="#i-folder" /></svg>queue</span
+                    ><span class="sep">·</span><span class="st working">Working</span
+                    ><span class="sep">·</span
+                    ><span class="envl"><svg><use href="#i-drives" /></svg><span>WSL · ubuntu</span></span>
+                  </div>
+                </div>
+                <div class="age">18m</div>
+              </div>
+
+              <div class="group">Done</div>
+              <div class="row wash-done">
+                <div class="mark"><div class="m-done"><svg><use href="#i-check" /></svg></div></div>
+                <div class="body">
+                  <div class="title">Pricing page copy, three tiers</div>
+                  <div class="sub">
+                    <span class="proj"><img alt="" src="data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'><rect width='24' height='24' rx='6' fill='%23e06b4f'/><path d='M7 15l4-6 4 6' stroke='white' stroke-width='2.4' fill='none' stroke-linecap='round' stroke-linejoin='round'/></svg>" />salesmaxai</span
+                    ><span class="sep">·</span><span class="st done">Done</span
+                    ><span class="sep">·</span
+                    ><span class="envl"><svg><use href="#i-drives" /></svg><span>laptop</span></span>
+                  </div>
+                </div>
+                <div class="age">1h</div>
+              </div>
+
+              <div class="group">Failed</div>
+              <div class="row wash-error">
+                <div class="mark"><div class="m-error">×</div></div>
+                <div class="body">
+                  <div class="title">Sync foundations: convergence harness</div>
+                  <div class="sub">
+                    <span class="proj"><svg><use href="#i-folder" /></svg>openmanager</span
+                    ><span class="sep">·</span><span class="st error">Failed</span
+                    ><span class="sep">·</span
+                    ><span class="envl"><svg><use href="#i-drives" /></svg><span>WSL · ubuntu</span></span>
+                  </div>
+                </div>
+                <div class="age">3h</div>
+              </div>
+
+              <div class="group">Recent</div>
+              <div class="row">
+                <div class="mark"><div class="m-idle"></div></div>
+                <div class="body">
+                  <div class="title">Freelancer Portfolio Site</div>
+                  <div class="sub">
+                    <span class="proj"><svg><use href="#i-folder" /></svg>ClePro</span
+                    ><span class="sep">·</span
+                    ><span class="envl"><svg><use href="#i-drives" /></svg><span>laptop</span></span>
+                  </div>
+                </div>
+                <div class="age">1d</div>
+              </div>
+            </div>
+          </div>
+          <div class="fadeout"></div>
+          <div class="dock">
+            <div class="fab quiet"><svg><use href="#i-gear" /></svg></div>
+            <div class="newchat"><svg><use href="#i-newchat" /></svg>New chat</div>
+            <div class="fab"><svg><use href="#i-search" /></svg></div>
+          </div>
+          <div class="homebar"></div>
+        </div>
+      </div>
+
+      <!-- ═══════════════ C · Settled · dark ═══════════════ -->
+      <div class="frame">
+        <div class="label">
+          <b>C · Home, Settled</b> · Neutral dark · one environment. The long tail: a flat list,
+          newest first, no groups. A settled session keeps its mark (idle, almost always) and
+          a missing project folder dims the row.
+        </div>
+        <div class="phone" data-theme="neutral">
+          <div class="statusbar"><span>9:41</span><span class="right">●●●● ◗ ▮</span></div>
+          <div class="screen">
+            <div class="header">
+              <div class="top">
+                <h1>Sessions</h1>
+                <div class="views">
+                  <div class="tab">All<span class="n">9</span></div>
+                  <div class="tab on">Settled<span class="n">14</span></div>
+                </div>
+              </div>
+            </div>
+            <div class="list" style="padding-top: 8px">
+              <div class="row">
+                <div class="mark"><div class="m-idle"></div></div>
+                <div class="body">
+                  <div class="title">Group themes into families</div>
+                  <div class="sub"><span class="proj"><svg><use href="#i-folder" /></svg>openmanager</span></div>
+                </div>
+                <div class="age">1d</div>
+              </div>
+              <div class="row">
+                <div class="mark"><div class="m-idle"></div></div>
+                <div class="body">
+                  <div class="title">Stop a sent message from flickering</div>
+                  <div class="sub"><span class="proj"><svg><use href="#i-folder" /></svg>openmanager</span></div>
+                </div>
+                <div class="age">2d</div>
+              </div>
+              <div class="row">
+                <div class="mark"><div class="m-idle"></div></div>
+                <div class="body">
+                  <div class="title">Session cards: question and background states</div>
+                  <div class="sub"><span class="proj"><svg><use href="#i-folder" /></svg>openmanager</span></div>
+                </div>
+                <div class="age">2d</div>
+              </div>
+              <div class="row">
+                <div class="mark"><div class="m-idle"></div></div>
+                <div class="body">
+                  <div class="title">Settings redesign: environment cards and routes</div>
+                  <div class="sub"><span class="proj"><svg><use href="#i-folder" /></svg>openmanager</span></div>
+                </div>
+                <div class="age">3d</div>
+              </div>
+              <div class="row">
+                <div class="mark"><div class="m-idle"></div></div>
+                <div class="body">
+                  <div class="title">Waiving Whop $500 Setup Fee for Users</div>
+                  <div class="sub"><span class="proj"><img alt="" src="data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'><rect width='24' height='24' rx='6' fill='%23e06b4f'/><path d='M7 15l4-6 4 6' stroke='white' stroke-width='2.4' fill='none' stroke-linecap='round' stroke-linejoin='round'/></svg>" />salesmaxai</span></div>
+                </div>
+                <div class="age">4d</div>
+              </div>
+              <div class="row">
+                <div class="mark"><div class="m-idle"></div></div>
+                <div class="body">
+                  <div class="title">Scheduled prompts: nightly harness run</div>
+                  <div class="sub"><span class="proj"><svg><use href="#i-folder" /></svg>openmanager</span></div>
+                </div>
+                <div class="age">5d</div>
+              </div>
+              <div class="row">
+                <div class="mark"><div class="m-idle"></div></div>
+                <div class="body">
+                  <div class="title">Cloudflare tunnel: named tunnel only</div>
+                  <div class="sub"><span class="proj"><svg><use href="#i-folder" /></svg>openmanager</span></div>
+                </div>
+                <div class="age">6d</div>
+              </div>
+              <div class="row dim">
+                <div class="mark"><div class="m-idle"></div></div>
+                <div class="body">
+                  <div class="title">Read t3code as a security reference</div>
+                  <div class="sub">
+                    <span class="proj"><svg><use href="#i-folder" /></svg>t3code</span
+                    ><span class="sep">·</span><span class="st idle">Project folder is unavailable</span>
+                  </div>
+                </div>
+                <div class="age">9d</div>
+              </div>
+              <div class="row">
+                <div class="mark"><div class="m-idle"></div></div>
+                <div class="body">
+                  <div class="title">Freelancer Portfolio Website Planning</div>
+                  <div class="sub"><span class="proj"><svg><use href="#i-folder" /></svg>ClePro</span></div>
+                </div>
+                <div class="age">12d</div>
+              </div>
+              <div class="row">
+                <div class="mark"><div class="m-idle"></div></div>
+                <div class="body">
+                  <div class="title">Sidebar render isolation audit</div>
+                  <div class="sub"><span class="proj"><svg><use href="#i-folder" /></svg>openmanager</span></div>
+                </div>
+                <div class="age">2w</div>
+              </div>
+              <div class="row">
+                <div class="mark"><div class="m-idle"></div></div>
+                <div class="body">
+                  <div class="title">Upload tickets with credential PUT</div>
+                  <div class="sub"><span class="proj"><svg><use href="#i-folder" /></svg>openmanager</span></div>
+                </div>
+                <div class="age">3w</div>
+              </div>
+              <div class="row">
+                <div class="mark"><div class="m-idle"></div></div>
+                <div class="body">
+                  <div class="title">Generated session titles, protocol v9</div>
+                  <div class="sub"><span class="proj"><svg><use href="#i-folder" /></svg>openmanager</span></div>
+                </div>
+                <div class="age">1mo</div>
+              </div>
+            </div>
+          </div>
+          <div class="fadeout"></div>
+          <div class="dock">
+            <div class="fab quiet"><svg><use href="#i-gear" /></svg></div>
+            <div class="newchat"><svg><use href="#i-newchat" /></svg>New chat</div>
+            <div class="fab"><svg><use href="#i-search" /></svg></div>
+          </div>
+          <div class="homebar"></div>
+        </div>
+      </div>
+
+      <!-- ═══════════════ D · Empty · light ═══════════════ -->
+      <div class="frame">
+        <div class="label">
+          <b>D · Home, empty</b> · Neutral light · paired, nothing active. The dock is the
+          call to action; the pairing and connection empty states (PairFirst, ConnectionPanel)
+          keep their place in the same list area.
+        </div>
+        <div class="phone" data-theme="neutral-light">
+          <div class="statusbar"><span>9:41</span><span class="right">●●●● ◗ ▮</span></div>
+          <div class="screen">
+            <div class="header">
+              <div class="top">
+                <h1>Sessions</h1>
+                <div class="views">
+                  <div class="tab on">All</div>
+                  <div class="tab">Settled<span class="n">14</span></div>
+                </div>
+              </div>
+            </div>
+            <div class="list">
+              <div class="empty">
+                <div class="tile"><svg><use href="#i-plus" /></svg></div>
+                <div class="t">Nothing active</div>
+                <div class="b">
+                  Every session is settled. Start one with New chat, or on your computer; it
+                  shows up here.
+                </div>
+              </div>
+            </div>
+          </div>
+          <div class="fadeout"></div>
+          <div class="dock">
+            <div class="fab quiet"><svg><use href="#i-gear" /></svg></div>
+            <div class="newchat"><svg><use href="#i-newchat" /></svg>New chat</div>
+            <div class="fab"><svg><use href="#i-search" /></svg></div>
+          </div>
+          <div class="homebar"></div>
+        </div>
+      </div>
+    </div>
+
+    <div class="note">
+      <h2>What changed, and why</h2>
+      <ol>
+        <li>
+          <b>No Inbox.</b> It listed needs-you, done-unseen and failed; the home now carries all
+          three without a second place: those sessions sit first in <i>All</i>, as their own
+          groups (Needs you, Working, Done, Failed), with the marks and the done/failed washes
+          the rows already had. The order is pinned → needs you → working → done and failed
+          (news since you looked) → the rest, newest first within each.
+        </li>
+        <li>
+          <b>Top row is one row.</b> A smaller title and the two views on the same 44px line;
+          the environment line is gone. One environment is context, not news. With two, every
+          row says where it runs (frame B) and nothing at the top has to.
+        </li>
+        <li>
+          <b>All · Settled, no days.</b> <i>All</i> is what is unsettled; <i>Settled</i> is the
+          long tail, flat and newest first. "Today / Yesterday / Tuesday" labels are gone; the
+          age at the right of each row says when.
+        </li>
+        <li>
+          <b>Drafts are cards at the top of All</b>, in the draft fill with the pen mark, as the
+          web sidebar's Drafts section above Active. Swipe left to discard, as before. No Drafts
+          tab.
+        </li>
+        <li>
+          <b>The dock replaces the pill.</b> With Inbox gone a two-item pill says nothing, so
+          the bottom becomes the actions you reach for: <i>New chat</i> as a wide glass pill in
+          the middle (the primary thing, under the thumb), search at the right as before, and
+          Settings at the left (the only other top-level place; rare, but a header button would
+          have been the one thing left at the top for no reason). Settings is a page pushed from
+          the home, with Back, not a tab.
+        </li>
+        <li>
+          <b>Project marks.</b> A project with no declared icon shows the folder (web's
+          <i>FolderSimple</i>), never a coloured tile; a declared icon shows as before
+          (salesmaxai in the frames).
+        </li>
+      </ol>
+      <h2>Open</h2>
+      <ul>
+        <li>
+          Group labels in All cost ~28px each. They could go, leaving marks and order alone;
+          kept for now because the owner kept the Active tab's grouping and Pinned's label is
+          part of how pinned reads.
+        </li>
+        <li>
+          The environment label sits last on the row's second line. The alternative is a faint
+          line under the age at the right; last-on-the-line was chosen so it is the first thing
+          to truncate when a title's project and status need the room.
+        </li>
+      </ul>
+    </div>
+  </body>
+</html>

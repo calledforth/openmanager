@@ -12,6 +12,7 @@ import {
 } from '../home/rows'
 import { usePhoneTheme } from '../theme/ThemeProvider'
 import type { PhoneTheme } from '../theme/tokens'
+import { EnvironmentTag, LineDot } from './EnvironmentTag'
 import { ProjectChip } from './ProjectChip'
 import { StatusMark } from './StatusMark'
 import { tap } from './haptics'
@@ -52,19 +53,22 @@ export function rowFill(
  * pressed state is the hover fill, selection the active fill, and a card at
  * rest takes its status wash or the draft fill (`rowFill`). A session whose
  * composer holds an unsent reply carries web's pen, in the draft accent,
- * beside its age, and a pinned one web's filled pin. A long press opens its
- * actions.
+ * beside its age, and a pinned one web's filled pin. With `showEnvironment`
+ * the line ends with where it runs, for a home spanning more than one. A
+ * long press opens its actions.
  */
 const INDENT = 34
 
 export function SessionRow({
   row,
   selected = false,
+  showEnvironment = false,
   onPress,
   onLongPress,
 }: {
   row: HomeRow
   selected?: boolean
+  showEnvironment?: boolean
   onPress?: () => void
   onLongPress?: () => void
 }) {
@@ -79,6 +83,7 @@ export function SessionRow({
   const count = session.workspaceUnavailable ? null : statusCountOf(session)
   const tone = mark === 'idle' ? theme.muted : theme.status[mark]
   const rest = rowFill(theme, mark, { unsent, settled: !!session.settledAt })
+  const environment = showEnvironment ? session.environment : undefined
   // One step per generation, capped so a deep tree still leaves the title room.
   const indent = INDENT * Math.min(depth, 2)
   return (
@@ -152,11 +157,7 @@ export function SessionRow({
         </AppText>
         <View className="mt-0.5 flex-row items-center gap-1.5">
           {workspace ? <ProjectChip name={workspace.name} workspaceId={workspace.path} /> : null}
-          {workspace && line ? (
-            <AppText variant="text-12-regular" style={{ color: theme.faint }}>
-              ·
-            </AppText>
-          ) : null}
+          {workspace && line ? <LineDot /> : null}
           {line ? (
             <AppText
               variant={mark === 'idle' ? 'text-12-regular' : 'text-12-medium'}
@@ -173,6 +174,12 @@ export function SessionRow({
             >
               · {count}
             </AppText>
+          ) : null}
+          {environment ? (
+            <>
+              {workspace || line ? <LineDot /> : null}
+              <EnvironmentTag environment={environment} />
+            </>
           ) : null}
         </View>
       </View>

@@ -2,6 +2,7 @@ import Constants from 'expo-constants'
 import * as Device from 'expo-device'
 import { useFocusEffect, useRouter } from 'expo-router'
 import {
+  CaretLeftIcon,
   CaretRightIcon,
   DeviceMobileIcon,
   InfoIcon,
@@ -12,34 +13,37 @@ import { ScrollView, View } from 'react-native'
 import { PROTOCOL_VERSION } from '@openmanager/protocol'
 import { useSafeAreaInsets } from 'react-native-safe-area-context'
 
-import { AppText } from '../../components/ui/AppText'
-import { usePhoneConnection } from '../../environment/PhoneEnvironmentProvider'
-import { suggestPhoneLabel } from '../../pairing/device-label'
-import { AppearanceSection } from '../../settings/AppearanceSection'
-import { EnvironmentCard } from '../../settings/EnvironmentCard'
-import { environmentCards } from '../../settings/environments'
-import { NotificationsSection } from '../../settings/NotificationsSection'
-import { SettingsRow } from '../../settings/SettingsRow'
-import { usePhoneTheme } from '../../theme/ThemeProvider'
-import { UpdateRow } from '../../updates/UpdateRow'
-import { useCheckOnFocus } from '../../updates/useUpdater'
-import { BigTitle, FadeOut, SectionLabel } from '../../ui/chrome'
-import { GlassContent } from '../../ui/Glass'
-import { Screen } from '../../ui/Screen'
-import { Press } from '../../ui/Press'
+import { AppText } from '../components/ui/AppText'
+import { usePhoneConnection } from '../environment/PhoneEnvironmentProvider'
+import { suggestPhoneLabel } from '../pairing/device-label'
+import { AppearanceSection } from '../settings/AppearanceSection'
+import { EnvironmentCard } from '../settings/EnvironmentCard'
+import { environmentCards } from '../settings/environments'
+import { NotificationsSection } from '../settings/NotificationsSection'
+import { SettingsRow } from '../settings/SettingsRow'
+import { usePhoneTheme } from '../theme/ThemeProvider'
+import { UpdateRow } from '../updates/UpdateRow'
+import { useCheckOnFocus } from '../updates/useUpdater'
+import { FadeOut, PageTitle, SectionLabel } from '../ui/chrome'
+import { GlassContent } from '../ui/Glass'
+import { useGoBack } from '../ui/goBack'
+import { IconButton } from '../ui/IconButton'
+import { Screen, ScreenBar } from '../ui/Screen'
+import { Press } from '../ui/Press'
 
 /** What this phone calls itself, the way it names itself when it pairs. */
 const PHONE_NAME = suggestPhoneLabel({ modelName: Device.modelName, osName: Device.osName })
 
 /**
- * Settings, the third tab, as the mockup's Settings frame: environments
- * first, as cards (each carries its own live state in the shared words, the
- * phone being connected to every one at once; each opens its page, where its devices,
- * pairing links, providers and session titles live). Then appearance,
- * session notifications, and this phone.
+ * Settings, a page pushed from the home's dock, as the mockup's Settings
+ * frame: environments first, as cards (each carries its own live state in
+ * the shared words, the phone being connected to every one at once; each
+ * opens its page, where its devices, pairing links, providers and session
+ * titles live). Then appearance, session notifications, and this phone.
  */
 export default function SettingsScreen() {
   const router = useRouter()
+  const goBack = useGoBack()
   const insets = useSafeAreaInsets()
   const theme = usePhoneTheme()
   const connection = usePhoneConnection()
@@ -64,15 +68,27 @@ export default function SettingsScreen() {
   useFocusEffect(useCheckOnFocus())
 
   return (
-    <Screen tab="settings">
+    <Screen>
+      <ScreenBar
+        top={insets.top + 6}
+        height={44}
+        left={
+          <IconButton label="Back" onPress={goBack}>
+            <CaretLeftIcon size={18} color={theme.fg} />
+          </IconButton>
+        }
+      />
       <GlassContent style={{ paddingTop: insets.top + 6 }}>
-        <BigTitle title="Settings" />
+        <View style={{ paddingHorizontal: 20 }}>
+          <View style={{ height: 44 }} />
+          <PageTitle style={{ marginTop: 6 }}>Settings</PageTitle>
+        </View>
         <View className="flex-1">
           <ScrollView
             contentContainerStyle={{
               paddingHorizontal: 8,
-              // The pill nav floats over the end of the list.
-              paddingBottom: insets.bottom + 140,
+              paddingTop: 6,
+              paddingBottom: insets.bottom + 40,
             }}
             showsVerticalScrollIndicator={false}
           >
@@ -112,7 +128,7 @@ export default function SettingsScreen() {
             />
             <UpdateRow />
           </ScrollView>
-          <FadeOut />
+          <FadeOut height={40} />
         </View>
       </GlassContent>
     </Screen>

@@ -3,19 +3,22 @@ import { sessionBusyTone } from '@openmanager/app-core/components/sidebar/sessio
 
 import { FIXTURE_DRAFTS, FIXTURE_SESSIONS, FIXTURE_WORKSPACES } from '../src/home/fixture'
 import {
-  countNeedsYou,
-  dayLabel,
+  countEnvironments,
+  DRAFTS_GROUP,
+  listShapeOf,
+  PINNED_GROUP,
   selectDraftRows,
   selectHomeRows,
   selectTabRows,
+  SETTLED_GROUP,
   statusCountOf,
   statusLineOf,
   statusMarkOf,
   tabCounts,
+  type HomeListRow,
   type HomeSession,
 } from '../src/home/rows'
 
-// Local time, since day boundaries are the reader's.
 const NOW = new Date(2026, 9, 21, 12, 0, 0)
 const local = (y: number, m: number, d: number, h = 10) => new Date(y, m - 1, d, h).toISOString()
 
@@ -27,6 +30,9 @@ const session = (overrides: Partial<HomeSession>): HomeSession => ({
   workspacePath: FIXTURE_WORKSPACES[0]!.path,
   ...overrides,
 })
+
+const idOf = (row: HomeListRow) =>
+  row.kind === 'session' ? row.session.externalId : row.draft.draftId
 
 describe('status marks', () => {
   it("reads the server's lifecycle and what it waits on as one glyph", () => {
@@ -84,163 +90,112 @@ describe('status marks', () => {
   })
 })
 
-describe('tab rows with drafts', () => {
-  const now = NOW
-  const today = local(2026, 10, 21, 9)
-  const yesterday = local(2026, 10, 20, 9)
-  const draft = (overrides: Partial<(typeof FIXTURE_DRAFTS)[number]>) => ({
-    ...FIXTURE_DRAFTS[0]!,
-    draftId: 'd1',
-    sessionId: 's-d1',
-    workspaceId: FIXTURE_WORKSPACES[0]!.path,
-    ...overrides,
-  })
-
-  it('opens Active with a Drafts group above the live work', () => {
-    const rows = selectTabRows({
-      sessions: [session({ externalId: 'a', status: 'running', updatedAt: today })],
-      drafts: [draft({ editedAt: new Date(yesterday).getTime() })],
-      workspaces: FIXTURE_WORKSPACES,
-      tab: 'active',
-      now,
-    })
-    expect(rows.map((g) => g.label)).toEqual(['Drafts', 'Working'])
-    expect(rows[0]!.rows[0]!.kind).toBe('draft')
-  })
-
-  it('leaves the Drafts group out of Active when there are none', () => {
-    const rows = selectTabRows({
-      sessions: [session({ externalId: 'a', status: 'running', updatedAt: today })],
-      drafts: [],
-      workspaces: FIXTURE_WORKSPACES,
-      tab: 'active',
-      now,
-    })
-    expect(rows.map((g) => g.label)).toEqual(['Working'])
-  })
-
-  it('places a draft in All on the day it was edited, above that day sessions', () => {
-    const rows = selectTabRows({
-      sessions: [
-        session({ externalId: 'a', updatedAt: today }),
-        session({ externalId: 'b', updatedAt: yesterday }),
-      ],
-      drafts: [draft({ editedAt: new Date(yesterday).getTime() + 60_000 })],
-      workspaces: FIXTURE_WORKSPACES,
-      tab: 'all',
-      now,
-    })
-    expect(rows.map((g) => g.label)).toEqual(['Today', 'Yesterday'])
-    expect(rows[1]!.rows.map((r) => r.kind)).toEqual(['draft', 'session'])
-  })
-
-  it('lets a fresh draft start a day of its own, newest first', () => {
-    const rows = selectTabRows({
-      sessions: [session({ externalId: 'b', updatedAt: yesterday })],
-      drafts: [draft({ editedAt: new Date(today).getTime() })],
-      workspaces: FIXTURE_WORKSPACES,
-      tab: 'all',
-      now,
-    })
-    expect(rows.map((g) => g.label)).toEqual(['Today', 'Yesterday'])
-    expect(rows[0]!.rows[0]!.kind).toBe('draft')
-  })
-
-  it('keeps the Drafts tab to drafts alone', () => {
-    const rows = selectTabRows({
-      sessions: [session({ externalId: 'a', updatedAt: today })],
-      drafts: [draft({ editedAt: new Date(today).getTime() })],
-      workspaces: FIXTURE_WORKSPACES,
-      tab: 'drafts',
-      now,
-    })
-    expect(rows.flatMap((g) => g.rows.map((r) => r.kind))).toEqual(['draft'])
-  })
-})
-
-describe('day labels', () => {
-  it('names the day relative to now', () => {
-    expect(dayLabel(local(2026, 10, 21, 8), NOW)).toBe('Today')
-    expect(dayLabel(local(2026, 10, 20, 23), NOW)).toBe('Yesterday')
-    expect(dayLabel(local(2026, 10, 17), NOW)).toBe(
-      new Intl.DateTimeFormat(undefined, { weekday: 'long' }).format(new Date(2026, 9, 17, 10)),
-    )
-    expect(dayLabel(local(2026, 10, 3), NOW)).toBe('Earlier this month')
-    expect(dayLabel(local(2026, 9, 2), NOW)).toBe(
-      new Intl.DateTimeFormat(undefined, { month: 'long' }).format(new Date(2026, 8, 2, 10)),
-    )
-    expect(dayLabel(local(2025, 3, 2), NOW)).toBe(
-      new Intl.DateTimeFormat(undefined, { month: 'long', year: 'numeric' }).format(
-        new Date(2025, 2, 2, 10),
-      ),
-    )
-    expect(dayLabel(undefined, NOW)).toBe('Earlier')
-    expect(dayLabel('not a date', NOW)).toBe('Earlier')
-    // Epoch ms, as draft cards carry their edits.
-    expect(dayLabel(new Date(2026, 9, 21, 9).getTime(), NOW)).toBe('Today')
-    expect(dayLabel(0, NOW)).toBe('Earlier')
-  })
-
-  it('turns over at local midnight, not at a fixed number of hours', () => {
-    const justAfterMidnight = new Date(2026, 9, 21, 0, 0, 30)
-    expect(dayLabel(local(2026, 10, 21, 0), justAfterMidnight)).toBe('Today')
-    expect(dayLabel(new Date(2026, 9, 20, 23, 59, 59).toISOString(), justAfterMidnight)).toBe(
-      'Yesterday',
-    )
-    // Six days back is still a weekday name; seven is earlier this month.
-    expect(dayLabel(local(2026, 10, 15), NOW)).toBe(
-      new Intl.DateTimeFormat(undefined, { weekday: 'long' }).format(new Date(2026, 9, 15, 10)),
-    )
-    expect(dayLabel(local(2026, 10, 14), NOW)).toBe('Earlier this month')
-    // A week back across a month boundary is that month.
-    const earlyNovember = new Date(2026, 10, 4, 12)
-    expect(dayLabel(local(2026, 10, 27), earlyNovember)).toBe(
-      new Intl.DateTimeFormat(undefined, { month: 'long' }).format(new Date(2026, 9, 27, 10)),
-    )
-  })
-})
-
-describe('home rows', () => {
-  it('keeps settled sessions out of Active and in All', () => {
+describe('the two views', () => {
+  it('keeps settled sessions out of All and in Settled, every session in one of them', () => {
     const all = selectHomeRows({
       sessions: FIXTURE_SESSIONS,
       workspaces: FIXTURE_WORKSPACES,
       tab: 'all',
-      now: NOW,
     })
-    const active = selectHomeRows({
+    const settled = selectHomeRows({
       sessions: FIXTURE_SESSIONS,
       workspaces: FIXTURE_WORKSPACES,
-      tab: 'active',
-      now: NOW,
+      tab: 'settled',
     })
     const ids = (groups: typeof all) =>
       groups.flatMap((g) => g.rows.map((r) => r.session.externalId))
-    expect(ids(all)).toContain('s-grouped-themes')
-    expect(ids(active)).not.toContain('s-grouped-themes')
-    expect(ids(all)).toHaveLength(FIXTURE_SESSIONS.length)
+    expect(ids(all)).not.toContain('s-grouped-themes')
+    expect(ids(settled)).toContain('s-grouped-themes')
+    expect(ids(settled)).not.toContain('s-tool-payloads')
+    expect([...ids(all), ...ids(settled)].sort()).toEqual(
+      FIXTURE_SESSIONS.map((s) => s.externalId).sort(),
+    )
   })
 
-  it('groups Active as needs you, working, failed, recent', () => {
-    const active = selectHomeRows({
+  it('lists Settled flat, newest first, under no heading', () => {
+    const settled = selectHomeRows({
       sessions: FIXTURE_SESSIONS,
       workspaces: FIXTURE_WORKSPACES,
-      tab: 'active',
-      now: NOW,
+      tab: 'settled',
     })
+    expect(settled).toHaveLength(1)
+    expect(settled[0]!.key).toBe(SETTLED_GROUP)
+    expect(settled[0]!.label).toBeNull()
+    const times = settled[0]!.rows.map((r) => Date.parse(r.session.updatedAt!))
+    expect([...times].sort((a, b) => b - a)).toEqual(times)
+  })
+
+  it('has no Settled group at all with nothing settled', () => {
     expect(
-      active.map((g) => [g.label, g.rows.filter((r) => r.depth === 0).map((r) => r.mark)]),
-    ).toEqual([
-      ['Needs you', ['needs', 'question']],
-      ['Working', ['working', 'background']],
-      ['Failed', ['error']],
-      ['Recent', ['done', 'idle']],
+      selectHomeRows({
+        sessions: [session({ externalId: 'a', status: 'running' })],
+        workspaces: FIXTURE_WORKSPACES,
+        tab: 'settled',
+      }),
+    ).toEqual([])
+  })
+
+  it('counts the views by sessions alone', () => {
+    expect(tabCounts(FIXTURE_SESSIONS)).toEqual({
+      all: FIXTURE_SESSIONS.filter((s) => !s.settledAt).length,
+      settled: FIXTURE_SESSIONS.filter((s) => s.settledAt).length,
+    })
+  })
+})
+
+describe('All', () => {
+  it('groups by what each session asks: needs you, working, failed, done, the rest', () => {
+    const at = NOW.toISOString()
+    const all = selectHomeRows({
+      sessions: [
+        session({ externalId: 'idle', updatedAt: at }),
+        session({ externalId: 'done', status: 'done', updatedAt: at }),
+        session({ externalId: 'failed', status: 'error', updatedAt: at }),
+        session({ externalId: 'bg', status: 'running', inBackground: true, updatedAt: at }),
+        session({ externalId: 'busy', status: 'running', updatedAt: at }),
+        session({ externalId: 'asks', status: 'waiting', waitingOn: 'question', updatedAt: at }),
+        session({ externalId: 'needs', status: 'waiting', waitingOn: 'permission', updatedAt: at }),
+      ],
+      workspaces: FIXTURE_WORKSPACES,
+      tab: 'all',
+    })
+    expect(all.map((g) => [g.label, g.rows.map((r) => r.session.externalId)])).toEqual([
+      ['Needs you', ['asks', 'needs']],
+      ['Working', ['busy', 'bg']],
+      ['Failed', ['failed']],
+      ['Done', ['done']],
+      ['Recent', ['idle']],
     ])
   })
 
-  it('keeps pinned sessions above every Active group, most recently pinned first', () => {
+  it('orders each group newest first', () => {
+    const all = selectHomeRows({
+      sessions: [
+        session({ externalId: 'older', status: 'running', updatedAt: local(2026, 10, 20) }),
+        session({ externalId: 'newer', status: 'running', updatedAt: local(2026, 10, 21) }),
+      ],
+      workspaces: FIXTURE_WORKSPACES,
+      tab: 'all',
+    })
+    expect(all[0]!.rows.map((r) => r.session.externalId)).toEqual(['newer', 'older'])
+  })
+
+  it('leaves an empty group out', () => {
     const at = NOW.toISOString()
-    const active = selectHomeRows({
+    const all = selectHomeRows({
+      sessions: [
+        session({ externalId: 'w', status: 'running', updatedAt: at }),
+        session({ externalId: 'r', status: 'ready', updatedAt: at }),
+      ],
+      workspaces: FIXTURE_WORKSPACES,
+      tab: 'all',
+    })
+    expect(all.map((g) => g.label)).toEqual(['Working', 'Recent'])
+  })
+
+  it('keeps pinned sessions above every group, most recently pinned first', () => {
+    const at = NOW.toISOString()
+    const all = selectHomeRows({
       sessions: [
         session({ externalId: 'needs', status: 'waiting', waitingOn: 'permission', updatedAt: at }),
         session({
@@ -255,64 +210,26 @@ describe('home rows', () => {
           pinnedAt: local(2026, 10, 3),
         }),
         session({ externalId: 'recent', updatedAt: at }),
-      ],
-      workspaces: FIXTURE_WORKSPACES,
-      tab: 'active',
-      now: NOW,
-    })
-    expect(active.map((g) => [g.label, g.rows.map((r) => r.session.externalId)])).toEqual([
-      ['Pinned', ['new-pin', 'old-pin']],
-      ['Needs you', ['needs']],
-      ['Recent', ['recent']],
-    ])
-  })
-
-  it('keeps Pinned on top of All, above the newest day and its drafts', () => {
-    const rows = selectTabRows({
-      sessions: [
-        session({ externalId: 'today', updatedAt: NOW.toISOString() }),
-        session({ externalId: 'pin', updatedAt: local(2026, 9, 1), pinnedAt: local(2026, 10, 1) }),
-        // Settled while pinned: back with the rest, as web keeps pins to Active.
+        // Settled while pinned: in the long tail, as web keeps pins to Active.
         session({
-          externalId: 'settled',
-          updatedAt: local(2026, 10, 20),
-          pinnedAt: local(2026, 10, 1),
+          externalId: 'settled-pin',
+          updatedAt: at,
+          pinnedAt: local(2026, 10, 4),
           settledAt: local(2026, 10, 20),
         }),
       ],
-      drafts: [],
       workspaces: FIXTURE_WORKSPACES,
       tab: 'all',
-      now: NOW,
     })
-    expect(
-      rows.map((g) => [
-        g.label,
-        g.rows.map((r) => (r.kind === 'session' ? r.session.externalId : r.draft.draftId)),
-      ]),
-    ).toEqual([
-      ['Pinned', ['pin']],
-      ['Today', ['today']],
-      ['Yesterday', ['settled']],
+    expect(all.map((g) => [g.key, g.rows.map((r) => r.session.externalId)])).toEqual([
+      [PINNED_GROUP, ['new-pin', 'old-pin']],
+      ['needs', ['needs']],
+      ['recent', ['recent']],
     ])
   })
 
-  it('leaves an empty Active group out', () => {
-    const at = NOW.toISOString()
-    const active = selectHomeRows({
-      sessions: [
-        session({ externalId: 'w', status: 'running', updatedAt: at }),
-        session({ externalId: 'r', status: 'ready', updatedAt: at }),
-      ],
-      workspaces: FIXTURE_WORKSPACES,
-      tab: 'active',
-      now: NOW,
-    })
-    expect(active.map((g) => g.label)).toEqual(['Working', 'Recent'])
-  })
-
-  it('ranks an Active tree by its most urgent member, at any depth', () => {
-    const active = selectHomeRows({
+  it('ranks a tree by its most urgent member, at any depth', () => {
+    const all = selectHomeRows({
       sessions: [
         session({ externalId: 'busy', status: 'running', updatedAt: local(2026, 10, 21, 11) }),
         session({ externalId: 'quiet-parent', status: 'ready', updatedAt: local(2026, 10, 19) }),
@@ -331,53 +248,44 @@ describe('home rows', () => {
         }),
       ],
       workspaces: FIXTURE_WORKSPACES,
-      tab: 'active',
-      now: NOW,
+      tab: 'all',
     })
-    expect(active[0]!.label).toBe('Needs you')
-    expect(active[0]!.rows.map((r) => [r.session.externalId, r.depth, r.mark])).toEqual([
+    expect(all[0]!.label).toBe('Needs you')
+    expect(all[0]!.rows.map((r) => [r.session.externalId, r.depth, r.mark])).toEqual([
       ['quiet-parent', 0, 'idle'],
       ['child', 1, 'idle'],
       ['asking-grandchild', 2, 'needs'],
     ])
-    expect(active[1]!.label).toBe('Working')
+    expect(all[1]!.label).toBe('Working')
   })
 
-  it('dates an All tree by its newest member', () => {
+  it('dates a tree by its newest member', () => {
     const all = selectHomeRows({
       sessions: [
         session({ externalId: 'yesterday', status: 'ready', updatedAt: local(2026, 10, 20) }),
+        session({ externalId: 'old-parent', status: 'ready', updatedAt: local(2026, 10, 12) }),
         session({
-          externalId: 'settled-parent',
+          externalId: 'fresh-child',
+          parentExternalId: 'old-parent',
           status: 'ready',
-          updatedAt: local(2026, 10, 12),
-          settledAt: local(2026, 10, 13),
-        }),
-        session({
-          externalId: 'running-child',
-          parentExternalId: 'settled-parent',
-          status: 'running',
           updatedAt: local(2026, 10, 21, 11),
         }),
       ],
       workspaces: FIXTURE_WORKSPACES,
       tab: 'all',
-      now: NOW,
     })
     expect(all.map((g) => [g.label, g.rows.map((r) => r.session.externalId)])).toEqual([
-      ['Today', ['settled-parent', 'running-child']],
-      ['Yesterday', ['yesterday']],
+      ['Recent', ['old-parent', 'fresh-child', 'yesterday']],
     ])
   })
 
   it('nests a child under its parent and never starts a group with one', () => {
-    const active = selectHomeRows({
+    const all = selectHomeRows({
       sessions: FIXTURE_SESSIONS,
       workspaces: FIXTURE_WORKSPACES,
-      tab: 'active',
-      now: NOW,
+      tab: 'all',
     })
-    const rows = active.find((g) => g.key === 'working')!.rows
+    const rows = all.find((g) => g.key === 'working')!.rows
     const parent = rows.findIndex((r) => r.session.externalId === 's-tool-payloads')
     expect(rows[parent + 1]!.session.externalId).toBe('s-tool-payloads-tests')
     expect(rows[parent + 1]!.depth).toBe(1)
@@ -403,8 +311,7 @@ describe('home rows', () => {
         }),
       ],
       workspaces: FIXTURE_WORKSPACES,
-      tab: 'active',
-      now: NOW,
+      tab: 'all',
     })
     expect(rows[0]!.rows.map((r) => [r.session.externalId, r.depth])).toEqual([
       ['root', 0],
@@ -422,7 +329,6 @@ describe('home rows', () => {
       ],
       workspaces: FIXTURE_WORKSPACES,
       tab: 'all',
-      now: NOW,
     })
     const ids = rows.flatMap((g) => g.rows.map((r) => r.session.externalId)).sort()
     expect(ids).toEqual(['a', 'b'])
@@ -436,76 +342,146 @@ describe('home rows', () => {
       status: 'running',
       updatedAt: NOW.toISOString(),
     })
-    const rows = selectHomeRows({
-      sessions: [orphan],
-      workspaces: FIXTURE_WORKSPACES,
-      tab: 'all',
-      now: NOW,
-    })
+    const rows = selectHomeRows({ sessions: [orphan], workspaces: FIXTURE_WORKSPACES, tab: 'all' })
     expect(rows[0]!.rows[0]).toMatchObject({ depth: 0, session: { externalId: 'child' } })
   })
 
-  it('groups All by day, newest first', () => {
-    const all = selectHomeRows({
-      sessions: FIXTURE_SESSIONS,
+  it('makes a child whose parent is settled top-level in All', () => {
+    const rows = selectHomeRows({
+      sessions: [
+        session({ externalId: 'parent', settledAt: local(2026, 10, 20) }),
+        session({ externalId: 'child', parentExternalId: 'parent', status: 'running' }),
+      ],
       workspaces: FIXTURE_WORKSPACES,
       tab: 'all',
-      now: new Date(),
     })
-    expect(all[0]!.label).toBe('Today')
-    // Each tree by its newest member.
-    const times = all.flatMap((g) =>
-      g.rows.flatMap((r, i) => {
-        if (r.depth > 0) return []
-        const tree = [r]
-        for (let j = i + 1; j < g.rows.length && g.rows[j]!.depth > 0; j++) tree.push(g.rows[j]!)
-        return [Math.max(...tree.map((member) => Date.parse(member.session.updatedAt!)))]
-      }),
-    )
-    expect([...times].sort((a, b) => b - a)).toEqual(times)
+    expect(rows.flatMap((g) => g.rows.map((r) => [r.session.externalId, r.depth]))).toEqual([
+      ['child', 0],
+    ])
   })
 
   it('attaches the workspace so a row can show its project', () => {
-    const all = selectHomeRows({
+    const settled = selectHomeRows({
       sessions: FIXTURE_SESSIONS,
       workspaces: FIXTURE_WORKSPACES,
-      tab: 'all',
-      now: NOW,
+      tab: 'settled',
     })
-    const row = all.flatMap((g) => g.rows).find((r) => r.session.externalId === 's-t3code')!
+    const row = settled.flatMap((g) => g.rows).find((r) => r.session.externalId === 's-t3code')!
     expect(row.workspace?.name).toBe('t3code')
     expect(row.session.workspaceUnavailable).toBe(true)
   })
+})
 
-  it('counts the inbox badge and the tab labels', () => {
-    expect(countNeedsYou(FIXTURE_SESSIONS)).toBe(2)
-    expect(tabCounts(FIXTURE_SESSIONS, FIXTURE_DRAFTS)).toEqual({
-      all: FIXTURE_SESSIONS.length,
-      active: FIXTURE_SESSIONS.filter((s) => !s.settledAt).length,
-      drafts: FIXTURE_DRAFTS.length,
-    })
+describe('drafts', () => {
+  const draft = (overrides: Partial<(typeof FIXTURE_DRAFTS)[number]>) => ({
+    ...FIXTURE_DRAFTS[0]!,
+    draftId: 'd1',
+    sessionId: 's-d1',
+    workspaceId: FIXTURE_WORKSPACES[0]!.path,
+    ...overrides,
   })
 
-  it('lists drafts newest first by day', () => {
-    const groups = selectDraftRows({
-      drafts: FIXTURE_DRAFTS,
+  it('opens All with the draft cards, newest edit first, above Pinned', () => {
+    const rows = selectTabRows({
+      sessions: [
+        session({
+          externalId: 'pin',
+          updatedAt: local(2026, 10, 21),
+          pinnedAt: local(2026, 10, 21),
+        }),
+        session({ externalId: 'a', status: 'running', updatedAt: local(2026, 10, 21) }),
+      ],
+      drafts: [
+        draft({ draftId: 'older', editedAt: new Date(local(2026, 10, 1)).getTime() }),
+        draft({ draftId: 'newer', editedAt: new Date(local(2026, 10, 21)).getTime() }),
+      ],
       workspaces: FIXTURE_WORKSPACES,
-      now: new Date(),
+      tab: 'all',
     })
-    expect(groups[0]!.label).toBe('Today')
-    expect(groups[0]!.rows[0]!.draft.draftId).toBe('d-upload-retry')
-    expect(groups.flatMap((g) => g.rows)).toHaveLength(FIXTURE_DRAFTS.length)
+    expect(rows.map((g) => [g.key, g.label, g.rows.map(idOf)])).toEqual([
+      [DRAFTS_GROUP, 'Drafts', ['newer', 'older']],
+      [PINNED_GROUP, 'Pinned', ['pin']],
+      ['working', 'Working', ['a']],
+    ])
+  })
+
+  it('leaves the Drafts group out when there are none, and out of Settled always', () => {
+    const none = selectTabRows({
+      sessions: [session({ externalId: 'a', status: 'running' })],
+      drafts: [],
+      workspaces: FIXTURE_WORKSPACES,
+      tab: 'all',
+    })
+    expect(none.map((g) => g.key)).toEqual(['working'])
+    const settled = selectTabRows({
+      sessions: [session({ externalId: 'a', settledAt: local(2026, 10, 20) })],
+      drafts: [draft({})],
+      workspaces: FIXTURE_WORKSPACES,
+      tab: 'settled',
+    })
+    expect(settled.flatMap((g) => g.rows.map((r) => r.kind))).toEqual(['session'])
   })
 
   it('places a draft in its project by id, and in none once that project is gone', () => {
     const first = FIXTURE_DRAFTS[0]!
-    const groups = selectDraftRows({
+    const rows = selectDraftRows({
       drafts: [first, { ...first, draftId: 'orphan', workspaceId: null }],
       workspaces: FIXTURE_WORKSPACES,
-      now: NOW,
     })
-    const rows = groups.flatMap((g) => g.rows)
     expect(rows.find((r) => r.draft.draftId === first.draftId)!.workspace?.name).toBe('openmanager')
     expect(rows.find((r) => r.draft.draftId === 'orphan')!.workspace).toBeUndefined()
+  })
+})
+
+describe('environments', () => {
+  const desktop = { environmentId: 'env-a', label: 'desktop' }
+  const wsl = { environmentId: 'env-b', label: 'wsl' }
+
+  it('counts the environments the rows span, ignoring rows that name none', () => {
+    expect(countEnvironments([])).toBe(0)
+    expect(countEnvironments([session({}), session({})])).toBe(0)
+    expect(
+      countEnvironments([session({ environment: desktop }), session({ environment: desktop })]),
+    ).toBe(1)
+    expect(
+      countEnvironments([
+        session({ environment: desktop }),
+        session({}),
+        { ...FIXTURE_DRAFTS[0]!, environment: wsl },
+      ]),
+    ).toBe(2)
+  })
+
+  it('carries each row its environment, untouched', () => {
+    const rows = selectTabRows({
+      sessions: [session({ externalId: 'a', status: 'running', environment: wsl })],
+      drafts: [{ ...FIXTURE_DRAFTS[0]!, environment: desktop }],
+      workspaces: FIXTURE_WORKSPACES,
+      tab: 'all',
+    })
+    const [draftRow, sessionRow] = rows.flatMap((g) => g.rows)
+    expect(draftRow!.kind === 'draft' && draftRow!.draft.environment).toBe(desktop)
+    expect(sessionRow!.kind === 'session' && sessionRow!.session.environment).toBe(wsl)
+  })
+
+  it('spans two environments in the fixture, so the labels can be seen', () => {
+    expect(countEnvironments([...FIXTURE_SESSIONS, ...FIXTURE_DRAFTS])).toBe(2)
+  })
+})
+
+describe('list shape', () => {
+  it('changes when rows come, go or move, never with what a row shows', () => {
+    const keyOf = (row: HomeListRow) => idOf(row)
+    const sections = (sessions: HomeSession[]) =>
+      selectTabRows({ sessions, drafts: [], workspaces: FIXTURE_WORKSPACES, tab: 'all' }).map(
+        (g) => ({ key: g.key, data: g.rows }),
+      )
+    const at = NOW.toISOString()
+    const a = session({ externalId: 'a', status: 'running', updatedAt: at, title: 'one' })
+    const b = session({ externalId: 'b', status: 'ready', updatedAt: at })
+    const before = listShapeOf(sections([a, b]), keyOf)
+    expect(listShapeOf(sections([{ ...a, title: 'two' }, b]), keyOf)).toBe(before)
+    expect(listShapeOf(sections([{ ...a, status: 'ready' }, b]), keyOf)).not.toBe(before)
+    expect(listShapeOf(sections([a]), keyOf)).not.toBe(before)
   })
 })

@@ -1,34 +1,43 @@
 import { ClockIcon, WarningCircleIcon } from 'phosphor-react-native'
-import { memo } from 'react'
+import { memo, useMemo } from 'react'
 import { View } from 'react-native'
 import type { ArtifactSource, MessagePart, OptimisticImage } from '@openmanager/app-core/logic'
 
 import { MessageLongPress } from '../../session/message-actions'
 import { usePhoneTheme } from '../../theme/ThemeProvider'
-import { ImagePart } from '../parts/ImagePart'
+import { ImageGroup, useTranscriptWidth, type GalleryImage } from '../parts/ImageGroup'
 import { AppText } from '../ui/AppText'
 
 /** The images a prompt carries: its own parts once confirmed, its echo's before. */
-function imagesOf(parts: readonly MessagePart[], attachments: readonly OptimisticImage[]) {
+function imagesOf(
+  parts: readonly MessagePart[],
+  attachments: readonly OptimisticImage[],
+): GalleryImage[] {
   const fromParts = parts
     .filter((part) => part.type === 'image')
     .map((part) => ({
       id: part.id,
       url: typeof part.url === 'string' ? part.url : undefined,
       artifact: part.artifact as ArtifactSource | undefined,
+      name: typeof part.name === 'string' ? part.name : undefined,
     }))
   if (fromParts.length > 0) return fromParts
   return attachments.map((image) => ({
     id: image.id,
     url: image.previewUrl,
     artifact: image.artifact,
+    name: image.name,
   }))
 }
 
+/** The bubble's share of the row (`max-w-[86%]`), which its images keep to. */
+const BUBBLE_SHARE = 0.86
+
 /**
  * Right-aligned user bubble on web's chat-user fill (a sent message reads by
- * colour, no outline), with its images above it. An echo the environment has
- * not confirmed is dimmed with a clock; one it refused says why.
+ * colour, no outline), with its images above it as one group. An echo the
+ * environment has not confirmed is dimmed with a clock; one it refused says
+ * why.
  */
 export const UserMessage = memo(function UserMessage({
   content,
@@ -44,17 +53,12 @@ export const UserMessage = memo(function UserMessage({
   sendError?: string
 }) {
   const theme = usePhoneTheme()
-  const images = imagesOf(parts, attachments)
+  const images = useMemo(() => imagesOf(parts, attachments), [attachments, parts])
+  const width = Math.round(useTranscriptWidth() * BUBBLE_SHARE)
 
   return (
     <View className="w-full items-end gap-1.5">
-      {images.length > 0 ? (
-        <View className="max-w-[86%] flex-row flex-wrap justify-end gap-1.5">
-          {images.map((image) => (
-            <ImagePart key={image.id} url={image.url} artifact={image.artifact} size={120} />
-          ))}
-        </View>
-      ) : null}
+      {images.length > 0 ? <ImageGroup images={images} width={width} align="end" /> : null}
       {content ? (
         // Held, the message's actions: copy it, or select from it.
         <MessageLongPress

@@ -16,14 +16,14 @@ import { Press } from '../ui/Press'
 const NOTICE_IN = FadeIn.duration(180).easing(Easing.out(Easing.quad))
 const NOTICE_OUT = FadeOut.duration(150).easing(Easing.in(Easing.quad))
 
-/** The height the floating pill nav takes from the bottom edge, with its gap. */
-export function pillNavClearance(bottomInset: number) {
+/** The height the floating dock takes from the bottom edge, with its gap. */
+export function homeDockClearance(bottomInset: number) {
   return Math.max(bottomInset, 16) + 12 + 56 + 10
 }
 
 /**
- * "Draft discarded" with Undo, floating over the home just above the pill
- * nav while the discard waits out its window (the shared `useDraftDiscards`,
+ * "Draft discarded" with Undo, floating over the home just above the dock
+ * while the discard waits out its window (the shared `useDraftDiscards`,
  * one for every environment, keeps the clock and makes the delete).
  * A finger on Undo holds the window open; ✕ lets the discard go now. With a
  * screen reader on, the window is held until one of the two is chosen, and
@@ -68,7 +68,12 @@ export function DraftDiscardToast() {
       entering={NOTICE_IN}
       exiting={NOTICE_OUT}
       pointerEvents="box-none"
-      style={{ position: 'absolute', left: 16, right: 16, bottom: pillNavClearance(insets.bottom) }}
+      style={{
+        position: 'absolute',
+        left: 16,
+        right: 16,
+        bottom: homeDockClearance(insets.bottom),
+      }}
     >
       <Glass
         strength="strong"

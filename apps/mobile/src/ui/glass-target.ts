@@ -45,34 +45,3 @@ export function glassBlurProps(slot: GlassTargetSlot, os: string, pixelRatio: nu
     blurReductionFactor: blurReductionFor(pixelRatio),
   }
 }
-
-/**
- * The tabs' targets, by tab: the tab bar is drawn by the tabs navigator,
- * beside every tab's screen and inside none, and blurs the one in front.
- * A screen sets its target once it is drawn and clears it when it goes; only
- * the tab bar listens, so a screen's own render never waits on it.
- */
-export function createTabTargets() {
-  const targets = new Map<string, GlassTarget>()
-  const listeners = new Set<() => void>()
-  const emit = () => {
-    for (const listener of [...listeners]) listener()
-  }
-  return {
-    get: (tab: string): GlassTarget | null => targets.get(tab) ?? null,
-    set(tab: string, target: GlassTarget | null) {
-      if ((targets.get(tab) ?? null) === target) return
-      if (target) targets.set(tab, target)
-      else targets.delete(tab)
-      emit()
-    },
-    subscribe(listener: () => void) {
-      listeners.add(listener)
-      return () => {
-        listeners.delete(listener)
-      }
-    },
-  }
-}
-
-export type TabTargets = ReturnType<typeof createTabTargets>

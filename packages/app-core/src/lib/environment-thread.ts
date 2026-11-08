@@ -85,6 +85,8 @@ function imageParts(message: Message, sessionId: string): MessagePart[] {
           id: `${message.messageId}:image:${index}`,
           url: `data:${block.mimeType};base64,${block.data}`,
           name: `image-${index + 1}`,
+          // An image the agent sent inline is its answer, as a stored one is.
+          ...(message.role === 'assistant' ? { generated: true } : {}),
         },
       ]
     }

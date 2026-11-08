@@ -1,6 +1,6 @@
 import { router, useNavigation } from 'expo-router'
 import { TrashIcon } from 'phosphor-react-native'
-import { useCallback, useContext, useEffect, useRef, useState } from 'react'
+import { useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react'
 import type { TextInput } from 'react-native'
 import {
   SidebarDataContext,
@@ -23,10 +23,8 @@ import {
   usePhoneConnectionController,
 } from '../environment/PhoneEnvironmentProvider'
 import { useHomeSource } from '../home/source'
-import { SessionThread } from '../session/SessionThread'
-import { usePhoneTheme } from '../theme/ThemeProvider'
+import { SessionThread, type HeaderAction } from '../session/SessionThread'
 import { useGoBack } from '../ui/goBack'
-import { IconButton } from '../ui/IconButton'
 import { discardHandoff, draftDiscardable } from './discard-handoff'
 import { EnvironmentSheet } from './EnvironmentSheet'
 import { NewSessionHead, StartWithProject } from './NewSessionLanding'
@@ -59,24 +57,30 @@ function useScreenArrived(): boolean {
 }
 
 /**
- * Discard, in the header's corner: back to the sessions home, where the
+ * Discard, in the title's menu: back to the sessions home, where the
  * draft's row is gone with an Undo beside the Drafts tab.
  */
-function DiscardButton({ draftId }: { draftId: string }) {
-  const theme = usePhoneTheme()
+function useDiscardAction(draftId: string | null, discardable: boolean): HeaderAction[] {
   const goBack = useGoBack()
   const environmentId = usePageEnvironmentId()
-  return (
-    <IconButton
-      label="Discard draft"
-      onPress={() => {
-        // Through this page's environment: the same id elsewhere is another draft.
-        if (environmentId) discardHandoff.request({ environmentId, draftId })
-        goBack()
-      }}
-    >
-      <TrashIcon size={18} color={theme.fg} />
-    </IconButton>
+  return useMemo(
+    () =>
+      discardable && draftId
+        ? [
+            {
+              id: 'discard-draft',
+              label: 'Discard draft',
+              icon: TrashIcon,
+              destructive: true,
+              run: () => {
+                // Through this page's environment: the same id elsewhere is another draft.
+                if (environmentId) discardHandoff.request({ environmentId, draftId })
+                goBack()
+              },
+            },
+          ]
+        : [],
+    [discardable, draftId, environmentId, goBack],
   )
 }
 
@@ -148,6 +152,7 @@ export function DraftPage() {
     useCallback((state: EnvironmentState) => draftDiscardable(state, draftId), [draftId]),
   )
   const discardable = !!useSidebarDrafts() && canDiscard && !pendingDraftSessionStart
+  const headerActions = useDiscardAction(draftId, discardable)
 
   const environmentLabel = sidebar?.environment?.label ?? null
   const choice = useEnvironmentChoice(
@@ -205,7 +210,7 @@ export function DraftPage() {
       messages={messages}
       phase="ready"
       empty={empty}
-      headerAction={discardable && draftId ? <DiscardButton draftId={draftId} /> : undefined}
+      headerActions={headerActions}
       composer={composer}
     />
   )

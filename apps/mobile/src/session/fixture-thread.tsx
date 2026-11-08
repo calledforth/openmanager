@@ -25,6 +25,7 @@ import {
   backgroundThread,
   doneThread,
   failedThread,
+  imagesThread,
   longThread,
   LONG_THREAD_SESSION_ID,
   permissionThread,
@@ -40,6 +41,7 @@ const FIXTURE_THREADS: Record<string, (now: number) => ThreadState> = {
   's-pricing': doneThread,
   's-sync-f2': failedThread,
   's-mcp-server': backgroundThread,
+  's-soul-id': imagesThread,
   [LONG_THREAD_SESSION_ID]: (now) => longThread(now),
 }
 
