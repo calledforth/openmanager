@@ -42,7 +42,7 @@ jobs:
       - name: Typecheck, lint, and test the environment client
         run: pnpm run ci:environment-client
 
-      - name: Verify shared application core and Storybook
+      - name: Typecheck, lint, test and build the shared application core
         run: pnpm run ci:app-core
 
       - name: Typecheck, lint, and test desktop
