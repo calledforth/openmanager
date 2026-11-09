@@ -4,6 +4,7 @@ import { memo } from 'react'
 import { View } from 'react-native'
 
 import { AppText } from '../components/ui/AppText'
+import { sessionRowHref } from '../environment/landing-route'
 import { statusLineOf, statusMarkOf, type HomeSession } from '../home/rows'
 import { usePhoneTheme } from '../theme/ThemeProvider'
 import { tap } from '../ui/haptics'
@@ -26,7 +27,7 @@ const ChildSessionCard = memo(function ChildSessionCard({ session }: { session: 
       accessibilityLabel={`Open subagent ${title}`}
       onPress={() => {
         tap()
-        router.push(`/session/${encodeURIComponent(session.externalId)}`)
+        router.push(sessionRowHref(session) as never)
       }}
       style={({ pressed }) => ({
         flexDirection: 'row',

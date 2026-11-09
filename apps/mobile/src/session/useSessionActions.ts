@@ -1,7 +1,7 @@
 import { useCallback, useMemo } from 'react'
 import { useEnvironmentClient } from '@openmanager/app-core/logic'
 
-import { usePhoneConnection } from '../environment/PhoneEnvironmentProvider'
+import { usePageConnectionStatus } from '../environment/PhoneEnvironmentProvider'
 import { statusMarkOf, type HomeSession } from '../home/rows'
 import { sessionMenuItems, type SessionMenuItem, type SessionMenuItemId } from './session-menu'
 
@@ -49,7 +49,7 @@ export function useSessionActions(
   openSettings?: () => void,
 ): SessionActions {
   const client = useEnvironmentClient()
-  const { status } = usePhoneConnection()
+  const status = usePageConnectionStatus()
   const mark = session ? statusMarkOf(session) : 'idle'
   const settled = !!session?.settledAt
   const pinned = !!session?.pinnedAt

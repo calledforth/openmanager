@@ -11,19 +11,25 @@ export interface SegmentedTab<Key extends string> {
   count?: number
 }
 
-/** Pills under a big title; the chosen one is a fill, not an underline. */
+/**
+ * Pills for the views of a screen; the chosen one is a fill, not an
+ * underline. Under a big title by default (`className` places them
+ * elsewhere: the home keeps them in its title row).
+ */
 export function SegmentedTabs<Key extends string>({
   tabs,
   value,
   onChange,
+  className = 'flex-row gap-1.5 px-5 pb-2 pt-3.5',
 }: {
   tabs: readonly SegmentedTab<Key>[]
   value: Key
   onChange: (key: Key) => void
+  className?: string
 }) {
   const theme = usePhoneTheme()
   return (
-    <View className="flex-row gap-1.5 px-5 pb-2 pt-3.5">
+    <View className={className}>
       {tabs.map((tab) => {
         const on = tab.key === value
         return (

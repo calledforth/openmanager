@@ -15,10 +15,13 @@ import { ProjectMark } from '../ui/ProjectMark'
 export function StartWithProject({
   environmentLabel,
   onAdd,
+  onPickEnvironment,
 }: {
   environmentLabel: string | null
   /** Add project; absent where the environment cannot. */
   onAdd?: () => void
+  /** Run it on another environment; absent with one saved. */
+  onPickEnvironment?: () => void
 }) {
   const theme = usePhoneTheme()
   return (
@@ -61,6 +64,32 @@ export function StartWithProject({
           </AppText>
         </Press>
       ) : null}
+      {onPickEnvironment ? (
+        <Press
+          accessibilityRole="button"
+          accessibilityLabel="Another environment"
+          accessibilityHint="Pick the environment this session runs on"
+          onPress={() => {
+            tap()
+            onPickEnvironment()
+          }}
+          style={({ pressed }) => ({
+            marginTop: 10,
+            flexDirection: 'row',
+            alignItems: 'center',
+            gap: 6,
+            paddingVertical: 9,
+            paddingHorizontal: 14,
+            borderRadius: 999,
+            backgroundColor: pressed ? theme.active : 'transparent',
+          })}
+        >
+          <DesktopIcon size={15} color={theme.muted} />
+          <AppText variant="text-14-medium" style={{ color: theme.muted }}>
+            Another environment
+          </AppText>
+        </Press>
+      ) : null}
     </View>
   )
 }
@@ -76,6 +105,7 @@ export function NewSessionHead({
   loading,
   note,
   onPick,
+  onPickEnvironment,
 }: {
   environmentLabel: string | null
   /** The draft's project; absent while none is picked (or it was removed). */
@@ -85,6 +115,8 @@ export function NewSessionHead({
   /** Why the draft cannot go as it stands. */
   note: string | null
   onPick: () => void
+  /** Pick another environment; absent with one saved, or once something is written. */
+  onPickEnvironment?: () => void
 }) {
   const theme = usePhoneTheme()
   if (loading) {
@@ -121,9 +153,7 @@ export function NewSessionHead({
             backgroundColor: pressed ? theme.active : theme.hover,
           })}
         >
-          {workspace ? (
-            <ProjectMark workspaceId={workspace.path} name={workspace.name} size={14} />
-          ) : null}
+          {workspace ? <ProjectMark workspaceId={workspace.path} size={14} /> : null}
           <AppText
             variant="text-16-medium"
             numberOfLines={1}
@@ -136,7 +166,39 @@ export function NewSessionHead({
       </View>
       {environmentLabel || note ? (
         <View className="flex-row items-center" style={{ gap: 5 }}>
-          {environmentLabel ? (
+          {environmentLabel && onPickEnvironment ? (
+            <Press
+              accessibilityRole="button"
+              accessibilityLabel={`Environment: ${environmentLabel}`}
+              accessibilityHint="Pick the environment this session runs on"
+              onPress={() => {
+                tap()
+                onPickEnvironment()
+              }}
+              hitSlop={8}
+              style={({ pressed }) => ({
+                flexDirection: 'row',
+                alignItems: 'center',
+                gap: 5,
+                flexShrink: 1,
+                marginLeft: -6,
+                paddingVertical: 3,
+                paddingHorizontal: 6,
+                borderRadius: 999,
+                backgroundColor: pressed ? theme.active : theme.hover,
+              })}
+            >
+              <DesktopIcon size={12} color={theme.muted} />
+              <AppText
+                variant="text-12-regular"
+                numberOfLines={1}
+                style={{ color: theme.muted, flexShrink: 1 }}
+              >
+                {environmentLabel}
+              </AppText>
+              <CaretDownIcon size={10} color={theme.faint} weight="bold" />
+            </Press>
+          ) : environmentLabel ? (
             <>
               <DesktopIcon size={12} color={theme.faint} />
               <AppText

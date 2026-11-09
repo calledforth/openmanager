@@ -5,12 +5,10 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import {
   blurReductionFor,
-  createTabTargets,
   glassBlurProps,
   INSIDE_TARGET,
   type GlassTarget,
 } from '../src/ui/glass-target'
-import { createTabBarCover } from '../src/ui/tab-bar-cover'
 
 // The layers as Android lays them out, on react-native-web: the blur
 // records what it was told to draw, and the target is the view it stands for.
@@ -38,29 +36,9 @@ vi.mock('../src/theme/ThemeProvider', () => {
   const theme = new Proxy({}, { get: () => '#888888' })
   return { usePhoneTheme: () => theme }
 })
-vi.mock('../src/ui/haptics', () => ({ tap: () => undefined }))
-vi.mock('expo-router', () => ({ useRouter: () => ({ push: () => undefined }) }))
-// The pill's sliding highlight: its values read at rest, nothing animates here.
-vi.mock('react-native-reanimated', async () => {
-  // @ts-expect-error -- react-native-web ships no types.
-  const web = (await import('react-native-web')) as { View: unknown }
-  return {
-    default: { View: web.View },
-    useSharedValue: (value: number) => ({ value }),
-    useAnimatedStyle: (style: () => object) => style(),
-    withSpring: (value: number) => value,
-    withTiming: (value: number) => value,
-    Easing: { in: () => undefined, out: () => undefined, cubic: undefined },
-  }
-})
-vi.mock('phosphor-react-native', () => {
-  const Icon = () => null
-  return { GearSixIcon: Icon, ListIcon: Icon, MagnifyingGlassIcon: Icon, TrayIcon: Icon }
-})
 ;(globalThis as { __DEV__?: boolean }).__DEV__ = true
 const { Glass, GlassContent, GlassLayer, GlassTargetProvider } = await import('../src/ui/Glass')
-const { Screen, TabTargetsContext } = await import('../src/ui/Screen')
-const { PillNav } = await import('../src/ui/PillNav')
+const { Screen } = await import('../src/ui/Screen')
 
 /** The last thing each Glass drew, by the label inside it. */
 function Labelled({ label }: { label: string }) {
@@ -116,23 +94,6 @@ describe('glassBlurProps', () => {
       const radius = (24 / blurReductionFor(ratio)) * 4
       expect(0.57735 * radius).toBeCloseTo(24 * ratio, 5)
     }
-  })
-})
-
-describe('tab targets', () => {
-  it('holds one target per tab and tells only when one changes', () => {
-    const targets = createTabTargets()
-    const heard = vi.fn()
-    targets.subscribe(heard)
-    const a = { current: null } as GlassTarget
-    targets.set('index', a)
-    targets.set('index', a)
-    expect(heard).toHaveBeenCalledTimes(1)
-    expect(targets.get('index')).toBe(a)
-    expect(targets.get('settings')).toBeNull()
-    targets.set('index', null)
-    expect(targets.get('index')).toBeNull()
-    expect(heard).toHaveBeenCalledTimes(2)
   })
 })
 
@@ -212,74 +173,22 @@ describe('glass layers', () => {
     const target = { current: document.createElement('section') } as unknown as GlassTarget
     await render(
       <GlassTargetProvider target={target}>
-        <Labelled label="tab bar" />
+        <Labelled label="elsewhere" />
       </GlassTargetProvider>,
     )
     expect(lastTarget()).toBe(target.current)
   })
-})
 
-describe('the tab bar', () => {
-  const props = (index: number) =>
-    ({
-      state: {
-        index,
-        routes: [
-          { key: 'index-1', name: 'index' },
-          { key: 'inbox-1', name: 'inbox' },
-          { key: 'settings-1', name: 'settings' },
-        ],
-      },
-      navigation: { emit: () => ({ defaultPrevented: false }), navigate: () => undefined },
-      insets: { top: 0, bottom: 0, left: 0, right: 0 },
-    }) as unknown as Parameters<typeof PillNav>[0]
-
-  it('blurs the screen in front, and follows the tab the moment it changes', async () => {
-    const targets = createTabTargets()
-    const page = (index: number) => (
-      <TabTargetsContext.Provider value={targets}>
-        <Screen tab="index">
-          <GlassContent>
-            <p>sessions</p>
-          </GlassContent>
-        </Screen>
-        <Screen tab="settings">
-          <GlassContent>
-            <p>settings</p>
-          </GlassContent>
-        </Screen>
-        <PillNav {...props(index)} targets={targets} />
-      </TabTargetsContext.Provider>
+  it('blurs the screen a dock floats over: the screen is one layer, the dock beside its content', async () => {
+    await render(
+      <Screen>
+        <GlassContent>
+          <p>sessions</p>
+        </GlassContent>
+        <Labelled label="dock" />
+      </Screen>,
     )
-    await render(page(0))
-    const [sessions, settings] = sections()
-    // The pill and the search button: both on the sessions screen.
-    expect(blurs.slice(-2).map((blur) => blur.blurTarget?.current)).toEqual([sessions, sessions])
-    await render(page(2))
-    expect(blurs.slice(-2).map((blur) => blur.blurTarget?.current)).toEqual([settings, settings])
-    // A tab whose screen is not drawn yet: the tint alone, never another tab's.
-    await render(page(1))
-    expect(blurs.slice(-2).map((blur) => blur.blurTarget)).toEqual([undefined, undefined])
-  })
-
-  it('steps aside while a sheet is open, and comes back once the last one closes', async () => {
-    const targets = createTabTargets()
-    const cover = createTabBarCover()
-    const pill = () => container.firstElementChild as HTMLElement
-    await render(<PillNav {...props(0)} targets={targets} cover={cover} />)
-    const inPlace = pill().className
-    expect(pill().style.opacity).toBe('1')
-
-    const lowerOne = cover.raise()
-    const lowerTwo = cover.raise()
-    await act(async () => undefined)
-    // Faded out, and taps go through it (pointer events off, not box-none).
-    expect(pill().style.opacity).toBe('0')
-    expect(pill().className).not.toBe(inPlace)
-    await act(async () => lowerOne())
-    expect(pill().style.opacity).toBe('0')
-    await act(async () => lowerTwo())
-    expect(pill().style.opacity).toBe('1')
-    expect(pill().className).toBe(inPlace)
+    const [sessions] = sections()
+    expect(lastTarget()).toBe(sessions)
   })
 })

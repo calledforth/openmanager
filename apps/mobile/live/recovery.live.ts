@@ -13,6 +13,8 @@ import { fetchBootstrap, noLoopbackGate } from '@openmanager/environment-client/
 import { phoneConnectionView } from '../src/environment/connection-ui'
 import {
   createPhoneConnectionController,
+  linkOf,
+  statusOf,
   type AppActivity,
   type PhoneConnectionController,
   type PhoneNetwork,
@@ -289,17 +291,19 @@ describe('connection recovery, live', () => {
       const states: string[] = []
       phone.subscribe(() => {
         const state = phone.getState()
-        const view = phoneConnectionView(state)
-        const line = `${state.status}|${view.ui.kind}|${view.ui.title}|${state.endpoint ?? ''}`
+        const view = phoneConnectionView(state, environmentId)
+        const status = statusOf(state, environmentId)
+        const endpoint = linkOf(state, environmentId)?.endpoint ?? ''
+        const line = `${status}|${view.ui.kind}|${view.ui.title}|${endpoint}`
         if (states.at(-1) !== line) {
           states.push(line)
           note('state', {
-            status: state.status,
+            status,
             kind: view.ui.kind,
             title: view.ui.title,
             detail: view.ui.detail ?? null,
-            endpoint: state.endpoint,
-            retryAt: state.retryAt ? state.retryAt - Date.now() : null,
+            endpoint: endpoint || null,
+            retryAt: view.retryAt ? view.retryAt - Date.now() : null,
           })
         }
       })
@@ -309,7 +313,8 @@ describe('connection recovery, live', () => {
       const paired = await exchangeLink(read.link, { label: 'Recovery phone' }, phone, phoneFetch)
       expect(paired).toMatchObject({ ok: true })
       const connected = (endpoint: string) => () =>
-        phone.getState().status === 'connected' && phone.getState().endpoint === endpoint
+        statusOf(phone.getState(), environmentId) === 'connected' &&
+        linkOf(phone.getState(), environmentId)?.endpoint === endpoint
       await until('connected over the LAN', connected(LAN))
       // The tunnel joins as the person agreed in the consent sheet.
       expect(phone.addRoute({ environmentId, endpoint: TUNNEL })).toBe(true)
@@ -321,7 +326,7 @@ describe('connection recovery, live', () => {
 
       // ---- airplane mode ------------------------------------------------------
       network.set({ online: false })
-      await until('offline', () => phone.getState().status === 'offline')
+      await until('offline', () => statusOf(phone.getState(), environmentId) === 'offline')
       const offline = phoneConnectionView(phone.getState())
       expect(offline.ui.title).toBe("You're offline")
       expect(offline.next).toEqual(['network_settings'])
@@ -337,7 +342,7 @@ describe('connection recovery, live', () => {
 
       // ---- the tunnel goes down, then comes back --------------------------------
       tunnel.set('530')
-      await until('waiting', () => phone.getState().status === 'waiting')
+      await until('waiting', () => statusOf(phone.getState(), environmentId) === 'waiting')
       const down = phoneConnectionView(phone.getState())
       note('tunnel.down', { reason: down.ui.reason, detail: down.ui.detail, next: down.next })
       expect(down.ui).toMatchObject({ kind: 'unreachable', reason: 'tunnel_down', retrying: true })
@@ -351,21 +356,26 @@ describe('connection recovery, live', () => {
 
       // ---- the server restarts ------------------------------------------------
       await stopServer()
-      await until('server gone', () => ['waiting', 'searching'].includes(phone.getState().status))
+      await until('server gone', () =>
+        ['waiting', 'searching'].includes(statusOf(phone.getState(), environmentId)),
+      )
       const gone = phoneConnectionView(phone.getState())
       note('server.down', { kind: gone.ui.kind, detail: gone.ui.detail })
       startServer()
       await serverUp()
       results.serverRestart = await until(
         'back after the restart',
-        () => phone.getState().status === 'connected',
+        () => statusOf(phone.getState(), environmentId) === 'connected',
       )
       await new Promise((done) => setTimeout(done, 2000))
 
       // ---- the owner revokes the phone: refused, and pairing is the way back --
       const owner = await ownerClient()
       await owner.commands.revokeOtherAuthorizedClients()
-      await until('unauthorized', () => phone.getState().status === 'unauthorized')
+      await until(
+        'unauthorized',
+        () => statusOf(phone.getState(), environmentId) === 'unauthorized',
+      )
       const refused = phoneConnectionView(phone.getState())
       note('revoked', { kind: refused.ui.kind, title: refused.ui.title, next: refused.next })
       expect(refused.ui.kind).toBe('unauthorized')
@@ -388,10 +398,13 @@ describe('connection recovery, live', () => {
         kind: 'paired',
         paired: { how: 'exchanged' },
       })
-      await until('connected after pairing again', () => phone.getState().status === 'connected')
+      await until(
+        'connected after pairing again',
+        () => statusOf(phone.getState(), environmentId) === 'connected',
+      )
       note('repaired', { newSockets: dials.length - socketsAtRefusal })
       results.pairAgain = Date.now() - from
-      note('results', { results, finalEndpoint: phone.getState().endpoint })
+      note('results', { results, finalEndpoint: linkOf(phone.getState(), environmentId)?.endpoint })
     },
   )
 })

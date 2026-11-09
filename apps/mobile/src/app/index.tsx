@@ -1,54 +1,58 @@
 import { useRouter } from 'expo-router'
-import { DesktopIcon, NotePencilIcon, PlusIcon, QrCodeIcon } from 'phosphor-react-native'
+import { DesktopIcon, PlusIcon, QrCodeIcon } from 'phosphor-react-native'
 import { useCallback, useMemo, useRef, useState } from 'react'
 import { LayoutAnimation, SectionList, View, type SectionListRenderItem } from 'react-native'
 import { useSafeAreaInsets } from 'react-native-safe-area-context'
-import { useSidebarDrafts } from '@openmanager/app-core/providers/sidebar-provider'
 
-import { AppText } from '../../components/ui/AppText'
-import { DraftDiscardToast } from '../../draft/DraftDiscard'
+import { AppText } from '../components/ui/AppText'
+import { DraftDiscardToast } from '../draft/DraftDiscard'
 import {
+  countEnvironments,
+  homeSessionKey,
   listShapeOf,
   selectTabRows,
   statusMarkOf,
   tabCounts,
   type HomeListRow,
   type HomeRow,
+  type HomeSession,
   type HomeTab,
-} from '../../home/rows'
-import { SessionActionsSheet } from '../../session/SessionActionsSheet'
-import { phoneConnectionView } from '../../environment/connection-ui'
-import { usePhoneConnection } from '../../environment/PhoneEnvironmentProvider'
-import { useHomeSource } from '../../home/source'
-import { ActionButton } from '../../pairing/ActionButton'
-import { ConnectionPanel } from '../../settings/ConnectionPanel'
-import { useTitleEnvironment } from '../../settings/title-environment'
-import { usePhoneTheme } from '../../theme/ThemeProvider'
-import { UpdateNotice } from '../../updates/UpdateRow'
-import { BigTitle, FadeOut, SectionLabel } from '../../ui/chrome'
-import { DraftRow } from '../../ui/DraftRow'
-import { GlassContent } from '../../ui/Glass'
-import { IconButton } from '../../ui/IconButton'
-import { Screen, ScreenBar } from '../../ui/Screen'
-import { SegmentedTabs } from '../../ui/SegmentedTabs'
-import { SessionRow } from '../../ui/SessionRow'
+} from '../home/rows'
+import { SessionActionsSheet } from '../session/SessionActionsSheet'
+import { phoneConnectionView } from '../environment/connection-ui'
+import { draftRowHref, sessionRowHref } from '../environment/landing-route'
+import { usePhoneConnection } from '../environment/PhoneEnvironmentProvider'
+import { useHomeSource } from '../home/source'
+import { ActionButton } from '../pairing/ActionButton'
+import { ConnectionPanel } from '../settings/ConnectionPanel'
+import { usePhoneTheme } from '../theme/ThemeProvider'
+import { UpdateNotice } from '../updates/UpdateRow'
+import { FadeOut, PageTitle, SectionLabel } from '../ui/chrome'
+import { DraftRow } from '../ui/DraftRow'
+import { GlassContent } from '../ui/Glass'
+import { HomeDock } from '../ui/HomeDock'
+import { Screen } from '../ui/Screen'
+import { SegmentedTabs } from '../ui/SegmentedTabs'
+import { SessionRow } from '../ui/SessionRow'
 
 type ListRow = HomeListRow
-type ListSection = { key: string; label: string; data: ListRow[] }
+type ListSection = { key: string; label: string | null; data: ListRow[] }
 
-const EMPTY: Record<HomeTab, { title: string; body: string }> = {
-  all: {
-    title: 'No sessions yet',
-    body: 'Start one from the compose button, or on your computer; it shows up here.',
-  },
-  active: {
+/** The words for an empty view: nothing at all, nothing active, nothing settled. */
+function emptyCopy(tab: HomeTab, sessionCount: number): { title: string; body: string } {
+  if (tab === 'settled') {
+    return { title: 'Nothing settled', body: 'Sessions you settle wait here.' }
+  }
+  if (sessionCount === 0) {
+    return {
+      title: 'No sessions yet',
+      body: 'Start one with New chat, or on your computer; it shows up here.',
+    }
+  }
+  return {
     title: 'Nothing active',
     body: 'Every session is settled. New work and anything that needs you shows up here.',
-  },
-  drafts: {
-    title: 'No drafts',
-    body: 'A message you start and leave unsent waits here.',
-  },
+  }
 }
 
 /**
@@ -94,15 +98,21 @@ function PairFirst({ again, onPair }: { again: string | null; onPair: () => void
   )
 }
 
+/** Ids are only unique within one environment: a row's key names its environment too. */
 const keyOf = (row: ListRow) =>
-  row.kind === 'draft' ? `draft:${row.draft.draftId}` : `session:${row.session.externalId}`
+  row.kind === 'draft'
+    ? `draft:${row.draft.environment?.environmentId ?? ''}:${row.draft.draftId}`
+    : `session:${sessionKeyOf(row.session)}`
+
+const sessionKeyOf = (session: HomeSession) => homeSessionKey(session)
 
 /**
- * Rows coming, going or changing places (a sent draft leaving Drafts and its
- * session arriving in Active, a discard, a session moving to Needs you) ease
- * into place: one native layout animation for that commit, on the UI thread.
- * Never for a tab switch, and never for what a row shows: a streamed token
- * or a preview typed elsewhere changes no row's place.
+ * Rows coming, going or changing places (a sent draft's card leaving and
+ * its session arriving under Working, a discard, a session moving to Needs
+ * you, a settle) ease into place: one native layout animation for that
+ * commit, on the UI thread. Never for a view switch, and never for what a
+ * row shows: a streamed token or a preview typed elsewhere changes no row's
+ * place.
  */
 const ROWS_MOVE = LayoutAnimation.create(200, 'easeInEaseOut', 'opacity')
 
@@ -115,37 +125,48 @@ function useRowsMove(tab: HomeTab, shape: string) {
 }
 
 /**
- * The sessions home: big title with the environment under it, All · Active
- * · Drafts, rows grouped by what they are doing (Active) or by day (All).
- * The floating pill nav is the tabs group's tab bar, drawn over this; the
- * compose button floats over the title row.
+ * The sessions home: one title row with the two views (All, what is
+ * unsettled; Settled, the long tail), then the rows. All opens with the
+ * draft cards, then Pinned, Needs you, Working, Failed, Done and Recent,
+ * which is what the inbox listed, in the one place. Where the rows span
+ * more than one environment each says where it runs. The dock (Settings,
+ * New chat, Search) floats over the end of the list.
  */
 export default function SessionsHome() {
   const router = useRouter()
   const insets = useSafeAreaInsets()
   const theme = usePhoneTheme()
   const source = useHomeSource()
-  const { environment, needsPairing, workspaces, sessions, drafts } = source
-  const titleEnvironment = useTitleEnvironment(source)
+  const { environment, environments, needsPairing, workspaces, sessions, drafts } = source
   const connection = usePhoneConnection()
   const view = phoneConnectionView(connection)
   // Not connected and nothing to show yet: the connection's own state, with
   // its next step, says why the list is empty.
   const showConnection = source.kind === 'environment' && view.ui.kind !== 'ready'
   const [tab, setTab] = useState<HomeTab>('all')
-  // Null on a host without draft cards and in the sample home.
-  const sidebarDrafts = useSidebarDrafts()
-  const discardDraft = source.kind === 'environment' ? sidebarDrafts?.discardDraft : undefined
+  // A view opens at its top: the list is the same element for both views,
+  // and would otherwise keep the place the other was scrolled to.
+  const list = useRef<SectionList<ListRow, ListSection>>(null)
+  const changeTab = useCallback((next: HomeTab) => {
+    list.current?.getScrollResponder()?.scrollTo({ y: 0, animated: false })
+    setTab(next)
+  }, [])
+  // Through each card's own environment; absent in the sample home.
+  const discardDraft = source.kind === 'environment' ? source.discardDraft : undefined
 
-  const counts = useMemo(() => tabCounts(sessions, drafts), [sessions, drafts])
+  const counts = useMemo(() => tabCounts(sessions), [sessions])
+  const showEnvironment = useMemo(
+    () => countEnvironments([...sessions, ...drafts]) > 1,
+    [sessions, drafts],
+  )
   const sections = useMemo<ListSection[]>(
     () =>
-      selectTabRows({ sessions, drafts, workspaces, tab }).map((group) => ({
+      selectTabRows({ sessions, drafts, workspaces, environments, tab }).map((group) => ({
         key: group.key,
         label: group.label,
         data: group.rows,
       })),
-    [sessions, drafts, workspaces, tab],
+    [sessions, drafts, workspaces, environments, tab],
   )
   useRowsMove(tab, listShapeOf(sections, keyOf))
 
@@ -153,16 +174,20 @@ export default function SessionsHome() {
   // listing while the sheet is up, so a rename shows in it as it lands.
   const [actionsId, setActionsId] = useState<string | null>(null)
   const actionsRow = useMemo<HomeRow | null>(() => {
-    const session = actionsId ? sessions.find((s) => s.externalId === actionsId) : undefined
+    const session = actionsId ? sessions.find((s) => sessionKeyOf(s) === actionsId) : undefined
     if (!session) return null
+    // Its project from its own environment's list: two can hold the same path.
+    const projects =
+      environments.find((item) => item.environmentId === session.environment?.environmentId)
+        ?.workspaces ?? workspaces
     return {
       kind: 'session',
       session,
-      workspace: workspaces.find((w) => w.path === session.workspacePath),
+      workspace: projects.find((w) => w.path === session.workspacePath),
       mark: statusMarkOf(session),
       depth: 0,
     }
-  }, [actionsId, sessions, workspaces])
+  }, [actionsId, environments, sessions, workspaces])
   const closeActions = useCallback(() => setActionsId(null), [])
 
   const renderItem = useCallback<SectionListRenderItem<ListRow, ListSection>>(
@@ -170,53 +195,63 @@ export default function SessionsHome() {
       item.kind === 'draft' ? (
         <DraftRow
           row={item}
-          onPress={() => router.push(`/draft/${encodeURIComponent(item.draft.draftId)}`)}
-          {...(discardDraft ? { onDiscard: () => discardDraft(item.draft.draftId) } : {})}
+          showEnvironment={showEnvironment}
+          onPress={() => router.push(draftRowHref(item.draft) as never)}
+          {...(discardDraft ? { onDiscard: () => discardDraft(item.draft) } : {})}
         />
       ) : (
         <SessionRow
           row={item}
-          onPress={() => router.push(`/session/${encodeURIComponent(item.session.externalId)}`)}
-          onLongPress={() => setActionsId(item.session.externalId)}
+          showEnvironment={showEnvironment}
+          onPress={() => router.push(sessionRowHref(item.session) as never)}
+          onLongPress={() => setActionsId(sessionKeyOf(item.session))}
         />
       ),
-    [discardDraft, router],
+    [discardDraft, router, showEnvironment],
   )
 
-  const empty = EMPTY[tab]
+  const empty = emptyCopy(tab, sessions.length)
 
   return (
-    <Screen tab="index">
-      <ScreenBar
-        top={insets.top + 6}
-        height={44}
-        right={
-          <IconButton label="New session" onPress={() => router.push('/draft/new')}>
-            <NotePencilIcon size={18} color={theme.fg} />
-          </IconButton>
-        }
-      />
+    <Screen>
       <GlassContent style={{ paddingTop: insets.top + 6 }}>
-        <BigTitle title="Sessions" environment={titleEnvironment} />
-        <SegmentedTabs
-          tabs={[
-            { key: 'all', label: 'All' },
-            { key: 'active', label: 'Active', count: counts.active },
-            { key: 'drafts', label: 'Drafts', count: counts.drafts },
-          ]}
-          value={tab}
-          onChange={setTab}
-        />
+        <View
+          style={{
+            height: 44,
+            paddingHorizontal: 20,
+            flexDirection: 'row',
+            alignItems: 'center',
+            justifyContent: 'space-between',
+          }}
+        >
+          <PageTitle>Sessions</PageTitle>
+          <SegmentedTabs
+            className="flex-row gap-1"
+            tabs={[
+              { key: 'all', label: 'All', count: counts.all || undefined },
+              { key: 'settled', label: 'Settled', count: counts.settled || undefined },
+            ]}
+            value={tab}
+            onChange={changeTab}
+          />
+        </View>
         <View className="flex-1">
           <SectionList
+            ref={list}
             className="flex-1"
             sections={sections}
             keyExtractor={keyOf}
             renderItem={renderItem}
             ListHeaderComponent={<UpdateNotice />}
-            renderSectionHeader={({ section }) => <SectionLabel>{section.label}</SectionLabel>}
+            renderSectionHeader={({ section }) =>
+              section.label ? <SectionLabel>{section.label}</SectionLabel> : null
+            }
             stickySectionHeadersEnabled={false}
-            contentContainerStyle={{ paddingHorizontal: 8, paddingBottom: insets.bottom + 140 }}
+            contentContainerStyle={{
+              paddingHorizontal: 8,
+              paddingTop: tab === 'settled' ? 6 : 0,
+              paddingBottom: insets.bottom + 140,
+            }}
             showsVerticalScrollIndicator={false}
             ListEmptyComponent={
               needsPairing ? (
@@ -265,6 +300,7 @@ export default function SessionsHome() {
           <FadeOut />
         </View>
       </GlassContent>
+      <HomeDock />
       <DraftDiscardToast />
       {actionsRow ? <SessionActionsSheet row={actionsRow} onClose={closeActions} /> : null}
     </Screen>

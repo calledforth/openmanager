@@ -148,13 +148,17 @@ function phone(name: string): PhoneConnectionController {
   return controller
 }
 
+/** Each live phone saves one environment: its one link, once the registry is read. */
+const onlyLink = (controller: PhoneConnectionController) =>
+  Object.values(controller.getState().links)[0]
+
 async function pair(controller: PhoneConnectionController, link: string, label: string) {
   await controller.start()
   const read = readPairingLink(link)
   if (!read.ok) throw new Error('link did not read')
   const paired = await exchangeLink(read.link, { label }, controller, globalThis.fetch)
   expect(paired).toMatchObject({ ok: true })
-  await until(`${label} connected`, () => controller.getState().status === 'connected')
+  await until(`${label} connected`, () => onlyLink(controller)?.status === 'connected')
 }
 
 describe('devices from the phone, live', () => {
@@ -186,7 +190,7 @@ describe('devices from the phone, live', () => {
 
       const first = phone('first')
       await pair(first, await ownerLink(['read', 'operate', 'agent', 'admin']), 'Live phone')
-      const client = first.getState().client!
+      const client = onlyLink(first)!.client!
       const admin = createDeviceAdmin(client, environmentId)
       cleanups.push(() => admin.dispose())
       admin.start()
@@ -264,16 +268,16 @@ describe('devices from the phone, live', () => {
       // ---- revoke the kitchen tablet: gone from the list, refused next time -
       expect(await admin.revoke(secondId)).toBe(true)
       await until('the tablet gone', () => !labels().includes('Kitchen tablet'))
-      await until('the tablet signed out', () => second.getState().status === 'unauthorized')
-      note('revoked', { labels: labels(), second: second.getState().status })
+      await until('the tablet signed out', () => onlyLink(second)?.status === 'unauthorized')
+      note('revoked', { labels: labels(), second: onlyLink(second)?.status })
 
       // ---- revoke the others: only the owner and this phone stay ------------
       expect(revocableOthers(admin.getState().list!)).toBe(1)
       expect(await admin.revokeOthers()).toBe(true)
       await until('only the owner and this phone', () => labels().length === 2)
-      await until('the third phone signed out', () => third.getState().status === 'unauthorized')
-      note('revoked_others', { labels: labels(), third: third.getState().status })
-      expect(first.getState().status).toBe('connected')
+      await until('the third phone signed out', () => onlyLink(third)?.status === 'unauthorized')
+      note('revoked_others', { labels: labels(), third: onlyLink(third)?.status })
+      expect(onlyLink(first)?.status).toBe('connected')
 
       // ---- the phone cannot rotate the owner's credential -------------------
       expect(await admin.rotate()).toBeNull()

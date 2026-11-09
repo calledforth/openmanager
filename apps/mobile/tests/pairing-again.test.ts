@@ -72,11 +72,11 @@ async function refusedUnconfirmed(confirmation: Promise<BootstrapOutcome>) {
   await flush()
   h.socket().accept()
   await flush()
-  expect(h.state().status).toBe('connected')
+  expect(h.status()).toBe('connected')
   h.answers.set(LAN, confirmation)
   h.socket().drop(4401, 'unauthorized')
   await flush()
-  expect(h.state().status).toBe('unauthorized')
+  expect(h.status()).toBe('unauthorized')
   expect(h.state().environments[0]!.paired).toBe(true)
   expect(h.storage.secret(ENV)).toBe(TOKEN)
   return h
@@ -130,7 +130,7 @@ describe.each([
     expect(h.storage.secret(ENV)).toBe(FRESH)
     h.socket().accept()
     await flush()
-    expect(h.state().status).toBe('connected')
+    expect(h.status()).toBe('connected')
     // Every socket after the refusal carried the new token; the refused one
     // was never sent again.
     expect(tokensDialled(h).slice(socketsAtRefusal)).not.toContain(TOKEN)
@@ -153,7 +153,7 @@ describe.each([
     await h.controller.flush()
     // Nothing the route said replaced or cleared it, and nothing redialled.
     expect(h.storage.secret(ENV)).toBe(TOKEN)
-    expect(h.state().status).toBe('unauthorized')
+    expect(h.status()).toBe('unauthorized')
   })
 
   it('a redeem reached anyway gives up at once instead of redialling', async () => {
@@ -167,7 +167,7 @@ describe.each([
     await flush()
     expect(h.sockets().length).toBe(sockets)
     expect(h.probes.length).toBe(probes)
-    expect(h.state().status).toBe('unauthorized')
+    expect(h.status()).toBe('unauthorized')
   })
 })
 

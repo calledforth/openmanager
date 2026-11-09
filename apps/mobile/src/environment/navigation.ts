@@ -1,4 +1,4 @@
-import { BLANK_DRAFT, draftHref, landingOf, sessionHref } from './landing-route'
+import { BLANK_DRAFT, draftHref, landingFor, landingOf, sessionHref } from './landing-route'
 
 /** The part of expo-router's imperative router the shared navigation needs. */
 export interface PhoneRouter {
@@ -19,8 +19,9 @@ const decoded = (path: string) => {
 }
 
 /**
- * The shared session state's navigation (`navigateSession`, `navigateDraft`)
- * over the phone's routes. Each answers once the address in front reads its
+ * One environment's shared session state's navigation (`navigateSession`,
+ * `navigateDraft`) over the phone's routes, every address that environment's
+ * own. Each answers once the address in front reads its
  * destination, as web's router answers once it has moved: the shared state
  * holds the page it opened until then, and an address that has not caught up
  * yet must not read as the user's own move.
@@ -40,19 +41,22 @@ const decoded = (path: string) => {
 export function createPhoneNavigation(
   router: PhoneRouter,
   {
+    environmentId,
     timers = {
       setTimeout: (run, ms) => globalThis.setTimeout(run, ms),
       clearTimeout: (handle) => globalThis.clearTimeout(handle as ReturnType<typeof setTimeout>),
     },
     stayed,
   }: {
+    /** The environment whose pages these are. */
+    environmentId: string
     timers?: {
       setTimeout: (run: () => void, ms: number) => unknown
       clearTimeout: (handle: unknown) => void
     }
     /** A session's page was not opened in a new-session page's place: the reader left it. */
     stayed?: (sessionId: string) => void
-  } = {},
+  },
 ) {
   let path = ''
   const waiters = new Set<{ to: string; done: () => void }>()
@@ -79,8 +83,8 @@ export function createPhoneNavigation(
     })
   }
 
-  /** A new-session page is in front. */
-  const onLanding = () => landingOf(path).onLanding
+  /** A new-session page of this environment is in front. */
+  const onLanding = () => landingFor(landingOf(path), environmentId).onLanding
 
   return {
     /** The address in front changed: navigations that reached it are settled. */
@@ -92,7 +96,7 @@ export function createPhoneNavigation(
     },
 
     navigateDraft(draftId: string, options?: { replace?: boolean }): Promise<void> {
-      const to = draftHref(draftId)
+      const to = draftHref(environmentId, draftId)
       return go(to, () => {
         // In place: the blank page becoming its draft's own, or one draft
         // page taking another's address.
@@ -104,7 +108,7 @@ export function createPhoneNavigation(
 
     navigateSession(sessionId: string | null, options?: { replace?: boolean }): Promise<void> {
       if (sessionId !== null) {
-        const to = sessionHref(sessionId)
+        const to = sessionHref(environmentId, sessionId)
         if (options?.replace && !onLanding() && decoded(path) !== decoded(to)) {
           stayed?.(sessionId)
           return Promise.resolve()
@@ -112,7 +116,7 @@ export function createPhoneNavigation(
         return go(to, () => (options?.replace ? router.replace(to) : router.push(to)))
       }
       // The blank page: on a new-session page, that page becomes it.
-      const to = draftHref(null)
+      const to = draftHref(environmentId, null)
       return go(to, () => {
         if (onLanding()) router.setParams({ draftId: BLANK_DRAFT })
         else if (options?.replace) router.replace(to)

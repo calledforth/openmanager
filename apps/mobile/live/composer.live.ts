@@ -12,6 +12,7 @@ import {
   type WebSocketConstructor,
 } from '@openmanager/environment-client'
 import { exchangePairingToken } from '@openmanager/environment-client/connection'
+import { linkOf, statusOf } from '../src/environment/controller'
 import type {
   AppActivity,
   PhoneConnectionController,
@@ -207,8 +208,8 @@ describe('the phone composer, live', () => {
       credential: paired.credential,
       appOrigin: APP_ORIGIN,
     })
-    await until('connected', () => controller.getState().status === 'connected')
-    const client = controller.getState().client as EnvironmentClient
+    await until('connected', () => statusOf(controller.getState(), environmentId) === 'connected')
+    const client = linkOf(controller.getState(), environmentId)!.client as EnvironmentClient
 
     let model: ComposerModel | null = null
     let phase = ''

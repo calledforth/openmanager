@@ -1,9 +1,9 @@
 import { ArrowUUpLeftIcon, TrashIcon, XIcon } from 'phosphor-react-native'
-import { useEffect, useRef } from 'react'
+import { useContext, useEffect, useRef } from 'react'
 import { AccessibilityInfo, View } from 'react-native'
 import Animated, { Easing, FadeIn, FadeOut } from 'react-native-reanimated'
 import { useSafeAreaInsets } from 'react-native-safe-area-context'
-import { useSidebarDrafts } from '@openmanager/app-core/providers/sidebar-provider'
+import { DraftDiscardsContext } from '@openmanager/app-core/providers/environment-sidebar-drafts'
 
 import { AppText } from '../components/ui/AppText'
 import { usePhoneTheme } from '../theme/ThemeProvider'
@@ -16,21 +16,28 @@ import { Press } from '../ui/Press'
 const NOTICE_IN = FadeIn.duration(180).easing(Easing.out(Easing.quad))
 const NOTICE_OUT = FadeOut.duration(150).easing(Easing.in(Easing.quad))
 
-/** The height the floating pill nav takes from the bottom edge, with its gap. */
-export function pillNavClearance(bottomInset: number) {
+/** The height the floating dock takes from the bottom edge, with its gap. */
+export function homeDockClearance(bottomInset: number) {
   return Math.max(bottomInset, 16) + 12 + 56 + 10
 }
 
 /**
- * "Draft discarded" with Undo, floating over the home just above the pill
- * nav while the discard waits out its window (the shared
- * `EnvironmentSidebarDraftsProvider` keeps the clock and makes the delete).
+ * "Draft discarded" with Undo, floating over the home just above the dock
+ * while the discard waits out its window (the shared `useDraftDiscards`,
+ * one for every environment, keeps the clock and makes the delete).
  * A finger on Undo holds the window open; ✕ lets the discard go now. With a
  * screen reader on, the window is held until one of the two is chosen, and
  * focus goes to Undo, as web's keyboard discard does.
  */
 export function DraftDiscardToast() {
-  const drafts = useSidebarDrafts()
+  // The one window every environment's draft cards share.
+  const discards = useContext(DraftDiscardsContext)
+  const drafts = discards && {
+    pendingDiscard: discards.pending,
+    holdDiscard: discards.hold,
+    undoDiscard: discards.undo,
+    confirmDiscard: discards.confirm,
+  }
   const insets = useSafeAreaInsets()
   const theme = usePhoneTheme()
   const undoRef = useRef<View>(null)
@@ -61,7 +68,12 @@ export function DraftDiscardToast() {
       entering={NOTICE_IN}
       exiting={NOTICE_OUT}
       pointerEvents="box-none"
-      style={{ position: 'absolute', left: 16, right: 16, bottom: pillNavClearance(insets.bottom) }}
+      style={{
+        position: 'absolute',
+        left: 16,
+        right: 16,
+        bottom: homeDockClearance(insets.bottom),
+      }}
     >
       <Glass
         strength="strong"

@@ -10,6 +10,7 @@ import {
   type WebSocketConstructor,
 } from '@openmanager/environment-client'
 import { exchangePairingToken } from '@openmanager/environment-client/connection'
+import { linkOf, statusOf } from '../src/environment/controller'
 import type {
   AppActivity,
   PhoneConnectionController,
@@ -242,12 +243,12 @@ describe('sessions list and read-only thread, live', () => {
       credential: paired.credential,
       appOrigin: APP_ORIGIN,
     })
-    await until('connected', () => controller.getState().status === 'connected')
-    const client = controller.getState().client as EnvironmentClient
+    await until('connected', () => statusOf(controller.getState(), environmentId) === 'connected')
+    const client = linkOf(controller.getState(), environmentId)!.client as EnvironmentClient
     note('connected', {
-      status: controller.getState().status,
-      endpoint: controller.getState().endpoint,
-      protocol: controller.getState().protocol,
+      status: statusOf(controller.getState(), environmentId),
+      endpoint: linkOf(controller.getState(), environmentId)!.endpoint,
+      protocol: linkOf(controller.getState(), environmentId)!.protocol,
     })
 
     // ---- the shared providers on the phone's client, as the app mounts them

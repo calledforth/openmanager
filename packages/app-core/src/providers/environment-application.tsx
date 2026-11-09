@@ -424,7 +424,8 @@ interface DraftInternals {
   ) => Promise<ThreadTarget | null>
 }
 
-const DraftInternalsContext = createContext<DraftInternals | null>(null)
+/** Exported only for `environment-scope.tsx`, which carries it to pages outside these providers. */
+export const DraftInternalsContext = createContext<DraftInternals | null>(null)
 
 /** A project a session can be started in right now. */
 function canHostDraft(workspace: Workspace | undefined): workspace is Workspace {

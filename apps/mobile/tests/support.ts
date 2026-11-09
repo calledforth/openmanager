@@ -12,8 +12,11 @@ import {
 } from '@openmanager/environment-client/connection'
 import {
   createPhoneConnectionController,
+  linkOf,
+  statusOf,
   type AppActivity,
   type PhoneConnectionOptions,
+  type PhoneLinkState,
   type PhoneNetwork,
 } from '../src/environment/controller'
 import { createPhoneStorage } from '../src/storage/phone-storage'
@@ -321,6 +324,18 @@ export function harness(
     sockets: () => FakeSocket.instances,
     socket: () => FakeSocket.instances.at(-1)!,
     state: () => controller.getState(),
+    /**
+     * One saved environment's own connection (`ENV` unless named). Throws
+     * for an environment that has no link, so a test reads the wrong one
+     * loudly rather than as `undefined`.
+     */
+    link: (environmentId: string = ENV): PhoneLinkState => {
+      const link = linkOf(controller.getState(), environmentId)
+      if (!link) throw new Error(`No link for ${environmentId}`)
+      return link
+    },
+    /** Where one environment stands, the whole phone's state folded in. */
+    status: (environmentId: string = ENV) => statusOf(controller.getState(), environmentId),
   }
 }
 

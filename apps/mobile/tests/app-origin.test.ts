@@ -67,7 +67,7 @@ describe('the controller and the app origin', () => {
     await h.controller.start()
     await flush()
     expect(h.socket().origin).toBe(APP)
-    expect(h.state().socketOrigin).toEqual({ origin: APP, from: 'app' })
+    expect(h.link().socketOrigin).toEqual({ origin: APP, from: 'app' })
     expect(h.state().environments[0]!.appOrigin).toBe(APP)
     expect(h.warnings).toEqual([])
   })
@@ -78,7 +78,7 @@ describe('the controller and the app origin', () => {
     await flush()
     expect(h.socket().options).toBeUndefined()
     expect(h.socket().origin).toBe(LAN)
-    expect(h.state().socketOrigin).toEqual({ origin: LAN, from: 'route' })
+    expect(h.link().socketOrigin).toEqual({ origin: LAN, from: 'route' })
     expect(h.state().environments[0]!.appOrigin).toBeNull()
     expect(h.warnings).toHaveLength(1)
     expect(h.warnings[0]).toContain(ENV)
@@ -95,7 +95,7 @@ describe('the controller and the app origin', () => {
     const h = harness({ routes: [LAN] })
     await h.controller.start()
     await flush()
-    expect(h.state().socketOrigin?.from).toBe('route')
+    expect(h.link().socketOrigin?.from).toBe('route')
 
     h.controller.saveEnvironment({
       environmentId: ENV,
@@ -109,7 +109,7 @@ describe('the controller and the app origin', () => {
     expect(h.sockets()).toHaveLength(2)
     expect(h.sockets()[0]!.origin).toBe(LAN)
     expect(h.socket().origin).toBe(APP)
-    expect(h.state().socketOrigin).toEqual({ origin: APP, from: 'app' })
+    expect(h.link().socketOrigin).toEqual({ origin: APP, from: 'app' })
     await h.controller.flush()
     expect(h.storage.document()!.environments[0]!.appOrigin).toBe(APP)
   })
@@ -133,7 +133,7 @@ describe('the controller and the app origin', () => {
     await flush()
     h.socket().accept()
     await flush()
-    expect(h.state()).toMatchObject({ status: 'connected' })
+    expect(h.link()).toMatchObject({ status: 'connected' })
     const first = h.socket()
 
     h.controller.saveEnvironment({
@@ -146,7 +146,7 @@ describe('the controller and the app origin', () => {
     expect(first.readyState).toBe(3)
     expect(h.sockets()).toHaveLength(2)
     expect(h.socket().origin).toBe(APP)
-    expect(h.state().socketOrigin).toEqual({ origin: APP, from: 'app' })
+    expect(h.link().socketOrigin).toEqual({ origin: APP, from: 'app' })
   })
 
   it('refuses an app origin that is not an http(s) origin', async () => {

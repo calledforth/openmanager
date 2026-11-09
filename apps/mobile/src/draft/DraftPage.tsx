@@ -1,6 +1,6 @@
-import { useNavigation } from 'expo-router'
+import { router, useNavigation } from 'expo-router'
 import { TrashIcon } from 'phosphor-react-native'
-import { useCallback, useContext, useEffect, useRef, useState } from 'react'
+import { useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react'
 import type { TextInput } from 'react-native'
 import {
   SidebarDataContext,
@@ -17,11 +17,16 @@ import { ComposerSurface } from '../composer/ComposerSurface'
 import { ThreadBridge } from '../composer/thread-port'
 import { createComposerUi } from '../composer/ui-state'
 import { draftSendBlocked, useLiveComposerModel } from '../composer/useLiveComposerModel'
-import { SessionThread } from '../session/SessionThread'
-import { usePhoneTheme } from '../theme/ThemeProvider'
+import { BLANK_DRAFT } from '../environment/landing-route'
+import {
+  usePageEnvironmentId,
+  usePhoneConnectionController,
+} from '../environment/PhoneEnvironmentProvider'
+import { useHomeSource } from '../home/source'
+import { SessionThread, type HeaderAction } from '../session/SessionThread'
 import { useGoBack } from '../ui/goBack'
-import { IconButton } from '../ui/IconButton'
 import { discardHandoff, draftDiscardable } from './discard-handoff'
+import { EnvironmentSheet } from './EnvironmentSheet'
 import { NewSessionHead, StartWithProject } from './NewSessionLanding'
 import { useProjectSource } from './useProjectSource'
 
@@ -52,23 +57,67 @@ function useScreenArrived(): boolean {
 }
 
 /**
- * Discard, in the header's corner: back to the sessions home, where the
+ * Discard, in the title's menu: back to the sessions home, where the
  * draft's row is gone with an Undo beside the Drafts tab.
  */
-function DiscardButton({ draftId }: { draftId: string }) {
-  const theme = usePhoneTheme()
+function useDiscardAction(draftId: string | null, discardable: boolean): HeaderAction[] {
   const goBack = useGoBack()
-  return (
-    <IconButton
-      label="Discard draft"
-      onPress={() => {
-        discardHandoff.request(draftId)
-        goBack()
-      }}
-    >
-      <TrashIcon size={18} color={theme.fg} />
-    </IconButton>
+  const environmentId = usePageEnvironmentId()
+  return useMemo(
+    () =>
+      discardable && draftId
+        ? [
+            {
+              id: 'discard-draft',
+              label: 'Discard draft',
+              icon: TrashIcon,
+              destructive: true,
+              run: () => {
+                // Through this page's environment: the same id elsewhere is another draft.
+                if (environmentId) discardHandoff.request({ environmentId, draftId })
+                goBack()
+              },
+            },
+          ]
+        : [],
+    [discardable, draftId, environmentId, goBack],
   )
+}
+
+/**
+ * The environment a new session runs on, picked on its page when several
+ * are saved. Only a blank page offers it (`blank`): the pick opens that
+ * environment's blank page in place (its last picked project with it), and
+ * becomes where the next new session goes. A page with something written
+ * keeps its environment, so nothing written is left behind or copied.
+ */
+function useEnvironmentChoice(blank: boolean) {
+  const environmentId = usePageEnvironmentId()
+  const controller = usePhoneConnectionController()
+  const { environments } = useHomeSource()
+  const [open, setOpen] = useState(false)
+  const close = useCallback(() => setOpen(false), [])
+  const pick = useCallback(
+    (next: string) => {
+      setOpen(false)
+      controller.selectEnvironment(next)
+      router.setParams({ environmentId: next, draftId: BLANK_DRAFT })
+    },
+    [controller],
+  )
+  const offered = blank && environments.length > 1 && environmentId !== null
+  return {
+    open: offered ? () => setOpen(true) : undefined,
+    sheet:
+      offered && open ? (
+        <EnvironmentSheet
+          environments={environments}
+          current={environmentId}
+          onPick={pick}
+          onClose={close}
+        />
+      ) : null,
+  }
 }
 
 /**
@@ -103,8 +152,12 @@ export function DraftPage() {
     useCallback((state: EnvironmentState) => draftDiscardable(state, draftId), [draftId]),
   )
   const discardable = !!useSidebarDrafts() && canDiscard && !pendingDraftSessionStart
+  const headerActions = useDiscardAction(draftId, discardable)
 
   const environmentLabel = sidebar?.environment?.label ?? null
+  const choice = useEnvironmentChoice(
+    draftId === null && model.text.length === 0 && model.images.length === 0,
+  )
   const loading = !!sidebar?.isWorkspacesLoading || !!isDraftLoading
   const empty =
     loading || workspaces.length > 0 ? (
@@ -123,6 +176,7 @@ export function DraftPage() {
               pendingDraftSessionStart ? 'Starting session…' : draftSendBlocked(session, workspace)
             }
             onPick={openPicker}
+            onPickEnvironment={choice.open}
           />
         }
       />
@@ -130,6 +184,7 @@ export function DraftPage() {
       <StartWithProject
         environmentLabel={environmentLabel}
         {...(projects.add && projects.browse ? { onAdd: openAdd } : {})}
+        onPickEnvironment={choice.open}
       />
     )
   // Once the first message shows, the page is a session's: the dock takes over.
@@ -142,6 +197,7 @@ export function DraftPage() {
         projects={projects}
         page={messages.length === 0 ? { input, trayHeight } : null}
       />
+      {choice.sheet}
     </>
   )
 
@@ -154,7 +210,7 @@ export function DraftPage() {
       messages={messages}
       phase="ready"
       empty={empty}
-      headerAction={discardable && draftId ? <DiscardButton draftId={draftId} /> : undefined}
+      headerActions={headerActions}
       composer={composer}
     />
   )

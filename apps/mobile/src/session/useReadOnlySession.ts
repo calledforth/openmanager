@@ -32,7 +32,7 @@ import { isEnvironmentClientError, type EnvironmentState } from '@openmanager/en
 
 import { usePhoneConnection } from '../environment/PhoneEnvironmentProvider'
 import type { HomeSession } from '../home/rows'
-import { useHomeSource } from '../home/source'
+import { usePageSessions, usePageWorkspaces } from '../home/source'
 
 /**
  * - `opening`: asked for, the transcript is on its way (or the socket is).
@@ -76,7 +76,9 @@ export function useReadOnlySession(
   const client = useEnvironmentClient()
   const thread = useActiveThreadState()
   const sidebar = useContext(SidebarDataContext)
-  const { sessions, workspaces } = useHomeSource()
+  // The page's own environment's: ids are only unique within one.
+  const sessions = usePageSessions()
+  const workspaces = usePageWorkspaces()
   const { activity } = usePhoneConnection()
   const connected = useEnvironmentState(selectConnected)
   const replays = useEnvironmentState(selectReplays)
