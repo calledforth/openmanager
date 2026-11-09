@@ -632,9 +632,4 @@ describe('the undo notice', () => {
     )
     expect(region().style.bottom).toBe(`${window.innerHeight - 700 + 4}px`)
   })
-
-  it('rests just above the sidebar’s foot when docked', async () => {
-    await show(true, <Anchor name="sidebar-foot" element={anchored(700)} />)
-    expect(region().style.bottom).toBe(`${window.innerHeight - 700 + 4}px`)
-  })
 })

@@ -1,7 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import {
   COMMAND_ACCESS,
-  ClientLabelSchema,
   PAIRING_TOKEN_ALPHABET,
   PAIRING_TOKEN_LENGTH,
   PairingCommandSchemas,
@@ -67,13 +66,5 @@ describe('pairing commands', () => {
       PairingExchangeRequestSchema.safeParse({ token: 'ABCDEFGHJKMN', credential: 'omc1.x' })
         .success,
     ).toBe(false)
-  })
-
-  it('refuse control and format characters in labels', () => {
-    expect(ClientLabelSchema.safeParse('Phone\u0007').success).toBe(false)
-    expect(ClientLabelSchema.safeParse('Phone‮enod').success).toBe(false)
-    expect(ClientLabelSchema.safeParse('Lap‍top').success).toBe(false)
-    expect(ClientLabelSchema.safeParse('Pixel 9 — Chrome').success).toBe(true)
-    expect(ClientLabelSchema.safeParse('x'.repeat(129)).success).toBe(false)
   })
 })

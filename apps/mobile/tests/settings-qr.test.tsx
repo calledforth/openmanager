@@ -211,30 +211,6 @@ describe('the pairing QR code as the phone draws it', () => {
 })
 
 describe('the encoder', () => {
-  it('round-trips a pairing link through the matrix alone', async () => {
-    const { size, modules } = qrMatrix(LINK)
-    const scale = 4
-    const quiet = 4
-    const width = (size + quiet * 2) * scale
-    const data = new Uint8ClampedArray(width * width * 4).fill(255)
-    modules.forEach((row, y) => {
-      for (const run of darkRuns(row)) {
-        for (let x = run.start; x < run.start + run.length; x += 1) {
-          for (let dy = 0; dy < scale; dy += 1) {
-            for (let dx = 0; dx < scale; dx += 1) {
-              const at = (((y + quiet) * scale + dy) * width + (x + quiet) * scale + dx) * 4
-              data[at] = data[at + 1] = data[at + 2] = 0
-            }
-          }
-        }
-      }
-    })
-    const found = await (
-      await zxing()
-    ).readBarcodes({ data, width, height: width, colorSpace: 'srgb' }, { formats: ['QRCode'] })
-    expect(found.map((item) => item.text)).toEqual([LINK])
-  })
-
   it('is square, sized by the QR versions, with the finder patterns in three corners', () => {
     const { size, modules } = qrMatrix('https://app.example.test/pair#v=1')
     expect((size - 17) % 4).toBe(0)

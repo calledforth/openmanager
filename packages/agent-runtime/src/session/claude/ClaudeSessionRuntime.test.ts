@@ -200,11 +200,12 @@ describe('ClaudeSessionRuntime turns', () => {
     sdk.last.emitResult({ parentToolUseId: 'toolu_child' })
     await vi.waitFor(() => expect(names(events)).toContain('agent_message_chunk'))
     expect(settled).toBe(false)
+    expect(names(events)).not.toContain('prompt_completed')
 
     sdk.last.emitResult()
     await turn
     expect(settled).toBe(true)
-    expect(names(events)).toContain('prompt_completed')
+    expect(names(events).filter((name) => name === 'prompt_completed')).toHaveLength(1)
     expect(
       events
         .filter((event) => event.event === 'agent_message_chunk')
@@ -249,21 +250,6 @@ describe('ClaudeSessionRuntime turns', () => {
     sdk.last.emitResult()
     await turn
     expect(names(events)).toContain('prompt_completed')
-  })
-
-  it('does not report the user turn finished when a subagent result lands', async () => {
-    const { runtime, events, sdk } = build()
-    await runtime.start()
-
-    const turn = runtime.prompt({ prompt: { text: 'hi', blocks: [] } })
-    await vi.waitFor(() => expect(sdk.last.prompts).toHaveLength(1))
-    sdk.last.emitResult({ parentToolUseId: 'toolu_child' })
-    await vi.waitFor(() => expect(sdk.last.prompts).toHaveLength(1))
-    expect(names(events)).not.toContain('prompt_completed')
-
-    sdk.last.emitResult()
-    await turn
-    expect(names(events).filter((name) => name === 'prompt_completed')).toHaveLength(1)
   })
 
   it('rejects the active turn when the output pump dies', async () => {

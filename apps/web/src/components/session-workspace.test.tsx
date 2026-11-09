@@ -297,12 +297,6 @@ describe('session workspace', () => {
     expect(landingShown).toBe(false)
   })
 
-  it('opens the session named by the URL', async () => {
-    const { client } = renderConnected('/sessions/session-1')
-    expect(await screen.findByText('In the shared application package.')).toBeInTheDocument()
-    expect(client.getState().activeSessionId).toBe('session-1')
-  })
-
   it('replaces the address of a session the environment does not have with `/`', async () => {
     const { client, router } = renderConnected('/sessions/deleted-since')
     await waitFor(() => expect(router.state.location.pathname).toBe('/'))

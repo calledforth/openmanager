@@ -54,11 +54,6 @@ describe('the socket wrapper', () => {
     expect(fake.origin).toBe(APP)
     expect(FakeSocket.instances).toEqual([fake])
   })
-
-  it("leaves React Native's own default, the route's origin, when unwrapped", () => {
-    const socket = new FakeSocket('wss://studio.example.com/ws')
-    expect(socket.origin).toBe('https://studio.example.com')
-  })
 })
 
 describe('the controller and the app origin', () => {

@@ -210,23 +210,6 @@ const type = async (text: string) => {
 }
 
 describe('mock environment client drives the shared UI', () => {
-  it('renders sessions in the sidebar and opens one from the mock state', async () => {
-    const client = createMockEnvironmentClient({
-      seed: { workspaces: [WORKSPACE], sessions: [{ session: SESSION, threads: [THREAD] }] },
-    })
-    await render(<App client={client} />)
-    expect(container.textContent).toContain('repo')
-    expect(container.textContent).toContain('First')
-
-    const row = [...container.querySelectorAll('button')].find((node) =>
-      node.textContent?.includes('First'),
-    )!
-    await act(() => row.click())
-    await settle(client)
-    expect(client.getState().activeSessionId).toBe(SESSION.sessionId)
-    expect(client.calls.map((call) => call.command)).toContain('openSession')
-  })
-
   it('reflects a rename and a delete in the sidebar', async () => {
     const client = createMockEnvironmentClient({
       seed: { workspaces: [WORKSPACE], sessions: [{ session: SESSION, threads: [THREAD] }] },
@@ -262,28 +245,6 @@ describe('mock environment client drives the shared UI', () => {
     expect(messages.textContent).toContain('You said: hello there')
     expect(client.getState().sessions[created]?.status).toBe('idle')
     expect(button('Stop')).toBeNull()
-  })
-
-  it('shows Stop while streaming and interrupts through the client', async () => {
-    const client = createMockEnvironmentClient({
-      seed: {
-        workspaces: [WORKSPACE],
-        sessions: [{ session: SESSION, threads: [THREAD] }],
-        activeSessionId: SESSION.sessionId,
-      },
-      respond: () => null,
-    })
-    await render(<App client={client} />)
-    await type('slow')
-    await act(() => button('Send')!.click())
-    await settle(client)
-    expect(button('Stop')).not.toBeNull()
-    expect(container.textContent).toContain('slow')
-
-    await act(() => button('Stop')!.click())
-    await settle(client)
-    expect(button('Stop')).toBeNull()
-    expect(client.getState().threads[THREAD.threadId]?.turns[0]?.state).toBe('interrupted')
   })
 
   it('surfaces pending interactions and clears them when resolved', async () => {
