@@ -24,6 +24,7 @@ import { PlatformCapabilitiesContext } from '@openmanager/app-core/providers/pla
 import { isEnvironmentReachable } from '@openmanager/app-core/providers/sidebar-rows'
 import { EnvironmentClientError } from '@openmanager/environment-client'
 import { SessionStateContext } from '@openmanager/app-core/providers/session-provider'
+import { useEnterWhileRunning, type FollowUpAction } from '@openmanager/app-core/logic'
 import { AddProjectStartSetting } from '../components/add-project-start-setting'
 import { DevicesSettingControl } from '../components/devices-settings'
 import {
@@ -64,6 +65,7 @@ const SETTINGS_TABS = [
   { id: 'environments', label: 'Environments' },
   { id: 'devices', label: 'Devices' },
   { id: 'appearance', label: 'Appearance' },
+  { id: 'chat', label: 'Chat' },
   { id: 'notifications', label: 'Notifications' },
   { id: 'providers', label: 'Providers' },
 ] as const
@@ -726,6 +728,29 @@ function AppearancePanel() {
   )
 }
 
+const ENTER_WHILE_RUNNING_CHOICES: ReadonlyArray<{ id: FollowUpAction; label: string }> = [
+  { id: 'queue', label: 'Queue' },
+  { id: 'steer', label: 'Steer' },
+]
+
+function ChatPanel() {
+  const [enterWhileRunning, setEnterWhileRunning] = useEnterWhileRunning()
+  return (
+    <SettingsSection
+      title="While a turn runs, Enter…"
+      description="Steer adds your message to the running turn. Agents that can’t steer queue it instead."
+    >
+      <ChoiceGroup
+        name="enter-while-running"
+        label="While a turn runs, Enter"
+        value={enterWhileRunning}
+        options={ENTER_WHILE_RUNNING_CHOICES}
+        onChange={setEnterWhileRunning}
+      />
+    </SettingsSection>
+  )
+}
+
 function NotificationsPanel() {
   return (
     <SettingsSection
@@ -752,6 +777,7 @@ const PANELS: Record<SettingsTab, () => ReactNode> = {
   environments: EnvironmentsPanel,
   devices: DevicesPanel,
   appearance: AppearancePanel,
+  chat: ChatPanel,
   notifications: NotificationsPanel,
   providers: () => (
     <EnvironmentSettings>

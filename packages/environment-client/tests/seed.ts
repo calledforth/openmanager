@@ -65,6 +65,7 @@ export function loadThread(
           turnId: message.turnId,
         })),
       listing: {},
+      queue: { items: [], pausedBy: null },
       interactions: (page.interactions ?? []).map((item) => ({
         turnId: item.turnId ?? fallback,
         interaction: item.interaction,

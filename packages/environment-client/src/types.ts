@@ -26,11 +26,14 @@ import type {
   ProviderBootstrap,
   ProviderLimits,
   ProviderCatalogEntry,
+  QueuedMessage,
   Session,
   SessionComposerState,
   SessionStatus,
   SessionTitleSource,
   Thread,
+  ThreadQueue,
+  ThreadQueuePause,
   TransientTurnNotice,
   Turn,
   UploadResult,
@@ -60,8 +63,11 @@ export type {
   EnvironmentSettingsPatch,
   FilesystemListing,
   ProviderCatalogEntry,
+  QueuedMessage,
   SessionComposerState,
   SessionStatus,
+  ThreadQueue,
+  ThreadQueuePause,
   WorkspaceComposerPreference,
 }
 
@@ -154,6 +160,13 @@ export interface ThreadState {
   interactions: PendingInteraction[]
   /** What the provider offers this chat. It arrives with the chat. */
   listing: ComposerListing
+  /**
+   * The messages the chat holds back while a turn runs, as the environment
+   * last stated them (`thread.queue.updated`, the thread snapshot). Server
+   * state: replaced whole, never edited here. Read it through
+   * `selectThreadQueue`, which also covers a copy cached before it existed.
+   */
+  queue: ThreadQueue
   /**
    * Where this copy stands in the thread's stream: it holds every record up
    * to this cursor and no others. Written in the same store update as what
@@ -455,6 +468,36 @@ export interface InterruptTurnInput extends ThreadTarget {
   turnId: string
 }
 
+/**
+ * A message for later. Never echoed in the transcript: it shows as the chat's
+ * queue says, and becomes a turn (carrying `commandId`) when its turn comes.
+ */
+export interface QueueMessageInput extends ThreadTarget {
+  text: string
+  /** Artifacts already uploaded to this session that the message attaches. */
+  artifactIds?: string[]
+  /**
+   * The queued message's id (`queueItemId`), stable across retries: a retry
+   * finds the message, or the turn it became. Generated when omitted.
+   */
+  commandId?: string
+}
+
+/** A message for the running turn `turnId`, joining it at the agent's next step. */
+export interface SteerTurnInput extends QueueMessageInput {
+  turnId: string
+}
+
+export interface RemoveQueuedMessageInput extends ThreadTarget {
+  queueItemId: string
+}
+
+/** How a steer was taken: waiting for the agent's next step, or queued instead. */
+export interface SteerTurnResult {
+  queueItemId: string
+  outcome: 'steering' | 'queued'
+}
+
 export interface RespondToInteractionInput extends ThreadTarget {
   response: InteractionResponse
   /** Accept and implement a plan using its provider's continuation rule. */
@@ -555,6 +598,23 @@ export interface EnvironmentCommands {
   deleteSession(sessionId: string): Promise<void>
   sendTurn(input: SendTurnInput): Promise<{ turn: Turn; userMessage: Message }>
   interruptTurn(input: InterruptTurnInput): Promise<void>
+  /**
+   * Hold a message until the running turn ends; it then runs as the next turn
+   * with the composer selection it was sent with. To a chat with nothing
+   * running and nothing waiting, it starts the turn at once. Nothing is echoed:
+   * the chat's `queue` shows it once the environment has it.
+   */
+  queueMessage(input: QueueMessageInput): Promise<{ queueItemId: string }>
+  /** Take a queued message out before it runs. One already with the provider is a `conflict`. */
+  removeQueuedMessage(input: RemoveQueuedMessageInput): Promise<void>
+  /** Let a paused queue drain again: at once when nothing is running. */
+  resumeQueue(input: ThreadTarget): Promise<void>
+  /**
+   * Add a message to the running turn. It waits in the queue as `steering`
+   * until the provider takes it, and is queued instead when the turn has
+   * ended or its provider cannot steer; the answer says which.
+   */
+  steerTurn(input: SteerTurnInput): Promise<SteerTurnResult>
   respondToInteraction(input: RespondToInteractionInput): Promise<void>
   getProviderCatalog(): Promise<ProviderCatalogEntry[]>
   /** Re-checks one provider now; resolves with its entry once the probe settles. */

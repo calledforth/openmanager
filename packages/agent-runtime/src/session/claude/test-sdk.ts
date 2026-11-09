@@ -365,10 +365,39 @@ export class FakeClaudeQuery implements ClaudeQuerySession {
     }
   }
 
+  /** Async messages the CLI still holds, by uuid: a test marks one dequeued
+   * (`started`) by emitting its lifecycle frame, which takes it out of here. */
+  readonly heldCommands = new Set<string>()
+  /** Every `cancelAsyncMessage` uuid, in order. */
+  readonly cancelledCommands: string[] = []
+  /** What the next `interrupt()` reports as surviving it. */
+  stillQueued: string[] | undefined
+
+  /** `cancel_async_message`, as the CLI answers it: dropped (and a
+   * `cancelled` lifecycle frame) when still held, false once dequeued. */
+  async cancelAsyncMessage(uuid: string): Promise<boolean> {
+    this.cancelledCommands.push(uuid)
+    if (!this.heldCommands.delete(uuid)) return false
+    this.emitLifecycle(uuid, 'cancelled')
+    return true
+  }
+
+  /** One `command_lifecycle` frame (`msg_lifecycle_v1`). */
+  emitLifecycle(uuid: string, state: 'queued' | 'started' | 'completed' | 'cancelled'): void {
+    if (state !== 'queued') this.heldCommands.delete(uuid)
+    this.emit({
+      type: 'command_lifecycle',
+      command_uuid: uuid,
+      state,
+      uuid: crypto.randomUUID(),
+      session_id: this.sessionId,
+    } as unknown as SDKMessage)
+  }
+
   async interrupt(): Promise<unknown> {
     this.interrupts += 1
     if (this.interruptError) throw this.interruptError
-    return undefined
+    return this.stillQueued ? { still_queued: this.stillQueued } : undefined
   }
   async setModel(model?: string): Promise<void> {
     this.models.push(model)

@@ -42,6 +42,7 @@ class ThreadBuilder {
       outbox: [],
       hydration: 'ready',
       listing: {},
+      queue: { items: [], pausedBy: null },
     }
   }
 

@@ -520,7 +520,11 @@ export class AgentRuntime {
     const id = crypto.randomUUID()
     // A turn the provider began by itself needs a message to file its output
     // under exactly as a prompted one does.
-    if (event.event === 'prompt_started' || event.event === 'background_turn_started') {
+    if (
+      event.event === 'prompt_started' ||
+      event.event === 'background_turn_started' ||
+      event.event === 'steer_turn_started'
+    ) {
       this.activeMessageIds.set(event.threadId, `agent_asst_${id}`)
     }
     const messageId = this.activeMessageIds.get(event.threadId)
@@ -1049,6 +1053,28 @@ export class AgentRuntime {
   }
   cancelPrompt(args: RuntimeRoute & { sessionId: string }): Promise<void> {
     return this.cancel(args)
+  }
+
+  /** Add a message to the turn in flight on a thread (`canSteer`).
+   *
+   * Bypasses the prompt queue on purpose: that queue holds prompts back until
+   * the turn ahead of them ends, and a steer exists to reach the turn that is
+   * running. Like `cancel`, it never respawns: a thread with no live process
+   * has no turn to steer. Resolves once the provider holds the message; the
+   * runtime's `steer_*` events say what became of it. */
+  async steer(
+    args: RuntimeRoute & { sessionId: string; prompt: PromptInput; steerId: string },
+  ): Promise<void> {
+    // Refused quietly, not through `require`: its `capability_missing` event
+    // ends the turn in flight, and a steer that cannot be made must leave
+    // that turn running (the host queues the message instead).
+    if (!this.configs[args.providerId].capabilities.canSteer)
+      throw new CapabilityMissingError(args.providerId, 'canSteer', 'steer a turn')
+    const entry = this.registry.get(args.threadId)
+    const steer = entry?.runtime.steer?.bind(entry.runtime)
+    if (!entry || !isRuntimeAlive(entry.runtime.phase) || !steer)
+      throw new Error(`No turn to steer on thread ${args.threadId}`)
+    await steer({ prompt: args.prompt, steerId: args.steerId })
   }
 
   /** Stop background tasks on a thread: the ones named, or every live one.

@@ -67,6 +67,7 @@ describe('durable notices', () => {
         })),
         interactions: [],
         listing: {},
+        queue: { items: [], pausedBy: null },
       },
     } as ScopeSnapshot)
     expect(thread(state).notices.map((notice) => notice.noticeId)).toEqual(['notice-1', 'notice-2'])

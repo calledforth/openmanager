@@ -17,6 +17,8 @@ export const ProviderCapabilitiesSchema = z.strictObject({
   canLoadSession: z.boolean(),
   canListSessions: z.boolean(),
   canCancelPrompt: z.boolean(),
+  /** A message sent mid-turn can join the running turn (`turn.steer`). */
+  canSteer: z.boolean(),
   supportsPlans: z.boolean(),
   supportsAvailableCommands: z.boolean(),
   supportsUsage: z.boolean(),

@@ -31,6 +31,7 @@ import {
   WorkspaceComposerPreferenceSchema,
 } from './composer.js'
 import { ComposerListingsSnapshotSchema } from './composer-listings.js'
+import { ThreadQueueSchema } from './queue.js'
 import { ProofEventSchema, ProofEventSchemas, type ProofEvent } from './events.js'
 
 export const SequenceSchema = z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER)
@@ -200,6 +201,8 @@ const ThreadSnapshotSchema = z
       interactions: z.array(z.object({ turnId: EntityIdSchema, interaction: InteractionSchema })),
       /** What the provider offers this chat. */
       listing: ComposerListingSchema,
+      /** The messages the chat holds back, as `thread.queue.updated` last stated them. */
+      queue: ThreadQueueSchema,
     }),
   })
   .superRefine((snapshot, ctx) => {

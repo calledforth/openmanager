@@ -80,6 +80,8 @@ export const opencode: AcpProviderConfig = {
     canLoadSession: true,
     canListSessions: false,
     canCancelPrompt: true,
+    // ACP has no way to add to a running prompt; a message sent mid-turn queues.
+    canSteer: false,
     supportsPlans: false,
     supportsAvailableCommands: true,
     supportsUsage: true,

@@ -129,6 +129,7 @@ export function createEventProjector(
     ),
     // Field by field: the event names what changed. A list is replaced whole,
     // an empty one included, and a field it does not name stays as held.
+    updateThreadQueue: database.prepare('UPDATE threads SET queue_json = ? WHERE thread_id = ?'),
     updateThreadListing: database.prepare(
       `UPDATE threads SET listing_json = json_patch(COALESCE(listing_json, '{}'), ?)
        WHERE thread_id = ?`,
@@ -697,6 +698,16 @@ export function createEventProjector(
         ) {
           throw new ProjectionRefusal(
             `Cannot record a listing for missing thread ${event.scope.threadId}`,
+          )
+        }
+        return
+      case 'thread.queue.updated':
+        // The whole queue, so the row is replaced, never merged.
+        if (
+          s.updateThreadQueue.run(JSON.stringify(event.payload), event.scope.threadId).changes !== 1
+        ) {
+          throw new ProjectionRefusal(
+            `Cannot record a queue for missing thread ${event.scope.threadId}`,
           )
         }
         return

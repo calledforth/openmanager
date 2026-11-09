@@ -257,6 +257,7 @@ function threadState(thread: typeof THREAD, history: typeof EMPTY_HISTORY) {
       turnId: message.turnId,
     })),
     listing: {},
+    queue: { items: [], pausedBy: null },
     interactions: history.interactions.map((item) => ({
       turnId: item.turnId ?? open?.turnId ?? turns.at(-1)?.turnId ?? '',
       interaction: item.interaction,
@@ -869,6 +870,53 @@ describe('websocket environment client', () => {
     })
     socket.respond('session.background.stop', null)
     await all
+    client.disconnect()
+  })
+
+  it('queues and steers by command id, without echoing anything', async () => {
+    const { client, socket } = await connected([
+      ...FULL_CAPABILITIES,
+      'queue.add',
+      'queue.remove',
+      'queue.resume',
+      'turn.steer',
+    ])
+    expect(client.supports('queueMessage')).toBe(true)
+    expect(client.supports('steerTurn')).toBe(true)
+
+    const queued = client.commands.queueMessage({ ...THREAD, text: 'later', artifactIds: [] })
+    const sent = socket.last('queue.add').payload as { commandId: string }
+    expect(sent).toEqual({ ...THREAD, text: 'later', commandId: expect.any(String) })
+    // The queue shows it, once the environment has it; the transcript has no row.
+    expect(client.getState().threads[THREAD.threadId]?.outbox ?? []).toEqual([])
+    socket.respond('queue.add', { queueItemId: sent.commandId })
+    await expect(queued).resolves.toEqual({ queueItemId: sent.commandId })
+
+    const steered = client.commands.steerTurn({
+      ...THREAD,
+      turnId: 'turn-1',
+      text: 'also',
+      commandId: 's1',
+      artifactIds: ['a1'],
+    })
+    expect(socket.last('turn.steer').payload).toEqual({
+      ...THREAD,
+      turnId: 'turn-1',
+      text: 'also',
+      commandId: 's1',
+      artifactIds: ['a1'],
+    })
+    socket.respond('turn.steer', { queueItemId: 's1', outcome: 'queued' })
+    await expect(steered).resolves.toEqual({ queueItemId: 's1', outcome: 'queued' })
+
+    const removed = client.commands.removeQueuedMessage({ ...THREAD, queueItemId: 's1' })
+    expect(socket.last('queue.remove').payload).toEqual({ ...THREAD, queueItemId: 's1' })
+    socket.respond('queue.remove', null)
+    await removed
+    const resumed = client.commands.resumeQueue(THREAD)
+    expect(socket.last('queue.resume').payload).toEqual(THREAD)
+    socket.respond('queue.resume', null)
+    await resumed
     client.disconnect()
   })
 
@@ -2445,6 +2493,7 @@ describe('cursor replay on reconnect', () => {
           order: [],
           interactions: [],
           listing: {},
+          queue: { items: [], pausedBy: null },
         },
       },
     })
@@ -2564,6 +2613,7 @@ describe('cursor replay on reconnect', () => {
           order: [],
           interactions: [],
           listing: {},
+          queue: { items: [], pausedBy: null },
         },
       },
     })
@@ -2688,6 +2738,7 @@ describe('cursor replay on reconnect', () => {
           order: [],
           interactions: [],
           listing: {},
+          queue: { items: [], pausedBy: null },
         },
       },
     })
@@ -2773,6 +2824,7 @@ describe('cursor replay on reconnect', () => {
           order: [],
           interactions: [],
           listing: {},
+          queue: { items: [], pausedBy: null },
         },
       },
     })
@@ -2885,6 +2937,7 @@ describe('one ordered queue on the client (§5.2)', () => {
         order: [],
         interactions: [],
         listing: {},
+        queue: { items: [], pausedBy: null },
       },
     },
   })

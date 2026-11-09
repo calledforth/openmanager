@@ -31,6 +31,12 @@ import {
   type TurnStart,
   type WorkspaceComposerPreference,
   type Cursor,
+  EMPTY_THREAD_QUEUE,
+  THREAD_QUEUE_MAX,
+  type QueuedMessage,
+  type QueuedMessageSettings,
+  type ThreadQueue,
+  type ThreadQueuePause,
 } from '@openmanager/protocol/node'
 import {
   projectAgentEvent,
@@ -52,6 +58,7 @@ import {
   hasInteraction,
   listAllSessionSummaries,
   listThreadsForSession,
+  readThreadQueue,
   readThreadState,
   type ThreadState,
 } from './db/session-store.ts'
@@ -238,6 +245,7 @@ type InteractionRuntime = Pick<AgentRuntime, 'ensureSession' | 'prompt' | 'cance
       | 'respondPlan'
       | 'stopBackgroundTasks'
       | 'closeThread'
+      | 'steer'
     >
   >
 type ThreadRecord = {
@@ -254,6 +262,18 @@ type ThreadRecord = {
   commandTurns: Map<string, TurnStart>
   /** Every interaction this thread raised, by host id, pending or settled. */
   interactions: Map<string, InteractionEntry>
+  /**
+   * The messages the chat holds back, as the last committed
+   * `thread.queue.updated` said: memory follows the log, never a write that
+   * failed. See `writeQueue`.
+   */
+  queue: ThreadQueue
+  /**
+   * Steered messages the provider gave back that still wait at the front of
+   * the queue, so the next one given back lines up behind them. See
+   * `givenBackFirst`.
+   */
+  givenBackSteers?: Set<string>
   status: SessionStatus
   updatedAt: number
   /** In-memory mode only; with SQLite the row is the single source. */
@@ -294,6 +314,27 @@ type SessionOpenPosition = { environment: Cursor; session: Cursor }
 
 type Loaded =
   { refused: LoadRefusal } | { session: SessionSummary; threads: Thread[]; at: SessionOpenPosition }
+
+/**
+ * A queue with the steered messages `returning` picks given back as `queued`.
+ * They were meant for the running turn, so they move ahead of every message
+ * that was only queued, keeping their order. `ahead` names steers given back
+ * earlier that already wait at the front.
+ */
+function givenBackFirst(
+  items: readonly QueuedMessage[],
+  ahead: ReadonlySet<string>,
+  returning: (item: QueuedMessage) => boolean,
+): QueuedMessage[] {
+  const front: QueuedMessage[] = []
+  const rest: QueuedMessage[] = []
+  for (const item of items) {
+    if (returning(item)) front.push({ ...item, delivery: 'queued' })
+    else if (ahead.has(item.queueItemId)) front.push(item)
+    else rest.push(item)
+  }
+  return [...front, ...rest]
+}
 
 const errorResult = (requestId: string, code: ErrorCode, message: string, details?: unknown) => ({
   type: 'error' as const,
@@ -452,6 +493,18 @@ export function createThreadService(
     titles?: TitleGenerator
     /** A title pass that failed or was overtaken; nothing the user waits on. */
     onTitleFailure?: (sessionId: string, error: unknown) => void
+    /**
+     * The composer selection a message sent now would run with: the
+     * session's own, with the workspace preference for what it has not
+     * chosen. A queued message keeps it, so it runs on what the user saw.
+     */
+    queuedSettings?: (args: {
+      providerId: ProviderId
+      workspaceId: string
+      threadId: string
+    }) => QueuedMessageSettings
+    /** Something the queue could not do that nobody is waiting on an answer for. */
+    onQueueProblem?: (message: string, data: Record<string, unknown>) => void
   } = {},
 ) {
   const sessions = new Map<string, ThreadRecord>()
@@ -621,6 +674,14 @@ export function createThreadService(
       // Deferred until the caller has marked the turn completed, which it
       // does right after announcing it.
       if (record && event.name === 'turn.completed') queueMicrotask(() => refineTitle(record))
+      // The queue follows the turn's end, deferred for the same reason: the
+      // next turn may only start once this one is off the record.
+      if (record && committed) {
+        const ended = event.name
+        const restarted =
+          event.name === 'turn.interrupted' && event.payload.reason === 'server_restarted'
+        queueMicrotask(() => settleQueue(record, ended, restarted))
+      }
       // The requests the turn left open were closed by `interaction.cancelled`
       // events committed with its end (db/turn-closure.ts). Memory follows
       // those committed rows, never a write that failed (I11). Without a
@@ -896,6 +957,11 @@ export function createThreadService(
         messages: [],
         commandTurns: new Map(),
         interactions: new Map(),
+        // Restored as the rows hold it. A restart has already paused it
+        // (`pauseQueuesAfterRestart`), so nothing drains on its own.
+        queue: options.database
+          ? readThreadQueue(options.database, thread.threadId)
+          : EMPTY_THREAD_QUEUE,
         titleSource: session.titleSource,
         status: session.status,
         updatedAt: Date.parse(session.updatedAt),
@@ -1871,6 +1937,7 @@ export function createThreadService(
       messages: [],
       commandTurns: new Map(),
       interactions: new Map(),
+      queue: EMPTY_THREAD_QUEUE,
       status: 'idle',
       updatedAt: Date.now(),
     }
@@ -1957,35 +2024,85 @@ export function createThreadService(
     }
     const providerRejection = rejectProvider(command.requestId, record.providerId)
     if (providerRejection) return providerRejection
-    if (record.activeTurn || record.cancellation || record.pendingBuild) {
-      return errorResult(command.requestId, 'conflict', 'A turn is already in progress.')
+    return startTurn(record, command.requestId, input, commandId, { modeId })
+  }
+
+  /** Whether something holds the thread: a turn, a stop or a plan build under way. */
+  const threadBusy = (record: ThreadRecord) =>
+    !!(record.activeTurn || record.cancellation || record.pendingBuild)
+
+  /**
+   * The images a message names, as the turn shows them and as the provider
+   * reads them. Each must be an artifact of this session in its workspace.
+   */
+  const readAttachments = (
+    record: ThreadRecord,
+    requestId: string,
+    artifactIds: readonly string[] | undefined,
+    withBytes: boolean,
+  ):
+    | {
+        content: Message['content']
+        images: { type: 'image'; mimeType: string; data: string }[]
+      }
+    | ReturnType<typeof errorResult> => {
+    const content: Message['content'] = []
+    const images: { type: 'image'; mimeType: string; data: string }[] = []
+    try {
+      for (const artifactId of new Set(artifactIds ?? [])) {
+        const metadata = options.artifacts?.get(record.session.sessionId, artifactId)
+        if (!metadata || metadata.workspaceId !== record.session.workspaceId) {
+          return errorResult(requestId, 'not_found', 'Artifact not found in this session.')
+        }
+        content.push(options.artifacts!.reference(metadata))
+        if (withBytes) {
+          images.push({
+            type: 'image',
+            mimeType: metadata.mimeType,
+            data: options.artifacts!.read(metadata).toString('base64'),
+          })
+        }
+      }
+    } catch {
+      return errorResult(requestId, 'unavailable', 'An attachment could not be read.')
+    }
+    return { content, images }
+  }
+
+  /**
+   * Start a turn on a thread nothing holds: record it, then hand the prompt
+   * to the provider. `queueAfter` is what the chat's queue becomes when the
+   * turn is a queued message's: the two are written in one transaction, so
+   * the message is either still waiting or running, never both or neither.
+   */
+  const startTurn = (
+    record: ThreadRecord,
+    requestId: string,
+    input: { sessionId: string; threadId: string; text: string; artifactIds?: string[] },
+    commandId: string,
+    opts: { modeId?: string; settings?: QueuedMessageSettings; queueAfter?: ThreadQueue } = {},
+  ) => {
+    const { modeId } = opts
+    if (threadBusy(record)) {
+      return errorResult(requestId, 'conflict', 'A turn is already in progress.')
+    }
+    // The provider may start a steered message it still holds as its next
+    // turn; a prompt started now could be credited with it.
+    if (record.queue.items.some((item) => item.delivery === 'steering')) {
+      return errorResult(requestId, 'conflict', 'A message is still with the agent.')
     }
     // The rows may hold a turn no process runs: one whose recovery failed at
     // boot. A second turn beside it would leave the thread with two open.
     if (options.database) {
       options.flush?.()
       if (findOpenTurnId(options.database, input)) {
-        return errorResult(command.requestId, 'conflict', 'A turn is already in progress.')
+        return errorResult(requestId, 'conflict', 'A turn is already in progress.')
       }
     }
-    let promptImages: { type: 'image'; mimeType: string; data: string }[] = []
-    const artifactContent: Message['content'] = []
-    try {
-      for (const artifactId of new Set(input.artifactIds ?? [])) {
-        const metadata = options.artifacts?.get(input.sessionId, artifactId)
-        if (!metadata || metadata.workspaceId !== workspaceId) {
-          return errorResult(command.requestId, 'not_found', 'Artifact not found in this session.')
-        }
-        artifactContent.push(options.artifacts!.reference(metadata))
-        promptImages.push({
-          type: 'image',
-          mimeType: metadata.mimeType,
-          data: options.artifacts!.read(metadata).toString('base64'),
-        })
-      }
-    } catch {
-      return errorResult(command.requestId, 'unavailable', 'An attachment could not be read.')
-    }
+    const attachments = readAttachments(record, requestId, input.artifactIds, true)
+    if ('type' in attachments) return attachments
+    const artifactContent = attachments.content
+    let promptImages = attachments.images
     const startedAt = new Date().toISOString()
     const turn: Turn = {
       turnId: randomUUID(),
@@ -2006,28 +2123,33 @@ export function createThreadService(
       ],
     }
     const started: TurnStart = { turn, userMessage, commandId }
+    // Without a database the provider's `prompt_started` announces the turn;
+    // the queue still says the message left it.
+    const events: ProofEvent[] = []
     if (options.database) {
-      try {
-        const event = ProofEventSchemas['turn.started'].parse({
+      events.push(
+        ProofEventSchemas['turn.started'].parse({
           type: 'event',
           name: 'turn.started',
           eventId: randomUUID(),
           timestamp: startedAt,
           scope: threadScope(record),
           payload: started,
-        })
+        }),
+      )
+    }
+    if (opts.queueAfter) events.push(queueEvent(record, opts.queueAfter))
+    if (events.length > 0) {
+      try {
         // A failed host command must not leave a start in the streaming
         // buffer that a later retry could flush as an orphaned turn.
-        if (options.appendAtomic) options.appendAtomic([event])
-        else appendEvent(event)
+        if (options.appendAtomic) options.appendAtomic(events)
+        else for (const item of events) appendEvent(item)
       } catch (error) {
         options.onPersistenceError?.(error, 'turn.started')
-        return errorResult(
-          command.requestId,
-          'unavailable',
-          'The message could not be saved. Try again.',
-        )
+        return errorResult(requestId, 'unavailable', 'The message could not be saved. Try again.')
       }
+      if (opts.queueAfter) record.queue = opts.queueAfter
     }
     record.turns.push(turn)
     record.messages.push(userMessage)
@@ -2066,9 +2188,14 @@ export function createThreadService(
         }
         if (record.activeTurn !== active || active.interruptRequested) return
         active.promptStarted = true
+        const desiredConfig = {
+          ...(opts.settings?.modelId ? { modelId: opts.settings.modelId } : {}),
+          ...(opts.settings?.configValues ? { values: opts.settings.configValues } : {}),
+          ...(modeId ? { modeId } : {}),
+        }
         return runtime.prompt({
           ...route(record, sessionId),
-          ...(modeId ? { desiredConfig: { modeId } } : {}),
+          ...(Object.keys(desiredConfig).length > 0 ? { desiredConfig } : {}),
           prompt: {
             text: input.text,
             blocks: [
@@ -2102,7 +2229,385 @@ export function createThreadService(
           touch(record, active.interruptRequested ? resting(record) : 'error')
         }
       })
-    return turnSendResult(command.requestId, started)
+    return turnSendResult(requestId, started)
+  }
+
+  // ---------------------------------------------------------------- queue
+
+  const queueEvent = (record: ThreadRecord, queue: ThreadQueue) =>
+    ProofEventSchemas['thread.queue.updated'].parse({
+      type: 'event',
+      name: 'thread.queue.updated',
+      eventId: randomUUID(),
+      timestamp: new Date().toISOString(),
+      scope: threadScope(record),
+      payload: queue,
+    })
+
+  /**
+   * Commit a new queue, with any events it belongs with, in one write. Memory
+   * follows only a committed write, so what the queue says in memory is what
+   * every client was told. Answers whether it committed.
+   */
+  const writeQueue = (
+    record: ThreadRecord,
+    queue: ThreadQueue,
+    alongside: readonly ProofEvent[] = [],
+  ): boolean => {
+    const events = [...alongside, queueEvent(record, queue)]
+    try {
+      if (options.appendAtomic) options.appendAtomic(events)
+      else for (const event of events) appendEvent(event)
+    } catch (error) {
+      options.onPersistenceError?.(error, 'thread.queue.updated')
+      return false
+    }
+    record.queue = queue
+    return true
+  }
+
+  const withoutItem = (queue: ThreadQueue, queueItemId: string): ThreadQueue => ({
+    items: queue.items.filter((item) => item.queueItemId !== queueItemId),
+    pausedBy: queue.pausedBy,
+  })
+
+  /** Whether a message id was already queued here or already ran as a turn. */
+  const knownQueueItem = (record: ThreadRecord, commandId: string) =>
+    record.queue.items.some((item) => item.queueItemId === commandId) ||
+    record.commandTurns.has(commandId) ||
+    // A delivered steer is a user message carrying the message's id.
+    record.messages.some((message) => message.messageId === commandId) ||
+    findPersistedTurn(record.session.sessionId, record.thread.threadId, commandId) !== undefined ||
+    (options.database !== undefined &&
+      options.database.prepare('SELECT 1 FROM messages WHERE message_id = ?').get(commandId) !==
+        undefined)
+
+  /**
+   * Run the next queued message, when nothing holds the thread and nothing
+   * holds the queue back: not a pause, and not a message the provider still
+   * has (its fate decides what runs next). The message leaves the queue in
+   * the same write that starts its turn. One that cannot start stays first in
+   * line and pauses the queue, so the next one does not jump it.
+   */
+  const drain = (record: ThreadRecord) => {
+    if (threads.get(record.thread.threadId) !== record) return
+    const queue = record.queue
+    if (queue.pausedBy || threadBusy(record)) return
+    if (queue.items.some((item) => item.delivery === 'steering')) return
+    const next = queue.items[0]
+    if (!next) return
+    const result = startTurn(
+      record,
+      'queue-drain',
+      {
+        sessionId: record.session.sessionId,
+        threadId: record.thread.threadId,
+        text: next.text,
+        ...(next.artifactIds ? { artifactIds: next.artifactIds } : {}),
+      },
+      next.queueItemId,
+      { settings: next.settings, queueAfter: withoutItem(queue, next.queueItemId) },
+    )
+    if (result.type !== 'error') return
+    options.onQueueProblem?.('a queued message could not start', {
+      sessionId: record.session.sessionId,
+      queueItemId: next.queueItemId,
+      reason: result.error.message,
+    })
+    // `threadBusy` was checked above, so a conflict here is a turn the rows
+    // hold open with nothing running it: waiting would wait forever.
+    writeQueue(record, { items: record.queue.items, pausedBy: 'failure' })
+  }
+
+  /**
+   * What a turn's end does to the queue. A completed or stopped turn lets the
+   * next message run: Stop ends this turn, not the plan the user queued
+   * behind it. A failed or restart-cut turn pauses a queue that has anything
+   * in it. A message the provider holds for steering stays `steering`: only
+   * the provider can say it gave it back (`steer_withdrawn`, which its exit
+   * also sends), and guessing would let a resume send it a second time; once
+   * given back it runs first.
+   */
+  const settleQueue = (
+    record: ThreadRecord,
+    ended: 'turn.completed' | 'turn.interrupted' | 'turn.failed',
+    restarted: boolean,
+  ) => {
+    if (threads.get(record.thread.threadId) !== record) return
+    // A turn already followed it: a steered message's own, which takes the
+    // queue from here.
+    if (record.activeTurn) return
+    const queue = record.queue
+    if (queue.items.length === 0) return
+    if (ended === 'turn.completed' || (ended === 'turn.interrupted' && !restarted)) {
+      drain(record)
+      return
+    }
+    const pausedBy: ThreadQueuePause = restarted ? 'restart' : 'failure'
+    if (queue.pausedBy === pausedBy) return
+    writeQueue(record, { items: queue.items, pausedBy })
+  }
+
+  /** The prompt the provider reads for a message: its text and its images. */
+  const promptOf = (text: string, images: { type: 'image'; mimeType: string; data: string }[]) => ({
+    text,
+    blocks: [...(text ? [{ type: 'text' as const, text }] : []), ...images],
+  })
+
+  /**
+   * Hand a `steering` message to the provider. Anything that stops it
+   * reaching the turn puts it back in line as `queued`, and a thread with
+   * nothing running lets it run as the next turn.
+   */
+  const steerToProvider = (
+    record: ThreadRecord,
+    item: QueuedMessage,
+    images: { type: 'image'; mimeType: string; data: string }[],
+  ) => {
+    const steer = runtime.steer
+    const giveBack = (reason: unknown) => {
+      options.onQueueProblem?.('a steered message went back to the queue', {
+        sessionId: record.session.sessionId,
+        queueItemId: item.queueItemId,
+        reason: reason instanceof Error ? reason.message : String(reason),
+      })
+      returnSteer(record, item.queueItemId)
+    }
+    if (!steer) {
+      giveBack('this environment cannot steer')
+      return
+    }
+    void record.runtimeSession
+      .then((sessionId) =>
+        steer.call(runtime, {
+          ...route(record, sessionId),
+          sessionId,
+          prompt: promptOf(item.text, images),
+          steerId: item.queueItemId,
+        }),
+      )
+      .catch(giveBack)
+  }
+
+  /**
+   * A steered message is back in line: the provider never took it. It was
+   * meant for the running turn, so it runs before anything that was only
+   * queued, behind the steers given back before it.
+   */
+  const returnSteer = (record: ThreadRecord, queueItemId: string) => {
+    if (threads.get(record.thread.threadId) !== record) return
+    const item = record.queue.items.find((entry) => entry.queueItemId === queueItemId)
+    if (!item || item.delivery !== 'steering') return
+    const ahead = new Set(
+      [...(record.givenBackSteers ?? [])].filter((id) =>
+        record.queue.items.some((entry) => entry.queueItemId === id),
+      ),
+    )
+    const committed = writeQueue(record, {
+      items: givenBackFirst(record.queue.items, ahead, (entry) => entry === item),
+      pausedBy: record.queue.pausedBy,
+    })
+    if (!committed) return
+    record.givenBackSteers = ahead.add(queueItemId)
+    // The turn it was for may have ended while the provider still held it.
+    queueMicrotask(() => drain(record))
+  }
+
+  /** The user message a queued one becomes, inside `turnId`. */
+  const messageOf = (record: ThreadRecord, item: QueuedMessage, turnId: string): Message => {
+    const read = readAttachments(record, 'steer', item.artifactIds, false)
+    // The agent read the message either way; images whose files went
+    // missing since leave the words on the record rather than nothing.
+    const attachments = 'type' in read ? { content: [] } : read
+    return {
+      // The message's own id, so a retried send of it finds it here.
+      messageId: item.queueItemId,
+      threadId: record.thread.threadId,
+      turnId,
+      role: 'user',
+      content: [
+        ...(item.text ? [{ type: 'text' as const, text: item.text }] : []),
+        ...attachments.content,
+      ],
+    }
+  }
+
+  /**
+   * The provider took a steered message into the running turn. It becomes a
+   * user message of that turn, placed where the agent read it, and leaves the
+   * queue in the same write.
+   */
+  const deliverSteer = (record: ThreadRecord, steerId: string, timestamp: string) => {
+    const item = record.queue.items.find((entry) => entry.queueItemId === steerId)
+    if (!item) return
+    const active = record.activeTurn
+    const message = active ? messageOf(record, item, active.turn.turnId) : undefined
+    if (!active || !message) {
+      // The agent has it, but there is no running turn to show it in (the
+      // turn was ended here first). Running it again would send it twice.
+      options.onQueueProblem?.('a steered message arrived after its turn ended', {
+        sessionId: record.session.sessionId,
+        queueItemId: steerId,
+      })
+      writeQueue(record, withoutItem(record.queue, steerId))
+      return
+    }
+    const deltas = message.content.map((content) =>
+      ProofEventSchemas['message.delta'].parse({
+        type: 'event',
+        name: 'message.delta',
+        eventId: randomUUID(),
+        timestamp,
+        scope: threadScope(record),
+        payload: {
+          messageId: message.messageId,
+          turnId: active.turn.turnId,
+          role: 'user',
+          content,
+        },
+      }),
+    )
+    if (!writeQueue(record, withoutItem(record.queue, steerId), deltas)) return
+    record.messages.push(message)
+    // What the agent says next answers the steered message: a new run.
+    active.textRunId = undefined
+    active.reasoningRunId = undefined
+  }
+
+  /**
+   * The turn a steered message was sent into ended before the provider took
+   * it, and the provider began a turn of its own for it. That turn is the
+   * message's, as if it had waited in the queue: it is recorded with the
+   * message as its prompt, and the message leaves the queue in the same write.
+   */
+  const startSteeredTurn = (record: ThreadRecord, event: RuntimeEvent, steerId: string) => {
+    const item = record.queue.items.find((entry) => entry.queueItemId === steerId)
+    if (record.activeTurn) {
+      // Only reachable if the provider folded it after all; file it there.
+      deliverSteer(record, steerId, event.timestamp)
+      return
+    }
+    const turn: Turn = {
+      turnId: randomUUID(),
+      threadId: record.thread.threadId,
+      state: 'running',
+      startedAt: event.timestamp,
+      ...(item ? { commandId: item.queueItemId } : {}),
+    }
+    const userMessage = item
+      ? { ...messageOf(record, item, turn.turnId), messageId: randomUUID() }
+      : undefined
+    if (!item || !userMessage) {
+      // A message this queue no longer has: the turn is still the provider's
+      // to run, and its output needs somewhere to go.
+      startBackgroundTurn(record, event)
+      return
+    }
+    const started: TurnStart = { turn, userMessage, commandId: item.queueItemId }
+    const startEvent = ProofEventSchemas['turn.started'].parse({
+      type: 'event',
+      name: 'turn.started',
+      eventId: randomUUID(),
+      timestamp: event.timestamp,
+      scope: threadScope(record),
+      payload: started,
+    })
+    if (!writeQueue(record, withoutItem(record.queue, steerId), [startEvent])) {
+      // Unrecorded, the provider's output for it would fail every write.
+      // Filed under a background turn instead, the next frame tries again.
+      record.unrecordedBackgroundTurn = event
+      return
+    }
+    record.turns.push(turn)
+    record.messages.push(userMessage)
+    record.commandTurns.set(item.queueItemId, started)
+    record.activeTurn = {
+      turn,
+      userMessage,
+      interruptRequested: false,
+      promptStarted: true,
+      runtimeMessageId: event.messageId,
+      toolIds: new Map(),
+      interactionIds: new Map(),
+      pendingInteractions: new Map(),
+    }
+    touch(record, 'running')
+  }
+
+  /**
+   * Resolve the thread a queue command names, as a send does: access first,
+   * then the record, loading a chat the rows hold after a restart.
+   */
+  const queueTarget = (
+    requestId: string,
+    input: { sessionId: string; threadId: string },
+    context: CommandContext | undefined,
+  ): ThreadRecord | ReturnType<typeof errorResult> => {
+    const recordOf = () => {
+      const threadRecord = threads.get(input.threadId)
+      return threadRecord?.session.sessionId === input.sessionId ? threadRecord : undefined
+    }
+    let record = recordOf()
+    const workspaceId = record?.session.workspaceId ?? persistedWorkspaceId(input.sessionId)
+    if (workspaceId === undefined) return errorResult(requestId, 'not_found', 'Thread not found.')
+    if (!resolveWorkspace(workspaceId, context)) {
+      return rejectWorkspace(requestId, workspaceId, SEND_WORKSPACE_UNAVAILABLE)
+    }
+    if (!record) {
+      const loaded = loadSession(input.sessionId, context)
+      if (loaded && 'refused' in loaded) return refused(requestId, loaded.refused)
+      record = recordOf()
+    }
+    return record ?? errorResult(requestId, 'not_found', 'Thread not found.')
+  }
+
+  /**
+   * Add a message to the queue, as `queued` or as `steering`. The id is the
+   * client's, so a retry of a message already queued or already run answers
+   * the same. The selection is captured now: the message runs on what the
+   * composer showed when it was sent.
+   */
+  const enqueue = (
+    record: ThreadRecord,
+    requestId: string,
+    input: { text: string; commandId: string; artifactIds?: string[] },
+    delivery: QueuedMessage['delivery'],
+  ):
+    | { item: QueuedMessage; images: { type: 'image'; mimeType: string; data: string }[] }
+    | ReturnType<typeof errorResult> => {
+    const attachments = readAttachments(
+      record,
+      requestId,
+      input.artifactIds,
+      delivery === 'steering',
+    )
+    if ('type' in attachments) return attachments
+    if (record.queue.items.length >= THREAD_QUEUE_MAX) {
+      return errorResult(
+        requestId,
+        'conflict',
+        `A chat can hold ${THREAD_QUEUE_MAX} messages back at a time. Wait for one to run, or remove one.`,
+      )
+    }
+    const item: QueuedMessage = {
+      queueItemId: input.commandId,
+      text: input.text,
+      ...(input.artifactIds?.length ? { artifactIds: [...new Set(input.artifactIds)] } : {}),
+      settings:
+        options.queuedSettings?.({
+          providerId: record.providerId,
+          workspaceId: record.session.workspaceId,
+          threadId: record.thread.threadId,
+        }) ?? {},
+      delivery,
+      createdAt: new Date().toISOString(),
+    }
+    if (
+      !writeQueue(record, { items: [...record.queue.items, item], pausedBy: record.queue.pausedBy })
+    ) {
+      return errorResult(requestId, 'unavailable', 'The message could not be saved. Try again.')
+    }
+    return { item, images: attachments.images }
   }
 
   const service = {
@@ -2153,6 +2658,7 @@ export function createThreadService(
           .filter((entry) => !entry.settled && record.activeTurn?.turn.turnId === entry.turnId)
           .map((entry) => ({ turnId: entry.turnId, interaction: entry.interaction })),
         listing: {},
+        queue: record.queue,
       }
     },
 
@@ -2189,6 +2695,54 @@ export function createThreadService(
       if (options.appendAtomic) options.appendAtomic(events)
       else for (const event of events) appendEvent(event)
       return stale.length
+    },
+
+    /**
+     * Pause every queue that still holds messages after a restart, and take
+     * back what the provider held for steering: that provider process is
+     * gone. The turn the restart cut short counts as stopped, so nothing
+     * drains on its own; a queue the user had paused keeps its reason. Said
+     * through the event log, so a client with a saved cursor hears it too.
+     * Call once, before any session can run.
+     */
+    pauseQueuesAfterRestart(): number {
+      const database = options.database
+      if (!database) return 0
+      options.flush?.()
+      const rows = database
+        .prepare(
+          "SELECT thread_id, session_id FROM threads WHERE queue_json IS NOT NULL AND json_array_length(queue_json, '$.items') > 0",
+        )
+        .all() as { thread_id: string; session_id: string }[]
+      const timestamp = new Date().toISOString()
+      const events: ProofEvent[] = []
+      for (const row of rows) {
+        const queue = readThreadQueue(database, row.thread_id)
+        const steering = queue.items.some((item) => item.delivery === 'steering')
+        if (queue.items.length === 0 || (queue.pausedBy && !steering)) continue
+        events.push(
+          ProofEventSchemas['thread.queue.updated'].parse({
+            type: 'event',
+            name: 'thread.queue.updated',
+            eventId: randomUUID(),
+            timestamp,
+            scope: {
+              type: 'thread',
+              environmentId,
+              sessionId: row.session_id,
+              threadId: row.thread_id,
+            },
+            payload: {
+              items: givenBackFirst(queue.items, new Set(), (item) => item.delivery === 'steering'),
+              pausedBy: queue.pausedBy ?? 'restart',
+            },
+          }),
+        )
+      }
+      if (events.length === 0) return 0
+      if (options.appendAtomic) options.appendAtomic(events)
+      else for (const event of events) appendEvent(event)
+      return events.length
     },
 
     /**
@@ -2431,6 +2985,7 @@ export function createThreadService(
           messages: [],
           commandTurns: new Map(),
           interactions: new Map(),
+          queue: EMPTY_THREAD_QUEUE,
           status: 'idle',
           // The time it was announced at, as the answer and the event say.
           updatedAt: Date.parse(announcedAt),
@@ -2897,6 +3452,113 @@ export function createThreadService(
 
       if (command.name === 'turn.send') return sendTurn(command, context)
 
+      if (command.name === 'queue.add' || command.name === 'turn.steer') {
+        const steering = command.name === 'turn.steer'
+        const parsed = steering
+          ? ProofCommandSchemas['turn.steer'].safeParse(command)
+          : ProofCommandSchemas['queue.add'].safeParse(command)
+        if (!parsed.success) {
+          return errorResult(command.requestId, 'validation', 'Invalid message request.')
+        }
+        const input = parsed.data.payload
+        const target = queueTarget(command.requestId, input, context)
+        if ('type' in target) return target
+        const record = target
+        const providerRejection = rejectProvider(command.requestId, record.providerId)
+        if (providerRejection) return providerRejection
+        const answer = (outcome: 'steering' | 'queued') =>
+          steering
+            ? ProofResponseSchemas['turn.steer'].parse({
+                type: 'response',
+                requestId: command.requestId,
+                payload: { queueItemId: input.commandId, outcome },
+              })
+            : ProofResponseSchemas['queue.add'].parse({
+                type: 'response',
+                requestId: command.requestId,
+                payload: { queueItemId: input.commandId },
+              })
+        // A retry: the message is waiting or already ran. Answered as it
+        // stands now, which is what a client needs to know.
+        if (knownQueueItem(record, input.commandId)) {
+          const waiting = record.queue.items.find((item) => item.queueItemId === input.commandId)
+          return answer(waiting?.delivery === 'steering' ? 'steering' : 'queued')
+        }
+        // Steering needs a turn of the user's that the provider is running,
+        // that nobody is stopping, on a provider that can take a message
+        // into it. Otherwise the message waits for the next turn.
+        const active = record.activeTurn
+        const steerable =
+          'turnId' in input &&
+          providers[record.providerId].capabilities.canSteer &&
+          !!runtime.steer &&
+          !!active &&
+          active.turn.turnId === input.turnId &&
+          active.promptStarted === true &&
+          // A turn the provider began by itself has no prompt to add to.
+          active.userMessage !== undefined &&
+          !active.interruptRequested &&
+          !record.cancellation &&
+          !record.pendingBuild
+        const added = enqueue(record, command.requestId, input, steerable ? 'steering' : 'queued')
+        if ('type' in added) return added
+        if (steerable) steerToProvider(record, added.item, added.images)
+        // Nothing running and nothing held back: it runs now.
+        else drain(record)
+        return answer(steerable ? 'steering' : 'queued')
+      }
+
+      if (command.name === 'queue.remove') {
+        const parsed = ProofCommandSchemas['queue.remove'].safeParse(command)
+        if (!parsed.success) {
+          return errorResult(command.requestId, 'validation', 'Invalid queue request.')
+        }
+        const input = parsed.data.payload
+        const target = queueTarget(command.requestId, input, context)
+        if ('type' in target) return target
+        const item = target.queue.items.find((entry) => entry.queueItemId === input.queueItemId)
+        if (!item) {
+          return errorResult(command.requestId, 'conflict', 'This message was already sent.')
+        }
+        if (item.delivery === 'steering') {
+          return errorResult(
+            command.requestId,
+            'conflict',
+            'This message is already with the agent. It joins at the next step.',
+          )
+        }
+        if (!writeQueue(target, withoutItem(target.queue, input.queueItemId))) {
+          return errorResult(command.requestId, 'unavailable', 'The queue could not be saved.')
+        }
+        return ProofResponseSchemas['queue.remove'].parse({
+          type: 'response',
+          requestId: command.requestId,
+          payload: null,
+        })
+      }
+
+      if (command.name === 'queue.resume') {
+        const parsed = ProofCommandSchemas['queue.resume'].safeParse(command)
+        if (!parsed.success) {
+          return errorResult(command.requestId, 'validation', 'Invalid queue request.')
+        }
+        const target = queueTarget(command.requestId, parsed.data.payload, context)
+        if ('type' in target) return target
+        const providerRejection = rejectProvider(command.requestId, target.providerId)
+        if (providerRejection) return providerRejection
+        if (target.queue.pausedBy) {
+          if (!writeQueue(target, { items: target.queue.items, pausedBy: null })) {
+            return errorResult(command.requestId, 'unavailable', 'The queue could not be saved.')
+          }
+        }
+        drain(target)
+        return ProofResponseSchemas['queue.resume'].parse({
+          type: 'response',
+          requestId: command.requestId,
+          payload: null,
+        })
+      }
+
       if (command.name === 'turn.interrupt') {
         const parsed = ProofCommandSchemas['turn.interrupt'].safeParse(command)
         if (!parsed.success) {
@@ -2996,6 +3658,9 @@ export function createThreadService(
             })
             .finally(() => {
               record.cancellation = undefined
+              // The turn's end found the thread still busy with this stop;
+              // the next message runs now that it is not.
+              drain(record)
             })
         }
         return ProofResponseSchemas['turn.interrupt'].parse({
@@ -3139,6 +3804,8 @@ export function createThreadService(
             record.pendingBuild = true
             entry.result = proposing.completion!.then(() => {
               record.pendingBuild = false
+              // Whatever happens to the build, the queue is no longer held.
+              queueMicrotask(() => drain(record))
               if (
                 threads.get(threadId) !== record ||
                 proposing.turn.state !== 'completed' ||
@@ -3201,6 +3868,18 @@ export function createThreadService(
       }
       if (event.event === 'background_turn_started') {
         startBackgroundTurn(record, event)
+        return
+      }
+      if (event.event === 'steer_delivered') {
+        deliverSteer(record, event.data.steerId, event.timestamp)
+        return
+      }
+      if (event.event === 'steer_turn_started') {
+        startSteeredTurn(record, event, event.data.steerId)
+        return
+      }
+      if (event.event === 'steer_withdrawn') {
+        returnSteer(record, event.data.steerId)
         return
       }
       const unrecorded = record.unrecordedBackgroundTurn

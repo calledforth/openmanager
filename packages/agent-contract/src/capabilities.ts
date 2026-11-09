@@ -7,6 +7,8 @@ export type ProviderCapabilities = {
   canLoadSession: boolean
   canListSessions: boolean
   canCancelPrompt: boolean
+  /** A message sent mid-turn can join the running turn at the agent's next step. */
+  canSteer: boolean
   supportsPlans: boolean
   supportsAvailableCommands: boolean
   supportsUsage: boolean
@@ -27,6 +29,7 @@ export type CapabilityKey =
   | 'canLoadSession'
   | 'canListSessions'
   | 'canCancelPrompt'
+  | 'canSteer'
   | 'supportsPlans'
   | 'supportsAvailableCommands'
   | 'supportsUsage'

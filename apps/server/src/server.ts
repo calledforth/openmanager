@@ -125,6 +125,10 @@ export const SERVER_CAPABILITIES = [
   'session.background.stop',
   'turn.send',
   'turn.interrupt',
+  'queue.add',
+  'queue.remove',
+  'queue.resume',
+  'turn.steer',
   'interaction.respond',
   PLAN_BUILD_CAPABILITY,
   'workspace.list',
@@ -307,6 +311,9 @@ export async function startServer(config: ServerConfig) {
       }
     })
   let onRuntimeEvent: HostDeps['emitEvent'] = () => undefined
+  // What a message queued now would run with; the composer service answers
+  // once it exists, and nothing can queue before then.
+  let queuedSelection: NonNullable<HostDeps['desiredSessionConfig']> = () => undefined
   // Until the composer service exists only the workspace preference can answer.
   let desiredConfigFor: NonNullable<HostDeps['desiredSessionConfig']> = ({
     providerId,
@@ -431,6 +438,14 @@ export async function startServer(config: ServerConfig) {
       ...(titles ? { titles } : {}),
       onTitleFailure: (sessionId, error) =>
         log('warn', 'session title was not generated', { sessionId, reason: String(error) }),
+      queuedSettings: ({ providerId, workspaceId, threadId }) => {
+        const desired = queuedSelection({ providerId, workspacePath: workspaceId, threadId })
+        return {
+          ...(desired?.modelId ? { modelId: desired.modelId } : {}),
+          ...(desired?.values ? { configValues: desired.values } : {}),
+        }
+      },
+      onQueueProblem: (message, data) => log('warn', message, data),
     },
   )
   closeWorkspaceSessions = (workspaceId) => {
@@ -481,6 +496,7 @@ export async function startServer(config: ServerConfig) {
     },
   )
   desiredConfigFor = (args) => composerService.desiredFor(args)
+  queuedSelection = (args) => composerService.desiredFor(args)
   recordSessionMode = (sessionId, modeId) => composerService.recordSessionMode(sessionId, modeId)
   launchPreference = (workspaceId, providerId, picks) =>
     composerService.launchPreference(workspaceId, providerId, picks)
@@ -552,6 +568,12 @@ export async function startServer(config: ServerConfig) {
   } catch (error) {
     // Left for the next start; a stale "running" is wrong but harmless.
     log('error', 'stale background work was not cleared', { reason: String(error) })
+  }
+  try {
+    threadService.pauseQueuesAfterRestart()
+  } catch (error) {
+    // A queue left unpaused still waits: nothing drains until a turn ends.
+    log('error', 'chat queues were not paused after the restart', { reason: String(error) })
   }
   onRuntimeEvent = (event) => {
     if (event.event === 'usage_limits_update') providerLimits.observe(event.providerId, event.data)

@@ -497,6 +497,7 @@ describe('applyEvent', () => {
         notices: [],
         interactions: [],
         listing: {},
+        queue: { items: [], pausedBy: null },
         ...activity,
       },
     }).threads[THREAD.threadId]!
@@ -962,6 +963,7 @@ describe('optimistic sends', () => {
         order: [],
         interactions: [],
         listing: {},
+        queue: { items: [], pausedBy: null },
       },
     })
     expect(replaced.threads[THREAD.threadId]?.confirmedEchoes).toEqual({
@@ -1020,6 +1022,7 @@ describe('optimistic sends', () => {
         order: [],
         interactions: [],
         listing: {},
+        queue: { items: [], pausedBy: null },
       },
     })
     // The same text from another send is not this one: no text matching.
@@ -1048,6 +1051,7 @@ describe('optimistic sends', () => {
         order: [],
         interactions: [],
         listing: {},
+        queue: { items: [], pausedBy: null },
       },
     })
     expect(reconnected.threads[THREAD.threadId]?.outbox).toEqual([])
@@ -1091,6 +1095,7 @@ describe('optimistic sends', () => {
         order: [],
         interactions: [],
         listing: {},
+        queue: { items: [], pausedBy: null },
       },
     })
     expect(replaced.threads[THREAD.threadId]?.outbox).toHaveLength(1)
@@ -1119,6 +1124,7 @@ describe('snapshots', () => {
         order: [],
         interactions: [],
         listing: {},
+        queue: { items: [], pausedBy: null },
       },
     }
     const state = applySnapshot(applyEvent(seeded(), turnStarted()), snapshot)

@@ -15,6 +15,7 @@ import {
   selectPendingInteractions,
   selectSessionList,
   selectRecentWorkspaces,
+  selectThreadQueue,
   selectWorkspaces,
   shallowEqualArray,
   type EnvironmentClient,
@@ -137,6 +138,20 @@ export function usePendingInteractions(threadId?: string | null) {
     [threadId],
   )
   return useEnvironmentState(selector, shallowEqualArray)
+}
+
+/**
+ * What a chat holds back, as the environment last said: the open chat's when
+ * no thread is named. The queue is replaced whole on each change, so a reader
+ * renders only when it did.
+ */
+export function useThreadQueue(threadId?: string | null) {
+  const selector = useCallback(
+    (state: EnvironmentState) =>
+      selectThreadQueue(state, threadId === undefined ? state.activeThreadId : threadId),
+    [threadId],
+  )
+  return useEnvironmentState(selector)
 }
 
 export function useConnectionState() {

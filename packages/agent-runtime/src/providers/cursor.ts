@@ -202,6 +202,8 @@ export const cursor: AcpProviderConfig = {
     canLoadSession: true,
     canListSessions: true,
     canCancelPrompt: true,
+    // ACP has no way to add to a running prompt; a message sent mid-turn queues.
+    canSteer: false,
     supportsPlans: true,
     supportsAvailableCommands: true,
     // Probed 2026-07-24 (cursor-agent 2026.07.23): cursor emits no `usage_update`

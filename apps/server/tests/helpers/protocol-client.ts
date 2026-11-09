@@ -29,7 +29,12 @@ const clients: WebSocket[] = []
 export async function cleanupProtocolHosts(): Promise<void> {
   for (const client of clients.splice(0)) client.terminate()
   await Promise.all(servers.splice(0).map((server) => server.close()))
-  await Promise.all(directories.splice(0).map((path) => rm(path, { recursive: true, force: true })))
+  // A live provider's CLI can still hold its folder for a moment on Windows.
+  await Promise.all(
+    directories
+      .splice(0)
+      .map((path) => rm(path, { recursive: true, force: true, maxRetries: 10, retryDelay: 200 })),
+  )
 }
 
 export async function startProtocolHost(overrides: Partial<ServerConfig> = {}) {

@@ -30,6 +30,7 @@ import {
 import {
   UPLOAD_TICKET_COMMAND,
   hasDraftContent,
+  isEnvironmentClientError,
   isSuperseded,
   selectActiveSendPending,
   selectActiveSession,
@@ -41,6 +42,7 @@ import {
   selectDraftTarget,
   selectProviderCatalog,
   selectRecentWorkspaces,
+  selectThreadQueue,
   selectWorkspaces,
   shallowEqualArray,
   type EnvironmentState,
@@ -124,6 +126,7 @@ import {
   type ActiveThreadStateValue,
   type ActiveThreadStores,
   type SendRefused,
+  type ThreadFollowUps,
   type UIMessage,
 } from './active-thread-provider'
 import {
@@ -1732,10 +1735,8 @@ function EnvironmentActiveThreadProvider({ children }: { children: ReactNode }) 
     async (turnId: string) => {
       const current = targetRef.current
       if (!current) return
-      const prompt = resendablePrompt(
-        client.getState().threads[current.threadId]?.messages ?? [],
-        turnId,
-      )
+      const held = client.getState().threads[current.threadId]
+      const prompt = resendablePrompt(held?.messages ?? [], turnId, held?.order)
       if (prompt) await resend(prompt.text, prompt.artifactIds)
     },
     [client, resend],
@@ -1752,6 +1753,107 @@ function EnvironmentActiveThreadProvider({ children }: { children: ReactNode }) 
       busy: recoveryBusy,
     }),
     [activeProviderId, compactSession, providerDisplayName, recoveryBusy, retryTurn],
+  )
+
+  // A message sent while the chat is busy: held for the next turn, or added
+  // to the running one. Neither is a send: nothing is echoed, and what shows
+  // it is the chat's queue as the environment states it, so the client never
+  // shows a queue the environment does not hold.
+  const queues = useEnvironmentState(useCallback(() => client.supports('queueMessage'), [client]))
+  // Queued messages still running one after another: a message sent between
+  // two of them waits behind them rather than racing the next.
+  const queueDraining = useEnvironmentState(
+    useCallback((state: EnvironmentState) => {
+      const queue = selectThreadQueue(state)
+      return queue.items.length > 0 && !queue.pausedBy
+    }, []),
+  )
+  const providerSteers = useEnvironmentState(
+    useCallback(
+      (state: EnvironmentState) => {
+        const providerId = state.activeSessionId
+          ? state.sessions[state.activeSessionId]?.providerId
+          : undefined
+        return (
+          !!providerId &&
+          state.providers[providerId]?.capabilities.canSteer === true &&
+          client.supports('steerTurn')
+        )
+      },
+      [client],
+    ),
+  )
+  // What could not be sent, with the id it went under: the same message sent
+  // again reuses it, so one that did land is found rather than held twice.
+  const unsentFollowUp = useRef<{ key: string; commandId: string } | null>(null)
+  const followUp = useCallback(
+    async (action: 'queue' | 'steer', content: string, attachments?: UploadedImageAttachment[]) => {
+      const text = content.trim()
+      if (!text && !attachments?.length) return
+      const current = targetRef.current
+      if (!current) throw new Error('This session is still opening. Send again once it loads.')
+      if (
+        attachments?.some(
+          (attachment) =>
+            attachment.workspaceId !== undefined ||
+            (attachment.sessionId !== undefined && attachment.sessionId !== current.sessionId),
+        )
+      ) {
+        throw new Error('These images were uploaded for another chat. Attach them again.')
+      }
+      const artifactIds = attachments?.map((attachment) => attachment.id) ?? []
+      // Steered into the turn running now. With none (it ended since the
+      // composer drew), the message waits for its own turn instead.
+      const turn = selectActiveTurn(client.getState())
+      const steering =
+        action === 'steer' && turn?.threadId === current.threadId && client.supports('steerTurn')
+      // The words alone: a retry after a lost answer keeps the id whether it
+      // is steered or queued now, and images re-uploaded get new ids.
+      const key = JSON.stringify([current.threadId, text])
+      const commandId =
+        unsentFollowUp.current?.key === key
+          ? unsentFollowUp.current.commandId
+          : globalThis.crypto.randomUUID()
+      const message = {
+        ...current,
+        text,
+        commandId,
+        ...(artifactIds.length ? { artifactIds } : {}),
+      }
+      try {
+        if (steering) await commands.steerTurn({ ...message, turnId: turn.turnId })
+        else await commands.queueMessage(message)
+        unsentFollowUp.current = null
+      } catch (err) {
+        // Only an answer lost on the way leaves the outcome unknown.
+        unsentFollowUp.current =
+          isEnvironmentClientError(err) && err.code === 'unavailable' ? { key, commandId } : null
+        throw err
+      }
+    },
+    [client, commands],
+  )
+  const busy = !!activeTurn || queueDraining
+  const canSteer = providerSteers && !!activeTurn
+  const followUps = useMemo<ThreadFollowUps | undefined>(
+    () =>
+      queues
+        ? {
+            busy,
+            canSteer,
+            queue: (content, attachments) => followUp('queue', content, attachments),
+            steer: (content, attachments) => followUp('steer', content, attachments),
+            removeQueued: async (queueItemId) => {
+              const current = targetRef.current
+              if (current) await commands.removeQueuedMessage({ ...current, queueItemId })
+            },
+            resume: async () => {
+              const current = targetRef.current
+              if (current) await commands.resumeQueue(current)
+            },
+          }
+        : undefined,
+    [busy, canSteer, commands, followUp, queues],
   )
 
   // An answer (a question's, a plan's, a permission's) is a send too: held while
@@ -1820,6 +1922,7 @@ function EnvironmentActiveThreadProvider({ children }: { children: ReactNode }) 
       acknowledgeOptimisticMessage: noop,
       sendMessage,
       retrySend,
+      ...(followUps ? { followUps } : {}),
       abortSession: async () => {
         const current = targetRef.current
         if (!current || !activeTurn) return
@@ -1859,6 +1962,7 @@ function EnvironmentActiveThreadProvider({ children }: { children: ReactNode }) 
       commands,
       error,
       findInteraction,
+      followUps,
       messages,
       respond,
       retrySend,

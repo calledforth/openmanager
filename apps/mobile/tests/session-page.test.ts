@@ -194,6 +194,9 @@ describe('transcript rows', () => {
     expect(turnIdOf(assistant)).toBe('turn-d1')
     expect(turnIdOf(user)).toBeNull()
     expect(turnIdOf({ role: 'assistant', rowKey: 'send:1' })).toBeNull()
+    // The reply after a message steered into the turn is that turn's too.
+    expect(turnIdOf({ role: 'assistant', rowKey: 'turn:turn-d1:assistant:m-2' })).toBe('turn-d1')
+    expect(turnIdOf({ role: 'assistant', rowKey: 'turn:turn-d1:assistantx' })).toBeNull()
   })
 
   it('lists a session children in the order the shared listing gives them', () => {

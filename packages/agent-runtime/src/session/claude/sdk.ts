@@ -66,6 +66,12 @@ export interface ClaudeQuerySession extends AsyncIterable<SDKMessage> {
   /** Stop one background task by the id `background_tasks_changed` lists it
    * under. The CLI answers with a roster that no longer has it. */
   stopTask(taskId: string): Promise<void>
+  /** Take back an async user message the CLI has queued but not yet started.
+   * True when it was dropped and will never run; false when it had already
+   * been dequeued (it runs, or is running). In the SDK's runtime but missing
+   * from its typings, hence optional: a build without it reads as "cannot take
+   * a steer back", never as a crash. */
+  cancelAsyncMessage?(messageUuid: string): Promise<boolean>
   /** Synchronous and fire-and-forget: it *starts* the SDK's cleanup and
    * returns without awaiting it. See `ClaudeSessionRuntime.settleExit`. */
   close(): void

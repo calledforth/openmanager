@@ -64,6 +64,7 @@ const CLAUDE = {
     canLoadSession: true,
     canListSessions: true,
     canCancelPrompt: true,
+    canSteer: false,
     supportsPlans: true,
     supportsAvailableCommands: true,
     supportsUsage: true,
