@@ -17,6 +17,8 @@ import {
   WorkspaceComposerPreferenceSchema,
   SEARCH_RESULTS_DEFAULT,
   type MessageSearchHit,
+  type PullRequestDetail,
+  type PullRequestSummary,
   type AuthorizedClient,
   type AuthorizedClientList,
   type AccessCapability,
@@ -55,6 +57,7 @@ import {
   applyEvent,
   applyProviderCatalog,
   applyProviderProbe,
+  applyPullRequestDetail,
   applySessionCreated,
   applySessionOpen,
   applySessionOpening,
@@ -160,6 +163,11 @@ export interface MockEnvironmentClientOptions {
   respond?: ((turn: MockTurnContext) => readonly string[] | null) | null
   /** Delay between streamed chunks. Zero still yields to the event loop. */
   chunkDelayMs?: number
+  /**
+   * What `getPullRequest` answers for a linked pull request. Defaults to its
+   * summary with nothing more read (no body, reviewers or checks).
+   */
+  pullRequestDetail?: (summary: PullRequestSummary) => PullRequestDetail
   /** What `searchMessages` answers. Defaults to nothing found. */
   searchMessages?: (query: string, limit: number) => readonly MessageSearchHit[]
   /** Latency added to every command. Zero still yields to the event loop. */
@@ -1713,6 +1721,36 @@ export function createMockEnvironmentClient(
           [input.configId]: input.value,
         }
         return writePreference(target, { configValues }, known)
+      }),
+    getPullRequest: (input) =>
+      run('getPullRequest', input, () => {
+        const summary = store
+          .getState()
+          .sessions[input.sessionId]?.pullRequests?.find(
+            (item) => item.repository === input.repository && item.number === input.number,
+          )
+        if (!summary) {
+          throw new EnvironmentClientError(
+            'not_found',
+            'That pull request is not linked to this session.',
+          )
+        }
+        const detail = options.pullRequestDetail?.(summary) ?? {
+          ...summary,
+          body: '',
+          author: null,
+          headRef: null,
+          baseRef: null,
+          createdAt: null,
+          mergedAt: null,
+          closedAt: null,
+          changedFiles: null,
+          commits: null,
+          reviewers: [],
+          checkRuns: [],
+        }
+        store.update((state) => applyPullRequestDetail(state, detail))
+        return detail
       }),
     searchMessages: (query, limit) =>
       run('searchMessages', limit === undefined ? query : { query, limit }, () => [

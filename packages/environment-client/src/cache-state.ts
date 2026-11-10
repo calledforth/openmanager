@@ -10,6 +10,7 @@ import type { EnvironmentState } from './types'
 export function cacheState(state: EnvironmentState): EnvironmentState {
   return {
     ...state,
+    ...linkedDetails(state),
     connection: createInitialState().connection,
     sessionOpenFailure: null,
     catchingUp: {},
@@ -64,6 +65,25 @@ export function forgetCursors(state: EnvironmentState): EnvironmentState {
     cursors: { environment: null, sessions: {} },
     threads: Object.fromEntries(
       Object.entries(state.threads).map(([id, { cursor: _cursor, ...thread }]) => [id, thread]),
+    ),
+  }
+}
+
+/**
+ * Pull request details some session still links: one whose last link went
+ * (with its session, or unlinked) is not worth keeping across a reload.
+ */
+function linkedDetails(state: EnvironmentState): Pick<EnvironmentState, 'pullRequestDetails'> {
+  if (!state.pullRequestDetails) return {}
+  const linked = new Set<string>()
+  for (const session of Object.values(state.sessions)) {
+    for (const pullRequest of session.pullRequests ?? []) {
+      linked.add(`${pullRequest.repository}#${pullRequest.number}`)
+    }
+  }
+  return {
+    pullRequestDetails: Object.fromEntries(
+      Object.entries(state.pullRequestDetails).filter(([key]) => linked.has(key)),
     ),
   }
 }
