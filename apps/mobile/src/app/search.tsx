@@ -1,32 +1,45 @@
 import { useRouter } from 'expo-router'
 import { MagnifyingGlassIcon, XIcon } from 'phosphor-react-native'
-import { useMemo, useState } from 'react'
+import { useCallback, useMemo, useState } from 'react'
 import { ScrollView, TextInput, View } from 'react-native'
+import Animated, { Easing, FadeIn } from 'react-native-reanimated'
 import { useSafeAreaInsets } from 'react-native-safe-area-context'
+import { chatSearchStatus, useChatSearch } from '@openmanager/app-core/lib/chat-search'
 
 import { AppText } from '../components/ui/AppText'
-import { statusMarkOf, type HomeRow } from '../home/rows'
+import { messageHitRowsOf, useChatSearchSources } from '../home/message-search'
+import { countEnvironments, homeSessionKey, statusMarkOf, type HomeRow } from '../home/rows'
 import { matchesTerms, searchTerms } from '../home/search'
 import { sessionRowHref } from '../environment/landing-route'
 import { useHomeSource } from '../home/source'
 import { usePhoneTheme } from '../theme/ThemeProvider'
 import { SectionLabel } from '../ui/chrome'
 import { useGoBack } from '../ui/goBack'
+import { MessageHitRow } from '../ui/MessageHitRow'
 import { ProjectMark } from '../ui/ProjectMark'
 import { SessionRow } from '../ui/SessionRow'
 import { Press } from '../ui/Press'
 
 /**
+ * How the messages section and the status line come in: a light fade on
+ * the UI thread when they first appear, never per keystroke or per answer.
+ */
+const SEARCH_FADE = FadeIn.duration(180).easing(Easing.out(Easing.quad))
+
+/**
  * Search is a layer over whatever you were on: the field at the top,
- * results as the standard rows, grouped sessions then projects. Title and
- * project only, which is what the environment indexes.
+ * results as the standard rows, grouped sessions then projects, matched at
+ * once on title and project from what the phone holds. Under them, what
+ * was said in the chats: each environment that can (`search.messages`) is
+ * asked as typing settles (app-core's `useChatSearch`), one row per session
+ * at its best message, a session already listed by its title not repeated.
  */
 export default function Search() {
   const router = useRouter()
   const goBack = useGoBack()
   const insets = useSafeAreaInsets()
   const theme = usePhoneTheme()
-  const { workspaces, sessions } = useHomeSource()
+  const { workspaces, sessions, environments } = useHomeSource()
   const [query, setQuery] = useState('')
   const terms = useMemo(() => searchTerms(query), [query])
   const needle = terms.length > 0
@@ -49,6 +62,27 @@ export default function Search() {
     }
   }, [needle, terms, sessions, workspaces, byPath])
 
+  const sources = useChatSearchSources()
+  const search = useChatSearch(query, sources)
+  const messages = useMemo(
+    () =>
+      messageHitRowsOf({
+        hits: search.hits,
+        sessions,
+        listed: new Set(hits.sessions.map((row) => homeSessionKey(row.session))),
+        workspaceOf: (session) => byPath.get(session.workspacePath),
+      }),
+    [search.hits, sessions, hits.sessions, byPath],
+  )
+  const showEnvironment = useMemo(() => countEnvironments(sessions) > 1, [sessions])
+  const environmentName = useCallback(
+    (environmentId: string) =>
+      environments.find((item) => item.environmentId === environmentId)?.label,
+    [environments],
+  )
+  const status = chatSearchStatus(query, search, sources.length, environmentName)
+  const searching = needle && search.pending
+
   const sessionCount = (path: string) => sessions.filter((s) => s.workspacePath === path).length
 
   return (
@@ -62,7 +96,7 @@ export default function Search() {
           autoFocus
           value={query}
           onChangeText={setQuery}
-          placeholder="Search sessions and projects"
+          placeholder="Search sessions and messages"
           placeholderTextColor={theme.faint}
           returnKeyType="search"
           style={{
@@ -128,13 +162,52 @@ export default function Search() {
                 ))}
               </View>
             ) : null}
-            {!hits.sessions.length && !hits.projects.length ? (
+            {messages.length ? (
+              <Animated.View entering={SEARCH_FADE}>
+                <SectionLabel
+                  trailing={
+                    <AppText variant="text-11-regular" style={{ color: theme.muted }}>
+                      {String(messages.length)}
+                    </AppText>
+                  }
+                >
+                  Messages
+                </SectionLabel>
+                {messages.map((message) => (
+                  <MessageHitRow
+                    key={message.key}
+                    hit={message}
+                    showEnvironment={showEnvironment}
+                    onPress={() => router.replace(sessionRowHref(message.row.session) as never)}
+                  />
+                ))}
+              </Animated.View>
+            ) : null}
+            {!hits.sessions.length && !hits.projects.length && !messages.length ? (
+              // "Searching…" holds the place "Nothing matches" takes, fainter
+              // because it is passing.
               <AppText
                 variant="text-14-regular"
-                style={{ color: theme.muted, textAlign: 'center', paddingTop: 40 }}
+                style={{
+                  color: searching ? theme.faint : theme.muted,
+                  textAlign: 'center',
+                  paddingTop: 40,
+                }}
               >
-                Nothing matches "{query.trim()}"
+                {searching ? 'Searching…' : `Nothing matches “${query.trim()}”.`}
               </AppText>
+            ) : null}
+            {status ? (
+              <Animated.View entering={SEARCH_FADE}>
+                <AppText
+                  accessibilityRole="text"
+                  accessibilityLiveRegion="polite"
+                  variant="text-12-regular"
+                  style={{ color: theme.muted, paddingHorizontal: 12, paddingTop: 14 }}
+                >
+                  {status}
+                </AppText>
+              </Animated.View>
             ) : null}
           </>
         ) : (

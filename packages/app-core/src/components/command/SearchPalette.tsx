@@ -13,9 +13,12 @@ import {
 import { ProviderIcon } from '../providers/ProviderIcon'
 import { formatRelativeTime, useNow } from '../../lib/relative-time'
 import {
+  chatSearchStatus,
   matchesWords,
   searchWords,
+  snippetRuns,
   useChatSearch,
+  withoutLeadingEllipsis,
   type ChatSearchSource,
   type PlacedSearchHit,
 } from '../../lib/chat-search'
@@ -169,7 +172,7 @@ export function SearchPaletteBody({
     return { items, rows }
   }, [query, sessions, search.hits, onOpenSession])
 
-  const status = statusLine(query, search, sources.length, environmentName)
+  const status = chatSearchStatus(query, search, sources.length, environmentName)
   const typed = query.trim() !== ''
   const searching = typed && search.pending
 
@@ -224,22 +227,6 @@ export function SearchPaletteBody({
 }
 
 const keepAll = () => true
-
-/** What is still coming, or could not come, under the rows. */
-function statusLine(
-  query: string,
-  search: ReturnType<typeof useChatSearch>,
-  sourceCount: number,
-  environmentName: SearchPaletteBodyProps['environmentName'],
-): string | null {
-  if (query.trim() === '') return null
-  if (sourceCount === 0) return 'Message search needs a connected environment on a newer server.'
-  if (search.failed.length > 0) {
-    const names = search.failed.map((id) => environmentName?.(id) ?? 'An environment')
-    return `Couldn’t search ${names.join(', ')}.`
-  }
-  return null
-}
 
 /**
  * A row for a session, or for a session at the message that matched. Both
@@ -304,26 +291,6 @@ function SearchRow({
   )
 }
 
-/**
- * The snippet without the "…" SQLite puts before a match that is not at the
- * start of its message. At the head of a line it reads as noise, where the
- * trailing one still says the message goes on; the highlight offsets shift
- * with the cut.
- */
-function withoutLeadingEllipsis(hit: PlacedSearchHit): {
-  text: string
-  highlights: readonly SearchHighlight[]
-} {
-  const cut = hit.snippet.startsWith('… ') ? 2 : hit.snippet.startsWith('…') ? 1 : 0
-  if (cut === 0) return { text: hit.snippet, highlights: hit.highlights }
-  return {
-    text: hit.snippet.slice(cut),
-    highlights: hit.highlights.flatMap(([start, end]) =>
-      end <= cut ? [] : [[Math.max(0, start - cut), end - cut] as SearchHighlight],
-    ),
-  }
-}
-
 /** The snippet with its matched runs at full strength. */
 function Highlighted({
   text,
@@ -332,18 +299,17 @@ function Highlighted({
   text: string
   highlights: readonly SearchHighlight[]
 }) {
-  const parts: ReactNode[] = []
-  let at = 0
-  for (const [start, end] of highlights) {
-    if (start < at || end > text.length) continue
-    if (start > at) parts.push(text.slice(at, start))
-    parts.push(
-      <mark key={start} className="bg-transparent font-medium text-foreground">
-        {text.slice(start, end)}
-      </mark>,
-    )
-    at = end
-  }
-  if (at < text.length) parts.push(text.slice(at))
-  return <>{parts}</>
+  return (
+    <>
+      {snippetRuns(text, highlights).map((run) =>
+        run.match ? (
+          <mark key={run.start} className="bg-transparent font-medium text-foreground">
+            {run.text}
+          </mark>
+        ) : (
+          run.text
+        ),
+      )}
+    </>
+  )
 }
