@@ -37,6 +37,7 @@ import {
   PAIRING_LIST_CAPABILITY,
   PAIRING_REDEEM_CAPABILITY,
   PAIRING_REVOKE_CAPABILITY,
+  PULL_REQUEST_GET_CAPABILITY,
   type DurableEvent,
   type ProofEvent,
   type WorkspaceComposerPreference,
@@ -54,6 +55,10 @@ import { openEnvironmentSettings } from './environment-settings.ts'
 import { createTitleGenerator } from './session-titles/generator.ts'
 import { createFilesystemService } from './filesystem.ts'
 import { createMessageSearch } from './message-search.ts'
+import { createGitHubReader, createGitHubToken } from './pull-requests/github.ts'
+import { createAgentToolsEndpoint } from './pull-requests/mcp-endpoint.ts'
+import { createPullRequestService } from './pull-requests/service.ts'
+import { serverVersion } from './standalone/version.ts'
 import { auditValue, createAuditLog } from './audit.ts'
 import type { ServerConfig } from './config.ts'
 import { validateHosts, validateOrigins, validateWorkspaceRoots } from './config.ts'
@@ -142,6 +147,7 @@ export const SERVER_CAPABILITIES = [
   ENVIRONMENT_SETTINGS_GET_CAPABILITY,
   ENVIRONMENT_SETTINGS_SET_CAPABILITY,
   SEARCH_MESSAGES_CAPABILITY,
+  PULL_REQUEST_GET_CAPABILITY,
   DRAFT_LIST_CAPABILITY,
   DRAFT_SAVE_CAPABILITY,
   DRAFT_DELETE_CAPABILITY,
@@ -314,6 +320,27 @@ export async function startServer(config: ServerConfig) {
         },
       }
     })
+  // Pull requests linked to sessions, and the environment's own MCP tools
+  // agents link them with. Both outlive no listener: the port and the client
+  // count are read when asked, once the socket server exists.
+  let anyClientConnected = () => false
+  let listeningPort = () => config.port
+  const pullRequests = createPullRequestService({
+    database: eventDatabase,
+    github: config.github ?? createGitHubReader({ token: createGitHubToken() }),
+    environmentId: () => identity.environmentId,
+    appendAtomic: (events, options) => eventService.appendAtomic(events, options),
+    flush: () => eventService.flush(),
+    anyClientConnected: () => anyClientConnected(),
+    log,
+  })
+  const agentTools = createAgentToolsEndpoint({
+    serverName: 'openmanager',
+    tools: pullRequests.tools,
+    port: () => listeningPort(),
+    version: serverVersion(),
+    log,
+  })
   let onRuntimeEvent: HostDeps['emitEvent'] = () => undefined
   // What a message queued now would run with; the composer service answers
   // once it exists, and nothing can queue before then.
@@ -328,6 +355,7 @@ export async function startServer(config: ServerConfig) {
     (event) => onRuntimeEvent(event),
     (args) => desiredConfigFor(args),
     config.runtimeOptions,
+    agentTools.host,
   )
   let observeProviderCatalog: (providerId: string, result: RuntimeProviderBootstrap) => void = () =>
     undefined
@@ -418,6 +446,11 @@ export async function startServer(config: ServerConfig) {
           log: (level, message, data) => log(level, message, data),
         })
       : undefined)
+  const toolOutputOf = createToolOutputReader(eventDatabase)
+  const readToolOutput = (sessionId: string, toolCallId: string) => {
+    eventService.flush()
+    return toolOutputOf(sessionId, toolCallId)
+  }
   const threadService = createThreadService(
     runtime,
     providerService,
@@ -450,6 +483,19 @@ export async function startServer(config: ServerConfig) {
         }
       },
       onQueueProblem: (message, data) => log('warn', message, data),
+      watchToolInput: (input) => pullRequests.wantsToolInput(input),
+      onWatchedToolSettled: ({ sessionId, toolCallId, text, startedAt }) =>
+        // After the settling update is appended, so its stored text is there to read.
+        setImmediate(() => {
+          try {
+            const output = text ?? readToolOutput(sessionId, toolCallId)?.text
+            if (output !== undefined) {
+              void pullRequests.observeSettledTool({ sessionId, output, startedAt })
+            }
+          } catch (error) {
+            log('warn', 'a settled gh pr create was not read', { reason: String(error) })
+          }
+        }),
     },
   )
   closeWorkspaceSessions = (workspaceId) => {
@@ -656,6 +702,7 @@ export async function startServer(config: ServerConfig) {
     }
     if (uploads.handle(request, response)) return
     if (pairing.handle(request, response)) return
+    if (agentTools.handle(request, response)) return
     if (request.method === 'GET' && (path === '/health' || path === '/bootstrap')) {
       response.writeHead(200, {
         'content-type': 'application/json; charset=utf-8',
@@ -853,6 +900,7 @@ export async function startServer(config: ServerConfig) {
       uploads.dispatch(command, context) ??
       filesystem.dispatch(command, context) ??
       messageSearch.dispatch(command) ??
+      pullRequests.dispatch(command) ??
       drafts.dispatch(command, context) ??
       pairing.dispatch(command, context) ??
       clientService.dispatch(command, context) ??
@@ -912,6 +960,9 @@ export async function startServer(config: ServerConfig) {
   }
   const address = server.address() as AddressInfo
   websocketUrl = `ws://127.0.0.1:${address.port}/ws`
+  listeningPort = () => address.port
+  anyClientConnected = () => sockets.connectedClientIds().size > 0
+  pullRequests.start()
   // Nothing goes out before the server listens and can describe itself. No
   // client can be connected yet, and durable events stay replayable. Looked
   // up per item, so a test can watch what is sent.
@@ -951,6 +1002,8 @@ export async function startServer(config: ServerConfig) {
     threadService,
     composerService,
     composerStore,
+    pullRequests,
+    agentTools,
     environmentSettings,
     uploads,
     pairing,
@@ -1006,6 +1059,7 @@ export async function startServer(config: ServerConfig) {
         stopLimitsEvents()
         providerLimits.stop()
         providerService.stop()
+        pullRequests.stop()
       }
       return closePromise
     },

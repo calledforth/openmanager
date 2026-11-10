@@ -60,6 +60,7 @@ import {
   applyProviderCatalog,
   applyProviderHealth,
   applyProviderLimits,
+  applyPullRequestDetail,
   applyProviderProbe,
   applyLiveNoticesCleared,
   applyRecord as applyRecordToState,
@@ -2039,6 +2040,15 @@ export function createWebSocketEnvironmentClient(
     async searchMessages(query, limit) {
       return (await request('search.messages', limit === undefined ? { query } : { query, limit }))
         .hits
+    },
+    async getPullRequest(input) {
+      const { pullRequest } = await request('pull_request.get', {
+        sessionId: input.sessionId,
+        repository: input.repository,
+        number: input.number,
+      })
+      store.update((state) => applyPullRequestDetail(state, pullRequest))
+      return pullRequest
     },
     async getEnvironmentSettings() {
       return (await request('environment.settings.get', null)).settings

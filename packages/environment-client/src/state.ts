@@ -13,6 +13,8 @@ import type {
   ProviderCatalogEntry,
   ProviderHealth,
   ProviderLimits,
+  PullRequestDetail,
+  PullRequestSummary,
   ScopeSnapshot,
   Session,
   SessionSummary as ProtocolSessionSummary,
@@ -239,6 +241,20 @@ function backgroundOf(
   return { backgroundTasks: held && sameJson(tasks, held) ? held : tasks }
 }
 
+/**
+ * A session's pull requests after an update: the stated list, or the held one
+ * when nothing was said. None is no key at all, and the held list is kept
+ * when nothing changed, so selectors stay stable.
+ */
+function pullRequestsOf(
+  reported: PullRequestSummary[] | undefined,
+  held: PullRequestSummary[] | undefined,
+): Pick<SessionSummary, 'pullRequests'> {
+  const list = reported ?? held
+  if (!list?.length) return {}
+  return { pullRequests: held && sameJson(list, held) ? held : list }
+}
+
 function upsertWorkspace(state: EnvironmentState, workspace: Workspace): EnvironmentState {
   return {
     ...state,
@@ -360,10 +376,19 @@ export function applyEvent(state: EnvironmentState, event: ProofEvent): Environm
     case 'session.updated': {
       const session = state.sessions[event.payload.sessionId]
       if (!session) return state
-      const { title, status, updatedAt, settledAt, pinnedAt, doneAt, backgroundTasks } =
-        event.payload
+      const {
+        title,
+        status,
+        updatedAt,
+        settledAt,
+        pinnedAt,
+        doneAt,
+        backgroundTasks,
+        pullRequests,
+      } = event.payload
       const {
         backgroundTasks: heldTasks,
+        pullRequests: heldPullRequests,
         waitingOn: heldWaitingOn,
         inBackground: heldInBackground,
         ...held
@@ -374,6 +399,7 @@ export function applyEvent(state: EnvironmentState, event: ProofEvent): Environm
       const next: SessionSummary = {
         ...held,
         ...backgroundOf(backgroundTasks, heldTasks),
+        ...pullRequestsOf(pullRequests, heldPullRequests),
         ...activityOf(
           status ?? session.status,
           event.payload.waitingOn !== undefined
@@ -1047,6 +1073,7 @@ export function applySessionCreated(
             ...(existing.pinnedAt ? { pinnedAt: existing.pinnedAt } : {}),
             doneAt: existing.doneAt ?? null,
             ...(existing.backgroundTasks ? { backgroundTasks: existing.backgroundTasks } : {}),
+            ...(existing.pullRequests ? { pullRequests: existing.pullRequests } : {}),
             ...(existing.waitingOn ? { waitingOn: existing.waitingOn } : {}),
             ...(existing.inBackground ? { inBackground: existing.inBackground } : {}),
           }
@@ -1162,6 +1189,37 @@ export function applyProviderLimits(
   const provider = state.providers[providerId]
   if (!provider || sameJson(provider.limits, limits)) return state
   return { ...state, providers: { ...state.providers, [providerId]: { ...provider, limits } } }
+}
+
+/** Where `state.pullRequestDetails` keeps a pull request. */
+export const pullRequestDetailKey = (pullRequest: { repository: string; number: number }) =>
+  `${pullRequest.repository}#${pullRequest.number}`
+
+/** `getPullRequest`'s answer: the environment stating the pull request in full (I10). */
+export function applyPullRequestDetail(
+  state: EnvironmentState,
+  detail: PullRequestDetail,
+): EnvironmentState {
+  const key = pullRequestDetailKey(detail)
+  const held = state.pullRequestDetails?.[key]
+  if (held && sameJson(held, detail)) return state
+  return { ...state, pullRequestDetails: { ...state.pullRequestDetails, [key]: detail } }
+}
+
+/**
+ * Whether a held detail still says what the summary says. The summary's
+ * `syncedAt` moves only when the environment read something new, so a
+ * detail read at or after it is current.
+ */
+export function pullRequestDetailIsCurrent(
+  summary: PullRequestSummary,
+  detail: PullRequestDetail | undefined,
+): boolean {
+  if (!detail) return false
+  // Never read yet: the detail holds all there is until a read lands.
+  if (summary.syncedAt === null) return true
+  if (detail.syncedAt === null) return false
+  return Date.parse(detail.syncedAt) >= Date.parse(summary.syncedAt)
 }
 
 /** A probe answers with the whole provider entry, minus the composer profile. */

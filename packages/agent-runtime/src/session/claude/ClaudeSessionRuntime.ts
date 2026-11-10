@@ -34,6 +34,7 @@ import type {
 } from '../../core/InteractionBroker.js'
 import { PERMISSION_TIMEOUT_MS, type PermissionBroker } from '../../core/PermissionBroker.js'
 import type { HostDeps } from '../../host.js'
+import { claudeMcpTools, claudeToolName } from '../../tools/agent-tools.js'
 import type { ClaudeProviderConfig } from '../../providers/index.js'
 import type { AppliedSessionState } from '../AppliedConfigCache.js'
 import { DEFAULT_RUNTIME_TIMEOUTS, type RuntimeTimeouts } from '../constants.js'
@@ -123,7 +124,7 @@ type PermissionProtocolResponse = {
 
 export type ClaudeSessionRuntimeDeps = {
   config: ClaudeProviderConfig
-  host: Pick<HostDeps, 'log' | 'onSessionTitle'>
+  host: Pick<HostDeps, 'log' | 'onSessionTitle' | 'agentTools'>
   permissions: PermissionBroker
   interactions: InteractionBroker
   timeouts?: Partial<RuntimeTimeouts>
@@ -290,7 +291,7 @@ export class ClaudeSessionRuntime implements ManagedSessionRuntime {
   private appliedAt: string | undefined
 
   private readonly config: ClaudeProviderConfig
-  private readonly host: Pick<HostDeps, 'log' | 'onSessionTitle'>
+  private readonly host: Pick<HostDeps, 'log' | 'onSessionTitle' | 'agentTools'>
   private readonly permissions: PermissionBroker
   private readonly interactions: InteractionBroker
   private readonly timeouts: RuntimeTimeouts
@@ -512,6 +513,7 @@ export class ClaudeSessionRuntime implements ManagedSessionRuntime {
     const desiredValues = this.spec.desiredConfig?.values ?? {}
     const rawEffort = desiredValues[CLAUDE_CONFIG.effort]
     const desiredEffort = typeof rawEffort === 'string' ? (rawEffort as EffortLevel) : undefined
+    const hostTools = this.hostMcpServer()
     const options: Options = {
       cwd: this.cwd,
       pathToClaudeCodeExecutable: executable,
@@ -558,6 +560,12 @@ export class ClaudeSessionRuntime implements ManagedSessionRuntime {
       // prompts, but also the two tools that are really user interactions.
       canUseTool: (toolName, input, callbackOptions) =>
         this.canUseTool(toolName, input, callbackOptions),
+      // The host's own tools, beside the user's MCP servers from their
+      // settings (merged, not replaced). Pre-approved: they act only on
+      // OpenManager's own records, so no mode should stop to ask.
+      ...(hostTools
+        ? { mcpServers: { [hostTools.name]: hostTools.server }, allowedTools: hostTools.toolNames }
+        : {}),
       stderr: (data: string) =>
         this.host.log({ scope: 'claude', level: 'warn', message: '[stderr]', data }),
     }
@@ -1801,6 +1809,32 @@ export class ClaudeSessionRuntime implements ManagedSessionRuntime {
     return this.interactions.respond(requestId, outcome, { kind: 'plan_review', outcome })
   }
 
+  /** Names Claude Code gives the host's tools; `canUseTool` allows them. */
+  private hostToolNames = new Set<string>()
+
+  /** The host's tools as an in-process SDK server, bound to this runtime. */
+  private hostMcpServer():
+    | { name: string; server: NonNullable<Options['mcpServers']>[string]; toolNames: string[] }
+    | undefined {
+    const host = this.host.agentTools
+    if (!host || host.tools.length === 0 || !this.sdk?.createMcpServer) return undefined
+    // Read at call time, so a rebind's new thread is who calls.
+    const runtime = this
+    const context = {
+      get threadId() {
+        return runtime.threadIdValue
+      },
+      providerId: this.providerId,
+    }
+    const toolNames = host.tools.map((tool) => claudeToolName(host.serverName, tool.name))
+    this.hostToolNames = new Set(toolNames)
+    return {
+      name: host.serverName,
+      server: this.sdk.createMcpServer(host.serverName, claudeMcpTools(host, context)),
+      toolNames,
+    }
+  }
+
   // -------------------------------------------------------------- canUseTool
 
   /** Everything the CLI wants to run, in a precedence that is load-bearing.
@@ -1826,6 +1860,9 @@ export class ClaudeSessionRuntime implements ManagedSessionRuntime {
     if (!sessionId)
       return { behavior: 'deny', message: `${this.providerId} has no session for this tool call` }
     try {
+      // `allowedTools` already pre-approves them; this holds in every mode
+      // even if a CLI routes them here anyway.
+      if (this.hostToolNames.has(toolName)) return { behavior: 'allow' }
       if (toolName === 'AskUserQuestion') {
         const answered = await this.askUserQuestion(sessionId, input, options)
         // Undefined only when the input was not a recognisable question set, in

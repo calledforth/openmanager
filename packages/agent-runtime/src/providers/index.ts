@@ -104,6 +104,22 @@ export type AcpProviderConfig = ProviderConfigBase & {
   }
   extensions: ExtensionHandlers
   subtasks?: SubtaskAdapter
+  /**
+   * Environment that lets the host's own MCP tools run without the agent
+   * asking, for a provider that asks by configuration rather than for every
+   * MCP call. Merged over the provider's environment when the session is
+   * served host tools. `env` is the environment it will be merged into, so a
+   * setting the user already passes is extended rather than replaced.
+   *
+   * The runtime answers a permission prompt itself only on a structural
+   * match no tool input can forge (Cursor's `providerIdentifier`); a
+   * provider without one must keep its own prompt from being raised.
+   */
+  allowHostTools?: (
+    tools: { serverName: string; toolNames: readonly string[] },
+    env: Readonly<Record<string, string>>,
+  ) => Record<string, string>
+
   /** What the provider can say about its models outside a session. Both are
    * optional, and independent of each other. */
   models?: {

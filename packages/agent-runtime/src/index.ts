@@ -136,3 +136,11 @@ export type {
 export type { HostDeps, HostLogEntry } from './host.js'
 export { projectAgentEvent, ToolCallTracker } from './protocol/projectAgentEvent.js'
 export type { ProtocolEventContext } from './protocol/projectAgentEvent.js'
+export { callAgentTool, claudeToolName, serveAgentToolsHttp } from './tools/agent-tools.js'
+export type {
+  AgentTool,
+  AgentToolContext,
+  AgentToolResult,
+  AgentToolsHost,
+  RemoteAgentTools,
+} from './tools/agent-tools.js'

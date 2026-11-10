@@ -6,7 +6,8 @@ import { cn } from "../lib/utils";
 
 // ---------------------------------------------------------------------------
 // The main region's topbar: a slim strip for the trigger and whatever the
-// host puts beside it (a title trail). While the sidebar is only PEEKED the
+// host puts beside it (a title trail), plus an optional right-aligned `end`
+// group (status notices, a side panel's toggle). While the sidebar is only PEEKED the
 // trigger hides (the overlay covers it anyway); after a pin it fades back in
 // slightly late, so it appears at its settled position instead of riding the
 // inset's slide.
@@ -14,9 +15,13 @@ import { cn } from "../lib/utils";
 
 export function SidebarInsetTopbar({
   children,
+  end,
   className,
 }: {
   children?: ReactNode;
+  /** Right-aligned group. Its items share one flex row, so several can sit
+   *  there without competing `ml-auto`s. */
+  end?: ReactNode;
   className?: string;
 }) {
   const { isPeeking } = useSidebar();
@@ -34,6 +39,9 @@ export function SidebarInsetTopbar({
         }`}
       />
       {children}
+      {end != null && end !== false ? (
+        <div className="ml-auto flex min-w-0 items-center gap-1">{end}</div>
+      ) : null}
     </header>
   );
 }

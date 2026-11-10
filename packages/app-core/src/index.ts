@@ -28,3 +28,10 @@ export {
   EnvironmentApplicationProviders,
   type EnvironmentApplicationOptions,
 } from './providers/environment-application'
+export {
+  PULL_REQUEST_WATCH_RENEW_MS,
+  usePullRequestDetail,
+  useSessionPullRequests,
+  type PullRequestDetailOptions,
+  type PullRequestDetailState,
+} from './lib/pull-requests/use-pull-requests'

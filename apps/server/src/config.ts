@@ -13,6 +13,7 @@ import {
 } from './tunnel.ts'
 import type { WorkspaceRuntimeResolver } from './thread-service.ts'
 import type { EventRepositoryOptions } from './db/event-repository.ts'
+import type { GitHubReader } from './pull-requests/github.ts'
 
 export const LOG_LEVELS = ['debug', 'info', 'warn', 'error', 'silent'] as const
 export type LogLevel = (typeof LOG_LEVELS)[number]
@@ -83,6 +84,8 @@ export interface ServerConfig {
    * the convergence harness uses them to kill the server inside a write.
    */
   commitHooks?: Pick<EventRepositoryOptions, 'beforeCommit' | 'afterCommit'>
+  /** Test-only GitHub reader for linked pull requests; production uses the user's `gh` login. */
+  github?: GitHubReader
   /** Test-only connector seams (fake cloudflared, fake self-check, short timers). */
   tunnelOptions?: Pick<TunnelSupervisorOptions, 'spawn' | 'fetch' | 'now' | 'timing' | 'env'>
 }

@@ -42,6 +42,7 @@ import type {
 } from '../core/InteractionBroker.js'
 import type { PermissionBroker } from '../core/PermissionBroker.js'
 import type { HostDeps } from '../host.js'
+import type { RemoteAgentTools } from '../tools/agent-tools.js'
 import { OpenCodeQuestions, type OpenCodeQuestionRequest } from '../providers/opencode-questions.js'
 import {
   acpCommandBin,
@@ -104,7 +105,7 @@ import {
  * settles only its own thread's requests when it exits. */
 export type SessionRuntimeDeps = {
   config: AcpProviderConfig
-  host: Pick<HostDeps, 'log' | 'onSessionTitle'>
+  host: Pick<HostDeps, 'log' | 'onSessionTitle' | 'agentTools'>
   permissions: PermissionBroker
   interactions: InteractionBroker
   /** Overrides for DEFAULT_RUNTIME_TIMEOUTS. */
@@ -163,11 +164,15 @@ export class AcpSessionRuntimeImpl implements ManagedSessionRuntime {
   private stopRequest: TerminationRequest | undefined
   private nativeQuestions: OpenCodeQuestions | null = null
   private sessionListAdvertisedValue = false
+  /** Whether `initialize` advertised `mcpCapabilities.http`. */
+  private httpMcpAdvertised = false
+  /** This session's grant to the host's tools, while the process lives. */
+  private remoteTools: RemoteAgentTools | undefined
   /** Tail of the dispatch gate — see `withDispatchGate`. */
   private dispatchGate: Promise<unknown> = Promise.resolve()
 
   private readonly config: AcpProviderConfig
-  private readonly host: Pick<HostDeps, 'log' | 'onSessionTitle'>
+  private readonly host: Pick<HostDeps, 'log' | 'onSessionTitle' | 'agentTools'>
   private readonly permissions: PermissionBroker
   private readonly interactions: InteractionBroker
   private readonly connections: AcpConnectionFactory
@@ -402,7 +407,7 @@ export class AcpSessionRuntimeImpl implements ManagedSessionRuntime {
         command,
         args,
         cwd: this.cwd,
-        env: environment(this.config.command.env),
+        env: this.processEnvironment(),
         client,
         spawnTimeoutMs: this.timeouts.spawnMs,
         terminateGraceMs: this.timeouts.terminateGraceMs,
@@ -450,6 +455,8 @@ export class AcpSessionRuntimeImpl implements ManagedSessionRuntime {
       response,
       this.config.capabilities.canListSessions,
     )
+    this.httpMcpAdvertised =
+      object(object(response.agentCapabilities).mcpCapabilities).http === true
     const methods = authMethods(response)
     this.emit(
       routeEvent(this.route(), undefined, 'lifecycle', 'initialized', {
@@ -511,7 +518,7 @@ export class AcpSessionRuntimeImpl implements ManagedSessionRuntime {
             this.connection().loadSession({
               sessionId: this.spec.sessionId,
               cwd: this.cwd,
-              mcpServers: [],
+              mcpServers: this.hostMcpServers(),
             }),
           ),
         )
@@ -561,7 +568,7 @@ export class AcpSessionRuntimeImpl implements ManagedSessionRuntime {
         await this.rpc(
           'session/new',
           this.timeouts.newSessionMs,
-          this.connection().newSession({ cwd: this.cwd, mcpServers: [] }),
+          this.connection().newSession({ cwd: this.cwd, mcpServers: this.hostMcpServers() }),
         ),
       )
       const sessionId = string(response.sessionId)
@@ -577,6 +584,52 @@ export class AcpSessionRuntimeImpl implements ManagedSessionRuntime {
       if (isAuthRequired(error)) throw this.authRequired(undefined, errorMessage(error))
       throw error
     }
+  }
+
+  /** The agent's environment: the provider's, plus what lets the host's own
+   * tools run unasked where the provider needs telling (see `allowHostTools`). */
+  private processEnvironment(): Record<string, string> {
+    const env = environment(this.config.command.env)
+    const host = this.host.agentTools
+    if (!this.config.allowHostTools || !host?.openRemote || host.tools.length === 0) return env
+    const tools = { serverName: host.serverName, toolNames: host.tools.map((tool) => tool.name) }
+    return { ...env, ...this.config.allowHostTools(tools, env) }
+  }
+
+  /** The host's tools for this session, granted once and revoked on exit.
+   * HTTP when the agent's `initialize` advertised it (Cursor and OpenCode
+   * both do), else the stdio bridge every ACP agent can launch. */
+  private hostMcpServers(): acp.McpServer[] {
+    const host = this.host.agentTools
+    if (!host?.openRemote || host.tools.length === 0) return []
+    if (!this.remoteTools) {
+      const runtime = this
+      this.remoteTools = host.openRemote({
+        get threadId() {
+          return runtime.threadIdValue
+        },
+        providerId: this.providerId,
+      })
+    }
+    const grant = this.remoteTools
+    if (this.httpMcpAdvertised) {
+      return [
+        {
+          type: 'http',
+          name: host.serverName,
+          url: grant.http.url,
+          headers: Object.entries(grant.http.headers).map(([name, value]) => ({ name, value })),
+        },
+      ]
+    }
+    return [
+      {
+        name: host.serverName,
+        command: grant.stdio.command,
+        args: grant.stdio.args,
+        env: Object.entries(grant.stdio.env).map(([name, value]) => ({ name, value })),
+      },
+    ]
   }
 
   async stop(request: TerminationRequest): Promise<SessionRuntimeExit> {
@@ -609,6 +662,9 @@ export class AcpSessionRuntimeImpl implements ManagedSessionRuntime {
     this.interactions.settleThread(this.providerId, this.threadIdValue)
     this.nativeQuestions?.dispose()
     this.nativeQuestions = null
+    // The process that held the grant is gone; nothing may use it again.
+    this.remoteTools?.close()
+    this.remoteTools = undefined
     if (emitted)
       this.emit(
         routeEvent(this.route(), this.sessionIdValue, 'lifecycle', 'process_exited', {
@@ -1097,6 +1153,19 @@ export class AcpSessionRuntimeImpl implements ManagedSessionRuntime {
         kind: (string(o.kind) ?? 'reject_once') as PermissionOption['kind'],
       }
     })
+    // The host's own tools act only on the host's records: the agent asking
+    // to run one is answered here, never put to the user (Cursor asks for
+    // every MCP tool).
+    const toolCallId = string(tool.toolCallId)
+    if (
+      (toolCallId !== undefined && this.hostToolCallIds.has(toolCallId)) ||
+      this.isHostToolCall(tool)
+    ) {
+      const allow =
+        options.find((option) => option.kind === 'allow_once') ??
+        options.find((option) => option.kind === 'allow_always')
+      if (allow) return { outcome: { outcome: 'selected', optionId: allow.optionId } }
+    }
     const expiresAt = new Date(Date.now() + 5 * 60 * 1000).toISOString()
     this.emit(
       routeEvent(this.route(), sessionId, 'permission', 'permission_request', {
@@ -1122,6 +1191,31 @@ export class AcpSessionRuntimeImpl implements ManagedSessionRuntime {
         resolve,
       }),
     )
+  }
+
+  /** Tool calls the agent made to the host's own tools, by provider id. */
+  private readonly hostToolCallIds = new Set<string>()
+
+  /** Whether the agent names this call as one of the host's tools, by a field
+   * its MCP client fills in and no tool input can: Cursor's
+   * `rawInput.providerIdentifier` (the MCP server) with `toolName`. Never by
+   * title: OpenCode titles a shell call with its command, so a command
+   * spelled like the tool would pass (its prompt is kept from being raised
+   * instead, see `allowHostTools`). Only while this runtime holds a grant. */
+  private isHostToolCall(tool: { rawInput?: unknown }): boolean {
+    const host = this.host.agentTools
+    if (!host || !this.remoteTools) return false
+    const input = object(tool.rawInput)
+    const named = string(input.toolName)
+    return (
+      string(input.providerIdentifier) === host.serverName &&
+      named !== undefined &&
+      host.tools.some((item) => item.name === named)
+    )
+  }
+
+  private noteHostToolCall(tool: { toolCallId: string; rawInput?: unknown }) {
+    if (tool.toolCallId && this.isHostToolCall(tool)) this.hostToolCallIds.add(tool.toolCallId)
   }
 
   private async sessionUpdate(params: acp.SessionNotification): Promise<void> {
@@ -1178,6 +1272,7 @@ export class AcpSessionRuntimeImpl implements ManagedSessionRuntime {
         locations: update.locations as ToolCall['locations'],
         metadata: update._meta as ToolCall['metadata'],
       }
+      this.noteHostToolCall(tool)
       const subtask = this.subtaskFromTool(tool, 'call')
       this.emit(
         subtask
@@ -1198,6 +1293,7 @@ export class AcpSessionRuntimeImpl implements ManagedSessionRuntime {
         locations: update.locations as ToolCallUpdate['locations'],
         metadata: update._meta as ToolCallUpdate['metadata'],
       }
+      this.noteHostToolCall(tool)
       const subtask = this.subtaskFromTool(tool, 'update')
       this.emit(
         subtask
@@ -1684,7 +1780,7 @@ function environment(overrides: Record<string, string> | undefined): Record<stri
 
 export type AcpSessionRuntimeFactoryDeps = {
   configs: Readonly<Record<ProviderId, ProviderConfig>>
-  host: Pick<HostDeps, 'log' | 'onSessionTitle'>
+  host: Pick<HostDeps, 'log' | 'onSessionTitle' | 'agentTools'>
   permissions: PermissionBroker
   interactions: InteractionBroker
   connections: AcpConnectionFactory

@@ -39,6 +39,7 @@ const commands: EnvironmentCommands = {
   setSessionConfigOption: reject('setSessionConfigOption'),
   browseFolders: reject('browseFolders'),
   searchMessages: reject('searchMessages'),
+  getPullRequest: reject('getPullRequest'),
   getEnvironmentSettings: reject('getEnvironmentSettings'),
   setEnvironmentSettings: reject('setEnvironmentSettings'),
   renameEnvironment: reject('renameEnvironment'),

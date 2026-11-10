@@ -146,6 +146,11 @@ type ActiveTurn = {
   toolCalls?: ToolCallTracker
   /** The tool call behind each open question, by host interaction id, when the provider says. */
   questionTools?: Map<string, string>
+  /**
+   * Tool calls whose input `watchToolInput` asked to see settle, by host id,
+   * with when the host first saw that input (no later than the call ran).
+   */
+  watchedTools?: Map<string, number>
   toolIds: Map<string, string>
   interactionIds: Map<string, string>
   /** Each open request's kind and when it was raised, by host id. */
@@ -505,6 +510,21 @@ export function createThreadService(
     }) => QueuedMessageSettings
     /** Something the queue could not do that nobody is waiting on an answer for. */
     onQueueProblem?: (message: string, data: Record<string, unknown>) => void
+    /**
+     * Tool calls the host wants to hear about when they end, by their input
+     * (a shell command running `gh pr create`). Asked of every tool update
+     * that carries input; each call it accepts is reported once by
+     * `onWatchedToolSettled`, when it completes or fails, with its whole text
+     * when the update carries it. Called before the update is appended.
+     */
+    watchToolInput?: (input: unknown) => boolean
+    onWatchedToolSettled?: (args: {
+      sessionId: string
+      toolCallId: string
+      text: string | undefined
+      /** When the host first saw the call's input, in ms: before it ran. */
+      startedAt: number
+    }) => void
   } = {},
 ) {
   const sessions = new Map<string, ThreadRecord>()
@@ -1301,6 +1321,27 @@ export function createThreadService(
     if (projected.name === 'tool.updated') {
       const text = toolCalls?.takeBody(projected.payload.toolCallId)
       if (text !== undefined) withSettledText(projected, text)
+      const { toolCallId, input, status } = projected.payload
+      if (
+        active &&
+        input !== undefined &&
+        !active.watchedTools?.has(toolCallId) &&
+        options.watchToolInput?.(input)
+      ) {
+        ;(active.watchedTools ??= new Map()).set(toolCallId, Date.now())
+      }
+      // `gh pr create` that found a pull request already open exits with a
+      // failure and still names it, so a failed call is reported too.
+      const startedAt = active?.watchedTools?.get(toolCallId)
+      if (startedAt !== undefined && (status === 'completed' || status === 'failed')) {
+        active!.watchedTools!.delete(toolCallId)
+        options.onWatchedToolSettled?.({
+          sessionId: record.session.sessionId,
+          toolCallId,
+          text,
+          startedAt,
+        })
+      }
     }
     if (
       projected.name === 'message.delta' &&

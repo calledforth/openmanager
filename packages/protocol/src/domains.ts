@@ -1,6 +1,7 @@
 import { z } from 'zod'
 import { SessionTitleSourceSchema } from './session-title.js'
 import { SessionComposerStateSchema } from './session-composer.js'
+import { PullRequestSummaryListSchema } from './pull-requests.js'
 
 /** Host-owned resource identity, distinct from a command's request ID. */
 export const EntityIdSchema = z.string().min(1).max(256).regex(/^\S+$/)
@@ -189,6 +190,11 @@ export const SessionSummarySchema = SessionSchema.extend({
   inBackground: z.literal(true).optional(),
   /** Absent until the session has a selection, and on older environments. */
   composer: SessionComposerStateSchema.optional(),
+  /**
+   * Pull requests linked to the session, oldest link first. Absent when there
+   * are none, and on older environments. See `pull-requests.ts`.
+   */
+  pullRequests: PullRequestSummaryListSchema.optional(),
 })
 export const ThreadSchema = z.object({ threadId: EntityIdSchema, sessionId: EntityIdSchema })
 
