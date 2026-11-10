@@ -4,8 +4,10 @@ import { join } from 'node:path'
 import type { DatabaseSync } from 'node:sqlite'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import {
+  PULL_REQUEST_CHECK_RUNS_MAX,
   PULL_REQUESTS_PER_SESSION_MAX,
   ProofEventSchemas,
+  PullRequestDetailSchema,
   PullRequestSummaryListSchema,
   type ProofEvent,
 } from '@openmanager/protocol/node'
@@ -97,17 +99,33 @@ describe('gh pr create', () => {
     expect(shellCommandOf('gh pr create')).toBeUndefined()
   })
 
+  it('never takes a dry run, which prints the body and opens nothing', () => {
+    expect(runsGhPrCreate('gh pr create --dry-run --body-file b.md')).toBe(false)
+    expect(runsGhPrCreate('gh pr create --fill --dry-run')).toBe(false)
+    expect(runsGhPrCreate('gh pr create --fill --title "no --dry-run-ish"')).toBe(true)
+  })
+
   it('finds the pull request it opened, or the one that already existed', () => {
     expect(
       pullRequestCreatedBy(
         'Creating pull request for feat into main in calledforth/openmanager\n\nhttps://github.com/calledforth/openmanager/pull/298\n',
       ),
-    ).toEqual(REF)
+    ).toEqual({ ref: REF, existingHead: null })
     expect(
       pullRequestCreatedBy(
         'a pull request for branch "feat" into branch "main" already exists:\nhttps://github.com/calledforth/openmanager/pull/298\n',
       ),
-    ).toEqual(REF)
+    ).toEqual({ ref: REF, existingHead: 'feat' })
+    // More than one candidate: which one is new cannot be told.
+    expect(
+      pullRequestCreatedBy(
+        'https://github.com/calledforth/openmanager/pull/298\nhttps://github.com/calledforth/openmanager/pull/297\n',
+      ),
+    ).toBeNull()
+    // The same one twice is still one.
+    expect(
+      pullRequestCreatedBy(`${REF.url}\nhttps://github.com/CalledForth/OpenManager/pull/298\n`),
+    ).toEqual({ ref: REF, existingHead: null })
     // A URL inside prose is not what gh printed.
     expect(
       pullRequestCreatedBy('see https://github.com/calledforth/openmanager/pull/12 for context'),
@@ -222,6 +240,49 @@ describe('GitHub GraphQL', () => {
     expect(pullRequestFromGraphQL(REF, { ...GRAPHQL_NODE, state: 'CLOSED' }).state).toBe('closed')
   })
 
+  it('lists one page of check runs and carries GitHub count of them all', () => {
+    const run = (n: number) => ({
+      __typename: 'CheckRun',
+      name: `check ${n}`,
+      status: 'COMPLETED',
+      conclusion: 'SUCCESS',
+    })
+    const node = {
+      ...GRAPHQL_NODE,
+      headCommit: {
+        nodes: [
+          {
+            commit: {
+              statusCheckRollup: {
+                state: 'FAILURE',
+                contexts: {
+                  totalCount: 140,
+                  nodes: Array.from({ length: PULL_REQUEST_CHECK_RUNS_MAX + 5 }, (_, n) => run(n)),
+                },
+              },
+            },
+          },
+        ],
+      },
+    }
+    const read = pullRequestFromGraphQL(REF, node)
+    expect(read.checkRuns).toHaveLength(PULL_REQUEST_CHECK_RUNS_MAX)
+    expect(read.checkRunsTotal).toBe(140)
+    expect(
+      PullRequestDetailSchema.parse({
+        ...read,
+        linkedAt: '2026-11-10T10:00:00.000Z',
+        syncedAt: null,
+        problem: null,
+      }),
+    ).toMatchObject({ checkRunsTotal: 140 })
+    expect(pullRequestQuery([REF]).query).toContain(
+      `contexts(first: ${PULL_REQUEST_CHECK_RUNS_MAX}) {\n            totalCount`,
+    )
+    // A rollup without a count says none.
+    expect('checkRunsTotal' in pullRequestFromGraphQL(REF, GRAPHQL_NODE)).toBe(false)
+  })
+
   it('asks for every pull request in one query, by variables', () => {
     const { query, variables } = pullRequestQuery([REF, { ...REF, number: 1 }])
     expect(query).toContain('pr0: repository(owner: $o0, name: $n0)')
@@ -311,6 +372,7 @@ const READ = pullRequestFromGraphQL(REF, GRAPHQL_NODE)
 async function harness(
   reads: (refs: readonly PullRequestRef[]) => PullRequestReadResult[] = (refs) =>
     refs.map((ref) => ({ read: { ...READ, repository: ref.repository, number: ref.number } })),
+  options: { now?: () => number; failWrites?: () => boolean } = {},
 ) {
   const directory = await mkdtemp(join(tmpdir(), 'openmanager-pr-test-'))
   directories.push(directory)
@@ -333,10 +395,15 @@ async function harness(
     database,
     github,
     environmentId: () => 'environment-1',
-    appendAtomic: (list, options) => events.appendAtomic(list, options),
+    appendAtomic: (list, writeOptions) => {
+      // A write that fails the way `appendAtomic` can: its flush throws first.
+      if (options.failWrites?.()) throw new Error('SQLITE_BUSY: database is locked')
+      return events.appendAtomic(list, writeOptions)
+    },
     flush: () => events.flush(),
     anyClientConnected: () => true,
     log: () => undefined,
+    ...(options.now ? { now: options.now } : {}),
   })
   cleanups.push(() => {
     service.stop()
@@ -428,19 +495,89 @@ describe('linking', () => {
     expect(listed(database)?.[0]).toMatchObject({ title: null, problem: 'not_signed_in' })
   })
 
-  it('links what gh pr create printed, once, as its own source', async () => {
-    const { database, service } = await harness()
-    service.observeSettledTool({
-      sessionId: 'session-1',
-      output: `a pull request for branch "x" into branch "main" already exists:\n${REF.url}\n`,
+  describe('from gh pr create', () => {
+    // READ was created at 2026-11-08T10:00:00Z from the head `feat/search`.
+    const CREATED_AT = Date.parse('2026-11-08T10:00:00Z')
+
+    it('links the one it opened, confirmed by GitHub, with what it read, in one event', async () => {
+      const { database, service, published, github } = await harness()
+      await service.observeSettledTool({
+        sessionId: 'child-1',
+        output: `Creating pull request for feat/search into main\n\n${REF.url}\n`,
+        startedAt: CREATED_AT - 5_000,
+      })
+      expect(listed(database)).toEqual([
+        expect.objectContaining({ number: 298, title: 'Search what was said in chats' }),
+      ])
+      expect(database.prepare('SELECT source FROM session_pull_requests').get()).toEqual({
+        source: 'gh_pr_create',
+      })
+      // Never shown before GitHub confirmed it: the first event already has the read.
+      const updates = published.filter((event) => event.name === 'session.updated')
+      expect(updates).toHaveLength(1)
+      // Linked already: the next settle reads nothing and links nothing.
+      await service.observeSettledTool({
+        sessionId: 'session-1',
+        output: `${REF.url}\n`,
+        startedAt: CREATED_AT,
+      })
+      expect(github.read).toHaveBeenCalledTimes(1)
+      expect(service.wantsToolInput({ command: 'gh pr create --fill' })).toBe(true)
+      expect(service.wantsToolInput({ command: 'gh pr view 298' })).toBe(false)
     })
-    service.observeSettledTool({ sessionId: 'session-1', output: `${REF.url}\n` })
-    expect(listed(database)).toHaveLength(1)
-    expect(database.prepare('SELECT source FROM session_pull_requests').get()).toEqual({
-      source: 'gh_pr_create',
+
+    it('links the one that already existed for the branch it named', async () => {
+      const { database, service } = await harness()
+      await service.observeSettledTool({
+        sessionId: 'session-1',
+        output: `a pull request for branch "someone:feat/search" into branch "main" already exists:\n${REF.url}\n`,
+        // Long after it was opened: gh found it, it did not open it.
+        startedAt: CREATED_AT + 86_400_000,
+      })
+      expect(listed(database)).toHaveLength(1)
     })
-    expect(service.wantsToolInput({ command: 'gh pr create --fill' })).toBe(true)
-    expect(service.wantsToolInput({ command: 'gh pr view 298' })).toBe(false)
+
+    it('links nothing GitHub does not confirm', async () => {
+      const { database, service, published } = await harness()
+      const later = CREATED_AT + 86_400_000
+      // gh pr create failed, and a list printed one old pull request.
+      await service.observeSettledTool({
+        sessionId: 'session-1',
+        output: `pull request create failed: GraphQL: No commits between main and feat\n${REF.url}\n`,
+        startedAt: later,
+      })
+      // "Already exists" for another branch than the one GitHub has.
+      await service.observeSettledTool({
+        sessionId: 'session-1',
+        output: `a pull request for branch "other" into branch "main" already exists:\n${REF.url}\n`,
+        startedAt: later,
+      })
+      // `gh pr create --fill; gh pr list --json url -q '.[].url'`: several printed.
+      await service.observeSettledTool({
+        sessionId: 'session-1',
+        output: `${REF.url}\nhttps://github.com/calledforth/openmanager/pull/297\n`,
+        startedAt: CREATED_AT - 5_000,
+      })
+      expect(listed(database) ?? []).toEqual([])
+      expect(published.filter((event) => event.name === 'session.updated')).toEqual([])
+      // `--dry-run` prints the body, which may hold a pull request URL on a
+      // line of its own; the command is never watched.
+      expect(service.wantsToolInput({ command: 'gh pr create --dry-run --body-file b.md' })).toBe(
+        false,
+      )
+    })
+
+    it('links nothing when GitHub cannot be read to confirm it', async () => {
+      const { database, service } = await harness((refs) =>
+        refs.map(() => ({ problem: 'unreachable' })),
+      )
+      await service.observeSettledTool({
+        sessionId: 'session-1',
+        output: `${REF.url}\n`,
+        startedAt: CREATED_AT - 5_000,
+      })
+      expect(listed(database) ?? []).toEqual([])
+    })
   })
 
   it('refuses a new link no write names a source for', async () => {
@@ -520,6 +657,39 @@ describe('pull_request.get and polling', () => {
     const reads = vi.mocked(github.read).mock.calls.length
     await service.pollOnce()
     expect(vi.mocked(github.read).mock.calls.length).toBe(reads)
+  })
+
+  it('keeps a change it could not publish out of its copy, and publishes it next poll', async () => {
+    let state: PullRequestRead['state'] = 'open'
+    let at = Date.parse('2026-11-10T10:00:00Z')
+    let failing = false
+    const { call, service, published, database } = await harness(
+      (refs) => refs.map(() => ({ read: { ...READ, state } })),
+      { now: () => at, failWrites: () => failing },
+    )
+    await call(REF.url)
+    const copy = () =>
+      database.prepare('SELECT state, attempted_at FROM pull_requests').get() as {
+        state: string
+        attempted_at: number
+      }
+    const before = published.length
+    // Merged on GitHub, and the write that would say so fails.
+    state = 'merged'
+    failing = true
+    at += 60_000
+    await service.pollOnce()
+    expect(published.length).toBe(before)
+    // The copy still says what clients were told; only the pace moved.
+    expect(copy()).toEqual({ state: 'open', attempted_at: at })
+    expect(listed(database)?.[0]?.state).toBe('open')
+    // The next poll finds the change again, and this time it lands.
+    failing = false
+    at += 60_000
+    await service.pollOnce()
+    expect(published.length).toBe(before + 1)
+    expect(copy().state).toBe('merged')
+    expect(listed(database)?.[0]?.state).toBe('merged')
   })
 })
 

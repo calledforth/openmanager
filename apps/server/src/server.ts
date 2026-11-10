@@ -484,12 +484,14 @@ export async function startServer(config: ServerConfig) {
       },
       onQueueProblem: (message, data) => log('warn', message, data),
       watchToolInput: (input) => pullRequests.wantsToolInput(input),
-      onWatchedToolSettled: ({ sessionId, toolCallId, text }) =>
+      onWatchedToolSettled: ({ sessionId, toolCallId, text, startedAt }) =>
         // After the settling update is appended, so its stored text is there to read.
         setImmediate(() => {
           try {
             const output = text ?? readToolOutput(sessionId, toolCallId)?.text
-            if (output !== undefined) pullRequests.observeSettledTool({ sessionId, output })
+            if (output !== undefined) {
+              void pullRequests.observeSettledTool({ sessionId, output, startedAt })
+            }
           } catch (error) {
             log('warn', 'a settled gh pr create was not read', { reason: String(error) })
           }

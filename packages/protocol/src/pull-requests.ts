@@ -21,6 +21,14 @@ export const PULL_REQUEST_GET_CAPABILITY = 'pull_request.get' as const
  */
 export const PULL_REQUESTS_PER_SESSION_MAX = 100
 
+/**
+ * The most check runs a detail lists: one page of the head commit's checks.
+ * GitHub's GraphQL API returns at most 100 nodes per page, and reading a
+ * second page would cost a request per pull request instead of one for 25.
+ * A pull request with more says how many in `checkRunsTotal`.
+ */
+export const PULL_REQUEST_CHECK_RUNS_MAX = 100
+
 /** GitHub's own cap on a body is 65,536 characters; this leaves room for UTF-16. */
 export const PULL_REQUEST_BODY_MAX = 262_144
 
@@ -126,7 +134,13 @@ export const PullRequestDetailSchema = PullRequestSummarySchema.extend({
   changedFiles: z.number().int().nonnegative().nullable(),
   commits: z.number().int().nonnegative().nullable(),
   reviewers: z.array(PullRequestReviewerSchema).max(100),
-  checkRuns: z.array(PullRequestCheckRunSchema).max(200),
+  checkRuns: z.array(PullRequestCheckRunSchema).max(PULL_REQUEST_CHECK_RUNS_MAX),
+  /**
+   * GitHub's count of the head commit's checks, which is more than
+   * `checkRuns` lists when there are more than one page. Absent from an
+   * environment that does not say (additive).
+   */
+  checkRunsTotal: z.number().int().nonnegative().optional(),
 })
 
 const command = <N extends string, P extends z.ZodType>(name: N, payload: P) =>

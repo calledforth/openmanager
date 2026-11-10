@@ -279,7 +279,13 @@ function PropertyList({
       ) : null}
       {pr.checks || pr.checkRuns.length > 0 ? (
         <Property label="Checks">
-          <Checks summary={pr.checks} runs={pr.checkRuns} onOpen={onOpenOnGitHub} />
+          <Checks
+            summary={pr.checks}
+            runs={pr.checkRuns}
+            total={pr.checkRunsTotal}
+            checksUrl={`${pr.url}/checks`}
+            onOpen={onOpenOnGitHub}
+          />
         </Property>
       ) : null}
       {pr.labels.length > 0 ? (
@@ -406,13 +412,25 @@ function Review({
   )
 }
 
+/**
+ * The rollup, then the runs. The environment lists one page of runs (see
+ * `PULL_REQUEST_CHECK_RUNS_MAX`); the rest are counted, and the list ends
+ * with a row opening them on GitHub. Counts in the line are of the listed
+ * runs. A failing rollup whose failure is not among them says so, and the
+ * row for the rest carries the failure, so the list never reads all green.
+ */
 function Checks({
   summary,
   runs,
+  total,
+  checksUrl,
   onOpen,
 }: {
   summary: PullRequestDetail['checks']
   runs: readonly PullRequestCheckRun[]
+  /** GitHub's count of every run, when the environment says it. */
+  total: number | undefined
+  checksUrl: string
   onOpen: (url: string) => void
 }) {
   const [open, setOpen] = useState(summary === 'failing')
@@ -420,15 +438,29 @@ function Checks({
   const meta = summary ? PR_CHECKS[summary] : null
   const failed = runs.filter((r) => r.state === 'failure').length
   const passed = runs.filter((r) => r.state === 'success').length
-  const detail =
+  const unlisted = Math.max(0, (total ?? runs.length) - runs.length)
+  // The rollup failed on a run the list does not hold.
+  const failureUnlisted = summary === 'failing' && failed === 0
+  const listed =
     runs.length === 0
       ? ''
       : summary === 'failing'
-        ? `${failed} of ${runs.length} failed`
+        ? failed > 0
+          ? `${failed} of ${runs.length} failed`
+          : ''
         : summary === 'pending'
           ? `${passed} of ${runs.length} done`
           : `${runs.length} ${runs.length === 1 ? 'check' : 'checks'}`
-  const expandable = runs.length > 0
+  const detail =
+    unlisted === 0
+      ? listed
+      : failureUnlisted
+        ? `${unlisted} not listed`
+        : listed
+          ? `${listed}, ${unlisted} more`
+          : `${unlisted} more`
+  const expandable = runs.length > 0 || unlisted > 0
+  const rest = failureUnlisted ? PR_CHECKS.failing : null
 
   return (
     <div className="flex min-w-0 flex-1 flex-col">
@@ -518,6 +550,36 @@ function Checks({
                 </li>
               )
             })}
+            {unlisted > 0 ? (
+              <li className={cn(runs.length === 0 && 'pt-1.5')}>
+                <button
+                  type="button"
+                  onClick={() => onOpen(checksUrl)}
+                  className="group/run -mx-1.5 flex w-[calc(100%+12px)] cursor-pointer items-center gap-2 rounded-md px-1.5 py-[3px] text-left transition-colors duration-150 hover:bg-hover focus-visible:outline-2 focus-visible:outline-ring"
+                >
+                  {rest ? (
+                    <rest.Icon
+                      size={12}
+                      weight="bold"
+                      className="shrink-0"
+                      style={{ color: rest.color }}
+                      aria-hidden
+                    />
+                  ) : (
+                    <span className="size-3 shrink-0" aria-hidden />
+                  )}
+                  <span className="min-w-0 flex-1 truncate text-12-regular leading-none text-[var(--basis-text-muted)]">
+                    {unlisted} more on GitHub
+                  </span>
+                  {rest ? <span className="sr-only">One or more failed</span> : null}
+                  <ArrowSquareOutIcon
+                    size={11}
+                    className="shrink-0 text-[var(--basis-text-faint)] opacity-0 transition-opacity duration-150 group-hover/run:opacity-100 group-focus-visible/run:opacity-100"
+                    aria-hidden
+                  />
+                </button>
+              </li>
+            ) : null}
           </motion.ul>
         ) : null}
       </AnimatePresence>

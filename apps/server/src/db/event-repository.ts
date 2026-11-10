@@ -64,6 +64,14 @@ export interface WriteOptions {
    * row it inserts, and refuses a new link without one (pull-requests/).
    */
   pullRequestSources?: Readonly<Record<string, 'tool' | 'gh_pr_create'>>
+  /**
+   * Host-private rows these events state, written inside the same
+   * transaction before the events, so both commit or neither does. The
+   * environment's copy of a pull request goes this way with the
+   * `session.updated` that states it (pull-requests/): a write that fails
+   * leaves the copy as it was, so the next read finds the change again.
+   */
+  alongside?: () => void
 }
 
 /** The key of one session's link to one pull request, in `pullRequestSources`. */
@@ -501,6 +509,7 @@ export function createEventRepository(
         workspaces: new Map(),
         retriedStatus: [],
       }
+      writeOptions?.alongside?.()
       const records = pending.flatMap(({ scope, events }) =>
         writeScope(scope, events, writtenAt, transaction, writeOptions),
       )

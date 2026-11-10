@@ -146,8 +146,11 @@ type ActiveTurn = {
   toolCalls?: ToolCallTracker
   /** The tool call behind each open question, by host interaction id, when the provider says. */
   questionTools?: Map<string, string>
-  /** Tool calls whose input `watchToolInput` asked to see settle, by host id. */
-  watchedTools?: Set<string>
+  /**
+   * Tool calls whose input `watchToolInput` asked to see settle, by host id,
+   * with when the host first saw that input (no later than the call ran).
+   */
+  watchedTools?: Map<string, number>
   toolIds: Map<string, string>
   interactionIds: Map<string, string>
   /** Each open request's kind and when it was raised, by host id. */
@@ -519,6 +522,8 @@ export function createThreadService(
       sessionId: string
       toolCallId: string
       text: string | undefined
+      /** When the host first saw the call's input, in ms: before it ran. */
+      startedAt: number
     }) => void
   } = {},
 ) {
@@ -1317,20 +1322,24 @@ export function createThreadService(
       const text = toolCalls?.takeBody(projected.payload.toolCallId)
       if (text !== undefined) withSettledText(projected, text)
       const { toolCallId, input, status } = projected.payload
-      if (active && input !== undefined && options.watchToolInput?.(input)) {
-        ;(active.watchedTools ??= new Set()).add(toolCallId)
+      if (
+        active &&
+        input !== undefined &&
+        !active.watchedTools?.has(toolCallId) &&
+        options.watchToolInput?.(input)
+      ) {
+        ;(active.watchedTools ??= new Map()).set(toolCallId, Date.now())
       }
       // `gh pr create` that found a pull request already open exits with a
       // failure and still names it, so a failed call is reported too.
-      if (
-        active?.watchedTools?.has(toolCallId) &&
-        (status === 'completed' || status === 'failed')
-      ) {
-        active.watchedTools.delete(toolCallId)
+      const startedAt = active?.watchedTools?.get(toolCallId)
+      if (startedAt !== undefined && (status === 'completed' || status === 'failed')) {
+        active!.watchedTools!.delete(toolCallId)
         options.onWatchedToolSettled?.({
           sessionId: record.session.sessionId,
           toolCallId,
           text,
+          startedAt,
         })
       }
     }

@@ -21,8 +21,10 @@ import {
   parsePullRequestUrl,
   pullRequestCreatedBy,
   runsGhPrCreate,
+  sameHead,
   shellCommandOf,
   type PullRequestRef,
+  type ReportedPullRequest,
 } from './url.ts'
 
 export type PullRequestLinkSource = 'tool' | 'gh_pr_create'
@@ -50,6 +52,16 @@ const POLL_TICK_MS = 5_000
 
 export const LINK_PULL_REQUEST_TOOL = 'link_pull_request'
 
+/**
+ * How much earlier than the host saw `gh pr create` start GitHub may stamp
+ * the pull request it opened and still count as opened by it. GitHub stamps
+ * `createdAt` to the second, from its own clock, and this machine's may be a
+ * few seconds off; 30 s covers both with room. A pull request somebody else
+ * opened in those 30 s that is also the only one the command printed is not a
+ * mistake worth guarding against.
+ */
+export const GH_PR_CREATE_CLOCK_SLACK_MS = 30_000
+
 const LINK_TOOL_DESCRIPTION =
   "Link a GitHub pull request to this OpenManager session so the user can follow it in the session's pull-request panel. " +
   'Call it right after you open a pull request, or when the user asks you to track one. Safe to call again.'
@@ -72,6 +84,7 @@ type CacheRow = {
   number: number
   url: string
   state: string | null
+  github_updated_at: number | null
   detail_json: string | null
   synced_at: number | null
   changed_at: number | null
@@ -148,7 +161,8 @@ export function createPullRequestService(deps: PullRequestServiceDeps) {
       'SELECT DISTINCT session_id FROM session_pull_requests WHERE repository = ? AND number = ?',
     ),
     cache: database.prepare(
-      `SELECT repository, number, url, state, detail_json, synced_at, changed_at, problem, attempted_at
+      `SELECT repository, number, url, state, github_updated_at, detail_json, synced_at,
+              changed_at, problem, attempted_at
        FROM pull_requests WHERE repository = ? AND number = ?`,
     ),
     // Host-private (I1): no client reads this table; the lists built from it
@@ -157,8 +171,16 @@ export function createPullRequestService(deps: PullRequestServiceDeps) {
       `INSERT INTO pull_requests (repository, number, url) VALUES (?, ?, ?)
        ON CONFLICT (repository, number) DO NOTHING`,
     ),
-    recordProblem: database.prepare(
-      'UPDATE pull_requests SET problem = ?, attempted_at = ? WHERE repository = ? AND number = ?',
+    // The whole copy as one read left it (`nextCopy`).
+    writeCopy: database.prepare(
+      `UPDATE pull_requests SET url = ?, state = ?, github_updated_at = ?, detail_json = ?,
+         synced_at = ?, changed_at = ?, problem = ?, attempted_at = ?
+       WHERE repository = ? AND number = ?`,
+    ),
+    // A read whose change was not published: only the pace moves, so the
+    // copy still differs from the read and the next one publishes it.
+    recordAttempt: database.prepare(
+      'UPDATE pull_requests SET attempted_at = ? WHERE repository = ? AND number = ?',
     ),
     pollable: database.prepare(
       `SELECT p.repository, p.number, p.url, p.attempted_at FROM pull_requests p
@@ -172,14 +194,6 @@ export function createPullRequestService(deps: PullRequestServiceDeps) {
          WHERE l.repository = pull_requests.repository AND l.number = pull_requests.number)`,
     ),
   }
-  // A read that worked: ?5 is when, ?6 whether it found anything new.
-  const recordRead = database.prepare(
-    `UPDATE pull_requests SET url = ?1, state = ?2, github_updated_at = ?3, detail_json = ?4,
-       synced_at = ?5, changed_at = CASE WHEN ?6 = 1 THEN ?5 ELSE changed_at END,
-       problem = NULL, attempted_at = ?5
-     WHERE repository = ?7 AND number = ?8`,
-  )
-
   const readCache = (ref: { repository: string; number: number }) =>
     q.cache.get(ref.repository, ref.number) as CacheRow | undefined
 
@@ -202,8 +216,15 @@ export function createPullRequestService(deps: PullRequestServiceDeps) {
     return row ? rootSessionOf(row.session_id) : undefined
   }
 
-  /** `session.updated` stating each session's whole list as the rows now say. */
-  const listEvent = (sessionId: string, extra?: LinkRow): ProofEvent => {
+  /**
+   * `session.updated` stating a session's whole list: its links, plus `extra`
+   * when this event creates it, each summarised from `copies` where a write
+   * is about to change the copy, else from the copy as it stands.
+   */
+  const listEvent = (
+    sessionId: string,
+    { extra, copies }: { extra?: LinkRow; copies?: ReadonlyMap<string, CacheRow> } = {},
+  ): ProofEvent => {
     const links = q.linksOf.all(sessionId) as LinkRow[]
     if (extra) links.push(extra)
     return ProofEventSchemas['session.updated'].parse({
@@ -214,56 +235,133 @@ export function createPullRequestService(deps: PullRequestServiceDeps) {
       scope: { type: 'environment', environmentId: deps.environmentId() },
       payload: {
         sessionId,
-        pullRequests: links.map((link) => summaryOf(link, readCache(link))),
+        pullRequests: links.map((link) =>
+          summaryOf(link, copies?.get(keyOf(link)) ?? readCache(link)),
+        ),
       },
     })
   }
 
-  /** Tell every session linking these pull requests what they now hold. */
-  const publishChanged = (refs: readonly PullRequestRef[]) => {
+  /** One pull request's copy after a read, and whether a client would see the difference. */
+  type CopyUpdate = { ref: PullRequestRef; row: CacheRow; visible: boolean }
+
+  const nextCopy = (
+    ref: PullRequestRef,
+    cache: CacheRow,
+    result: PullRequestReadResult,
+    at: number,
+  ): CopyUpdate => {
+    if ('read' in result) {
+      const detail = JSON.stringify(result.read)
+      const changed = cache.detail_json !== detail
+      return {
+        ref,
+        row: {
+          ...cache,
+          url: result.read.url,
+          state: result.read.state,
+          github_updated_at:
+            result.read.updatedAt === null ? null : Date.parse(result.read.updatedAt),
+          detail_json: detail,
+          synced_at: at,
+          // When a read last found something new: a poll that finds nothing
+          // new restates nothing.
+          changed_at: changed ? at : cache.changed_at,
+          problem: null,
+          attempted_at: at,
+        },
+        visible: changed || cache.problem !== null,
+      }
+    }
+    return {
+      ref,
+      row: { ...cache, problem: result.problem, attempted_at: at },
+      visible: cache.problem !== result.problem,
+    }
+  }
+
+  const emptyCopy = (ref: PullRequestRef): CacheRow => ({
+    repository: ref.repository,
+    number: ref.number,
+    url: ref.url,
+    state: null,
+    github_updated_at: null,
+    detail_json: null,
+    synced_at: null,
+    changed_at: null,
+    problem: null,
+    attempted_at: null,
+  })
+
+  /**
+   * Write these copies, and a new link if one is made, in one transaction
+   * with the `session.updated` of every session that sees a difference: the
+   * copy never holds a change no event has stated, so a write that fails
+   * (it throws) leaves the copy as it was and the next read finds the change
+   * again. A read that changes nothing a client sees writes the copy alone.
+   */
+  const commitCopies = (
+    updates: readonly CopyUpdate[],
+    newLink?: { row: LinkRow; source: PullRequestLinkSource },
+  ) => {
+    const copies = new Map(updates.map((update) => [keyOf(update.ref), update.row]))
     const sessions = new Set<string>()
-    for (const ref of refs) {
-      for (const row of q.sessionsLinking.all(ref.repository, ref.number) as {
+    for (const update of updates) {
+      if (!update.visible) continue
+      for (const row of q.sessionsLinking.all(update.ref.repository, update.ref.number) as {
         session_id: string
       }[]) {
         sessions.add(row.session_id)
       }
     }
-    if (sessions.size === 0) return
-    try {
-      deps.appendAtomic([...sessions].map((sessionId) => listEvent(sessionId)))
-    } catch (error) {
-      // The copy is kept; the next change restates each list whole.
-      deps.log('error', 'pull request changes were not published', { reason: String(error) })
+    const events: ProofEvent[] = []
+    if (newLink) {
+      sessions.delete(newLink.row.session_id)
+      events.push(listEvent(newLink.row.session_id, { extra: newLink.row, copies }))
     }
+    for (const sessionId of sessions) events.push(listEvent(sessionId, { copies }))
+    const write = () => {
+      if (newLink) {
+        q.ensureCache.run(newLink.row.repository, newLink.row.number, newLink.row.url)
+      }
+      for (const { row } of updates) {
+        q.writeCopy.run(
+          row.url,
+          row.state,
+          row.github_updated_at,
+          row.detail_json,
+          row.synced_at,
+          row.changed_at,
+          row.problem,
+          row.attempted_at,
+          row.repository,
+          row.number,
+        )
+      }
+    }
+    if (events.length === 0) {
+      write()
+      return
+    }
+    deps.appendAtomic(events, {
+      alongside: write,
+      ...(newLink
+        ? {
+            pullRequestSources: {
+              [pullRequestLinkKey(
+                newLink.row.session_id,
+                newLink.row.repository,
+                newLink.row.number,
+              )]: newLink.source,
+            },
+          }
+        : {}),
+    })
   }
 
   // ------------------------------------------------------------- reading
 
   const inFlight = new Map<string, Promise<void>>()
-
-  const applyResult = (ref: PullRequestRef, result: PullRequestReadResult): boolean => {
-    const at = now()
-    const cache = readCache(ref)
-    if (!cache) return false
-    if ('read' in result) {
-      const detail = JSON.stringify(result.read)
-      const changed = cache.detail_json !== detail
-      recordRead.run(
-        result.read.url,
-        result.read.state,
-        result.read.updatedAt === null ? null : Date.parse(result.read.updatedAt),
-        detail,
-        at,
-        changed ? 1 : 0,
-        ref.repository,
-        ref.number,
-      )
-      return changed || cache.problem !== null
-    }
-    q.recordProblem.run(result.problem, at, ref.repository, ref.number)
-    return cache.problem !== result.problem
-  }
 
   /** Read these from GitHub now (joining reads already under way), and publish what changed. */
   const refresh = async (refs: readonly PullRequestRef[]): Promise<void> => {
@@ -277,18 +375,30 @@ export function createPullRequestService(deps: PullRequestServiceDeps) {
     if (fresh.length > 0) {
       const read = (async () => {
         const results = await deps.github.read(fresh)
-        const changed = fresh.filter((ref, index) => {
-          try {
-            return applyResult(ref, results[index]!)
-          } catch (error) {
-            deps.log('error', 'a pull request read was not kept', {
-              pullRequest: keyOf(ref),
-              reason: String(error),
-            })
-            return false
-          }
+        const at = now()
+        const updates: CopyUpdate[] = []
+        fresh.forEach((ref, index) => {
+          const cache = readCache(ref)
+          // Unlinked everywhere meanwhile and pruned: nothing to keep.
+          if (cache) updates.push(nextCopy(ref, cache, results[index]!, at))
         })
-        publishChanged(changed)
+        try {
+          commitCopies(updates)
+        } catch (error) {
+          deps.log('error', 'pull request reads were not kept', {
+            pullRequests: updates.map((update) => keyOf(update.ref)),
+            reason: String(error),
+          })
+          // Keep the pace, and nothing else: the copy still differs from
+          // what GitHub said, so the next read finds it and publishes it.
+          for (const { ref } of updates) {
+            try {
+              q.recordAttempt.run(at, ref.repository, ref.number)
+            } catch {
+              // The database refuses writes too; the next tick tries again.
+            }
+          }
+        }
       })().finally(() => {
         for (const ref of fresh) inFlight.delete(keyOf(ref))
       })
@@ -306,20 +416,30 @@ export function createPullRequestService(deps: PullRequestServiceDeps) {
     | { kind: 'full' }
     | { kind: 'no_session' }
 
+  /** The root session a link from this session goes to, and its link to `ref` if it has one. */
+  const linkTarget = (sessionId: string, ref: PullRequestRef) => {
+    deps.flush()
+    const root = rootSessionOf(sessionId)
+    if (!root) return undefined
+    const existing = q.linkAnyCase.get(root, ref.repository, ref.number) as LinkRow | undefined
+    return { root, existing }
+  }
+
   /**
    * Link a pull request to a session (its root, for a sub-agent's). Commits
-   * at once with whatever the environment already knows of it; the read from
-   * GitHub follows and publishes what it finds.
+   * at once with whatever the environment knows of it, or with `read` when
+   * the caller has just read it from GitHub (written with the link, in the
+   * same transaction); otherwise the read follows and publishes what it finds.
    */
   const link = (
     sessionId: string,
     ref: PullRequestRef,
     source: PullRequestLinkSource,
+    read?: PullRequestReadResult,
   ): LinkOutcome => {
-    deps.flush()
-    const root = rootSessionOf(sessionId)
-    if (!root) return { kind: 'no_session' }
-    const existing = q.linkAnyCase.get(root, ref.repository, ref.number) as LinkRow | undefined
+    const target = linkTarget(sessionId, ref)
+    if (!target) return { kind: 'no_session' }
+    const { root, existing } = target
     if (existing) {
       return {
         kind: 'already',
@@ -330,7 +450,6 @@ export function createPullRequestService(deps: PullRequestServiceDeps) {
     if ((q.linksOf.all(root) as LinkRow[]).length >= PULL_REQUESTS_PER_SESSION_MAX) {
       return { kind: 'full' }
     }
-    q.ensureCache.run(ref.repository, ref.number, ref.url)
     const row: LinkRow = {
       session_id: root,
       repository: ref.repository,
@@ -338,9 +457,8 @@ export function createPullRequestService(deps: PullRequestServiceDeps) {
       url: ref.url,
       linked_at: now(),
     }
-    deps.appendAtomic([listEvent(root, row)], {
-      pullRequestSources: { [pullRequestLinkKey(root, ref.repository, ref.number)]: source },
-    })
+    const updates = read ? [nextCopy(ref, readCache(ref) ?? emptyCopy(ref), read, now())] : []
+    commitCopies(updates, { row, source })
     return { kind: 'linked', ref, sessionId: root }
   }
 
@@ -406,20 +524,59 @@ export function createPullRequestService(deps: PullRequestServiceDeps) {
   }
 
   /**
-   * A tool call ran `gh pr create` and settled: link the pull request it
-   * printed. Nothing else links on its own (see `runsGhPrCreate`).
+   * Whether GitHub's read confirms that the command opened (or found) the
+   * pull request it printed: it was created once the command had started, or
+   * `gh` said one already existed for a branch and this is that branch's.
    */
-  const observeSettledTool = (args: { sessionId: string; output: string }) => {
-    const ref = pullRequestCreatedBy(args.output)
-    if (!ref) return
+  const confirms = (
+    reported: ReportedPullRequest,
+    result: PullRequestReadResult | undefined,
+    startedAt: number,
+  ): boolean => {
+    if (!result || !('read' in result)) return false
+    if (reported.existingHead !== null) return sameHead(reported.existingHead, result.read.headRef)
+    const createdAt =
+      result.read.createdAt === null ? Number.NaN : Date.parse(result.read.createdAt)
+    return createdAt >= startedAt - GH_PR_CREATE_CLOCK_SLACK_MS
+  }
+
+  /**
+   * A tool call ran `gh pr create` and settled: link the pull request it
+   * printed, once GitHub confirms that command made it. Nothing else links
+   * on its own (see `runsGhPrCreate`), and a link is made only after the
+   * confirming read, with that read: a link nobody can remove must never be
+   * a guess, so there is no window in which an unconfirmed one is visible
+   * and no event retracting it. A read that fails (GitHub unreachable, `gh`
+   * signed out) confirms nothing, and the agent can still link it with the
+   * tool.
+   */
+  const observeSettledTool = async (args: {
+    sessionId: string
+    output: string
+    /** When the host first saw the command, in ms. */
+    startedAt: number
+  }): Promise<void> => {
+    const reported = pullRequestCreatedBy(args.output)
+    if (!reported) return
+    const { ref } = reported
     try {
-      const outcome = link(args.sessionId, ref, 'gh_pr_create')
+      const target = linkTarget(args.sessionId, ref)
+      if (!target || target.existing) return
+      const [result] = await deps.github.read([ref])
+      if (!confirms(reported, result, args.startedAt)) {
+        deps.log('info', 'gh pr create printed a pull request it did not open; not linked', {
+          sessionId: target.root,
+          pullRequest: keyOf(ref),
+          read: result && 'problem' in result ? result.problem : 'read',
+        })
+        return
+      }
+      const outcome = link(args.sessionId, ref, 'gh_pr_create', result)
       if (outcome.kind === 'linked') {
         deps.log('info', 'linked the pull request gh pr create opened', {
           sessionId: outcome.sessionId,
           pullRequest: keyOf(ref),
         })
-        void refresh([ref]).catch(() => undefined)
       }
     } catch (error) {
       deps.log('error', 'the pull request gh pr create opened was not linked', {
@@ -487,6 +644,7 @@ export function createPullRequestService(deps: PullRequestServiceDeps) {
       commits: read?.commits ?? null,
       reviewers: read?.reviewers ?? [],
       checkRuns: read?.checkRuns ?? [],
+      ...(read?.checkRunsTotal === undefined ? {} : { checkRunsTotal: read.checkRunsTotal }),
     }
   }
 

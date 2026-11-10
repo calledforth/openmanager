@@ -47,9 +47,15 @@ export const samePullRequest = (
  * none of those is one it opened.
  */
 const GH_PR_CREATE = /(?:^|[\s;&|(`'"])(?:[\w./\\:-]*[/\\])?gh(?:\.exe)?["']?\s+pr\s+create\b/i
+/** `--dry-run` prints what it would send (the body too) and opens nothing. */
+const DRY_RUN = /(?:^|\s)--dry-run(?:[=\s"']|$)/
 
+/**
+ * Whether a command runs `gh pr create` in a way that can open a pull
+ * request: never with `--dry-run` anywhere in it.
+ */
 export function runsGhPrCreate(command: string): boolean {
-  return GH_PR_CREATE.test(command)
+  return GH_PR_CREATE.test(command) && !DRY_RUN.test(command)
 }
 
 /**
@@ -69,21 +75,51 @@ export function shellCommandOf(input: unknown): string | undefined {
   return undefined
 }
 
-const ALREADY_EXISTS = /a pull request for branch [^\n]* already exists:?\s*(https?:\/\/\S+)/i
+// gh's own words (pkg/cmd/pr/create): the head is `branch`, or `owner:branch`
+// from a fork, quoted Go-style.
+const ALREADY_EXISTS =
+  /a pull request for branch "([^"\n]*)" into branch "[^"\n]*" already exists:?\s*(https?:\/\/\S+)/i
 const URL_LINE = /^\s*(https?:\/\/(?:www\.)?github\.com\/\S+\/pull\/\d+)\s*$/gim
+
+/** A pull request `gh pr create` reported, and how. */
+export type ReportedPullRequest = {
+  ref: PullRequestRef
+  /**
+   * The head `gh` named when it found one already open for the branch
+   * (`branch` or `owner:branch`); null when it printed the URL of one it
+   * opened.
+   */
+  existingHead: string | null
+}
 
 /**
  * The pull request `gh pr create` reported: the URL it prints on a line of
  * its own when it opened one, or the one after "a pull request for branch …
- * already exists:" when there was one. The last such line wins: `gh` prints
- * the URL last, after any warnings.
+ * already exists:" when there was one. Only when the output names exactly
+ * one pull request that way: a command that also lists or prints others
+ * (`gh pr create --fill; gh pr list …`) cannot say which is the new one.
+ * This is only a candidate; the caller confirms it with GitHub.
  */
-export function pullRequestCreatedBy(output: string): PullRequestRef | null {
-  const existing = ALREADY_EXISTS.exec(output)
-  if (existing) return parsePullRequestUrl(existing[1]!)
-  let last: PullRequestRef | null = null
-  for (const match of output.matchAll(URL_LINE)) {
-    last = parsePullRequestUrl(match[1]!) ?? last
+export function pullRequestCreatedBy(output: string): ReportedPullRequest | null {
+  const candidates: PullRequestRef[] = []
+  const add = (ref: PullRequestRef | null) => {
+    if (ref && !candidates.some((known) => samePullRequest(known, ref))) candidates.push(ref)
   }
-  return last
+  const existing = ALREADY_EXISTS.exec(output)
+  const existingRef = existing ? parsePullRequestUrl(existing[2]!) : null
+  add(existingRef)
+  for (const match of output.matchAll(URL_LINE)) add(parsePullRequestUrl(match[1]!))
+  if (candidates.length !== 1) return null
+  const ref = candidates[0]!
+  return {
+    ref,
+    existingHead:
+      existing && existingRef && samePullRequest(existingRef, ref) ? existing[1]! : null,
+  }
+}
+
+/** Whether `gh`'s head label (`branch` or `owner:branch`) names this head branch. */
+export function sameHead(label: string, headRef: string | null): boolean {
+  if (!headRef || !label) return false
+  return label === headRef || label.endsWith(`:${headRef}`)
 }

@@ -1,9 +1,10 @@
 import { execFile as nodeExecFile } from 'node:child_process'
-import type {
-  PullRequestCheckRun,
-  PullRequestDetail,
-  PullRequestProblem,
-  PullRequestReviewer,
+import {
+  PULL_REQUEST_CHECK_RUNS_MAX,
+  type PullRequestCheckRun,
+  type PullRequestDetail,
+  type PullRequestProblem,
+  type PullRequestReviewer,
 } from '@openmanager/protocol/node'
 import type { PullRequestRef } from './url.ts'
 
@@ -23,7 +24,8 @@ export const GITHUB_GRAPHQL_URL = 'https://api.github.com/graphql'
 
 /**
  * Pull requests per GraphQL request. Each asks for up to 100 labels, 100
- * reviews, 100 review requests and 100 check contexts, about 400 nodes, so 25
+ * reviews, 100 review requests and 100 check contexts (one page of each:
+ * GitHub's most), about 400 nodes, so 25
  * stay far below GitHub's 500,000-node limit and cost one rate-limit point.
  */
 export const GITHUB_BATCH_MAX = 25
@@ -126,7 +128,8 @@ const PULL_REQUEST_FIELDS = `
       commit {
         statusCheckRollup {
           state
-          contexts(first: 100) {
+          contexts(first: ${PULL_REQUEST_CHECK_RUNS_MAX}) {
+            totalCount
             nodes {
               __typename
               ... on CheckRun { name status conclusion detailsUrl }
@@ -244,8 +247,9 @@ export function pullRequestFromGraphQL(ref: PullRequestRef, node: unknown): Pull
           : 'open'
   const rollup = obj(obj(nodes(pr.headCommit)[0]?.commit).statusCheckRollup)
   const checkRuns: PullRequestCheckRun[] = []
+  const checkRunsTotal = count(obj(rollup.contexts).totalCount)
   for (const context of nodes(rollup.contexts)) {
-    if (checkRuns.length >= 200) break
+    if (checkRuns.length >= PULL_REQUEST_CHECK_RUNS_MAX) break
     if (context.__typename === 'CheckRun') {
       const name = str(context.name)
       if (!name) continue
@@ -313,6 +317,8 @@ export function pullRequestFromGraphQL(ref: PullRequestRef, node: unknown): Pull
     commits: count(obj(pr.commits).totalCount),
     reviewers: reviewers.slice(0, 100),
     checkRuns,
+    // GitHub's count, when it says one; `checkRuns` holds at most one page.
+    ...(checkRunsTotal === null ? {} : { checkRunsTotal }),
   }
 }
 
