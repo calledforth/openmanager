@@ -18,6 +18,7 @@ import { surfaceClasses } from "../lib/surface-classes";
 import { ScrollArea } from "./scroll-area";
 import {
   useSidebar,
+  SidebarScope,
   SidebarShell,
   type SidebarSide,
   type SidebarVariant,
@@ -37,10 +38,11 @@ interface SidebarSheetProps {
   side: SidebarSide;
   open: boolean;
   onClose: () => void;
+  title: string;
   children: ReactNode;
 }
 
-function SidebarSheet({ side, open, onClose, children }: SidebarSheetProps) {
+function SidebarSheet({ side, open, onClose, title, children }: SidebarSheetProps) {
   const { widthMobile } = useSidebar();
   // Reduced motion drops the slide (the movement) but keeps the scrim's
   // opacity fade — the state change stays legible without the travel.
@@ -127,7 +129,7 @@ function SidebarSheet({ side, open, onClose, children }: SidebarSheetProps) {
             >
               {/* Radix's TitleWarning checks for a rendered DialogTitle, so
                   ship a visually hidden one as the accessible name. */}
-              <DialogPrimitive.Title className="sr-only">Sidebar</DialogPrimitive.Title>
+              <DialogPrimitive.Title className="sr-only">{title}</DialogPrimitive.Title>
               <SurfaceProvider value={level}>{children}</SurfaceProvider>
             </motion.div>
           </DialogPrimitive.Content>
@@ -155,11 +157,24 @@ export interface SidebarProps
   railTooltipOpen?: boolean;
   /** Render the built-in resize/collapse rail. Default true. */
   rail?: boolean;
+  /** Accessible name of the mobile sheet (a dialog). Default "Sidebar". */
+  sheetTitle?: string;
 }
 
-const Sidebar = forwardRef<HTMLDivElement, SidebarProps>(
+// The sidebar binds to the provider of ITS side (see useSidebar), and marks
+// its subtree so everything rendered inside — rows, rail, sheet, the
+// consumer's own hooks — binds there too, even with another side's provider
+// nearer or a left one around.
+const Sidebar = forwardRef<HTMLDivElement, SidebarProps>((props, ref) => (
+  <SidebarScope side={props.side ?? "left"}>
+    <SidebarImpl ref={ref} {...props} />
+  </SidebarScope>
+));
+Sidebar.displayName = "Sidebar";
+
+const SidebarImpl = forwardRef<HTMLDivElement, SidebarProps>(
   (
-    { side = "left", variant = "sidebar", collapsible = "offcanvas", bordered = true, rail = true, railTooltipOpen, className, style, children, ...props },
+    { side = "left", variant = "sidebar", collapsible = "offcanvas", bordered = true, rail = true, railTooltipOpen, sheetTitle = "Sidebar", className, style, children, ...props },
     ref
   ) => {
     const { isMobile, openMobile, setOpenMobile, width, registerSide } = useSidebar();
@@ -206,7 +221,7 @@ const Sidebar = forwardRef<HTMLDivElement, SidebarProps>(
     return (
       <>
         {isMobile && (
-          <SidebarSheet side={side} open={openMobile} onClose={() => setOpenMobile(false)}>
+          <SidebarSheet side={side} open={openMobile} onClose={() => setOpenMobile(false)} title={sheetTitle}>
             {children}
           </SidebarSheet>
         )}
@@ -217,7 +232,7 @@ const Sidebar = forwardRef<HTMLDivElement, SidebarProps>(
     );
   }
 );
-Sidebar.displayName = "Sidebar";
+SidebarImpl.displayName = "SidebarImpl";
 
 // ─── SidebarContent ──────────────────────────────────────────────────────────
 
@@ -273,6 +288,7 @@ export { Sidebar, SidebarContent };
 export {
   SidebarProvider,
   useSidebar,
+  useOptionalSidebar,
   SidebarTrigger,
   SidebarRail,
   SidebarInset,
@@ -287,6 +303,7 @@ export {
   SidebarGroupContent,
   SIDEBAR_COOKIE_NAME,
   SIDEBAR_COOKIE_MAX_AGE,
+  SIDEBAR_WIDTH_STORAGE_KEY,
   SIDEBAR_WIDTH,
   SIDEBAR_WIDTH_MOBILE,
   SIDEBAR_KEYBOARD_SHORTCUT,

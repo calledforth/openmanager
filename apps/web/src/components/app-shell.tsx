@@ -49,6 +49,10 @@ import {
 } from '@openmanager/app-core/components/fluid/ui/sidebar'
 import { SidebarInsetTopbar } from '@openmanager/app-core/components/fluid/sidebar-app/inset-topbar'
 import {
+  SidePanelHost,
+  SidePanelPillSlot,
+} from '@openmanager/app-core/components/side-panel/SidePanel'
+import {
   SidebarWorkspaceHeader,
   WorkspaceTile,
 } from '@openmanager/app-core/components/fluid/sidebar-app/workspace-header'
@@ -76,6 +80,7 @@ import {
 } from './environments-sidebar'
 import { EnvironmentNotifications } from './session-notifications'
 import { SidebarDock } from './sidebar-dock'
+import { SessionSidePanel } from './session-side-panel'
 
 const NewAgentIcon = phosphorIcon(NotePencilIcon)
 const AddProjectIcon = phosphorIcon(FolderPlusIcon)
@@ -473,35 +478,47 @@ export function AppShell() {
   const showScreen = !ungated && placed.surface === 'screen'
   const showBanner = !ungated && placed.surface === 'banner'
 
+  const sessionView = Boolean(client) && isSessionPath(pathname) && !showScreen
+  // The host stays mounted on every page, so moving between pages never
+  // remounts the page under it; only session pages declare a side panel.
   const main = (
     <SidebarInset className="overflow-hidden">
-      <SidebarInsetTopbar>
-        {client && isSessionPath(pathname) ? <SessionTrail /> : null}
-        {othersNotice ? (
-          <OtherEnvironmentsStatus
-            notice={othersNotice}
-            onOpenSettings={() => void navigate({ to: '/settings' })}
+      <SidePanelHost>
+        <SidebarInsetTopbar
+          end={
+            <>
+              {othersNotice ? (
+                <OtherEnvironmentsStatus
+                  notice={othersNotice}
+                  onOpenSettings={() => void navigate({ to: '/settings' })}
+                />
+              ) : null}
+              <SidePanelPillSlot />
+            </>
+          }
+        >
+          {client && isSessionPath(pathname) ? <SessionTrail /> : null}
+        </SidebarInsetTopbar>
+        {/* Floats over the page under the topbar, so the session stays where it was. */}
+        <div className="pointer-events-none absolute inset-x-0 top-11 z-30 flex flex-col items-center gap-1.5 px-3">
+          {showBanner ? (
+            <ConnectionBanner className="pointer-events-auto" state={placed} handlers={handlers} />
+          ) : null}
+          <EnvironmentFailureNotice className="pointer-events-auto" />
+        </div>
+        {showScreen ? (
+          <ConnectionScreen
+            state={ui}
+            handlers={handlers}
+            environments={environments}
+            selectedId={selectedId}
+            inUseEndpoint={inUseEndpoint}
           />
-        ) : null}
-      </SidebarInsetTopbar>
-      {/* Floats over the page under the topbar, so the session stays where it was. */}
-      <div className="pointer-events-none absolute inset-x-0 top-11 z-30 flex flex-col items-center gap-1.5 px-3">
-        {showBanner ? (
-          <ConnectionBanner className="pointer-events-auto" state={placed} handlers={handlers} />
-        ) : null}
-        <EnvironmentFailureNotice className="pointer-events-auto" />
-      </div>
-      {showScreen ? (
-        <ConnectionScreen
-          state={ui}
-          handlers={handlers}
-          environments={environments}
-          selectedId={selectedId}
-          inUseEndpoint={inUseEndpoint}
-        />
-      ) : (
-        <Outlet />
-      )}
+        ) : (
+          <Outlet />
+        )}
+        {sessionView ? <SessionSidePanel placeholder={import.meta.env.DEV} /> : null}
+      </SidePanelHost>
     </SidebarInset>
   )
 

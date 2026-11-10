@@ -2,6 +2,7 @@
 
 import {
   createContext,
+  use,
   useContext,
   useState,
   useEffect,
@@ -102,23 +103,98 @@ export interface SidebarContextValue {
    *  width spring so the panel tracks the pointer 1:1). */
   isResizing: boolean;
   setIsResizing: React.Dispatch<React.SetStateAction<boolean>>;
+  /** Drag-resize clamp (px) for this instance's rail. */
+  minWidth: number;
+  maxWidth: number;
+  /** True while the provider is `disabled`: the sidebar reads as collapsed
+   *  and ignores its toggles and shortcut. */
+  disabled: boolean;
 }
 
 // Mounted-provider registry for the global toggle shortcut. The listener has
 // to be global (the key should work without focus in the sidebar), but only
-// ONE provider may answer a keypress: the innermost one containing focus, or —
-// when focus is outside every provider — the OUTERMOST mounted one (the
-// app-shell provider that wraps everything else; mount order can't be used
-// because a persistent layout provider mounts once while demos mount later
-// on navigation). Same pattern as AskUserQuestions' 1-9 shortcuts.
-const mountedProviders: HTMLElement[] = [];
+// ONE provider may answer a keypress — among the providers bound to THAT key.
+// A left sidebar ("[") and a right one ("]") never compete, however they
+// nest; two providers on the same key (an app shell wrapping a doc preview)
+// resolve to the innermost one containing focus, or — when focus is outside
+// every one of them — the OUTERMOST (the app-shell provider that wraps
+// everything else; mount order can't be used because a persistent layout
+// provider mounts once while demos mount later on navigation). Same pattern
+// as AskUserQuestions' 1-9 shortcuts.
+interface MountedProvider {
+  el: HTMLElement;
+  /** The key this provider answers right now (null: none — disabled). */
+  key: () => string | null;
+}
+const mountedProviders: MountedProvider[] = [];
 
-const SidebarContext = createContext<SidebarContextValue | null>(null);
+// Two sidebars can be live at once — the app's left rail and a right panel,
+// usually with the right provider NESTED inside the left one's inset. Each
+// side has its own context so a consumer subscribes only to the instance it
+// reads: dragging the right panel never re-renders the left rail's consumers.
+// A nested provider of the SAME side shadows the outer one (doc previews
+// inside an app shell keep working); a provider of the other side passes the
+// outer instance through untouched.
+const SidebarSideContexts: Record<SidebarSide, React.Context<SidebarContextValue | null>> = {
+  left: createContext<SidebarContextValue | null>(null),
+  right: createContext<SidebarContextValue | null>(null),
+};
 
-export function useSidebar(): SidebarContextValue {
-  const ctx = useContext(SidebarContext);
-  if (!ctx) throw new Error("useSidebar must be used within a SidebarProvider");
+interface SidebarRouting {
+  /** The side of the innermost provider. */
+  nearest: SidebarSide;
+  /** Set inside a <Sidebar>: the side of the sidebar being rendered. */
+  current: SidebarSide | null;
+  left: boolean;
+  right: boolean;
+}
+
+// Which instances exist, and which one is "yours". Only changes when a
+// provider mounts, flips side, or a <Sidebar> is entered — never on state.
+const SidebarRoutingContext = createContext<SidebarRouting | null>(null);
+
+/**
+ * The sidebar instance a component belongs to.
+ *
+ * - `useSidebar()` — inside a `<Sidebar>` (its header, rows, rail, sheet),
+ *   that sidebar's instance; anywhere else, the LEFT one (the app's primary
+ *   navigation — the inset topbar's trigger, Ctrl/⌘+B handlers), falling back
+ *   to the nearest provider when there is no left one.
+ * - `useSidebar("right")` / `useSidebar("left")` — that side's instance from
+ *   anywhere inside its provider; throws when there is none.
+ */
+export function useSidebar(side?: SidebarSide): SidebarContextValue {
+  const routing = useContext(SidebarRoutingContext);
+  if (!routing) throw new Error("useSidebar must be used within a SidebarProvider");
+  const resolved =
+    side ??
+    (routing.current && routing[routing.current]
+      ? routing.current
+      : routing.left
+        ? "left"
+        : routing.nearest);
+  // `use`, not useContext: only the resolved side's context is subscribed.
+  const ctx = use(SidebarSideContexts[resolved]);
+  if (!ctx) throw new Error(`useSidebar("${resolved}") must be used within a ${resolved} SidebarProvider`);
   return ctx;
+}
+
+/** `useSidebar(side)` that returns null instead of throwing when that side
+ *  has no provider. */
+export function useOptionalSidebar(side: SidebarSide): SidebarContextValue | null {
+  return useContext(SidebarSideContexts[side]);
+}
+
+/** Internal: <Sidebar/> marks its subtree as its own, so `useSidebar()`
+ *  inside it binds to this instance even when another side's provider is
+ *  nearer or the left one exists. */
+export function SidebarScope({ side, children }: { side: SidebarSide; children: ReactNode }) {
+  const routing = useContext(SidebarRoutingContext);
+  const value = useMemo<SidebarRouting | null>(
+    () => (routing ? { ...routing, current: side } : null),
+    [routing, side]
+  );
+  return <SidebarRoutingContext.Provider value={value}>{children}</SidebarRoutingContext.Provider>;
 }
 
 // Starts undefined so the server and first client render agree (both treat it
@@ -137,17 +213,18 @@ function useIsMobile(breakpoint: number): boolean {
 
 // Persisted desktop state, read once on mount. Either reader returns
 // undefined when nothing usable was stored, so the props stay the fallback.
-function readStoredOpen(): boolean | undefined {
+function readStoredOpen(cookieName: string): boolean | undefined {
   if (typeof document === "undefined") return undefined;
-  const match = document.cookie.match(new RegExp(`(?:^|; )${SIDEBAR_COOKIE_NAME}=(true|false)`));
+  const name = cookieName.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const match = document.cookie.match(new RegExp(`(?:^|; )${name}=(true|false)`));
   return match ? match[1] === "true" : undefined;
 }
 
-function readStoredWidth(): string | undefined {
+function readStoredWidth(storageKey: string, min: number, max: number): string | undefined {
   try {
-    const px = Number(window.localStorage.getItem(SIDEBAR_WIDTH_STORAGE_KEY));
+    const px = Number(window.localStorage.getItem(storageKey));
     if (!Number.isFinite(px) || px <= 0) return undefined;
-    return `${Math.max(SIDEBAR_MIN_WIDTH, Math.min(SIDEBAR_MAX_WIDTH, px))}px`;
+    return `${Math.max(min, Math.min(max, px))}px`;
   } catch {
     return undefined;
   }
@@ -163,6 +240,25 @@ export interface SidebarProviderProps extends HTMLAttributes<HTMLDivElement> {
    *  drag-resized width (localStorage) and restore both on mount. Mobile
    *  state never persists. */
   persist?: boolean;
+  /** Cookie holding the persisted open state. Give each instance its own
+   *  when two sidebars persist side by side. @default "sidebar_state" */
+  stateCookieName?: string;
+  /** localStorage key holding the persisted drag-resized width.
+   *  @default "sidebar_width" */
+  widthStorageKey?: string;
+  /** The edge this provider's sidebar sits on. Declaring it up front lets
+   *  `useSidebar(side)` and the default shortcut resolve from the first
+   *  render; otherwise <Sidebar side/> reports it after mount.
+   *  @default "left" */
+  side?: SidebarSide;
+  /** Drag-resize clamp (px) for the rail; a persisted width is clamped to
+   *  it too. @default 160 / 360 */
+  minWidth?: number;
+  maxWidth?: number;
+  /** Takes the sidebar out of reach without forgetting it: it reads as
+   *  collapsed (and animates shut), its shortcut and toggles do nothing,
+   *  and the saved open state comes back when it is re-enabled. */
+  disabled?: boolean;
   /** Bare-key toggle shortcut. Defaults to "[" for a left sidebar and "]"
    *  for a right one; `null` disables it. */
   shortcut?: string | null;
@@ -183,6 +279,12 @@ const SidebarProvider = forwardRef<HTMLDivElement, SidebarProviderProps>(
       open: openProp,
       onOpenChange,
       persist = true,
+      stateCookieName = SIDEBAR_COOKIE_NAME,
+      widthStorageKey = SIDEBAR_WIDTH_STORAGE_KEY,
+      side: sideProp,
+      minWidth = SIDEBAR_MIN_WIDTH,
+      maxWidth = SIDEBAR_MAX_WIDTH,
+      disabled = false,
       shortcut: shortcutProp,
       mobileBreakpoint = 768,
       peek = "none",
@@ -196,24 +298,39 @@ const SidebarProvider = forwardRef<HTMLDivElement, SidebarProviderProps>(
     ref
   ) => {
     const isMobile = useIsMobile(mobileBreakpoint);
-    const [openMobile, setOpenMobile] = useState(false);
-    const [side, setSide] = useState<SidebarSide>("left");
+    const [openMobileState, setOpenMobile] = useState(false);
+    const openMobile = openMobileState && !disabled;
+    const [side, setSide] = useState<SidebarSide>(sideProp ?? "left");
+    useEffect(() => {
+      if (sideProp) setSide(sideProp);
+    }, [sideProp]);
     const wrapperRef = useRef<HTMLDivElement | null>(null);
+    // Read by the global key listener at keypress time (see mountedProviders).
+    const activeKeyRef = useRef<string | null>(null);
 
     useEffect(() => {
       const el = wrapperRef.current;
       if (!el) return;
-      mountedProviders.push(el);
+      const entry: MountedProvider = { el, key: () => activeKeyRef.current };
+      mountedProviders.push(entry);
       return () => {
-        const i = mountedProviders.indexOf(el);
+        const i = mountedProviders.indexOf(entry);
         if (i !== -1) mountedProviders.splice(i, 1);
       };
     }, []);
     const registerSide = useCallback((next: SidebarSide) => setSide(next), []);
 
+    // A sheet left open while the sidebar is disabled must not pop back open
+    // when it is re-enabled.
+    useEffect(() => {
+      if (disabled) setOpenMobile(false);
+    }, [disabled]);
+
     // Live width: a persisted drag-resize wins over the prop on mount, the
     // rail's drag-resize updates it at runtime, and a changed prop resets it.
-    const [width, setWidth] = useState(() => (persist && readStoredWidth()) || widthProp);
+    const [width, setWidth] = useState(
+      () => (persist && readStoredWidth(widthStorageKey, minWidth, maxWidth)) || widthProp
+    );
     const lastWidthPropRef = useRef(widthProp);
     useEffect(() => {
       if (lastWidthPropRef.current === widthProp) return;
@@ -225,11 +342,11 @@ const SidebarProvider = forwardRef<HTMLDivElement, SidebarProviderProps>(
     useEffect(() => {
       if (!persist || isResizing || !width.endsWith("px")) return;
       try {
-        window.localStorage.setItem(SIDEBAR_WIDTH_STORAGE_KEY, String(parseFloat(width)));
+        window.localStorage.setItem(widthStorageKey, String(parseFloat(width)));
       } catch {
         // Storage unavailable (private mode, quota) — the width just won't stick.
       }
-    }, [persist, isResizing, width]);
+    }, [persist, isResizing, width, widthStorageKey]);
 
     // Default shortcut mirrors the sidebar's edge: "[" left, "]" right.
     const shortcut =
@@ -239,10 +356,14 @@ const SidebarProvider = forwardRef<HTMLDivElement, SidebarProviderProps>(
           : SIDEBAR_KEYBOARD_SHORTCUT
         : shortcutProp;
 
-    const [internalOpen, setInternalOpen] = useState(() => (persist ? (readStoredOpen() ?? defaultOpen) : defaultOpen));
-    const open = openProp ?? internalOpen;
-    const openRef = useRef(open);
-    openRef.current = open;
+    const [internalOpen, setInternalOpen] = useState(() =>
+      persist ? (readStoredOpen(stateCookieName) ?? defaultOpen) : defaultOpen
+    );
+    // The saved state survives `disabled`; only what's shown is forced shut.
+    const storedOpen = openProp ?? internalOpen;
+    const open = storedOpen && !disabled;
+    const openRef = useRef(storedOpen);
+    openRef.current = storedOpen;
 
     const setOpen = useCallback(
       (value: boolean | ((prev: boolean) => boolean)) => {
@@ -250,16 +371,18 @@ const SidebarProvider = forwardRef<HTMLDivElement, SidebarProviderProps>(
         if (onOpenChange) onOpenChange(next);
         else setInternalOpen(next);
         if (persist) {
-          document.cookie = `${SIDEBAR_COOKIE_NAME}=${next}; path=/; max-age=${SIDEBAR_COOKIE_MAX_AGE}`;
+          document.cookie = `${stateCookieName}=${next}; path=/; max-age=${SIDEBAR_COOKIE_MAX_AGE}`;
         }
       },
-      [onOpenChange, persist]
+      [onOpenChange, persist, stateCookieName]
     );
 
     const toggleSidebar = useCallback(() => {
+      if (disabled) return;
       if (isMobile) setOpenMobile((prev) => !prev);
       else setOpen((prev) => !prev);
-    }, [isMobile, setOpen]);
+    }, [disabled, isMobile, setOpen]);
+    activeKeyRef.current = disabled ? null : shortcut;
 
     // Collapsed-peek overlay state. Pinning the sidebar open (or disabling
     // the mode) always dismisses the peek — including a PENDING intent
@@ -268,12 +391,12 @@ const SidebarProvider = forwardRef<HTMLDivElement, SidebarProviderProps>(
     const [isPeeking, setIsPeeking] = useState(false);
     const peekTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
     useEffect(() => {
-      if (open || peek === "none") {
+      if (open || peek === "none" || disabled) {
         if (peekTimerRef.current) clearTimeout(peekTimerRef.current);
         peekTimerRef.current = null;
         setIsPeeking(false);
       }
-    }, [open, peek]);
+    }, [open, peek, disabled]);
     const cancelPeekTimer = useCallback(() => {
       if (peekTimerRef.current) clearTimeout(peekTimerRef.current);
       peekTimerRef.current = null;
@@ -292,9 +415,10 @@ const SidebarProvider = forwardRef<HTMLDivElement, SidebarProviderProps>(
     // provider's lifetime (not a docs-only global), skipped while typing, and
     // skipped when a modifier is held so ⌘[ / ⌘] keep their browser meaning.
     useEffect(() => {
-      if (shortcut == null) return;
+      if (shortcut == null || disabled) return;
       const onKeyDown = (event: KeyboardEvent) => {
-        if (event.key.toLowerCase() !== shortcut.toLowerCase()) return;
+        const pressed = event.key.toLowerCase();
+        if (pressed !== shortcut.toLowerCase()) return;
         if (event.metaKey || event.ctrlKey || event.altKey) return;
         const target = event.target as HTMLElement;
         if (
@@ -304,24 +428,25 @@ const SidebarProvider = forwardRef<HTMLDivElement, SidebarProviderProps>(
           target.isContentEditable
         )
           return;
-        // Only one mounted provider answers (see mountedProviders). Providers
-        // can NEST (an app shell wrapping doc previews), so containment alone
-        // isn't enough: the innermost provider containing focus wins.
+        // Only one provider answers a key, chosen among the providers bound
+        // to THAT key (see mountedProviders): a right panel's "]" never
+        // competes with the left rail's "[", however the two nest. Within
+        // one key, providers can NEST (an app shell wrapping doc previews),
+        // so containment alone isn't enough: the innermost provider
+        // containing focus wins.
         const root = wrapperRef.current;
         if (!root) return;
+        const peers = mountedProviders
+          .filter((entry) => entry.key()?.toLowerCase() === pressed)
+          .map((entry) => entry.el);
         if (root.contains(target)) {
-          if (
-            mountedProviders.some(
-              (el) => el !== root && root.contains(el) && el.contains(target)
-            )
-          )
+          if (peers.some((el) => el !== root && root.contains(el) && el.contains(target)))
             return;
           // The focused element itself WRAPS another provider (a docs
           // preview frame holding keyboard scope for the demo inside it —
           // see click-to-focus): the wrapped provider answers, not this
           // ancestor shell.
-          if (mountedProviders.some((el) => el !== root && target.contains(el)))
-            return;
+          if (peers.some((el) => el !== root && target.contains(el))) return;
         } else {
           // Focus outside this provider. A focused element that WRAPS
           // providers — a docs preview frame holding keyboard scope for the
@@ -334,18 +459,16 @@ const SidebarProvider = forwardRef<HTMLDivElement, SidebarProviderProps>(
           // the OUTERMOST provider overall answers — mount order is
           // unreliable here (a persistent app-shell provider mounts once,
           // while doc demos mount later on client-side navigation).
-          const wrapped = mountedProviders.filter((el) => target.contains(el));
+          const wrapped = peers.filter((el) => target.contains(el));
           if (wrapped.length > 0) {
             const outermost = wrapped.find(
               (el) => !wrapped.some((other) => other !== el && other.contains(el))
             );
             if (outermost !== root) return;
           } else {
-            if (mountedProviders.some((el) => el !== root && el.contains(target)))
-              return;
-            const outermost = mountedProviders.find(
-              (el) =>
-                !mountedProviders.some((other) => other !== el && other.contains(el))
+            if (peers.some((el) => el !== root && el.contains(target))) return;
+            const outermost = peers.find(
+              (el) => !peers.some((other) => other !== el && other.contains(el))
             );
             if (outermost !== root) return;
           }
@@ -355,7 +478,7 @@ const SidebarProvider = forwardRef<HTMLDivElement, SidebarProviderProps>(
       };
       window.addEventListener("keydown", onKeyDown);
       return () => window.removeEventListener("keydown", onKeyDown);
-    }, [shortcut, toggleSidebar]);
+    }, [shortcut, disabled, toggleSidebar]);
 
     const value = useMemo<SidebarContextValue>(
       () => ({
@@ -381,6 +504,9 @@ const SidebarProvider = forwardRef<HTMLDivElement, SidebarProviderProps>(
         cancelPeekTimer,
         isResizing,
         setIsResizing,
+        minWidth,
+        maxWidth,
+        disabled,
       }),
       [
         open,
@@ -400,11 +526,30 @@ const SidebarProvider = forwardRef<HTMLDivElement, SidebarProviderProps>(
         scheduleDismissPeek,
         cancelPeekTimer,
         isResizing,
+        minWidth,
+        maxWidth,
+        disabled,
       ]
     );
 
+    // Pass the other side's instance through and shadow our own side; the
+    // tree shape never changes, so a late side flip doesn't remount.
+    const parentRouting = useContext(SidebarRoutingContext);
+    const parentLeft = useContext(SidebarSideContexts.left);
+    const parentRight = useContext(SidebarSideContexts.right);
+    const hasLeft = side === "left" || !!parentRouting?.left;
+    const hasRight = side === "right" || !!parentRouting?.right;
+    const routing = useMemo<SidebarRouting>(
+      () => ({ nearest: side, current: null, left: hasLeft, right: hasRight }),
+      [side, hasLeft, hasRight]
+    );
+    const LeftContext = SidebarSideContexts.left;
+    const RightContext = SidebarSideContexts.right;
+
     return (
-      <SidebarContext.Provider value={value}>
+      <SidebarRoutingContext.Provider value={routing}>
+      <LeftContext.Provider value={side === "left" ? value : parentLeft}>
+      <RightContext.Provider value={side === "right" ? value : parentRight}>
         <div
           ref={(node) => {
             wrapperRef.current = node;
@@ -424,7 +569,9 @@ const SidebarProvider = forwardRef<HTMLDivElement, SidebarProviderProps>(
         >
           {children}
         </div>
-      </SidebarContext.Provider>
+      </RightContext.Provider>
+      </LeftContext.Provider>
+      </SidebarRoutingContext.Provider>
     );
   }
 );
@@ -578,6 +725,7 @@ const SidebarShell = forwardRef<HTMLDivElement, SidebarShellProps>(
       schedulePeek,
       scheduleDismissPeek,
       cancelPeekTimer,
+      disabled,
     } = useSidebar();
     const shape = useShape();
     const shellRef = useRef<HTMLDivElement | null>(null);
@@ -588,7 +736,7 @@ const SidebarShell = forwardRef<HTMLDivElement, SidebarShellProps>(
     // `!isResizing`: a drag can preview the collapsed state mid-gesture; the
     // shell must not swap to the peek strip then, or it would unmount the
     // rail holding the pointer capture and kill the drag.
-    const peekEnabled = peek !== "none" && !open && !isResizing;
+    const peekEnabled = peek !== "none" && !open && !isResizing && !disabled;
     useEffect(() => {
       if (!(peekEnabled && isPeeking)) return;
       const onKeyDown = (event: KeyboardEvent) => {
@@ -1007,7 +1155,7 @@ export interface SidebarRailProps extends HTMLAttributes<HTMLButtonElement> {
  *  brightens the edge border. */
 const SidebarRail = forwardRef<HTMLButtonElement, SidebarRailProps>(
   ({ className, tooltipOpen, ...props }, ref) => {
-    const { toggleSidebar, setOpen, setWidth, side, setIsResizing } = useSidebar();
+    const { toggleSidebar, setOpen, setWidth, side, setIsResizing, minWidth, maxWidth } = useSidebar();
     const shortcutKey = useShortcutKey();
     const railRef = useRef<HTMLButtonElement | null>(null);
     const dragRef = useRef<{ startX: number; startWidth: number; moved: boolean; collapsed: boolean } | null>(null);
@@ -1035,10 +1183,10 @@ const SidebarRail = forwardRef<HTMLButtonElement, SidebarRailProps>(
       // Dragged well past the minimum, toward the edge: preview the collapse
       // but keep the drag session alive — pulling back past the threshold
       // re-expands, so an overshoot isn't committed until release.
-      if (raw < SIDEBAR_MIN_WIDTH - SIDEBAR_COLLAPSE_SLOP) {
+      if (raw < minWidth - SIDEBAR_COLLAPSE_SLOP) {
         if (!drag.collapsed) {
           drag.collapsed = true;
-          setWidth(`${SIDEBAR_MIN_WIDTH}px`);
+          setWidth(`${minWidth}px`);
           setOpen(false);
         }
         return;
@@ -1047,7 +1195,7 @@ const SidebarRail = forwardRef<HTMLButtonElement, SidebarRailProps>(
         drag.collapsed = false;
         setOpen(true);
       }
-      const next = Math.max(SIDEBAR_MIN_WIDTH, Math.min(SIDEBAR_MAX_WIDTH, raw));
+      const next = Math.max(minWidth, Math.min(maxWidth, raw));
       setWidth(`${next}px`);
     };
 
