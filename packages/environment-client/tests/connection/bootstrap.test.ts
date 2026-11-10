@@ -131,6 +131,33 @@ describe('interpretBootstrapResponse', () => {
     expect(answer('plan9')).not.toHaveProperty('platform')
   })
 
+  it('reads the distro a server reports, and nothing for one that is not usable', () => {
+    const answer = (distro: unknown) =>
+      interpretBootstrapResponse({
+        ok: true,
+        status: 200,
+        body: {
+          protocolVersion: PROTOCOL_VERSION,
+          environmentId: 'env-local',
+          capabilities: [],
+          label: 'Laptop',
+          platform: 'wsl',
+          distro,
+        },
+      })
+    expect(answer({ id: 'ubuntu', name: 'Ubuntu', like: ['debian'] })).toMatchObject({
+      status: 'ready',
+      distro: { id: 'ubuntu', name: 'Ubuntu', like: ['debian'] },
+    })
+    // A name or parents it cannot use are left out, not the distro.
+    expect(answer({ id: 'arch', name: '', like: 'nope' })).toMatchObject({
+      distro: { id: 'arch' },
+    })
+    expect(answer({ id: 'Not An ID' })).not.toHaveProperty('distro')
+    expect(answer('ubuntu')).not.toHaveProperty('distro')
+    expect(answer(undefined)).not.toHaveProperty('distro')
+  })
+
   it('returns incompatible_protocol from evaluateBootstrap', () => {
     const result = interpretBootstrapResponse({
       ok: true,

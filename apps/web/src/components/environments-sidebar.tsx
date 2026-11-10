@@ -11,6 +11,7 @@ import {
 } from 'react'
 import { useNavigate } from '@tanstack/react-router'
 import { shallowEqualArray, type EnvironmentClient } from '@openmanager/environment-client'
+import { sameEnvironmentDistro } from '@openmanager/protocol'
 import { DraftDiscardNotice } from '@openmanager/app-core/components/sidebar/DraftDiscardToast'
 import { WorkspaceSidebar } from '@openmanager/app-core/components/sidebar/WorkspaceSidebar'
 import { newestDraftFirst } from '@openmanager/app-core/components/sidebar/sidebar-sessions'
@@ -265,6 +266,7 @@ function sameRowEnvironments(
         b !== undefined &&
         a.name === b.name &&
         a.platform === b.platform &&
+        sameEnvironmentDistro(a.distro, b.distro) &&
         a.reachable === b.reachable &&
         a.canSettle === b.canSettle &&
         a.canPin === b.canPin &&
@@ -421,10 +423,11 @@ function EnvironmentsSidebar({
       }: { reachable?: boolean; canSettle: boolean; canPin: boolean; hasIcons: boolean },
     ) => {
       const client = clients[environmentId]
-      const platform = environments.find((item) => item.environmentId === environmentId)?.platform
+      const saved = environments.find((item) => item.environmentId === environmentId)
       next[environmentId] = {
         name: nameOf(environmentId),
-        ...(platform ? { platform } : {}),
+        ...(saved?.platform ? { platform: saved.platform } : {}),
+        ...(saved?.distro ? { distro: saved.distro } : {}),
         // A card that reads offline isn't one New agent hands over to.
         reachable: reachable === true && !down.has(environmentId),
         canSettle,

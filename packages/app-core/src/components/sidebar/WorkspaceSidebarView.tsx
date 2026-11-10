@@ -1520,7 +1520,7 @@ function OfflineWord() {
  * readers get it with the card's title.
  */
 function EnvironmentName({ environment }: { environment: SidebarRowEnvironment }) {
-  const { name, platform, offline } = environment
+  const { name, platform, distro, offline, reachable } = environment
   return (
     <span
       aria-hidden
@@ -1530,8 +1530,13 @@ function EnvironmentName({ environment }: { environment: SidebarRowEnvironment }
       )}
       title={offline ? offlineExplanation(name) : name}
     >
+      <EnvironmentPlatformIcon
+        platform={platform}
+        distro={distro}
+        muted={offline === true || reachable !== true}
+        aria-hidden
+      />
       <span className="min-w-0 truncate">{nameWithoutPlatform(name, platform)}</span>
-      <EnvironmentPlatformIcon platform={platform} aria-hidden />
       {offline ? <OfflineWord /> : null}
     </span>
   )
@@ -2135,7 +2140,7 @@ const MotionMenuItem = motion.create(SidebarMenuItem)
 
 /** The environment of a settled row: a one-line row, so it follows the title. */
 function SettledEnvironmentName({ environment }: { environment: SidebarRowEnvironment }) {
-  const { name, platform, offline } = environment
+  const { name, platform, distro, offline, reachable } = environment
   return (
     <span
       aria-hidden
@@ -2145,8 +2150,13 @@ function SettledEnvironmentName({ environment }: { environment: SidebarRowEnviro
       )}
       title={offline ? offlineExplanation(name) : name}
     >
+      <EnvironmentPlatformIcon
+        platform={platform}
+        distro={distro}
+        muted={offline === true || reachable !== true}
+        aria-hidden
+      />
       <span className="min-w-0 truncate">{nameWithoutPlatform(name, platform)}</span>
-      <EnvironmentPlatformIcon platform={platform} aria-hidden />
       {offline ? <OfflineWord /> : null}
     </span>
   )

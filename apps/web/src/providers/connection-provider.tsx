@@ -795,6 +795,7 @@ export function ConnectionProvider({
           endpoint,
           label: answer.label,
           platform: answer.platform,
+          distro: answer.distro,
           health: { status: 'available' },
           // A saved route the client picked by itself is not a choice, so the
           // person's order stays. Nor does an answer change what is selected.
@@ -854,6 +855,7 @@ export function ConnectionProvider({
         endpoint,
         label: connectAnswer.label,
         platform: connectAnswer.platform,
+        distro: connectAnswer.distro,
         credential: pending.credential,
         health: fresh ? { status: 'available' } : undefined,
       }),

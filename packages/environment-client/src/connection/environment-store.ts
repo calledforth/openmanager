@@ -1,4 +1,9 @@
-import { EnvironmentPlatformSchema, type EnvironmentPlatform } from '@openmanager/protocol'
+import {
+  EnvironmentPlatformSchema,
+  parseEnvironmentDistro,
+  type EnvironmentDistro,
+  type EnvironmentPlatform,
+} from '@openmanager/protocol'
 
 export const ENVIRONMENT_STORAGE_KEY = 'openmanager-environments'
 export const LEGACY_ENVIRONMENT_STORAGE_KEY = 'openmanager-environment'
@@ -73,6 +78,8 @@ export type StoredEnvironment = {
    * server that reports it has answered.
    */
   platform?: EnvironmentPlatform
+  /** The Linux distribution it last said it runs, for a Linux or WSL one. */
+  distro?: EnvironmentDistro
   /** Never empty, sorted by priority. */
   routes: EnvironmentRoute[]
   credential: string
@@ -216,6 +223,11 @@ function parsePlatform(raw: unknown): { platform?: EnvironmentPlatform } {
   return parsed.success ? { platform: parsed.data } : {}
 }
 
+function parseDistro(raw: unknown): { distro?: EnvironmentDistro } {
+  const distro = parseEnvironmentDistro(raw)
+  return distro ? { distro } : {}
+}
+
 function parseLabel(raw: unknown): string {
   if (typeof raw !== 'string') return DEFAULT_ENVIRONMENT_LABEL
   const label = raw.trim().slice(0, 128)
@@ -326,6 +338,7 @@ export function parseStoredEnvironment(input: unknown): StoredEnvironment | null
     environmentId,
     label: parseLabel(record.label),
     ...parsePlatform(record.platform),
+    ...parseDistro(record.distro),
     routes,
     credential,
     ...(appOrigin ? { appOrigin } : {}),
@@ -416,6 +429,11 @@ export function upsertStoredEnvironment(
     label?: string
     /** Omitted keeps what is saved: an older server says nothing either way. */
     platform?: EnvironmentPlatform
+    /**
+     * Goes with `platform`: an answer that names the platform is taken whole,
+     * its distro or the lack of one. Without a platform, what is saved stays.
+     */
+    distro?: EnvironmentDistro
     credential?: string
     /** What reaching the endpoint just showed. Omitted leaves its health alone. */
     health?: RouteHealthReport
@@ -448,6 +466,7 @@ export function upsertStoredEnvironment(
         environmentId,
         label: input.label !== undefined ? parseLabel(input.label) : existing.label,
         ...parsePlatform(input.platform ?? existing.platform),
+        ...parseDistro(input.platform !== undefined ? input.distro : existing.distro),
         routes:
           input.keepOrder && known
             ? existing.routes.map((item) =>
@@ -462,6 +481,7 @@ export function upsertStoredEnvironment(
         environmentId,
         label: parseLabel(input.label),
         ...parsePlatform(input.platform),
+        ...parseDistro(input.distro),
         routes: preferRoute([], endpoint, input.health, now),
         credential,
       }

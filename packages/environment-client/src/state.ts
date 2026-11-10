@@ -1,5 +1,10 @@
 import { foldProtocolEvent, placeActivity } from '@agentpack/view/protocol'
-import { EMPTY_THREAD_QUEUE, sameScope, unpackComposerListings } from '@openmanager/protocol'
+import {
+  EMPTY_THREAD_QUEUE,
+  sameEnvironmentDistro,
+  sameScope,
+  unpackComposerListings,
+} from '@openmanager/protocol'
 import type {
   BackgroundTask,
   ComposerListing,
@@ -1391,7 +1396,8 @@ export function applyEnvironment(
       environment &&
       current.environmentId === environment.environmentId &&
       current.name === environment.name &&
-      current.platform === environment.platform)
+      current.platform === environment.platform &&
+      sameEnvironmentDistro(current.distro, environment.distro))
   ) {
     return state
   }

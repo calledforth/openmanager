@@ -1,5 +1,6 @@
 import {
   EnvironmentPlatformSchema,
+  parseEnvironmentDistro,
   evaluateBootstrap,
   PROTOCOL_VERSION,
   type BootstrapResponse,
@@ -72,6 +73,7 @@ export function interpretBootstrapResponse(input: {
         environmentId: state.bootstrap.environmentId,
         label: readOptionalLabel(state.bootstrap),
         ...readOptionalPlatform(state.bootstrap),
+        ...readOptionalDistro(state.bootstrap),
       }
     }
     return {
@@ -79,6 +81,7 @@ export function interpretBootstrapResponse(input: {
       environmentId: state.bootstrap.environmentId,
       label: readOptionalLabel(state.bootstrap),
       ...readOptionalPlatform(state.bootstrap),
+      ...readOptionalDistro(state.bootstrap),
       protocolVersion: state.bootstrap.protocolVersion,
     }
   } catch {
@@ -94,6 +97,12 @@ export function interpretBootstrapResponse(input: {
 function readOptionalPlatform(bootstrap: BootstrapResponse) {
   const parsed = EnvironmentPlatformSchema.safeParse(bootstrap.platform)
   return parsed.success ? { platform: parsed.data } : {}
+}
+
+/** Linux and WSL only; older servers say nothing. */
+function readOptionalDistro(bootstrap: BootstrapResponse) {
+  const distro = parseEnvironmentDistro(bootstrap.distro)
+  return distro ? { distro } : {}
 }
 
 function readOptionalLabel(bootstrap: BootstrapResponse): string | undefined {

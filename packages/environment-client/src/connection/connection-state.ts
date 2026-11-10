@@ -1,4 +1,4 @@
-import type { EnvironmentPlatform } from '@openmanager/protocol'
+import type { EnvironmentDistro, EnvironmentPlatform } from '@openmanager/protocol'
 
 /**
  * Connection UI is derived from environment selection, the bootstrap
@@ -55,6 +55,7 @@ export type BootstrapOutcome =
       environmentId: string
       label?: string
       platform?: EnvironmentPlatform
+      distro?: EnvironmentDistro
       protocolVersion: number
     }
   | {
@@ -64,6 +65,7 @@ export type BootstrapOutcome =
       environmentId?: string
       label?: string
       platform?: EnvironmentPlatform
+      distro?: EnvironmentDistro
     }
   | { status: 'unauthorized'; message?: string }
   | {

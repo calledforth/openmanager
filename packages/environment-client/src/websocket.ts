@@ -40,6 +40,7 @@ import {
   UploadResultSchema,
   EnvironmentChangedEventSchema,
   EnvironmentPlatformSchema,
+  parseEnvironmentDistro,
   WorkspaceUnavailableDetailsSchema,
 } from '@openmanager/protocol'
 import { z } from 'zod'
@@ -638,10 +639,12 @@ export function createWebSocketEnvironmentClient(
     const label = typeof bootstrap.label === 'string' ? bootstrap.label.trim() : ''
     if (label) {
       const platform = EnvironmentPlatformSchema.safeParse(bootstrap.platform)
+      const distro = parseEnvironmentDistro(bootstrap.distro)
       const environment = {
         environmentId: bootstrap.environmentId,
         name: label,
         ...(platform.success ? { platform: platform.data } : {}),
+        ...(distro ? { distro } : {}),
       }
       store.update((state) => applyEnvironment(state, environment))
     }
