@@ -1,60 +1,106 @@
-import { GitPullRequestIcon } from '@phosphor-icons/react'
-import { Button } from '@openmanager/app-core/components/fluid/ui/button'
-import { phosphorIcon } from '@openmanager/app-core/components/fluid/lib/icon-context'
+import { useCallback, useEffect, useState } from 'react'
+import type { EnvironmentState } from '@openmanager/environment-client'
+import { useEnvironmentState } from '@openmanager/app-core/providers/environment-client'
 import { SidePanel, useSidePanel } from '@openmanager/app-core/components/side-panel/SidePanel'
+import {
+  PullRequestPill,
+  PullRequestsPanel,
+  pullRequestKey,
+} from '@openmanager/app-core/components/pull-requests'
+import {
+  usePullRequestDetail,
+  useSessionPullRequests,
+} from '@openmanager/app-core/lib/pull-requests'
+import type { PullRequestSummary } from '@openmanager/protocol'
 
 /**
- * The session view's right-hand panel. The shell renders this on session
- * pages only, inside the environment providers, so it may read the session
- * and its data. What it declares through <SidePanel> lands in two places: the
- * pill in the chat topbar's right end, the content in the panel.
- *
- * Integration point for pull requests: render
- * `<SidePanel available={prs.length > 0} title="Pull requests" pill={…}>`
- * with the pill hidden (null) and `available={false}` when the session links
- * none — then `]` does nothing and no pill shows.
- *
- * Until then it shows a placeholder, only when asked to (`placeholder`), so
- * the panel can be tried without data.
+ * Links are kept on the root session (a sub-agent's pull request belongs to
+ * the chat that started it), so a child session shows its root's list.
  */
-export function SessionSidePanel({ placeholder = false }: { placeholder?: boolean }) {
-  if (!placeholder) return null
+const selectRootSessionId = (state: EnvironmentState): string | null => {
+  let id = state.activeSessionId
+  const seen = new Set<string>()
+  while (id && !seen.has(id)) {
+    seen.add(id)
+    const parent = state.sessions[id]?.parentSessionId
+    if (!parent || !state.sessions[parent]) return id
+    id = parent
+  }
+  return id ?? null
+}
+
+const selectEnvironmentName = (state: EnvironmentState) => state.environment?.name ?? null
+
+/**
+ * The session view's right-hand panel: the pull requests linked to the open
+ * session. The pill and the panel only exist while the session links at
+ * least one, so `]` does nothing and no pill shows otherwise.
+ */
+export function SessionSidePanel() {
+  const sessionId = useEnvironmentState(selectRootSessionId)
+  const pullRequests = useSessionPullRequests(null, sessionId)
+  if (!sessionId || pullRequests.length === 0) return null
   return (
-    <SidePanel available title="Pull requests" pill={<PlaceholderPill />}>
-      <PlaceholderContent />
+    <SidePanel available title="Pull requests" pill={<Pill pullRequests={pullRequests} />}>
+      <Content key={sessionId} sessionId={sessionId} pullRequests={pullRequests} />
     </SidePanel>
   )
 }
 
-const PullRequestIcon = phosphorIcon(GitPullRequestIcon)
-
-function PlaceholderPill() {
-  const { open, toggle } = useSidePanel()
+function Pill({ pullRequests }: { pullRequests: readonly PullRequestSummary[] }) {
+  const { open, toggle, shortcut } = useSidePanel()
   return (
-    <Button
-      variant="ghost"
-      size="compact"
-      active={open}
-      aria-pressed={open}
-      aria-label={open ? 'Hide pull requests' : 'Show pull requests'}
-      onClick={toggle}
-      leadingIcon={PullRequestIcon}
-      className="max-md:h-9"
-    >
-      Pull requests
-    </Button>
+    <PullRequestPill
+      pullRequests={pullRequests as PullRequestSummary[]}
+      open={open}
+      onToggle={toggle}
+      shortcut={shortcut}
+    />
   )
 }
 
-function PlaceholderContent() {
+function Content({
+  sessionId,
+  pullRequests,
+}: {
+  sessionId: string
+  pullRequests: readonly PullRequestSummary[]
+}) {
+  const environmentName = useEnvironmentState(selectEnvironmentName)
+  // The newest link first: it is usually the one the agent just opened.
+  const newest = pullRequests[pullRequests.length - 1]
+  const [selectedKey, setSelectedKey] = useState<string | null>(
+    newest ? pullRequestKey(newest) : null,
+  )
+  const selected = pullRequests.find((pr) => pullRequestKey(pr) === selectedKey) ?? newest ?? null
+  // A newly linked pull request takes the selection, like a new message
+  // takes the chat's attention.
+  const newestKey = newest ? pullRequestKey(newest) : null
+  useEffect(() => {
+    if (newestKey) setSelectedKey(newestKey)
+  }, [newestKey])
+
+  const { detail, loading, error } = usePullRequestDetail(
+    null,
+    sessionId,
+    selected?.repository,
+    selected?.number,
+  )
+  const openOnGitHub = useCallback((url: string) => {
+    window.open(url, '_blank', 'noopener,noreferrer')
+  }, [])
+
   return (
-    <section aria-label="Pull requests" className="flex h-full min-h-0 min-w-0 flex-col">
-      <div className="flex h-9 shrink-0 items-center px-4 max-md:h-11">
-        <h2 className="text-[12px] font-medium text-muted-foreground">Pull requests</h2>
-      </div>
-      <p className="px-4 pt-8 text-center text-[12px] text-faint">
-        No pull requests linked to this session.
-      </p>
-    </section>
+    <PullRequestsPanel
+      pullRequests={pullRequests as PullRequestSummary[]}
+      selectedKey={selected ? pullRequestKey(selected) : null}
+      onSelect={setSelectedKey}
+      detail={detail ?? null}
+      detailLoading={loading}
+      detailError={error}
+      onOpenOnGitHub={openOnGitHub}
+      environmentLabel={environmentName}
+      className="h-full"
+    />
   )
 }

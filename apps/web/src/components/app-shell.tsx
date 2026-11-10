@@ -517,7 +517,7 @@ export function AppShell() {
         ) : (
           <Outlet />
         )}
-        {sessionView ? <SessionSidePanel placeholder={import.meta.env.DEV} /> : null}
+        {sessionView ? <SessionSidePanel /> : null}
       </SidePanelHost>
     </SidebarInset>
   )
