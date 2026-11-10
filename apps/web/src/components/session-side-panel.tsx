@@ -80,11 +80,14 @@ function Content({
     if (newestKey) setSelectedKey(newestKey)
   }, [newestKey])
 
+  // The collapsed rail stays mounted on desktop: only an open panel is viewing.
+  const { open } = useSidePanel()
   const { detail, loading, error } = usePullRequestDetail(
     null,
     sessionId,
     selected?.repository,
     selected?.number,
+    { viewing: open },
   )
   const openOnGitHub = useCallback((url: string) => {
     window.open(url, '_blank', 'noopener,noreferrer')

@@ -93,17 +93,34 @@ function ask(
   return asked
 }
 
+export interface PullRequestDetailOptions {
+  /**
+   * Whether the detail is on screen: the panel showing it is open. Only then
+   * does the hook ask, because an ask is what tells the environment somebody
+   * is looking. @default true
+   */
+  viewing?: boolean
+}
+
 /**
- * One linked pull request in full. Asks the environment when nothing is held,
- * or when the session's summary says the environment has read something newer
- * than the held detail; otherwise shows the held detail without asking.
+ * One linked pull request in full, and the environment told while it is
+ * viewed. While `viewing`, the hook asks when it comes into view (the panel
+ * opens, or another pull request is picked), even with a current detail
+ * held, since the ask is how the environment learns someone is looking; it
+ * asks again every `PULL_REQUEST_WATCH_RENEW_MS` while still viewed, and
+ * whenever the session's summary says the environment has read something
+ * newer than the held detail. Not viewing, it asks nothing and shows what it
+ * holds. Whether a detail is current is the environment's word, never the
+ * client's guess: it compares the read times the environment stated.
  */
 export function usePullRequestDetail(
   environmentId: string | null,
   sessionId: string | null | undefined,
   repository: string | null | undefined,
   number: number | null | undefined,
+  options: PullRequestDetailOptions = {},
 ): PullRequestDetailState {
+  const viewing = options.viewing ?? true
   const client = useScopedClient(environmentId)
   const key = repository && number ? pullRequestDetailKey({ repository, number }) : null
   const selectSummary = useCallback(
@@ -151,16 +168,20 @@ export function usePullRequestDetail(
   }, [client, sessionId, repository, number])
 
   const linked = summary !== undefined
+  const watching = supported && linked && viewing
+  // Into view: ask at once, then renew the environment's watch while it lasts.
+  // `fetchDetail` changes with the pull request, so a new pick asks too.
   useEffect(() => {
-    if (!supported || !linked || current) return
+    if (!watching) return
     fetchDetail()
-  }, [supported, linked, current, fetchDetail])
-
-  useEffect(() => {
-    if (!supported || !linked) return
     const timer = setInterval(fetchDetail, PULL_REQUEST_WATCH_RENEW_MS)
     return () => clearInterval(timer)
-  }, [supported, linked, fetchDetail])
+  }, [watching, fetchDetail])
+  // The summary moved past the held detail: fetch the newer one.
+  useEffect(() => {
+    if (!watching || current) return
+    fetchDetail()
+  }, [watching, current, fetchDetail])
 
   return { detail, loading, error }
 }
