@@ -21,7 +21,12 @@ export const ErrorCodeSchema = z.enum([
 
 export type ErrorCode = z.infer<typeof ErrorCodeSchema>
 export type ErrorRetryPolicy =
-  'after_auth' | 'after_change' | 'after_backoff' | 'after_upgrade' | 'never' | 'reconcile'
+  | 'after_auth'
+  | 'after_change'
+  | 'after_backoff'
+  | 'after_upgrade'
+  | 'never'
+  | 'reconcile'
 
 /** Policy for a NEW attempt after a terminal error, not for replaying a request ID. */
 export const ERROR_RETRY_POLICY = {
