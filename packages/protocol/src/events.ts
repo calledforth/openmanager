@@ -33,6 +33,7 @@ import {
 } from './composer.js'
 import { DraftSchema, DraftTombstoneSchema } from './drafts.js'
 import { ThreadQueueSchema } from './queue.js'
+import { PullRequestSummaryListSchema } from './pull-requests.js'
 
 const event = <N extends string, S extends z.ZodType, P extends z.ZodType>(
   name: N,
@@ -108,6 +109,8 @@ export const ProofEventSchemas = {
        */
       waitingOn: InteractionKindSchema.nullable().optional(),
       inBackground: z.boolean().optional(),
+      /** Present only when the session's linked pull requests changed: every one, as it is now. */
+      pullRequests: PullRequestSummaryListSchema.optional(),
     }),
   ),
   'session.deleted': event(
