@@ -1,4 +1,4 @@
-import type { DatabaseSync } from 'node:sqlite'
+import type { DatabaseSync, StatementSync } from 'node:sqlite'
 import type { Logger } from '../logger.ts'
 import { storedListing } from './composer-rows.ts'
 import { readSessionActivity } from './session-activity.ts'
@@ -203,7 +203,31 @@ export function sessionRowToSummary(database: DatabaseSync, row: SessionRow): Se
       : {}),
     ...(row.composer_json ? { composer: JSON.parse(row.composer_json) } : {}),
     ...readSessionActivity(database, row),
+    ...readSessionPullRequests(database, row.session_id),
   })
+}
+
+const pullRequestStatements = new WeakMap<DatabaseSync, StatementSync>()
+
+/**
+ * The session's pull requests as the last `session.updated` naming them
+ * stated, oldest link first; nothing when it has none (migration 30).
+ */
+export function readSessionPullRequests(
+  database: DatabaseSync,
+  sessionId: string,
+): Pick<SessionSummary, 'pullRequests'> {
+  let statement = pullRequestStatements.get(database)
+  if (!statement) {
+    statement = database.prepare(
+      `SELECT summary_json FROM session_pull_requests
+       WHERE session_id = ? ORDER BY linked_at, rowid`,
+    )
+    pullRequestStatements.set(database, statement)
+  }
+  const rows = statement.all(sessionId) as { summary_json: string }[]
+  if (rows.length === 0) return {}
+  return { pullRequests: rows.map((row) => JSON.parse(row.summary_json)) }
 }
 
 /** Every session, newest first: the environment snapshot's sidebar (§6.2). */

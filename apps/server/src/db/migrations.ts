@@ -1087,6 +1087,59 @@ export const MIGRATIONS: readonly Migration[] = [
       `)
     },
   },
+  {
+    version: 30,
+    name: 'pull_requests',
+    up(database) {
+      // Pull requests linked to sessions (pull-requests/service.ts).
+      //
+      // `session_pull_requests` is the client-visible list: one row per link,
+      // written only by the projection of `session.updated` (I1), which states
+      // the session's whole list each time. `summary_json` is the summary as
+      // that event stated it. `source` is host-private: how the link was made,
+      // given to the write that creates the row (WriteOptions).
+      //
+      // `pull_requests` is the environment's own copy of GitHub, one row per
+      // pull request however many sessions link it: what the poller last read,
+      // the detail `pull_request.get` answers with, and what went wrong. No
+      // client reads it; it is where each session's list is built from.
+      // `detail_json` is everything one read returned (summary fields
+      // included); `state` is kept beside it for the poller's query.
+      // `synced_at` is the last read that worked, `changed_at` the last one
+      // that found something new (what clients see as `syncedAt`), and
+      // `attempted_at` the last try, failed or not, which paces the poller.
+      database.exec(`
+        CREATE TABLE IF NOT EXISTS session_pull_requests (
+          session_id TEXT NOT NULL REFERENCES sessions(session_id) ON DELETE CASCADE,
+          repository TEXT NOT NULL,
+          number INTEGER NOT NULL,
+          url TEXT NOT NULL,
+          linked_at INTEGER NOT NULL,
+          source TEXT NOT NULL CHECK (source IN ('tool', 'gh_pr_create')),
+          summary_json TEXT NOT NULL CHECK (json_valid(summary_json)),
+          PRIMARY KEY (session_id, repository, number)
+        ) STRICT;
+        CREATE INDEX IF NOT EXISTS session_pull_requests_by_pull_request
+          ON session_pull_requests (repository, number);
+
+        CREATE TABLE IF NOT EXISTS pull_requests (
+          repository TEXT NOT NULL,
+          number INTEGER NOT NULL,
+          url TEXT NOT NULL,
+          state TEXT CHECK (state IS NULL OR state IN ('open', 'draft', 'merged', 'closed')),
+          github_updated_at INTEGER,
+          detail_json TEXT CHECK (detail_json IS NULL OR json_valid(detail_json)),
+          synced_at INTEGER,
+          changed_at INTEGER,
+          problem TEXT CHECK (
+            problem IS NULL OR problem IN ('not_signed_in', 'not_found', 'unreachable')
+          ),
+          attempted_at INTEGER,
+          PRIMARY KEY (repository, number)
+        ) STRICT;
+      `)
+    },
+  },
 ]
 
 type RetainedActivityRow = {

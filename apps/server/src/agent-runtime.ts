@@ -22,6 +22,7 @@ export function mountAgentRuntime(
   emitEvent: HostDeps['emitEvent'] = () => undefined,
   desiredSessionConfig?: HostDeps['desiredSessionConfig'],
   runtimeOptions?: AgentRuntimeOptions,
+  agentTools?: HostDeps['agentTools'],
 ): AgentRuntime {
   const runtime = new AgentRuntime(
     {
@@ -31,6 +32,7 @@ export function mountAgentRuntime(
       emitEvent,
       log: (entry) => logRuntimeEntry(log, entry),
       ...(desiredSessionConfig ? { desiredSessionConfig } : {}),
+      ...(agentTools ? { agentTools } : {}),
     },
     providers,
     runtimeOptions,

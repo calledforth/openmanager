@@ -58,7 +58,17 @@ export interface WriteOptions {
    * (§4.7.4 (e)). Every key must name a session the same write creates.
    */
   identities?: Readonly<Record<string, string>>
+  /**
+   * How each pull-request link this write creates was made, by
+   * `pullRequestLinkKey`. The `session.updated` projection stores it with the
+   * row it inserts, and refuses a new link without one (pull-requests/).
+   */
+  pullRequestSources?: Readonly<Record<string, 'tool' | 'gh_pr_create'>>
 }
+
+/** The key of one session's link to one pull request, in `pullRequestSources`. */
+export const pullRequestLinkKey = (sessionId: string, repository: string, number: number) =>
+  `${sessionId} ${repository}#${number}`
 
 export interface EventRepository {
   appendEvents(scope: SubscriptionScope, events: readonly DurableProofEvent[]): DurableEvent[]
