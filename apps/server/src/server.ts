@@ -24,6 +24,7 @@ import {
   ENVIRONMENT_RENAME_CAPABILITY,
   FILESYSTEM_BROWSE_CAPABILITY,
   PROTOCOL_VERSION,
+  SEARCH_MESSAGES_CAPABILITY,
   SESSION_CREATE_EXPLICIT_CAPABILITY,
   UPLOAD_TICKET_CAPABILITY,
   PROVIDER_CATALOG_CAPABILITY,
@@ -52,6 +53,7 @@ import { openComposerStore } from './composer-store.ts'
 import { openEnvironmentSettings } from './environment-settings.ts'
 import { createTitleGenerator } from './session-titles/generator.ts'
 import { createFilesystemService } from './filesystem.ts'
+import { createMessageSearch } from './message-search.ts'
 import { auditValue, createAuditLog } from './audit.ts'
 import type { ServerConfig } from './config.ts'
 import { validateHosts, validateOrigins, validateWorkspaceRoots } from './config.ts'
@@ -139,6 +141,7 @@ export const SERVER_CAPABILITIES = [
   FILESYSTEM_BROWSE_CAPABILITY,
   ENVIRONMENT_SETTINGS_GET_CAPABILITY,
   ENVIRONMENT_SETTINGS_SET_CAPABILITY,
+  SEARCH_MESSAGES_CAPABILITY,
   DRAFT_LIST_CAPABILITY,
   DRAFT_SAVE_CAPABILITY,
   DRAFT_DELETE_CAPABILITY,
@@ -202,6 +205,7 @@ export async function startServer(config: ServerConfig) {
   // the runtime exist, which both commit through the event service.
   let followWorkspaceRecord: (record: DurableEvent) => void = () => undefined
   const eventDatabase = openEnvironmentDatabase(config.dataDir)
+  const messageSearch = createMessageSearch({ database: eventDatabase })
   const sessionRowExists = eventDatabase.prepare('SELECT 1 FROM sessions WHERE session_id = ?')
   const sessionActivityRow = eventDatabase.prepare(
     'SELECT updated_at FROM sessions WHERE session_id = ?',
@@ -848,6 +852,7 @@ export async function startServer(config: ServerConfig) {
       providerLimits.dispatch(command) ??
       uploads.dispatch(command, context) ??
       filesystem.dispatch(command, context) ??
+      messageSearch.dispatch(command) ??
       drafts.dispatch(command, context) ??
       pairing.dispatch(command, context) ??
       clientService.dispatch(command, context) ??

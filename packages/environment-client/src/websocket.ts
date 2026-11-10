@@ -2036,6 +2036,10 @@ export function createWebSocketEnvironmentClient(
         ...(path === undefined ? {} : { path }),
         ...(prefix === undefined ? {} : { prefix }),
       }),
+    async searchMessages(query, limit) {
+      return (await request('search.messages', limit === undefined ? { query } : { query, limit }))
+        .hits
+    },
     async getEnvironmentSettings() {
       return (await request('environment.settings.get', null)).settings
     },

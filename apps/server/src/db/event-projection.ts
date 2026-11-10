@@ -231,6 +231,20 @@ export function createEventProjector(
     finalizeTurnMessages: database.prepare(
       'UPDATE messages SET is_final = 1, updated_at = ? WHERE turn_id = ?',
     ),
+    // What search finds of a turn's messages once it has ended (migration 29).
+    indexTurnText: database.prepare(
+      `INSERT INTO message_text (message_id, body)
+       SELECT message_id, replace(replace(body, char(2), ''), char(3), '') FROM (
+         SELECT m.message_id AS message_id,
+           group_concat(json_extract(p.content_json, '$.text'), char(10) ORDER BY p.ordinal) AS body
+         FROM messages m JOIN message_parts p ON p.message_id = m.message_id
+         WHERE m.turn_id = ? AND p.part_type = 'text'
+         GROUP BY m.message_id
+       )
+       WHERE body IS NOT NULL AND trim(body) <> ''
+       ON CONFLICT (message_id) DO UPDATE SET body = excluded.body
+         WHERE message_text.body IS NOT excluded.body`,
+    ),
     selectLastPart: database.prepare(
       `SELECT part_id, ordinal, part_type, content_json
        FROM message_parts WHERE message_id = ? ORDER BY ordinal DESC LIMIT 1`,
@@ -885,6 +899,7 @@ export function createEventProjector(
           throw new ProjectionRefusal(`Cannot finalize missing or finished turn ${turnId}`)
         }
         s.finalizeTurnMessages.run(at, turnId)
+        s.indexTurnText.run(turnId)
         // The turn is over but the session is not resting while work it
         // started is still running in the background.
         const working = !!s.hasBackgroundTasks.get(event.scope.sessionId)

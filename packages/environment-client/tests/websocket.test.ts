@@ -920,6 +920,37 @@ describe('websocket environment client', () => {
     client.disconnect()
   })
 
+  it('searches messages and hands back the hits; older servers are not asked', async () => {
+    const { client, socket } = await connected([...FULL_CAPABILITIES, 'search.messages'])
+    expect(client.supports('searchMessages')).toBe(true)
+    const hits = [
+      {
+        sessionId: SESSION.sessionId,
+        workspaceId: 'workspace-1',
+        title: 'Sockets',
+        messageId: 'message-1',
+        role: 'assistant',
+        at: '2026-11-10T10:00:00.000Z',
+        snippet: 'the reconnect backoff',
+        highlights: [[14, 21]],
+        matches: 2,
+      },
+    ]
+    const searched = client.commands.searchMessages('backoff', 5)
+    expect(socket.last('search.messages').payload).toEqual({ query: 'backoff', limit: 5 })
+    socket.respond('search.messages', { hits })
+    await expect(searched).resolves.toEqual(hits)
+    client.disconnect()
+
+    const older = await connected()
+    expect(older.client.supports('searchMessages')).toBe(false)
+    await expect(older.client.commands.searchMessages('backoff')).rejects.toMatchObject({
+      code: 'capability_missing',
+    })
+    expect(older.socket.sent.some((message) => message.name === 'search.messages')).toBe(false)
+    older.client.disconnect()
+  })
+
   it('rejects regenerating a title on servers that cannot', async () => {
     const { client, socket } = await connected()
     expect(client.supports('regenerateSessionTitle')).toBe(false)

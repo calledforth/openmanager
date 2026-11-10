@@ -19,6 +19,10 @@ import {
   type CommandPaletteItemData,
 } from '@openmanager/app-core/components/command/CommandPalette'
 import {
+  requestSearch,
+  SEARCH_SHORTCUT,
+} from '@openmanager/app-core/components/command/SearchPalette'
+import {
   QUICK_AGENT_SHORTCUT,
   QuickAgentPalette,
   requestQuickAgent,
@@ -28,6 +32,7 @@ import {
   ArrowsClockwiseIcon,
   FolderPlusIcon,
   GaugeIcon,
+  MagnifyingGlassIcon,
   NotePencilIcon,
 } from '@phosphor-icons/react'
 import {
@@ -76,6 +81,7 @@ const NewAgentIcon = phosphorIcon(NotePencilIcon)
 const AddProjectIcon = phosphorIcon(FolderPlusIcon)
 const UsageIcon = phosphorIcon(GaugeIcon)
 const RegenerateTitleIcon = phosphorIcon(ArrowsClockwiseIcon)
+const SearchIcon = phosphorIcon(MagnifyingGlassIcon)
 
 function isSessionPath(pathname: string) {
   return pathname === '/' || pathname.startsWith('/sessions/') || pathname.startsWith('/drafts/')
@@ -241,6 +247,15 @@ function ConnectedOverlays({
               },
             ]
           : []),
+      {
+        value: 'action:search',
+        label: 'Search sessions and messages…',
+        icon: SearchIcon,
+        group: 'Actions',
+        shortcut: SEARCH_SHORTCUT,
+        keywords: ['search', 'find', 'messages', 'sessions', 'chats', 'history'],
+        onSelect: () => requestSearch(),
+      },
       {
         value: 'action:add-project',
         label: addsTo ? `Add project to ${addsTo}` : 'Add project',

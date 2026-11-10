@@ -19,6 +19,7 @@ import type {
   ErrorCode,
   FilesystemListing,
   InteractionKind,
+  MessageSearchHit,
   InteractionResponse,
   Message,
   PairingLink,
@@ -62,6 +63,7 @@ export type {
   PairingRedeemResponse,
   EnvironmentSettingsPatch,
   FilesystemListing,
+  MessageSearchHit,
   ProviderCatalogEntry,
   QueuedMessage,
   SessionComposerState,
@@ -640,6 +642,12 @@ export interface EnvironmentCommands {
    * how a listing too large to send whole (`omitted` > 0) is reached.
    */
   browseFolders(path?: string, prefix?: string): Promise<FilesystemListing>
+  /**
+   * Sessions whose messages hold every word of `query` (each as the start of
+   * a word), best first, one per session at its best message. A turn is
+   * searchable once it ends. Not stored: each call asks the environment.
+   */
+  searchMessages(query: string, limit?: number): Promise<MessageSearchHit[]>
   /** Settings the environment shares with every client. Not stored. */
   getEnvironmentSettings(): Promise<EnvironmentSettings>
   /** A patch: settings left out keep their value. Resolves with all of them. */
