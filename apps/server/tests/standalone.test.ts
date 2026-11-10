@@ -167,7 +167,10 @@ describe('releases', () => {
       requested.push(String(input))
       return Response.json([{ tag_name: 'server-v0.2.0' }])
     }) as typeof fetch
-    for (const api of ['https://mirror.example/releases', 'https://mirror.example/r?per_page=100']) {
+    for (const api of [
+      'https://mirror.example/releases',
+      'https://mirror.example/r?per_page=100',
+    ]) {
       expect(await fetchNewestRelease(fake, { OPENMANAGER_RELEASES_API: api })).toBe('0.2.0')
     }
     expect(requested).toEqual([
@@ -504,12 +507,14 @@ describe.skipIf(target === undefined)('standalone commands', () => {
     },
   )
 
-  it('uninstall without a service skips the service step', async () => {
-    const system = fakeInstall({})
-    cleanups.push(system.temp)
-    // Keep the folder on Windows, where uninstall hands deletion to a helper.
-    if (process.platform === 'win32') return
-    expect(await runUninstall([], system.deps)).toBe(0)
-    expect(system.serviceCalls).toEqual([])
-  })
+  // Not on Windows, where uninstall hands deletion of the folder to a helper.
+  it.skipIf(process.platform === 'win32')(
+    'uninstall without a service skips the service step',
+    async () => {
+      const system = fakeInstall({})
+      cleanups.push(system.temp)
+      expect(await runUninstall([], system.deps)).toBe(0)
+      expect(system.serviceCalls).toEqual([])
+    },
+  )
 })

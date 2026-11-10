@@ -60,7 +60,9 @@ describe('InteractionBroker', () => {
     const pending = addPending(broker, 'req-1')
     vi.advanceTimersByTime(INTERACTION_TIMEOUT_MS + 1)
     await expect(pending.promise).resolves.toEqual({ outcome: 'cancelled', reason: 'timeout' })
+    // One-shot: a late answer after the timeout changes nothing.
     expect(broker.respond('req-1', {})).toBe(false)
+    expect(settlements).toHaveLength(1)
   })
 
   it('honors a custom per-request timeout', async () => {
@@ -145,14 +147,5 @@ describe('InteractionBroker', () => {
     broker.settleAll()
     expect(settlements[0]).toMatchObject({ kind: 'extension' })
     expect(settlements[0]?.resolution).toBeUndefined()
-  })
-
-  it('is strictly one-shot: a late answer after a timeout changes nothing', () => {
-    vi.useFakeTimers()
-    addPending(broker, 'req-1')
-    vi.advanceTimersByTime(INTERACTION_TIMEOUT_MS + 1)
-    expect(broker.respond('req-1', { late: true })).toBe(false)
-    expect(settlements).toHaveLength(1)
-    expect(settlements[0]?.outcome).toEqual({ outcome: 'cancelled', reason: 'timeout' })
   })
 })

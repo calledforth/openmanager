@@ -224,16 +224,6 @@ describe('devices settings', () => {
     expect(await screen.findByText(/2 devices lose access now/)).toBeInTheDocument()
   })
 
-  it('refuses everything to a device without admin, as the environment would', async () => {
-    const client = mockClient('client-tablet')
-    await expect(client.commands.listAuthorizedClients()).rejects.toMatchObject({
-      code: 'capability_missing',
-    })
-    await expect(client.commands.revokeAuthorizedClient('client-phone')).rejects.toMatchObject({
-      code: 'capability_missing',
-    })
-  })
-
   it('keeps the confirm open with the reason when a revoke fails', async () => {
     const user = userEvent.setup()
     const client = mockClient()

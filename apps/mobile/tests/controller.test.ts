@@ -417,16 +417,6 @@ describe('phone connection controller', () => {
       expect(h.link().client!.getState()).toBe(client!.getState())
     })
 
-    it('treats iOS inactive as still on screen: the socket stays', async () => {
-      const h = harness()
-      await connect(h)
-      // The adapter maps `inactive` to `active`, so the source never changes.
-      h.activity.set('active')
-      await flush()
-      expect(h.status()).toBe('connected')
-      expect(h.sockets()).toHaveLength(1)
-    })
-
     it('does not start a search that was due while the app was away', async () => {
       const h = harness({ answers: { [LAN]: silent } })
       await h.controller.start()

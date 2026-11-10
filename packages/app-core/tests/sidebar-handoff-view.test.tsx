@@ -204,19 +204,6 @@ describe('sending a draft from the sidebar', () => {
     expect(fill()).toContain('bg-active')
   })
 
-  it('reads as the draft did until its session is named', async () => {
-    const only = draft('d1', 'only idea', 1)
-    await render({ sessions: [OLDER], drafts: [only] })
-    // Listed from the create answer, before any title arrives.
-    const untitled = { ...session('d1-session', '', '2026-10-02T00:00:00.000Z'), title: undefined }
-    await render({ sessions: [untitled, OLDER], drafts: [] })
-    expect(rowOf('only idea')).toBeDefined()
-    expect(rows()).not.toContain('New session')
-    const named = session('d1-session', 'Named by the environment', '2026-10-02T00:00:01.000Z')
-    await render({ sessions: [named, OLDER], drafts: [] })
-    expect(rowOf('Named by the environment')).toBeDefined()
-  })
-
   it('keeps reading as the draft while other drafts change, until its session is named', async () => {
     const sent = draft('d1', 'first idea', 1)
     await render({ sessions: [OLDER], drafts: [sent] })

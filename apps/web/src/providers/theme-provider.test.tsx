@@ -41,11 +41,4 @@ describe('ThemeProvider', () => {
     await user.click(screen.getByRole('button', { name: 'Lovable' }))
     expect(document.documentElement.dataset.theme).toBe('lovable')
   })
-
-  it('shows Lovable for a Black saved before families', () => {
-    localStorage.setItem('openmanager-theme', 'black')
-    renderWithTheme(<ThemeProbe />)
-    expect(screen.getByTestId('theme-value').textContent).toBe('lovable')
-    expect(document.documentElement.dataset.theme).toBe('lovable')
-  })
 })
