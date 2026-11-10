@@ -575,16 +575,18 @@ export function EnvironmentList({
                 />
               ) : (
                 <p className="flex min-w-0 flex-1 items-center gap-2">
+                  <EnvironmentPlatformIcon
+                    platform={environment.platform}
+                    distro={environment.distro}
+                    // Grey until one of its routes has answered.
+                    muted={!environment.routes.some((route) => route.health.status === 'available')}
+                    className="size-3.5"
+                  />
                   <Tooltip content={environment.environmentId}>
                     <span className="truncate text-[13px] font-medium text-foreground">
                       {nameWithoutPlatform(environment.label, environment.platform)}
                     </span>
                   </Tooltip>
-                  <EnvironmentPlatformIcon
-                    platform={environment.platform}
-                    distro={environment.distro}
-                    className="size-3.5 text-muted-foreground"
-                  />
                   {selected && several ? (
                     <span className="shrink-0 rounded bg-active px-1.5 py-px text-[11px] text-muted-foreground">
                       Current

@@ -68,6 +68,41 @@ describe('EnvironmentPlatformIcon', () => {
   })
 })
 
+describe('EnvironmentPlatformIcon colour', () => {
+  it('takes its brand colour while reachable, and the grey of its row when muted', async () => {
+    const ubuntu = await render(
+      <EnvironmentPlatformIcon platform="linux" distro={{ id: 'ubuntu' }} />,
+    )
+    expect(ubuntu?.style.color).toBe('rgb(233, 84, 32)')
+    const off = await render(
+      <EnvironmentPlatformIcon platform="linux" distro={{ id: 'ubuntu' }} muted />,
+    )
+    expect(off?.style.color).toBe('')
+    expect(off?.hasAttribute('data-muted')).toBe(true)
+    // One blue for Windows, not its four-colour flag.
+    const windows = await render(<EnvironmentPlatformIcon platform="windows" />)
+    expect(windows?.style.color).toBe('rgb(0, 120, 212)')
+  })
+
+  it('lifts a brand colour too dark to read on the dark scheme', async () => {
+    const slackware = await render(
+      <EnvironmentPlatformIcon platform="linux" distro={{ id: 'slackware' }} />,
+    )
+    // Slackware's brand is black.
+    expect(slackware?.style.color).not.toBe('rgb(0, 0, 0)')
+    expect(slackware?.style.color).toMatch(/^rgb\(/)
+  })
+
+  it('stands in a fallback for a platform it has no logo for', async () => {
+    await act(async () =>
+      root.render(
+        <EnvironmentPlatformIcon platform={undefined} fallback={<i data-testid="x" />} />,
+      ),
+    )
+    expect(container.querySelector('[data-testid="x"]')).toBeTruthy()
+  })
+})
+
 describe('environmentOsName', () => {
   it('says the distro where there is one, and the platform otherwise', () => {
     expect(environmentOsName('wsl', { id: 'debian', name: 'Debian GNU/Linux' })).toBe(

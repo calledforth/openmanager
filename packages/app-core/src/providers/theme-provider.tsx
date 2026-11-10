@@ -286,6 +286,11 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
   return <ThemeContext.Provider value={value}>{children}</ThemeContext.Provider>
 }
 
+/** Whether the scheme on screen is light: for a mark that has to stay readable. Dark outside a provider. */
+export function useLightScheme(): boolean {
+  return useContext(ThemeContext)?.scheme === 'light'
+}
+
 export function useTheme() {
   const ctx = useContext(ThemeContext)
   if (!ctx) throw new Error('useTheme must be used within ThemeProvider')

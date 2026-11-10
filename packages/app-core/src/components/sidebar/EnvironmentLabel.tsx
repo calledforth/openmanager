@@ -37,11 +37,15 @@ export function EnvironmentLabel({
           className,
         )}
       >
-        <HardDrivesIcon weight="light" aria-hidden className="h-3 w-3 shrink-0" />
+        <EnvironmentPlatformIcon
+          platform={platform}
+          distro={distro}
+          aria-hidden
+          fallback={<HardDrivesIcon weight="light" aria-hidden className="h-3 w-3 shrink-0" />}
+        />
         <span className="sr-only">Sessions run on </span>
         <span className="truncate">{label}</span>
         {osName ? <span className="sr-only"> ({osName})</span> : null}
-        <EnvironmentPlatformIcon platform={platform} distro={distro} aria-hidden />
       </span>
     </Tooltip>
   )

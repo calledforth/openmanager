@@ -1,6 +1,7 @@
 import type { Meta, StoryObj } from '@storybook/react-vite'
 import { EnvironmentPicker } from '../../components/chat/EnvironmentPicker'
 import { NewSessionLandingView } from '../../components/chat/NewSessionLanding'
+import { ThemeProvider } from '../../providers/theme-provider'
 
 const meta = {
   title: 'App/NewSessionLanding',
@@ -23,9 +24,11 @@ const meta = {
   },
   decorators: [
     (Story) => (
-      <div className="flex h-screen w-screen bg-[var(--basis-canvas-bg)] text-[var(--basis-text)]">
-        <Story />
-      </div>
+      <ThemeProvider>
+        <div className="flex h-screen w-screen bg-[var(--basis-canvas-bg)] text-[var(--basis-text)]">
+          <Story />
+        </div>
+      </ThemeProvider>
     ),
   ],
 } satisfies Meta<typeof NewSessionLandingView>

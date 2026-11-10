@@ -168,13 +168,14 @@ export function EnvironmentPicker({
             open && 'bg-hover text-[var(--basis-text-muted)]',
           )}
         >
-          <HardDrivesIcon weight="light" aria-hidden className="h-3 w-3 shrink-0" />
-          <span className="truncate">{shownLabel}</span>
           <EnvironmentPlatformIcon
             platform={selected?.platform}
             distro={selected?.distro}
+            muted={selected ? !selected.reachable : false}
             aria-hidden
+            fallback={<HardDrivesIcon weight="light" aria-hidden className="h-3 w-3 shrink-0" />}
           />
+          <span className="truncate">{shownLabel}</span>
           <CaretDownIcon
             weight="light"
             aria-hidden
@@ -198,19 +199,26 @@ function EnvironmentRow({
 }) {
   return (
     <CommandMenuItem value={item.value} className="h-9 gap-2.5 px-2.5 text-[13px] text-foreground">
-      <HardDrivesIcon
-        weight="light"
+      <EnvironmentPlatformIcon
+        platform={system?.platform}
+        distro={system?.distro}
+        muted={item.disabled === true}
         aria-hidden
-        className="h-3.5 w-3.5 shrink-0 text-muted-foreground"
+        className="h-3.5 w-3.5"
+        fallback={
+          <HardDrivesIcon
+            weight="light"
+            aria-hidden
+            className="h-3.5 w-3.5 shrink-0 text-muted-foreground"
+          />
+        }
       />
       <span className="flex min-w-0 flex-1 items-baseline gap-2">
-        <span className="flex min-w-0 shrink-0 items-center gap-1.5">
-          <span className="truncate">{item.label}</span>
-          <EnvironmentPlatformIcon
-            platform={system?.platform}
-            distro={system?.distro}
-            className="text-muted-foreground"
-          />
+        <span className="shrink-0 truncate">
+          {item.label}
+          {system && environmentOsName(system.platform, system.distro) ? (
+            <span className="sr-only"> ({environmentOsName(system.platform, system.distro)})</span>
+          ) : null}
         </span>
         {item.description && (
           <span className="min-w-0 truncate text-muted-foreground/70">{item.description}</span>
