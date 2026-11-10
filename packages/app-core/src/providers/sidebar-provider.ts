@@ -1,5 +1,6 @@
 import { createContext, useContext } from 'react'
 import type { ProviderId } from '@agentpack/contract'
+import type { EnvironmentPlatform } from '@openmanager/protocol'
 import type { DraftDiscardOptions, SidebarDraft } from '../components/sidebar/sidebar-sessions'
 
 export type { DraftDiscardOptions, SidebarDraft }
@@ -30,8 +31,8 @@ export interface SidebarEnvironment {
   environmentId: string
   /** The name the environment reports for itself (its host name by default). */
   label: string
-  /** The kind of machine it runs on, as read ("WSL"), when its server says. */
-  platform?: string
+  /** The kind of machine it runs on, when its server says. */
+  platform?: EnvironmentPlatform
 }
 
 export interface SidebarSessionEntry {
@@ -211,6 +212,8 @@ export interface SidebarEnvironmentRows {
 export interface SidebarRowEnvironment {
   /** Its saved name, shown on the card. */
   name: string
+  /** The kind of machine it runs on, whose logo follows the name. */
+  platform?: EnvironmentPlatform
   /**
    * Connected now, and not `offline`, so a new agent could start there.
    * Absent reads as not.
@@ -251,6 +254,8 @@ export function useSidebarEnvironments(): SidebarEnvironmentsValue | null {
 export interface EnvironmentOption {
   environmentId: string
   label: string
+  /** The kind of machine it runs on, when its server says. */
+  platform?: EnvironmentPlatform
   /** Its address, for an environment whose name another saved one shares. */
   detail?: string
   /**

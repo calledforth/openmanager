@@ -10,6 +10,7 @@ import { EnvironmentLabel } from '../sidebar/EnvironmentLabel'
 import { EnvironmentPicker } from './EnvironmentPicker'
 import { ProjectIcon } from '../sidebar/ProjectIcon'
 import { ProjectPicker, describeCapabilities } from './ProjectPicker'
+import type { EnvironmentPlatform } from '@openmanager/protocol'
 
 /** How many recent projects the landing offers as one-click chips. */
 const RECENT_CHIP_LIMIT = 4
@@ -29,8 +30,8 @@ export function NewSessionLandingView({
 }: {
   /** Where the session will run; omitted, no environment copy shows. */
   environmentLabel?: string
-  /** The kind of machine it is ("WSL"), when its server says. */
-  environmentPlatform?: string
+  /** The kind of machine it is, when its server says. */
+  environmentPlatform?: EnvironmentPlatform
   /** Stands where the label would, on a host with more than one environment. */
   environmentPicker?: ReactNode
   workspaces: WorkspaceEntry[]

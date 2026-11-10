@@ -113,6 +113,36 @@ describe('EnvironmentPicker', () => {
     expect(rows[1]).toContain('127.0.0.1:2 · Not connected')
   })
 
+  it("shows each environment's platform as a logo, not in brackets", async () => {
+    await render(
+      <EnvironmentPicker
+        environments={[
+          { environmentId: 'win', label: 'Laptop (Windows)', platform: 'windows', reachable: true },
+          { environmentId: 'wsl', label: 'Laptop (WSL)', platform: 'wsl', reachable: true },
+          { environmentId: 'mac', label: 'Studio', platform: 'macos', reachable: true },
+        ]}
+        selectedId="wsl"
+        onSelect={() => undefined}
+      />,
+    )
+    expect(trigger()!.querySelector('.truncate')?.textContent).toBe('Laptop')
+    expect(trigger()!.querySelector('[data-platform="wsl"]')).toBeTruthy()
+    // What the logo stands for is still said, and still searched.
+    expect(trigger()!.getAttribute('aria-label')).toBe(
+      'Environment: Laptop (WSL). Choose an environment',
+    )
+    await act(async () => trigger()!.click())
+    const rows = [...document.querySelectorAll('[role="option"]')]
+    expect(
+      rows.map((row) => row.querySelector('[data-platform]')?.getAttribute('aria-label')),
+    ).toEqual(['Windows', 'WSL', 'macOS'])
+    expect(rows.map((row) => row.querySelector('.truncate')?.textContent)).toEqual([
+      'Laptop',
+      'Laptop',
+      'Studio',
+    ])
+  })
+
   it('leaves the environment the page is on usable when it is not connected', async () => {
     await picker(vi.fn(), 'lab')
     expect(option('Lab')?.getAttribute('aria-disabled')).toBeNull()

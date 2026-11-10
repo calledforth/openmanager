@@ -58,6 +58,7 @@ import {
   SidebarMenuItem,
 } from '../fluid/ui/sidebar'
 import { ProviderIcon } from '../providers/ProviderIcon'
+import { EnvironmentPlatformIcon, nameWithoutPlatform } from '../ui/EnvironmentPlatformIcon'
 import { Tooltip } from '../ui/Tooltip'
 import { ProjectIcon } from './ProjectIcon'
 import { SessionBusyLoader, sessionBusyTone, type SessionBusyTone } from './SessionBusyLoader'
@@ -1519,22 +1520,19 @@ function OfflineWord() {
  * readers get it with the card's title.
  */
 function EnvironmentName({ environment }: { environment: SidebarRowEnvironment }) {
-  const { name, offline } = environment
-  if (offline) {
-    return (
-      <span
-        aria-hidden
-        className="ml-auto flex min-w-0 max-w-[65%] shrink-0 items-center gap-1 pl-1"
-        title={offlineExplanation(name)}
-      >
-        <span className="min-w-0 truncate">{name}</span>
-        <OfflineWord />
-      </span>
-    )
-  }
+  const { name, platform, offline } = environment
   return (
-    <span aria-hidden className="ml-auto min-w-0 max-w-[55%] shrink-0 truncate pl-1" title={name}>
-      {name}
+    <span
+      aria-hidden
+      className={cn(
+        'ml-auto flex min-w-0 shrink-0 items-center gap-1 pl-1',
+        offline ? 'max-w-[65%]' : 'max-w-[55%]',
+      )}
+      title={offline ? offlineExplanation(name) : name}
+    >
+      <span className="min-w-0 truncate">{nameWithoutPlatform(name, platform)}</span>
+      <EnvironmentPlatformIcon platform={platform} aria-hidden />
+      {offline ? <OfflineWord /> : null}
     </span>
   )
 }
@@ -2137,26 +2135,19 @@ const MotionMenuItem = motion.create(SidebarMenuItem)
 
 /** The environment of a settled row: a one-line row, so it follows the title. */
 function SettledEnvironmentName({ environment }: { environment: SidebarRowEnvironment }) {
-  const { name, offline } = environment
-  if (offline) {
-    return (
-      <span
-        aria-hidden
-        className="flex min-w-0 max-w-[55%] shrink-0 items-center gap-1 text-[12px] text-faint"
-        title={offlineExplanation(name)}
-      >
-        <span className="min-w-0 truncate">{name}</span>
-        <OfflineWord />
-      </span>
-    )
-  }
+  const { name, platform, offline } = environment
   return (
     <span
       aria-hidden
-      className="min-w-0 max-w-[45%] shrink-0 truncate text-[12px] text-faint"
-      title={name}
+      className={cn(
+        'flex min-w-0 shrink-0 items-center gap-1 text-[12px] text-faint',
+        offline ? 'max-w-[55%]' : 'max-w-[45%]',
+      )}
+      title={offline ? offlineExplanation(name) : name}
     >
-      {name}
+      <span className="min-w-0 truncate">{nameWithoutPlatform(name, platform)}</span>
+      <EnvironmentPlatformIcon platform={platform} aria-hidden />
+      {offline ? <OfflineWord /> : null}
     </span>
   )
 }
