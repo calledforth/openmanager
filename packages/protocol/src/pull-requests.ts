@@ -81,7 +81,13 @@ export const PullRequestSummarySchema = z.object({
    * summary's `updatedAt` moves past the detail's.
    */
   updatedAt: Timestamp.nullable(),
-  /** When the environment last read it successfully. */
+  /**
+   * When the environment read the values above from GitHub. A later read
+   * that finds nothing changed does not restate the summary (the event log
+   * would grow with every poll), so this moves only with a change; a
+   * detail from `pull_request.get` carries the latest read that worked.
+   * A client keeps a detail until the summary's `syncedAt` moves past it.
+   */
   syncedAt: Timestamp.nullable(),
   /** Set while the last read failed; cleared by the next one that works. */
   problem: PullRequestProblemSchema.nullable(),

@@ -1143,6 +1143,19 @@ export class AcpSessionRuntimeImpl implements ManagedSessionRuntime {
         kind: (string(o.kind) ?? 'reject_once') as PermissionOption['kind'],
       }
     })
+    // The host's own tools act only on the host's records: the agent asking
+    // to run one is answered here, never put to the user (Cursor asks for
+    // every MCP tool).
+    const toolCallId = string(tool.toolCallId)
+    if (
+      (toolCallId !== undefined && this.hostToolCallIds.has(toolCallId)) ||
+      this.isHostToolCall(tool)
+    ) {
+      const allow =
+        options.find((option) => option.kind === 'allow_once') ??
+        options.find((option) => option.kind === 'allow_always')
+      if (allow) return { outcome: { outcome: 'selected', optionId: allow.optionId } }
+    }
     const expiresAt = new Date(Date.now() + 5 * 60 * 1000).toISOString()
     this.emit(
       routeEvent(this.route(), sessionId, 'permission', 'permission_request', {
@@ -1168,6 +1181,36 @@ export class AcpSessionRuntimeImpl implements ManagedSessionRuntime {
         resolve,
       }),
     )
+  }
+
+  /** Tool calls the agent made to the host's own tools, by provider id. */
+  private readonly hostToolCallIds = new Set<string>()
+
+  /** Whether the agent names this call as one of the host's tools: Cursor by
+   * `rawInput.providerIdentifier` and `toolName`, others by a title built
+   * from the server and tool names. Only while this runtime holds a grant. */
+  private isHostToolCall(tool: { title?: unknown; rawInput?: unknown }): boolean {
+    const host = this.host.agentTools
+    if (!host || !this.remoteTools) return false
+    const names = new Set(host.tools.map((item) => item.name))
+    const input = object(tool.rawInput)
+    const named = string(input.toolName)
+    if (string(input.providerIdentifier) === host.serverName && named && names.has(named)) {
+      return true
+    }
+    const title = string(tool.title)
+    if (!title) return false
+    return [...names].some((name) =>
+      [
+        `${host.serverName}: ${name}`,
+        `${host.serverName}_${name}`,
+        `mcp__${host.serverName}__${name}`,
+      ].includes(title),
+    )
+  }
+
+  private noteHostToolCall(tool: { toolCallId: string; title?: string; rawInput?: unknown }) {
+    if (tool.toolCallId && this.isHostToolCall(tool)) this.hostToolCallIds.add(tool.toolCallId)
   }
 
   private async sessionUpdate(params: acp.SessionNotification): Promise<void> {
@@ -1224,6 +1267,7 @@ export class AcpSessionRuntimeImpl implements ManagedSessionRuntime {
         locations: update.locations as ToolCall['locations'],
         metadata: update._meta as ToolCall['metadata'],
       }
+      this.noteHostToolCall(tool)
       const subtask = this.subtaskFromTool(tool, 'call')
       this.emit(
         subtask
@@ -1244,6 +1288,7 @@ export class AcpSessionRuntimeImpl implements ManagedSessionRuntime {
         locations: update.locations as ToolCallUpdate['locations'],
         metadata: update._meta as ToolCallUpdate['metadata'],
       }
+      this.noteHostToolCall(tool)
       const subtask = this.subtaskFromTool(tool, 'update')
       this.emit(
         subtask

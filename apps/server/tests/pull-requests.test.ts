@@ -571,6 +571,30 @@ describe('the MCP endpoint', () => {
       })
       const result = ((await called.json()) as { result: { isError: boolean } }).result
       expect(result.isError).toBe(true)
+      // The stdio bridge an agent without HTTP MCP launches: the same endpoint, line by line.
+      const { runMcpBridge } = await import('../src/mcp-bridge.js')
+      const { PassThrough } = await import('node:stream')
+      const input = new PassThrough()
+      const output = new PassThrough()
+      let written = ''
+      output.on('data', (chunk) => (written += String(chunk)))
+      const bridged = runMcpBridge(
+        Object.fromEntries(Object.entries(grant.stdio.env)),
+        input,
+        output,
+      )
+      input.end(
+        [initialize, { jsonrpc: '2.0', id: 2, method: 'tools/list', params: {} }]
+          .map((message) => `${JSON.stringify(message)}\n`)
+          .join(''),
+      )
+      await expect(bridged).resolves.toBe(0)
+      const lines = written
+        .trim()
+        .split('\n')
+        .map((line) => JSON.parse(line) as { id: number })
+      expect(lines.map((line) => line.id).sort()).toEqual([1, 2])
+      expect(grant.stdio.args.at(-1)).toBe('mcp-bridge')
       grant.close()
       expect((await post(initialize)).status).toBe(401)
     } finally {

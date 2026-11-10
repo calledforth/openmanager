@@ -154,6 +154,58 @@ describe('host tools on ACP agents', () => {
     expect(closed).toEqual(['thread-1'])
   })
 
+  it("answers the agent's own permission prompt for a host tool, and only for one", async () => {
+    const { agentTools } = host()
+    const connections = new FakeConnectionFactory({
+      initialize: async () => ({
+        protocolVersion: 1,
+        authMethods: [],
+        agentCapabilities: { mcpCapabilities: { http: true } },
+      }),
+      newSession: async () => ({ sessionId: 'session-1' }),
+    })
+    const permissions = new PermissionBroker(() => undefined)
+    const runtime = new AcpSessionRuntimeImpl(
+      { threadId: 'thread-1', providerId: cursor.id, cwd: 'C:/workspace' },
+      {
+        config: cursor,
+        host: { log: vi.fn(), agentTools },
+        permissions,
+        interactions: new InteractionBroker(() => undefined),
+        connections,
+      },
+    )
+    await runtime.start()
+    const options = [
+      { optionId: 'yes', name: 'Allow', kind: 'allow_once' },
+      { optionId: 'no', name: 'Reject', kind: 'reject_once' },
+    ]
+    // Cursor's shape for an MCP tool.
+    await expect(
+      connections.last.requestPermission({
+        sessionId: 'session-1',
+        toolCall: {
+          toolCallId: 'call-1',
+          title: 'openmanager: link_pull_request',
+          rawInput: { providerIdentifier: 'openmanager', toolName: 'link_pull_request', args: {} },
+        },
+        options,
+      }),
+    ).resolves.toEqual({ outcome: { outcome: 'selected', optionId: 'yes' } })
+    // Anything else still goes to the user.
+    let settled = false
+    void connections.last
+      .requestPermission({
+        sessionId: 'session-1',
+        toolCall: { toolCallId: 'call-2', title: 'Shell', rawInput: { command: 'rm -rf /' } },
+        options,
+      })
+      .then(() => (settled = true))
+    await new Promise((resolve) => setTimeout(resolve, 20))
+    expect(settled).toBe(false)
+    await runtime.stop({ reason: 'disposed' })
+  })
+
   it('falls back to the stdio bridge otherwise', async () => {
     const { sessions } = await run(false)
     expect(sessions).toEqual([
