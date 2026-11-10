@@ -71,7 +71,7 @@ import {
 import { createClientService, type ClientSockets } from './client-service.ts'
 import { createEnvironmentNameService } from './environment-name.ts'
 import { loadEnvironmentIdentity } from './identity.ts'
-import { detectEnvironmentPlatform } from './platform.ts'
+import { detectEnvironmentDistro, detectEnvironmentPlatform } from './platform.ts'
 import {
   evaluateLocalOwnerAccess,
   evaluateLocalOwnerRouteAccess,
@@ -183,10 +183,12 @@ export async function startServer(config: ServerConfig) {
   // its name when it needs it, never a copy taken at boot.
   let identity = await loadEnvironmentIdentity(config.dataDir)
   const platform = detectEnvironmentPlatform()
+  const distro = detectEnvironmentDistro(platform)
   const environmentRecord = () => ({
     environmentId: identity.environmentId,
     name: identity.label,
     ...(platform ? { platform } : {}),
+    ...(distro ? { distro } : {}),
   })
   const audit = createAuditLog(log, { dataDir: config.dataDir })
   const environmentSettings = openEnvironmentSettings(config.dataDir)
@@ -641,6 +643,7 @@ export async function startServer(config: ServerConfig) {
       environmentId: identity.environmentId,
       label: identity.label,
       ...(platform ? { platform } : {}),
+      ...(distro ? { distro } : {}),
       protocolVersion: PROTOCOL_VERSION,
       capabilities: SERVER_CAPABILITIES,
       providers: providerService.snapshot(),

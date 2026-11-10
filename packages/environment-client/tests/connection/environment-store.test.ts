@@ -191,6 +191,37 @@ describe('upsertStoredEnvironment', () => {
     ).toBeUndefined()
   })
 
+  it('takes the distro along with the platform, and keeps both when an answer says neither', () => {
+    const ubuntu = { id: 'ubuntu', name: 'Ubuntu', like: ['debian'] }
+    const added = upsertStoredEnvironment(EMPTY_REGISTRY, {
+      environmentId: 'env-local',
+      endpoint: LOCAL,
+      label: 'Laptop',
+      platform: 'wsl',
+      distro: ubuntu,
+    })!
+    expect(added.environments[0]!.distro).toEqual(ubuntu)
+    expect(parseStoredEnvironment(added.environments[0])?.distro).toEqual(ubuntu)
+    // An older server names neither.
+    const older = upsertStoredEnvironment(added, {
+      environmentId: 'env-local',
+      endpoint: LOCAL,
+      label: 'Laptop',
+    })!
+    expect(older.environments[0]!.distro).toEqual(ubuntu)
+    // One that names the platform and no distro has none to name.
+    const none = upsertStoredEnvironment(older, {
+      environmentId: 'env-local',
+      endpoint: LOCAL,
+      label: 'Laptop',
+      platform: 'wsl',
+    })!
+    expect(none.environments[0]).not.toHaveProperty('distro')
+    expect(
+      parseStoredEnvironment({ ...added.environments[0], distro: { id: 'Not An ID' } }),
+    ).not.toHaveProperty('distro')
+  })
+
   it('inserts a new record keyed by environment ID, with one route', () => {
     const next = upsertStoredEnvironment(EMPTY_REGISTRY, {
       environmentId: 'env-local',

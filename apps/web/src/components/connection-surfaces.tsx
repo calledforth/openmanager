@@ -582,6 +582,7 @@ export function EnvironmentList({
                   </Tooltip>
                   <EnvironmentPlatformIcon
                     platform={environment.platform}
+                    distro={environment.distro}
                     className="size-3.5 text-muted-foreground"
                   />
                   {selected && several ? (

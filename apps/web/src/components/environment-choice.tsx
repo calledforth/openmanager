@@ -148,6 +148,7 @@ export function EnvironmentChoiceHost({ children }: { children: ReactNode }) {
         environmentId,
         label,
         ...(environment.platform ? { platform: environment.platform } : {}),
+        ...(environment.distro ? { distro: environment.distro } : {}),
         ...(detail ? { detail } : {}),
         // Down (the device offline, say) while its socket still reads connected,
         // it reads offline everywhere else, so it isn't one to pick.

@@ -9,6 +9,7 @@ const meta = {
   args: {
     environmentLabel: 'studio-workstation',
     environmentPlatform: 'wsl',
+    environmentDistro: { id: 'ubuntu', name: 'Ubuntu', like: ['debian'] },
     workspaces: [
       { path: 'C:\\repos\\openmanager', name: 'openmanager' },
       { path: 'C:\\repos\\agentpack', name: 'agentpack' },
@@ -81,7 +82,35 @@ export const SeveralEnvironments: Story = {
             reachable: true,
           },
           { environmentId: 'laptop', label: 'travel-laptop', platform: 'macos', reachable: true },
-          { environmentId: 'homelab', label: 'homelab', platform: 'linux', reachable: false },
+          {
+            environmentId: 'studio-wsl',
+            label: 'studio-workstation',
+            platform: 'wsl',
+            distro: { id: 'ubuntu', name: 'Ubuntu' },
+            reachable: true,
+          },
+          {
+            environmentId: 'studio-arch',
+            label: 'studio-workstation',
+            platform: 'wsl',
+            distro: { id: 'arch', name: 'Arch Linux' },
+            reachable: true,
+          },
+          {
+            environmentId: 'homelab',
+            label: 'homelab',
+            platform: 'linux',
+            distro: { id: 'fedora', name: 'Fedora Linux' },
+            reachable: true,
+          },
+          {
+            environmentId: 'pi',
+            label: 'pi',
+            platform: 'linux',
+            distro: { id: 'debian' },
+            reachable: true,
+          },
+          { environmentId: 'nas', label: 'nas', platform: 'linux', reachable: false },
         ]}
         selectedId="studio"
         onSelect={() => undefined}

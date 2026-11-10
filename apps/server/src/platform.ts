@@ -1,5 +1,9 @@
 import { readFileSync } from 'node:fs'
-import type { EnvironmentPlatform } from '@openmanager/protocol'
+import {
+  parseEnvironmentDistro,
+  type EnvironmentDistro,
+  type EnvironmentPlatform,
+} from '@openmanager/protocol'
 
 type PlatformProbe = {
   platform: NodeJS.Platform
@@ -43,4 +47,53 @@ export function detectEnvironmentPlatform(
     default:
       return undefined
   }
+}
+
+function readOsRelease(): string | undefined {
+  // The first is the admin's, the second the vendor's default (os-release(5)).
+  for (const path of ['/etc/os-release', '/usr/lib/os-release']) {
+    try {
+      return readFileSync(path, 'utf8')
+    } catch {
+      // Try the next one.
+    }
+  }
+  return undefined
+}
+
+/** os-release's `KEY=value` lines, the value unquoted (os-release(5)). */
+function parseOsRelease(text: string): Map<string, string> {
+  const fields = new Map<string, string>()
+  for (const line of text.split(/\r?\n/)) {
+    const match = /^([A-Z0-9_]+)=(.*)$/.exec(line.trim())
+    if (!match) continue
+    let value = match[2]!
+    const quote = value[0]
+    if ((quote === '"' || quote === "'") && value.endsWith(quote) && value.length >= 2) {
+      value = value.slice(1, -1)
+      if (quote === '"') value = value.replace(/\\(["\\`$])/g, '$1')
+    }
+    fields.set(match[1]!, value)
+  }
+  return fields
+}
+
+/**
+ * Which Linux distribution this server runs, for clients to show its logo.
+ * Read once at boot. Only for Linux and WSL, and undefined when os-release is
+ * missing or names nothing usable.
+ */
+export function detectEnvironmentDistro(
+  platform: EnvironmentPlatform | undefined,
+  osRelease: () => string | undefined = readOsRelease,
+): EnvironmentDistro | undefined {
+  if (platform !== 'linux' && platform !== 'wsl') return undefined
+  const text = osRelease()
+  if (text === undefined) return undefined
+  const fields = parseOsRelease(text)
+  return parseEnvironmentDistro({
+    id: fields.get('ID')?.toLowerCase(),
+    name: fields.get('NAME'),
+    like: fields.get('ID_LIKE')?.toLowerCase().split(/\s+/).filter(Boolean).slice(0, 8),
+  })
 }

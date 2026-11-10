@@ -1,6 +1,6 @@
 import { createContext, useContext } from 'react'
 import type { ProviderId } from '@agentpack/contract'
-import type { EnvironmentPlatform } from '@openmanager/protocol'
+import type { EnvironmentDistro, EnvironmentPlatform } from '@openmanager/protocol'
 import type { DraftDiscardOptions, SidebarDraft } from '../components/sidebar/sidebar-sessions'
 
 export type { DraftDiscardOptions, SidebarDraft }
@@ -33,6 +33,8 @@ export interface SidebarEnvironment {
   label: string
   /** The kind of machine it runs on, when its server says. */
   platform?: EnvironmentPlatform
+  /** Its Linux distribution, for a Linux or WSL one whose server says. */
+  distro?: EnvironmentDistro
 }
 
 export interface SidebarSessionEntry {
@@ -214,6 +216,8 @@ export interface SidebarRowEnvironment {
   name: string
   /** The kind of machine it runs on, whose logo follows the name. */
   platform?: EnvironmentPlatform
+  /** Its Linux distribution, for a Linux or WSL one whose server says. */
+  distro?: EnvironmentDistro
   /**
    * Connected now, and not `offline`, so a new agent could start there.
    * Absent reads as not.
@@ -256,6 +260,8 @@ export interface EnvironmentOption {
   label: string
   /** The kind of machine it runs on, when its server says. */
   platform?: EnvironmentPlatform
+  /** Its Linux distribution, for a Linux or WSL one whose server says. */
+  distro?: EnvironmentDistro
   /** Its address, for an environment whose name another saved one shares. */
   detail?: string
   /**

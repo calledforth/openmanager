@@ -1178,25 +1178,30 @@ describe('websocket environment client', () => {
     expect(socket.sent.some((message) => message.name === 'environment.get')).toBe(false)
   })
 
-  it('names the platform from the handshake, and takes a rename broadcast to every socket', async () => {
+  it('names the platform and distro from the handshake, and takes a rename broadcast to every socket', async () => {
+    const UBUNTU = { id: 'ubuntu', name: 'Ubuntu', like: ['debian'] }
     const { client, socket } = await connected(
       FULL_CAPABILITIES.filter((name) => name !== 'environment.get'),
-      { label: 'devbox', platform: 'wsl' },
+      { label: 'devbox', platform: 'wsl', distro: UBUNTU },
     )
     expect(client.getState().environment).toEqual({
       environmentId: ENV,
       name: 'devbox',
       platform: 'wsl',
+      distro: UBUNTU,
     })
     socket.receive({
       type: 'event',
       name: 'environment.changed',
-      payload: { environment: { environmentId: ENV, name: 'Laptop', platform: 'wsl' } },
+      payload: {
+        environment: { environmentId: ENV, name: 'Laptop', platform: 'wsl', distro: UBUNTU },
+      },
     })
     expect(client.getState().environment).toEqual({
       environmentId: ENV,
       name: 'Laptop',
       platform: 'wsl',
+      distro: UBUNTU,
     })
   })
 

@@ -1341,8 +1341,14 @@ function EnvironmentSidebarDataProvider({ children }: { children: ReactNode }) {
   const environment = useMemo<SidebarEnvironment | undefined>(() => {
     const label = environmentState?.name.trim()
     const platform = environmentState?.platform
+    const distro = environmentState?.distro
     return environmentState && label
-      ? { environmentId: environmentState.environmentId, label, ...(platform ? { platform } : {}) }
+      ? {
+          environmentId: environmentState.environmentId,
+          label,
+          ...(platform ? { platform } : {}),
+          ...(distro ? { distro } : {}),
+        }
       : undefined
   }, [environmentState])
   const available = useEnvironmentState(

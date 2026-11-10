@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import { CaretDownIcon, CheckIcon, HardDrivesIcon } from '@phosphor-icons/react'
-import { environmentPlatformName, type EnvironmentPlatform } from '@openmanager/protocol'
+import type { EnvironmentDistro, EnvironmentPlatform } from '@openmanager/protocol'
 import type { EnvironmentOption } from '../../providers/sidebar-provider'
 import { cn } from '../../lib/utils'
 import {
@@ -13,7 +13,11 @@ import {
   type CommandMenuItemData,
 } from '../fluid/ui/command-menu'
 import { useHoldFocus } from '../command/pickerRegistry'
-import { EnvironmentPlatformIcon, nameWithoutPlatform } from '../ui/EnvironmentPlatformIcon'
+import {
+  EnvironmentPlatformIcon,
+  environmentOsName,
+  nameWithoutPlatform,
+} from '../ui/EnvironmentPlatformIcon'
 import { Tooltip } from '../ui/Tooltip'
 import { usePortaledMenu } from '../ui/usePortaledMenu'
 
@@ -48,23 +52,25 @@ export function EnvironmentPicker({
   const label = selected?.label ?? selectedId
   // The logo says what the brackets would, so the name drops them.
   const shownLabel = nameWithoutPlatform(label, selected?.platform)
-  const platforms = useMemo(
+  const systems = useMemo(
     () =>
       new Map(
-        environments.map(({ environmentId, platform }) => [environmentId, platform] as const),
+        environments.map(
+          ({ environmentId, platform, distro }) => [environmentId, { platform, distro }] as const,
+        ),
       ),
     [environments],
   )
 
   const items = useMemo<CommandMenuItemData[]>(
     () =>
-      environments.map(({ environmentId, label, platform, detail, reachable }) => {
+      environments.map(({ environmentId, label, platform, distro, detail, reachable }) => {
         const usable = reachable || environmentId === selectedId
         const description = [detail, usable ? undefined : 'Not connected']
           .filter(Boolean)
           .join(' · ')
-        // Still found by its platform's name, now that only its logo shows it.
-        const keywords = [detail, environmentPlatformName(platform)].filter(
+        // Still found by what it runs ("ubuntu", "wsl"), now that only its logo shows it.
+        const keywords = [detail, environmentOsName(platform, distro)].filter(
           (keyword): keyword is string => Boolean(keyword),
         )
         return {
@@ -133,7 +139,7 @@ export function EnvironmentPicker({
             renderItem={(item) => (
               <EnvironmentRow
                 item={item}
-                platform={platforms.get(item.value)}
+                system={systems.get(item.value)}
                 active={item.value === selectedId}
               />
             )}
@@ -164,7 +170,11 @@ export function EnvironmentPicker({
         >
           <HardDrivesIcon weight="light" aria-hidden className="h-3 w-3 shrink-0" />
           <span className="truncate">{shownLabel}</span>
-          <EnvironmentPlatformIcon platform={selected?.platform} aria-hidden />
+          <EnvironmentPlatformIcon
+            platform={selected?.platform}
+            distro={selected?.distro}
+            aria-hidden
+          />
           <CaretDownIcon
             weight="light"
             aria-hidden
@@ -179,11 +189,11 @@ export function EnvironmentPicker({
 
 function EnvironmentRow({
   item,
-  platform,
+  system,
   active,
 }: {
   item: CommandMenuItemData
-  platform: EnvironmentPlatform | undefined
+  system: { platform?: EnvironmentPlatform; distro?: EnvironmentDistro } | undefined
   active: boolean
 }) {
   return (
@@ -196,7 +206,11 @@ function EnvironmentRow({
       <span className="flex min-w-0 flex-1 items-baseline gap-2">
         <span className="flex min-w-0 shrink-0 items-center gap-1.5">
           <span className="truncate">{item.label}</span>
-          <EnvironmentPlatformIcon platform={platform} className="text-muted-foreground" />
+          <EnvironmentPlatformIcon
+            platform={system?.platform}
+            distro={system?.distro}
+            className="text-muted-foreground"
+          />
         </span>
         {item.description && (
           <span className="min-w-0 truncate text-muted-foreground/70">{item.description}</span>
