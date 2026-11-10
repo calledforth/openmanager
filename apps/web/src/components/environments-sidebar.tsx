@@ -46,6 +46,7 @@ import {
 } from '@openmanager/app-core/providers/sidebar-rows'
 import { WorkspaceIconContext } from '@openmanager/app-core/providers/view-actions'
 import { EnvironmentFailureStrip } from './connection-surfaces'
+import { ShellSearchPalette } from './search-palette'
 import { environmentIsDown } from '@openmanager/environment-client/connection'
 import { useAddressLookup, type Address } from '../providers/address-environment'
 import { useConnection } from '../providers/connection-provider'
@@ -700,6 +701,9 @@ function EnvironmentsSidebar({
               <SidebarEnvironmentsContext.Provider value={listed}>
                 {/* A healthy connection says nothing; trouble shows as the banner. */}
                 {listing ? <WorkspaceSidebar footer={footer} /> : fallback}
+                {/* Here, not with the shell's overlays: it lists every
+                    environment's rows, which only the sidebar is given. */}
+                {listing ? <ShellSearchPalette /> : null}
                 {/* Beside the sidebar, not in it: on a phone the sidebar is a modal
                     sheet that closes on the tap that reaches for Undo. A discard
                     waiting when the list goes keeps its Undo. */}

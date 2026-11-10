@@ -29,6 +29,7 @@ import {
   DRAFT_SAVE_CAPABILITY,
   DraftCommandSchemas,
 } from './drafts.js'
+import { SEARCH_MESSAGES_CAPABILITY, SearchCommandSchemas } from './search.js'
 // Type-only: pairing.ts imports AccessGrantSchema from here.
 import type { PairingCommandSchemas } from './pairing.js'
 
@@ -56,6 +57,7 @@ export type CommandName =
   | keyof typeof UploadCommandSchemas
   | keyof typeof FilesystemCommandSchemas
   | keyof typeof DraftCommandSchemas
+  | keyof typeof SearchCommandSchemas
   | keyof typeof PairingCommandSchemas
   | keyof typeof ClientCommandSchemas
   | keyof typeof EnvironmentNameCommandSchemas
@@ -85,6 +87,8 @@ export const COMMAND_ACCESS = Object.freeze({
   [PROVIDER_LIMITS_REFRESH_CAPABILITY]: 'read',
   [ENVIRONMENT_SETTINGS_GET_CAPABILITY]: 'read',
   [DRAFT_LIST_CAPABILITY]: 'read',
+  // Reads what any client with `read` can already open, chat by chat.
+  [SEARCH_MESSAGES_CAPABILITY]: 'read',
   'session.create': 'operate',
   'session.rename': 'operate',
   'session.delete': 'operate',

@@ -5,6 +5,7 @@ import {
   EnvironmentNameResponseSchemas,
   FilesystemResponseSchemas,
   PairingResponseSchemas,
+  SearchResponseSchemas,
   ProofResponseSchemas,
   ProviderLimitsRefreshResponseSchema,
   ProviderProbeResponseSchema,
@@ -51,6 +52,7 @@ export const WIRE_COMMANDS = {
   setSessionMode: 'composer.mode.set',
   setSessionConfigOption: 'composer.config_option.set',
   browseFolders: 'filesystem.browse',
+  searchMessages: 'search.messages',
   getEnvironmentSettings: 'environment.settings.get',
   setEnvironmentSettings: 'environment.settings.set',
   renameEnvironment: 'environment.rename',
@@ -114,6 +116,7 @@ export const WIRE_RESPONSES = {
     ComposerResponseSchemas['composer.config_option.set'].shape.payload,
   ),
   'filesystem.browse': payload(FilesystemResponseSchemas['filesystem.browse'].shape.payload),
+  'search.messages': payload(SearchResponseSchemas['search.messages'].shape.payload),
   'environment.settings.get': payload(
     FilesystemResponseSchemas['environment.settings.get'].shape.payload,
   ),

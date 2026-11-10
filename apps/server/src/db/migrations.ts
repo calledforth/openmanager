@@ -1031,6 +1031,62 @@ export const MIGRATIONS: readonly Migration[] = [
       }
     },
   },
+  {
+    version: 29,
+    name: 'message_search',
+    up(database) {
+      // What `search.messages` looks through: each finished message's text,
+      // one row per message, indexed by FTS5 (`message_search` reads its text
+      // from `message_text`, so it is stored once). A message is written here
+      // when its turn ends (event-projection.ts) and leaves with its message;
+      // the triggers keep the index in step with the rows. The integer key is
+      // the index's rowid, which a VACUUM must not renumber. No stemmer: every
+      // word is searched as a prefix, and a stemmed prefix misses ("pay" stems
+      // to "pai", which no longer starts "payload").
+      database.exec(`
+        CREATE TABLE IF NOT EXISTS message_text (
+          search_rowid INTEGER PRIMARY KEY,
+          message_id TEXT NOT NULL UNIQUE REFERENCES messages(message_id) ON DELETE CASCADE,
+          body TEXT NOT NULL
+        ) STRICT;
+
+        CREATE VIRTUAL TABLE IF NOT EXISTS message_search USING fts5(
+          body,
+          content = 'message_text',
+          content_rowid = 'search_rowid',
+          tokenize = 'unicode61 remove_diacritics 2'
+        );
+
+        CREATE TRIGGER IF NOT EXISTS message_text_ai AFTER INSERT ON message_text BEGIN
+          INSERT INTO message_search (rowid, body) VALUES (new.search_rowid, new.body);
+        END;
+        CREATE TRIGGER IF NOT EXISTS message_text_ad AFTER DELETE ON message_text BEGIN
+          INSERT INTO message_search (message_search, rowid, body)
+            VALUES ('delete', old.search_rowid, old.body);
+        END;
+        CREATE TRIGGER IF NOT EXISTS message_text_au AFTER UPDATE ON message_text BEGIN
+          INSERT INTO message_search (message_search, rowid, body)
+            VALUES ('delete', old.search_rowid, old.body);
+          INSERT INTO message_search (rowid, body) VALUES (new.search_rowid, new.body);
+        END;
+      `)
+      // Every message already finished. A turn still open is indexed when it ends.
+      // The same statement as `indexTurnText` in event-projection.ts, over all
+      // of them; the markers a snippet is cut with (, ) are taken out.
+      database.exec(`
+        INSERT INTO message_text (message_id, body)
+        SELECT message_id, replace(replace(body, char(2), ''), char(3), '') FROM (
+          SELECT m.message_id AS message_id,
+            group_concat(json_extract(p.content_json, '$.text'), char(10) ORDER BY p.ordinal) AS body
+          FROM messages m JOIN message_parts p ON p.message_id = m.message_id
+          WHERE m.is_final = 1 AND p.part_type = 'text'
+          GROUP BY m.message_id
+        )
+        WHERE body IS NOT NULL AND trim(body) <> ''
+        ON CONFLICT (message_id) DO NOTHING
+      `)
+    },
+  },
 ]
 
 type RetainedActivityRow = {

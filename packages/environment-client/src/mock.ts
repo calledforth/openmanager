@@ -15,6 +15,8 @@ import {
   ProofCommandSchemas,
   ProviderCatalogEntrySchema,
   WorkspaceComposerPreferenceSchema,
+  SEARCH_RESULTS_DEFAULT,
+  type MessageSearchHit,
   type AuthorizedClient,
   type AuthorizedClientList,
   type AccessCapability,
@@ -158,6 +160,8 @@ export interface MockEnvironmentClientOptions {
   respond?: ((turn: MockTurnContext) => readonly string[] | null) | null
   /** Delay between streamed chunks. Zero still yields to the event loop. */
   chunkDelayMs?: number
+  /** What `searchMessages` answers. Defaults to nothing found. */
+  searchMessages?: (query: string, limit: number) => readonly MessageSearchHit[]
   /** Latency added to every command. Zero still yields to the event loop. */
   latencyMs?: number
   now?: () => string
@@ -1710,6 +1714,10 @@ export function createMockEnvironmentClient(
         }
         return writePreference(target, { configValues }, known)
       }),
+    searchMessages: (query, limit) =>
+      run('searchMessages', limit === undefined ? query : { query, limit }, () => [
+        ...(options.searchMessages?.(query, limit ?? SEARCH_RESULTS_DEFAULT) ?? []),
+      ]),
     browseFolders: (path, prefix) =>
       run('browseFolders', prefix === undefined ? path : { path, prefix }, () => {
         const folders = options.seed?.folders ?? {}
