@@ -3,7 +3,7 @@ import {
   parseEnvironmentDistro,
   type EnvironmentDistro,
   type EnvironmentPlatform,
-} from '@openmanager/protocol'
+} from '@openmanager/protocol/node'
 
 type PlatformProbe = {
   platform: NodeJS.Platform
