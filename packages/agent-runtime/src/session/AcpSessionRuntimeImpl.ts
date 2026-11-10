@@ -407,7 +407,7 @@ export class AcpSessionRuntimeImpl implements ManagedSessionRuntime {
         command,
         args,
         cwd: this.cwd,
-        env: environment(this.config.command.env),
+        env: this.processEnvironment(),
         client,
         spawnTimeoutMs: this.timeouts.spawnMs,
         terminateGraceMs: this.timeouts.terminateGraceMs,
@@ -584,6 +584,16 @@ export class AcpSessionRuntimeImpl implements ManagedSessionRuntime {
       if (isAuthRequired(error)) throw this.authRequired(undefined, errorMessage(error))
       throw error
     }
+  }
+
+  /** The agent's environment: the provider's, plus what lets the host's own
+   * tools run unasked where the provider needs telling (see `allowHostTools`). */
+  private processEnvironment(): Record<string, string> {
+    const env = environment(this.config.command.env)
+    const host = this.host.agentTools
+    if (!this.config.allowHostTools || !host?.openRemote || host.tools.length === 0) return env
+    const tools = { serverName: host.serverName, toolNames: host.tools.map((tool) => tool.name) }
+    return { ...env, ...this.config.allowHostTools(tools, env) }
   }
 
   /** The host's tools for this session, granted once and revoked on exit.
@@ -1186,30 +1196,25 @@ export class AcpSessionRuntimeImpl implements ManagedSessionRuntime {
   /** Tool calls the agent made to the host's own tools, by provider id. */
   private readonly hostToolCallIds = new Set<string>()
 
-  /** Whether the agent names this call as one of the host's tools: Cursor by
-   * `rawInput.providerIdentifier` and `toolName`, others by a title built
-   * from the server and tool names. Only while this runtime holds a grant. */
-  private isHostToolCall(tool: { title?: unknown; rawInput?: unknown }): boolean {
+  /** Whether the agent names this call as one of the host's tools, by a field
+   * its MCP client fills in and no tool input can: Cursor's
+   * `rawInput.providerIdentifier` (the MCP server) with `toolName`. Never by
+   * title: OpenCode titles a shell call with its command, so a command
+   * spelled like the tool would pass (its prompt is kept from being raised
+   * instead, see `allowHostTools`). Only while this runtime holds a grant. */
+  private isHostToolCall(tool: { rawInput?: unknown }): boolean {
     const host = this.host.agentTools
     if (!host || !this.remoteTools) return false
-    const names = new Set(host.tools.map((item) => item.name))
     const input = object(tool.rawInput)
     const named = string(input.toolName)
-    if (string(input.providerIdentifier) === host.serverName && named && names.has(named)) {
-      return true
-    }
-    const title = string(tool.title)
-    if (!title) return false
-    return [...names].some((name) =>
-      [
-        `${host.serverName}: ${name}`,
-        `${host.serverName}_${name}`,
-        `mcp__${host.serverName}__${name}`,
-      ].includes(title),
+    return (
+      string(input.providerIdentifier) === host.serverName &&
+      named !== undefined &&
+      host.tools.some((item) => item.name === named)
     )
   }
 
-  private noteHostToolCall(tool: { toolCallId: string; title?: string; rawInput?: unknown }) {
+  private noteHostToolCall(tool: { toolCallId: string; rawInput?: unknown }) {
     if (tool.toolCallId && this.isHostToolCall(tool)) this.hostToolCallIds.add(tool.toolCallId)
   }
 

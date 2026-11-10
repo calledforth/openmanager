@@ -4,6 +4,7 @@ import { InteractionBroker } from '../core/InteractionBroker.js'
 import { PermissionBroker } from '../core/PermissionBroker.js'
 import { claude } from '../providers/claude.js'
 import { cursor } from '../providers/cursor.js'
+import { opencode, opencodeAllowHostTools } from '../providers/opencode.js'
 import { AcpSessionRuntimeImpl } from '../session/AcpSessionRuntimeImpl.js'
 import { ClaudeSessionRuntime } from '../session/claude/ClaudeSessionRuntime.js'
 import type { ClaudeMcpTool } from '../session/claude/sdk.js'
@@ -204,6 +205,91 @@ describe('host tools on ACP agents', () => {
     await new Promise((resolve) => setTimeout(resolve, 20))
     expect(settled).toBe(false)
     await runtime.stop({ reason: 'disposed' })
+  })
+
+  it('never allows a call by its title, even one a tool call made before', async () => {
+    const { agentTools } = host()
+    const connections = new FakeConnectionFactory({
+      initialize: async () => ({
+        protocolVersion: 1,
+        authMethods: [],
+        agentCapabilities: { mcpCapabilities: { http: true } },
+      }),
+      newSession: async () => ({ sessionId: 'session-1' }),
+    })
+    const runtime = new AcpSessionRuntimeImpl(
+      { threadId: 'thread-1', providerId: opencode.id, cwd: 'C:/workspace' },
+      {
+        config: { ...cursor, id: opencode.id, allowHostTools: opencodeAllowHostTools },
+        host: { log: vi.fn(), agentTools },
+        permissions: new PermissionBroker(() => undefined),
+        interactions: new InteractionBroker(() => undefined),
+        connections,
+      },
+    )
+    await runtime.start()
+    // OpenCode is told to allow the tool itself, by its exact tool id.
+    expect(
+      JSON.parse(connections.last.spec.env!.OPENCODE_CONFIG_CONTENT!) as unknown,
+    ).toMatchObject({ permission: { openmanager_link_pull_request: 'allow' } })
+    const options = [
+      { optionId: 'yes', name: 'Allow', kind: 'allow_once' },
+      { optionId: 'no', name: 'Reject', kind: 'reject_once' },
+    ]
+    // OpenCode's real wire (1.19.5): a shell command spelled like the tool is
+    // titled with the command; the MCP tool's own prompt has only its id.
+    await connections.last.sessionUpdate({
+      sessionId: 'session-1',
+      update: {
+        sessionUpdate: 'tool_call_update',
+        toolCallId: 'call-shell',
+        title: 'openmanager_link_pull_request',
+        kind: 'execute',
+        status: 'in_progress',
+        rawInput: { command: 'openmanager_link_pull_request' },
+      },
+    })
+    const settled: string[] = []
+    for (const toolCall of [
+      {
+        toolCallId: 'call-shell',
+        title: 'openmanager_link_pull_request',
+        kind: 'execute',
+        rawInput: { command: 'openmanager_link_pull_request' },
+      },
+      {
+        toolCallId: 'call-mcp',
+        title: 'openmanager_link_pull_request',
+        kind: 'other',
+        rawInput: {},
+      },
+      { toolCallId: 'call-other', title: 'mcp__openmanager__link_pull_request', rawInput: {} },
+    ]) {
+      void connections.last
+        .requestPermission({ sessionId: 'session-1', toolCall, options } as never)
+        .then(() => settled.push(toolCall.toolCallId))
+    }
+    await new Promise((resolve) => setTimeout(resolve, 20))
+    expect(settled).toEqual([])
+    await runtime.stop({ reason: 'disposed' })
+  })
+
+  it("extends a user's own OpenCode config rather than replacing it", () => {
+    const tools = { serverName: 'openmanager', toolNames: ['link_pull_request'] }
+    expect(opencodeAllowHostTools(tools, {})).toEqual({
+      OPENCODE_CONFIG_CONTENT: JSON.stringify({
+        permission: { openmanager_link_pull_request: 'allow' },
+      }),
+    })
+    const extended = opencodeAllowHostTools(tools, {
+      OPENCODE_CONFIG_CONTENT: JSON.stringify({ model: 'x', permission: 'ask' }),
+    })
+    expect(JSON.parse(extended.OPENCODE_CONFIG_CONTENT!)).toEqual({
+      model: 'x',
+      permission: { '*': 'ask', openmanager_link_pull_request: 'allow' },
+    })
+    // Not ours to rewrite: the tool then asks like any other.
+    expect(opencodeAllowHostTools(tools, { OPENCODE_CONFIG_CONTENT: 'not json' })).toEqual({})
   })
 
   it('falls back to the stdio bridge otherwise', async () => {
