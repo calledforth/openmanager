@@ -8,6 +8,7 @@ const meta = {
   parameters: { layout: 'fullscreen' },
   args: {
     environmentLabel: 'studio-workstation',
+    environmentPlatform: 'wsl',
     workspaces: [
       { path: 'C:\\repos\\openmanager', name: 'openmanager' },
       { path: 'C:\\repos\\agentpack', name: 'agentpack' },
@@ -73,9 +74,14 @@ export const SeveralEnvironments: Story = {
     environmentPicker: (
       <EnvironmentPicker
         environments={[
-          { environmentId: 'studio', label: 'studio-workstation', reachable: true },
-          { environmentId: 'laptop', label: 'travel-laptop', reachable: true },
-          { environmentId: 'homelab', label: 'homelab', reachable: false },
+          {
+            environmentId: 'studio',
+            label: 'studio-workstation',
+            platform: 'windows',
+            reachable: true,
+          },
+          { environmentId: 'laptop', label: 'travel-laptop', platform: 'macos', reachable: true },
+          { environmentId: 'homelab', label: 'homelab', platform: 'linux', reachable: false },
         ]}
         selectedId="studio"
         onSelect={() => undefined}

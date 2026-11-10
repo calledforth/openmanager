@@ -48,6 +48,7 @@ import {
 } from '../../providers/environment-quick-agent'
 import { useSessionState } from '../../providers/session-provider'
 import { useSidebarData, type WorkspaceEntry } from '../../providers/sidebar-provider'
+import type { EnvironmentPlatform } from '@openmanager/protocol'
 
 /** Opens the palette from anywhere, typing included. */
 export const QUICK_AGENT_SHORTCUT = 'mod+shift+o'
@@ -641,7 +642,7 @@ function QuickAgentPaletteContent({
   workspaces: WorkspaceEntry[]
   recentWorkspaces: WorkspaceEntry[]
   environmentLabel?: string
-  environmentPlatform?: string
+  environmentPlatform?: EnvironmentPlatform
   onClose: () => void
   onExpand?: () => void
   onAddWorkspace: () => void

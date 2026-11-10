@@ -264,6 +264,7 @@ function sameRowEnvironments(
       return (
         b !== undefined &&
         a.name === b.name &&
+        a.platform === b.platform &&
         a.reachable === b.reachable &&
         a.canSettle === b.canSettle &&
         a.canPin === b.canPin &&
@@ -420,8 +421,10 @@ function EnvironmentsSidebar({
       }: { reachable?: boolean; canSettle: boolean; canPin: boolean; hasIcons: boolean },
     ) => {
       const client = clients[environmentId]
+      const platform = environments.find((item) => item.environmentId === environmentId)?.platform
       next[environmentId] = {
         name: nameOf(environmentId),
+        ...(platform ? { platform } : {}),
         // A card that reads offline isn't one New agent hands over to.
         reachable: reachable === true && !down.has(environmentId),
         canSettle,
@@ -446,6 +449,7 @@ function EnvironmentsSidebar({
   }, [
     clients,
     down,
+    environments,
     nameOf,
     openCanPin,
     openCanSettle,

@@ -22,11 +22,7 @@ import {
   deriveProviderUiStatus,
   type ProviderHealthReport,
 } from '@openmanager/shared/contracts/provider-health'
-import {
-  environmentPlatformName,
-  type InteractionResponse,
-  type Workspace,
-} from '@openmanager/protocol'
+import { type InteractionResponse, type Workspace } from '@openmanager/protocol'
 import {
   UPLOAD_TICKET_COMMAND,
   hasDraftContent,
@@ -1344,7 +1340,7 @@ function EnvironmentSidebarDataProvider({ children }: { children: ReactNode }) {
   const activeEnvironmentId = environmentState?.environmentId
   const environment = useMemo<SidebarEnvironment | undefined>(() => {
     const label = environmentState?.name.trim()
-    const platform = environmentPlatformName(environmentState?.platform)
+    const platform = environmentState?.platform
     return environmentState && label
       ? { environmentId: environmentState.environmentId, label, ...(platform ? { platform } : {}) }
       : undefined

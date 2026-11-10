@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { platformBeside, withDisplayLabels } from './environment-names'
+import { withDisplayLabels } from './environment-names'
 
 describe('withDisplayLabels', () => {
   it('adds the platform only to names another environment shares', () => {
@@ -29,13 +29,5 @@ describe('withDisplayLabels', () => {
       { label: 'Desktop', platform: 'wsl' as const },
     ]
     expect(withDisplayLabels(environments)).toBe(environments)
-  })
-})
-
-describe('platformBeside', () => {
-  it('shows the platform unless the name already carries it', () => {
-    expect(platformBeside({ label: 'Desktop', platform: 'wsl' })).toBe('WSL')
-    expect(platformBeside({ label: 'Laptop (WSL)', platform: 'wsl' })).toBeUndefined()
-    expect(platformBeside({ label: 'Laptop' })).toBeUndefined()
   })
 })
