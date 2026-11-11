@@ -4,10 +4,13 @@ import { act, createElement } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 import type { MessageSearchHit } from '@openmanager/protocol'
 import {
+  chatSearchStatus,
   matchesWords,
   mergeSearchHits,
   searchWords,
+  snippetRuns,
   useChatSearch,
+  withoutLeadingEllipsis,
   type ChatSearchSource,
   type ChatSearchState,
 } from './chat-search'
@@ -63,6 +66,69 @@ describe('mergeSearchHits', () => {
   it('is empty for no answers', () => {
     expect(mergeSearchHits([])).toEqual([])
     expect(mergeSearchHits([{ environmentId: 'a', hits: [] }])).toEqual([])
+  })
+})
+
+describe('snippets', () => {
+  it('drops a leading ellipsis and shifts the highlights with it', () => {
+    expect(
+      withoutLeadingEllipsis({ snippet: '… the reconnect loop', highlights: [[6, 15]] }),
+    ).toEqual({ text: 'the reconnect loop', highlights: [[4, 13]] })
+    expect(
+      withoutLeadingEllipsis({
+        snippet: '…loop',
+        highlights: [
+          [0, 1],
+          [1, 5],
+        ],
+      }),
+    ).toEqual({
+      text: 'loop',
+      highlights: [[0, 4]],
+    })
+    const plain = { snippet: 'plain…', highlights: [[0, 5]] as [number, number][] }
+    expect(withoutLeadingEllipsis(plain)).toEqual({ text: 'plain…', highlights: [[0, 5]] })
+  })
+
+  it('cuts the text into runs that join back into it, matches marked', () => {
+    expect(snippetRuns('the reconnect loop', [[4, 13]])).toEqual([
+      { start: 0, text: 'the ', match: false },
+      { start: 4, text: 'reconnect', match: true },
+      { start: 13, text: ' loop', match: false },
+    ])
+    expect(snippetRuns('abc', [[0, 3]])).toEqual([{ start: 0, text: 'abc', match: true }])
+    expect(snippetRuns('abc', [])).toEqual([{ start: 0, text: 'abc', match: false }])
+  })
+
+  it('skips a highlight that overlaps the one before or runs past the text', () => {
+    const runs = snippetRuns('abcdef', [
+      [0, 3],
+      [2, 4],
+      [4, 9],
+    ])
+    expect(runs.map((run) => run.text).join('')).toBe('abcdef')
+    expect(runs.filter((run) => run.match).map((run) => run.text)).toEqual(['abc'])
+  })
+})
+
+describe('chatSearchStatus', () => {
+  const name = (id: string) => ({ desk: 'Desk' })[id]
+
+  it('says nothing with nothing typed or nothing failed', () => {
+    expect(chatSearchStatus('  ', { failed: ['desk'] }, 1, name)).toBeNull()
+    expect(chatSearchStatus('loop', { failed: [] }, 1, name)).toBeNull()
+  })
+
+  it('names each environment that could not be searched', () => {
+    expect(chatSearchStatus('loop', { failed: ['desk', 'gone'] }, 2, name)).toBe(
+      'Couldn’t search Desk, An environment.',
+    )
+  })
+
+  it('says why there is no message search with no capable environment', () => {
+    expect(chatSearchStatus('loop', { failed: [] }, 0, name)).toBe(
+      'Message search needs a connected environment on a newer server.',
+    )
   })
 })
 

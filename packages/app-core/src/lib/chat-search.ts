@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
-import type { MessageSearchHit } from '@openmanager/protocol'
+import type { MessageSearchHit, SearchHighlight } from '@openmanager/protocol'
 
 /** Typing settles for this long before the environments are asked. */
 export const CHAT_SEARCH_DEBOUNCE_MS = 200
@@ -62,6 +62,76 @@ export function mergeSearchHits(answers: readonly EnvironmentSearchHits[]): Plac
     merged.push(...tier)
   }
   return merged
+}
+
+/** A hit's snippet, ready to show: its text and the runs that matched in it. */
+export interface SearchSnippet {
+  text: string
+  highlights: readonly SearchHighlight[]
+}
+
+/**
+ * The snippet without the "…" SQLite puts before a match that is not at the
+ * start of its message. At the head of a line it reads as noise, where the
+ * trailing one still says the message goes on; the highlight offsets shift
+ * with the cut.
+ */
+export function withoutLeadingEllipsis(
+  hit: Pick<MessageSearchHit, 'snippet' | 'highlights'>,
+): SearchSnippet {
+  const cut = hit.snippet.startsWith('… ') ? 2 : hit.snippet.startsWith('…') ? 1 : 0
+  if (cut === 0) return { text: hit.snippet, highlights: hit.highlights }
+  return {
+    text: hit.snippet.slice(cut),
+    highlights: hit.highlights.flatMap(([start, end]) =>
+      end <= cut ? [] : [[Math.max(0, start - cut), end - cut] as SearchHighlight],
+    ),
+  }
+}
+
+/** One stretch of a snippet: matched, or the text between matches. */
+export interface SnippetRun {
+  /** Where it starts in the snippet: a stable key for the run. */
+  start: number
+  text: string
+  match: boolean
+}
+
+/**
+ * The snippet cut into runs, the matched ones marked, for a view to draw the
+ * matches at full strength. A highlight that overlaps the one before it or
+ * runs past the text is skipped, so the runs always join back into `text`.
+ */
+export function snippetRuns(text: string, highlights: readonly SearchHighlight[]): SnippetRun[] {
+  const runs: SnippetRun[] = []
+  let at = 0
+  for (const [start, end] of highlights) {
+    if (start < at || end > text.length) continue
+    if (start > at) runs.push({ start: at, text: text.slice(at, start), match: false })
+    runs.push({ start, text: text.slice(start, end), match: true })
+    at = end
+  }
+  if (at < text.length) runs.push({ start: at, text: text.slice(at), match: false })
+  return runs
+}
+
+/**
+ * What is still coming, or could not come, under the results: null while
+ * there is nothing to say. `environmentName` names a failed environment.
+ */
+export function chatSearchStatus(
+  query: string,
+  search: Pick<ChatSearchState, 'failed'>,
+  sourceCount: number,
+  environmentName?: (environmentId: string) => string | undefined,
+): string | null {
+  if (query.trim() === '') return null
+  if (sourceCount === 0) return 'Message search needs a connected environment on a newer server.'
+  if (search.failed.length > 0) {
+    const names = search.failed.map((id) => environmentName?.(id) ?? 'An environment')
+    return `Couldn’t search ${names.join(', ')}.`
+  }
+  return null
 }
 
 export interface ChatSearchState {
