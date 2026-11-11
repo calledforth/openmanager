@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import { CaretDownIcon, CheckIcon, HardDrivesIcon } from '@phosphor-icons/react'
+import type { EnvironmentDistro, EnvironmentPlatform } from '@openmanager/protocol'
 import type { EnvironmentOption } from '../../providers/sidebar-provider'
 import { cn } from '../../lib/utils'
 import {
@@ -12,6 +13,11 @@ import {
   type CommandMenuItemData,
 } from '../fluid/ui/command-menu'
 import { useHoldFocus } from '../command/pickerRegistry'
+import {
+  EnvironmentPlatformIcon,
+  environmentOsName,
+  nameWithoutPlatform,
+} from '../ui/EnvironmentPlatformIcon'
 import { Tooltip } from '../ui/Tooltip'
 import { usePortaledMenu } from '../ui/usePortaledMenu'
 
@@ -44,19 +50,34 @@ export function EnvironmentPicker({
   })
   const selected = environments.find(({ environmentId }) => environmentId === selectedId)
   const label = selected?.label ?? selectedId
+  // The logo says what the brackets would, so the name drops them.
+  const shownLabel = nameWithoutPlatform(label, selected?.platform)
+  const systems = useMemo(
+    () =>
+      new Map(
+        environments.map(
+          ({ environmentId, platform, distro }) => [environmentId, { platform, distro }] as const,
+        ),
+      ),
+    [environments],
+  )
 
   const items = useMemo<CommandMenuItemData[]>(
     () =>
-      environments.map(({ environmentId, label, detail, reachable }) => {
+      environments.map(({ environmentId, label, platform, distro, detail, reachable }) => {
         const usable = reachable || environmentId === selectedId
         const description = [detail, usable ? undefined : 'Not connected']
           .filter(Boolean)
           .join(' · ')
+        // Still found by what it runs ("ubuntu", "wsl"), now that only its logo shows it.
+        const keywords = [detail, environmentOsName(platform, distro)].filter(
+          (keyword): keyword is string => Boolean(keyword),
+        )
         return {
           value: environmentId,
-          label,
+          label: nameWithoutPlatform(label, platform),
           ...(description ? { description } : {}),
-          ...(detail ? { keywords: [detail] } : {}),
+          ...(keywords.length ? { keywords } : {}),
           ...(usable ? {} : { disabled: true }),
         }
       }),
@@ -115,7 +136,13 @@ export function EnvironmentPicker({
           />
           <CommandMenuList
             className="gap-0 px-1.5 pb-1.5 pt-0.5"
-            renderItem={(item) => <EnvironmentRow item={item} active={item.value === selectedId} />}
+            renderItem={(item) => (
+              <EnvironmentRow
+                item={item}
+                system={systems.get(item.value)}
+                active={item.value === selectedId}
+              />
+            )}
           >
             <CommandMenuEmpty>No environments</CommandMenuEmpty>
           </CommandMenuList>
@@ -141,8 +168,14 @@ export function EnvironmentPicker({
             open && 'bg-hover text-[var(--basis-text-muted)]',
           )}
         >
-          <HardDrivesIcon weight="light" aria-hidden className="h-3 w-3 shrink-0" />
-          <span className="truncate">{label}</span>
+          <EnvironmentPlatformIcon
+            platform={selected?.platform}
+            distro={selected?.distro}
+            muted={selected ? !selected.reachable : false}
+            aria-hidden
+            fallback={<HardDrivesIcon weight="light" aria-hidden className="h-3 w-3 shrink-0" />}
+          />
+          <span className="truncate">{shownLabel}</span>
           <CaretDownIcon
             weight="light"
             aria-hidden
@@ -155,16 +188,38 @@ export function EnvironmentPicker({
   )
 }
 
-function EnvironmentRow({ item, active }: { item: CommandMenuItemData; active: boolean }) {
+function EnvironmentRow({
+  item,
+  system,
+  active,
+}: {
+  item: CommandMenuItemData
+  system: { platform?: EnvironmentPlatform; distro?: EnvironmentDistro } | undefined
+  active: boolean
+}) {
   return (
     <CommandMenuItem value={item.value} className="h-9 gap-2.5 px-2.5 text-[13px] text-foreground">
-      <HardDrivesIcon
-        weight="light"
+      <EnvironmentPlatformIcon
+        platform={system?.platform}
+        distro={system?.distro}
+        muted={item.disabled === true}
         aria-hidden
-        className="h-3.5 w-3.5 shrink-0 text-muted-foreground"
+        className="h-3.5 w-3.5"
+        fallback={
+          <HardDrivesIcon
+            weight="light"
+            aria-hidden
+            className="h-3.5 w-3.5 shrink-0 text-muted-foreground"
+          />
+        }
       />
       <span className="flex min-w-0 flex-1 items-baseline gap-2">
-        <span className="shrink-0 truncate">{item.label}</span>
+        <span className="shrink-0 truncate">
+          {item.label}
+          {system && environmentOsName(system.platform, system.distro) ? (
+            <span className="sr-only"> ({environmentOsName(system.platform, system.distro)})</span>
+          ) : null}
+        </span>
         {item.description && (
           <span className="min-w-0 truncate text-muted-foreground/70">{item.description}</span>
         )}

@@ -37,7 +37,7 @@ type AcpTransport = () => AcpConnectionFactory
 
 export type ProviderSessionRuntimeFactoryDeps = {
   configs: Readonly<Record<ProviderId, ProviderConfig>>
-  host: Pick<HostDeps, 'log' | 'onSessionTitle'>
+  host: Pick<HostDeps, 'log' | 'onSessionTitle' | 'agentTools'>
   permissions: PermissionBroker
   interactions: InteractionBroker
   connections: AcpTransport

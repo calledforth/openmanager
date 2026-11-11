@@ -133,6 +133,13 @@ export async function run(mainPath: string): Promise<void> {
     case 'uninstall':
       process.exitCode = await runUninstall(rest)
       return
+    case 'mcp-bridge': {
+      // Internal: an agent without HTTP MCP launches this to reach the
+      // environment's tools (pull-requests/mcp-endpoint.ts).
+      const { runMcpBridge } = await import('./mcp-bridge.ts')
+      process.exitCode = await runMcpBridge()
+      return
+    }
     case 'activate':
       // Internal: the install scripts call it on the version they unpacked.
       process.exitCode = await runActivate(rest)

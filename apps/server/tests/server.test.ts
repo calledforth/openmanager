@@ -13,10 +13,12 @@ import {
   PROTOCOL_VERSION,
 } from '@openmanager/protocol/node'
 import type { AuditEvent } from '../src/audit.js'
-import { detectEnvironmentPlatform } from '../src/platform.js'
+import { detectEnvironmentDistro, detectEnvironmentPlatform } from '../src/platform.js'
 import { startServer } from '../src/server.js'
 import { createLogger } from '../src/logger.js'
 import { SERVER_CAPABILITIES } from '../src/server.js'
+
+const hostDistro = detectEnvironmentDistro(detectEnvironmentPlatform())
 
 /** fetch strips a caller-supplied Host header, so host policy tests go through node:http. */
 async function get(port: number, path: string, headers: Record<string, string>) {
@@ -77,6 +79,7 @@ describe('headless listener', () => {
       environmentId: first.identity.environmentId,
       label: first.identity.label,
       platform: detectEnvironmentPlatform(),
+      ...(hostDistro ? { distro: hostDistro } : {}),
       protocolVersion: PROTOCOL_VERSION,
       capabilities: SERVER_CAPABILITIES,
       instanceId: expect.any(String),
@@ -219,6 +222,7 @@ describe('headless listener', () => {
       environmentId: server.identity.environmentId,
       label: server.identity.label,
       platform: detectEnvironmentPlatform(),
+      ...(hostDistro ? { distro: hostDistro } : {}),
       protocolVersion: PROTOCOL_VERSION,
       capabilities: SERVER_CAPABILITIES,
       instanceId: expect.any(String),

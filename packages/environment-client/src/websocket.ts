@@ -40,6 +40,7 @@ import {
   UploadResultSchema,
   EnvironmentChangedEventSchema,
   EnvironmentPlatformSchema,
+  parseEnvironmentDistro,
   WorkspaceUnavailableDetailsSchema,
 } from '@openmanager/protocol'
 import { z } from 'zod'
@@ -60,6 +61,7 @@ import {
   applyProviderCatalog,
   applyProviderHealth,
   applyProviderLimits,
+  applyPullRequestDetail,
   applyProviderProbe,
   applyLiveNoticesCleared,
   applyRecord as applyRecordToState,
@@ -637,10 +639,12 @@ export function createWebSocketEnvironmentClient(
     const label = typeof bootstrap.label === 'string' ? bootstrap.label.trim() : ''
     if (label) {
       const platform = EnvironmentPlatformSchema.safeParse(bootstrap.platform)
+      const distro = parseEnvironmentDistro(bootstrap.distro)
       const environment = {
         environmentId: bootstrap.environmentId,
         name: label,
         ...(platform.success ? { platform: platform.data } : {}),
+        ...(distro ? { distro } : {}),
       }
       store.update((state) => applyEnvironment(state, environment))
     }
@@ -2039,6 +2043,15 @@ export function createWebSocketEnvironmentClient(
     async searchMessages(query, limit) {
       return (await request('search.messages', limit === undefined ? { query } : { query, limit }))
         .hits
+    },
+    async getPullRequest(input) {
+      const { pullRequest } = await request('pull_request.get', {
+        sessionId: input.sessionId,
+        repository: input.repository,
+        number: input.number,
+      })
+      store.update((state) => applyPullRequestDetail(state, pullRequest))
+      return pullRequest
     },
     async getEnvironmentSettings() {
       return (await request('environment.settings.get', null)).settings

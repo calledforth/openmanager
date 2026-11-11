@@ -113,6 +113,54 @@ describe('EnvironmentPicker', () => {
     expect(rows[1]).toContain('127.0.0.1:2 · Not connected')
   })
 
+  it("leads each environment with its platform's logo in place of the brackets", async () => {
+    await render(
+      <EnvironmentPicker
+        environments={[
+          { environmentId: 'win', label: 'Laptop (Windows)', platform: 'windows', reachable: true },
+          {
+            environmentId: 'wsl',
+            label: 'Laptop (WSL)',
+            platform: 'wsl',
+            distro: { id: 'ubuntu', name: 'Ubuntu' },
+            reachable: true,
+          },
+          { environmentId: 'mac', label: 'Studio', platform: 'macos', reachable: false },
+        ]}
+        selectedId="wsl"
+        onSelect={() => undefined}
+      />,
+    )
+    // The logo stands where the generic machine icon was, before the name.
+    expect(trigger()!.firstElementChild?.getAttribute('data-distro')).toBe('ubuntu')
+    expect(trigger()!.querySelector('.truncate')?.textContent).toBe('Laptop')
+    // What the logo stands for is still said, and still searched.
+    expect(trigger()!.getAttribute('aria-label')).toBe(
+      'Environment: Laptop (WSL). Choose an environment',
+    )
+    await act(async () => trigger()!.click())
+    const rows = [...document.querySelectorAll('[role="option"]')]
+    expect(
+      rows.map((row) => row.querySelector('[data-platform]')?.getAttribute('data-platform')),
+    ).toEqual(['windows', 'wsl', 'macos'])
+    expect(rows.map((row) => row.querySelector('.truncate')?.textContent)).toEqual([
+      'Laptop (Windows)',
+      'Laptop (Ubuntu (WSL))',
+      'Studio (macOS)',
+    ])
+    // In colour while it can be picked, grey when it cannot.
+    expect(
+      rows.map((row) => row.querySelector('[data-platform]')!.hasAttribute('data-muted')),
+    ).toEqual([false, false, true])
+    await act(async () => {
+      const search = document.querySelector<HTMLInputElement>('input')!
+      const setValue = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!
+      setValue.call(search, 'ubuntu')
+      search.dispatchEvent(new Event('input', { bubbles: true }))
+    })
+    expect([...document.querySelectorAll('[role="option"]')]).toHaveLength(1)
+  })
+
   it('leaves the environment the page is on usable when it is not connected', async () => {
     await picker(vi.fn(), 'lab')
     expect(option('Lab')?.getAttribute('aria-disabled')).toBeNull()

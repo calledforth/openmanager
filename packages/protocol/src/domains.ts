@@ -1,6 +1,7 @@
 import { z } from 'zod'
 import { SessionTitleSourceSchema } from './session-title.js'
 import { SessionComposerStateSchema } from './session-composer.js'
+import { PullRequestSummaryListSchema } from './pull-requests.js'
 
 /** Host-owned resource identity, distinct from a command's request ID. */
 export const EntityIdSchema = z.string().min(1).max(256).regex(/^\S+$/)
@@ -52,11 +53,51 @@ export function environmentPlatformName(platform: unknown): string | undefined {
     : undefined
 }
 
+/** An os-release ID ("ubuntu", "opensuse-tumbleweed"): lower case, digits, and `._-`. */
+const DistroIdSchema = z.string().regex(/^[a-z0-9._-]{1,64}$/)
+
+/**
+ * The Linux distribution a Linux or WSL environment runs, from its
+ * os-release: `id` "pop", `name` "Pop!_OS", `like` ["ubuntu", "debian"]. A
+ * client finds a logo by `id`, then by `like` for a derivative it has none
+ * for, and says `name`.
+ */
+export const EnvironmentDistroSchema = z.object({
+  id: DistroIdSchema,
+  name: z.string().trim().min(1).max(64).optional().catch(undefined),
+  like: z.array(DistroIdSchema).max(8).optional().catch(undefined),
+})
+export type EnvironmentDistro = z.infer<typeof EnvironmentDistroSchema>
+
+/** A distro as a server sent it, or undefined for nothing usable. */
+export function parseEnvironmentDistro(raw: unknown): EnvironmentDistro | undefined {
+  const parsed = EnvironmentDistroSchema.safeParse(raw)
+  if (!parsed.success) return undefined
+  const { id, name, like } = parsed.data
+  return { id, ...(name ? { name } : {}), ...(like?.length ? { like } : {}) }
+}
+
+export function sameEnvironmentDistro(
+  a: EnvironmentDistro | undefined,
+  b: EnvironmentDistro | undefined,
+): boolean {
+  return (
+    a === b ||
+    (a !== undefined &&
+      b !== undefined &&
+      a.id === b.id &&
+      a.name === b.name &&
+      (a.like ?? []).join(' ') === (b.like ?? []).join(' '))
+  )
+}
+
 export const EnvironmentSchema = z.object({
   environmentId: EntityIdSchema,
   name: z.string(),
   /** Absent from older servers; a platform this client does not know reads as absent. */
   platform: EnvironmentPlatformSchema.optional().catch(undefined),
+  /** Linux and WSL only, and absent from older servers. */
+  distro: EnvironmentDistroSchema.optional().catch(undefined),
 })
 /**
  * A folder registered on the environment. `path` is the canonical on-disk
@@ -189,6 +230,11 @@ export const SessionSummarySchema = SessionSchema.extend({
   inBackground: z.literal(true).optional(),
   /** Absent until the session has a selection, and on older environments. */
   composer: SessionComposerStateSchema.optional(),
+  /**
+   * Pull requests linked to the session, oldest link first. Absent when there
+   * are none, and on older environments. See `pull-requests.ts`.
+   */
+  pullRequests: PullRequestSummaryListSchema.optional(),
 })
 export const ThreadSchema = z.object({ threadId: EntityIdSchema, sessionId: EntityIdSchema })
 

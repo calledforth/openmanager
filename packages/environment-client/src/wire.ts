@@ -6,6 +6,7 @@ import {
   FilesystemResponseSchemas,
   PairingResponseSchemas,
   SearchResponseSchemas,
+  PullRequestResponseSchemas,
   ProofResponseSchemas,
   ProviderLimitsRefreshResponseSchema,
   ProviderProbeResponseSchema,
@@ -53,6 +54,7 @@ export const WIRE_COMMANDS = {
   setSessionConfigOption: 'composer.config_option.set',
   browseFolders: 'filesystem.browse',
   searchMessages: 'search.messages',
+  getPullRequest: 'pull_request.get',
   getEnvironmentSettings: 'environment.settings.get',
   setEnvironmentSettings: 'environment.settings.set',
   renameEnvironment: 'environment.rename',
@@ -117,6 +119,7 @@ export const WIRE_RESPONSES = {
   ),
   'filesystem.browse': payload(FilesystemResponseSchemas['filesystem.browse'].shape.payload),
   'search.messages': payload(SearchResponseSchemas['search.messages'].shape.payload),
+  'pull_request.get': payload(PullRequestResponseSchemas['pull_request.get'].shape.payload),
   'environment.settings.get': payload(
     FilesystemResponseSchemas['environment.settings.get'].shape.payload,
   ),

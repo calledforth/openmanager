@@ -21,6 +21,7 @@ import { Tooltip } from '../ui/Tooltip'
 import { usePortaledMenu } from '../ui/usePortaledMenu'
 import { useHoldFocus, useRegisterPicker } from '../command/pickerRegistry'
 import { behindModal } from '../../lib/modal-layers'
+import type { EnvironmentDistro, EnvironmentPlatform } from '@openmanager/protocol'
 
 const MENU_WIDTH = 360
 /** The "Add project" row's value; no workspace path can collide with it. */
@@ -56,6 +57,7 @@ export function ProjectPicker({
   activeWorkspace,
   environmentLabel,
   environmentPlatform,
+  environmentDistro,
   onSelect,
   onAddWorkspace,
   variant = 'title',
@@ -65,7 +67,8 @@ export function ProjectPicker({
   /** Null when the open draft has no project: the picker asks for one. */
   activeWorkspace: WorkspaceEntry | null
   environmentLabel?: string
-  environmentPlatform?: string
+  environmentPlatform?: EnvironmentPlatform
+  environmentDistro?: EnvironmentDistro
   onSelect: (workspacePath: string) => void
   onAddWorkspace: () => void
   /** `title` is the landing's headline control; `chip` a property chip, as
@@ -202,6 +205,7 @@ export function ProjectPicker({
               <EnvironmentLabel
                 label={environmentLabel}
                 platform={environmentPlatform}
+                distro={environmentDistro}
                 className="min-w-0 text-[11px]"
               />
             </div>

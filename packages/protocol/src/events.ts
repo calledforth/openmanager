@@ -33,6 +33,7 @@ import {
 } from './composer.js'
 import { DraftSchema, DraftTombstoneSchema } from './drafts.js'
 import { ThreadQueueSchema } from './queue.js'
+import { PullRequestSummaryListSchema } from './pull-requests.js'
 
 const event = <N extends string, S extends z.ZodType, P extends z.ZodType>(
   name: N,
@@ -53,8 +54,10 @@ const event = <N extends string, S extends z.ZodType, P extends z.ZodType>(
  * server whose log was written under an older version raises every stream's
  * replay floor at boot, so no stored event is replayed in a form this
  * version cannot state (docs/sync-foundations.md §4.7.7).
+ *
+ * 6: `session.updated` carries `pullRequests`.
  */
-export const EVENT_FORMAT_VERSION = 5 as const
+export const EVENT_FORMAT_VERSION = 6 as const
 
 /** A turn's state once an interaction event is applied: still asking, or running again. */
 export const InteractionTurnStateSchema = z.enum(['running', 'waiting'])
@@ -108,6 +111,8 @@ export const ProofEventSchemas = {
        */
       waitingOn: InteractionKindSchema.nullable().optional(),
       inBackground: z.boolean().optional(),
+      /** Present only when the session's linked pull requests changed: every one, as it is now. */
+      pullRequests: PullRequestSummaryListSchema.optional(),
     }),
   ),
   'session.deleted': event(

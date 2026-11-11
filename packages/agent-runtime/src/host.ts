@@ -1,5 +1,6 @@
 import type { AgentEvent, ProviderId } from '@agentpack/contract'
 import type { DesiredSessionConfig } from './session/lifecycle.js'
+import type { AgentToolsHost } from './tools/agent-tools.js'
 
 export type HostLogEntry = {
   scope: 'agent-runtime' | 'acp' | 'claude'
@@ -40,4 +41,8 @@ export type HostDeps = {
     workspacePath: string
     threadId: string
   }) => DesiredSessionConfig | undefined
+  /** Tools the host serves to every session as one MCP server (its own
+   * actions, such as linking a pull request to the session). Absent, agents
+   * get none. The probe runtimes never get them: a probe is no session. */
+  agentTools?: AgentToolsHost
 }

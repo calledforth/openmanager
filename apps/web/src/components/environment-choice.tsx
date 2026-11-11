@@ -30,7 +30,6 @@ import {
 } from '@openmanager/app-core/providers/sidebar-provider'
 import { environmentIsDown } from '@openmanager/environment-client/connection'
 import { isRecentDraftHandover, type DraftHandover, type LeftDraft } from '../lib/draft-handovers'
-import { platformBeside } from '../lib/environment-names'
 import { useConnection } from '../providers/connection-provider'
 import { useEnvironmentClients } from '../providers/environment-client-provider'
 
@@ -144,12 +143,12 @@ export function EnvironmentChoiceHost({ children }: { children: ReactNode }) {
       )
       const link = links.find((item) => item.environmentId === environmentId)
       const endpoint = link?.endpoint
-      const detail = [platformBeside(environment), twin && endpoint ? hostOf(endpoint) : undefined]
-        .filter(Boolean)
-        .join(' · ')
+      const detail = twin && endpoint ? hostOf(endpoint) : undefined
       return {
         environmentId,
         label,
+        ...(environment.platform ? { platform: environment.platform } : {}),
+        ...(environment.distro ? { distro: environment.distro } : {}),
         ...(detail ? { detail } : {}),
         // Down (the device offline, say) while its socket still reads connected,
         // it reads offline everywhere else, so it isn't one to pick.

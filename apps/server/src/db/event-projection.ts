@@ -19,7 +19,11 @@ import {
   readPreferenceRow,
   readProfileRow,
 } from './composer-rows.ts'
-import type { DurableProofEvent, WriteOptions } from './event-repository.ts'
+import {
+  pullRequestLinkKey,
+  type DurableProofEvent,
+  type WriteOptions,
+} from './event-repository.ts'
 import { prepareDraftProjection } from './draft-projection.ts'
 import { OPEN_TURN_FOR_SESSION_SQL } from './queries.ts'
 import { getSessionSummary } from './session-store.ts'
@@ -122,6 +126,24 @@ export function createEventProjector(
       'SELECT 1 FROM sessions WHERE session_id = ? AND background_tasks_json IS NOT NULL',
     ),
     selectSessionStatus: database.prepare('SELECT status FROM sessions WHERE session_id = ?'),
+    // A session's pull requests, as the last `session.updated` that named
+    // them stated: the whole list each time. `source` is set once, by the
+    // write that creates the link, and kept.
+    sessionPullRequestKeys: database.prepare(
+      'SELECT repository, number FROM session_pull_requests WHERE session_id = ?',
+    ),
+    upsertSessionPullRequest: database.prepare(
+      `INSERT INTO session_pull_requests (
+         session_id, repository, number, url, linked_at, source, summary_json
+       ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
+       ON CONFLICT (session_id, repository, number) DO UPDATE SET
+         url = excluded.url,
+         linked_at = excluded.linked_at,
+         summary_json = excluded.summary_json`,
+    ),
+    deleteSessionPullRequest: database.prepare(
+      'DELETE FROM session_pull_requests WHERE session_id = ? AND repository = ? AND number = ?',
+    ),
     openTurnForSession: database.prepare(OPEN_TURN_FOR_SESSION_SQL),
     // Not a sidebar-ordering change, so `updated_at` stays put.
     updateSessionComposer: database.prepare(
@@ -653,6 +675,46 @@ export function createEventProjector(
             throw new ProjectionRefusal(
               `Cannot acknowledge missing session ${event.payload.sessionId}`,
             )
+          }
+        }
+        if (event.payload.pullRequests !== undefined) {
+          const sessionId = event.payload.sessionId
+          if (!s.selectSessionStatus.get(sessionId)) {
+            throw new ProjectionRefusal(
+              `Cannot record pull requests for missing session ${sessionId}`,
+            )
+          }
+          const held = new Set(
+            (
+              s.sessionPullRequestKeys.all(sessionId) as { repository: string; number: number }[]
+            ).map((row) => pullRequestLinkKey(sessionId, row.repository, row.number)),
+          )
+          const stated = new Set<string>()
+          for (const pullRequest of event.payload.pullRequests) {
+            const key = pullRequestLinkKey(sessionId, pullRequest.repository, pullRequest.number)
+            const source = write?.pullRequestSources?.[key]
+            // A new link says how it was made; only the write creating it can.
+            if (!held.has(key) && !source) {
+              throw new ProjectionRefusal(`Pull request link ${key} is new and names no source`)
+            }
+            stated.add(key)
+            s.upsertSessionPullRequest.run(
+              sessionId,
+              pullRequest.repository,
+              pullRequest.number,
+              pullRequest.url,
+              Date.parse(pullRequest.linkedAt),
+              source ?? 'tool',
+              JSON.stringify(pullRequest),
+            )
+          }
+          for (const row of s.sessionPullRequestKeys.all(sessionId) as {
+            repository: string
+            number: number
+          }[]) {
+            if (!stated.has(pullRequestLinkKey(sessionId, row.repository, row.number))) {
+              s.deleteSessionPullRequest.run(sessionId, row.repository, row.number)
+            }
           }
         }
         if (event.payload.backgroundTasks !== undefined) {

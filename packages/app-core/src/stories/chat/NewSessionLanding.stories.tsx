@@ -1,6 +1,7 @@
 import type { Meta, StoryObj } from '@storybook/react-vite'
 import { EnvironmentPicker } from '../../components/chat/EnvironmentPicker'
 import { NewSessionLandingView } from '../../components/chat/NewSessionLanding'
+import { ThemeProvider } from '../../providers/theme-provider'
 
 const meta = {
   title: 'App/NewSessionLanding',
@@ -8,6 +9,8 @@ const meta = {
   parameters: { layout: 'fullscreen' },
   args: {
     environmentLabel: 'studio-workstation',
+    environmentPlatform: 'wsl',
+    environmentDistro: { id: 'ubuntu', name: 'Ubuntu', like: ['debian'] },
     workspaces: [
       { path: 'C:\\repos\\openmanager', name: 'openmanager' },
       { path: 'C:\\repos\\agentpack', name: 'agentpack' },
@@ -21,9 +24,11 @@ const meta = {
   },
   decorators: [
     (Story) => (
-      <div className="flex h-screen w-screen bg-[var(--basis-canvas-bg)] text-[var(--basis-text)]">
-        <Story />
-      </div>
+      <ThemeProvider>
+        <div className="flex h-screen w-screen bg-[var(--basis-canvas-bg)] text-[var(--basis-text)]">
+          <Story />
+        </div>
+      </ThemeProvider>
     ),
   ],
 } satisfies Meta<typeof NewSessionLandingView>
@@ -73,9 +78,42 @@ export const SeveralEnvironments: Story = {
     environmentPicker: (
       <EnvironmentPicker
         environments={[
-          { environmentId: 'studio', label: 'studio-workstation', reachable: true },
-          { environmentId: 'laptop', label: 'travel-laptop', reachable: true },
-          { environmentId: 'homelab', label: 'homelab', reachable: false },
+          {
+            environmentId: 'studio',
+            label: 'studio-workstation',
+            platform: 'windows',
+            reachable: true,
+          },
+          { environmentId: 'laptop', label: 'travel-laptop', platform: 'macos', reachable: true },
+          {
+            environmentId: 'studio-wsl',
+            label: 'studio-workstation',
+            platform: 'wsl',
+            distro: { id: 'ubuntu', name: 'Ubuntu' },
+            reachable: true,
+          },
+          {
+            environmentId: 'studio-arch',
+            label: 'studio-workstation',
+            platform: 'wsl',
+            distro: { id: 'arch', name: 'Arch Linux' },
+            reachable: true,
+          },
+          {
+            environmentId: 'homelab',
+            label: 'homelab',
+            platform: 'linux',
+            distro: { id: 'fedora', name: 'Fedora Linux' },
+            reachable: true,
+          },
+          {
+            environmentId: 'pi',
+            label: 'pi',
+            platform: 'linux',
+            distro: { id: 'debian' },
+            reachable: true,
+          },
+          { environmentId: 'nas', label: 'nas', platform: 'linux', reachable: false },
         ]}
         selectedId="studio"
         onSelect={() => undefined}

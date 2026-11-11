@@ -54,6 +54,50 @@ function opencodeSubtaskFromTool(
   }
 }
 
+/**
+ * OpenCode asks before an MCP tool only when its permission config says so
+ * (none by default; `"*": "ask"` asks for everything). Its permission prompt
+ * carries nothing structural: the title is the tool id for an MCP tool, and
+ * the command, pattern or path for bash, grep and patch, so a title match
+ * would also allow a shell command spelled like our tool. Instead the host's
+ * tools are allowed in OpenCode's own config, by their exact tool ids
+ * (`{server}_{tool}`), through `OPENCODE_CONFIG_CONTENT`, which OpenCode
+ * merges over the global and project config (verified with 1.19.5: a project
+ * `"*": "ask"` and an explicit deny for the tool are both overridden, and
+ * bash still asks). A user's own `OPENCODE_CONFIG_CONTENT` is kept and
+ * extended; one that is not a JSON object is left alone, and the tool then
+ * asks like any other.
+ */
+export function opencodeAllowHostTools(
+  tools: { serverName: string; toolNames: readonly string[] },
+  env: Readonly<Record<string, string>>,
+): Record<string, string> {
+  const sanitize = (name: string) => name.replace(/[^a-zA-Z0-9_-]/g, '_')
+  let content: Record<string, unknown> = {}
+  const existing = env.OPENCODE_CONFIG_CONTENT?.trim()
+  if (existing) {
+    try {
+      const parsed: unknown = JSON.parse(existing)
+      if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return {}
+      content = parsed as Record<string, unknown>
+    } catch {
+      return {}
+    }
+  }
+  const current = content.permission
+  // A bare string is OpenCode's shorthand for every permission.
+  const permission: Record<string, unknown> =
+    typeof current === 'string'
+      ? { '*': current }
+      : current && typeof current === 'object' && !Array.isArray(current)
+        ? { ...(current as Record<string, unknown>) }
+        : {}
+  for (const name of tools.toolNames) {
+    permission[`${sanitize(tools.serverName)}_${sanitize(name)}`] = 'allow'
+  }
+  return { OPENCODE_CONFIG_CONTENT: JSON.stringify({ ...content, permission }) }
+}
+
 export const opencode: AcpProviderConfig = {
   kind: 'acp',
   id: 'opencode',
@@ -72,6 +116,7 @@ export const opencode: AcpProviderConfig = {
     loginInstruction: 'Run `opencode auth login` and retry.',
   },
   quirks: { suppressPlanUpdates: true, nativeQuestions: 'opencode' },
+  allowHostTools: opencodeAllowHostTools,
   capabilities: {
     canSetModel: true,
     canSetMode: true,

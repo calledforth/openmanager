@@ -27,6 +27,8 @@ import type {
   ProviderBootstrap,
   ProviderLimits,
   ProviderCatalogEntry,
+  PullRequestDetail,
+  PullRequestSummary,
   QueuedMessage,
   Session,
   SessionComposerState,
@@ -65,6 +67,8 @@ export type {
   FilesystemListing,
   MessageSearchHit,
   ProviderCatalogEntry,
+  PullRequestDetail,
+  PullRequestSummary,
   QueuedMessage,
   SessionComposerState,
   SessionStatus,
@@ -104,6 +108,12 @@ export interface SessionSummary extends Session {
    * `session.composer.updated`. Absent until the environment reports one.
    */
   composer?: SessionComposerState
+  /**
+   * Pull requests linked to the session, oldest link first, as the
+   * environment last stated them (snapshots and `session.updated`). Absent
+   * when there are none.
+   */
+  pullRequests?: PullRequestSummary[]
   threadIds: string[]
 }
 
@@ -295,6 +305,14 @@ export interface EnvironmentState {
   draftEdits: Record<string, DraftEdit>
   /** Whether `drafts` was listed since the client last caught up with the environment. */
   draftsListed: boolean
+  /**
+   * Pull requests read in full with `getPullRequest`, by `repository#number`
+   * (`pullRequestDetailKey`): the environment's answer, kept so a reload or
+   * a reopened panel shows it at once. A summary whose `syncedAt` moves past
+   * a detail's says the detail is out of date. Absent until one is read; a
+   * host's cache keeps only those some session still links.
+   */
+  pullRequestDetails?: Record<string, PullRequestDetail>
   /**
    * Threads with a catch-up under way: asked for, or the server said the
    * subscription is lagging. The transport's own state, for the UI alone. Read
@@ -648,6 +666,16 @@ export interface EnvironmentCommands {
    * searchable once it ends. Not stored: each call asks the environment.
    */
   searchMessages(query: string, limit?: number): Promise<MessageSearchHit[]>
+  /**
+   * One pull request linked to a session, in full, from the environment's
+   * copy (it reads GitHub first only for one it never read). The answer is
+   * kept in `state.pullRequestDetails`.
+   */
+  getPullRequest(input: {
+    sessionId: string
+    repository: string
+    number: number
+  }): Promise<PullRequestDetail>
   /** Settings the environment shares with every client. Not stored. */
   getEnvironmentSettings(): Promise<EnvironmentSettings>
   /** A patch: settings left out keep their value. Resolves with all of them. */

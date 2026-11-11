@@ -86,12 +86,14 @@ export type ReviewedRegistryFields = AssertNone<
   // `tokenRefused`: a yes or no about the credential, holding none of it. Web
   // sets it; the phone forgets a refused credential instead. In AsyncStorage.
   // `platform`: the kind of machine the environment says it runs on ("wsl").
-  // Public, from bootstrap; in AsyncStorage.
+  // `distro`: its Linux distribution ("ubuntu"). Both public, from bootstrap;
+  // in AsyncStorage.
   | Exclude<
       keyof StoredEnvironment,
       | 'environmentId'
       | 'label'
       | 'platform'
+      | 'distro'
       | 'routes'
       | 'credential'
       | 'appOrigin'

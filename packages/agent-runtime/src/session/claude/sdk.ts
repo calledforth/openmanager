@@ -1,5 +1,6 @@
 import type {
   EffortLevel,
+  McpSdkServerConfigWithInstance,
   Options,
   PermissionMode,
   SDKControlGetContextUsageResponse,
@@ -93,6 +94,21 @@ export type ClaudeSdk = {
    * the CLI never wrote is distinguished from one that failed for some other
    * reason. */
   getSessionInfo(sessionId: string, options?: { dir?: string }): Promise<SDKSessionInfo | undefined>
+  /** Claude Code's in-process MCP server, built from the host's tools
+   * (`createSdkMcpServer` + `tool`). Optional so a fake without it runs a
+   * session with no host tools rather than failing to start. */
+  createMcpServer?(name: string, tools: readonly ClaudeMcpTool[]): McpSdkServerConfigWithInstance
+}
+
+/** One host tool as the SDK's `tool()` takes it. */
+export type ClaudeMcpTool = {
+  name: string
+  description: string
+  inputSchema: Record<string, import('zod').ZodType>
+  handler: (input: Record<string, unknown>) => Promise<{
+    content: { type: 'text'; text: string }[]
+    isError?: boolean
+  }>
 }
 
 /** The real module, imported on first use.
@@ -106,5 +122,20 @@ export async function loadClaudeSdk(): Promise<ClaudeSdk> {
   return {
     query: (args) => sdk.query(args),
     getSessionInfo: (sessionId, options) => sdk.getSessionInfo(sessionId, options),
+    createMcpServer: (name, tools) =>
+      sdk.createSdkMcpServer({
+        name,
+        tools: tools.map((spec) =>
+          sdk.tool(
+            spec.name,
+            spec.description,
+            spec.inputSchema,
+            (input) => spec.handler(input as Record<string, unknown>),
+            // Never deferred behind tool search: the agent is told to call it
+            // right after opening a pull request, without having to look.
+            { alwaysLoad: true },
+          ),
+        ),
+      }),
   }
 }

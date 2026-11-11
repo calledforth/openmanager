@@ -10,6 +10,7 @@ import { EnvironmentLabel } from '../sidebar/EnvironmentLabel'
 import { EnvironmentPicker } from './EnvironmentPicker'
 import { ProjectIcon } from '../sidebar/ProjectIcon'
 import { ProjectPicker, describeCapabilities } from './ProjectPicker'
+import type { EnvironmentDistro, EnvironmentPlatform } from '@openmanager/protocol'
 
 /** How many recent projects the landing offers as one-click chips. */
 const RECENT_CHIP_LIMIT = 4
@@ -17,6 +18,7 @@ const RECENT_CHIP_LIMIT = 4
 export function NewSessionLandingView({
   environmentLabel,
   environmentPlatform,
+  environmentDistro,
   environmentPicker,
   workspaces,
   recentWorkspaces = [],
@@ -29,8 +31,10 @@ export function NewSessionLandingView({
 }: {
   /** Where the session will run; omitted, no environment copy shows. */
   environmentLabel?: string
-  /** The kind of machine it is ("WSL"), when its server says. */
-  environmentPlatform?: string
+  /** The kind of machine it is, when its server says. */
+  environmentPlatform?: EnvironmentPlatform
+  /** Its Linux distribution, when its server says. */
+  environmentDistro?: EnvironmentDistro
   /** Stands where the label would, on a host with more than one environment. */
   environmentPicker?: ReactNode
   workspaces: WorkspaceEntry[]
@@ -116,6 +120,7 @@ export function NewSessionLandingView({
             activeWorkspace={activeWorkspace}
             environmentLabel={environmentLabel}
             environmentPlatform={environmentPlatform}
+            environmentDistro={environmentDistro}
             onSelect={(workspacePath) => {
               // With nothing open the first project is only what the picker
               // shows, so choosing it must still open it.
@@ -139,6 +144,7 @@ export function NewSessionLandingView({
                 <EnvironmentLabel
                   label={environmentLabel}
                   platform={environmentPlatform}
+                  distro={environmentDistro}
                   className="max-w-[240px]"
                 />
                 <span aria-hidden>·</span>
@@ -234,6 +240,7 @@ export function NewSessionLanding() {
     <NewSessionLandingView
       environmentLabel={environment?.label}
       environmentPlatform={environment?.platform}
+      environmentDistro={environment?.distro}
       environmentPicker={
         // What it marks as chosen is the environment this page's client is
         // on, so the two cannot disagree.

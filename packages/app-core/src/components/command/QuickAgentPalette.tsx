@@ -48,6 +48,7 @@ import {
 } from '../../providers/environment-quick-agent'
 import { useSessionState } from '../../providers/session-provider'
 import { useSidebarData, type WorkspaceEntry } from '../../providers/sidebar-provider'
+import type { EnvironmentDistro, EnvironmentPlatform } from '@openmanager/protocol'
 
 /** Opens the palette from anywhere, typing included. */
 export const QUICK_AGENT_SHORTCUT = 'mod+shift+o'
@@ -606,6 +607,7 @@ function QuickAgentPaletteBound() {
             recentWorkspaces={recentWorkspaces}
             environmentLabel={environment?.label}
             environmentPlatform={environment?.platform}
+            environmentDistro={environment?.distro}
             onClose={close}
             onExpand={navigation ? expand : undefined}
             onAddWorkspace={() => {
@@ -632,6 +634,7 @@ function QuickAgentPaletteContent({
   recentWorkspaces,
   environmentLabel,
   environmentPlatform,
+  environmentDistro,
   onClose,
   onExpand,
   onAddWorkspace,
@@ -641,7 +644,8 @@ function QuickAgentPaletteContent({
   workspaces: WorkspaceEntry[]
   recentWorkspaces: WorkspaceEntry[]
   environmentLabel?: string
-  environmentPlatform?: string
+  environmentPlatform?: EnvironmentPlatform
+  environmentDistro?: EnvironmentDistro
   onClose: () => void
   onExpand?: () => void
   onAddWorkspace: () => void
@@ -665,6 +669,7 @@ function QuickAgentPaletteContent({
             activeWorkspace={activeWorkspace}
             environmentLabel={environmentLabel}
             environmentPlatform={environmentPlatform}
+            environmentDistro={environmentDistro}
             onSelect={(workspacePath) => {
               if (workspacePath !== activeWorkspacePath) setDraftWorkspace?.(workspacePath)
             }}

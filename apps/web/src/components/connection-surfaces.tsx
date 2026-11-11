@@ -12,6 +12,10 @@ import {
 } from '@phosphor-icons/react'
 import { Button } from '@openmanager/app-core/components/fluid/ui/button'
 import { phosphorIcon } from '@openmanager/app-core/components/fluid/lib/icon-context'
+import {
+  EnvironmentPlatformIcon,
+  nameWithoutPlatform,
+} from '@openmanager/app-core/components/ui/EnvironmentPlatformIcon'
 import { Tooltip } from '@openmanager/app-core/components/ui/Tooltip'
 import {
   connectionActionLabel,
@@ -29,7 +33,6 @@ import {
   routeHealthLabel,
 } from '@openmanager/environment-client/connection'
 import { ENVIRONMENT_NAME_MAX_LENGTH } from '@openmanager/protocol'
-import { platformBeside } from '../lib/environment-names'
 import { canClaimLocalOwner } from '../lib/local-owner'
 import { cn } from '../lib/utils'
 import type { AddRouteResult } from '../providers/connection-provider'
@@ -572,17 +575,18 @@ export function EnvironmentList({
                 />
               ) : (
                 <p className="flex min-w-0 flex-1 items-center gap-2">
+                  <EnvironmentPlatformIcon
+                    platform={environment.platform}
+                    distro={environment.distro}
+                    // Grey until one of its routes has answered.
+                    muted={!environment.routes.some((route) => route.health.status === 'available')}
+                    className="size-3.5"
+                  />
                   <Tooltip content={environment.environmentId}>
                     <span className="truncate text-[13px] font-medium text-foreground">
-                      {environment.label}
+                      {nameWithoutPlatform(environment.label, environment.platform)}
                     </span>
                   </Tooltip>
-                  {platformBeside(environment) ? (
-                    <span className="shrink-0 rounded bg-active px-1.5 py-px text-[11px] text-muted-foreground">
-                      <span className="sr-only">Runs on </span>
-                      {platformBeside(environment)}
-                    </span>
-                  ) : null}
                   {selected && several ? (
                     <span className="shrink-0 rounded bg-active px-1.5 py-px text-[11px] text-muted-foreground">
                       Current

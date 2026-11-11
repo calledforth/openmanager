@@ -5,11 +5,14 @@ import {
   applyEvent,
   applySessionCreated,
   applySessionOpen,
+  applyPullRequestDetail,
   applySnapshot,
   applyTurnSendFailed,
   applyTurnSendReleased,
   applyTurnSending,
   createInitialState,
+  pullRequestDetailIsCurrent,
+  pullRequestDetailKey,
   selectActiveThread,
   selectActiveTurn,
   selectPendingInteractions,
@@ -17,6 +20,7 @@ import {
   selectSessionList,
   selectWorkspaces,
 } from '../src/state'
+import { cacheState } from '../src/cache-state'
 import { applySessionList, loadThread } from './seed'
 import type { EnvironmentState } from '../src/types'
 import {
@@ -1495,4 +1499,75 @@ describe('protocol turn finalization', () => {
       )
     },
   )
+})
+
+describe('pull requests', () => {
+  const PR = {
+    url: 'https://github.com/calledforth/openmanager/pull/298',
+    repository: 'calledforth/openmanager',
+    number: 298,
+    linkedAt: '2026-11-10T10:00:00.000Z',
+    title: 'Search',
+    state: 'open' as const,
+    labels: [],
+    checks: 'pending' as const,
+    reviewDecision: null,
+    additions: 1,
+    deletions: 2,
+    updatedAt: '2026-11-10T09:00:00.000Z',
+    syncedAt: '2026-11-10T10:00:01.000Z',
+    problem: null,
+  }
+  const DETAIL = {
+    ...PR,
+    body: 'Body',
+    author: null,
+    headRef: 'feat',
+    baseRef: 'main',
+    createdAt: null,
+    mergedAt: null,
+    closedAt: null,
+    changedFiles: 3,
+    commits: 1,
+    reviewers: [],
+    checkRuns: [],
+  }
+  const listed = (...pullRequests: (typeof PR)[]) =>
+    event({
+      name: 'session.updated',
+      scope: environmentScope,
+      payload: { sessionId: SESSION.sessionId, pullRequests },
+    })
+
+  it('holds the list an update states until another replaces it', () => {
+    let state = applyEvent(seeded(), listed(PR))
+    expect(state.sessions[SESSION.sessionId]?.pullRequests).toEqual([PR])
+    state = applyEvent(
+      state,
+      event({
+        name: 'session.updated',
+        scope: environmentScope,
+        payload: { sessionId: SESSION.sessionId, title: 'Renamed' },
+      }),
+    )
+    expect(state.sessions[SESSION.sessionId]?.pullRequests).toEqual([PR])
+    expect(applyEvent(state, listed({ ...PR }))).toBe(state)
+    expect(applyEvent(state, listed()).sessions[SESSION.sessionId]).not.toHaveProperty(
+      'pullRequests',
+    )
+  })
+
+  it('keeps details, current until the summary moves past them, and caches only linked ones', () => {
+    let state = applyEvent(seeded(), listed(PR))
+    state = applyPullRequestDetail(state, DETAIL)
+    expect(state.pullRequestDetails?.[pullRequestDetailKey(PR)]).toEqual(DETAIL)
+    expect(applyPullRequestDetail(state, { ...DETAIL })).toBe(state)
+    expect(pullRequestDetailIsCurrent(PR, DETAIL)).toBe(true)
+    expect(
+      pullRequestDetailIsCurrent({ ...PR, syncedAt: '2026-11-10T10:05:00.000Z' }, DETAIL),
+    ).toBe(false)
+    expect(pullRequestDetailIsCurrent(PR, undefined)).toBe(false)
+    expect(cacheState(state).pullRequestDetails).toEqual({ [pullRequestDetailKey(PR)]: DETAIL })
+    expect(cacheState(applyEvent(state, listed())).pullRequestDetails).toEqual({})
+  })
 })

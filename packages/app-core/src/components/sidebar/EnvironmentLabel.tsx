@@ -1,5 +1,7 @@
 import { HardDrivesIcon } from '@phosphor-icons/react'
+import type { EnvironmentDistro, EnvironmentPlatform } from '@openmanager/protocol'
 import { cn } from '../../lib/utils'
+import { EnvironmentPlatformIcon, environmentOsName } from '../ui/EnvironmentPlatformIcon'
 import { Tooltip } from '../ui/Tooltip'
 
 /**
@@ -10,17 +12,21 @@ import { Tooltip } from '../ui/Tooltip'
 export function EnvironmentLabel({
   label,
   platform,
+  distro,
   className,
 }: {
   label: string
   /**
-   * The kind of machine, as read ("WSL"). Shown after the name, so a Windows
-   * machine and a WSL distro on it, which share a host name, read apart.
+   * The kind of machine. Its logo follows the name, so a Windows machine and
+   * a WSL distro on it, which share a host name, read apart.
    */
-  platform?: string
+  platform?: EnvironmentPlatform
+  /** Its Linux distribution, whose logo then stands in for Tux. */
+  distro?: EnvironmentDistro
   className?: string
 }) {
-  const named = platform ? `${label} (${platform})` : label
+  const osName = environmentOsName(platform, distro)
+  const named = osName ? `${label} (${osName})` : label
   // The label is not a tab stop, so the tooltip is only a pointer nicety: the
   // visually hidden prefix carries the same explanation for assistive tech.
   return (
@@ -31,16 +37,15 @@ export function EnvironmentLabel({
           className,
         )}
       >
-        <HardDrivesIcon weight="light" aria-hidden className="h-3 w-3 shrink-0" />
+        <EnvironmentPlatformIcon
+          platform={platform}
+          distro={distro}
+          aria-hidden
+          fallback={<HardDrivesIcon weight="light" aria-hidden className="h-3 w-3 shrink-0" />}
+        />
         <span className="sr-only">Sessions run on </span>
         <span className="truncate">{label}</span>
-        {platform ? (
-          <span className="shrink-0 rounded bg-[var(--basis-surface-hover)] px-1 text-[0.9em] leading-tight">
-            <span className="sr-only"> (</span>
-            {platform}
-            <span className="sr-only">)</span>
-          </span>
-        ) : null}
+        {osName ? <span className="sr-only"> ({osName})</span> : null}
       </span>
     </Tooltip>
   )
