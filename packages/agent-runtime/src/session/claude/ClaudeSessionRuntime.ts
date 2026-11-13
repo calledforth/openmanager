@@ -249,6 +249,9 @@ export class ClaudeSessionRuntime implements ManagedSessionRuntime {
    * whether each runs a subagent in the foreground. A steer reads it to choose
    * its priority (see `steer`), and moves those subagents to the background. */
   private readonly runningTools = new Map<string, { subagent: boolean }>()
+  /** Steers accepted but not yet with the CLI (subagents are being moved),
+   * by `steerId`. One taken back meanwhile is marked and never sent. */
+  private readonly preparingSteers = new Map<string, PendingSteer & { withdrawn: boolean }>()
   /** What the CLI's last `system/init` advertised. */
   private cliCapabilities = new Set<string>()
   /** Every background task the CLI last reported as live. */
@@ -1014,7 +1017,17 @@ export class ClaudeSessionRuntime implements ManagedSessionRuntime {
     // Converted before anything is recorded, as a prompt is: an unsupported
     // block refuses the steer instead of leaving it pending forever.
     const content = claudePromptContent(args.prompt)
-    await this.backgroundForegroundSubagents()
+    // The host shows the message as waiting from here on, so it may be taken
+    // back (send now) before it reaches the CLI.
+    const preparing = { steerId: args.steerId, turnId: turn.id, withdrawn: false }
+    this.preparingSteers.set(args.steerId, preparing)
+    try {
+      await this.backgroundForegroundSubagents()
+    } finally {
+      this.preparingSteers.delete(args.steerId)
+    }
+    // Taken back meanwhile: `withdrawSteer` has already said so.
+    if (preparing.withdrawn) return
     // The turn can end while the CLI answers. A steer pushed then would start
     // a turn nobody tracks as this message's; refused, the host runs it as
     // the next turn instead.
@@ -1092,6 +1105,13 @@ export class ClaudeSessionRuntime implements ManagedSessionRuntime {
    * message. This is the first half of "send now": the host takes the steer
    * back, interrupts the turn, and runs the message as the next one. */
   async withdrawSteer(steerId: string): Promise<boolean> {
+    const preparing = this.preparingSteers.get(steerId)
+    if (preparing && !preparing.withdrawn) {
+      // Not with the CLI yet: it never will be.
+      preparing.withdrawn = true
+      this.emitSteer('steer_withdrawn', preparing)
+      return true
+    }
     let withdrawn = false
     await this.withdrawSteers({
       steerId,
@@ -1134,15 +1154,13 @@ export class ClaudeSessionRuntime implements ManagedSessionRuntime {
   }
 
   /** Keep `runningTools` in step with the main agent's own frames: a
-   * `tool_use` opens a call, its `tool_result` closes it, and a result ends
-   * them all. Frames from inside a subagent (`parent_tool_use_id`) are its
-   * own business: what holds a steer back is the main agent's calls. */
+   * `tool_use` opens a call and its `tool_result` closes it. The turn's own
+   * end clears them all (`completeTurn`, `failActiveTurn`); a result this
+   * runtime refuses as another turn's ends nothing. Frames from inside a
+   * subagent (`parent_tool_use_id`) are its own business: what holds a steer
+   * back is the main agent's calls. */
   private noteToolCalls(message: SDKMessage): void {
     if ((message as { parent_tool_use_id?: unknown }).parent_tool_use_id) return
-    if (message.type === 'result') {
-      this.runningTools.clear()
-      return
-    }
     if (message.type !== 'assistant' && message.type !== 'user') return
     const content = (message.message as { content?: unknown } | undefined)?.content
     if (!Array.isArray(content)) return
@@ -1152,8 +1170,7 @@ export class ClaudeSessionRuntime implements ManagedSessionRuntime {
         const id = string(block.id)
         const name = string(block.name) ?? ''
         if (!id) continue
-        const subagent =
-          SUBAGENT_TOOLS.has(name) && object(block.input).run_in_background !== true
+        const subagent = SUBAGENT_TOOLS.has(name) && object(block.input).run_in_background !== true
         this.runningTools.set(id, { subagent })
       } else if (message.type === 'user' && block.type === 'tool_result') {
         const id = string(block.tool_use_id)
@@ -1383,6 +1400,7 @@ export class ClaudeSessionRuntime implements ManagedSessionRuntime {
     if (!turn || turn.state !== 'dispatched') return
     turn.state = 'completing'
     this.turn = undefined
+    this.runningTools.clear()
     // A failed result is a failure, not a quiet completion.
     //
     // This used to emit `prompt_completed` and settle cleanly for every result
@@ -1495,6 +1513,7 @@ export class ClaudeSessionRuntime implements ManagedSessionRuntime {
     const turn = this.turn
     if (!turn) return
     this.turn = undefined
+    this.runningTools.clear()
     this.host.log({
       scope: 'claude',
       level: 'warn',

@@ -152,6 +152,36 @@ describe('ClaudeSessionRuntime steering', () => {
     expect(sdk.last.backgroundedTools).toEqual(['toolu_agent'])
   })
 
+  it('takes back a steer still waiting on a subagent move, and never sends it', async () => {
+    const { runtime, events, sdk } = await runningTurn()
+    sdk.last.emitAssistantBlocks([
+      { type: 'tool_use', id: 'toolu_agent', name: 'Agent', input: { prompt: 'Run' } },
+    ])
+    await new Promise((resolve) => setTimeout(resolve, 10))
+    let release!: () => void
+    sdk.last.backgroundGate = new Promise((resolve) => (release = resolve))
+    const steering = runtime.steer({ prompt: { text: 'Now', blocks: [] }, steerId: 's' })
+    await vi.waitFor(() => expect(sdk.last.backgroundedTools).toHaveLength(1))
+    await expect(runtime.withdrawSteer('s')).resolves.toBe(true)
+    expect(steerEvents(events)).toEqual([['steer_withdrawn', 's']])
+    release()
+    await steering
+    expect(sdk.last.prompts).toHaveLength(1)
+    expect(steerEvents(events)).toEqual([['steer_withdrawn', 's']])
+  })
+
+  it("keeps a running tool when another turn's result passes by", async () => {
+    const { runtime, sdk } = await runningTurn()
+    sdk.last.emitAssistantBlocks([
+      { type: 'tool_use', id: 'toolu_bash', name: 'Bash', input: { command: 'pnpm test' } },
+    ])
+    // A late result of some earlier turn: refused, it ends nothing here.
+    sdk.last.emitResult({ userMessageUuid: 'an-earlier-turn' })
+    await new Promise((resolve) => setTimeout(resolve, 10))
+    const sent = await steer(runtime, sdk.last, 'After the tests')
+    expect(sent.priority).toBe('next')
+  })
+
   it('refuses a steer whose turn ended while subagents were being moved', async () => {
     const { runtime, sdk, turn, first } = await runningTurn()
     sdk.last.emitAssistantBlocks([
