@@ -73,6 +73,11 @@ export interface ClaudeQuerySession extends AsyncIterable<SDKMessage> {
    * from its typings, hence optional: a build without it reads as "cannot take
    * a steer back", never as a crash. */
   cancelAsyncMessage?(messageUuid: string): Promise<boolean>
+  /** Move foreground work to the background, as Ctrl+B does: with
+   * `toolUseId`, only the task that `tool_use` started. Its call returns at
+   * once ("running in the background") and the task reports back later.
+   * Optional so an SDK without it reads as "cannot move", never as a crash. */
+  backgroundTasks?(toolUseId?: string): Promise<boolean>
   /** Synchronous and fire-and-forget: it *starts* the SDK's cleanup and
    * returns without awaiting it. See `ClaudeSessionRuntime.settleExit`. */
   close(): void

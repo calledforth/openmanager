@@ -41,6 +41,9 @@ function boot(database: DatabaseSync, published: EventEnvelope[]) {
       .mockReturnValue(new Promise(() => undefined)),
     cancel: vi.fn().mockResolvedValue(undefined),
     steer: vi.fn().mockResolvedValue(undefined),
+    withdrawSteer: vi
+      .fn<(args: { steerId: string }) => Promise<boolean>>()
+      .mockResolvedValue(false),
   }
   const settings = { current: { modelId: 'claude-sonnet-5' } as Record<string, unknown> }
   const service = createThreadService(
@@ -489,6 +492,68 @@ describe('steering', () => {
     chat.emit({ category: 'lifecycle', event: 'steer_withdrawn', data: { steerId: 's-1' } })
     expect((await chat.started(1)).prompt.text).toBe('Also lint')
     expect(chat.queue()).toMatchObject({ items: [{ queueItemId: 'q-2' }], pausedBy: null })
+  })
+
+  it('sends a steer now: takes it back, stops the turn, and runs it ahead of the queue', async () => {
+    const chat = await setup()
+    const sent = chat.send('Build it')
+    await chat.started(0)
+    chat.dispatch('turn.steer', {
+      ...chat.thread,
+      turnId: sent.turn.turnId,
+      text: 'Use pnpm instead',
+      commandId: 's-1',
+    })
+    chat.dispatch('queue.add', { ...chat.thread, text: 'Then docs', commandId: 'q-2' })
+    chat.runtime.withdrawSteer.mockImplementation(async ({ steerId }) => {
+      chat.emit({ category: 'lifecycle', event: 'steer_withdrawn', data: { steerId } })
+      return true
+    })
+    expect(
+      chat.dispatch('turn.steer.send_now', { ...chat.thread, queueItemId: 's-1' }),
+    ).toMatchObject({ type: 'response', payload: null })
+    await vi.waitFor(() => expect(chat.runtime.cancel).toHaveBeenCalledTimes(1))
+    expect(chat.runtime.withdrawSteer).toHaveBeenCalledWith(
+      expect.objectContaining({ steerId: 's-1' }),
+    )
+    await vi.waitFor(() => expect(chat.state().turns[0]?.state).toBe('interrupted'))
+    expect((await chat.started(1)).prompt.text).toBe('Use pnpm instead')
+    expect(chat.queue()).toMatchObject({ items: [{ queueItemId: 'q-2' }], pausedBy: null })
+  })
+
+  it('leaves the turn alone when the provider already started the steer', async () => {
+    const chat = await setup()
+    const sent = chat.send('Build it')
+    await chat.started(0)
+    chat.dispatch('turn.steer', {
+      ...chat.thread,
+      turnId: sent.turn.turnId,
+      text: 'Use pnpm instead',
+      commandId: 's-1',
+    })
+    chat.runtime.withdrawSteer.mockResolvedValue(false)
+    expect(
+      chat.dispatch('turn.steer.send_now', { ...chat.thread, queueItemId: 's-1' }),
+    ).toMatchObject({ type: 'response' })
+    await vi.waitFor(() => expect(chat.runtime.withdrawSteer).toHaveBeenCalledTimes(1))
+    await Promise.resolve()
+    await Promise.resolve()
+    expect(chat.runtime.cancel).not.toHaveBeenCalled()
+    expect(chat.state().turns[0]?.state).toBe('running')
+  })
+
+  it('refuses to send now a message that is not with the agent', async () => {
+    const chat = await setup()
+    chat.send('Build it')
+    await chat.started(0)
+    chat.dispatch('queue.add', { ...chat.thread, text: 'Then docs', commandId: 'q-2' })
+    expect(
+      chat.dispatch('turn.steer.send_now', { ...chat.thread, queueItemId: 'q-2' }),
+    ).toMatchObject({ type: 'error', error: { code: 'conflict' } })
+    expect(
+      chat.dispatch('turn.steer.send_now', { ...chat.thread, queueItemId: 'gone' }),
+    ).toMatchObject({ type: 'error', error: { code: 'conflict' } })
+    expect(chat.runtime.withdrawSteer).not.toHaveBeenCalled()
   })
 
   it('runs steers given back ahead of messages that were only queued, in order', async () => {

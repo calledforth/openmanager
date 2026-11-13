@@ -1,5 +1,6 @@
 import { useState } from 'react'
-import { ArrowsOutIcon, ImageBrokenIcon } from '@phosphor-icons/react'
+import { motion, useReducedMotion } from 'motion/react'
+import { ArrowsOutIcon, ArrowUpIcon, CircleNotchIcon, ImageBrokenIcon } from '@phosphor-icons/react'
 import type { StreamMessagePart } from '@openmanager/shared/lib/remote-stream-parts'
 import { cn } from '../../lib/utils'
 import type { ArtifactSource, OptimisticImage } from '../../lib/attachments'
@@ -7,6 +8,7 @@ import { partArtifact, useArtifactPreview } from '../../lib/artifact-preview'
 import { useEnvironmentAvailability } from '../../providers/environment-availability'
 import { Markdown } from '../markdown/Markdown'
 import { ImageViewer } from '../parts/GeneratedImagePart'
+import { Tooltip } from '../ui/Tooltip'
 import { CopyMessageButton } from './CopyMessageButton'
 import { chatUserInner, chatUserMessageShell } from './userMessageStyles'
 
@@ -60,6 +62,72 @@ function ImageThumbnail({ image, onPreview }: { image: BubbleImage; onPreview: (
   )
 }
 
+/**
+ * Under a steered message the agent has not read yet: what it waits for, and
+ * a way to stop waiting. It fades in after a beat, so a steer the agent takes
+ * at once reads as a plain send rather than flashing a status.
+ */
+function SteerStatus({
+  steer,
+  onSendNow,
+}: {
+  steer: 'waiting' | 'next'
+  onSendNow?: () => Promise<void>
+}) {
+  const reduceMotion = useReducedMotion()
+  const [sending, setSending] = useState(false)
+  const [failure, setFailure] = useState<string | null>(null)
+  const sendNow = () => {
+    if (!onSendNow) return
+    setFailure(null)
+    setSending(true)
+    onSendNow().catch((error: unknown) => {
+      setFailure(error instanceof Error && error.message ? error.message : 'Couldn’t send it now.')
+      setSending(false)
+    })
+  }
+  return (
+    <motion.div
+      initial={reduceMotion ? false : { opacity: 0 }}
+      animate={{ opacity: 1 }}
+      transition={{ delay: reduceMotion ? 0 : 0.4, duration: 0.18 }}
+      className="mt-1 flex flex-col items-end"
+    >
+      <div className="flex h-6 items-center gap-2">
+        <span
+          className="todo-progress-loader shrink-0 text-[var(--basis-text-muted)]"
+          aria-hidden="true"
+        />
+        <span className="text-11-regular leading-none text-[var(--basis-text-muted)]">
+          {steer === 'waiting' ? 'Waiting for the current step' : 'Sending next'}
+        </span>
+        {steer === 'waiting' && onSendNow ? (
+          <Tooltip content="Stop the current step and send this now">
+            <button
+              type="button"
+              onClick={sendNow}
+              disabled={sending}
+              className="flex h-5 shrink-0 cursor-pointer items-center gap-1 rounded-full bg-hover px-2 text-11-regular leading-none text-[var(--basis-text)] transition-colors duration-100 hover:bg-active focus-visible:outline focus-visible:outline-2 focus-visible:outline-ring disabled:cursor-default disabled:opacity-60"
+            >
+              {sending ? (
+                <CircleNotchIcon className="h-3 w-3 animate-spin" aria-hidden="true" />
+              ) : (
+                <ArrowUpIcon className="h-3 w-3" weight="bold" aria-hidden="true" />
+              )}
+              Send now
+            </button>
+          </Tooltip>
+        ) : null}
+      </div>
+      {failure ? (
+        <p role="alert" className="text-11-regular leading-4 text-red-400">
+          {failure}
+        </p>
+      ) : null}
+    </motion.div>
+  )
+}
+
 export function UserMessage({
   content,
   parts,
@@ -67,6 +135,8 @@ export function UserMessage({
   sendError,
   sendWaiting = false,
   onRetry,
+  steer,
+  onSendNow,
 }: {
   content: string
   parts?: MessagePart[]
@@ -76,6 +146,10 @@ export function UserMessage({
   sendWaiting?: boolean
   /** Send this message again. Omitted when the host cannot retry it. */
   onRetry?: () => void
+  /** A steered message the agent has not read yet; see `UIMessage.steer`. */
+  steer?: 'waiting' | 'next'
+  /** Stop the agent's current step and send it now. Omitted when the host cannot. */
+  onSendNow?: () => Promise<void>
 }) {
   const [viewing, setViewing] = useState<number | null>(null)
   const environmentName = useEnvironmentAvailability()?.name
@@ -98,7 +172,15 @@ export function UserMessage({
       }))
   return (
     <div className="group/user flex w-full flex-col items-end pt-6 pb-1">
-      <div className={chatUserMessageShell}>
+      {/* Dimmed until the agent reads it; the same bubble then comes up to
+          full strength in place. */}
+      <div
+        className={cn(
+          chatUserMessageShell,
+          'transition-opacity duration-200 ease-out',
+          steer && 'opacity-55',
+        )}
+      >
         <div className={chatUserInner}>
           {images.length > 0 && (
             <div className="mb-2 flex flex-wrap gap-1.5">
@@ -137,7 +219,9 @@ export function UserMessage({
         </div>
       </div>
       {/* Under the bubble's right edge, where the eye finishes reading it. */}
-      {content || sendWaiting ? (
+      {steer ? (
+        <SteerStatus steer={steer} onSendNow={onSendNow} />
+      ) : content || sendWaiting ? (
         <div className="mt-1 flex items-center justify-end gap-1.5">
           {sendWaiting ? (
             <span

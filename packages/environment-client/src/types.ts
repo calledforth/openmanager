@@ -198,6 +198,15 @@ export interface ThreadState {
    * for this page's lifetime; absent from state that predates it.
    */
   confirmedEchoes?: Readonly<Record<string, string>>
+  /**
+   * The queued messages that were steered into a turn, in queue order: shown
+   * in the conversation, not with the queue, from the moment the environment
+   * holds one for the agent until it runs, including after the agent gave it
+   * back to run next. Derived from what the environment stated
+   * (`thread.queue.updated`, the thread snapshot); client-side only, and
+   * absent when there are none.
+   */
+  steeredQueueIds?: readonly string[]
   hydration: HydrationState
 }
 
@@ -512,6 +521,11 @@ export interface RemoveQueuedMessageInput extends ThreadTarget {
   queueItemId: string
 }
 
+/** A steered message, still `steering`, to send without waiting for the agent's step. */
+export interface SendSteerNowInput extends ThreadTarget {
+  queueItemId: string
+}
+
 /** How a steer was taken: waiting for the agent's next step, or queued instead. */
 export interface SteerTurnResult {
   queueItemId: string
@@ -635,6 +649,13 @@ export interface EnvironmentCommands {
    * ended or its provider cannot steer; the answer says which.
    */
   steerTurn(input: SteerTurnInput): Promise<SteerTurnResult>
+  /**
+   * Send a `steering` message without waiting for the agent's current step:
+   * the environment stops the turn, as Stop does, and runs the message next.
+   * One the provider already started simply arrives. Check
+   * `supports('sendSteerNow')` before offering it.
+   */
+  sendSteerNow(input: SendSteerNowInput): Promise<void>
   respondToInteraction(input: RespondToInteractionInput): Promise<void>
   getProviderCatalog(): Promise<ProviderCatalogEntry[]>
   /** Re-checks one provider now; resolves with its entry once the probe settles. */

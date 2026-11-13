@@ -28,6 +28,13 @@ export interface UIMessage {
   sendWaiting?: boolean
   /** The id of the send this row echoes; retrying with it reuses the row. */
   commandId?: string
+  /**
+   * A steered message the agent has not read yet, shown where it will land:
+   * `waiting` while the agent finishes its current step (it can be sent now),
+   * `next` once given back to run as the next turn. Its `commandId` is the
+   * queued message's id. Gone once it arrives, when the row is the message.
+   */
+  steer?: 'waiting' | 'next'
 }
 
 /** A send the environment refused: the reason it gave. */
@@ -57,6 +64,12 @@ export interface ThreadFollowUps {
   removeQueued: (queueItemId: string) => Promise<void>
   /** Let a paused queue run again. */
   resume: () => Promise<void>
+  /**
+   * Send a steered message without waiting for the agent's current step: the
+   * step is stopped and the message runs next. Absent when the environment
+   * cannot.
+   */
+  sendSteerNow?: (queueItemId: string) => Promise<void>
 }
 
 /** The persisted record of the thread on screen, plus whether this client drives it. */

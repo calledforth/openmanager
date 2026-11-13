@@ -3,9 +3,9 @@ import { useDeviceStorage, type DeviceStorage } from '../../providers/device-hos
 
 /**
  * What a message sent while a turn runs does. `queue`: it waits, and runs as
- * the next turn once this one completes. `steer`: it joins the running turn at
- * the agent's next step. Enter does the one chosen here, and the composer
- * offers the other beside it.
+ * the next turn once this one completes. `steer`: it cuts in once the agent's
+ * current step ends (a reply stops at once), and the agent answers it. Enter
+ * does the one chosen here, and the composer offers the other beside it.
  */
 export type FollowUpAction = 'queue' | 'steer'
 

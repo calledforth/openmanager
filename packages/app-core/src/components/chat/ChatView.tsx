@@ -75,6 +75,7 @@ type TimelineMessage = Pick<
   | 'sendError'
   | 'sendWaiting'
   | 'commandId'
+  | 'steer'
 >
 
 /**
@@ -108,6 +109,7 @@ export function ChatView() {
     history,
     acknowledgeOptimisticMessage,
     retrySend,
+    followUps,
   } = useActiveThreadState()
   const availability = useEnvironmentAvailability()
   const environmentName = availability?.name
@@ -182,6 +184,7 @@ export function ChatView() {
           onAtEndChange={handleAtEndChange}
           onPersistedContentReady={acknowledgeOptimisticMessage}
           onRetrySend={sendHeld ? undefined : retrySend}
+          onSendSteerNow={followUps?.sendSteerNow}
         />
       </div>
       <ScrollToEndButton
@@ -205,6 +208,8 @@ interface TimelineProps {
   onAtEndChange: (atEnd: boolean) => void
   onPersistedContentReady: (messageId: string) => void
   onRetrySend?: (commandId: string) => Promise<void>
+  /** Send a steered message without waiting for the agent's step, by its queue id. */
+  onSendSteerNow?: (queueItemId: string) => Promise<void>
 }
 
 function ConversationTimeline({
@@ -282,6 +287,7 @@ function MessageTimeline({
   onHydrated,
   onPersistedContentReady,
   onRetrySend,
+  onSendSteerNow,
 }: TimelineProps & { hidden: boolean; onHydrated: () => void }) {
   const [readyMessageIds, setReadyMessageIds] = useState<Set<string>>(() => new Set())
   const didReportHydratedRef = useRef(false)
@@ -691,6 +697,7 @@ function MessageTimeline({
                 onReady={handleMessageReady}
                 onPersistedContentReady={onPersistedContentReady}
                 onRetrySend={onRetrySend}
+                onSendSteerNow={onSendSteerNow}
                 animate={!initialMessageIdsRef.current.has(rowKeyOf(message))}
               />
             </div>
@@ -805,6 +812,7 @@ function MessageRow({
   onReady,
   onPersistedContentReady,
   onRetrySend,
+  onSendSteerNow,
   animate,
 }: {
   message: TimelineMessage
@@ -812,14 +820,19 @@ function MessageRow({
   onReady: (messageId: string) => void
   onPersistedContentReady: (messageId: string) => void
   onRetrySend?: (commandId: string) => Promise<void>
+  onSendSteerNow?: (queueItemId: string) => Promise<void>
   animate: boolean
 }) {
   // Resolved here rather than inside the memoized row: a row that reads the
   // active-thread context re-renders on every streamed token.
-  const { commandId, sendError } = message
+  const { commandId, sendError, steer } = message
   const retry = useCallback(() => {
     if (commandId && onRetrySend) void onRetrySend(commandId)
   }, [commandId, onRetrySend])
+  const sendNow = useCallback(
+    () => (commandId && onSendSteerNow ? onSendSteerNow(commandId) : Promise.resolve()),
+    [commandId, onSendSteerNow],
+  )
   return (
     <div className={cn(animate && 'chat-animate-slide-up')}>
       <ResolvedMessage
@@ -832,6 +845,8 @@ function MessageRow({
         sendError={message.sendError}
         sendWaiting={message.sendWaiting}
         onRetry={sendError && commandId && onRetrySend ? retry : undefined}
+        steer={steer}
+        onSendNow={steer === 'waiting' && commandId && onSendSteerNow ? sendNow : undefined}
         isDriven={isDriven}
         onReady={onReady}
         onPersistedContentReady={onPersistedContentReady}
@@ -850,6 +865,8 @@ const ResolvedMessage = memo(function ResolvedMessage(props: {
   sendError?: string
   sendWaiting?: boolean
   onRetry?: () => void
+  steer?: TimelineMessage['steer']
+  onSendNow?: () => Promise<void>
   isDriven: boolean
   onReady?: (messageId: string) => void
   onPersistedContentReady?: (messageId: string) => void
@@ -929,6 +946,8 @@ const ResolvedMessage = memo(function ResolvedMessage(props: {
         sendError={props.sendError}
         sendWaiting={props.sendWaiting}
         onRetry={props.onRetry}
+        steer={props.steer}
+        onSendNow={props.onSendNow}
       />
     )
   }

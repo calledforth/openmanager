@@ -1785,6 +1785,9 @@ function EnvironmentActiveThreadProvider({ children }: { children: ReactNode }) 
       [client],
     ),
   )
+  const sendsSteerNow = useEnvironmentState(
+    useCallback(() => client.supports('sendSteerNow'), [client]),
+  )
   // What could not be sent, with the id it went under: the same message sent
   // again reuses it, so one that did land is found rather than held twice.
   const unsentFollowUp = useRef<{ key: string; commandId: string } | null>(null)
@@ -1853,9 +1856,17 @@ function EnvironmentActiveThreadProvider({ children }: { children: ReactNode }) 
               const current = targetRef.current
               if (current) await commands.resumeQueue(current)
             },
+            ...(sendsSteerNow
+              ? {
+                  sendSteerNow: async (queueItemId: string) => {
+                    const current = targetRef.current
+                    if (current) await commands.sendSteerNow({ ...current, queueItemId })
+                  },
+                }
+              : {}),
           }
         : undefined,
-    [busy, canSteer, commands, followUp, queues],
+    [busy, canSteer, commands, followUp, queues, sendsSteerNow],
   )
 
   // An answer (a question's, a plan's, a permission's) is a send too: held while

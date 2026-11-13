@@ -9,6 +9,7 @@ import {
   type EnvironmentClient,
   type EnvironmentState,
   type OutboxEntry,
+  type QueuedMessage,
   type ReasoningEntry,
   type ThreadState,
   type ToolState,
@@ -121,6 +122,8 @@ const toolParts = new WeakMap<ToolState, MessagePart>()
 const textPartsByMessage = new WeakMap<Message, MessagePart[]>()
 /** The row of a send still waiting on the environment, kept while it stays where it is. */
 const outboxRows = new WeakMap<OutboxEntry, UIMessage>()
+/** The row each steered message last had, kept while it says the same thing. */
+const steerRows = new WeakMap<QueuedMessage, UIMessage>()
 
 function reasoningPart(entry: ReasoningEntry, settled: boolean): MessagePart {
   const cached = reasoningParts.get(entry)
@@ -513,6 +516,42 @@ export function projectThread(
       messages.push(entry.message)
     }
     sequence += projection.entries.length
+  }
+
+  // Steered messages the agent has not read yet come next, where they will
+  // land: after what the running turn has said so far.
+  const steered = thread.steeredQueueIds
+  for (const item of steered ? thread.queue.items : []) {
+    if (!steered!.includes(item.queueItemId)) continue
+    const steer = item.delivery === 'steering' ? 'waiting' : 'next'
+    const held = steerRows.get(item)
+    if (held?.sequenceNum === sequence && held.steer === steer) {
+      messages.push(held)
+    } else {
+      const row: UIMessage = {
+        // The key the message keeps once it arrives (`confirmedEchoes`).
+        externalId: sendRowKey(item.queueItemId),
+        role: 'user',
+        isFinal: true,
+        sequenceNum: sequence,
+        optimisticContent: item.text,
+        ...(item.artifactIds?.length
+          ? {
+              optimisticAttachments: item.artifactIds.map((artifactId, index) => ({
+                id: artifactId,
+                name: `image-${index + 1}`,
+                artifact: { sessionId: thread.thread.sessionId, artifactId },
+              })),
+            }
+          : {}),
+        isOptimistic: true,
+        commandId: item.queueItemId,
+        steer,
+      }
+      steerRows.set(item, row)
+      messages.push(row)
+    }
+    sequence += 1
   }
 
   // Sends the environment has not confirmed yet close the timeline: they are
