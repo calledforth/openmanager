@@ -184,9 +184,7 @@ export class FakeClaudeQuery implements ClaudeQuerySession {
 
   /** The CLI's roster of live background tasks, as `background_tasks_changed`
    * reports it: every task still running, replacing whatever came before. */
-  emitBackgroundTasks(
-    tasks: { task_id: string; task_type: string; description: string }[],
-  ): void {
+  emitBackgroundTasks(tasks: { task_id: string; task_type: string; description: string }[]): void {
     this.emitSystem('background_tasks_changed', this.sessionId, { tasks })
   }
 
@@ -214,7 +212,11 @@ export class FakeClaudeQuery implements ClaudeQuerySession {
   }
 
   emitTextBlock(index: number, chunks: string[]): void {
-    this.emitStream({ type: 'content_block_start', index, content_block: { type: 'text', text: '' } })
+    this.emitStream({
+      type: 'content_block_start',
+      index,
+      content_block: { type: 'text', text: '' },
+    })
     for (const text of chunks)
       this.emitStream({ type: 'content_block_delta', index, delta: { type: 'text_delta', text } })
     this.emitStream({ type: 'content_block_stop', index })
@@ -382,6 +384,20 @@ export class FakeClaudeQuery implements ClaudeQuerySession {
     return true
   }
 
+  /** Every `backgroundTasks` call, by the `tool_use` id it named. */
+  readonly backgroundedTools: (string | undefined)[] = []
+  /** When set, `backgroundTasks` waits for this before it answers. */
+  backgroundGate: Promise<void> | undefined
+
+  /** Ctrl+B, as the CLI answers it for one subagent call: the call returns
+   * at once with a note that the agent runs in the background. */
+  async backgroundTasks(toolUseId?: string): Promise<boolean> {
+    this.backgroundedTools.push(toolUseId)
+    await this.backgroundGate
+    if (toolUseId) this.emitToolResult(toolUseId, 'Async agent launched successfully.')
+    return true
+  }
+
   /** One `command_lifecycle` frame (`msg_lifecycle_v1`). */
   emitLifecycle(uuid: string, state: 'queued' | 'started' | 'completed' | 'cancelled'): void {
     if (state !== 'queued') this.heldCommands.delete(uuid)
@@ -428,12 +444,9 @@ export class FakeClaudeQuery implements ClaudeQuerySession {
     rate_limits: { five_hour: { utilization: 37, resets_at: '2026-11-03T14:20:00Z' } },
   }
   get usage_EXPERIMENTAL_MAY_CHANGE_DO_NOT_RELY_ON_THIS_API_YET():
-    | (() => Promise<SDKControlGetUsageResponse>)
-    | undefined {
+    (() => Promise<SDKControlGetUsageResponse>) | undefined {
     const response = this.usageResponse
-    return response
-      ? async () => response as unknown as SDKControlGetUsageResponse
-      : undefined
+    return response ? async () => response as unknown as SDKControlGetUsageResponse : undefined
   }
   async stopTask(taskId: string): Promise<void> {
     this.stoppedTasks.push(taskId)

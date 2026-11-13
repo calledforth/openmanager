@@ -29,6 +29,7 @@ const commands: EnvironmentCommands = {
   removeQueuedMessage: reject('removeQueuedMessage'),
   resumeQueue: reject('resumeQueue'),
   steerTurn: reject('steerTurn'),
+  sendSteerNow: reject('sendSteerNow'),
   respondToInteraction: reject('respondToInteraction'),
   getProviderCatalog: reject('getProviderCatalog'),
   probeProvider: reject('probeProvider'),

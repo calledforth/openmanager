@@ -7,11 +7,13 @@ import { ClaudeSessionRuntime } from './ClaudeSessionRuntime.js'
 import { FakeClaudeSdk, type FakeClaudeQuery } from './test-sdk.js'
 
 /**
- * Steering, as the CLI does it (probed on Agent SDK 0.3.220): an async user
- * message with `priority: 'next'` is queued (`command_lifecycle: queued`),
- * then `started` at the running turn's next tool boundary, where it folds into
- * that turn. A message still queued when the turn ends is started as a turn of
- * its own, or dropped by `cancel_async_message` (`cancelled`).
+ * Steering, as the CLI does it (probed on Agent SDK 0.3.220 and 0.3.323): an
+ * async user message is queued (`command_lifecycle: queued`). With
+ * `priority: 'now'`, sent while the agent writes, the CLI cuts the reply off
+ * and `started`s the message as a turn of its own a few ms after that turn's
+ * result. With `'next'`, sent while a tool runs, it is `started` inside the
+ * turn once the tool returns (the fold). Until then `cancel_async_message`
+ * can drop it (`cancelled`).
  */
 function build() {
   const events: BackendEvent[] = []
@@ -60,25 +62,156 @@ async function steer(runtime: ClaudeSessionRuntime, query: FakeClaudeQuery, text
 }
 
 describe('ClaudeSessionRuntime steering', () => {
-  it('sends a steer as a next-priority message and reports the fold', async () => {
+  it('sends a steer as a now-priority message that starts a turn of its own', async () => {
     const { runtime, events, sdk, turn, first } = await runningTurn()
+    sdk.last.emitText('Writing a long reply')
     const sent = await steer(runtime, sdk.last, 'Skip the slow ones')
-    expect(sent.priority).toBe('next')
+    expect(sent.priority).toBe('now')
     expect(sent.message.content).toEqual('Skip the slow ones')
     expect(steerEvents(events)).toEqual([])
 
-    // The next tool boundary: the CLI takes it into the running turn.
+    // The CLI cuts the reply off and dequeues the steer for its own turn
+    // before anything could take it back.
+    sdk.last.heldCommands.delete(sent.uuid!)
+    sdk.last.emitResult({ userMessageUuid: first, terminalReason: 'aborted_streaming' })
+    await turn
     sdk.last.emitLifecycle(sent.uuid!, 'started')
     await vi.waitFor(() =>
-      expect(steerEvents(events)).toEqual([['steer_delivered', 'steer:Skip the slow ones']]),
+      expect(steerEvents(events)).toEqual([['steer_turn_started', 'steer:Skip the slow ones']]),
     )
+    expect(runtime.busy).toBe(true)
     sdk.last.emitText('Skipping them.')
+    sdk.last.emitResult({ userMessageUuid: sent.uuid! })
+    await vi.waitFor(() => expect(runtime.busy).toBe(false))
+    expect(events.filter((event) => event.event === 'prompt_completed')).toHaveLength(2)
+  })
+
+  it('reports a fold when the CLI takes a steer inside the turn after all', async () => {
+    const { runtime, events, sdk, turn, first } = await runningTurn()
+    const sent = await steer(runtime, sdk.last, 'Fold me')
+    sdk.last.emitLifecycle(sent.uuid!, 'started')
+    await vi.waitFor(() =>
+      expect(steerEvents(events)).toEqual([['steer_delivered', 'steer:Fold me']]),
+    )
     sdk.last.emitResult({ userMessageUuid: first })
     await turn
-    // One turn, one result: nothing was withdrawn, nothing ran on its own.
-    expect(steerEvents(events)).toEqual([['steer_delivered', 'steer:Skip the slow ones']])
     expect(sdk.last.cancelledCommands).toEqual([])
-    expect(runtime.busy).toBe(false)
+  })
+
+  it('waits for a running tool with next, and cuts a reply off with now', async () => {
+    const { runtime, sdk } = await runningTurn()
+    sdk.last.emitAssistantBlocks([
+      { type: 'tool_use', id: 'toolu_bash', name: 'Bash', input: { command: 'pnpm test' } },
+    ])
+    await new Promise((resolve) => setTimeout(resolve, 10))
+    const during = await steer(runtime, sdk.last, 'After the tests')
+    // A held `now` would make the CLI ignore Stop until the command ends.
+    expect(during.priority).toBe('next')
+
+    sdk.last.emitToolResult('toolu_bash', 'ok')
+    sdk.last.emitText('All green, and now')
+    await new Promise((resolve) => setTimeout(resolve, 10))
+    const writing = await steer(runtime, sdk.last, 'Shorter please')
+    expect(writing.priority).toBe('now')
+  })
+
+  it('moves foreground subagents to the background before it steers', async () => {
+    const { runtime, sdk } = await runningTurn()
+    sdk.last.emitAssistantBlocks([
+      { type: 'tool_use', id: 'toolu_agent', name: 'Agent', input: { prompt: 'Run the suite' } },
+      {
+        type: 'tool_use',
+        id: 'toolu_bg_agent',
+        name: 'Agent',
+        input: { prompt: 'Watch', run_in_background: true },
+      },
+    ])
+    // The background one returns at once.
+    sdk.last.emitToolResult('toolu_bg_agent', 'Async agent launched successfully.')
+    // A subagent's own subagent is its business, not the main agent's.
+    sdk.last.emitAssistantBlocks(
+      [{ type: 'tool_use', id: 'toolu_nested', name: 'Agent', input: { prompt: 'x' } }],
+      'toolu_agent',
+    )
+    await new Promise((resolve) => setTimeout(resolve, 10))
+    let release!: () => void
+    sdk.last.backgroundGate = new Promise((resolve) => (release = resolve))
+    const steering = runtime.steer({ prompt: { text: 'Stop that', blocks: [] }, steerId: 's' })
+    await vi.waitFor(() => expect(sdk.last.backgroundedTools).toEqual(['toolu_agent']))
+    // Nothing goes to the CLI until the subagent is safe.
+    expect(sdk.last.prompts).toHaveLength(1)
+    release()
+    await steering
+    // Moved, nothing holds the message: it cuts in.
+    await vi.waitFor(() => expect(sdk.last.prompts.at(-1)?.priority).toBe('now'))
+
+    // Its call returned ("running in the background"): a second steer has
+    // nothing to move.
+    await new Promise((resolve) => setTimeout(resolve, 10))
+    await runtime.steer({ prompt: { text: 'And this', blocks: [] }, steerId: 's2' })
+    expect(sdk.last.backgroundedTools).toEqual(['toolu_agent'])
+  })
+
+  it('takes back a steer still waiting on a subagent move, and never sends it', async () => {
+    const { runtime, events, sdk } = await runningTurn()
+    sdk.last.emitAssistantBlocks([
+      { type: 'tool_use', id: 'toolu_agent', name: 'Agent', input: { prompt: 'Run' } },
+    ])
+    await new Promise((resolve) => setTimeout(resolve, 10))
+    let release!: () => void
+    sdk.last.backgroundGate = new Promise((resolve) => (release = resolve))
+    const steering = runtime.steer({ prompt: { text: 'Now', blocks: [] }, steerId: 's' })
+    await vi.waitFor(() => expect(sdk.last.backgroundedTools).toHaveLength(1))
+    await expect(runtime.withdrawSteer('s')).resolves.toBe(true)
+    expect(steerEvents(events)).toEqual([['steer_withdrawn', 's']])
+    release()
+    await steering
+    expect(sdk.last.prompts).toHaveLength(1)
+    expect(steerEvents(events)).toEqual([['steer_withdrawn', 's']])
+  })
+
+  it("keeps a running tool when another turn's result passes by", async () => {
+    const { runtime, sdk } = await runningTurn()
+    sdk.last.emitAssistantBlocks([
+      { type: 'tool_use', id: 'toolu_bash', name: 'Bash', input: { command: 'pnpm test' } },
+    ])
+    // A late result of some earlier turn: refused, it ends nothing here.
+    sdk.last.emitResult({ userMessageUuid: 'an-earlier-turn' })
+    await new Promise((resolve) => setTimeout(resolve, 10))
+    const sent = await steer(runtime, sdk.last, 'After the tests')
+    expect(sent.priority).toBe('next')
+  })
+
+  it('refuses a steer whose turn ended while subagents were being moved', async () => {
+    const { runtime, sdk, turn, first } = await runningTurn()
+    sdk.last.emitAssistantBlocks([
+      { type: 'tool_use', id: 'toolu_agent', name: 'Agent', input: { prompt: 'Run' } },
+    ])
+    await new Promise((resolve) => setTimeout(resolve, 10))
+    let release!: () => void
+    sdk.last.backgroundGate = new Promise((resolve) => (release = resolve))
+    const steering = runtime.steer({ prompt: { text: 'Late', blocks: [] }, steerId: 's' })
+    await vi.waitFor(() => expect(sdk.last.backgroundedTools).toHaveLength(1))
+    sdk.last.emitResult({ userMessageUuid: first })
+    await turn
+    release()
+    await expect(steering).rejects.toThrow(/ended before the steer was sent/)
+    expect(sdk.last.prompts).toHaveLength(1)
+  })
+
+  it('takes one steer back on request, and only while the CLI holds it', async () => {
+    const { runtime, events, sdk } = await runningTurn()
+    const kept = await steer(runtime, sdk.last, 'Keep')
+    const sent = await steer(runtime, sdk.last, 'Send now')
+    await expect(runtime.withdrawSteer('steer:Send now')).resolves.toBe(true)
+    expect(sdk.last.cancelledCommands).toEqual([sent.uuid])
+    expect(steerEvents(events)).toEqual([['steer_withdrawn', 'steer:Send now']])
+
+    // Already dequeued: it runs, so it is not the caller's to resend.
+    sdk.last.heldCommands.delete(kept.uuid!)
+    await expect(runtime.withdrawSteer('steer:Keep')).resolves.toBe(false)
+    await expect(runtime.withdrawSteer('steer:unknown')).resolves.toBe(false)
+    expect(steerEvents(events)).toEqual([['steer_withdrawn', 'steer:Send now']])
   })
 
   it('refuses a steer when no turn runs, and when the CLI cannot report lifecycles', async () => {

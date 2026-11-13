@@ -75,6 +75,74 @@ describe('thread queue state', () => {
     expect(selectThreadQueue(cached, THREAD.threadId)).toBe(EMPTY_THREAD_QUEUE)
   })
 
+  it('follows steered messages until they run, and gives each its row', () => {
+    const steering = { ...queued('s1', 'use pnpm'), delivery: 'steering' as const }
+    let state = applyEvent(
+      createInitialState(),
+      queueEvent({ items: [steering, queued('q1', 'later')], pausedBy: null }),
+    )
+    expect(state.threads[THREAD.threadId]?.steeredQueueIds).toEqual(['s1'])
+
+    // Given back to run next: still the steer it was, not a queued message.
+    state = applyEvent(
+      state,
+      queueEvent({ items: [queued('s1', 'use pnpm'), queued('q1', 'later')], pausedBy: null }),
+    )
+    expect(state.threads[THREAD.threadId]?.steeredQueueIds).toEqual(['s1'])
+
+    // Its turn starts, then it leaves the queue: the prompt keeps its row.
+    const userMessage = {
+      messageId: 'm-steer',
+      threadId: THREAD.threadId,
+      turnId: 'turn-steer',
+      role: 'user' as const,
+      content: [{ type: 'text' as const, text: 'use pnpm' }],
+    }
+    state = applyEvent(
+      state,
+      event({
+        name: 'turn.started',
+        scope: threadScope,
+        payload: {
+          turn: {
+            turnId: 'turn-steer',
+            threadId: THREAD.threadId,
+            state: 'running',
+            commandId: 's1',
+          },
+          userMessage,
+          commandId: 's1',
+        },
+      }),
+    )
+    expect(state.threads[THREAD.threadId]?.confirmedEchoes).toEqual({ 'm-steer': 's1' })
+    state = applyEvent(state, queueEvent({ items: [queued('q1', 'later')], pausedBy: null }))
+    expect(state.threads[THREAD.threadId]?.steeredQueueIds).toBeUndefined()
+
+    // One folded into a running turn arrives under its own id.
+    state = applyEvent(
+      state,
+      queueEvent({
+        items: [{ ...queued('s2', 'also lint'), delivery: 'steering' }],
+        pausedBy: null,
+      }),
+    )
+    state = applyEvent(
+      state,
+      event({
+        name: 'message.delta',
+        scope: threadScope,
+        payload: {
+          messageId: 's2',
+          turnId: 'turn-steer',
+          role: 'user',
+          content: { type: 'text', text: 'also lint' },
+        },
+      }),
+    )
+    expect(state.threads[THREAD.threadId]?.confirmedEchoes).toMatchObject({ s2: 's2' })
+  })
+
   it("names a turn's prompt by order, not a message steered in after it", () => {
     const prompt = {
       messageId: 'm-prompt',

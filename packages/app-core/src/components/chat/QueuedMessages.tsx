@@ -1,4 +1,4 @@
-import { useCallback, useState } from 'react'
+import { useCallback, useMemo, useState } from 'react'
 import { AnimatePresence, motion, useReducedMotion } from 'motion/react'
 import { CircleNotchIcon, ClockIcon, ImageIcon, XIcon } from '@phosphor-icons/react'
 import type { SessionConfigOption } from '@agentpack/contract'
@@ -204,7 +204,7 @@ export function QueuedMessagesView({
                       ) : null}
                       {steering ? (
                         <span className="shrink-0 pr-1.5 text-11-regular leading-none text-[var(--basis-text-faint)]">
-                          Joins at the next step
+                          After the current step
                         </span>
                       ) : (
                         <Tooltip content="Remove">
@@ -263,7 +263,25 @@ function EnvironmentQueuedMessages() {
   const threadId = useEnvironmentState(
     useCallback((state: EnvironmentState) => state.activeThreadId, []),
   )
-  const queue = useThreadQueue()
+  const fullQueue = useThreadQueue()
+  // Steered messages show in the conversation, where they will land.
+  const steered = useEnvironmentState(
+    useCallback(
+      (state: EnvironmentState) =>
+        state.activeThreadId ? state.threads[state.activeThreadId]?.steeredQueueIds : undefined,
+      [],
+    ),
+  )
+  const queue = useMemo(
+    () =>
+      steered
+        ? {
+            ...fullQueue,
+            items: fullQueue.items.filter((item) => !steered.includes(item.queueItemId)),
+          }
+        : fullQueue,
+    [fullQueue, steered],
+  )
   // What the composer is set to now, and the names to say a difference in.
   const composer = useEnvironmentState(
     useCallback(

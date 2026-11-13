@@ -718,7 +718,13 @@ describe('the shared application over the environment client', () => {
     const thread = (client: MockEnvironmentClient) => client.getState().threads[THREAD.threadId]!
     const followUpCalls = (client: MockEnvironmentClient) =>
       client.calls.filter((call) =>
-        ['queueMessage', 'steerTurn', 'removeQueuedMessage', 'resumeQueue'].includes(call.command),
+        [
+          'queueMessage',
+          'steerTurn',
+          'removeQueuedMessage',
+          'resumeQueue',
+          'sendSteerNow',
+        ].includes(call.command),
       )
 
     it('queues on Enter: the composer clears, a chip shows it, and no row is echoed', async () => {
@@ -803,8 +809,10 @@ describe('the shared application over the environment client', () => {
         command: 'steerTurn',
         input: { ...THREAD, turnId, text: 'use the other file' },
       })
-      expect(container.textContent).toContain('Joins at the next step')
-      // Already with the agent: nothing to take back.
+      // In the conversation, where it will land, waiting on the agent's step;
+      // not in the queue, and nothing to take back.
+      expect(container.textContent).toContain('Waiting for the current step')
+      expect(occurrences('use the other file')).toBe(1)
       expect(button('Remove “use the other file”')).toBeNull()
 
       await type('and then this')
@@ -815,11 +823,30 @@ describe('the shared application over the environment client', () => {
         input: { text: 'and then this' },
       })
 
-      // Taken into the turn: it shows in the transcript, after the agent's work so far.
+      // Taken into the turn: the same row is now the message.
       await act(() => client.deliverSteering(THREAD))
       await settle(client)
-      expect(container.textContent).not.toContain('Joins at the next step')
+      expect(container.textContent).not.toContain('Waiting for the current step')
       expect(occurrences('use the other file')).toBe(1)
+    })
+
+    it('sends a waiting steer now from its row in the conversation', async () => {
+      globalThis.localStorage.setItem('openmanager-enter-while-running', 'steer')
+      const { client, turnId } = await running(true, { holdSteering: true })
+      await type('use the other file')
+      await pressEnter()
+      await settle(client)
+      const queueItemId = thread(client).queue.items[0]!.queueItemId
+
+      await act(() => buttonWithText('Send now')!.click())
+      await settle(client)
+      expect(followUpCalls(client).at(-1)).toMatchObject({
+        command: 'sendSteerNow',
+        input: { ...THREAD, queueItemId },
+      })
+      expect(container.textContent).not.toContain('Waiting for the current step')
+      expect(occurrences('use the other file')).toBe(1)
+      expect(thread(client).turns.find((turn) => turn.turnId === turnId)).toBeDefined()
     })
 
     it('queues when the provider cannot steer, whatever this device chose', async () => {

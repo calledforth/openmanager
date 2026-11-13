@@ -1437,7 +1437,7 @@ export function MessageInputView(props: MessageInputViewProps) {
 
 const FOLLOW_UP: Record<FollowUpAction, { label: string; description: string }> = {
   queue: { label: 'Queue', description: 'Runs when this turn ends' },
-  steer: { label: 'Steer', description: 'Joins this turn at the next step' },
+  steer: { label: 'Steer', description: 'Cuts in once the current step ends' },
 }
 
 /** A tip naming the action and its keys, the way the model picker's does. */

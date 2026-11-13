@@ -30,6 +30,7 @@ import {
   DraftCommandSchemas,
 } from './drafts.js'
 import { SEARCH_MESSAGES_CAPABILITY, SearchCommandSchemas } from './search.js'
+import { STEER_SEND_NOW_CAPABILITY, SteerCommandSchemas } from './steer.js'
 import { PULL_REQUEST_GET_CAPABILITY, PullRequestCommandSchemas } from './pull-requests.js'
 // Type-only: pairing.ts imports AccessGrantSchema from here.
 import type { PairingCommandSchemas } from './pairing.js'
@@ -59,6 +60,7 @@ export type CommandName =
   | keyof typeof FilesystemCommandSchemas
   | keyof typeof DraftCommandSchemas
   | keyof typeof SearchCommandSchemas
+  | keyof typeof SteerCommandSchemas
   | keyof typeof PullRequestCommandSchemas
   | keyof typeof PairingCommandSchemas
   | keyof typeof ClientCommandSchemas
@@ -120,6 +122,8 @@ export const COMMAND_ACCESS = Object.freeze({
   'queue.remove': 'agent',
   'queue.resume': 'agent',
   'turn.steer': 'agent',
+  // Stops the agent's step for a message, as an interrupt does.
+  [STEER_SEND_NOW_CAPABILITY]: 'agent',
   // Ends work the agent is doing, exactly as an interrupt does.
   'session.background.stop': 'agent',
   'interaction.respond': 'agent',

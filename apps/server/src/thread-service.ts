@@ -4,6 +4,9 @@ import {
   ProofCommandSchemas,
   ProofEventSchemas,
   ProofResponseSchemas,
+  STEER_SEND_NOW_CAPABILITY,
+  SteerCommandSchemas,
+  SteerResponseSchemas,
   BACKGROUND_TASKS_MAX,
   shouldReplaceSessionTitle,
   TURN_FAILURE_MESSAGES,
@@ -251,6 +254,7 @@ type InteractionRuntime = Pick<AgentRuntime, 'ensureSession' | 'prompt' | 'cance
       | 'stopBackgroundTasks'
       | 'closeThread'
       | 'steer'
+      | 'withdrawSteer'
     >
   >
 type ThreadRecord = {
@@ -2576,6 +2580,75 @@ export function createThreadService(
   }
 
   /**
+   * Stop the running turn, as Stop does: the provider is asked to cancel, and
+   * once it has, the turn ends as interrupted and the queue runs on. A turn
+   * already being stopped is left to that stop.
+   */
+  const interruptTurn = (record: ThreadRecord, active: ActiveTurn) => {
+    if (active.interruptRequested) return
+    active.interruptRequested = true
+    record.cancellation = record.runtimeSession
+      .then((sessionId) => runtime.cancel({ ...route(record), sessionId }))
+      .then(() => {
+        if (record.activeTurn?.turn.turnId !== active.turn.turnId) return
+        active.turn.state = 'interrupted'
+        record.activeTurn = undefined
+        touch(record, resting(record))
+        emitInterrupted(record, active.turn.turnId)
+      })
+      .catch(() => {
+        if (record.activeTurn?.turn.turnId !== active.turn.turnId) return
+        // A prompt skipped during startup has no provider work left to stop.
+        if (!active.promptStarted) {
+          emitInterrupted(record, active.turn.turnId)
+          active.turn.state = 'interrupted'
+          record.activeTurn = undefined
+          touch(record, resting(record))
+          return
+        }
+        // A running prompt remains active so cancellation can be retried.
+        active.interruptRequested = false
+      })
+      .finally(() => {
+        record.cancellation = undefined
+        // The turn's end found the thread still busy with this stop;
+        // the next message runs now that it is not.
+        drain(record)
+      })
+  }
+
+  /**
+   * Send a steered message without waiting for the agent's step to end. The
+   * provider gives it back first: while it holds a steer, it ignores an
+   * interrupt. Given back, the message is first in line (`steer_withdrawn`);
+   * the turn it was for is then stopped as Stop stops it, and the message
+   * runs as the next turn. One the provider has already started is left to
+   * arrive as it is: stopping now would stop the message's own turn.
+   */
+  const sendSteerNow = (record: ThreadRecord, queueItemId: string) => {
+    const withdraw = runtime.withdrawSteer
+    if (!withdraw) return
+    const active = record.activeTurn
+    void record.runtimeSession
+      .then((sessionId) =>
+        withdraw.call(runtime, { ...route(record, sessionId), sessionId, steerId: queueItemId }),
+      )
+      .then((withdrawn) => {
+        if (!withdrawn || threads.get(record.thread.threadId) !== record) return
+        // The turn may have ended meanwhile; the message then runs as soon as
+        // it is back in line, with nothing left to stop.
+        if (active && record.activeTurn === active) interruptTurn(record, active)
+      })
+      .catch((error: unknown) => {
+        options.onQueueProblem?.('a steered message could not be sent early', {
+          sessionId: record.session.sessionId,
+          queueItemId,
+          reason: error instanceof Error ? error.message : String(error),
+        })
+      })
+  }
+
+  /**
    * Resolve the thread a queue command names, as a send does: access first,
    * then the record, loading a chat the rows hold after a restart.
    */
@@ -3600,6 +3673,42 @@ export function createThreadService(
         })
       }
 
+      if (command.name === STEER_SEND_NOW_CAPABILITY) {
+        const parsed = SteerCommandSchemas[STEER_SEND_NOW_CAPABILITY].safeParse(command)
+        if (!parsed.success) {
+          return errorResult(command.requestId, 'validation', 'Invalid steer request.')
+        }
+        const input = parsed.data.payload
+        const target = queueTarget(command.requestId, input, context)
+        if ('type' in target) return target
+        const providerRejection = rejectProvider(command.requestId, target.providerId)
+        if (providerRejection) return providerRejection
+        if (!runtime.withdrawSteer || !providers[target.providerId].capabilities.canCancelPrompt) {
+          return errorResult(
+            command.requestId,
+            'capability_missing',
+            'This provider cannot send a steered message early.',
+          )
+        }
+        const item = target.queue.items.find((entry) => entry.queueItemId === input.queueItemId)
+        if (!item) {
+          return errorResult(command.requestId, 'conflict', 'This message was already sent.')
+        }
+        if (item.delivery !== 'steering') {
+          return errorResult(
+            command.requestId,
+            'conflict',
+            'This message is not waiting for the agent.',
+          )
+        }
+        sendSteerNow(target, item.queueItemId)
+        return SteerResponseSchemas[STEER_SEND_NOW_CAPABILITY].parse({
+          type: 'response',
+          requestId: command.requestId,
+          payload: null,
+        })
+      }
+
       if (command.name === 'turn.interrupt') {
         const parsed = ProofCommandSchemas['turn.interrupt'].safeParse(command)
         if (!parsed.success) {
@@ -3673,37 +3782,7 @@ export function createThreadService(
         if (!active || active.turn.turnId !== parsed.data.payload.turnId) {
           return errorResult(command.requestId, 'conflict', 'Turn is not in progress.')
         }
-        if (!active.interruptRequested) {
-          active.interruptRequested = true
-          record.cancellation = record.runtimeSession
-            .then((sessionId) => runtime.cancel({ ...route(record), sessionId }))
-            .then(() => {
-              if (record.activeTurn?.turn.turnId !== active.turn.turnId) return
-              active.turn.state = 'interrupted'
-              record.activeTurn = undefined
-              touch(record, resting(record))
-              emitInterrupted(record, active.turn.turnId)
-            })
-            .catch(() => {
-              if (record.activeTurn?.turn.turnId !== active.turn.turnId) return
-              // A prompt skipped during startup has no provider work left to stop.
-              if (!active.promptStarted) {
-                emitInterrupted(record, active.turn.turnId)
-                active.turn.state = 'interrupted'
-                record.activeTurn = undefined
-                touch(record, resting(record))
-                return
-              }
-              // A running prompt remains active so cancellation can be retried.
-              active.interruptRequested = false
-            })
-            .finally(() => {
-              record.cancellation = undefined
-              // The turn's end found the thread still busy with this stop;
-              // the next message runs now that it is not.
-              drain(record)
-            })
-        }
+        interruptTurn(record, active)
         return ProofResponseSchemas['turn.interrupt'].parse({
           type: 'response',
           requestId: command.requestId,

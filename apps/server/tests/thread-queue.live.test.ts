@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it } from 'vitest'
-import { ProofResponseSchemas } from '@openmanager/protocol/node'
+import { ProofResponseSchemas, STEER_SEND_NOW_CAPABILITY } from '@openmanager/protocol/node'
 import {
   cleanupProtocolHosts,
   collectThreadRecords,
@@ -14,95 +14,175 @@ import {
 /**
  * Queue and steer against the real Claude Code CLI. Opt in with
  * `OPENMANAGER_LIVE_CLAUDE=1`; it spends a few cents of quota.
+ *
+ * A steer cuts a reply off at once and starts a turn of its own, but never
+ * cuts a shell command short: Send now and Stop do that. Both must end the
+ * turn at once, well inside the 15 s after which the runtime gives up on an
+ * ignored interrupt and is replaced (which would also end it).
+ * The CLI refuses `sleep N && …`, so slow commands here are `node -e` timers.
  */
+
+/** Well inside the runtime's interrupt grace (15 s). */
+const PROMPT_STOP_MS = 5_000
 const live = process.env.OPENMANAGER_LIVE_CLAUDE === '1'
 
 afterEach(async () => {
   await cleanupProtocolHosts()
 })
 
+/** A command that runs for `seconds`, then prints `label`. */
+const slowCommand = (seconds: number, label: string) =>
+  `node -e "setTimeout(() => console.log('${label}'), ${seconds * 1000})"`
+
+async function openChat() {
+  const host = await startProtocolHost()
+  const client = await connectProtocol(host)
+  await handshake(client)
+  const createId = client.command('session.create', {
+    environmentId: host.server.identity.environmentId,
+    workspaceId: host.workspaceId,
+    providerId: 'claude',
+  })
+  const createdRaw = await nextResponse(client, createId)
+  if ((createdRaw as { type: string }).type !== 'response')
+    throw new Error(`session.create refused: ${JSON.stringify(createdRaw)}`)
+  const { session, thread } = ProofResponseSchemas['session.create'].parse(createdRaw).payload
+  const target = { sessionId: session.sessionId, threadId: thread.threadId }
+  const subscriptionId = await subscribe(client, {
+    type: 'thread',
+    environmentId: host.server.identity.environmentId,
+    ...target,
+  })
+  const send = async (text: string) => {
+    const sendId = client.command('turn.send', { ...target, text })
+    return ProofResponseSchemas['turn.send'].parse(await nextResponse(client, sendId)).payload.turn
+      .turnId
+  }
+  const steer = async (turnId: string, text: string, commandId: string) => {
+    const steerId = client.command('turn.steer', { ...target, turnId, text, commandId })
+    expect(await nextResponse(client, steerId)).toMatchObject({
+      payload: { queueItemId: commandId, outcome: 'steering' },
+    })
+  }
+  const until = (predicate: Parameters<typeof collectThreadRecords>[2], timeoutMs: number) =>
+    collectThreadRecords(client, subscriptionId, predicate, timeoutMs)
+  const state = () => threadState(client, host.server.identity.environmentId, target)
+  /** The slow command is running: its call is written out in full (a call
+   * still streaming has empty input, and a steer then only cuts the reply),
+   * and it has had time to start. */
+  const commandRunning = async () => {
+    await until(
+      (records) =>
+        records.some(
+          (record) =>
+            record.event.name === 'tool.updated' &&
+            JSON.stringify(record.event).includes('setTimeout'),
+        ),
+      90_000,
+    )
+    await new Promise((resolve) => setTimeout(resolve, 4_000))
+  }
+  return { client, target, send, steer, until, state, commandRunning }
+}
+
+/** How many records of `name` the batch holds. */
+const count = (records: { event: { name: string } }[], name: string) =>
+  records.filter((record) => record.event.name === name).length
+
 describe.skipIf(!live)('queue and steer on live Claude Code', () => {
   it(
-    'folds a steer into the running turn, then runs a queued message as the next turn',
+    'cuts a reply off for a steer, runs it as its own turn, then the queued message',
     { timeout: 240_000 },
     async () => {
-      const host = await startProtocolHost()
-      const client = await connectProtocol(host)
-      await handshake(client)
-      const createId = client.command('session.create', {
-        environmentId: host.server.identity.environmentId,
-        workspaceId: host.workspaceId,
-        providerId: 'claude',
-      })
-      const createdRaw = await nextResponse(client, createId)
-      if ((createdRaw as { type: string }).type !== 'response')
-        throw new Error(`session.create refused: ${JSON.stringify(createdRaw)}`)
-      const { session, thread } = ProofResponseSchemas['session.create'].parse(createdRaw).payload
-      const target = { sessionId: session.sessionId, threadId: thread.threadId }
-      const scope = {
-        type: 'thread' as const,
-        environmentId: host.server.identity.environmentId,
-        ...target,
-      }
-      const subscriptionId = await subscribe(client, scope)
-
-      const sendId = client.command('turn.send', {
-        ...target,
-        text:
-          'Run the bash command `sleep 15 && echo one`. Then run the bash command `echo two`. ' +
-          'Then reply with exactly the word FINISHED.',
-      })
-      const sent = ProofResponseSchemas['turn.send'].parse(await nextResponse(client, sendId))
-      const turnId = sent.payload.turn.turnId
-      // The first tool is running: steer now, so it lands at the next boundary.
-      await collectThreadRecords(
-        client,
-        subscriptionId,
-        (records) => records.some((record) => record.event.name === 'tool.updated'),
+      const chat = await openChat()
+      const turnId = await chat.send(
+        'Write a 1500-word short story about a lighthouse keeper. Do not use any tools.',
+      )
+      // The story is streaming: steer now.
+      await chat.until(
+        (records) => records.some((record) => record.event.name === 'message.delta'),
         90_000,
       )
-      const steerId = client.command('turn.steer', {
-        ...target,
+      const steeredAt = Date.now()
+      await chat.steer(
         turnId,
-        text: 'Change of plan: do not run `echo two`. Run `echo steered` instead, then reply FINISHED.',
-        commandId: 'steer-1',
-      })
-      expect(await nextResponse(client, steerId)).toMatchObject({
-        payload: { queueItemId: 'steer-1', outcome: 'steering' },
-      })
-      const queueId = client.command('queue.add', {
-        ...target,
+        'Stop the story. Reply with exactly the word STEERED and nothing else.',
+        'steer-1',
+      )
+      const queueId = chat.client.command('queue.add', {
+        ...chat.target,
         text: 'Reply with exactly the word QUEUED and nothing else. Do not use tools.',
         commandId: 'queued-1',
       })
-      expect(await nextResponse(client, queueId)).toMatchObject({
+      expect(await nextResponse(chat.client, queueId)).toMatchObject({
         payload: { queueItemId: 'queued-1' },
       })
+      await chat.until((records) => count(records, 'turn.started') >= 1, 30_000)
+      // Cut off at once, not after the story's end.
+      expect(Date.now() - steeredAt).toBeLessThan(10_000)
+      await chat.until((records) => count(records, 'turn.completed') >= 2, 180_000)
 
-      const records = await collectThreadRecords(
-        client,
-        subscriptionId,
-        (seen) => seen.filter((record) => record.event.name === 'turn.completed').length >= 2,
-        180_000,
-      )
-      const names = records.map((record) => record.event.name)
-      expect(names).toContain('thread.queue.updated')
-
-      const state = await threadState(client, host.server.identity.environmentId, target)
+      const state = await chat.state()
       expect(state.queue).toEqual({ items: [], pausedBy: null })
-      expect(state.turns).toHaveLength(2)
-      expect(state.turns[1]!.commandId).toBe('queued-1')
-      const firstTurnUsers = state.messages.filter(
-        (message) => message.turnId === turnId && message.role === 'user',
+      expect(
+        state.turns.map((turn) => [turn.turnId === turnId ? 'sent' : turn.commandId, turn.state]),
+      ).toEqual([
+        ['sent', 'completed'],
+        ['steer-1', 'completed'],
+        ['queued-1', 'completed'],
+      ])
+      const said = (id: string) =>
+        state.messages
+          .filter((message) => message.role === 'assistant' && message.turnId === id)
+          .map((message) => JSON.stringify(message.content))
+          .join('')
+      const story = said(turnId)
+      expect(story.length).toBeGreaterThan(0)
+      // Far short of 1500 words.
+      expect(story.length).toBeLessThan(4000)
+      expect(said(state.turns[1]!.turnId)).toContain('STEERED')
+      expect(said(state.turns[2]!.turnId)).toContain('QUEUED')
+    },
+  )
+
+  it(
+    'sends a steer now: stops the running command and runs the steer next',
+    { timeout: 240_000 },
+    async () => {
+      const chat = await openChat()
+      const turnId = await chat.send(
+        `Run this exact shell command in the foreground: \`${slowCommand(90, 'done')}\`. ` +
+          'It takes 90 seconds; wait for it. Then reply with exactly DONE.',
       )
-      expect(firstTurnUsers).toHaveLength(2)
-      expect(JSON.stringify(firstTurnUsers[1]!.content)).toContain('echo steered')
-      // The agent acted on it inside the same turn.
-      const commands = state.tools
-        .filter((tool) => tool.turnId === turnId)
-        .map((tool) => JSON.stringify(tool))
-      expect(commands.some((tool) => tool.includes('echo steered'))).toBe(true)
-      expect(commands.some((tool) => tool.includes('echo two'))).toBe(false)
+      await chat.commandRunning()
+      await chat.steer(
+        turnId,
+        'Reply with exactly the word STEERED and nothing else. Do not use tools.',
+        'steer-1',
+      )
+      const sentAt = Date.now()
+      const nowId = chat.client.command(STEER_SEND_NOW_CAPABILITY, {
+        ...chat.target,
+        queueItemId: 'steer-1',
+      })
+      expect(await nextResponse(chat.client, nowId)).toMatchObject({ type: 'response' })
+      await chat.until((records) => count(records, 'turn.interrupted') >= 1, 30_000)
+      // Stopped at once, not by the runtime giving up on the interrupt.
+      expect(Date.now() - sentAt).toBeLessThan(PROMPT_STOP_MS)
+      await chat.until((records) => count(records, 'turn.completed') >= 1, 60_000)
+
+      const state = await chat.state()
+      expect(state.queue).toEqual({ items: [], pausedBy: null })
+      expect(
+        state.turns.map((turn) => [turn.turnId === turnId ? 'sent' : turn.commandId, turn.state]),
+      ).toEqual([
+        ['sent', 'interrupted'],
+        ['steer-1', 'completed'],
+      ])
+      const steered = state.messages.filter(
+        (message) => message.role === 'assistant' && message.turnId === state.turns[1]!.turnId,
+      )
+      expect(JSON.stringify(steered)).toContain('STEERED')
     },
   )
 
@@ -110,67 +190,41 @@ describe.skipIf(!live)('queue and steer on live Claude Code', () => {
     'on Stop, runs a steer the turn never reached, then the queued message',
     { timeout: 240_000 },
     async () => {
-      const host = await startProtocolHost()
-      const client = await connectProtocol(host)
-      await handshake(client)
-      const createId = client.command('session.create', {
-        environmentId: host.server.identity.environmentId,
-        workspaceId: host.workspaceId,
-        providerId: 'claude',
-      })
-      const createdRaw = await nextResponse(client, createId)
-      if ((createdRaw as { type: string }).type !== 'response')
-        throw new Error(`session.create refused: ${JSON.stringify(createdRaw)}`)
-      const { session, thread } = ProofResponseSchemas['session.create'].parse(createdRaw).payload
-      const target = { sessionId: session.sessionId, threadId: thread.threadId }
-      const scope = {
-        type: 'thread' as const,
-        environmentId: host.server.identity.environmentId,
-        ...target,
-      }
-      const subscriptionId = await subscribe(client, scope)
-
-      const sendId = client.command('turn.send', {
-        ...target,
-        text: 'Run the bash command `sleep 60 && echo done`, then reply with exactly DONE.',
-      })
-      const sent = ProofResponseSchemas['turn.send'].parse(await nextResponse(client, sendId))
-      const turnId = sent.payload.turn.turnId
-      await collectThreadRecords(
-        client,
-        subscriptionId,
-        (records) => records.some((record) => record.event.name === 'tool.updated'),
-        90_000,
+      const chat = await openChat()
+      const turnId = await chat.send(
+        `Run this exact shell command in the foreground: \`${slowCommand(60, 'done')}\`. ` +
+          'Then reply with exactly DONE.',
       )
+      await chat.commandRunning()
       // Queued first, steered second: the steer still runs first.
-      const queueId = client.command('queue.add', {
-        ...target,
+      const queueId = chat.client.command('queue.add', {
+        ...chat.target,
         text: 'Reply with exactly the word QUEUED and nothing else. Do not use tools.',
         commandId: 'queued-1',
       })
-      expect(await nextResponse(client, queueId)).toMatchObject({
+      expect(await nextResponse(chat.client, queueId)).toMatchObject({
         payload: { queueItemId: 'queued-1' },
       })
-      const steerId = client.command('turn.steer', {
-        ...target,
+      await chat.steer(
         turnId,
-        text: 'Reply with exactly the word STEERED and nothing else. Do not use tools.',
-        commandId: 'steer-1',
-      })
-      expect(await nextResponse(client, steerId)).toMatchObject({
-        payload: { queueItemId: 'steer-1', outcome: 'steering' },
-      })
-      // The sleep is still running, so the steer has not reached the turn.
-      const stopId = client.command('turn.interrupt', { ...target, turnId })
-      expect(await nextResponse(client, stopId)).toMatchObject({ type: 'response' })
+        'Reply with exactly the word STEERED and nothing else. Do not use tools.',
+        'steer-1',
+      )
+      // The command is still running, so the steer has not reached the turn.
+      const stoppedAt = Date.now()
+      const stopId = chat.client.command('turn.interrupt', { ...chat.target, turnId })
+      expect(await nextResponse(chat.client, stopId)).toMatchObject({ type: 'response' })
+      const afterStop = await chat.until(
+        (records) => count(records, 'turn.interrupted') >= 1,
+        30_000,
+      )
+      expect(Date.now() - stoppedAt).toBeLessThan(PROMPT_STOP_MS)
 
-      await collectThreadRecords(
-        client,
-        subscriptionId,
-        (seen) => seen.filter((record) => record.event.name === 'turn.completed').length >= 2,
+      await chat.until(
+        (records) => count([...afterStop, ...records], 'turn.completed') >= 2,
         180_000,
       )
-      const state = await threadState(client, host.server.identity.environmentId, target)
+      const state = await chat.state()
       expect(state.queue).toEqual({ items: [], pausedBy: null })
       expect(
         state.turns.map((turn) => [turn.turnId === turnId ? 'sent' : turn.commandId, turn.state]),

@@ -1628,6 +1628,18 @@ export function createMockEnvironmentClient(
         return { queueItemId: send.commandId, outcome: delivery }
       })
     },
+    sendSteerNow: (input) =>
+      run('sendSteerNow', input, () => {
+        requireThread(input)
+        const item = queueOf(input.threadId).items.find(
+          (each) => each.queueItemId === input.queueItemId,
+        )
+        if (!item || item.delivery !== 'steering') {
+          throw new EnvironmentClientError('conflict', 'This message is not waiting for the agent.')
+        }
+        // The environment stops the step and runs it next; here it simply arrives.
+        deliverSteering(input)
+      }),
     respondToInteraction: (input) =>
       run('respondToInteraction', input, () => {
         const thread = requireThread(input)

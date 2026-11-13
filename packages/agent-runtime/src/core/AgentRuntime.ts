@@ -124,9 +124,7 @@ export function isPseudoThreadId(threadId: string): boolean {
   return PSEUDO_THREAD_PREFIXES.some((prefix) => threadId.startsWith(prefix))
 }
 
-function withoutMode(
-  desired: DesiredSessionConfig | undefined,
-): DesiredSessionConfig | undefined {
+function withoutMode(desired: DesiredSessionConfig | undefined): DesiredSessionConfig | undefined {
   if (desired?.modeId === undefined) return desired
   const { modeId: _modeId, ...rest } = desired
   return Object.keys(rest).length > 0 ? rest : undefined
@@ -142,8 +140,7 @@ function mergeDesired(
   if (!override) return base
   const modelId = override.modelId ?? base.modelId
   const modeId = override.modeId ?? base.modeId
-  const values =
-    base.values || override.values ? { ...base.values, ...override.values } : undefined
+  const values = base.values || override.values ? { ...base.values, ...override.values } : undefined
   return {
     ...(modelId !== undefined ? { modelId } : {}),
     ...(modeId !== undefined ? { modeId } : {}),
@@ -337,9 +334,7 @@ export class AgentRuntime {
           },
           // Optional on the interface: pass it through only where it exists,
           // or every provider would read as able to report limits.
-          ...(probe.readUsageLimits
-            ? { readUsageLimits: () => probe.readUsageLimits!() }
-            : {}),
+          ...(probe.readUsageLimits ? { readUsageLimits: () => probe.readUsageLimits!() } : {}),
           dispose: () => probe.dispose(),
         }
       },
@@ -908,7 +903,9 @@ export class AgentRuntime {
       ...(desired.modelId !== undefined && capabilities.canSetModel
         ? { modelId: desired.modelId }
         : {}),
-      ...(desired.modeId !== undefined && capabilities.canSetMode ? { modeId: desired.modeId } : {}),
+      ...(desired.modeId !== undefined && capabilities.canSetMode
+        ? { modeId: desired.modeId }
+        : {}),
       ...(desired.values && capabilities.canSetConfigOption ? { values: desired.values } : {}),
     }
     return Object.keys(supported).length > 0 ? supported : undefined
@@ -1077,6 +1074,20 @@ export class AgentRuntime {
     await steer({ prompt: args.prompt, steerId: args.steerId })
   }
 
+  /** Take a steered message back from the provider, if it still holds it.
+   *
+   * True when it was dropped unread (its `steer_withdrawn` event has gone
+   * out); false when the provider already started it, or there is no live
+   * process holding it. Never respawns, like `steer`. */
+  async withdrawSteer(
+    args: RuntimeRoute & { sessionId: string; steerId: string },
+  ): Promise<boolean> {
+    const entry = this.registry.get(args.threadId)
+    if (!entry || entry.providerId !== args.providerId || !isRuntimeAlive(entry.runtime.phase))
+      return false
+    return (await entry.runtime.withdrawSteer?.(args.steerId)) ?? false
+  }
+
   /** Stop background tasks on a thread: the ones named, or every live one.
    *
    * Like `cancel`, this never respawns a missing runtime. Background tasks are
@@ -1196,8 +1207,7 @@ export class AgentRuntime {
         // The probe the monitor was holding is a child like any other.
         Promise.all([this.registry.shutdown({ reason: 'disposed' }), this.health.drain()]),
         SHUTDOWN_BUDGET_MS,
-        () =>
-          new Error(`Session runtimes did not all exit within ${SHUTDOWN_BUDGET_MS}ms`),
+        () => new Error(`Session runtimes did not all exit within ${SHUTDOWN_BUDGET_MS}ms`),
       )
     } catch (error) {
       this.host.log({
@@ -1270,7 +1280,9 @@ export class AgentRuntime {
    * created but never prompted; `AcpSessionRuntimeImpl.openSession` catches
    * that and falls back to `session/new`, so a never-prompted thread resumes
    * as an empty session instead of failing. */
-  private async liveEntry(args: RuntimeRoute & { sessionId?: string }): Promise<SessionRuntimeEntry> {
+  private async liveEntry(
+    args: RuntimeRoute & { sessionId?: string },
+  ): Promise<SessionRuntimeEntry> {
     const existing = this.registry.get(args.threadId)
     if (existing && isRuntimeAlive(existing.runtime.phase)) return existing
 

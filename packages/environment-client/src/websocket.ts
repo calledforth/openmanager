@@ -6,6 +6,7 @@ import {
   ErrorEnvelopeSchema,
   PROTOCOL_VERSION,
   SESSION_CREATE_EXPLICIT_CAPABILITY,
+  STEER_SEND_NOW_CAPABILITY,
   SERVER_SHUTDOWN_CLOSE_CODE,
   SERVER_SHUTDOWN_CLOSE_REASON,
   ProviderHealthChangedEventSchema,
@@ -1945,6 +1946,13 @@ export function createWebSocketEnvironmentClient(
     },
     async steerTurn(input) {
       return await request('turn.steer', { ...followUpPayload(input), turnId: input.turnId })
+    },
+    async sendSteerNow(input) {
+      await request(STEER_SEND_NOW_CAPABILITY, {
+        sessionId: input.sessionId,
+        threadId: input.threadId,
+        queueItemId: input.queueItemId,
+      })
     },
     async respondToInteraction(input) {
       if (input.build && !capabilities.has(PLAN_BUILD_CAPABILITY)) {

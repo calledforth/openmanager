@@ -508,10 +508,13 @@ export function applyEvent(state: EnvironmentState, event: ProofEvent): Environm
   switch (event.name) {
     case 'turn.started':
       return patchThread(state, thread, (current) => applyStart(current, event.payload))
+    case 'message.delta':
+      return patchThread(state, thread, (current) =>
+        foldSteeredMessage(foldProtocolEvent(current, event), event.payload),
+      )
     case 'turn.completed':
     case 'turn.interrupted':
     case 'turn.failed':
-    case 'message.delta':
     case 'message.reasoning':
     case 'tool.updated':
     case 'turn.notice.recorded':
@@ -575,7 +578,7 @@ export function applyEvent(state: EnvironmentState, event: ProofEvent): Environm
       // The whole queue every time: replaced, so a repeat changes nothing.
       return patchThread(state, thread, (current) => {
         const queue = share(current.queue, event.payload)
-        return queue === current.queue ? current : { ...current, queue }
+        return queue === current.queue ? current : withQueue(current, queue)
       })
     default:
       return state
@@ -653,6 +656,8 @@ export function applySnapshot(state: EnvironmentState, snapshot: ScopeSnapshot):
     listing: share(existing.listing, snapshotState.listing),
     queue: share(existing.queue, snapshotState.queue),
   }
+  const steered = steeredIn(existing.steeredQueueIds, replaced.queue)
+  if (steered) replaced.steeredQueueIds = steered
   return { ...withThread, threads: { ...withThread.threads, [thread.threadId]: replaced } }
 }
 
@@ -920,6 +925,9 @@ function applyStart(current: ThreadState, payload: TurnStarted): ThreadState {
   if (!userMessage) {
     return known && !settled ? current : { ...current, turns, ...(settled ? { outbox } : {}) }
   }
+  // A steered message's own turn, or one given back and run next: its prompt
+  // takes the row the message already had in the conversation.
+  const steered = !!commandId && !!current.steeredQueueIds?.includes(commandId)
   return {
     ...current,
     turns,
@@ -929,13 +937,50 @@ function applyStart(current: ThreadState, payload: TurnStarted): ThreadState {
       id: userMessage.messageId,
       turnId: payload.turn.turnId,
     }),
-    ...(settled
-      ? {
-          outbox,
-          confirmedEchoes: { ...current.confirmedEchoes, [userMessage.messageId]: commandId! },
-        }
+    ...(settled ? { outbox } : {}),
+    ...(settled || steered
+      ? { confirmedEchoes: { ...current.confirmedEchoes, [userMessage.messageId]: commandId! } }
       : {}),
   }
+}
+
+/**
+ * The steered ones among `queue`'s messages, given those already known: each
+ * one the environment holds for the agent, and each known one still waiting.
+ * Undefined when there are none; `previous` itself when nothing changed.
+ */
+function steeredIn(
+  previous: readonly string[] | undefined,
+  queue: ThreadQueue,
+): readonly string[] | undefined {
+  const ids = queue.items
+    .filter((item) => item.delivery === 'steering' || previous?.includes(item.queueItemId))
+    .map((item) => item.queueItemId)
+  if (ids.length === 0) return undefined
+  return previous && shallowEqualArray(previous, ids) ? previous : ids
+}
+
+/** The thread with `queue` as its queue, and its steered messages followed. */
+function withQueue(current: ThreadState, queue: ThreadQueue): ThreadState {
+  const steered = steeredIn(current.steeredQueueIds, queue)
+  const next: ThreadState = { ...current, queue }
+  if (steered) next.steeredQueueIds = steered
+  else delete next.steeredQueueIds
+  return next
+}
+
+/**
+ * A steered message the agent took into the running turn arrives as a user
+ * message carrying the message's id: it keeps the row it already had.
+ */
+function foldSteeredMessage(
+  current: ThreadState,
+  payload: { messageId: string; role: string },
+): ThreadState {
+  const { messageId } = payload
+  if (payload.role !== 'user' || !current.steeredQueueIds?.includes(messageId)) return current
+  if (current.confirmedEchoes?.[messageId] === messageId) return current
+  return { ...current, confirmedEchoes: { ...current.confirmedEchoes, [messageId]: messageId } }
 }
 
 /**
