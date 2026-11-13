@@ -9,6 +9,7 @@ import {
   useComposerDraftStore,
   useDeviceStorage,
   useDraftSyncStatus,
+  useEnterWhileRunning,
   useEnvironmentClient,
   useEnvironmentState,
   usePlanStateOptional,
@@ -17,6 +18,7 @@ import {
   writeFavoriteModels,
   type DraftImageAttachment,
   type FavoriteModelKey,
+  type FollowUpAction,
   type SessionStateValue,
   type UploadedImageAttachment,
   type WorkspaceEntry,
@@ -24,7 +26,7 @@ import {
 import { selectActiveTurn, type EnvironmentState } from '@openmanager/environment-client'
 
 import { usePageConnectionStatus } from '../environment/PhoneEnvironmentProvider'
-import { choiceLabel, primaryAction, type ComposerModel } from './model'
+import { choiceLabel, primaryAction, stopAction, whileBusyOf, type ComposerModel } from './model'
 import { effortChoicesOf, modeChoicesOf, picksOf } from './controls-view'
 import { useThreadPort, type ThreadPort } from './thread-port'
 import { useComposerControls } from './useComposerControls'
@@ -112,7 +114,9 @@ export function useLiveComposerModel(sessionId: string | null): {
     : activeSessionId
   const ownerRef = useRef(owner)
   ownerRef.current = owner
-  const { port, status: threadStatus } = useThreadPort()
+  const { port, status: threadStatus, busy, canSteer } = useThreadPort()
+  // What a message sent while the chat is busy does on this phone (Settings).
+  const [choice] = useEnterWhileRunning()
   const binding = useComposerControls(threadStatus)
   const { controls } = binding
   const { uploadAttachments } = useViewActions()
@@ -172,10 +176,18 @@ export function useLiveComposerModel(sessionId: string | null): {
   const launching = isDraft && session.launchingMessage !== undefined
 
   const send = useCallback(
-    async (text: string, attachments: UploadedImageAttachment[]) => {
+    async (text: string, attachments: UploadedImageAttachment[], action?: FollowUpAction) => {
       // A pending plan turns the field into a change request, as on web.
       if (pendingPlan && planState && text.trim()) {
         await planState.resolvePlan({ outcome: 'rejected', reason: text.trim() })
+        return
+      }
+      // While the chat is busy the message waits, or joins the running turn.
+      // Nothing is echoed: the queue above the dock, or the steered row in
+      // the transcript, shows it once the environment has it. Refused, it
+      // throws, and the draft comes back with why.
+      if (action && !isDraft) {
+        await port.followUp(action, text, attachments)
         return
       }
       if (!launching) {
@@ -204,7 +216,17 @@ export function useLiveComposerModel(sessionId: string | null): {
         throw error
       }
     },
-    [activeSessionId, beginDraftTurn, client, failTurn, launching, pendingPlan, planState, port],
+    [
+      activeSessionId,
+      beginDraftTurn,
+      client,
+      failTurn,
+      isDraft,
+      launching,
+      pendingPlan,
+      planState,
+      port,
+    ],
   )
   // The page's own session, whatever the client has open: text typed while
   // it opens (or after the page lets it go) stays in its draft. A new
@@ -277,9 +299,12 @@ export function useLiveComposerModel(sessionId: string | null): {
 
   const hasContent = draft.text.trim().length > 0 || draft.images.length > 0
   const planReview = !!pendingPlan
+  const canInterrupt = activeTurnId !== null && client.supports('interruptTurn')
+  // A new session's draft is never busy: its send creates the session.
+  const whileBusy = whileBusyOf({ busy: busy && !isDraft, canSteer, choice, planReview })
   const primary = primaryAction({
     isStreaming: controls.isStreaming,
-    canInterrupt: activeTurnId !== null && client.supports('interruptTurn'),
+    canInterrupt,
     hasContent: planReview ? draft.text.trim().length > 0 : hasContent,
     sending: draft.sending,
     uploading: draft.uploading,
@@ -288,7 +313,12 @@ export function useLiveComposerModel(sessionId: string | null): {
     imageProblem: imageUploadEnabled ? null : imageSupportMessage,
     planReview,
     hasImages: draft.images.length > 0,
+    whileBusy,
   })
+  const stop =
+    controls.isStreaming && primary.kind !== 'stop' && primary.kind !== 'send'
+      ? stopAction({ canInterrupt, unavailable })
+      : null
 
   const placeholder = !controls.providerReady
     ? `Connecting to ${controls.currentProviderName}…`
@@ -320,12 +350,13 @@ export function useLiveComposerModel(sessionId: string | null): {
         (imageUploadEnabled ? null : imageSupportMessage),
     },
     primary,
+    stop,
     isStreaming: controls.isStreaming,
     notice: draft.error ?? stopError ?? binding.error,
     unsynced: DRAFT_SYNC_EXPLANATION[syncStatus] ?? null,
     prompt,
     setText: draft.setText,
-    send: () => void draft.send(),
+    send: (action) => void draft.send(action),
     interrupt,
     attachPhoto: (photo) => void draft.attachPhoto(photo),
     removeImage: draft.removeImage,

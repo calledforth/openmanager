@@ -1,4 +1,5 @@
-import { forwardRef, type ReactNode } from 'react'
+import { ArrowBendUpRightIcon, ClockIcon } from 'phosphor-react-native'
+import { forwardRef, useRef, type ReactNode } from 'react'
 import { View, type LayoutChangeEvent } from 'react-native'
 
 import { AppText } from '../components/ui/AppText'
@@ -6,7 +7,10 @@ import { usePhoneTheme } from '../theme/ThemeProvider'
 import { tap } from '../ui/haptics'
 import { Press } from '../ui/Press'
 import { SendGlyph, StopGlyph } from './icons'
-import { meterPercent, pressPrimary, type PrimaryAction } from './model'
+import { FOLLOW_UP_LABEL, meterPercent, pressPrimary, type PrimaryAction } from './model'
+import type { FollowUpAction } from '@openmanager/app-core/logic'
+import { measure } from './Picks'
+import type { PickAnchor } from './ui-state'
 
 /**
  * One pick in the composer's row or tray: an icon, a short label, a fill
@@ -133,33 +137,72 @@ export function ContextMeter({ percent }: { percent: number }) {
  * Send and stop, one button. Disabled (a quiet fill, faint glyph) with its
  * reason for a screen reader; the reason is also said under the field.
  */
+/** What the button is called, by what it does now. */
+function primaryLabel(action: Pick<PrimaryAction, 'kind' | 'busy'>): string {
+  if (action.kind === 'stop') return 'Stop'
+  if (action.busy) return 'Sending'
+  return action.kind === 'send' ? 'Send' : FOLLOW_UP_LABEL[action.kind].label
+}
+
+/**
+ * The send button. While the chat is busy it queues or steers what is typed
+ * (a clock, or an arrow bending into the turn), and when the other is
+ * possible a long press opens both (`onChoose`), as web's menu beside it.
+ */
 export function PrimaryButton({
   action,
   size = 36,
   onSend,
   onStop,
+  onChoose,
 }: {
-  action: PrimaryAction
+  action: Omit<PrimaryAction, 'alternate'> & { alternate?: FollowUpAction | null }
   size?: number
-  onSend: () => void
+  onSend: (action?: FollowUpAction) => void
   onStop: () => void
+  /** The long press: both ways to send, standing on the button. */
+  onChoose?: (anchor: PickAnchor) => void
 }) {
   const theme = usePhoneTheme()
+  const button = useRef<View>(null)
   const stop = action.kind === 'stop'
   const active = action.enabled
   const glyph = active ? theme.actionFg : theme.faint
+  const choosable = !!action.alternate && !!onChoose && active
+  const choose = () => {
+    if (!choosable) return
+    tap()
+    measure(button.current, (anchor) => onChoose!(anchor))
+  }
   return (
     <Press
+      ref={button}
       accessibilityRole="button"
-      accessibilityLabel={stop ? 'Stop' : action.busy ? 'Sending' : 'Send'}
-      accessibilityHint={action.reason ?? undefined}
+      accessibilityLabel={primaryLabel(action)}
+      accessibilityHint={
+        action.reason ??
+        (action.kind === 'queue' || action.kind === 'steer'
+          ? FOLLOW_UP_LABEL[action.kind].description
+          : undefined)
+      }
       accessibilityState={{ disabled: !active, busy: action.busy }}
+      accessibilityActions={
+        choosable ? [{ name: 'longpress', label: 'Choose how to send' }] : undefined
+      }
+      onAccessibilityAction={(event) => {
+        if (event.nativeEvent.actionName === 'longpress') choose()
+      }}
       disabled={!active}
       hitSlop={6}
       onPress={() => {
         tap()
-        pressPrimary(action, { send: onSend, interrupt: onStop })
+        pressPrimary(
+          { alternate: null, ...action },
+          { send: (followUp) => onSend(followUp), interrupt: onStop },
+        )
       }}
+      onLongPress={choosable ? choose : undefined}
+      delayLongPress={350}
       style={({ pressed }) => ({
         width: size,
         height: size,
@@ -172,9 +215,54 @@ export function PrimaryButton({
     >
       {stop ? (
         <StopGlyph size={size * 0.39} color={glyph} />
+      ) : action.kind === 'queue' ? (
+        <ClockIcon size={size * 0.47} color={glyph} weight="bold" />
+      ) : action.kind === 'steer' ? (
+        <ArrowBendUpRightIcon size={size * 0.47} color={glyph} weight="bold" />
       ) : (
         <SendGlyph size={size * 0.39} color={glyph} />
       )}
+    </Press>
+  )
+}
+
+/**
+ * Stop beside the send button, while a turn runs and the button queues or
+ * steers what is typed: a quieter round button with the same square.
+ */
+export function StopBeside({
+  action,
+  size = 36,
+  onStop,
+}: {
+  action: Omit<PrimaryAction, 'alternate'>
+  size?: number
+  onStop: () => void
+}) {
+  const theme = usePhoneTheme()
+  return (
+    <Press
+      accessibilityRole="button"
+      accessibilityLabel="Stop"
+      accessibilityHint={action.reason ?? undefined}
+      accessibilityState={{ disabled: !action.enabled }}
+      disabled={!action.enabled}
+      hitSlop={6}
+      onPress={() => {
+        tap()
+        onStop()
+      }}
+      style={({ pressed }) => ({
+        width: size,
+        height: size,
+        borderRadius: size / 2,
+        alignItems: 'center',
+        justifyContent: 'center',
+        backgroundColor: pressed ? theme.active : theme.hover,
+        opacity: action.enabled ? 1 : 0.4,
+      })}
+    >
+      <StopGlyph size={size * 0.36} color={theme.muted} />
     </Press>
   )
 }

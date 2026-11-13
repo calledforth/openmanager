@@ -8,6 +8,7 @@ import {
   usePageExit,
   type ArtifactSource,
   type DraftImageAttachment,
+  type FollowUpAction,
   type ImageTarget,
   type KeptImage,
   type UploadedImageAttachment,
@@ -73,7 +74,12 @@ export interface DraftPorts {
   /** Store one image for the open session or draft (the shared `uploadAttachments`). */
   uploadAttachments?: (drafts: DraftImageAttachment[]) => Promise<UploadedImageAttachment[]>
   /** Send the text and images: a prompt, or a plan's change request while one is pending. */
-  send: (text: string, attachments: UploadedImageAttachment[]) => Promise<void>
+  /** `action`, while the chat is busy: the message waits for the next turn, or joins this one. */
+  send: (
+    text: string,
+    attachments: UploadedImageAttachment[],
+    action?: FollowUpAction,
+  ) => Promise<void>
   /** Reads a photo's bytes; `photoFile` over `fetch` unless a test says otherwise. */
   readPhoto?: (photo: CapturedPhoto) => Promise<File>
   /**
@@ -412,73 +418,76 @@ export function useComposerDraft({
     [draftKey, keepsImages, store],
   )
 
-  const send = useCallback(async () => {
-    const trimmed = text.trim()
-    if ((!trimmed && images.length === 0) || sending || uploading) return
-    setSending(true)
-    setError(null)
-    // Emptied before the round trip, as on web: the transcript shows the
-    // sent message at once, and a refusal puts everything back.
-    const restoreText = text
-    const restoreImages = storedImages
-    const restorePending = pending
-    const kept: KeptImage[] = images
-      .filter((image) => !image.uploading && restoreImages.includes(image.id))
-      .map((image) => ({
-        artifactId: image.id,
-        name: image.name,
-        ...(image.uri ? { previewUrl: image.uri } : {}),
-      }))
-    store.setText(draftKey, '')
-    if (restoreImages.length > 0) store.setImages?.(draftKey, NO_IDS)
-    if (!keepsImages && restorePending.length > 0) setPending(draftKey, NO_UPLOADS)
-    const release = store.beginSend?.(
+  const send = useCallback(
+    async (action?: FollowUpAction) => {
+      const trimmed = text.trim()
+      if ((!trimmed && images.length === 0) || sending || uploading) return
+      setSending(true)
+      setError(null)
+      // Emptied before the round trip, as on web: the transcript shows the
+      // sent message at once, and a refusal puts everything back.
+      const restoreText = text
+      const restoreImages = storedImages
+      const restorePending = pending
+      const kept: KeptImage[] = images
+        .filter((image) => !image.uploading && restoreImages.includes(image.id))
+        .map((image) => ({
+          artifactId: image.id,
+          name: image.name,
+          ...(image.uri ? { previewUrl: image.uri } : {}),
+        }))
+      store.setText(draftKey, '')
+      if (restoreImages.length > 0) store.setImages?.(draftKey, NO_IDS)
+      if (!keepsImages && restorePending.length > 0) setPending(draftKey, NO_UPLOADS)
+      const release = store.beginSend?.(
+        draftKey,
+        restoreText,
+        keepsImages ? restoreImages : undefined,
+      )
+      try {
+        const uploaded =
+          !keepsImages && restorePending.length > 0
+            ? await (uploadAttachments
+                ? uploadAttachments(restorePending)
+                : Promise.reject(new Error('This host cannot upload images')))
+            : []
+        await ports.send(trimmed, [...kept.map(keptAttachment), ...uploaded], action)
+        release?.()
+        for (const id of restoreImages) keptPreviews.current.delete(id)
+      } catch (sendError) {
+        release?.()
+        // Anything typed since goes after what failed, rather than under it.
+        const active = store.getText(draftKey)
+        store.setText(draftKey, active ? `${restoreText}\n${active}` : restoreText)
+        if (restoreImages.length > 0) {
+          const now = store.getImages?.(draftKey) ?? NO_IDS
+          store.setImages?.(draftKey, [
+            ...restoreImages,
+            ...now.filter((id) => !restoreImages.includes(id)),
+          ])
+        }
+        if (!keepsImages && restorePending.length > 0) {
+          setPending(draftKey, [...restorePending, ...(pendingRef.current[draftKey] ?? NO_UPLOADS)])
+        }
+        setError(reasonOf(sendError, 'Failed to send message'))
+      } finally {
+        setSending(false)
+      }
+    },
+    [
       draftKey,
-      restoreText,
-      keepsImages ? restoreImages : undefined,
-    )
-    try {
-      const uploaded =
-        !keepsImages && restorePending.length > 0
-          ? await (uploadAttachments
-              ? uploadAttachments(restorePending)
-              : Promise.reject(new Error('This host cannot upload images')))
-          : []
-      await ports.send(trimmed, [...kept.map(keptAttachment), ...uploaded])
-      release?.()
-      for (const id of restoreImages) keptPreviews.current.delete(id)
-    } catch (sendError) {
-      release?.()
-      // Anything typed since goes after what failed, rather than under it.
-      const active = store.getText(draftKey)
-      store.setText(draftKey, active ? `${restoreText}\n${active}` : restoreText)
-      if (restoreImages.length > 0) {
-        const now = store.getImages?.(draftKey) ?? NO_IDS
-        store.setImages?.(draftKey, [
-          ...restoreImages,
-          ...now.filter((id) => !restoreImages.includes(id)),
-        ])
-      }
-      if (!keepsImages && restorePending.length > 0) {
-        setPending(draftKey, [...restorePending, ...(pendingRef.current[draftKey] ?? NO_UPLOADS)])
-      }
-      setError(reasonOf(sendError, 'Failed to send message'))
-    } finally {
-      setSending(false)
-    }
-  }, [
-    draftKey,
-    images,
-    keepsImages,
-    pending,
-    ports,
-    sending,
-    store,
-    storedImages,
-    text,
-    uploadAttachments,
-    uploading,
-  ])
+      images,
+      keepsImages,
+      pending,
+      ports,
+      sending,
+      store,
+      storedImages,
+      text,
+      uploadAttachments,
+      uploading,
+    ],
+  )
 
   return {
     text,

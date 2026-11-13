@@ -339,7 +339,7 @@ describe('the dock folds with the turn', () => {
     ).toBe('prompt')
   })
 
-  it('turns send into stop while a turn runs, and stops it through the thread', async () => {
+  it('turns send into stop while a turn runs, queues what is typed then, and stops it through the thread', async () => {
     const client = await open({ seed: seed('completed'), respond: () => null })
     expect(current().isStreaming).toBe(false)
     expect(current().primary).toMatchObject({ kind: 'send', enabled: false })
@@ -356,15 +356,29 @@ describe('the dock folds with the turn', () => {
     expect(current().isStreaming).toBe(true)
     expect(current().primary).toMatchObject({ kind: 'stop', enabled: true })
 
-    // Typing meanwhile sends nothing: steering has not landed on the server.
+    expect(current().stop).toBeNull()
+
+    // Typed meanwhile, the button queues it (this phone's default), with
+    // Stop beside it; the mock's provider cannot steer, so nothing else is offered.
     await act(async () => current().setText('and then the lint'))
+    expect(current().primary).toMatchObject({ kind: 'queue', enabled: true, alternate: null })
+    expect(current().stop).toMatchObject({ kind: 'stop', enabled: true })
+    await press()
+    await flush()
+    expect(callsOf(client, 'queueMessage')).toEqual([
+      expect.objectContaining({ ...THREAD, text: 'and then the lint' }),
+    ])
+    expect(current().text).toBe('')
     expect(current().primary.kind).toBe('stop')
 
+    // Stop ends this turn, and the queued message runs as the next one.
     await act(async () => current().interrupt())
     await flush()
     expect(callsOf(client, 'interruptTurn')).toHaveLength(1)
-    expect(current().isStreaming).toBe(false)
-    expect(current().primary).toMatchObject({ kind: 'send', enabled: true })
+    const thread = client.getState().threads[THREAD.threadId]!
+    expect(thread.queue.items).toEqual([])
+    expect(thread.turns.at(-2)?.state).toBe('interrupted')
+    expect(current().isStreaming).toBe(true)
   })
 
   it('says why the button cannot be used rather than doing nothing', () => {

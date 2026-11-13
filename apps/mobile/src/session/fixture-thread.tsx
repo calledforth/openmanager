@@ -45,6 +45,19 @@ const FIXTURE_THREADS: Record<string, (now: number) => ThreadState> = {
   [LONG_THREAD_SESSION_ID]: (now) => longThread(now),
 }
 
+/**
+ * The fixture's follow-ups, done to its thread as the environment would do
+ * them: a queued message waits, a steered one waits on the command running,
+ * and Send now stops that turn and runs the message as the next one.
+ */
+export interface FixtureFollowUps {
+  queue: (text: string) => void
+  steer: (text: string) => void
+  remove: (queueItemId: string) => Promise<void>
+  resume: () => Promise<void>
+  sendNow: (queueItemId: string) => Promise<void>
+}
+
 /** Streams a turn into a fixture thread as the environment's events would. */
 export interface FixtureDriver {
   /** A prompt starts a new running turn. */
@@ -61,6 +74,7 @@ export interface FixtureThread {
   getThread: () => ThreadState | null
   getMessages: () => UIMessage[]
   driver: FixtureDriver
+  followUps: FixtureFollowUps
 }
 
 const iso = () => new Date().toISOString()
@@ -156,7 +170,105 @@ export function createFixtureThread(initial: ThreadState | null): FixtureThread 
     },
   }
 
+  let added = 0
+  const enqueue = (text: string, delivery: 'queued' | 'steering') => {
+    if (!thread) return
+    added += 1
+    const queueItemId = `fixture-${delivery}-${added}`
+    commit({
+      ...thread,
+      queue: {
+        ...thread.queue,
+        items: [
+          ...thread.queue.items,
+          { queueItemId, text, settings: {}, delivery, createdAt: iso() },
+        ],
+      },
+      ...(delivery === 'steering'
+        ? { steeredQueueIds: [...(thread.steeredQueueIds ?? []), queueItemId] }
+        : {}),
+    })
+  }
+  const followUps: FixtureFollowUps = {
+    queue: (text) => enqueue(text, 'queued'),
+    steer: (text) => enqueue(text, 'steering'),
+    remove: async (queueItemId) => {
+      if (!thread) return
+      commit({
+        ...thread,
+        queue: {
+          ...thread.queue,
+          items: thread.queue.items.filter((item) => item.queueItemId !== queueItemId),
+        },
+      })
+    },
+    resume: async () => {
+      if (thread) commit({ ...thread, queue: { ...thread.queue, pausedBy: null } })
+    },
+    sendNow: async (queueItemId) => {
+      const item = thread?.queue.items.find((entry) => entry.queueItemId === queueItemId)
+      if (!thread || !item) return
+      // Given back first, then first in line, as the environment does.
+      commit({
+        ...thread,
+        queue: {
+          ...thread.queue,
+          items: [
+            { ...item, delivery: 'queued' },
+            ...thread.queue.items.filter((entry) => entry !== item),
+          ],
+        },
+      })
+      await new Promise((resolve) => setTimeout(resolve, 700))
+      if (!thread) return
+      const current = thread
+      const turnId = `fixture-turn-${queueItemId}`
+      const messageId = `fixture-message-${queueItemId}`
+      const at = iso()
+      commit({
+        ...current,
+        turns: [
+          ...current.turns.map((turn) =>
+            turn.state === 'running' || turn.state === 'waiting'
+              ? { ...turn, state: 'interrupted' as const, finishedAt: at }
+              : turn,
+          ),
+          {
+            turnId,
+            threadId: current.thread.threadId,
+            state: 'running',
+            startedAt: at,
+            commandId: queueItemId,
+          },
+        ],
+        messages: [
+          ...current.messages,
+          {
+            messageId,
+            threadId: current.thread.threadId,
+            turnId,
+            role: 'user',
+            content: [{ type: 'text', text: item.text }],
+          },
+        ],
+        order: [...current.order, { kind: 'message', id: messageId, turnId }],
+        // The prompt keeps the row the steered message had.
+        confirmedEchoes: { ...current.confirmedEchoes, [messageId]: queueItemId },
+      })
+      if (!thread) return
+      commit({
+        ...thread,
+        queue: {
+          ...thread.queue,
+          items: thread.queue.items.filter((entry) => entry.queueItemId !== queueItemId),
+        },
+        steeredQueueIds: (thread.steeredQueueIds ?? []).filter((id) => id !== queueItemId),
+      })
+    },
+  }
+
   return {
+    followUps,
     subscribe,
     getThread: () => thread,
     getMessages: () => projection.messages,

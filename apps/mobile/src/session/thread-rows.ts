@@ -23,6 +23,13 @@ export interface ThreadRowView {
   isFinal: boolean
   /** An echo the environment has not confirmed yet. */
   queued: boolean
+  /**
+   * A steered message the agent has not read yet: `waiting` while it finishes
+   * its current step (it can be sent now), `next` once given back to run next.
+   */
+  steer?: 'waiting' | 'next'
+  /** The steered message's id in the chat's queue, for sending it now. */
+  queueItemId?: string
   /** Why the environment refused this send, once it says. */
   sendError?: string
   /** Images the echo carries, before the environment's copy of the prompt names them. */
@@ -54,7 +61,10 @@ export function resolveThreadRow(
       content: message.optimisticContent ?? content?.content ?? streaming?.content ?? '',
       parts: content?.parts ?? streaming?.parts ?? NO_PARTS,
       isFinal: true,
-      queued: message.isOptimistic === true,
+      queued: message.isOptimistic === true && !message.steer,
+      ...(message.steer
+        ? { steer: message.steer, ...(message.commandId ? { queueItemId: message.commandId } : {}) }
+        : {}),
       ...(message.sendError ? { sendError: message.sendError } : {}),
       attachments: message.optimisticAttachments ?? NO_ATTACHMENTS,
     }

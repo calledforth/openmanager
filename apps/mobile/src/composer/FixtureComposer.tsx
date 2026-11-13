@@ -2,6 +2,7 @@ import { useMemo, useState } from 'react'
 import {
   favoriteModelKey,
   toggleFavoriteModel,
+  useEnterWhileRunning,
   useQuestionFlow,
   type ComposerChoice,
   type FavoriteModelKey,
@@ -11,12 +12,15 @@ import {
 } from '@openmanager/app-core/logic'
 
 import type { HomeSession } from '../home/rows'
+import type { FixtureFollowUps } from '../session/fixture-thread'
 import { ComposerSurface } from './ComposerSurface'
 import {
   choiceLabel,
   currentModelLabel,
   permissionChoices,
   primaryAction,
+  stopAction,
+  whileBusyOf,
   type ComposerModel,
   type ComposerPrompt,
   type ProviderId,
@@ -145,10 +149,14 @@ function promptKindOf(session: HomeSession | undefined): 'permission' | 'questio
 export function FixtureComposer({
   session,
   ui,
+  followUps,
 }: {
   session: HomeSession | undefined
   ui: ComposerUi
+  /** The sample chat's queue: a message typed while it runs is queued or steered there. */
+  followUps?: FixtureFollowUps
 }) {
+  const [choice] = useEnterWhileRunning()
   const providerId = (session?.providerId ?? 'claude') as ProviderId
   const group = GROUPS.find((entry) => entry.providerId === providerId) ?? GROUPS[0]!
   const [text, setText] = useState('')
@@ -165,6 +173,23 @@ export function FixtureComposer({
     setNote(SAMPLE_REASON)
   })
   const isStreaming = session?.status === 'running'
+  // A running sample chat takes follow-ups as a live one does; nothing else is sent.
+  const whileBusy = followUps
+    ? whileBusyOf({ busy: isStreaming, canSteer: true, choice, planReview: kind === 'plan' })
+    : null
+  const primary = primaryAction({
+    isStreaming,
+    canInterrupt: false,
+    hasContent: text.trim().length > 0,
+    sending: false,
+    uploading: false,
+    unavailable: whileBusy ? null : SAMPLE_REASON,
+    sendBlockedReason: null,
+    imageProblem: null,
+    planReview: kind === 'plan',
+    hasImages: false,
+    whileBusy,
+  })
 
   const prompt = useMemo((): ComposerPrompt | null => {
     if (kind === 'permission') {
@@ -225,24 +250,26 @@ export function FixtureComposer({
     placeholder: kind === 'plan' ? 'Describe what should change in the plan…' : 'Ask anything…',
     images: [],
     attach: { enabled: false, reason: SAMPLE_REASON },
-    primary: primaryAction({
-      isStreaming,
-      canInterrupt: false,
-      hasContent: text.trim().length > 0,
-      sending: false,
-      uploading: false,
-      unavailable: SAMPLE_REASON,
-      sendBlockedReason: null,
-      imageProblem: null,
-      planReview: kind === 'plan',
-      hasImages: false,
-    }),
+    primary,
+    stop:
+      isStreaming && primary.kind !== 'stop' && primary.kind !== 'send'
+        ? stopAction({ canInterrupt: false, unavailable: SAMPLE_REASON })
+        : null,
     isStreaming,
     notice: null,
     unsynced: null,
     prompt,
     setText,
-    send: () => setNote(SAMPLE_REASON),
+    send: (action) => {
+      if (!action || !followUps) {
+        setNote(SAMPLE_REASON)
+        return
+      }
+      const typed = text.trim()
+      if (!typed) return
+      followUps[action](typed)
+      setText('')
+    },
     interrupt: () => setNote(SAMPLE_REASON),
     attachPhoto: () => setNote(SAMPLE_REASON),
     removeImage: () => undefined,
