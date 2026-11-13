@@ -1,4 +1,4 @@
-import { CameraIcon, ImagesIcon } from 'phosphor-react-native'
+import { ArrowBendUpRightIcon, CameraIcon, ClockIcon, ImagesIcon } from 'phosphor-react-native'
 import {
   useCallback,
   useEffect,
@@ -9,7 +9,11 @@ import {
   type RefObject,
 } from 'react'
 import { StyleSheet, TextInput, useWindowDimensions, View } from 'react-native'
-import { applySlashCommand, type ComposerChoice } from '@openmanager/app-core/logic'
+import {
+  applySlashCommand,
+  type ComposerChoice,
+  type FollowUpAction,
+} from '@openmanager/app-core/logic'
 
 import { DOCK_GAP, SessionDock, useDockSlot } from '../session/SessionDock'
 import { usePhoneTheme } from '../theme/ThemeProvider'
@@ -20,7 +24,7 @@ import { ComposerDock } from './ComposerDock'
 import { LibraryPick } from './LibraryPick'
 import { ModeIcon } from './icons'
 import { useKeyboardHeight } from './keyboard'
-import { slashPopupOf, type ComposerModel } from './model'
+import { FOLLOW_UP_LABEL, slashPopupOf, type ComposerModel } from './model'
 import { promptRoom, PromptRoomContext } from './prompt-room'
 import { ModelSheet } from './ModelSheet'
 import { PlanSheet } from './PlanSheet'
@@ -28,6 +32,15 @@ import { ProjectSheet, type ProjectSource } from './ProjectSheet'
 import { SettingsSheet } from './SettingsSheet'
 import { SlashPopup } from './SlashPopup'
 import { useComposerUiState, type ComposerUi } from './ui-state'
+
+/** Both ways to send while the chat is busy: the phone's choice first, as web's menu. */
+function followUpChoices(enter: FollowUpAction, alternate: FollowUpAction): ComposerChoice[] {
+  return [enter, alternate].map((action) => ({
+    id: action,
+    name: FOLLOW_UP_LABEL[action].label,
+    description: FOLLOW_UP_LABEL[action].description,
+  }))
+}
 
 /** Where an attached photo comes from. */
 const ATTACH_CHOICES: readonly ComposerChoice[] = [
@@ -205,6 +218,25 @@ export function ComposerSurface({
             // The pick opens what it names in the popover's place.
             closeOnPick={false}
             onPick={(id) => ui.open({ kind: id === 'camera' ? 'camera' : 'library' })}
+            onClose={ui.close}
+          />
+        ) : null}
+        {overlay?.kind === 'followUp' &&
+        (model.primary.kind === 'queue' || model.primary.kind === 'steer') &&
+        model.primary.alternate ? (
+          <ChoicePopover
+            anchor={overlay.anchor}
+            label="Send"
+            choices={followUpChoices(model.primary.kind, model.primary.alternate)}
+            current=""
+            icon={(choice) =>
+              choice.id === 'queue' ? (
+                <ClockIcon size={16} color={theme.muted} weight="bold" />
+              ) : (
+                <ArrowBendUpRightIcon size={16} color={theme.muted} weight="bold" />
+              )
+            }
+            onPick={(id) => model.send(id as FollowUpAction)}
             onClose={ui.close}
           />
         ) : null}

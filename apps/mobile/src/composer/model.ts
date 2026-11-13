@@ -14,6 +14,7 @@ import {
   type AcpSessionRuntimeState,
   type ComposerChoice,
   type FavoriteModelKey,
+  type FollowUpAction,
   type PendingPermission,
   type PlanRow,
   type ProviderModelGroup,
@@ -56,22 +57,52 @@ export function composerFold(
   return isStreaming && !focused ? 'running' : 'rest'
 }
 
-/** The one button at the field's end: send, or stop while a turn runs. */
+/**
+ * The one button at the field's end: send; stop while a turn runs; and,
+ * with something typed while the chat is busy, queue it for the next turn
+ * or steer it into the running one (`queue` / `steer`), with Stop beside it.
+ */
 export interface PrimaryAction {
-  kind: 'send' | 'stop'
+  kind: 'send' | 'stop' | FollowUpAction
   enabled: boolean
   /** Why it cannot be used now; null when it can. Said under the field and to a screen reader. */
   reason: string | null
   /** A send is on its way. */
   busy: boolean
+  /** The other way to send what is typed while the chat is busy, offered on a long press. */
+  alternate: FollowUpAction | null
+}
+
+/** What a busy chat does with a message: this phone's choice, and the other one when the turn can take it. */
+export interface WhileBusy {
+  enter: FollowUpAction
+  alternate: FollowUpAction | null
 }
 
 /**
- * Send and stop share one button, as on web. Steering a running turn has
- * not landed on the server, so while a turn runs the button stops it and
- * nothing is sent; except while a plan waits for review, when the turn is
- * held for the answer and the button sends the change request, as web's
- * plan review does.
+ * While the chat is busy, the phone's choice queues or steers, as web's
+ * Enter does; steering needs a turn that can take it, so without one both
+ * queue. Null while the chat is not busy, or a plan waits for review (the
+ * field is then a change request).
+ */
+export function whileBusyOf(input: {
+  busy: boolean
+  canSteer: boolean
+  /** This phone's choice (`useEnterWhileRunning`). */
+  choice: FollowUpAction
+  planReview: boolean
+}): WhileBusy | null {
+  if (!input.busy || input.planReview) return null
+  if (!input.canSteer) return { enter: 'queue', alternate: null }
+  return { enter: input.choice, alternate: input.choice === 'queue' ? 'steer' : 'queue' }
+}
+
+/**
+ * Send and stop share one button, as on web. While a turn runs and nothing
+ * is typed, the button stops it. With something typed while the chat is
+ * busy, it queues or steers (`whileBusy`), and Stop stands beside it.
+ * While a plan waits for review the turn is held for the answer and the
+ * button sends the change request, as web's plan review does.
  */
 export function primaryAction(input: {
   isStreaming: boolean
@@ -89,16 +120,13 @@ export function primaryAction(input: {
   /** A plan waits for review: text is feedback, and images cannot go with it. */
   planReview: boolean
   hasImages: boolean
+  /** The chat is busy and takes follow-ups; see `whileBusyOf`. */
+  whileBusy?: WhileBusy | null
 }): PrimaryAction {
-  if (input.isStreaming && !input.planReview) {
-    return {
-      kind: 'stop',
-      enabled: input.canInterrupt && !input.unavailable,
-      reason:
-        input.unavailable ??
-        (input.canInterrupt ? null : 'This environment cannot stop the turn from here'),
-      busy: false,
-    }
+  const whileBusy = input.planReview ? null : (input.whileBusy ?? null)
+  const following = !!whileBusy && (input.hasContent || input.sending || !input.isStreaming)
+  if (input.isStreaming && !input.planReview && !following) {
+    return { ...stopAction(input), alternate: null }
   }
   const reason =
     input.unavailable ??
@@ -109,21 +137,44 @@ export function primaryAction(input: {
       : null) ??
     (input.hasImages ? input.imageProblem : null)
   return {
-    kind: 'send',
+    kind: whileBusy ? whileBusy.enter : 'send',
     enabled: input.hasContent && !input.sending && reason === null,
     reason,
     busy: input.sending,
+    alternate: whileBusy?.alternate ?? null,
+  }
+}
+
+/** Stop, as the button or beside it: usable when the environment lists a turn it can stop. */
+export function stopAction(input: {
+  canInterrupt: boolean
+  unavailable: string | null
+}): Omit<PrimaryAction, 'alternate'> {
+  return {
+    kind: 'stop',
+    enabled: input.canInterrupt && !input.unavailable,
+    reason:
+      input.unavailable ??
+      (input.canInterrupt ? null : 'This environment cannot stop the turn from here'),
+    busy: false,
   }
 }
 
 /** What the one button does when pressed, as it is drawn. */
 export function pressPrimary(
   action: PrimaryAction,
-  handlers: { send: () => void; interrupt: () => void },
+  handlers: { send: (action?: FollowUpAction) => void; interrupt: () => void },
 ): void {
   if (!action.enabled) return
   if (action.kind === 'stop') handlers.interrupt()
-  else handlers.send()
+  else if (action.kind === 'send') handlers.send()
+  else handlers.send(action.kind)
+}
+
+/** How a follow-up reads in the long-press menu and to a screen reader, as web's menu says it. */
+export const FOLLOW_UP_LABEL: Record<FollowUpAction, { label: string; description: string }> = {
+  queue: { label: 'Queue', description: 'Runs when this turn ends' },
+  steer: { label: 'Steer', description: 'Cuts in once the current step ends' },
 }
 
 /** The picks as the dock's row and the tray show them. */
@@ -361,6 +412,8 @@ export interface ComposerModel {
   images: ComposerImage[]
   attach: { enabled: boolean; reason: string | null }
   primary: PrimaryAction
+  /** Stop beside the button while a turn runs and the button queues or steers; null otherwise. */
+  stop: Omit<PrimaryAction, 'alternate'> | null
   isStreaming: boolean
   /** The last thing that went wrong: a refused send, a pick the environment did not take. */
   notice: string | null
@@ -371,7 +424,8 @@ export interface ComposerModel {
   unsynced: string | null
   prompt: ComposerPrompt | null
   setText: (text: string) => void
-  send: () => void
+  /** Sends what is typed; while the chat is busy, `action` says whether it waits or joins the turn. */
+  send: (action?: FollowUpAction) => void
   interrupt: () => void
   attachPhoto: (photo: CapturedPhoto) => void
   removeImage: (id: string) => void

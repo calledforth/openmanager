@@ -14,6 +14,8 @@ export type ComposerOverlay =
   | { kind: 'attach'; anchor: PickAnchor }
   /** A popover, standing on the pick that opened it (its place in the window). */
   | { kind: 'mode' | 'effort'; anchor: PickAnchor }
+  /** Queue or steer what is typed, standing on the send button (its long press). */
+  | { kind: 'followUp'; anchor: PickAnchor }
 
 export interface PickAnchor {
   x: number

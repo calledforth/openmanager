@@ -1,10 +1,17 @@
 import { useIsFocused } from 'expo-router'
-import { useCallback, useMemo, useState, useSyncExternalStore } from 'react'
+import { useCallback, useMemo, useRef, useState, useSyncExternalStore } from 'react'
 import { useWindowDimensions } from 'react-native'
 import { useEnvironmentClient } from '@openmanager/app-core/logic'
 import { selectActiveThread } from '@openmanager/environment-client'
 
 import { BackgroundTasksRow, useBackgroundTasks } from './BackgroundTasks'
+import {
+  QueuedMessagesRow,
+  useWaitingQueue,
+  waitingQueueOf,
+  type WaitingQueue,
+} from './QueuedMessages'
+import { SteerNowContext } from './steer-now'
 
 import { LiveComposer } from '../composer/LiveComposer'
 import { FixtureComposer } from '../composer/FixtureComposer'
@@ -52,19 +59,37 @@ function LiveSession({ sessionId }: { sessionId: string }) {
       client.commands.stopBackgroundTasks({ sessionId, ...(taskIds ? { taskIds } : {}) }),
     [client, sessionId],
   )
-  // One element while the tasks are the same, so the page's memo holds.
+  // Messages waiting for the next turn: above the status line too. Steered
+  // ones stand in the transcript instead, with their Send now.
+  const waiting = useWaitingQueue(client, sessionId)
+  const queues = client.supports('queueMessage')
+  const sendSteerNow = client.supports('sendSteerNow') ? waiting.sendSteerNow : null
+  // One element while the tasks and the queue are the same, so the page's memo holds.
   const canStop = client.supports('stopBackgroundTasks')
   const above = useMemo(
     () =>
-      tasks.length > 0 ? (
-        <BackgroundTasksRow
-          // Per session: a stop pending in one must not show as pending in the next.
-          key={sessionId}
-          tasks={tasks}
-          onStop={canStop ? stopTasks : undefined}
-        />
+      tasks.length > 0 || (queues && (waiting.queue.items.length > 0 || waiting.queue.pausedBy)) ? (
+        <>
+          {queues ? (
+            <QueuedMessagesRow
+              // Per session: a remove pending in one must not show as pending in the next.
+              key={`queue:${sessionId}`}
+              queue={waiting.queue}
+              onRemove={waiting.remove}
+              onResume={waiting.resume}
+            />
+          ) : null}
+          {tasks.length > 0 ? (
+            <BackgroundTasksRow
+              // Per session: a stop pending in one must not show as pending in the next.
+              key={sessionId}
+              tasks={tasks}
+              onStop={canStop ? stopTasks : undefined}
+            />
+          ) : null}
+        </>
       ) : null,
-    [canStop, sessionId, stopTasks, tasks],
+    [canStop, queues, sessionId, stopTasks, tasks, waiting.queue, waiting.remove, waiting.resume],
   )
   const childSessions = useChildSessions(sessions, sessionId)
   const [ui] = useState(() => createComposerUi())
@@ -73,20 +98,22 @@ function LiveSession({ sessionId }: { sessionId: string }) {
   // One element for the page's life: the thread re-rendering leaves it be.
   const composer = useMemo(() => <LiveComposer sessionId={sessionId} ui={ui} />, [sessionId, ui])
   return (
-    <SessionThread
-      title={untitled(session?.title ?? title)}
-      project={workspace?.name}
-      projectId={workspace?.path ?? null}
-      above={above}
-      status={status}
-      messages={messages}
-      phase={phase}
-      failure={failure}
-      onRetry={retry}
-      childSessions={childSessions}
-      actions={actions}
-      composer={composer}
-    />
+    <SteerNowContext.Provider value={sendSteerNow}>
+      <SessionThread
+        title={untitled(session?.title ?? title)}
+        project={workspace?.name}
+        projectId={workspace?.path ?? null}
+        above={above}
+        status={status}
+        messages={messages}
+        phase={phase}
+        failure={failure}
+        onRetry={retry}
+        childSessions={childSessions}
+        actions={actions}
+        composer={composer}
+      />
+    </SteerNowContext.Provider>
   )
 }
 
@@ -97,6 +124,23 @@ export function FixtureSession({ sessionId, opened }: { sessionId: string; opene
   const [ui] = useState(() => createComposerUi(fixtureComposerUi(opened, window)))
   const fixture = useFixtureThread(sessionId)
   const messages = useSyncExternalStore(fixture.subscribe, fixture.getMessages)
+  // The sample chat's queue, as a live one shows it.
+  const lastQueue = useRef<WaitingQueue | undefined>(undefined)
+  const getQueue = useCallback(() => {
+    lastQueue.current = waitingQueueOf(fixture.getThread(), lastQueue.current)
+    return lastQueue.current
+  }, [fixture])
+  const queue = useSyncExternalStore(fixture.subscribe, getQueue)
+  const above = useMemo(
+    () => (
+      <QueuedMessagesRow
+        queue={queue}
+        onRemove={fixture.followUps.remove}
+        onResume={fixture.followUps.resume}
+      />
+    ),
+    [fixture, queue],
+  )
   const session = sessions.find((row) => row.externalId === sessionId)
   const workspace = workspaces.find((entry) => entry.path === session?.workspacePath)
   const status = useStatusLine(session, fixture.subscribe, fixture.getThread)
@@ -105,20 +149,26 @@ export function FixtureSession({ sessionId, opened }: { sessionId: string; opene
     () => unavailableSessionActions(session, 'A sample session: pair an environment to change it'),
     [session],
   )
-  const composer = useMemo(() => <FixtureComposer session={session} ui={ui} />, [session, ui])
+  const composer = useMemo(
+    () => <FixtureComposer session={session} ui={ui} followUps={fixture.followUps} />,
+    [fixture, session, ui],
+  )
   return (
     <FixtureThreadStores stores={fixture.stores}>
-      <SessionThread
-        title={untitled(session?.title)}
-        project={workspace?.name}
-        projectId={workspace?.path ?? null}
-        status={status}
-        messages={messages}
-        phase="ready"
-        childSessions={childSessions}
-        actions={actions}
-        composer={composer}
-      />
+      <SteerNowContext.Provider value={fixture.followUps.sendNow}>
+        <SessionThread
+          title={untitled(session?.title)}
+          project={workspace?.name}
+          projectId={workspace?.path ?? null}
+          above={above}
+          status={status}
+          messages={messages}
+          phase="ready"
+          childSessions={childSessions}
+          actions={actions}
+          composer={composer}
+        />
+      </SteerNowContext.Provider>
     </FixtureThreadStores>
   )
 }

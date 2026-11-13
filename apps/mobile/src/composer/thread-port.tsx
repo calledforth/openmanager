@@ -2,24 +2,51 @@ import { memo, useLayoutEffect, useState, useSyncExternalStore } from 'react'
 import {
   useActiveThreadState,
   type ActiveThreadStateValue,
+  type FollowUpAction,
   type SendRefused,
   type UploadedImageAttachment,
 } from '@openmanager/app-core/logic'
 
-type ThreadCommands = Pick<ActiveThreadStateValue, 'sendMessage' | 'abortSession' | 'buildPlan'>
+type ThreadCommands = Pick<
+  ActiveThreadStateValue,
+  'sendMessage' | 'abortSession' | 'buildPlan' | 'followUps'
+>
 
 /**
- * The thread's commands and its listed status, for the composer. The shared
- * thread state is a new value with every streamed token (its rows change),
- * so the composer does not read it: `ThreadBridge` does, renders nothing,
- * and hands on only the status, and only when it changes. The commands are
- * read at the moment they run, so the latest is always the one called.
+ * What the composer reads of the thread: its listed status, and whether a
+ * message sent now waits or joins the running turn. Each changes with the
+ * turn, never with a token.
+ */
+export interface ThreadPortState {
+  status: string | undefined
+  /** A message sent now cannot start a turn of its own (`followUps.busy`). */
+  busy: boolean
+  /** The running turn takes a steered message (`followUps.canSteer`). */
+  canSteer: boolean
+}
+
+const INITIAL: ThreadPortState = { status: undefined, busy: false, canSteer: false }
+
+/**
+ * The thread's commands and its state, for the composer. The shared thread
+ * state is a new value with every streamed token (its rows change), so the
+ * composer does not read it: `ThreadBridge` does, renders nothing, and hands
+ * on only `ThreadPortState`, and only when it changes. The commands are read
+ * at the moment they run, so the latest is always the one called.
  */
 export interface ThreadPort {
+  state(): ThreadPortState
+  /** The listed status alone, as before follow-ups. */
   status(): string | undefined
   subscribe(listener: () => void): () => void
   /** Rejects when the environment refused the message, with its reason. */
   send(text: string, attachments?: UploadedImageAttachment[]): Promise<void>
+  /** Queue the message for the next turn, or steer it into the running one. Rejects with the reason. */
+  followUp(
+    action: FollowUpAction,
+    text: string,
+    attachments?: UploadedImageAttachment[],
+  ): Promise<void>
   abort(sessionId: string): Promise<void>
   buildPlan(sessionId: string, requestId: string, modeId?: string): Promise<void>
   /** The bridge's side: what the thread state says now. */
@@ -27,7 +54,7 @@ export interface ThreadPort {
 }
 
 export function createThreadPort(): ThreadPort {
-  let status: string | undefined
+  let state = INITIAL
   let commands: ThreadCommands | null = null
   const listeners = new Set<() => void>()
   const need = () => {
@@ -35,7 +62,8 @@ export function createThreadPort(): ThreadPort {
     return commands
   }
   return {
-    status: () => status,
+    state: () => state,
+    status: () => state.status,
     subscribe(listener) {
       listeners.add(listener)
       return () => {
@@ -49,13 +77,20 @@ export function createThreadPort(): ThreadPort {
       // The phone has no retry on a refused row: the composer puts the draft back.
       if (outcome && 'refused' in outcome) throw new Error(outcome.refused)
     },
+    followUp: async (action, text, attachments) => {
+      const followUps = need().followUps
+      if (!followUps) throw new Error('This environment cannot hold a message for later.')
+      await followUps[action](text, attachments)
+    },
     abort: async (sessionId) => need().abortSession(sessionId),
     buildPlan: async (sessionId, requestId, modeId) =>
       need().buildPlan(sessionId, requestId, modeId),
-    update(next, nextCommands) {
+    update(status, nextCommands) {
       commands = nextCommands
-      if (next === status) return
-      status = next
+      const busy = nextCommands.followUps?.busy === true
+      const canSteer = nextCommands.followUps?.canSteer === true
+      if (status === state.status && busy === state.busy && canSteer === state.canSteer) return
+      state = { status, busy, canSteer }
       for (const listener of [...listeners]) listener()
     },
   }
@@ -71,9 +106,9 @@ export const ThreadBridge = memo(function ThreadBridge({ port }: { port: ThreadP
   return null
 })
 
-/** A port and the status it carries, re-rendering only when the status changes. */
+/** A port and the state it carries, re-rendering only when that state changes. */
 export function useThreadPort() {
   const [port] = useState(createThreadPort)
-  const status = useSyncExternalStore(port.subscribe, port.status, port.status)
-  return { port, status }
+  const state = useSyncExternalStore(port.subscribe, port.state, port.state)
+  return { port, status: state.status, busy: state.busy, canSteer: state.canSteer }
 }

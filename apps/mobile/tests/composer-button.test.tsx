@@ -23,6 +23,11 @@ vi.mock('react-native-svg', () => {
   const Stub = ({ children }: { children?: unknown }) => children ?? null
   return { default: Stub, Path: Stub, Rect: Stub }
 })
+// The follow-up glyphs (queue, steer) are Phosphor's; their drawing is not under test.
+vi.mock('phosphor-react-native', () => {
+  const Stub = () => null
+  return { ArrowBendUpRightIcon: Stub, ClockIcon: Stub }
+})
 vi.mock('../src/ui/haptics', () => ({ tap: () => undefined }))
 // Any colour will do here (the token map pulls in NativeWind's native runtime).
 vi.mock('../src/theme/ThemeProvider', () => {

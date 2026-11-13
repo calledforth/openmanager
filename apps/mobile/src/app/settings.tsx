@@ -17,6 +17,7 @@ import { AppText } from '../components/ui/AppText'
 import { usePhoneConnection } from '../environment/PhoneEnvironmentProvider'
 import { suggestPhoneLabel } from '../pairing/device-label'
 import { AppearanceSection } from '../settings/AppearanceSection'
+import { ChatSection } from '../settings/ChatSection'
 import { EnvironmentCard } from '../settings/EnvironmentCard'
 import { environmentCards } from '../settings/environments'
 import { NotificationsSection } from '../settings/NotificationsSection'
@@ -112,6 +113,8 @@ export default function SettingsScreen() {
 
             <SectionLabel>Appearance</SectionLabel>
             <AppearanceSection />
+
+            <ChatSection />
 
             <NotificationsSection />
 

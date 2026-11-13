@@ -7,7 +7,6 @@ import type {
   QueuedMessage,
   SessionComposerState,
   ThreadQueue,
-  ThreadQueuePause,
 } from '@openmanager/environment-client'
 import { Tooltip } from '../ui/Tooltip'
 import { useActiveThreadState } from '../../providers/active-thread-provider'
@@ -18,20 +17,9 @@ import {
 } from '../../providers/environment-client'
 import { effortConfigOption } from './modelConfig'
 import { modelLabel } from './modelLabel'
+import { QUEUE_PAUSE_REASON, queuedMessagePreview } from './queuedMessage'
 
-/** Why a queue waits for the user, as its header says it. */
-export const QUEUE_PAUSE_REASON: Record<ThreadQueuePause, string> = {
-  failure: 'the turn failed',
-  restart: 'the server restarted',
-}
-
-/** What a waiting message says, on one line: its text, else that it is only images. */
-export function queuedMessagePreview(item: Pick<QueuedMessage, 'text' | 'artifactIds'>): string {
-  const text = item.text.replace(/\s+/g, ' ').trim()
-  if (text) return text
-  const images = item.artifactIds?.length ?? 0
-  return images === 1 ? 'An image' : `${images} images`
-}
+export { QUEUE_PAUSE_REASON, queuedMessagePreview } from './queuedMessage'
 
 /** Ids providers give the reasoning-depth setting, when the chat lists none. */
 const EFFORT_IDS = ['effort', 'reasoning_effort', 'reasoning']

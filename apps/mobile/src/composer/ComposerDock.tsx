@@ -29,7 +29,7 @@ import {
 import { AttachGlyph } from './icons'
 import { ImageStrip } from './ImageStrip'
 import { composerFold, type ComposerModel } from './model'
-import { PrimaryButton } from './Pick'
+import { PrimaryButton, StopBeside } from './Pick'
 import { measure, Picks } from './Picks'
 import { PermissionPrompt, PlanPrompt, QuestionPrompt } from './Prompts'
 import type { ComposerUi } from './ui-state'
@@ -287,13 +287,20 @@ export function ComposerDock({
                 <AttachButton model={model} ui={ui} />
                 <PrimaryButton
                   action={model.primary}
-                  onSend={() => {
+                  onSend={(action) => {
                     // The reply is what comes next: the page takes the room back.
                     Keyboard.dismiss()
-                    model.send()
+                    model.send(action)
                   }}
                   onStop={model.interrupt}
+                  onChoose={(anchor) => ui.open({ kind: 'followUp', anchor })}
                 />
+                {/* Typed while a turn runs, the button queues or steers; Stop stays in reach. */}
+                {model.stop ? (
+                  <Animated.View entering={FOLD_IN} exiting={FOLD_OUT}>
+                    <StopBeside action={model.stop} onStop={model.interrupt} />
+                  </Animated.View>
+                ) : null}
               </View>
               {fold === 'rest' || prompt?.kind === 'plan' ? (
                 <Animated.View

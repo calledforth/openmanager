@@ -162,6 +162,27 @@ export function workingThread(now: number): ThreadState {
       startedAt: iso(now - 4_000),
     })
     .thought(turn, 'live-thought-2', '', 'delta')
+  // A steer waiting on the running command, and a message queued behind it.
+  live.state.queue = {
+    items: [
+      {
+        queueItemId: 'fixture-steer',
+        text: 'Skip the web tests, the protocol suite is enough for now.',
+        settings: {},
+        delivery: 'steering',
+        createdAt: iso(now - 20_000),
+      },
+      {
+        queueItemId: 'fixture-queued',
+        text: 'Then update the protocol README with the new fields.',
+        settings: {},
+        delivery: 'queued',
+        createdAt: iso(now - 12_000),
+      },
+    ],
+    pausedBy: null,
+  }
+  live.state.steeredQueueIds = ['fixture-steer']
   return live.state
 }
 

@@ -56,6 +56,8 @@ export const ResolvedMessage = memo(function ResolvedMessage({ message }: { mess
             parts={row.parts}
             attachments={row.attachments}
             isQueued={row.queued}
+            steer={row.steer}
+            queueItemId={row.queueItemId}
             sendError={row.sendError}
           />
         ) : (
