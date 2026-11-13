@@ -1,6 +1,9 @@
 import { useEffect, useMemo, useState, type ReactNode } from 'react'
 import { DeviceHostContext, type DeviceStorage } from '@openmanager/app-core/logic'
 
+/** How often a page waiting on a failed load checks whether boot's retry landed. */
+const READY_POLL_MS = 500
+
 /** What `HydratedDevice` needs of the phone's storage: its device store, and its load. */
 export interface LoadingDeviceStore {
   readonly device: DeviceStorage
@@ -31,15 +34,26 @@ export function HydratedDevice({
   useEffect(() => {
     if (ready) return
     let live = true
+    let poll: ReturnType<typeof setInterval> | undefined
     store.hydrate().then(
       () => {
         if (live) setReady(true)
       },
-      // A failed load is boot's to report and retry; this keeps waiting.
-      () => undefined,
+      // A failed load is boot's to report and retry. Its later success
+      // settles no promise held here, so watch for it instead: an open page
+      // then offers the setting without being opened again.
+      () => {
+        if (!live) return
+        poll = setInterval(() => {
+          if (!store.hydrated) return
+          clearInterval(poll)
+          if (live) setReady(true)
+        }, READY_POLL_MS)
+      },
     )
     return () => {
       live = false
+      if (poll) clearInterval(poll)
     }
   }, [ready, store])
   const host = useMemo(() => ({ storage: ready ? store.device : null }), [ready, store])

@@ -126,4 +126,38 @@ describe('the device storage outside an environment', () => {
     await act(async () => store.release())
     expect(seen).toBe(store.device)
   })
+
+  it("offers the setting once boot's retry lands after a failed load", async () => {
+    vi.useFakeTimers()
+    try {
+      const store = fakeStore()
+      let hydrated = false
+      const failing = {
+        ...store,
+        get hydrated() {
+          return hydrated
+        },
+        hydrate: () => Promise.reject(new Error('disk busy')),
+      } satisfies LoadingDeviceStore
+      act(() =>
+        root.render(
+          <HydratedDevice store={failing} hold>
+            <Probe />
+          </HydratedDevice>,
+        ),
+      )
+      await act(async () => {
+        await Promise.resolve()
+      })
+      expect(host.textContent).toBe('')
+      // Boot retries on its own and succeeds; the open page notices.
+      hydrated = true
+      await act(async () => {
+        vi.advanceTimersByTime(600)
+      })
+      expect(host.textContent).toBe('choice')
+    } finally {
+      vi.useRealTimers()
+    }
+  })
 })
