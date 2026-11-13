@@ -15,6 +15,7 @@ import { SteerNowContext } from './steer-now'
 
 import { LiveComposer } from '../composer/LiveComposer'
 import { FixtureComposer } from '../composer/FixtureComposer'
+import { PhoneDevice } from '../storage/PhoneDevice'
 import { createComposerUi, fixtureComposerUi } from '../composer/ui-state'
 import type { HomeSession } from '../home/rows'
 import { useHomeSource, usePageSessions } from '../home/source'
@@ -150,7 +151,12 @@ export function FixtureSession({ sessionId, opened }: { sessionId: string; opene
     [session],
   )
   const composer = useMemo(
-    () => <FixtureComposer session={session} ui={ui} followUps={fixture.followUps} />,
+    () => (
+      // No environment above a sample session: this phone's Send choice comes from its own storage.
+      <PhoneDevice>
+        <FixtureComposer session={session} ui={ui} followUps={fixture.followUps} />
+      </PhoneDevice>
+    ),
     [fixture, session, ui],
   )
   return (

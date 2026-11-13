@@ -2,6 +2,7 @@ import { View } from 'react-native'
 import { useEnterWhileRunning, type FollowUpAction } from '@openmanager/app-core/logic'
 
 import { AppText } from '../components/ui/AppText'
+import { PhoneDevice } from '../storage/PhoneDevice'
 import { usePhoneTheme } from '../theme/ThemeProvider'
 import { SectionLabel } from '../ui/chrome'
 import { Segmented } from './Segmented'
@@ -23,6 +24,14 @@ const EXPLAINED: Record<FollowUpAction, string> = {
  * on its device: it is how this person types, not what a chat holds.
  */
 export function ChatSection() {
+  return (
+    <PhoneDevice>
+      <ChatChoice />
+    </PhoneDevice>
+  )
+}
+
+function ChatChoice() {
   const theme = usePhoneTheme()
   const [value, setValue] = useEnterWhileRunning()
   return (
