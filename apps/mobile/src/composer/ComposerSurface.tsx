@@ -24,14 +24,14 @@ import { ComposerDock } from './ComposerDock'
 import { LibraryPick } from './LibraryPick'
 import { ModeIcon } from './icons'
 import { useKeyboardHeight } from './keyboard'
-import { FOLLOW_UP_LABEL, slashPopupOf, type ComposerModel } from './model'
+import { FOLLOW_UP_LABEL, followUpMenuOf, slashPopupOf, type ComposerModel } from './model'
 import { promptRoom, PromptRoomContext } from './prompt-room'
 import { ModelSheet } from './ModelSheet'
 import { PlanSheet } from './PlanSheet'
 import { ProjectSheet, type ProjectSource } from './ProjectSheet'
 import { SettingsSheet } from './SettingsSheet'
 import { SlashPopup } from './SlashPopup'
-import { useComposerUiState, type ComposerUi } from './ui-state'
+import { useCloseWhenGone, useComposerUiState, type ComposerUi } from './ui-state'
 
 /** Both ways to send while the chat is busy: the phone's choice first, as web's menu. */
 function followUpChoices(enter: FollowUpAction, alternate: FollowUpAction): ComposerChoice[] {
@@ -85,9 +85,12 @@ export function ComposerSurface({
 
   // A plan answered elsewhere takes its sheet with it.
   const plan = model.prompt?.kind === 'plan' ? model.prompt.plan : null
-  useEffect(() => {
-    if (overlay?.kind === 'plan' && !plan) ui.close()
-  }, [overlay, plan, ui])
+  useCloseWhenGone(ui, overlay, 'plan', plan !== null)
+
+  // The send menu goes when its choice does (the turn ended, the field was
+  // emptied): drawn no longer, it must not keep the page covered either.
+  const followUpMenu = followUpMenuOf(model.primary)
+  useCloseWhenGone(ui, overlay, 'followUp', followUpMenu !== null)
 
   // Whatever the composer opens covers the dock and the page: a screen
   // reader reads only the layer on top, as under a sheet.
@@ -221,13 +224,11 @@ export function ComposerSurface({
             onClose={ui.close}
           />
         ) : null}
-        {overlay?.kind === 'followUp' &&
-        (model.primary.kind === 'queue' || model.primary.kind === 'steer') &&
-        model.primary.alternate ? (
+        {overlay?.kind === 'followUp' && followUpMenu ? (
           <ChoicePopover
             anchor={overlay.anchor}
             label="Send"
-            choices={followUpChoices(model.primary.kind, model.primary.alternate)}
+            choices={followUpChoices(...followUpMenu)}
             current=""
             icon={(choice) =>
               choice.id === 'queue' ? (

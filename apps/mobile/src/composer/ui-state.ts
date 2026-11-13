@@ -1,4 +1,4 @@
-import { createContext, useContext, useSyncExternalStore } from 'react'
+import { createContext, useContext, useEffect, useSyncExternalStore } from 'react'
 
 /** What the composer has open over the page. */
 export type ComposerOverlay =
@@ -65,6 +65,24 @@ export function useComposerUi(): ComposerUi {
   const ui = useContext(ComposerUiContext)
   if (!ui) throw new Error('useComposerUi must be used inside a ComposerUiContext')
   return ui
+}
+
+/**
+ * Closes the overlay of `kind` once what it shows is gone (a plan answered
+ * elsewhere, a send choice the turn's end took away). The view stops drawing
+ * it at once; this takes it out of the state too, so it no longer covers the
+ * page for a screen reader (`covered`) or comes back when the choice does.
+ */
+export function useCloseWhenGone(
+  ui: ComposerUi,
+  overlay: ComposerOverlay | null,
+  kind: ComposerOverlay['kind'],
+  offered: boolean,
+): void {
+  const open = overlay?.kind === kind
+  useEffect(() => {
+    if (open && !offered) ui.close()
+  }, [offered, open, ui])
 }
 
 /** The composer's on-screen state, re-rendering when it changes. */

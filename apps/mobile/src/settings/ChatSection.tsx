@@ -25,7 +25,8 @@ const EXPLAINED: Record<FollowUpAction, string> = {
  */
 export function ChatSection() {
   return (
-    <PhoneDevice>
+    // Offered once the phone's storage has loaded: a choice made before would be dropped.
+    <PhoneDevice hold>
       <ChatChoice />
     </PhoneDevice>
   )

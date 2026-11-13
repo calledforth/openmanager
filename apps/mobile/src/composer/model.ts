@@ -171,6 +171,19 @@ export function pressPrimary(
   else handlers.send(action.kind)
 }
 
+/**
+ * The long-press menu's two ways to send, the button's own first; null when
+ * the button offers no choice (nothing typed, the turn ended, it cannot
+ * steer). The menu is drawn only while this is not null, and closed when it
+ * becomes null under it.
+ */
+export function followUpMenuOf(
+  primary: Pick<PrimaryAction, 'kind' | 'alternate'>,
+): [FollowUpAction, FollowUpAction] | null {
+  if ((primary.kind !== 'queue' && primary.kind !== 'steer') || !primary.alternate) return null
+  return [primary.kind, primary.alternate]
+}
+
 /** How a follow-up reads in the long-press menu and to a screen reader, as web's menu says it. */
 export const FOLLOW_UP_LABEL: Record<FollowUpAction, { label: string; description: string }> = {
   queue: { label: 'Queue', description: 'Runs when this turn ends' },
