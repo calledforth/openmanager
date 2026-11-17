@@ -8,7 +8,6 @@ import {
   useState,
   type MouseEvent as ReactMouseEvent,
   type ReactNode,
-  type Ref,
 } from 'react'
 import { AnimatePresence, motion, useReducedMotion, type MotionProps } from 'motion/react'
 import {
@@ -226,7 +225,7 @@ export interface SidebarDraftRow {
   workspace?: SidebarWorkspace
 }
 
-/** One card in Drafts or Active: a draft, or a session with its subagents. */
+/** One card in the list: a draft, or an active session with its subagents. */
 type ActiveItem = SidebarDraftRow | { kind: 'session'; entry: SidebarBoardEntry }
 
 /** Each draft with its project, in the order given. */
@@ -344,8 +343,8 @@ function useRowMotion(armed: boolean): MotionProps {
 
 /**
  * How a card that changes places moves: a sent draft's card going down to
- * the top of Active past the drafts still waiting, and those drafts closing
- * up. Nothing else moves this way: a card only takes a layout measurement
+ * the top of the sessions past the drafts still waiting, and those drafts
+ * closing up. Nothing else moves this way: a card only takes a layout measurement
  * when its place changes (`layoutDependency`), not on every render of the
  * list, and a session that changes places with newer activity still moves at
  * once.
@@ -353,19 +352,6 @@ function useRowMotion(armed: boolean): MotionProps {
 function useCardLayoutTransition(): MotionProps['transition'] {
   const reduceMotion = useReducedMotion() ?? false
   return useMemo(() => ({ layout: reduceMotion ? { duration: 0 } : ROOM }), [reduceMotion])
-}
-
-/**
- * The room a handed-over card closes below itself when it was the last draft:
- * the Drafts label and the gap under the drafts. Those go at once, with the
- * Active label taking the Drafts label's place, so nothing above the card
- * moves and the card holds still; the sessions below rise into the room as
- * it closes. One animation, so nothing can fall out of step with it.
- */
-interface HandoffFold {
-  px: number
-  /** The hand-off it belongs to, so a later one replays it. */
-  count: number
 }
 
 /** A card's key among the cards of every environment. */
@@ -376,31 +362,22 @@ function entryKey(entry: SidebarBoardEntry): string {
 
 /** A sent draft whose session took its card over. */
 interface Handoff {
-  /** Counts hand-offs, so each one replays the Active label's fade. */
-  count: number
   /** The session each handed-over card belongs to (`entryKey`), and the draft it was. */
   from: ReadonlyMap<string, string>
   /** What each handed-over card read as a draft: its title until the session is named. By `entryKey`. */
   previews: ReadonlyMap<string, string>
-  /** The last draft went with it (see `HandoffFold`). */
-  fold: HandoffFold | null
 }
 
-const NO_HANDOFF: Handoff = { count: 0, from: new Map(), previews: new Map(), fold: null }
+const NO_HANDOFF: Handoff = { from: new Map(), previews: new Map() }
 
 /**
  * Notices a draft's card becoming its session's: a key that was a draft in
  * the last render and is an active session now. The two lists never share a
  * key in one render, since a draft whose session is listed is left out of
  * the drafts in the same update. Read during render, so the frame that
- * moves the card already knows. `measureFold` reads the room the Drafts
- * label and its gap took, from the frame still on screen.
+ * moves the card already knows.
  */
-function useHandoff(
-  drafts: SidebarDraft[],
-  active: SidebarBoardEntry[],
-  measureFold: () => number,
-): [Handoff, (count: number) => void] {
+function useHandoff(drafts: SidebarDraft[], active: SidebarBoardEntry[]): Handoff {
   // Keyed on the drafts as the host hands them over, which change only when a
   // card does: a session update must not set state here and render the whole
   // view a second time.
@@ -408,17 +385,7 @@ function useHandoff(
     drafts,
     handoff: NO_HANDOFF,
   })
-  // Once its room has closed, the fold is over and the faded Drafts label goes.
-  const endFold = useCallback(
-    (count: number) =>
-      setSeen((current) =>
-        current.handoff.fold?.count === count
-          ? { ...current, handoff: { ...current.handoff, fold: null } }
-          : current,
-      ),
-    [],
-  )
-  if (seen.drafts === drafts) return [seen.handoff, endFold]
+  if (seen.drafts === drafts) return seen.handoff
   const before = new Map(
     seen.drafts.map((draft) => [sidebarRowKey(draft.environmentId, draft.sessionId), draft]),
   )
@@ -442,31 +409,13 @@ function useHandoff(
   }
   let handoff = seen.handoff
   if (from.size > 0) {
-    const count = seen.handoff.count + 1
-    handoff = {
-      count,
-      from,
-      previews,
-      fold: drafts.length === 0 ? { px: measureFold(), count } : null,
-    }
+    handoff = { from, previews }
   } else if (seen.handoff.from.size > 0 || seen.handoff.previews.size !== previews.size) {
-    handoff = { ...NO_HANDOFF, count: seen.handoff.count, previews }
+    handoff = { from: NO_HANDOFF.from, previews }
   }
   setSeen({ drafts, handoff })
-  return [handoff, endFold]
+  return handoff
 }
-
-/**
- * The fold's timing: the slow tier's length, eased out, on CSS rather than
- * Motion. It has to be in place in the very commit that hands the card over,
- * before the first frame paints, and a Motion value only lands on the frame
- * after.
- */
-const FOLD_MS = 240
-const FOLD_EASE = 'cubic-bezier(0.25, 1, 0.5, 1)'
-/** The Active label's fade after a hand-off, begun once the Drafts label (spring.moderate.exit) is mostly gone. */
-const LABEL_FADE_MS = 200
-const LABEL_FADE_DELAY_MS = 90
 
 /**
  * The surface behind an element: the first ancestor that paints a background.
@@ -718,8 +667,9 @@ export interface WorkspaceSidebarViewProps {
     environmentId?: string,
   ) => void
   /**
-   * Unsent new-session drafts, shown as cards in a Drafts section above Active, in the
-   * order given (newest edit first). Hosts without draft pages leave them out.
+   * Unsent new-session drafts, shown as cards in a Drafts section above the active
+   * sessions, in the order given (newest edit first). Hosts without draft pages leave
+   * them out.
    */
   drafts?: SidebarDraft[]
   /** The draft on screen; its card shows selected. */
@@ -932,22 +882,7 @@ export function WorkspaceSidebarView({
     rowMotion,
   }
   const cardLayout = useCardLayoutTransition()
-  const draftsLabelRef = useRef<HTMLDivElement>(null)
-  const activeLabelRef = useRef<HTMLDivElement>(null)
-  const [handoff, endFold] = useHandoff(drafts, active, () => {
-    // Read in the render that hands the card over, off the frame on screen.
-    const label = draftsLabelRef.current?.offsetHeight ?? 0
-    const gap = activeLabelRef.current
-      ? Number.parseFloat(getComputedStyle(activeLabelRef.current).paddingTop) || 0
-      : 0
-    return label + gap
-  })
-  const fold = handoff.fold
-  useEffect(() => {
-    if (!fold) return
-    const timer = setTimeout(() => endFold(fold.count), FOLD_MS + 60)
-    return () => clearTimeout(timer)
-  }, [endFold, fold])
+  const handoff = useHandoff(drafts, active)
 
   // Rows at Tend's 15px body size.
   return (
@@ -966,26 +901,24 @@ export function WorkspaceSidebarView({
           workspaces.every((workspace) => workspace.scratch && workspace.sessions.length === 0)) ? (
           <p className="px-4 py-5 text-[13px] text-muted-foreground">No projects yet</p>
         ) : (
-          // Drafts and Active share the floor, so Settled keeps its spot
-          // whether or not drafts are waiting above the active cards.
+          // The drafts and the active sessions share the floor, so Settled
+          // keeps its spot whether or not drafts are waiting above the cards.
           <div ref={setActiveGroup} className="flex flex-col" style={{ minHeight: activeFloor }}>
-            {/* Drafts, newest edit first, then the active sessions: one list,
-                with each section's label a row in it. A draft's card is keyed
-                by the session it will become, so its send hands the same row
-                to the session's card, which slides down to the top of Active
-                rather than folding away here and growing in there. The Drafts
-                label comes and goes with the first and last draft. */}
+            {/* Drafts, newest edit first, then the active sessions: one list.
+                The drafts are labelled, the sessions are not: they start
+                straight below the drafts, or at the top. A draft's card is
+                keyed by the session it will become, so its send hands the same
+                row to the session's card, which slides down to the top of the
+                sessions rather than folding away here and growing in there. */}
             <SidebarGroup>
               <CardList>
-                {/* Kept for the fold after the last draft is handed over: out
-                    of the flow, fading where it was as Active takes its place. */}
-                {draftRows.length > 0 || fold ? (
-                  <SectionLabel
-                    key="drafts-label"
-                    rowRef={draftsLabelRef}
-                    rowMotion={rowMotion}
-                    popped={draftRows.length === 0}
-                  >
+                {/* The Drafts label comes and goes with the first and last
+                    draft. When the last one is sent, it and the gap below the
+                    drafts fold away together, in the flow: the card they held
+                    rises into the label's place and the sessions follow it,
+                    every row moving as one. */}
+                {draftRows.length > 0 ? (
+                  <SectionLabel key="drafts-label" rowMotion={rowMotion}>
                     Drafts
                   </SectionLabel>
                 ) : null}
@@ -995,7 +928,6 @@ export function WorkspaceSidebarView({
                     item={row}
                     place={index}
                     layoutTransition={cardLayout}
-                    fold={null}
                     untitled={undefined}
                     selected={
                       row.draft.draftId === activeDraftId &&
@@ -1006,20 +938,15 @@ export function WorkspaceSidebarView({
                     {...shared}
                   />
                 ))}
-                <MemoActiveLabel
-                  key="active-label"
-                  rowRef={activeLabelRef}
-                  spaced={draftRows.length > 0}
-                  instant={fold !== null}
-                  handoff={handoff.count}
-                />
+                {draftRows.length > 0 && active.length > 0 ? (
+                  <SectionGap key="drafts-gap" rowMotion={rowMotion} />
+                ) : null}
                 {active.map((entry) => (
                   <MemoActiveCard
                     key={entryKey(entry)}
                     item={{ kind: 'session', entry }}
                     place={entry.root.session.pinnedAt ? 'pinned' : 'session'}
                     layoutTransition={cardLayout}
-                    fold={fold && handoff.from.has(entryKey(entry)) ? fold : null}
                     untitled={handoff.previews.get(entryKey(entry))}
                     selected={
                       entrySelection(entry, activeSessionId, activeEnvironmentId) ??
@@ -1029,8 +956,9 @@ export function WorkspaceSidebarView({
                   />
                 ))}
               </CardList>
-              <EmptyNote show={active.length === 0} rowMotion={rowMotion}>
-                {settled.length > 0 ? 'All caught up.' : 'No sessions yet.'}
+              {/* Only when the list is empty: under drafts it would say nothing. */}
+              <EmptyNote show={active.length + draftRows.length === 0} rowMotion={rowMotion}>
+                {settled.length + cooking.length > 0 ? 'All caught up.' : 'No sessions yet.'}
               </EmptyNote>
             </SidebarGroup>
           </div>
@@ -1311,7 +1239,12 @@ const MemoSidebarActions = memo(SidebarActions)
  */
 function CardList({ children }: { children: ReactNode }) {
   return (
-    <div role="list" tabIndex={-1} className="relative flex flex-col outline-none">
+    <div
+      role="list"
+      aria-label="Sessions"
+      tabIndex={-1}
+      className="relative flex flex-col outline-none"
+    >
       <AnimatePresence initial={false} presenceAffectsLayout={false}>
         {children}
       </AnimatePresence>
@@ -1323,32 +1256,9 @@ function CardList({ children }: { children: ReactNode }) {
  * A section's label as a row of the card list: it comes and goes as a card
  * does. Not a list item; a heading, so the sections can be found by one.
  */
-function SectionLabel({
-  rowMotion,
-  rowRef,
-  popped,
-  children,
-}: {
-  rowMotion: MotionProps
-  rowRef: Ref<HTMLDivElement>
-  /** Out of the flow, fading where it is: its section was handed over (`HandoffFold`). */
-  popped: boolean
-  children: ReactNode
-}) {
-  const reduceMotion = useReducedMotion() ?? false
+function SectionLabel({ rowMotion, children }: { rowMotion: MotionProps; children: ReactNode }) {
   return (
-    <motion.div
-      ref={rowRef}
-      role="presentation"
-      aria-hidden={popped || undefined}
-      className={cn('overflow-hidden', popped && 'pointer-events-none absolute inset-x-0 top-0')}
-      {...rowMotion}
-      animate={
-        popped
-          ? { opacity: 0, transition: reduceMotion ? { duration: 0 } : spring.moderate.exit }
-          : rowMotion.animate
-      }
-    >
+    <motion.div role="presentation" className="overflow-hidden" {...rowMotion}>
       <SidebarGroupLabel role="heading" aria-level={2}>
         {children}
       </SidebarGroupLabel>
@@ -1356,69 +1266,21 @@ function SectionLabel({
   )
 }
 
-/** The room between the last draft and the Active label. */
+/** The room between the last draft and the first session. */
 const SECTION_GAP = 16
 
 /**
- * The Active label, always in the list. Drafts above it are set off by a gap
- * that opens with the first draft and closes with the last. When a sent
- * draft's card moves down past it, the label does not travel up through the
- * card: it fades in at its new place instead (`handoff` counts the hand-offs).
- *
- * The gap is plain CSS, so that a hand-off of the last draft can close it in
- * the commit itself (`instant`), the card below holding still.
+ * The gap that sets the drafts off from the sessions below them, a row of the
+ * card list: it opens and closes as a row comes and goes, so when the last
+ * draft is sent it folds away in step with the Drafts label.
  */
-function ActiveLabel({
-  rowRef,
-  spaced,
-  instant,
-  handoff,
-}: {
-  rowRef: Ref<HTMLDivElement>
-  spaced: boolean
-  instant: boolean
-  handoff: number
-}) {
-  const reduceMotion = useReducedMotion() ?? false
-  const labelRef = useRef<HTMLDivElement>(null)
-  // Web Animations, not Motion: inside the list's presence (initial={false})
-  // a Motion child mounted later skips its `initial`, so a keyed fade never
-  // plays. Opacity alone runs off the main thread, and it waits a beat, until
-  // the Drafts label it replaces has mostly faded, so the two never overprint.
-  useLayoutEffect(() => {
-    const label = labelRef.current
-    if (handoff === 0 || reduceMotion || typeof label?.animate !== 'function') return
-    const fade = label.animate([{ opacity: 0 }, { opacity: 1 }], {
-      duration: LABEL_FADE_MS,
-      delay: LABEL_FADE_DELAY_MS,
-      easing: FOLD_EASE,
-      fill: 'backwards',
-    })
-    return () => fade.cancel()
-  }, [handoff, reduceMotion])
+function SectionGap({ rowMotion }: { rowMotion: MotionProps }) {
   return (
-    <div
-      ref={rowRef}
-      role="presentation"
-      style={{
-        paddingTop: spaced ? SECTION_GAP : 0,
-        // Opening on the slow tier, closing with the label's fold above it.
-        transition:
-          instant || reduceMotion
-            ? undefined
-            : `padding-top ${spaced ? FOLD_MS : spring.slow.exit.duration * 1000}ms ${FOLD_EASE}`,
-      }}
-    >
-      <div ref={labelRef}>
-        <SidebarGroupLabel role="heading" aria-level={2}>
-          Active
-        </SidebarGroupLabel>
-      </div>
-    </div>
+    <motion.div role="presentation" className="overflow-hidden" {...rowMotion}>
+      <div style={{ height: SECTION_GAP }} />
+    </motion.div>
   )
 }
-
-const MemoActiveLabel = memo(ActiveLabel)
 
 /** What an empty list says, coming and going the way a row does. */
 function EmptyNote({
@@ -1522,44 +1384,13 @@ interface ActiveCardProps extends RowHandlers {
   place: number | 'session' | 'pinned'
   /** How the card moves when its place changes (`useCardLayoutTransition`). */
   layoutTransition: MotionProps['transition']
-  /**
-   * The room this card closes below itself, when it took the last draft's
-   * place (`HandoffFold`). Read in the render that hands the card over, which
-   * re-renders it anyway, so it is left out of the card's comparison: the fold
-   * being over is no reason to render the card again.
-   */
-  fold: HandoffFold | null
   /** What a session card reads while its session has no title yet: the draft's first line, after a hand-off. */
   untitled: string | undefined
 }
 
-/** A card in Drafts or Active: a new-session draft, or a session. */
-function ActiveCard({
-  item,
-  place,
-  layoutTransition,
-  fold,
-  untitled,
-  ...handlers
-}: ActiveCardProps) {
+/** A card in the list: a new-session draft, or an active session. */
+function ActiveCard({ item, place, layoutTransition, untitled, ...handlers }: ActiveCardProps) {
   const rowRef = useRef<HTMLDivElement>(null)
-  const reduceMotion = useReducedMotion() ?? false
-  // Before the first frame paints: the room starts open, so nothing below the
-  // card moves in the commit, then closes.
-  useLayoutEffect(() => {
-    const row = rowRef.current
-    if (!fold || !row || reduceMotion) return
-    row.style.transition = 'none'
-    row.style.paddingBottom = `${fold.px}px`
-    void row.offsetHeight
-    row.style.transition = `padding-bottom ${FOLD_MS}ms ${FOLD_EASE}`
-    row.style.paddingBottom = '0px'
-    const timer = setTimeout(() => {
-      row.style.transition = ''
-      row.style.paddingBottom = ''
-    }, FOLD_MS + 60)
-    return () => clearTimeout(timer)
-  }, [fold, reduceMotion])
   return (
     // The clip lets the card fold to nothing on its way out; the padding
     // inside it is the space between cards, so it folds away too.

@@ -102,12 +102,14 @@ async function render({
   await act(() => new Promise<void>((resolve) => setTimeout(resolve, 0)))
 }
 
-/** The rows of the card list, labels included, as what each one reads. */
+/** The rows of the card list, the label and the gap included, as what each one reads. */
 const rows = () =>
   [...container.querySelector('[role="list"]')!.children].map((row) =>
     row.getAttribute('role') === 'listitem'
       ? (row.querySelector('.text-\\[14px\\]')?.firstChild?.textContent ?? '')
-      : `[${row.textContent}]`,
+      : row.textContent
+        ? `[${row.textContent}]`
+        : '(gap)',
   )
 const rowOf = (text: string) =>
   [...container.querySelectorAll('[role="listitem"]')].find((row) =>
@@ -115,14 +117,14 @@ const rowOf = (text: string) =>
   )
 
 describe('sending a draft from the sidebar', () => {
-  it('hands its row to the session, which moves down to the top of Active', async () => {
+  it('hands its row to the session, which moves down to the top of the sessions', async () => {
     const drafts = [draft('d2', 'second idea', 2), draft('d1', 'first idea', 1)]
     await render({ sessions: [OLDER, OLDEST], drafts })
     expect(rows()).toEqual([
       '[Drafts]',
       'second idea',
       'first idea',
-      '[Active]',
+      '(gap)',
       'Older work',
       'Oldest work',
     ])
@@ -134,7 +136,7 @@ describe('sending a draft from the sidebar', () => {
     expect(rows()).toEqual([
       '[Drafts]',
       'first idea',
-      '[Active]',
+      '(gap)',
       'second idea',
       'Older work',
       'Oldest work',
@@ -161,33 +163,22 @@ describe('sending a draft from the sidebar', () => {
     expect(rows()).toEqual([
       '[Drafts]',
       'first idea',
-      '[Active]',
+      '(gap)',
       'second idea',
       'Older work, renamed',
     ])
   })
 
-  it('swaps the Drafts label for Active with the last draft, nothing above the card moving', async () => {
+  it('lets the Drafts label and the gap go with the last draft, the card taking their place', async () => {
     const only = draft('d1', 'only idea', 1)
     await render({ sessions: [OLDER], drafts: [only] })
+    expect(rows()).toEqual(['[Drafts]', 'only idea', '(gap)', 'Older work'])
     const sent = rowOf('only idea')!
 
     const started = session('d1-session', 'only idea', '2026-10-02T00:00:00.000Z')
     await render({ sessions: [started, OLDER], drafts: [] })
-    // In the commit itself: the Drafts label is out of the flow, fading where
-    // it was, and the gap above Active is closed, so the card holds its place.
-    const drafts = container.querySelector('[role="list"]')!.firstElementChild as HTMLElement
-    expect(drafts.textContent).toBe('Drafts')
-    expect(drafts.getAttribute('aria-hidden')).toBe('true')
-    expect(drafts.className).toContain('absolute')
-    const active = drafts.nextElementSibling as HTMLElement
-    expect(active.textContent).toBe('Active')
-    expect(active.style.paddingTop).toBe('0px')
-    expect(rowOf('only idea')).toBe(sent)
-
-    // Once the room below the card has closed, the faded label goes.
-    await act(() => new Promise<void>((resolve) => setTimeout(resolve, 400)))
-    expect(rows()).toEqual(['[Active]', 'only idea', 'Older work'])
+    // The label and the gap folded away as rows do; the card is the same row.
+    expect(rows()).toEqual(['only idea', 'Older work'])
     expect(rowOf('only idea')).toBe(sent)
   })
 
@@ -223,30 +214,32 @@ describe('sending a draft from the sidebar', () => {
     expect(rowOf('Named by the environment')).toBeDefined()
     expect(rowOf('second idea')).toBeDefined()
   })
+})
 
-  it('fades the Active label in at its new place, after the Drafts label has gone', async () => {
-    const fades: Array<{ keyframes: Keyframe[]; options: KeyframeAnimationOptions }> = []
-    const animate = vi.fn(function (keyframes: Keyframe[], options: KeyframeAnimationOptions) {
-      fades.push({ keyframes, options })
-      return { cancel: () => undefined } as unknown as Animation
-    })
-    // jsdom has no Web Animations; the label's fade is checked by what it asks for.
-    Element.prototype.animate = animate as unknown as Element['animate']
-    try {
-      const only = draft('d1', 'only idea', 1)
-      await render({ sessions: [OLDER], drafts: [only] })
-      expect(animate).not.toHaveBeenCalled()
-      const started = session('d1-session', 'only idea', '2026-10-02T00:00:00.000Z')
-      await render({ sessions: [started, OLDER], drafts: [] })
-      expect(fades).toEqual([
-        {
-          keyframes: [{ opacity: 0 }, { opacity: 1 }],
-          options: expect.objectContaining({ delay: expect.any(Number), fill: 'backwards' }),
-        },
-      ])
-    } finally {
-      delete (Element.prototype as { animate?: unknown }).animate
-    }
+describe('the session list', () => {
+  const headings = () =>
+    [...container.querySelectorAll('[role="heading"]')].map((heading) => heading.textContent)
+
+  it('labels the drafts but not the sessions, and names the list', async () => {
+    await render({ sessions: [OLDER], drafts: [] })
+    expect(headings()).toEqual([])
+    expect(rows()).toEqual(['Older work'])
+    expect(container.querySelector('[role="list"]')!.getAttribute('aria-label')).toBe('Sessions')
+
+    await render({ sessions: [OLDER], drafts: [draft('d1', 'an idea', 1)] })
+    expect(headings()).toEqual(['Drafts'])
+  })
+
+  it('opens no gap under drafts with no sessions below them', async () => {
+    await render({ sessions: [], drafts: [draft('d1', 'an idea', 1)] })
+    expect(rows()).toEqual(['[Drafts]', 'an idea'])
+    // Nor says the list is empty: the drafts are in it.
+    expect(container.textContent).not.toContain('No sessions yet.')
+  })
+
+  it('says the list is empty only when there is nothing in it', async () => {
+    await render({ sessions: [], drafts: [] })
+    expect(container.textContent).toContain('No sessions yet.')
   })
 })
 
