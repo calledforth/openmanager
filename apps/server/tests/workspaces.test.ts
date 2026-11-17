@@ -867,6 +867,11 @@ describe('No project workspace', () => {
     const reopened = open([], { scratchRoot })
     expect(reopened.list()).toEqual([scratch])
     expect(events.filter((event) => event.name === 'workspace.updated')).toHaveLength(1)
+
+    // Not where providers are probed until a session has run there.
+    expect(reopened.mostRecent()).toBeUndefined()
+    reopened.markUsed(scratch!.workspaceId)
+    expect(reopened.mostRecent()?.workspaceId).toBe(scratch!.workspaceId)
   })
 
   it('keeps its name and refuses removal', async () => {

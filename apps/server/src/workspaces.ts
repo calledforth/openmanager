@@ -504,6 +504,8 @@ export function openWorkspaceRegistry(
      * The folder most recently worked in that can still be opened: where a
      * provider is probed before any client has named a workspace. Folders
      * never used keep their registration order behind the used ones.
+     * "No project" counts only once a session has run there: an environment
+     * no one has worked in has nowhere to probe yet, as before it existed.
      *
      * Reads the filesystem but records nothing. A command that uses a
      * workspace announces what it finds; this is asked from inside those very
@@ -511,6 +513,7 @@ export function openWorkspaceRegistry(
      */
     mostRecent(): RegisteredWorkspace | undefined {
       return [...byId.values()]
+        .filter((workspace) => workspace.kind !== 'scratch' || workspace.lastUsedAt !== null)
         .sort((left, right) => (right.lastUsedAt ?? -1) - (left.lastUsedAt ?? -1))
         .find((workspace) => availabilityOf(workspace.root) === 'available')
     },
