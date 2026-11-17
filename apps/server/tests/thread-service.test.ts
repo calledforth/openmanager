@@ -2699,14 +2699,12 @@ describe('durable session lifecycle', () => {
       h.events.flush()
       expect(listed()?.cookingAt ?? null).toBeNull()
       expect(listed()?.doneAt).toEqual(expect.any(String))
-      expect(
-        h.published.some(
-          (event) =>
-            event.name === 'session.updated' &&
-            event.payload.sessionId === sessionId &&
-            event.payload.cookingAt === null,
-        ),
-      ).toBe(true)
+      expect(h.published).toContainEqual(
+        expect.objectContaining({
+          name: 'session.updated',
+          payload: expect.objectContaining({ sessionId, cookingAt: null }),
+        }),
+      )
 
       // Brought back by hand, too.
       h.dispatch(h.service, 'session.cook', { sessionId, cooking: true })
