@@ -1053,9 +1053,17 @@ export function createThreadService(
       /* unavailable */
     }
     if (!target) return { refused: workspaceRefusal(session.workspaceId) }
+    // A sub-agent ran in its parent's folder (`registerChild`), so it is
+    // restored there: the folder is named for the root of its tree.
+    let root = session
+    for (let depth = 0; root.parentSessionId && depth < 64; depth += 1) {
+      const parent = getSessionSummary(database, root.parentSessionId)
+      if (!parent) break
+      root = parent
+    }
     let cwd: string
     try {
-      cwd = target.sessionCwd?.(sessionId) ?? target.cwd
+      cwd = target.sessionCwd?.(root.sessionId) ?? target.cwd
     } catch {
       return { refused: workspaceRefusal(session.workspaceId) }
     }

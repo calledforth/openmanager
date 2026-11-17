@@ -274,8 +274,14 @@ export async function startServer(config: ServerConfig) {
   // "No project" sessions run under the data directory, unless that sits in
   // a git checkout (a dev data dir inside the repo): there every session would
   // inherit the repository's status, so none is offered.
+  const scratchInCheckout = config.scratchWorkspace === true && insideGitCheckout(config.dataDir)
+  if (scratchInCheckout) {
+    log('info', 'No project is not offered: the data directory is inside a git checkout', {
+      dataDir: config.dataDir,
+    })
+  }
   const scratchRoot =
-    config.scratchWorkspace === true && !insideGitCheckout(config.dataDir)
+    config.scratchWorkspace === true && !scratchInCheckout
       ? join(config.dataDir, 'scratch')
       : undefined
   let workspaces

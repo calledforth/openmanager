@@ -902,6 +902,15 @@ describe('No project workspace', () => {
     }
   })
 
+  it('refuses a session folder that a link stands in for', async () => {
+    const { dataDir, roots, open } = await fixture()
+    const scratchRoot = join(dataDir, 'scratch')
+    const registry = open([], { scratchRoot })
+    const scratch = registry.resolve(registry.list()[0]!.workspaceId)!
+    await symlink(roots.a, join(scratch.root, 'session-2'))
+    expect(() => registry.sessionFolder(scratch, 'session-2')).toThrow(/not a plain folder/)
+  })
+
   it('runs ordinary workspaces in their root', async () => {
     const { roots, open } = await fixture()
     const registry = open([roots.a])

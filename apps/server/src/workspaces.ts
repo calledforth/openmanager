@@ -268,16 +268,17 @@ export function openWorkspaceRegistry(
    * now, so routing never follows a stale row, even when the write failed.
    */
   const observe = (workspace: RegisteredWorkspace): RegisteredWorkspace => {
+    let availability = availabilityOf(workspace.root)
     // The environment owns the scratch folder: one deleted from outside is
     // made again rather than reported missing, so "No project" always runs.
-    if (workspace.kind === 'scratch') {
+    if (workspace.kind === 'scratch' && availability === 'missing') {
       try {
         mkdirSync(workspace.root, { recursive: true })
+        availability = availabilityOf(workspace.root)
       } catch {
-        /* observed below as missing or inaccessible */
+        /* stays missing */
       }
     }
-    const availability = availabilityOf(workspace.root)
     const reading = availability === 'available' ? readGitReading(workspace.root) : undefined
     const row = readWorkspaceRow(database, workspace.workspaceId)
     if (!row) return workspace
@@ -533,6 +534,11 @@ export function openWorkspaceRegistry(
       if (workspace.kind !== 'scratch') return workspace.root
       const folder = scratchSessionFolder(workspace.root, sessionId)
       mkdirSync(folder, { recursive: true })
+      // A link left in its place (by an agent in another session, say) would
+      // run the session somewhere else: the folder must be itself.
+      if (canonicalizeRoot(folder) !== folder) {
+        throw new Error(`Session folder ${folder} is not a plain folder in the scratch root`)
+      }
       return folder
     },
 
