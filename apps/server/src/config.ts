@@ -46,6 +46,13 @@ export interface ServerConfig {
    * generator in `titleGenerator`.
    */
   generateTitles?: boolean
+  /**
+   * Offer "No project": a workspace the environment registers itself under
+   * `<dataDir>/scratch`, where each session runs in a folder of its own.
+   * The command line turns it on; a server started from code, a test for
+   * one, has to ask, so its workspace list holds only what it registered.
+   */
+  scratchWorkspace?: boolean
   /** Test-only title model, used whether or not `generateTitles` is set. */
   titleGenerator?: TitleGenerator
   /** Test-only runtime seams (fake ACP transport, fake Claude SDK, timers). */
@@ -230,6 +237,7 @@ export function loadConfig(
     workspaces,
     probeProviders: true,
     generateTitles: true,
+    scratchWorkspace: true,
     remintOwner: values['remint-owner'] === true,
     ...(logFile !== undefined ? { logFile: resolve(logFile) } : {}),
     ...(values['exit-with-parent'] ? { exitWithParent: true } : {}),

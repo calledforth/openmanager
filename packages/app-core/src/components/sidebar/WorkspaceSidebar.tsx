@@ -48,6 +48,7 @@ function sidebarWorkspace(
     missing: workspace.missing,
     availability: workspace.availability,
     ...(workspace.git ? { git: workspace.git } : {}),
+    ...(workspace.scratch ? { scratch: true } : {}),
     sessions: sessions[workspace.path] ?? NO_SESSIONS,
   }
 }

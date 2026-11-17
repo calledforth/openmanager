@@ -24,9 +24,11 @@ export interface WorkspaceRow {
   availability: WorkspaceAvailability
   last_used_at: number | null
   git_json: string | null
+  /** 'scratch' for the environment's own "No project" workspace; null otherwise. */
+  kind: 'scratch' | null
 }
 
-const WORKSPACE_COLUMNS = 'workspace_id, name, path, availability, last_used_at, git_json'
+const WORKSPACE_COLUMNS = 'workspace_id, name, path, availability, last_used_at, git_json, kind'
 
 export function readWorkspaceRow(
   database: DatabaseSync,
@@ -104,6 +106,7 @@ export function workspaceFromRow(row: WorkspaceRow, sessionLast: number | null):
     availability: row.availability,
     capabilities: { git: reading?.checkout === true },
     ...(reading?.git ? { git: reading.git } : {}),
+    ...(row.kind ? { kind: row.kind } : {}),
   })
 }
 

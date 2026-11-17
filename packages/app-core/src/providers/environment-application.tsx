@@ -431,7 +431,9 @@ function canHostDraft(workspace: Workspace | undefined): workspace is Workspace 
 
 /** Where a landing draft opens: the project last picked on this device while
  * it is there to work in, else the one most recently worked in, else the
- * first one listed that is there to work in. */
+ * first one listed that is there to work in. "No project" is where it opens
+ * only when it was picked: with no project of the user's, the landing asks,
+ * offering it beside Add project. */
 function landingWorkspaceFor(
   workspaces: Workspace[],
   recent: Workspace[],
@@ -441,7 +443,9 @@ function landingWorkspaceFor(
     ? workspaces.find((workspace) => workspace.workspaceId === picked)
     : undefined
   if (canHostDraft(remembered)) return remembered.workspaceId
-  return (recent.find(canHostDraft) ?? workspaces.find(canHostDraft))?.workspaceId ?? null
+  const project = (workspace: Workspace | undefined): workspace is Workspace =>
+    canHostDraft(workspace) && workspace.kind !== 'scratch'
+  return (recent.find(project) ?? workspaces.find(project))?.workspaceId ?? null
 }
 
 /** Where a landing draft would open in this environment. */

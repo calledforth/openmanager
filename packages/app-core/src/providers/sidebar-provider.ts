@@ -24,6 +24,11 @@ export interface WorkspaceEntry {
   capabilities?: WorkspaceCapabilitySummary
   /** The checkout's branch (null when detached) and whether it is a linked worktree. */
   git?: { branch: string | null; worktree: boolean }
+  /**
+   * The environment's own "No project" workspace: sessions there run in a
+   * folder of their own, so it is offered apart from the user's projects.
+   */
+  scratch?: boolean
 }
 
 /** Where the listed projects live and their sessions run. */

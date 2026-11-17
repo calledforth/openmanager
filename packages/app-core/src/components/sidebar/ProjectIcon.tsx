@@ -7,6 +7,7 @@ import {
   type ViewActions,
 } from '../../providers/view-actions'
 import { cn } from '../../lib/utils'
+import { NoProjectIcon } from './NoProjectIcon'
 
 // Preserve instant remounts without mixing icons from different hosts/environments.
 const iconCaches = new WeakMap<
@@ -23,6 +24,8 @@ interface ProjectIconProps {
    * workspace is on, and null when it has none. Left out, the context's.
    */
   iconLookup?: ViewActions['resolveWorkspaceIcon'] | null
+  /** "No project": its own dashed mark, never a folder icon looked up. */
+  scratch?: boolean
 }
 
 /**
@@ -30,9 +33,10 @@ interface ProjectIconProps {
  * `WorkspaceIconContext` where the host provides it, so switching sessions
  * leaves every icon be; hosts that only provide `ViewActions` still work.
  */
-export function ProjectIcon({ iconLookup, ...props }: ProjectIconProps) {
+export function ProjectIcon({ iconLookup, scratch, ...props }: ProjectIconProps) {
   const context = useContext(WorkspaceIconContext)
   const lookup = iconLookup === undefined ? context : iconLookup
+  if (scratch) return <NoProjectIcon className={props.className} />
   return lookup === WORKSPACE_ICONS_UNSET ? (
     <ProjectIconFromViewActions {...props} />
   ) : (

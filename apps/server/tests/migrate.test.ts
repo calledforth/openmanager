@@ -74,9 +74,9 @@ describe('schema migrations', () => {
   it('initializes a fresh database to the latest numbered version', async () => {
     const database = openEnvironmentDatabase(await dataDir())
     databases.push(database)
-    expect(readSchemaVersion(database)).toBe(31)
+    expect(readSchemaVersion(database)).toBe(32)
     expect(database.prepare('PRAGMA user_version').get() as { user_version: number }).toEqual({
-      user_version: 31,
+      user_version: 32,
     })
     expect(database.prepare('PRAGMA journal_mode').get() as { journal_mode: string }).toEqual({
       journal_mode: 'wal',
@@ -127,7 +127,7 @@ describe('schema migrations', () => {
       'workspace_composer_preferences',
       'workspaces',
     ])
-    expect(runMigrations(database, MIGRATIONS)).toBe(31)
+    expect(runMigrations(database, MIGRATIONS)).toBe(32)
   })
 
   it('upgrades sequentially across restarts and leaves already-applied versions untouched', async () => {
@@ -214,7 +214,7 @@ describe('schema migrations', () => {
 
     const database = openEnvironmentDatabase(directory)
     databases.push(database)
-    expect(readSchemaVersion(database)).toBe(31)
+    expect(readSchemaVersion(database)).toBe(32)
     expect(database.prepare('SELECT provider_id FROM provider_profiles').all()).toEqual([
       { provider_id: 'cursor' },
     ])
@@ -345,7 +345,7 @@ describe('schema migrations', () => {
 
     const database = openEnvironmentDatabase(directory)
     databases.push(database)
-    expect(readSchemaVersion(database)).toBe(31)
+    expect(readSchemaVersion(database)).toBe(32)
     expect(database.prepare('SELECT * FROM attachments ORDER BY attachment_id').all()).toEqual(
       before,
     )
@@ -384,7 +384,7 @@ describe('schema migrations', () => {
 
     const database = openEnvironmentDatabase(directory)
     databases.push(database)
-    expect(readSchemaVersion(database)).toBe(31)
+    expect(readSchemaVersion(database)).toBe(32)
     expect(
       database
         .prepare('SELECT client_id, kind, expires_at FROM authorized_clients ORDER BY client_id')
@@ -428,7 +428,7 @@ describe('schema migrations', () => {
 
     const database = openEnvironmentDatabase(directory)
     databases.push(database)
-    expect(readSchemaVersion(database)).toBe(31)
+    expect(readSchemaVersion(database)).toBe(32)
     expect(
       database
         .prepare(
@@ -466,7 +466,7 @@ describe('schema migrations', () => {
 
     const database = openEnvironmentDatabase(directory)
     databases.push(database)
-    expect(readSchemaVersion(database)).toBe(31)
+    expect(readSchemaVersion(database)).toBe(32)
     expect(tableNames(database)).toContain('audit_events')
     expect(database.prepare('SELECT client_id FROM authorized_clients').all()).toEqual([
       { client_id: 'client-1' },
@@ -698,7 +698,7 @@ describe('schema migrations', () => {
 
     const database = openEnvironmentDatabase(directory)
     databases.push(database)
-    expect(readSchemaVersion(database)).toBe(31)
+    expect(readSchemaVersion(database)).toBe(32)
     expect(
       database
         .prepare('SELECT title, settled_at, pinned_at, cooking_at, updated_at FROM sessions')

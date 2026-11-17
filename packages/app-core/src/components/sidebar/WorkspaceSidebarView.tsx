@@ -858,9 +858,12 @@ export function WorkspaceSidebarView({
             workspace.environmentId !== undefined &&
             rowEnvironments?.[workspace.environmentId]?.reachable === true,
         )
+  // "No project" is where it starts only from inside it, or with no project to pick.
   const newThreadTarget = startable.some((workspace) => workspace.path === activeWorkspacePath)
     ? activeWorkspacePath
-    : (startable[0]?.path ?? elsewhere?.path ?? null)
+    : ((startable.find((workspace) => !workspace.scratch) ?? startable[0])?.path ??
+      elsewhere?.path ??
+      null)
 
   const { active, cooking, settled } = useMemo(
     () => partitionSidebarSessions(workspaces),
@@ -958,7 +961,9 @@ export function WorkspaceSidebarView({
         addWorkspaceDisabled={addWorkspaceDisabled}
       />
       <SidebarContent>
-        {workspaces.length === 0 ? (
+        {workspaces.length === 0 ||
+        (drafts.length === 0 &&
+          workspaces.every((workspace) => workspace.scratch && workspace.sessions.length === 0)) ? (
           <p className="px-4 py-5 text-[13px] text-muted-foreground">No projects yet</p>
         ) : (
           // Drafts and Active share the floor, so Settled keeps its spot
@@ -1455,7 +1460,8 @@ function sameWorkspace(a: SidebarWorkspace, b: SidebarWorkspace): boolean {
       a.missing === b.missing &&
       a.availability === b.availability &&
       a.git?.branch === b.git?.branch &&
-      a.git?.worktree === b.git?.worktree)
+      a.git?.worktree === b.git?.worktree &&
+      a.scratch === b.scratch)
   )
 }
 
@@ -1765,7 +1771,12 @@ function SessionCardBody({
 
   const projectLine = (
     <span className="flex min-w-0 items-center gap-1.5 text-[12px] leading-4 text-muted-foreground">
-      <ProjectIcon workspacePath={workspace.path} className="opacity-80" iconLookup={iconLookup} />
+      <ProjectIcon
+        workspacePath={workspace.path}
+        scratch={workspace.scratch}
+        className="opacity-80"
+        iconLookup={iconLookup}
+      />
       <span className={cn('truncate', workspace.missing && 'line-through decoration-faint')}>
         {workspace.name}
       </span>
@@ -2094,6 +2105,7 @@ function DraftCardBody({
         <>
           <ProjectIcon
             workspacePath={workspace.path}
+            scratch={workspace.scratch}
             className="opacity-80"
             iconLookup={iconLookup}
           />

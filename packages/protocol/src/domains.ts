@@ -142,6 +142,14 @@ export const WorkspaceSchema = z.object({
   capabilities: WorkspaceCapabilitiesSchema.default({ git: false }),
   /** Absent outside a git checkout and on older environments. */
   git: WorkspaceGitSchema.optional(),
+  /**
+   * `scratch` marks the environment's own "No project" workspace: a folder
+   * under its data directory, registered by the environment itself, where
+   * each session runs in a subfolder of its own. Absent on every folder a
+   * user registered, and on older environments. A kind this build does not
+   * know reads as an ordinary folder.
+   */
+  kind: z.enum(['scratch']).optional().catch(undefined),
 })
 /**
  * A workspace icon travels inline as a `data:image/...;base64,` URL so a

@@ -66,15 +66,17 @@ export function createEventProjector(
     // registration inserts, every later change rewrites what the event states.
     upsertWorkspace: database.prepare(
       `INSERT INTO workspaces (
-         workspace_id, name, path, availability, git_json, last_used_at, created_at, updated_at
-       ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?7)
+         workspace_id, name, path, availability, git_json, last_used_at, created_at, updated_at,
+         kind
+       ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?7, ?8)
        ON CONFLICT(workspace_id) DO UPDATE SET
          name = excluded.name,
          path = excluded.path,
          availability = excluded.availability,
          git_json = excluded.git_json,
          last_used_at = excluded.last_used_at,
-         updated_at = excluded.updated_at`,
+         updated_at = excluded.updated_at,
+         kind = excluded.kind`,
     ),
     deleteWorkspace: database.prepare('DELETE FROM workspaces WHERE workspace_id = ?'),
     // Automatic titles never replace one the user set; a rename, or a title
@@ -607,6 +609,7 @@ export function createEventProjector(
           }),
           workspace.lastUsedAt === null ? null : Date.parse(workspace.lastUsedAt),
           at,
+          workspace.kind ?? null,
         )
         // Checked, not assumed: what a listing reads back, recency included,
         // is what the event said (I2).

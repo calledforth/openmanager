@@ -29,7 +29,9 @@ afterEach(() => {
   root = null
 })
 
-function render() {
+const SCRATCH: WorkspaceEntry = { path: 'scratch-id', name: 'No project', scratch: true }
+
+function render(workspaces = WORKSPACES, recentWorkspaces = [WORKSPACES[1]!]) {
   const onSelectWorkspace = vi.fn()
   const onAddWorkspace = vi.fn()
   host = document.createElement('div')
@@ -39,8 +41,8 @@ function render() {
     root!.render(
       <NewSessionLandingView
         environmentLabel="devbox"
-        workspaces={WORKSPACES}
-        recentWorkspaces={[WORKSPACES[1]!]}
+        workspaces={workspaces}
+        recentWorkspaces={recentWorkspaces}
         activeWorkspacePath="/repos/openmanager"
         isWorkspacesLoading={false}
         isStarting={false}
@@ -116,6 +118,16 @@ describe('ProjectPicker', () => {
     expect(labels()).toEqual(['Add project…'])
     press('Enter')
     expect(onAddWorkspace).toHaveBeenCalledTimes(1)
+  })
+
+  it('pins "No project" first, apart from recents and the rest', () => {
+    const { onSelectWorkspace } = render([SCRATCH, ...WORKSPACES], [SCRATCH, WORKSPACES[1]!])
+    open()
+    expect(labels()).toEqual(['No project', 'agentpack', 'openmanager', 'notes', 'Add project…'])
+    const row = document.querySelector('[role="option"]')!
+    expect(row.querySelector('svg path')?.getAttribute('d')).toMatch(/^M82,209/)
+    act(() => (row as HTMLElement).click())
+    expect(onSelectWorkspace).toHaveBeenCalledWith('scratch-id')
   })
 
   it('closes on Escape', () => {

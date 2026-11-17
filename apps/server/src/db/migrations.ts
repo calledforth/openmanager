@@ -1142,6 +1142,22 @@ export const MIGRATIONS: readonly Migration[] = [
   },
   {
     version: 31,
+    name: 'workspace_kind',
+    up(database) {
+      // Additive only. `kind` is null for every folder a user registered and
+      // 'scratch' for the environment's own "No project" workspace, which
+      // the registry creates under the data directory (workspaces.ts).
+      const columns = database.prepare('PRAGMA table_info(workspaces)').all() as {
+        name: string
+      }[]
+      if (!columns.some((column) => column.name === 'kind')) {
+        database.exec(`ALTER TABLE workspaces ADD COLUMN kind TEXT
+          CHECK (kind IS NULL OR kind = 'scratch')`)
+      }
+    },
+  },
+  {
+    version: 32,
     name: 'session_cooking_at',
     up(database) {
       const columns = new Set(

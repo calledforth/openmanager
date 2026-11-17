@@ -48,6 +48,7 @@ import {
 } from '../../providers/environment-quick-agent'
 import { useSessionState } from '../../providers/session-provider'
 import { useSidebarData, type WorkspaceEntry } from '../../providers/sidebar-provider'
+import { isNoProject } from '../../lib/no-project'
 import type { EnvironmentDistro, EnvironmentPlatform } from '@openmanager/protocol'
 
 /** Opens the palette from anywhere, typing included. */
@@ -460,6 +461,10 @@ const NO_WORKSPACES: WorkspaceEntry[] = []
 const hostable = (workspace: WorkspaceEntry | undefined): workspace is WorkspaceEntry =>
   !!workspace && !workspace.missing
 
+/** One of the user's own projects an agent can start in now: not "No project". */
+const hostableProject = (workspace: WorkspaceEntry | undefined): workspace is WorkspaceEntry =>
+  hostable(workspace) && !isNoProject(workspace)
+
 /**
  * Start an agent without leaving the chat you are in: ⌘⇧O (or N outside a
  * field) opens a composer over the page. Enter starts the agent in the
@@ -508,12 +513,14 @@ function QuickAgentPaletteBound() {
   const open = useCallback(() => {
     if (live.current.draft) return
     const { workspaces, recentWorkspaces, activeWorkspacePath } = live.current
-    // Where you are, else where you last worked, else the first one there.
+    // Where you are, else where you last worked, else the first one there;
+    // "No project" only when you are in it or there is no project at all.
     const workspaceId =
       (hostable(workspaces.find((workspace) => workspace.path === activeWorkspacePath))
         ? activeWorkspacePath
         : null) ??
-      recentWorkspaces.find(hostable)?.path ??
+      recentWorkspaces.find(hostableProject)?.path ??
+      workspaces.find(hostableProject)?.path ??
       workspaces.find(hostable)?.path ??
       null
     setDraft(mintQuickAgentDraft(workspaceId))
@@ -590,6 +597,7 @@ function QuickAgentPaletteBound() {
     [],
   )
 
+  // "No project" is somewhere to start too, so only its absence leaves nothing.
   const noProjects = workspaces.length === 0
   return (
     <>

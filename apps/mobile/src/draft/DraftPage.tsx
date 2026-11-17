@@ -3,8 +3,11 @@ import { TrashIcon } from 'phosphor-react-native'
 import { useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react'
 import type { TextInput } from 'react-native'
 import {
+  isNoProject,
+  noProjectOf,
   SidebarDataContext,
   useActiveThreadState,
+  userProjects,
   useEnvironmentState,
   useSessionState,
   type WorkspaceEntry,
@@ -159,8 +162,11 @@ export function DraftPage() {
     draftId === null && model.text.length === 0 && model.images.length === 0,
   )
   const loading = !!sidebar?.isWorkspacesLoading || !!isDraftLoading
+  // "No project" is offered beside the user's projects, never counted as one:
+  // with none of theirs, the page asks first, unless the draft is already there.
+  const noProject = noProjectOf(workspaces)
   const empty =
-    loading || workspaces.length > 0 ? (
+    loading || userProjects(workspaces).length > 0 || isNoProject(workspace) ? (
       <ComposerPage
         model={model}
         ui={ui}
@@ -184,6 +190,7 @@ export function DraftPage() {
       <StartWithProject
         environmentLabel={environmentLabel}
         {...(projects.add && projects.browse ? { onAdd: openAdd } : {})}
+        {...(noProject ? { onStartWithoutProject: () => projects.pick(noProject.path) } : {})}
         onPickEnvironment={choice.open}
       />
     )
