@@ -368,6 +368,11 @@ export function openWorkspaceRegistry(
     const root = canonicalizeRoot(configured)
     const existing = findByRoot(root)
     if (existing?.kind === 'scratch') return
+    // Where the folder really is: a link into a checkout would hand every
+    // session that repository's status.
+    if (insideGitCheckout(root)) {
+      throw new Error(`${root} is inside a git checkout, so No project is not offered`)
+    }
     if (existing) {
       throw new Error(`${root} is registered as a project, so No project is not offered`)
     }

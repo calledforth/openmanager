@@ -959,6 +959,16 @@ describe('No project workspace', () => {
     expect(folder(hashed)).not.toBe(folder('a/b'))
   })
 
+  it('is not offered when its folder links into a git checkout', async () => {
+    const { dataDir, roots, open } = await fixture()
+    await mkdir(join(roots.a, '.git'))
+    await symlink(roots.a, join(dataDir, 'scratch'))
+    const onScratchError = vi.fn()
+    const registry = open([], { scratchRoot: join(dataDir, 'scratch'), onScratchError })
+    expect(registry.list()).toEqual([])
+    expect(onScratchError).toHaveBeenCalledOnce()
+  })
+
   it('leaves a folder the user registered there as their project', async () => {
     const { dataDir, open } = await fixture()
     const scratchRoot = join(dataDir, 'scratch')
