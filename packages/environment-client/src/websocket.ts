@@ -84,6 +84,7 @@ import {
   dropOverlayEntry,
   dropPreferenceRequest,
   preferenceKey as overlayPreferenceKey,
+  cookAnswered,
   pinAnswered,
   settleAnswered,
   updateOverlay,
@@ -1884,6 +1885,24 @@ export function createWebSocketEnvironmentClient(
         throw error
       }
       store.update((state) => pinAnswered(state, sessionId, ticket))
+    },
+    async cookSession(sessionId, cooking) {
+      // The card moves at once. The answer ends the entry: by then state
+      // holds the echo, and whatever brought the session back since.
+      const ticket = nextTicket()
+      store.update((state) =>
+        updateOverlay(state, 'cooks', (entries) => ({
+          ...entries,
+          [sessionId]: { ticket, cooking, at: new Date().toISOString() },
+        })),
+      )
+      try {
+        await request('session.cook', { sessionId, cooking })
+      } catch (error) {
+        store.update((state) => dropOverlayEntry(state, 'cooks', sessionId, ticket))
+        throw error
+      }
+      store.update((state) => cookAnswered(state, sessionId, ticket))
     },
     async acknowledgeSession(sessionId) {
       const ticket = nextTicket()

@@ -88,6 +88,7 @@ type SessionRow = {
   background_tasks_json?: string | null
   settled_at?: number | null
   pinned_at?: number | null
+  cooking_at?: number | null
   done_at?: number | null
   updated_at: number
 }
@@ -197,6 +198,7 @@ export function sessionRowToSummary(database: DatabaseSync, row: SessionRow): Se
     updatedAt: new Date(row.updated_at).toISOString(),
     settledAt: row.settled_at ? new Date(row.settled_at).toISOString() : null,
     ...(row.pinned_at ? { pinnedAt: new Date(row.pinned_at).toISOString() } : {}),
+    ...(row.cooking_at ? { cookingAt: new Date(row.cooking_at).toISOString() } : {}),
     doneAt: row.done_at ? new Date(row.done_at).toISOString() : null,
     ...(row.background_tasks_json
       ? { backgroundTasks: JSON.parse(row.background_tasks_json) }
@@ -251,7 +253,7 @@ export function getSessionSummary(
   const row = database
     .prepare(
       `SELECT session_id, workspace_id, parent_session_id, provider_id, title, title_source, title_generated, status,
-              composer_json, background_tasks_json, settled_at, pinned_at, done_at, updated_at
+              composer_json, background_tasks_json, settled_at, pinned_at, cooking_at, done_at, updated_at
        FROM sessions WHERE session_id = ?`,
     )
     .get(sessionId) as SessionRow | undefined

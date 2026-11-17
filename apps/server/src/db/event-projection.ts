@@ -111,6 +111,14 @@ export function createEventProjector(
     ),
     // Only the user moves it, so no activity or settling touches this column.
     updateSessionPinned: database.prepare('UPDATE sessions SET pinned_at = ? WHERE session_id = ?'),
+    updateSessionCooking: database.prepare(
+      'UPDATE sessions SET cooking_at = ? WHERE session_id = ?',
+    ),
+    // Only what needs the user brings a cooking session back: a completed
+    // turn, a request, a failure. A turn starting does not.
+    uncookSession: database.prepare(
+      'UPDATE sessions SET cooking_at = NULL WHERE session_id = ? AND cooking_at IS NOT NULL',
+    ),
     // Work that needs the user brings a settled session back to the active list.
     unsettleSession: database.prepare(
       'UPDATE sessions SET settled_at = NULL WHERE session_id = ? AND settled_at IS NOT NULL',
@@ -128,6 +136,7 @@ export function createEventProjector(
       'SELECT 1 FROM sessions WHERE session_id = ? AND background_tasks_json IS NOT NULL',
     ),
     selectSessionStatus: database.prepare('SELECT status FROM sessions WHERE session_id = ?'),
+    selectThreadQueue: database.prepare('SELECT queue_json FROM threads WHERE thread_id = ?'),
     // A session's pull requests, as the last `session.updated` that named
     // them stated: the whole list each time. `source` is set once, by the
     // write that creates the link, and kept.
@@ -464,6 +473,14 @@ export function createEventProjector(
     )
   }
 
+  /** Whether the thread's queue runs its next message once the turn ends. */
+  function queueWaiting(threadId: string): boolean {
+    const row = s.selectThreadQueue.get(threadId) as { queue_json: string | null } | undefined
+    if (!row?.queue_json) return false
+    const queue = JSON.parse(row.queue_json) as { items?: unknown[]; pausedBy?: string | null }
+    return (queue.items?.length ?? 0) > 0 && !queue.pausedBy
+  }
+
   /** Mirrors the client fold: adjacent text merges, tokens only ever grow. */
   function projectReasoning(event: MessageReasoning, at: number): void {
     const { messageId, turnId, phase, content, tokens } = event.payload
@@ -629,6 +646,15 @@ export function createEventProjector(
         const movedAt =
           event.payload.updatedAt === undefined ? undefined : Date.parse(event.payload.updatedAt)
         if (event.payload.status !== undefined) {
+          // A session that starts asking or fails outside a turn needs the
+          // user. Only the change counts: a status restated leaves it be.
+          if (event.payload.status === 'waiting' || event.payload.status === 'error') {
+            const before = s.selectSessionStatus.get(event.payload.sessionId) as
+              { status: string } | undefined
+            if (before && before.status !== event.payload.status) {
+              s.uncookSession.run(event.payload.sessionId)
+            }
+          }
           if (
             s.updateSessionStatus.run(event.payload.status, movedAt ?? at, event.payload.sessionId)
               .changes !== 1
@@ -670,6 +696,13 @@ export function createEventProjector(
             event.payload.pinnedAt === null ? null : Date.parse(event.payload.pinnedAt)
           if (s.updateSessionPinned.run(pinnedAt, event.payload.sessionId).changes !== 1) {
             throw new ProjectionRefusal(`Cannot pin missing session ${event.payload.sessionId}`)
+          }
+        }
+        if (event.payload.cookingAt !== undefined) {
+          const cookingAt =
+            event.payload.cookingAt === null ? null : Date.parse(event.payload.cookingAt)
+          if (s.updateSessionCooking.run(cookingAt, event.payload.sessionId).changes !== 1) {
+            throw new ProjectionRefusal(`Cannot cook missing session ${event.payload.sessionId}`)
           }
         }
         if (event.payload.doneAt !== undefined) {
@@ -782,6 +815,8 @@ export function createEventProjector(
         return
       case 'thread.queue.updated':
         // The whole queue, so the row is replaced, never merged.
+        // (A queue still waiting keeps a cooking session cooking; see the
+        // terminal turn events.)
         if (
           s.updateThreadQueue.run(JSON.stringify(event.payload), event.scope.threadId).changes !== 1
         ) {
@@ -890,6 +925,7 @@ export function createEventProjector(
         }
         s.updateSessionStatus.run('waiting', at, event.scope.sessionId)
         s.unsettleSession.run(event.scope.sessionId)
+        s.uncookSession.run(event.scope.sessionId)
         return
       }
       case 'interaction.resolved':
@@ -990,6 +1026,15 @@ export function createEventProjector(
         if (event.name === 'turn.completed' && !working) {
           s.updateSessionDone.run(at, event.scope.sessionId)
         } else s.clearSessionDone.run(event.scope.sessionId)
+        // What is news brings a cooking session back: done, or failed. A
+        // turn that ends with the user's queued messages still to run is not
+        // done with them: the next one starts as soon as this is written.
+        if (
+          failedHere ||
+          (event.name === 'turn.completed' && !working && !queueWaiting(event.scope.threadId))
+        ) {
+          s.uncookSession.run(event.scope.sessionId)
+        }
         return
       }
       case 'message.reasoning':

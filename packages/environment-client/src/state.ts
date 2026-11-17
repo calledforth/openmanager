@@ -387,6 +387,7 @@ export function applyEvent(state: EnvironmentState, event: ProofEvent): Environm
         updatedAt,
         settledAt,
         pinnedAt,
+        cookingAt,
         doneAt,
         backgroundTasks,
         pullRequests,
@@ -423,6 +424,7 @@ export function applyEvent(state: EnvironmentState, event: ProofEvent): Environm
         ...(status !== undefined ? { status } : {}),
         ...(settledAt !== undefined ? { settledAt } : {}),
         ...(pinnedAt !== undefined ? { pinnedAt } : {}),
+        ...(cookingAt !== undefined ? { cookingAt } : {}),
         ...(doneAt !== undefined ? { doneAt } : {}),
         // The session's place moves only when the environment says so (§4.7.1).
         ...(updatedAt !== undefined ? { updatedAt } : {}),
@@ -1121,6 +1123,7 @@ export function applySessionCreated(
             updatedAt: existing.updatedAt,
             settledAt: existing.settledAt ?? null,
             ...(existing.pinnedAt ? { pinnedAt: existing.pinnedAt } : {}),
+            ...(existing.cookingAt ? { cookingAt: existing.cookingAt } : {}),
             doneAt: existing.doneAt ?? null,
             ...(existing.backgroundTasks ? { backgroundTasks: existing.backgroundTasks } : {}),
             ...(existing.pullRequests ? { pullRequests: existing.pullRequests } : {}),

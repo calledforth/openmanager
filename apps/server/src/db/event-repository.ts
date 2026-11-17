@@ -126,7 +126,8 @@ export function createEventRepository(
   const closure = createTurnClosure(database)
   const statements = {
     sessionStatus: database.prepare(
-      `SELECT session_id, workspace_id, status, updated_at, settled_at, done_at, background_tasks_json
+      `SELECT session_id, workspace_id, status, updated_at, settled_at, cooking_at, done_at,
+              background_tasks_json
        FROM sessions WHERE session_id = ?`,
     ),
     ensureStream: database.prepare(
@@ -407,6 +408,8 @@ export function createEventRepository(
       const before = entry.announced
       // Activity that unsettles a session rides the same event as its status.
       const unsettled = before.settled_at !== null && after.settled_at === null
+      // And what brings a cooking session back.
+      const uncooked = before.cooking_at !== null && after.cooking_at === null
       // Done rides it too: set when a turn completes, cleared when the next starts.
       const doneChanged = before.done_at !== after.done_at
       // So does what the status alone does not say: a second request can
@@ -421,6 +424,7 @@ export function createEventRepository(
       if (
         before.status === after.status &&
         !unsettled &&
+        !uncooked &&
         !doneChanged &&
         !activityChanged &&
         !moved
@@ -442,6 +446,7 @@ export function createEventRepository(
             // Only when they apply: a status without them clears them.
             ...after.activity,
             ...(unsettled ? { settledAt: null } : {}),
+            ...(uncooked ? { cookingAt: null } : {}),
             ...(doneChanged
               ? { doneAt: after.done_at === null ? null : new Date(after.done_at).toISOString() }
               : {}),
@@ -594,6 +599,7 @@ type SessionStatusRow = {
   status: SessionStatus
   updated_at: number
   settled_at: number | null
+  cooking_at: number | null
   done_at: number | null
   background_tasks_json: string | null
 }
@@ -624,7 +630,7 @@ function stated(
   before: StatusState,
   event: Extract<ProofEvent, { name: 'session.updated' }>,
 ): StatusState {
-  const { status, updatedAt, settledAt, doneAt, waitingOn, inBackground } = event.payload
+  const { status, updatedAt, settledAt, cookingAt, doneAt, waitingOn, inBackground } = event.payload
   return {
     ...before,
     ...(updatedAt === undefined ? {} : { updated_at: Date.parse(updatedAt) }),
@@ -641,6 +647,9 @@ function stated(
     ...(settledAt === undefined
       ? {}
       : { settled_at: settledAt === null ? null : Date.parse(settledAt) }),
+    ...(cookingAt === undefined
+      ? {}
+      : { cooking_at: cookingAt === null ? null : Date.parse(cookingAt) }),
     ...(doneAt === undefined ? {} : { done_at: doneAt === null ? null : Date.parse(doneAt) }),
   }
 }

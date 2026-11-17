@@ -17,6 +17,7 @@ import {
   CaretDownIcon,
   CheckIcon,
   CloudSlashIcon,
+  CookingPotIcon,
   FolderDashedIcon,
   FolderPlusIcon,
   GitBranchIcon,
@@ -76,6 +77,7 @@ import {
 const SETTLED_PREVIEW_LIMIT = 10
 const SETTLED_PAGE_SIZE = 25
 const SETTLED_OPEN_KEY = 'openmanager.sidebar.settled-open'
+const COOKING_OPEN_KEY = 'openmanager.sidebar.cooking-open'
 /** The share of the sidebar's scroll area kept below the active list for an
  *  open Settled while the cards fit above it: its default spot. */
 const SETTLED_SHARE = 0.3
@@ -113,25 +115,6 @@ const ChildSessionIcon = phosphorIcon(GitBranchIcon)
 const OpenDraftIcon = phosphorIcon(ArrowUpRightIcon)
 const DiscardDraftIcon = phosphorIcon(TrashIcon)
 
-// Provider marks need their id bound in.
-const providerIcons = new Map<ProviderId, IconComponent>()
-function providerIcon(providerId: ProviderId): IconComponent {
-  let icon = providerIcons.get(providerId)
-  if (!icon) {
-    const ProviderRowIcon = ({ size = 16, className }: IconComponentProps) => (
-      <span
-        className={cn('inline-flex shrink-0 items-center justify-center', className)}
-        style={{ width: size, height: size }}
-      >
-        <ProviderIcon providerId={providerId} className="h-3.5 w-3.5 opacity-70" />
-      </span>
-    )
-    icon = ProviderRowIcon
-    providerIcons.set(providerId, icon)
-  }
-  return icon
-}
-
 export interface SidebarBoardRow {
   session: SidebarSession
   workspace: SidebarWorkspace
@@ -149,19 +132,25 @@ const timeOf = (iso: string | null | undefined) => {
   return Number.isNaN(at) ? 0 : at
 }
 
-/**
- * Every project's sessions in one list, split by whether the user settled
- * them. Active work is newest activity first, under anything pinned, which is
- * most recently pinned first; settled work is most recently settled first.
- * Child transcripts ride with their parent, so a settled parent takes its
- * subagents with it. Several environments share the one list, each arranged
- * on its own first, since a session's id and its parent's mean something only
- * within its environment.
- */
-export function partitionSidebarSessions(workspaces: SidebarWorkspace[]): {
+/** The sidebar's three places for a session. */
+export interface SidebarBoard {
   active: SidebarBoardEntry[]
+  /** Sent off to work out of sight, until it needs the user again. */
+  cooking: SidebarBoardEntry[]
   settled: SidebarBoardEntry[]
-} {
+}
+
+/**
+ * Every project's sessions in one list, split by where the user put them:
+ * settled, cooking, or neither (active). Active work is newest activity first,
+ * under anything pinned, which is most recently pinned first; cooking work is
+ * most recently sent first; settled work is most recently settled first.
+ * Child transcripts ride with their parent, so a settled or cooking parent
+ * takes its subagents with it. Several environments share the one list, each
+ * arranged on its own first, since a session's id and its parent's mean
+ * something only within its environment.
+ */
+export function partitionSidebarSessions(workspaces: SidebarWorkspace[]): SidebarBoard {
   const byEnvironment = new Map<string | undefined, SidebarWorkspace[]>()
   for (const workspace of workspaces) {
     const group = byEnvironment.get(workspace.environmentId)
@@ -173,7 +162,8 @@ export function partitionSidebarSessions(workspaces: SidebarWorkspace[]): {
   // The open environment is listed first, so a tie left to the order given
   // would swap places whenever it changed.
   const newest =
-    (field: 'updatedAt' | 'settledAt') => (a: SidebarBoardEntry, b: SidebarBoardEntry) =>
+    (field: 'updatedAt' | 'settledAt' | 'cookingAt') =>
+    (a: SidebarBoardEntry, b: SidebarBoardEntry) =>
       timeOf(b.root.session[field]) - timeOf(a.root.session[field]) ||
       (a.root.session.environmentId ?? '').localeCompare(b.root.session.environmentId ?? '')
   return {
@@ -186,14 +176,12 @@ export function partitionSidebarSessions(workspaces: SidebarWorkspace[]): {
           timeOf(b.root.session.pinnedAt) - timeOf(a.root.session.pinnedAt) ||
           newest('updatedAt')(a, b),
       ),
+    cooking: parts.flatMap((part) => part.cooking).sort(newest('cookingAt')),
     settled: parts.flatMap((part) => part.settled).sort(newest('settledAt')),
   }
 }
 
-function partitionEnvironmentSessions(workspaces: SidebarWorkspace[]): {
-  active: SidebarBoardEntry[]
-  settled: SidebarBoardEntry[]
-} {
+function partitionEnvironmentSessions(workspaces: SidebarWorkspace[]): SidebarBoard {
   const workspaceOf = new Map<string, SidebarWorkspace>()
   const indexed: Array<{ session: SidebarSession; index: number }> = []
   for (const workspace of workspaces) {
@@ -207,21 +195,24 @@ function partitionEnvironmentSessions(workspaces: SidebarWorkspace[]): {
     .map(({ session }) => session)
 
   const active: SidebarBoardEntry[] = []
+  const cooking: SidebarBoardEntry[] = []
   const settled: SidebarBoardEntry[] = []
   let current: SidebarBoardEntry | undefined
   for (const { session, depth } of flattenSidebarSessions(ordered)) {
     const row = { session, workspace: workspaceOf.get(session.externalId)!, depth }
     if (depth === 0 || !current) {
       current = { root: row, children: [] }
-      ;(session.settledAt ? settled : active).push(current)
+      // Settled wins: a settled session is put away, whatever else it was.
+      ;(session.settledAt ? settled : session.cookingAt ? cooking : active).push(current)
     } else {
       current.children.push(row)
     }
   }
   settled.sort((a, b) => timeOf(b.root.session.settledAt) - timeOf(a.root.session.settledAt))
+  cooking.sort((a, b) => timeOf(b.root.session.cookingAt) - timeOf(a.root.session.cookingAt))
   // Stable, so everything unpinned (time 0) keeps its order from above.
   active.sort((a, b) => timeOf(b.root.session.pinnedAt) - timeOf(a.root.session.pinnedAt))
-  return { active, settled }
+  return { active, cooking, settled }
 }
 
 const NO_DRAFTS: SidebarDraft[] = []
@@ -282,7 +273,7 @@ function readSettledOpen(): boolean {
  */
 function useActiveFloor(
   active: HTMLElement | null,
-  settled: HTMLElement | null,
+  shelves: HTMLElement | null,
   settledOpen: boolean,
 ): number | undefined {
   const [floor, setFloor] = useState<number>()
@@ -291,18 +282,23 @@ function useActiveFloor(
       active?.closest<HTMLElement>('[data-slot="scroll-area-viewport"]') ??
       active?.closest<HTMLElement>('[data-sidebar="content"]')
     if (!scroller || typeof ResizeObserver === 'undefined') return
-    const measure = () =>
+    // Cooking, when there is any, sits above Settled and takes its room from
+    // the active list's floor, not from Settled's share.
+    const measure = () => {
+      const settled = shelves?.lastElementChild as HTMLElement | null | undefined
+      const cooking = shelves && settled ? shelves.offsetHeight - settled.offsetHeight : 0
       setFloor(
-        settledOpen || !settled
-          ? Math.round(scroller.clientHeight * (1 - SETTLED_SHARE))
-          : Math.max(0, scroller.clientHeight - settled.offsetHeight),
+        settledOpen || !shelves
+          ? Math.max(0, Math.round(scroller.clientHeight * (1 - SETTLED_SHARE)) - cooking)
+          : Math.max(0, scroller.clientHeight - shelves.offsetHeight),
       )
+    }
     measure()
     const observer = new ResizeObserver(measure)
     observer.observe(scroller)
-    if (settled) observer.observe(settled)
+    if (shelves) observer.observe(shelves)
     return () => observer.disconnect()
-  }, [active, settled, settledOpen])
+  }, [active, shelves, settledOpen])
   return floor
 }
 
@@ -523,6 +519,23 @@ function writeSettledOpen(open: boolean) {
   }
 }
 
+function readCookingOpen(): boolean {
+  try {
+    // Open until the user folds it: a session sent cooking is seen landing.
+    return globalThis.localStorage?.getItem(COOKING_OPEN_KEY) !== 'false'
+  } catch {
+    return true
+  }
+}
+
+function writeCookingOpen(open: boolean) {
+  try {
+    globalThis.localStorage?.setItem(COOKING_OPEN_KEY, String(open))
+  } catch {
+    /* best effort */
+  }
+}
+
 const STATUS_COPY: Record<SessionBusyTone, string> = {
   working: 'Working',
   background: 'Background',
@@ -690,6 +703,14 @@ export interface WorkspaceSidebarViewProps {
     pinned: boolean,
     environmentId?: string,
   ) => void | Promise<unknown>
+  /** Absent when the host cannot keep a cooking session; the action is hidden.
+   *  Moves the same way a settle does. */
+  onCookSession?: (
+    workspacePath: string,
+    externalId: string,
+    cooking: boolean,
+    environmentId?: string,
+  ) => void | Promise<unknown>
   onDeleteSession?: (
     workspacePath: string,
     externalId: string,
@@ -735,6 +756,7 @@ export function WorkspaceSidebarView({
   onSelectSession: requestSelect,
   onSettleSession: requestSettle,
   onPinSession: requestPin,
+  onCookSession: requestCook,
   drafts = NO_DRAFTS,
   activeDraftId = null,
   onOpenDraft: requestOpenDraft,
@@ -749,6 +771,7 @@ export function WorkspaceSidebarView({
   const selectRef = useRef(requestSelect)
   const settleRef = useRef(requestSettle)
   const pinRef = useRef(requestPin)
+  const cookRef = useRef(requestCook)
   const openDraftRef = useRef(requestOpenDraft)
   const discardDraftRef = useRef(requestDiscardDraft)
   const createSessionRef = useRef(onCreateSession)
@@ -757,6 +780,7 @@ export function WorkspaceSidebarView({
     selectRef.current = requestSelect
     settleRef.current = requestSettle
     pinRef.current = requestPin
+    cookRef.current = requestCook
     openDraftRef.current = requestOpenDraft
     discardDraftRef.current = requestDiscardDraft
     createSessionRef.current = onCreateSession
@@ -808,6 +832,17 @@ export function WorkspaceSidebarView({
         : undefined,
     [canPin],
   )
+  const canCook = requestCook !== undefined
+  const onCookSession = useMemo<WorkspaceSidebarViewProps['onCookSession']>(
+    () =>
+      canCook
+        ? (...args) => {
+            // A refusal already moved the card back; there is nothing to add.
+            void Promise.resolve(cookRef.current?.(...args)).catch(() => undefined)
+          }
+        : undefined,
+    [canCook],
+  )
   // A new agent starts in the open environment. One with nowhere to start it
   // hands over to the first reachable environment that has, in that project:
   // the page that opens says which, and offers the others.
@@ -830,18 +865,24 @@ export function WorkspaceSidebarView({
       elsewhere?.path ??
       null)
 
-  const { active, settled } = useMemo(() => partitionSidebarSessions(workspaces), [workspaces])
+  const { active, cooking, settled } = useMemo(
+    () => partitionSidebarSessions(workspaces),
+    [workspaces],
+  )
   const draftRows = useMemo(() => placeSidebarDrafts(drafts, workspaces), [drafts, workspaces])
   const now = useNow()
   const [settledOpen, setSettledOpen] = useState(readSettledOpen)
   const [settledVisible, setSettledVisible] = useState(SETTLED_PREVIEW_LIMIT)
   const [activeGroup, setActiveGroup] = useState<HTMLDivElement | null>(null)
-  const [settledGroup, setSettledGroup] = useState<HTMLDivElement | null>(null)
-  const activeFloor = useActiveFloor(activeGroup, settledGroup, settledOpen)
+  const [cookingOpen, setCookingOpen] = useState(readCookingOpen)
+  // Cooking and Settled rest together below the active list: the floor makes
+  // room for both.
+  const [shelves, setShelves] = useState<HTMLDivElement | null>(null)
+  const activeFloor = useActiveFloor(activeGroup, shelves, settledOpen)
   // Armed once the first sessions have rendered, so the initial load lands
   // still and only later settles, unsettles and new threads move.
   const [armed, setArmed] = useState(false)
-  const hasSessions = active.length + settled.length + draftRows.length > 0
+  const hasSessions = active.length + cooking.length + settled.length + draftRows.length > 0
   useEffect(() => {
     if (hasSessions && !rowsFilling) setArmed(true)
   }, [hasSessions, rowsFilling])
@@ -850,6 +891,10 @@ export function WorkspaceSidebarView({
     setSettledOpen(open)
     writeSettledOpen(open)
     if (!open) setSettledVisible(SETTLED_PREVIEW_LIMIT)
+  }, [])
+  const onCookingOpenChange = useCallback((open: boolean) => {
+    setCookingOpen(open)
+    writeCookingOpen(open)
   }, [])
   const onShowMoreSettled = useCallback(
     () => setSettledVisible((count) => count + SETTLED_PAGE_SIZE),
@@ -865,6 +910,11 @@ export function WorkspaceSidebarView({
       .some((entry) => entrySelection(entry, activeSessionId, activeEnvironmentId) !== null)
       ? activeRow
       : null
+  const cookingSelection =
+    activeRow !== null &&
+    cooking.some((entry) => entrySelection(entry, activeSessionId, activeEnvironmentId) !== null)
+      ? activeRow
+      : null
   // Selection is handed to each row as its own (`selected`), not as the id
   // on screen: opening another session re-renders the two rows it moves
   // between, not the whole list.
@@ -875,6 +925,7 @@ export function WorkspaceSidebarView({
     onSelectSession,
     onSettleSession,
     onPinSession,
+    onCookSession,
     onOpenDraft,
     onDiscardDraft,
     providerLabel,
@@ -989,17 +1040,33 @@ export function WorkspaceSidebarView({
             default spot (the active list's floor), on the bottom edge when
             folded, and moves only when the cards outgrow that, riding down as
             they grow in. */}
-        {workspaces.length > 0 || settled.length > 0 ? (
-          <MemoSettledShelf
-            groupRef={setSettledGroup}
-            settled={settled}
-            open={settledOpen}
-            onOpenChange={onSettledOpenChange}
-            visible={settledVisible}
-            onShowMore={onShowMoreSettled}
-            selected={settledSelection}
-            {...shared}
-          />
+        {workspaces.length > 0 || settled.length > 0 || cooking.length > 0 ? (
+          <div ref={setShelves} className="flex flex-col">
+            {/* Cooking comes and goes with its first and last session, above
+                Settled: work still going, out of sight until it needs you. */}
+            <AnimatePresence initial={false}>
+              {cooking.length > 0 ? (
+                <motion.div key="cooking" className="overflow-hidden" {...rowMotion}>
+                  <MemoCookingShelf
+                    cooking={cooking}
+                    open={cookingOpen}
+                    onOpenChange={onCookingOpenChange}
+                    selected={cookingSelection}
+                    {...shared}
+                  />
+                </motion.div>
+              ) : null}
+            </AnimatePresence>
+            <MemoSettledShelf
+              settled={settled}
+              open={settledOpen}
+              onOpenChange={onSettledOpenChange}
+              visible={settledVisible}
+              onShowMore={onShowMoreSettled}
+              selected={settledSelection}
+              {...shared}
+            />
+          </div>
         ) : null}
       </SidebarContent>
 
@@ -1016,7 +1083,6 @@ export function WorkspaceSidebarView({
  * (and whose selection, page and fold are too) has nothing to show for it.
  */
 function SettledShelf({
-  groupRef,
   settled,
   open,
   onOpenChange,
@@ -1025,7 +1091,6 @@ function SettledShelf({
   selected,
   ...shared
 }: Omit<RowHandlers, 'selected'> & {
-  groupRef: Ref<HTMLDivElement>
   settled: SidebarBoardEntry[]
   open: boolean
   onOpenChange: (open: boolean) => void
@@ -1035,13 +1100,7 @@ function SettledShelf({
   selected: string | null
 }) {
   return (
-    <SidebarGroup
-      ref={groupRef}
-      collapsible
-      className="pb-1"
-      open={open}
-      onOpenChange={onOpenChange}
-    >
+    <SidebarGroup collapsible className="pb-1" open={open} onOpenChange={onOpenChange}>
       {/* The toggle is a button, which inherits the row size; the spans
           carry the label size themselves. */}
       <SidebarGroupLabel>
@@ -1058,8 +1117,9 @@ function SettledShelf({
             .slice(0, visible)
             .flatMap((entry) => [entry.root, ...entry.children])
             .map((row) => (
-              <MemoSettledRow
+              <MemoShelfRow
                 key={sidebarRowKey(row.session.environmentId, row.session.externalId)}
+                shelf="settled"
                 row={row}
                 selected={
                   sidebarRowKey(row.session.environmentId, row.session.externalId) === selected
@@ -1105,13 +1165,88 @@ function sameEntries(a: SidebarBoardEntry[], b: SidebarBoardEntry[]): boolean {
 const MemoSettledShelf = memo(
   SettledShelf,
   (a: SettledShelfProps, b: SettledShelfProps) =>
-    a.groupRef === b.groupRef &&
     a.open === b.open &&
     a.onOpenChange === b.onOpenChange &&
     a.visible === b.visible &&
     a.onShowMore === b.onShowMore &&
     sameHandlers({ ...a, selected: a.selected }, { ...b, selected: b.selected }) &&
     sameEntries(a.settled, b.settled),
+)
+
+/**
+ * The Cooking group: sessions the user sent off to work out of sight. Each
+ * comes back to the active list by itself once it finishes, asks or fails, so
+ * what is here is working, or idle and put aside. Folded, its label still
+ * shows that something is working. Memoized as the Settled shelf is.
+ */
+function CookingShelf({
+  cooking,
+  open,
+  onOpenChange,
+  selected,
+  ...shared
+}: Omit<RowHandlers, 'selected'> & {
+  cooking: SidebarBoardEntry[]
+  open: boolean
+  onOpenChange: (open: boolean) => void
+  /** The open session's `sidebarRowKey` when it is one of the group's rows, else null. */
+  selected: string | null
+}) {
+  // What the folded label says is going on: the busiest any row is.
+  const live = cooking.some((entry) => liveTone(entry.root.session) === 'working')
+    ? 'working'
+    : cooking.some((entry) => liveTone(entry.root.session) === 'background')
+      ? 'background'
+      : null
+  return (
+    <SidebarGroup collapsible className="pb-1" open={open} onOpenChange={onOpenChange}>
+      <SidebarGroupLabel>
+        <span className="text-[12px]">Cooking</span>
+        <span className="text-[12px] tabular-nums text-faint">{cooking.length}</span>
+        {live && !open ? (
+          <span className="flex items-center" title={STATUS_COPY[live]}>
+            <SessionBusyLoader tone={live} />
+          </span>
+        ) : null}
+      </SidebarGroupLabel>
+      <SidebarMenu>
+        <AnimatePresence initial={false} presenceAffectsLayout={false}>
+          {cooking
+            .flatMap((entry) => [entry.root, ...entry.children])
+            .map((row) => (
+              <MemoShelfRow
+                key={sidebarRowKey(row.session.environmentId, row.session.externalId)}
+                shelf="cooking"
+                row={row}
+                selected={
+                  sidebarRowKey(row.session.environmentId, row.session.externalId) === selected
+                    ? row.session.externalId
+                    : null
+                }
+                {...shared}
+              />
+            ))}
+        </AnimatePresence>
+      </SidebarMenu>
+    </SidebarGroup>
+  )
+}
+
+/** A session's running tone, if it is running; what a folded Cooking label shows. */
+function liveTone(session: SidebarSession): 'working' | 'background' | null {
+  const tone = sessionBusyTone(session.status, session)
+  return tone === 'working' || tone === 'background' ? tone : null
+}
+
+type CookingShelfProps = Parameters<typeof CookingShelf>[0]
+
+const MemoCookingShelf = memo(
+  CookingShelf,
+  (a: CookingShelfProps, b: CookingShelfProps) =>
+    a.open === b.open &&
+    a.onOpenChange === b.onOpenChange &&
+    sameHandlers({ ...a, selected: a.selected }, { ...b, selected: b.selected }) &&
+    sameEntries(a.cooking, b.cooking),
 )
 
 /**
@@ -1347,6 +1482,7 @@ function sameHandlers(a: RowHandlers, b: RowHandlers): boolean {
     a.onSelectSession === b.onSelectSession &&
     a.onSettleSession === b.onSettleSession &&
     a.onPinSession === b.onPinSession &&
+    a.onCookSession === b.onCookSession &&
     a.onOpenDraft === b.onOpenDraft &&
     a.onDiscardDraft === b.onDiscardDraft &&
     a.providerLabel === b.providerLabel &&
@@ -1367,6 +1503,7 @@ interface RowHandlers {
   onSelectSession: WorkspaceSidebarViewProps['onSelectSession']
   onSettleSession?: WorkspaceSidebarViewProps['onSettleSession']
   onPinSession?: WorkspaceSidebarViewProps['onPinSession']
+  onCookSession?: WorkspaceSidebarViewProps['onCookSession']
   onOpenDraft?: (draftId: string, environmentId?: string) => void
   onDiscardDraft?: (draftId: string, options?: DraftDiscardOptions) => void
   providerLabel?: WorkspaceSidebarViewProps['providerLabel']
@@ -1576,6 +1713,7 @@ function SessionCardBody({
   onSelectSession,
   onSettleSession,
   onPinSession,
+  onCookSession,
   providerLabel,
 }: RowHandlers & { entry: SidebarBoardEntry; untitled?: string; pinned: boolean }) {
   const { session, workspace } = entry.root
@@ -1593,6 +1731,7 @@ function SessionCardBody({
   )
   const settleHere = !rowEnvironments || environment?.canSettle ? onSettleSession : undefined
   const pinHere = !rowEnvironments || environment?.canPin ? onPinSession : undefined
+  const cookHere = !rowEnvironments || environment?.canCook ? onCookSession : undefined
   const select = () =>
     onSelectSession(workspace.path, session.externalId, providerId, environmentId)
   const providerName = providerLabel?.(providerId) ?? providerId
@@ -1602,13 +1741,23 @@ function SessionCardBody({
   const lastSeen = sessionBusyTone(session.status, session)
   const tone = offline ? null : lastSeen
   const moment = useStatusMoment(lastSeen, offline)
-  // Live work cannot be settled, so its status has nothing to make room for.
-  const hasActions =
+  // Live work cannot be settled. Anything can go cooking except a session
+  // that already needs the user (asking, done, or failed): what would bring
+  // it back has already happened.
+  const canSettleHere =
     Boolean(settleHere) &&
     tone !== 'working' &&
     tone !== 'background' &&
     tone !== 'needs' &&
     tone !== 'question'
+  const canCookHere =
+    Boolean(cookHere) &&
+    tone !== 'needs' &&
+    tone !== 'question' &&
+    tone !== 'done' &&
+    tone !== 'error'
+  // The status makes room for the actions on hover, when there are any.
+  const hasActions = canSettleHere || canCookHere
   const reduceMotion = useReducedMotion() ?? false
   const cardRef = useRef<HTMLDivElement>(null)
   useEffect(() => {
@@ -1752,19 +1901,34 @@ function SessionCardBody({
       </div>
       {/* Live work cannot be settled: the environment refuses it, since
             nothing would bring the card back once the turn finished. */}
-      {settleHere && hasActions ? (
+      {hasActions ? (
         <div className="absolute right-1.5 top-1.5 flex items-center gap-0.5 opacity-0 transition-opacity duration-80 group-has-[:focus-visible]/card:opacity-100 group-hover/card:opacity-100 pointer-coarse:opacity-100 [:root[data-draft-discard-guard]_&]:opacity-0">
-          <CardAction
-            label="Settle"
-            onClick={(event) => {
-              // The second half of a double click that discarded the draft
-              // above: this card slid up under it. A keypress still settles.
-              if (event.detail > 0 && onDiscardGuardedSpot(event)) return
-              settleHere(workspace.path, session.externalId, true, environmentId)
-            }}
-          >
-            <CheckIcon />
-          </CardAction>
+          {canCookHere && cookHere ? (
+            <CardAction
+              label="Send to Cooking"
+              onClick={(event) => {
+                // As with Settle below: the card that slid up under a discard
+                // ignores the second click. A keypress still sends it.
+                if (event.detail > 0 && onDiscardGuardedSpot(event)) return
+                cookHere(workspace.path, session.externalId, true, environmentId)
+              }}
+            >
+              <CookingPotIcon />
+            </CardAction>
+          ) : null}
+          {canSettleHere && settleHere ? (
+            <CardAction
+              label="Settle"
+              onClick={(event) => {
+                // The second half of a double click that discarded the draft
+                // above: this card slid up under it. A keypress still settles.
+                if (event.detail > 0 && onDiscardGuardedSpot(event)) return
+                settleHere(workspace.path, session.externalId, true, environmentId)
+              }}
+            >
+              <CheckIcon />
+            </CardAction>
+          ) : null}
         </div>
       ) : null}
       {/* On the meta line, where any card has room: the top corner is the
@@ -2150,32 +2314,46 @@ function ChildRow({
 // A menu row that can grow in and fold away (see useRowMotion).
 const MotionMenuItem = motion.create(SidebarMenuItem)
 
-/** The environment of a settled row: a one-line row, so it follows the title. */
-function SettledEnvironmentName({ environment }: { environment: SidebarRowEnvironment }) {
-  const { name, platform, distro, offline, reachable } = environment
-  return (
-    <span
-      aria-hidden
-      className={cn(
-        'flex min-w-0 shrink-0 items-center gap-1 text-[12px] text-faint',
-        offline ? 'max-w-[55%]' : 'max-w-[45%]',
-      )}
-      title={offline ? offlineExplanation(name) : name}
-    >
-      <EnvironmentPlatformIcon
-        platform={platform}
-        distro={distro}
-        muted={offline === true || reachable !== true}
-        aria-hidden
-      />
-      <span className="min-w-0 truncate">{nameWithoutPlatform(name, platform)}</span>
-      {offline ? <OfflineWord /> : null}
-    </span>
-  )
+// Project marks need the project bound in: one component per project and
+// lookup, so a row keeps the same icon from render to render.
+const CONTEXT_ICONS = {}
+const NO_ICONS = {}
+const projectIcons = new WeakMap<object, Map<string, IconComponent>>()
+function projectIcon(
+  workspacePath: string,
+  iconLookup: ReturnType<typeof rowEnvironmentOf>['iconLookup'],
+): IconComponent {
+  // Undefined reads the host's lookup from context; null means there is none.
+  const owner = iconLookup === undefined ? CONTEXT_ICONS : (iconLookup ?? NO_ICONS)
+  let icons = projectIcons.get(owner)
+  if (!icons) {
+    icons = new Map()
+    projectIcons.set(owner, icons)
+  }
+  let icon = icons.get(workspacePath)
+  if (!icon) {
+    const ProjectRowIcon = ({ size = 16, className }: IconComponentProps) => (
+      <span
+        className={cn('inline-flex shrink-0 items-center justify-center', className)}
+        style={{ width: size, height: size }}
+      >
+        <ProjectIcon workspacePath={workspacePath} iconLookup={iconLookup} className="opacity-80" />
+      </span>
+    )
+    icon = ProjectRowIcon
+    icons.set(workspacePath, icon)
+  }
+  return icon
 }
 
-/** Settled work at a glance: what it was and when it was put away. */
-function SettledRow({
+/**
+ * A one-line row in Cooking or Settled: the project it is in, what it was,
+ * and either what it is doing or when it was last touched (put away, for a
+ * settled row). On hover it offers to bring the session back to the active
+ * list. Subagents sit indented under their parent and come back with it.
+ */
+function ShelfRow({
+  shelf,
   row,
   selected,
   environmentLabel,
@@ -2183,25 +2361,34 @@ function SettledRow({
   now,
   onSelectSession,
   onSettleSession,
+  onCookSession,
   rowMotion,
-}: RowHandlers & { row: SidebarBoardRow }) {
+}: RowHandlers & { shelf: 'cooking' | 'settled'; row: SidebarBoardRow }) {
   const { session, workspace, depth } = row
   const providerId = session.providerId
   const { environmentId } = session
-  const { environment, spokenName } = rowEnvironmentOf(
+  const { environment, spokenName, iconLookup } = rowEnvironmentOf(
     environmentId,
     rowEnvironments,
     environmentLabel,
   )
   const settleHere = !rowEnvironments || environment?.canSettle ? onSettleSession : undefined
+  const cookHere = !rowEnvironments || environment?.canCook ? onCookSession : undefined
+  const bringBack =
+    depth > 0
+      ? undefined
+      : shelf === 'settled'
+        ? settleHere && (() => settleHere(workspace.path, session.externalId, false, environmentId))
+        : cookHere && (() => cookHere(workspace.path, session.externalId, false, environmentId))
   const tone = environment?.offline ? null : sessionBusyTone(session.status, session)
   const isActive = session.externalId === selected
-  // Settled work can still hold a reply the user started: the active cards' mark.
+  // A put-away session can still hold a reply the user started: the active cards' mark.
   const unsent = Boolean(session.hasUnsentDraft) && !isActive
+  const putAwayAt = shelf === 'settled' ? session.settledAt : null
   return (
     <MotionMenuItem className="overflow-hidden" {...rowMotion}>
       <SidebarMenuButton
-        icon={depth > 0 ? ChildSessionIcon : providerIcon(providerId)}
+        icon={depth > 0 ? ChildSessionIcon : projectIcon(workspace.path, iconLookup)}
         isActive={isActive}
         className="text-muted-foreground"
         style={depth > 0 ? { paddingLeft: 8 + Math.min(depth, 4) * 12 } : undefined}
@@ -2211,8 +2398,6 @@ function SettledRow({
       >
         <span className="truncate">{session.title || 'New session'}</span>
         {unsent ? <UnsentMark /> : null}
-        {/* Under a parent, its subagents go without: they are on the same one. */}
-        {environment && depth === 0 ? <SettledEnvironmentName environment={environment} /> : null}
         <span className="sr-only">
           {' '}
           in {workspace.name}
@@ -2223,14 +2408,14 @@ function SettledRow({
         {tone ? (
           <SessionBusyLoader tone={tone} />
         ) : (
-          formatRelativeTime(session.settledAt ?? session.updatedAt, now)
+          formatRelativeTime(putAwayAt ?? session.updatedAt, now)
         )}
       </SidebarMenuBadge>
-      {settleHere && depth === 0 ? (
+      {bringBack ? (
         <SidebarMenuActions showOnHover>
           <SidebarMenuAction
-            aria-label="Move back to active"
-            onClick={() => settleHere(workspace.path, session.externalId, false, environmentId)}
+            aria-label={shelf === 'settled' ? 'Move back to active' : 'Bring back'}
+            onClick={bringBack}
           >
             <ArrowUUpLeftIcon />
           </SidebarMenuAction>
@@ -2240,4 +2425,7 @@ function SettledRow({
   )
 }
 
-const MemoSettledRow = memo(SettledRow, (a, b) => sameHandlers(a, b) && sameRow(a.row, b.row))
+const MemoShelfRow = memo(
+  ShelfRow,
+  (a, b) => a.shelf === b.shelf && sameHandlers(a, b) && sameRow(a.row, b.row),
+)

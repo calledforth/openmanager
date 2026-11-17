@@ -29,6 +29,8 @@ export interface PendingOverlay {
   settles: Record<string, PendingSettle>
   /** A requested pinned or unpinned placement; the latest click wins. */
   pins: Record<string, PendingPin>
+  /** A requested cooking or active placement; the latest click wins. */
+  cooks: Record<string, PendingCook>
   /** An acknowledged result, shown as not done until server state agrees. */
   acks: Record<string, PendingTicket>
   /** A session or workspace being removed, hidden until server state no longer has it. */
@@ -84,6 +86,12 @@ export interface PendingPin extends PendingTicket {
   at: string
 }
 
+export interface PendingCook extends PendingTicket {
+  cooking: boolean
+  /** Shown as the cooking time until the server's own arrives. */
+  at: string
+}
+
 export interface PendingRemoval extends PendingTicket {
   kind: 'session' | 'workspace'
 }
@@ -106,6 +114,7 @@ export function emptyOverlay(): PendingOverlay {
     answers: {},
     settles: {},
     pins: {},
+    cooks: {},
     acks: {},
     removals: {},
     preferences: {},
@@ -145,6 +154,16 @@ export function dropOverlayEntry<K extends Exclude<keyof PendingOverlay, 'prefer
     delete (next as Record<string, unknown>)[id]
     return next
   })
+}
+
+/**
+ * A cook's command was answered, so its entry ends here. Unlike a pin, server
+ * state may move on by itself: a session that finishes or asks comes back. No
+ * answer overtakes an event committed before it, so the echo, and anything
+ * that already brought the session back, is in state by now.
+ */
+export function cookAnswered(state: EnvironmentState, sessionId: string, ticket: number) {
+  return dropOverlayEntry(state, 'cooks', sessionId, ticket)
 }
 
 /** A pin's command was answered: from now on server state agreeing ends it. */
@@ -189,6 +208,9 @@ const settledMatches = (settledAt: string | null | undefined, settled: boolean) 
 
 const pinnedMatches = (pinnedAt: string | null | undefined, pinned: boolean) =>
   pinned === (pinnedAt !== null && pinnedAt !== undefined)
+
+const cookingMatches = (cookingAt: string | null | undefined, cooking: boolean) =>
+  cooking === (cookingAt !== null && cookingAt !== undefined)
 
 /**
  * Forget what server state now shows. Run after every update (store.ts), so
@@ -237,6 +259,9 @@ export function pruneOverlay(state: EnvironmentState): EnvironmentState {
     if (!session || (!entry.inFlight && pinnedMatches(session.pinnedAt, entry.pinned))) {
       next = dropOverlayEntry(next, 'pins', sessionId)
     }
+  }
+  for (const sessionId of Object.keys(overlay!.cooks ?? {})) {
+    if (!state.sessions[sessionId]) next = dropOverlayEntry(next, 'cooks', sessionId)
   }
   for (const sessionId of Object.keys(overlay!.acks)) {
     const session = state.sessions[sessionId]
@@ -317,6 +342,13 @@ export function composeView(state: EnvironmentState): EnvironmentState {
       pinnedMatches(session.pinnedAt, entry.pinned)
         ? session
         : { ...session, pinnedAt: entry.pinned ? entry.at : null },
+    )
+  }
+  for (const [sessionId, entry] of Object.entries(overlay!.cooks ?? {})) {
+    patchSession(sessionId, (session) =>
+      cookingMatches(session.cookingAt, entry.cooking)
+        ? session
+        : { ...session, cookingAt: entry.cooking ? entry.at : null },
     )
   }
   for (const sessionId of Object.keys(overlay!.acks)) {

@@ -45,6 +45,25 @@ describe('placeSidebarDrafts across environments', () => {
 })
 
 describe('partitionSidebarSessions', () => {
+  it('puts cooking sessions in their own list, newest sent first, children with them', () => {
+    const { active, cooking, settled } = partitionSidebarSessions([
+      workspace('p', [
+        session('busy', '2026-09-24T10:00:00Z'),
+        session('first-sent', '2026-09-23T10:00:00Z', { cookingAt: '2026-09-23T11:00:00Z' }),
+        session('last-sent', '2026-09-20T10:00:00Z', { cookingAt: '2026-09-24T11:00:00Z' }),
+        session('child', '2026-09-24T09:00:00Z', { parentExternalId: 'last-sent' }),
+        // Settled wins over cooking.
+        session('both', '2026-09-22T10:00:00Z', {
+          cookingAt: '2026-09-22T11:00:00Z',
+          settledAt: '2026-09-22T12:00:00Z',
+        }),
+      ]),
+    ])
+    expect(ids(active)).toEqual([['busy']])
+    expect(ids(cooking)).toEqual([['last-sent', 'child'], ['first-sent']])
+    expect(ids(settled)).toEqual([['both']])
+  })
+
   it('lists several environments together, newest first, in the same two lists', () => {
     const desk = [
       session('old', '2026-09-20T10:00:00Z', { environmentId: 'desk' }),

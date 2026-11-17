@@ -223,14 +223,15 @@ const NOT_OFFERED = 'none'
 function useOpenRowAbilities(client: EnvironmentClient | undefined) {
   const read = useCallback(() => {
     if (!client) return NOT_OFFERED
-    const { reachable, canSettle, canPin, hasIcons } = sidebarRowAbilities(client)
-    return `${reachable ? 'reachable' : ''} ${canSettle ? 'settle' : ''} ${canPin ? 'pin' : ''} ${hasIcons ? 'icons' : ''}`
+    const { reachable, canSettle, canPin, canCook, hasIcons } = sidebarRowAbilities(client)
+    return `${reachable ? 'reachable' : ''} ${canSettle ? 'settle' : ''} ${canPin ? 'pin' : ''} ${canCook ? 'cook' : ''} ${hasIcons ? 'icons' : ''}`
   }, [client])
   const abilities = useSyncExternalStore(client?.subscribe ?? NEVER, read, read)
   return {
     reachable: abilities.includes('reachable'),
     canSettle: abilities.includes('settle'),
     canPin: abilities.includes('pin'),
+    canCook: abilities.includes('cook'),
     hasIcons: abilities.includes('icons'),
   }
 }
@@ -270,6 +271,7 @@ function sameRowEnvironments(
         a.reachable === b.reachable &&
         a.canSettle === b.canSettle &&
         a.canPin === b.canPin &&
+        a.canCook === b.canCook &&
         a.offline === b.offline &&
         a.iconLookup === b.iconLookup
       )
@@ -406,6 +408,7 @@ function EnvironmentsSidebar({
     reachable: openReachable,
     canSettle: openCanSettle,
     canPin: openCanPin,
+    canCook: openCanCook,
     hasIcons: openHasIcons,
   } = useOpenRowAbilities(openClient)
 
@@ -419,8 +422,15 @@ function EnvironmentsSidebar({
         reachable,
         canSettle,
         canPin,
+        canCook,
         hasIcons,
-      }: { reachable?: boolean; canSettle: boolean; canPin: boolean; hasIcons: boolean },
+      }: {
+        reachable?: boolean
+        canSettle: boolean
+        canPin: boolean
+        canCook: boolean
+        hasIcons: boolean
+      },
     ) => {
       const client = clients[environmentId]
       const saved = environments.find((item) => item.environmentId === environmentId)
@@ -432,6 +442,7 @@ function EnvironmentsSidebar({
         reachable: reachable === true && !down.has(environmentId),
         canSettle,
         canPin,
+        canCook,
         offline: down.has(environmentId),
         iconLookup: hasIcons && client ? iconLookupOf(client) : null,
       }
@@ -441,6 +452,7 @@ function EnvironmentsSidebar({
         reachable: openReachable,
         canSettle: openCanSettle,
         canPin: openCanPin,
+        canCook: openCanCook,
         hasIcons: openHasIcons,
       })
     }
@@ -454,6 +466,7 @@ function EnvironmentsSidebar({
     down,
     environments,
     nameOf,
+    openCanCook,
     openCanPin,
     openCanSettle,
     openHasIcons,
@@ -542,8 +555,10 @@ function EnvironmentsSidebar({
 
   const anySettles = others.some((row) => row.canSettle)
   const anyPins = others.some((row) => row.canPin)
+  const anyCooks = others.some((row) => row.canCook)
   const sidebarData = useMemo<SidebarDataValue>(() => {
     const {
+      cookSession,
       createSession,
       deleteSession,
       pinSession,
@@ -613,8 +628,22 @@ function EnvironmentsSidebar({
             },
           }
         : {}),
+      ...(cookSession || anyCooks
+        ? {
+            cookSession: async (path, id, cooking, environmentId) => {
+              if (askedDirectly(environmentId)) {
+                await askRowEnvironment(
+                  environmentId,
+                  cooking ? 'send a session cooking' : 'bring a session back',
+                  ({ commands }) => commands.cookSession(id, cooking),
+                )
+              } else await cookSession?.(path, id, cooking)
+            },
+          }
+        : {}),
     }
   }, [
+    anyCooks,
     anyPins,
     anySettles,
     askedDirectly,

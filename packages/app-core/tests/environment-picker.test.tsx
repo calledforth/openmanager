@@ -227,6 +227,7 @@ describe('New agent in the sidebar', () => {
     reachable,
     canSettle: false,
     canPin: false,
+    canCook: false,
     iconLookup: null,
   })
   const view = async (

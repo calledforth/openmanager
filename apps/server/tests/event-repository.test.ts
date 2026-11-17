@@ -373,6 +373,36 @@ describe('event repository transactions', () => {
     ).toThrow(/Cannot pin missing session/)
   })
 
+  it('projects cooking, and refuses it for a missing session', async () => {
+    const { database } = await createDatabase()
+    const repository = createEventRepository(database)
+    const environment = { type: 'environment', environmentId: 'environment-1' } as const
+    const cook = (eventId: string, sessionId: string, cookingAt: string | null) =>
+      ProofEventSchemas['session.updated'].parse({
+        type: 'event',
+        name: 'session.updated',
+        eventId,
+        timestamp: '2026-09-10T09:00:00.000Z',
+        scope: environment,
+        payload: { sessionId, cookingAt },
+      })
+    const row = () =>
+      database
+        .prepare('SELECT cooking_at, updated_at FROM sessions WHERE session_id = ?')
+        .get('session-1')
+
+    repository.appendEvents(environment, [cook('cook-1', 'session-1', '2026-09-10T09:00:00.000Z')])
+    expect(row()).toEqual({ cooking_at: Date.parse('2026-09-10T09:00:00.000Z'), updated_at: 1 })
+    expect(getSessionSummary(database, 'session-1')).toMatchObject({
+      cookingAt: '2026-09-10T09:00:00.000Z',
+    })
+    repository.appendEvents(environment, [cook('cook-2', 'session-1', null)])
+    expect(row()).toEqual({ cooking_at: null, updated_at: 1 })
+    expect(() =>
+      repository.appendEvents(environment, [cook('cook-3', 'session-missing', null)]),
+    ).toThrow(/Cannot cook missing session/)
+  })
+
   it('settles without reordering and unsettles on the next turn through the status broadcast', async () => {
     const { database } = await createDatabase()
     const repository = createEventRepository(database)

@@ -1413,6 +1413,13 @@ function EnvironmentSidebarDataProvider({ children }: { children: ReactNode }) {
     [client],
   )
 
+  const canCook = connection.phase === 'connected' && client.supports('cookSession')
+  const cookSession = useCallback(
+    (_workspacePath: string, externalId: string, cooking: boolean) =>
+      client.commands.cookSession(externalId, cooking),
+    [client],
+  )
+
   const canRegenerateTitle =
     connection.phase === 'connected' && client.supports('regenerateSessionTitle')
   const canAcknowledge = connection.phase === 'connected' && client.supports('acknowledgeSession')
@@ -1448,6 +1455,7 @@ function EnvironmentSidebarDataProvider({ children }: { children: ReactNode }) {
         : {}),
       ...(canSettle ? { settleSession } : {}),
       ...(canPin ? { pinSession } : {}),
+      ...(canCook ? { cookSession } : {}),
       ...(canAcknowledge ? { acknowledgeSessionDone } : {}),
       deleteSession: session.deleteSession,
     }),
@@ -1455,8 +1463,10 @@ function EnvironmentSidebarDataProvider({ children }: { children: ReactNode }) {
       activeEnvironmentId,
       canSettle,
       canPin,
+      canCook,
       settleSession,
       pinSession,
+      cookSession,
       canRegenerateTitle,
       session.regenerateSessionTitle,
       canAcknowledge,

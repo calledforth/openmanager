@@ -125,6 +125,11 @@ export const ProofCommandSchemas = {
   // it go. Either way the change reaches every client as `session.updated`. Any
   // session can be pinned, live ones too, and pinning never moves `updatedAt`.
   'session.pin': command('session.pin', SessionTargetSchema.extend({ pinned: z.boolean() })),
+  // Cooking moves a session out of the active list while it works; `cooking: false`
+  // brings it back. The environment brings it back by itself when the session
+  // needs the user: a turn completes, it asks something, or it fails. A message
+  // the user sends leaves it cooking. Cooking a waiting session is a `conflict`.
+  'session.cook': command('session.cook', SessionTargetSchema.extend({ cooking: z.boolean() })),
   // Clears `doneAt` once the user has looked at a finished session, so every
   // client stops showing it as done. A session that is not done is a no-op.
   'session.acknowledge': command('session.acknowledge', SessionTargetSchema),
@@ -216,6 +221,7 @@ export const ProofCommandSchema = z.discriminatedUnion('name', [
   ProofCommandSchemas['session.title.regenerate'],
   ProofCommandSchemas['session.settle'],
   ProofCommandSchemas['session.pin'],
+  ProofCommandSchemas['session.cook'],
   ProofCommandSchemas['session.acknowledge'],
   ProofCommandSchemas['session.background.stop'],
   ProofCommandSchemas['turn.send'],
@@ -270,6 +276,7 @@ export const ProofResponseSchemas = {
   'session.title.regenerate': response(z.object({ session: SessionSchema })),
   'session.settle': response(z.object({ settledAt: TimestampSchema.nullable() })),
   'session.pin': response(z.object({ pinnedAt: TimestampSchema.nullable() })),
+  'session.cook': response(z.object({ cookingAt: TimestampSchema.nullable() })),
   'session.acknowledge': response(z.null()),
   'session.background.stop': response(z.null()),
   'turn.send': response(TurnStartSchema),

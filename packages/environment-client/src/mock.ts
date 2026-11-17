@@ -69,7 +69,13 @@ import {
   createThreadState,
   deriveSessionStatus,
 } from './state'
-import { dropOverlayEntry, pinAnswered, settleAnswered, updateOverlay } from './overlay'
+import {
+  cookAnswered,
+  dropOverlayEntry,
+  pinAnswered,
+  settleAnswered,
+  updateOverlay,
+} from './overlay'
 import { applyDraftList } from './draft-state'
 import { createDraftSync } from './draft-sync'
 import { createEnvironmentStore } from './store'
@@ -478,10 +484,24 @@ export function createMockEnvironmentClient(
                 ? null
                 : undefined
         const doneChanged = doneAt !== undefined && doneAt !== (session.doneAt ?? null)
+        // And what needs the user brings a cooking session back: a question,
+        // a failure, or a turn done with nothing left running.
+        const uncook =
+          !!session.cookingAt &&
+          (parsed.name === 'interaction.requested' ||
+            parsed.name === 'turn.failed' ||
+            (parsed.name === 'turn.completed' && !working))
         // Each of these events sets the status, so each moves the session's
         // place in the list; the environment announces every move (§4.7.1).
         const moved = parsed.timestamp !== session.updatedAt
-        if (status !== session.status || unsettle || doneChanged || activityChanged || moved) {
+        if (
+          status !== session.status ||
+          unsettle ||
+          uncook ||
+          doneChanged ||
+          activityChanged ||
+          moved
+        ) {
           emit({
             ...base(),
             name: 'session.updated',
@@ -493,6 +513,7 @@ export function createMockEnvironmentClient(
               ...(waitingOn ? { waitingOn } : {}),
               ...(inBackground ? { inBackground } : {}),
               ...(unsettle ? { settledAt: null } : {}),
+              ...(uncook ? { cookingAt: null } : {}),
               ...(doneChanged ? { doneAt } : {}),
             },
           })
@@ -1501,6 +1522,41 @@ export function createMockEnvironmentClient(
         throw error
       }
       store.update((state) => pinAnswered(state, sessionId, ticket))
+    },
+    cookSession: async (sessionId, cooking) => {
+      // As the client does: the click shows at once (pending.cooks).
+      const ticket = ++settleTickets
+      store.update((state) =>
+        updateOverlay(state, 'cooks', (entries) => ({
+          ...entries,
+          [sessionId]: { ticket, cooking, at: now() },
+        })),
+      )
+      try {
+        await run('cookSession', { sessionId, cooking }, () => {
+          const session = store.getState().sessions[sessionId]
+          if (!session) throw new EnvironmentClientError('not_found', 'Session not found.')
+          if (
+            cooking &&
+            (session.status === 'waiting' || session.status === 'error' || session.doneAt)
+          ) {
+            throw new EnvironmentClientError(
+              'conflict',
+              'A session that needs you cannot be sent cooking.',
+            )
+          }
+          emit({
+            ...base(),
+            name: 'session.updated',
+            scope: envScope(),
+            payload: { sessionId, cookingAt: cooking ? now() : null },
+          })
+        })
+      } catch (error) {
+        store.update((state) => dropOverlayEntry(state, 'cooks', sessionId, ticket))
+        throw error
+      }
+      store.update((state) => cookAnswered(state, sessionId, ticket))
     },
     stopBackgroundTasks: (input) =>
       run('stopBackgroundTasks', input, () => {

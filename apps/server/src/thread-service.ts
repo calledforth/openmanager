@@ -295,6 +295,8 @@ type ThreadRecord = {
   settledAt?: number
   /** In-memory mode only; with SQLite the row is the single source. */
   pinnedAt?: number
+  /** In-memory mode only; with SQLite the row is the single source. */
+  cookingAt?: number
   /** In-memory mode only: when the last turn completed, until acknowledged. */
   doneAt?: number
   activeTurn?: ActiveTurn
@@ -1920,6 +1922,13 @@ export function createThreadService(
     if (unsettle) record.settledAt = undefined
     // A new turn supersedes the last result, as `turn.started` does in SQLite.
     if (status === 'running' || status === 'waiting') record.doneAt = undefined
+    // And as it does for cooking: asking, failing or finishing brings it back.
+    const uncook =
+      record.cookingAt !== undefined &&
+      (status === 'waiting' ||
+        status === 'error' ||
+        (status === 'idle' && record.doneAt !== undefined))
+    if (uncook) record.cookingAt = undefined
     const activity = activityOf(record, status)
     record.announced = activity
     // A status moves the session's place in the list, and says so.
@@ -1938,6 +1947,7 @@ export function createThreadService(
           updatedAt: timestamp,
           ...summaryActivity(activity),
           ...(unsettle ? { settledAt: null } : {}),
+          ...(uncook ? { cookingAt: null } : {}),
           doneAt: record.doneAt === undefined ? null : new Date(record.doneAt).toISOString(),
         },
       }),
@@ -2040,6 +2050,9 @@ export function createThreadService(
     updatedAt: new Date(record.updatedAt).toISOString(),
     settledAt: record.settledAt === undefined ? null : new Date(record.settledAt).toISOString(),
     ...(record.pinnedAt === undefined ? {} : { pinnedAt: new Date(record.pinnedAt).toISOString() }),
+    ...(record.cookingAt === undefined
+      ? {}
+      : { cookingAt: new Date(record.cookingAt).toISOString() }),
     doneAt: record.doneAt === undefined ? null : new Date(record.doneAt).toISOString(),
     ...(record.backgroundTasks?.length ? { backgroundTasks: record.backgroundTasks } : {}),
     ...summaryActivity(activityOf(record, record.status)),
@@ -3380,13 +3393,17 @@ export function createThreadService(
         }
         const timestamp = new Date().toISOString()
         const settledAt = settled ? timestamp : null
+        // A settled session is put away for good: it leaves Cooking too, so
+        // moving it back, or a new turn, brings it to the active list.
+        const cooking =
+          record?.cookingAt !== undefined || ('cookingAt' in session && !!session.cookingAt)
         const event = ProofEventSchemas['session.updated'].parse({
           type: 'event',
           name: 'session.updated',
           eventId: randomUUID(),
           timestamp,
           scope: { type: 'environment', environmentId },
-          payload: { sessionId, settledAt },
+          payload: { sessionId, settledAt, ...(settled && cooking ? { cookingAt: null } : {}) },
         })
         try {
           appendEvent(event)
@@ -3401,6 +3418,7 @@ export function createThreadService(
         for (const item of threads.values()) {
           if (item.session.sessionId !== sessionId) continue
           item.settledAt = settled ? Date.parse(timestamp) : undefined
+          if (settled) item.cookingAt = undefined
         }
         return ProofResponseSchemas['session.settle'].parse({
           type: 'response',
@@ -3447,6 +3465,63 @@ export function createThreadService(
           type: 'response',
           requestId: command.requestId,
           payload: { pinnedAt },
+        })
+      }
+
+      if (command.name === 'session.cook') {
+        const parsed = ProofCommandSchemas['session.cook'].safeParse(command)
+        if (!parsed.success)
+          return errorResult(command.requestId, 'validation', 'Invalid session request.')
+        options.flush?.()
+        const { sessionId, cooking } = parsed.data.payload
+        const record = sessions.get(sessionId)
+        const summary = options.database
+          ? getSessionSummary(options.database, sessionId)
+          : record
+            ? summaryOf(record)
+            : undefined
+        if (!summary) return errorResult(command.requestId, 'not_found', 'Session not found.')
+        // A session that already needs the user (asking, done, or failed)
+        // stays where they will see it: what would bring it back has already
+        // happened. This also catches a turn that ends just before the request.
+        if (
+          cooking &&
+          (summary.status === 'waiting' || summary.status === 'error' || summary.doneAt)
+        ) {
+          return errorResult(
+            command.requestId,
+            'conflict',
+            'A session that needs you cannot be sent cooking.',
+          )
+        }
+        const timestamp = new Date().toISOString()
+        const cookingAt = cooking ? timestamp : null
+        const event = ProofEventSchemas['session.updated'].parse({
+          type: 'event',
+          name: 'session.updated',
+          eventId: randomUUID(),
+          timestamp,
+          scope: { type: 'environment', environmentId },
+          payload: { sessionId, cookingAt },
+        })
+        try {
+          appendEvent(event)
+        } catch (error) {
+          options.onPersistenceError?.(error, event.name)
+          return errorResult(
+            command.requestId,
+            'unavailable',
+            'The session change could not be saved. Try again.',
+          )
+        }
+        for (const item of threads.values()) {
+          if (item.session.sessionId !== sessionId) continue
+          item.cookingAt = cooking ? Date.parse(timestamp) : undefined
+        }
+        return ProofResponseSchemas['session.cook'].parse({
+          type: 'response',
+          requestId: command.requestId,
+          payload: { cookingAt },
         })
       }
 
