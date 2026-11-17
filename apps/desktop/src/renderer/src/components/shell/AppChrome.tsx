@@ -32,8 +32,9 @@ function useTitlebarTrail() {
   const { activeWorkspacePath } = useSessionState()
   const { workspaces } = useSidebarData()
 
+  const project = workspaces.find((workspace) => workspace.path === activeWorkspacePath)
   const projectName =
-    workspaces.find((workspace) => workspace.path === activeWorkspacePath)?.name ??
+    project?.name ??
     (activeWorkspacePath
       ? (activeWorkspacePath.split(/[\\/]/).filter(Boolean).pop() ?? activeWorkspacePath)
       : null)
@@ -43,7 +44,7 @@ function useTitlebarTrail() {
     chatTitle = activeThread.title
   }
 
-  return { projectName, chatTitle }
+  return { projectName, chatTitle, scratch: project?.scratch === true }
 }
 
 export function AppChrome() {
@@ -52,7 +53,7 @@ export function AppChrome() {
   const [maximized, setMaximized] = useState(false)
   const { activeWorkspacePath } = useSessionState()
   const { createSession } = useSidebarData()
-  const { projectName, chatTitle } = useTitlebarTrail()
+  const { projectName, chatTitle, scratch } = useTitlebarTrail()
 
   useEffect(() => {
     window.electronAPI
@@ -120,6 +121,7 @@ export function AppChrome() {
           <>
             <ProjectIcon
               workspacePath={activeWorkspacePath}
+              scratch={scratch}
               fallbackIcon={FolderSimpleIcon}
               className="h-4 w-4 text-[var(--basis-text-faint)]"
             />

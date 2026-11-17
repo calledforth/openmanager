@@ -10,7 +10,9 @@ import { openEnvironmentDatabase } from '../src/db/database.js'
 import { createPersistentEventService } from '../src/event-service.js'
 import { canonicalizeRoot } from '../src/workspace-paths.js'
 import {
+  insideGitCheckout,
   openWorkspaceRegistry,
+  scratchSessionFolder,
   readWorkspaceGit,
   type WorkspaceRegistryOptions,
   type WorkspaceRegistry,
@@ -839,5 +841,142 @@ describe('workspace registry', () => {
         payload: {},
       }),
     ).toMatchObject({ type: 'error', error: { code: 'validation' } })
+  })
+})
+
+describe('No project workspace', () => {
+  const remove = (registry: WorkspaceRegistry, workspaceId: string) =>
+    registry.dispatch({
+      type: 'command',
+      requestId: 'remove',
+      name: 'workspace.remove',
+      payload: { workspaceId },
+    }) as { type: string; error?: { code: string } }
+
+  it('registers itself once under the data directory, flagged as scratch', async () => {
+    const { dataDir, open, events } = await fixture()
+    const scratchRoot = join(dataDir, 'scratch')
+    const registry = open([], { scratchRoot })
+    const root = canonicalizeRoot(scratchRoot)
+    expect(listNow(registry)).toEqual([listed('No project', root, { kind: 'scratch' })])
+    expect(events.filter((event) => event.name === 'workspace.updated')).toHaveLength(1)
+    const [scratch] = registry.list()
+    registry.close()
+
+    // A restart finds it by its root and announces nothing new.
+    const reopened = open([], { scratchRoot })
+    expect(reopened.list()).toEqual([scratch])
+    expect(events.filter((event) => event.name === 'workspace.updated')).toHaveLength(1)
+
+    // Not where providers are probed until a session has run there.
+    expect(reopened.mostRecent()).toBeUndefined()
+    reopened.markUsed(scratch!.workspaceId)
+    expect(reopened.mostRecent()?.workspaceId).toBe(scratch!.workspaceId)
+  })
+
+  it('keeps its name and refuses removal', async () => {
+    const { dataDir, open } = await fixture()
+    const scratchRoot = join(dataDir, 'scratch')
+    const registry = open([], { scratchRoot })
+    const [scratch] = registry.list()
+    const renamed = registry.register({ path: scratchRoot, name: 'Mine' })
+    expect(renamed).toMatchObject({ ok: true, workspace: { name: 'No project', kind: 'scratch' } })
+    expect(remove(registry, scratch!.workspaceId)).toMatchObject({
+      type: 'error',
+      error: { code: 'validation' },
+    })
+    expect(registry.list()).toHaveLength(1)
+  })
+
+  it('gives each session a folder of its own that cannot leave the root', async () => {
+    const { dataDir, open } = await fixture()
+    const scratchRoot = join(dataDir, 'scratch')
+    const registry = open([], { scratchRoot })
+    const scratch = registry.resolve(registry.list()[0]!.workspaceId)!
+    const root = canonicalizeRoot(scratchRoot)
+
+    const folder = registry.sessionFolder(scratch, 'session-1')
+    expect(folder).toBe(join(root, 'session-1'))
+    expect(fs.statSync(folder).isDirectory()).toBe(true)
+    expect(registry.sessionFolder(scratch, 'session-1')).toBe(folder)
+
+    for (const hostile of ['../escape', '..', 'a/b', 'C:\\x', '.']) {
+      const named = registry.sessionFolder(scratch, hostile)
+      expect(named.startsWith(root + '/') || named.startsWith(root + '\\')).toBe(true)
+      expect(named.slice(root.length + 1)).toMatch(/^id\.[0-9a-f]{40}$/)
+    }
+  })
+
+  it('refuses a session folder that a link stands in for', async () => {
+    const { dataDir, roots, open } = await fixture()
+    const scratchRoot = join(dataDir, 'scratch')
+    const registry = open([], { scratchRoot })
+    const scratch = registry.resolve(registry.list()[0]!.workspaceId)!
+    await symlink(roots.a, join(scratch.root, 'session-2'))
+    expect(() => registry.sessionFolder(scratch, 'session-2')).toThrow(/not a plain folder/)
+  })
+
+  it('runs ordinary workspaces in their root', async () => {
+    const { roots, open } = await fixture()
+    const registry = open([roots.a])
+    const alpha = registry.resolve(registry.list()[0]!.workspaceId)!
+    expect(alpha.kind).toBeUndefined()
+    expect(registry.sessionFolder(alpha, 'session-1')).toBe(alpha.root)
+  })
+
+  it('makes its folder again when it was deleted from outside', async () => {
+    const { dataDir, open } = await fixture()
+    const scratchRoot = join(dataDir, 'scratch')
+    const registry = open([], { scratchRoot })
+    const [scratch] = registry.list()
+    await rm(scratchRoot, { recursive: true, force: true })
+    expect(registry.resolve(scratch!.workspaceId)).toMatchObject({ availability: 'available' })
+    expect(fs.existsSync(scratchRoot)).toBe(true)
+  })
+
+  it('is not offered under a git checkout, and a failure to make it never stops the start', async () => {
+    const { base, dataDir, open } = await fixture()
+    expect(insideGitCheckout(dataDir)).toBe(false)
+    await mkdir(join(base, '.git'))
+    expect(insideGitCheckout(dataDir)).toBe(true)
+
+    await writeFile(join(base, 'blocked'), 'a file, not a folder')
+    const onScratchError = vi.fn()
+    const registry = open([], { scratchRoot: join(base, 'blocked', 'scratch'), onScratchError })
+    expect(registry.list()).toEqual([])
+    expect(onScratchError).toHaveBeenCalledOnce()
+  })
+
+  it('names a session folder from any id as one safe segment no other id gets', () => {
+    const folder = (id: string) => scratchSessionFolder('/data/scratch', id)
+    const uuid = '0b7c6a2e-5f1d-4c3a-9e8b-1a2b3c4d5e6f'
+    expect(folder(uuid)).toBe(join('/data/scratch', uuid))
+    expect(folder('../x')).not.toBe(folder('..x'))
+    // Ids that differ only in case get two folders, even where case is ignored.
+    expect(folder('Session').toLowerCase()).not.toBe(folder('session').toLowerCase())
+    // A hashed name is never a plain id's: the plain id of the same text stays itself.
+    const hashed = folder('a/b').slice('/data/scratch/'.length)
+    expect(folder(hashed)).not.toBe(folder('a/b'))
+  })
+
+  it('is not offered when its folder links into a git checkout', async () => {
+    const { dataDir, roots, open } = await fixture()
+    await mkdir(join(roots.a, '.git'))
+    await symlink(roots.a, join(dataDir, 'scratch'))
+    const onScratchError = vi.fn()
+    const registry = open([], { scratchRoot: join(dataDir, 'scratch'), onScratchError })
+    expect(registry.list()).toEqual([])
+    expect(onScratchError).toHaveBeenCalledOnce()
+  })
+
+  it('leaves a folder the user registered there as their project', async () => {
+    const { dataDir, open } = await fixture()
+    const scratchRoot = join(dataDir, 'scratch')
+    await mkdir(scratchRoot)
+    open([scratchRoot]).close()
+    const onScratchError = vi.fn()
+    const registry = open([], { scratchRoot, onScratchError })
+    expect(registry.list()).toEqual([listed('scratch', canonicalizeRoot(scratchRoot))])
+    expect(onScratchError).toHaveBeenCalledOnce()
   })
 })

@@ -14,6 +14,7 @@ describe('configuration', () => {
       workspaces: [],
       probeProviders: true,
       generateTitles: true,
+      scratchWorkspace: true,
       remintOwner: false,
     })
   })
@@ -33,6 +34,7 @@ describe('configuration', () => {
       workspaces: [],
       probeProviders: true,
       generateTitles: true,
+      scratchWorkspace: true,
       remintOwner: false,
     })
     expect(
@@ -46,6 +48,7 @@ describe('configuration', () => {
       workspaces: [],
       probeProviders: true,
       generateTitles: true,
+      scratchWorkspace: true,
       remintOwner: false,
     })
   })

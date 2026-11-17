@@ -156,7 +156,13 @@ export function SessionRow({
           {title}
         </AppText>
         <View className="mt-0.5 flex-row items-center gap-1.5">
-          {workspace ? <ProjectChip name={workspace.name} workspaceId={workspace.path} /> : null}
+          {workspace ? (
+            <ProjectChip
+              name={workspace.name}
+              workspaceId={workspace.path}
+              scratch={workspace.scratch === true}
+            />
+          ) : null}
           {workspace && line ? <LineDot /> : null}
           {line ? (
             <AppText

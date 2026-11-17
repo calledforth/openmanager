@@ -1,6 +1,6 @@
 import { once } from 'node:events'
 import { onServerText } from './helpers/frames.ts'
-import { mkdir, mkdtemp, readFile, rm } from 'node:fs/promises'
+import { mkdir, mkdtemp, readFile, rm, stat } from 'node:fs/promises'
 import type { Socket } from 'node:net'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -1053,6 +1053,33 @@ describe('handshake and scoped subscriptions', () => {
       error: { code: 'not_found' },
     })
     expect(probe).not.toHaveBeenCalled()
+  })
+
+  it('starts each No project session in a folder of its own', async () => {
+    const host = await setup({ scratchWorkspace: true })
+    const scratch = host.server.workspaces.list().find((workspace) => workspace.kind === 'scratch')
+    expect(scratch).toMatchObject({ name: 'No project', path: join(host.root, '..', 'scratch') })
+    const client = await connect(host)
+    await handshake(client)
+    const ensure = vi.spyOn(host.server.runtime, 'ensureSession').mockResolvedValue({
+      sessionId: 'provider-session',
+      state: 'created',
+    })
+    for (const sessionId of ['scratch-one', 'scratch-two']) {
+      client.command('session.create', {
+        environmentId: host.server.identity.environmentId,
+        providerId: 'opencode',
+        workspaceId: scratch!.workspaceId,
+        sessionId,
+      })
+      ProofResponseSchemas['session.create'].parse(await client.next())
+    }
+    await vi.waitFor(() => expect(ensure).toHaveBeenCalledTimes(2))
+    expect(ensure.mock.calls.map(([route]) => route.cwd)).toEqual([
+      join(scratch!.path, 'scratch-one'),
+      join(scratch!.path, 'scratch-two'),
+    ])
+    expect((await stat(join(scratch!.path, 'scratch-one'))).isDirectory()).toBe(true)
   })
 
   it('routes create, resume, prompt and interrupt after their protocol responses', async () => {

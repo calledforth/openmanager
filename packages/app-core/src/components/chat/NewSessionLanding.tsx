@@ -10,6 +10,7 @@ import { EnvironmentLabel } from '../sidebar/EnvironmentLabel'
 import { EnvironmentPicker } from './EnvironmentPicker'
 import { ProjectIcon } from '../sidebar/ProjectIcon'
 import { ProjectPicker, describeCapabilities } from './ProjectPicker'
+import { isNoProject, noProjectOf, userProjects } from '../../lib/no-project'
 import type { EnvironmentDistro, EnvironmentPlatform } from '@openmanager/protocol'
 
 /** How many recent projects the landing offers as one-click chips. */
@@ -65,7 +66,21 @@ export function NewSessionLandingView({
     )
   }
 
-  if (workspaces.length === 0) {
+  // "No project" is offered beside the user's projects, never counted as one.
+  const projects = userProjects(workspaces)
+  const noProject = noProjectOf(workspaces)
+  const withoutProject = noProject && (
+    <button
+      type="button"
+      onClick={() => onSelectWorkspace(noProject.path)}
+      disabled={isStarting}
+      className="rounded-sm text-12-regular text-[var(--basis-text-muted)] underline decoration-[var(--basis-border)] underline-offset-[3px] transition-default hover:text-[var(--basis-text)] hover:decoration-current disabled:opacity-60"
+    >
+      or start without a project
+    </button>
+  )
+
+  if (projects.length === 0 && !(noProject && activeWorkspacePath === noProject.path)) {
     return (
       <div className="flex min-h-0 flex-1 items-center justify-center px-6">
         <div className="text-center">
@@ -86,6 +101,7 @@ export function NewSessionLandingView({
             <FolderPlusIcon className="h-3.5 w-3.5" />
             Add project
           </button>
+          {withoutProject && <div className="mt-3">{withoutProject}</div>}
           {environmentPicker && (
             <div className="mt-3 flex justify-center text-12-regular">{environmentPicker}</div>
           )}
@@ -96,9 +112,12 @@ export function NewSessionLandingView({
 
   const activeWorkspace = draftWithoutProject
     ? null
-    : (workspaces.find((workspace) => workspace.path === activeWorkspacePath) ?? workspaces[0]!)
+    : (workspaces.find((workspace) => workspace.path === activeWorkspacePath) ??
+      projects[0] ??
+      workspaces[0]!)
+  const inNoProject = isNoProject(activeWorkspace)
   // Chips offer somewhere else to go; the active project is already chosen.
-  const recentChips = recentWorkspaces
+  const recentChips = userProjects(recentWorkspaces)
     .filter((workspace) => !workspace.missing && workspace.path !== activeWorkspace?.path)
     .slice(0, RECENT_CHIP_LIMIT)
   // The draft stays with a project whose folder is gone, so nothing typed is
@@ -113,7 +132,7 @@ export function NewSessionLandingView({
     <div className="flex min-h-0 flex-1 items-center justify-center px-6">
       <div className="chat-animate-fade-in -mt-14 text-center">
         <div className="inline-flex max-w-[min(520px,86vw)] flex-wrap items-center justify-center gap-x-1.5 gap-y-1 text-16-medium text-[var(--basis-text)]">
-          <span>Let&apos;s build in</span>
+          <span>{inNoProject ? "Let's build with" : "Let's build in"}</span>
           <ProjectPicker
             workspaces={workspaces}
             recentWorkspaces={recentWorkspaces}
@@ -152,9 +171,17 @@ export function NewSessionLandingView({
             )
           )}
           <span>
-            {isStarting ? 'Starting session…' : (unavailable ?? 'Start with a message below')}
+            {isStarting
+              ? 'Starting session…'
+              : (unavailable ??
+                (inNoProject
+                  ? 'Runs in a folder of its own. Start with a message below'
+                  : 'Start with a message below'))}
           </span>
         </div>
+        {withoutProject && !inNoProject && !draftWithoutProject && (
+          <div className="mt-2 flex justify-center">{withoutProject}</div>
+        )}
 
         {recentChips.length > 0 && (
           <div

@@ -10,6 +10,10 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import { ActivityIndicator, ScrollView, TextInput, useWindowDimensions, View } from 'react-native'
 import {
   folderName,
+  isNoProject,
+  NO_PROJECT_NAME,
+  noProjectOf,
+  userProjects,
   visibleFolders,
   type FolderEntry,
   type WorkspaceEntry,
@@ -354,8 +358,9 @@ function FolderBrowser({
 }
 
 /**
- * The project picker for a new session: search, recents, then the
- * environment's projects under its name, and Browse a folder… at the end,
+ * The project picker for a new session: search, "No project" where the
+ * environment offers it, recents, then the environment's projects under its
+ * name, and Browse a folder… at the end,
  * which opens the folder browser as a second page of the same sheet.
  */
 export function ProjectSheet({
@@ -377,7 +382,9 @@ export function ProjectSheet({
     !needle ||
     entry.name.toLowerCase().includes(needle) ||
     entry.path.toLowerCase().includes(needle)
-  const recents = useMemo(() => source.recents.slice(0, 3), [source.recents])
+  const recents = useMemo(() => userProjects(source.recents).slice(0, 3), [source.recents])
+  const noProject = noProjectOf(source.workspaces)
+  const projects = useMemo(() => userProjects(source.workspaces), [source.workspaces])
   const pick = (entry: WorkspaceEntry) => {
     source.pick(entry.path)
     onClose()
@@ -391,8 +398,8 @@ export function ProjectSheet({
   const row = (entry: WorkspaceEntry) => (
     <Option
       key={entry.path}
-      title={entry.name}
-      detail={entry.path}
+      title={isNoProject(entry) ? NO_PROJECT_NAME : entry.name}
+      detail={isNoProject(entry) ? 'A folder of its own, outside any project' : entry.path}
       on={entry.path === source.current}
       icon={<ProjectMark workspaceId={entry.path} size={16} />}
       disabledReason={unavailable(entry)}
@@ -436,6 +443,9 @@ export function ProjectSheet({
                 }}
               />
             </View>
+            {noProject && (!needle || NO_PROJECT_NAME.toLowerCase().includes(needle))
+              ? row(noProject)
+              : null}
             {!needle && recents.length > 0 ? (
               <>
                 <Heading>Recent</Heading>
@@ -445,7 +455,7 @@ export function ProjectSheet({
             <Heading icon={<DesktopIcon size={13} color={theme.faint} />}>
               {source.environmentLabel}
             </Heading>
-            {source.workspaces.filter(matches).map(row)}
+            {projects.filter(matches).map(row)}
             <Option
               title="Browse a folder…"
               icon={<FolderIcon size={16} color={theme.muted} />}

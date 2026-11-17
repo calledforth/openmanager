@@ -3,12 +3,14 @@ import { useContext, useEffect, useState } from 'react'
 import { Image } from 'react-native'
 import { SvgXml } from 'react-native-svg'
 import {
+  SidebarDataContext,
   WORKSPACE_ICONS_UNSET,
   WorkspaceIconContext,
   type ViewActions,
 } from '@openmanager/app-core/logic'
 
 import { usePhoneTheme } from '../theme/ThemeProvider'
+import { NoProjectMark } from './NoProjectMark'
 import { svgOfDataUrl } from './project-icon'
 
 type Lookup = NonNullable<ViewActions['resolveWorkspaceIcon']>
@@ -16,6 +18,19 @@ type Lookup = NonNullable<ViewActions['resolveWorkspaceIcon']>
 // One cache per lookup, as web's `ProjectIcon` keeps: a remount shows the
 // icon at once, and two environments never share one.
 const caches = new WeakMap<Lookup, Map<string, string | null>>()
+
+/**
+ * Whether this is the environment's "No project", as its workspace list says:
+ * so every chip and header that marks a project marks "No project" too. Rows
+ * that may be another environment's say so themselves (`scratch`).
+ */
+function useIsNoProject(workspaceId: string | null): boolean {
+  const workspaces = useContext(SidebarDataContext)?.workspaces
+  return (
+    !!workspaceId &&
+    workspaces?.some((workspace) => workspace.path === workspaceId && workspace.scratch) === true
+  )
+}
 
 /** The icon a project declares (`workspace.icon`), as a data URL; null when it has none. */
 function useDeclaredIcon(workspaceId: string | null): string | null {
@@ -57,14 +72,20 @@ export function ProjectMark({
   workspaceId,
   size = 12,
   color,
+  scratch: known,
 }: {
   workspaceId: string | null
   size?: number
   color?: string
+  /** Whether it is "No project", from the row's own workspace; else the open environment's list says. */
+  scratch?: boolean
 }) {
   const theme = usePhoneTheme()
-  const src = useDeclaredIcon(workspaceId)
+  const listed = useIsNoProject(workspaceId)
+  const scratch = known ?? listed
+  const src = useDeclaredIcon(scratch ? null : workspaceId)
   const [failed, setFailed] = useState<string | null>(null)
+  if (scratch) return <NoProjectMark size={size} color={color ?? theme.muted} />
   const folder = <FolderSimpleIcon size={size} color={color ?? theme.muted} />
   if (!src || failed === src) return folder
   const svg = svgOfDataUrl(src)

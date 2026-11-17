@@ -43,6 +43,7 @@ export * from './lib/theme-tokens'
 export * from './lib/tool-output'
 export * from './lib/turn-notice-parts'
 export * from './lib/workspace-availability'
+export * from './lib/no-project'
 
 // Pure logic that lives beside the components it serves.
 export * from './components/chat/composerControls'

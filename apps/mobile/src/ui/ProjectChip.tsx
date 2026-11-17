@@ -14,17 +14,20 @@ export function ProjectChip({
   workspaceId = null,
   muted = true,
   size = 12,
+  scratch,
 }: {
   name: string
   workspaceId?: string | null
   muted?: boolean
   size?: number
+  /** It is "No project"; left out, the open environment's list says. */
+  scratch?: boolean
 }) {
   const theme = usePhoneTheme()
   const color = muted ? theme.muted : theme.fg
   return (
     <View className="flex-row items-center gap-1.5" style={{ flexShrink: 1 }}>
-      <ProjectMark workspaceId={workspaceId} size={size} color={color} />
+      <ProjectMark workspaceId={workspaceId} size={size} color={color} scratch={scratch} />
       <AppText variant="text-12-regular" numberOfLines={1} style={{ color, flexShrink: 1 }}>
         {name}
       </AppText>

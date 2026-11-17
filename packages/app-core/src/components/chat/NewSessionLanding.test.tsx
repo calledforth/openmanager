@@ -148,4 +148,51 @@ describe('NewSessionLandingView', () => {
 
     expect(html).toContain('Add a folder on devbox to open a fresh session.')
   })
+
+  it('offers "No project" beside the user\'s projects, never counting it as one', () => {
+    const scratch = { path: 'scratch-id', name: 'No project', scratch: true }
+    const empty = renderToStaticMarkup(
+      <NewSessionLandingView
+        workspaces={[scratch]}
+        recentWorkspaces={[scratch]}
+        activeWorkspacePath={null}
+        isWorkspacesLoading={false}
+        isStarting={false}
+        onSelectWorkspace={() => undefined}
+        onAddWorkspace={() => undefined}
+      />,
+    )
+    expect(empty).toContain('Start with a project')
+    expect(empty).toContain('or start without a project')
+
+    const inProject = renderToStaticMarkup(
+      <NewSessionLandingView
+        workspaces={[scratch, { path: '/repos/openmanager', name: 'openmanager' }]}
+        recentWorkspaces={[scratch]}
+        activeWorkspacePath={null}
+        isWorkspacesLoading={false}
+        isStarting={false}
+        onSelectWorkspace={() => undefined}
+        onAddWorkspace={() => undefined}
+      />,
+    )
+    // Opens on the user's project, offers the way out, and no chip for it.
+    expect(inProject).toContain('Project: openmanager')
+    expect(inProject).toContain('or start without a project')
+    expect(inProject).not.toContain('aria-label="Recent projects"')
+
+    const inNoProject = renderToStaticMarkup(
+      <NewSessionLandingView
+        workspaces={[scratch]}
+        activeWorkspacePath="scratch-id"
+        isWorkspacesLoading={false}
+        isStarting={false}
+        onSelectWorkspace={() => undefined}
+        onAddWorkspace={() => undefined}
+      />,
+    )
+    expect(inNoProject).toContain('Let&#x27;s build with')
+    expect(inNoProject).toContain('Runs in a folder of its own')
+    expect(inNoProject).not.toContain('or start without a project')
+  })
 })
