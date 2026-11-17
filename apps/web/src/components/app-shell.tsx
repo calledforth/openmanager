@@ -224,6 +224,7 @@ function ConnectedOverlays({
   const newAgentTarget =
     workspaces.find((workspace) => workspace.path === activeWorkspacePath && !workspace.missing)
       ?.path ??
+    workspaces.find((workspace) => !workspace.missing && !workspace.scratch)?.path ??
     workspaces.find((workspace) => !workspace.missing)?.path ??
     null
   const commands = useMemo<CommandPaletteItemData[]>(
@@ -327,7 +328,11 @@ function SessionTrail() {
     >
       {project ? (
         <>
-          <ProjectIcon workspacePath={project.path} className="h-3.5 w-3.5 shrink-0 opacity-80" />
+          <ProjectIcon
+            workspacePath={project.path}
+            scratch={project.scratch}
+            className="h-3.5 w-3.5 shrink-0 opacity-80"
+          />
           <span className="min-w-0 shrink truncate">{project.name}</span>
           <span className="shrink-0 text-faint">/</span>
         </>

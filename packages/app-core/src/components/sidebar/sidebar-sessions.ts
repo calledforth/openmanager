@@ -329,6 +329,8 @@ export interface SidebarWorkspace {
   availability?: 'available' | 'missing' | 'inaccessible'
   /** The checkout's branch (null when detached) and whether it is a linked worktree. */
   git?: { branch: string | null; worktree: boolean }
+  /** The environment's "No project": shown with its own mark, never a folder's. */
+  scratch?: boolean
   sessions: SidebarSession[]
 }
 

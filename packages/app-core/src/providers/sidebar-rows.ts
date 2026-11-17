@@ -34,6 +34,7 @@ export function toWorkspaceEntry(workspace: Workspace, available: string[]): Wor
     // Which providers could start here is provider health, the same for every project.
     capabilities: { git: workspace.capabilities.git, providers: available },
     ...(workspace.git ? { git: workspace.git } : {}),
+    ...(workspace.kind === 'scratch' ? { scratch: true } : {}),
   }
 }
 
@@ -150,7 +151,8 @@ function sameWorkspaceEntries(left: readonly WorkspaceEntry[], right: readonly W
         entry.missing === other.missing &&
         entry.availability === other.availability &&
         entry.git?.branch === other.git?.branch &&
-        entry.git?.worktree === other.git?.worktree
+        entry.git?.worktree === other.git?.worktree &&
+        entry.scratch === other.scratch
       )
     })
   )

@@ -3,6 +3,7 @@ import { createPortal } from 'react-dom'
 import { CaretDownIcon, CheckIcon, FolderPlusIcon, FolderSimpleIcon } from '@phosphor-icons/react'
 import type { WorkspaceEntry } from '../../providers/sidebar-provider'
 import { cn } from '../../lib/utils'
+import { isNoProject, NO_PROJECT_NAME, noProjectOf, userProjects } from '../../lib/no-project'
 import {
   CommandMenu,
   CommandMenuEmpty,
@@ -48,7 +49,8 @@ function filterProjects(item: CommandMenuItemData, query: string) {
 
 /**
  * The landing's "Let's build in <project>" control: a command menu under the
- * project name. Recent projects first, then the rest, then "Add project";
+ * project name. "No project" first where the environment offers it, then
+ * recent projects, then the rest, then "Add project";
  * the active project is highlighted on open. ⌘⇧P / Ctrl+Shift+P opens it.
  */
 export function ProjectPicker({
@@ -86,9 +88,10 @@ export function ProjectPicker({
   )
 
   const items = useMemo<CommandMenuItemData[]>(() => {
-    const recent = recentWorkspaces.filter((workspace) => !workspace.missing)
+    const noProject = noProjectOf(workspaces)
+    const recent = userProjects(recentWorkspaces).filter((workspace) => !workspace.missing)
     const recentPaths = new Set(recent.map((workspace) => workspace.path))
-    const rest = workspaces.filter((workspace) => !recentPaths.has(workspace.path))
+    const rest = userProjects(workspaces).filter((workspace) => !recentPaths.has(workspace.path))
     const row = (workspace: WorkspaceEntry, group?: string): CommandMenuItemData => {
       const description = describeCapabilities(workspace)
       return {
@@ -100,8 +103,23 @@ export function ProjectPicker({
       }
     }
     return [
+      ...(noProject
+        ? [
+            // Its own heading keeps it first, and "Add project", which has
+            // none, last: rows without one share a single section.
+            {
+              value: noProject.path,
+              label: NO_PROJECT_NAME,
+              description: 'its own folder',
+              keywords: ['none', 'without', 'scratch', 'chat'],
+              group: 'Without a project',
+            },
+          ]
+        : []),
       ...recent.map((workspace) => row(workspace, 'Recent')),
-      ...rest.map((workspace) => row(workspace, recent.length > 0 ? 'All projects' : undefined)),
+      ...rest.map((workspace) =>
+        row(workspace, recent.length > 0 || noProject ? 'All projects' : undefined),
+      ),
       { value: ADD_PROJECT, label: 'Add project…', keywords: ['new', 'folder'] },
     ]
   }, [recentWorkspaces, workspaces])
@@ -249,6 +267,7 @@ export function ProjectPicker({
           {activeWorkspace ? (
             <ProjectIcon
               workspacePath={activeWorkspace.path}
+              scratch={isNoProject(activeWorkspace)}
               fallbackIcon={FolderSimpleIcon}
               className={cn(chip ? 'h-3.5 w-3.5' : 'h-4 w-4', 'text-[var(--basis-text-muted)]')}
             />
@@ -284,13 +303,15 @@ function ProjectRow({
   workspace: WorkspaceEntry | undefined
   active: boolean
 }) {
+  const scratch = isNoProject(workspace)
   return (
     <CommandMenuItem
       value={item.value}
-      title={item.value}
+      title={scratch ? 'Start in a folder of its own, outside any project' : item.value}
       className="h-9 gap-2.5 px-2.5 text-[13px] text-foreground"
     >
       <ProjectIcon
+        scratch={scratch}
         workspacePath={workspace?.path ?? item.value}
         fallbackIcon={FolderSimpleIcon}
         className="h-3.5 w-3.5 shrink-0 text-muted-foreground"
