@@ -1,6 +1,6 @@
-import { randomUUID } from 'node:crypto'
-import { existsSync, readFileSync, statSync } from 'node:fs'
-import { basename, join, resolve } from 'node:path'
+import { createHash, randomUUID } from 'node:crypto'
+import { existsSync, mkdirSync, readFileSync, statSync } from 'node:fs'
+import { basename, dirname, join, resolve } from 'node:path'
 import type { DatabaseSync } from 'node:sqlite'
 import { isDeepStrictEqual } from 'node:util'
 import {
@@ -72,6 +72,39 @@ export function readGitReading(root: string): GitReading {
   return { checkout: existsSync(join(root, '.git')), ...(git ? { git } : {}) }
 }
 
+/** What users see the environment's scratch workspace as. */
+export const SCRATCH_WORKSPACE_NAME = 'No project'
+
+/**
+ * Whether `dir` sits inside a git checkout: any ancestor, itself included,
+ * holds a `.git`. A scratch folder there would inherit that repository's
+ * status, so the environment offers none (see `scratchRoot`).
+ */
+export function insideGitCheckout(dir: string): boolean {
+  let current = resolve(dir)
+  for (;;) {
+    if (existsSync(join(current, '.git'))) return true
+    const parent = dirname(current)
+    if (parent === current) return false
+    current = parent
+  }
+}
+
+/**
+ * The folder one session of the scratch workspace runs in: a direct child
+ * of the scratch root, named from the session id alone, so a restart finds
+ * it again without storing it. Session ids are chosen by clients and only
+ * promise no whitespace, so anything beyond letters, digits, `-` and `_` is
+ * replaced by a hash of the id: the name is always one segment that cannot
+ * climb out of the root.
+ */
+export function scratchSessionFolder(root: string, sessionId: string): string {
+  const name = /^[A-Za-z0-9_-]{1,128}$/.test(sessionId)
+    ? sessionId
+    : createHash('sha256').update(sessionId).digest('hex').slice(0, 32)
+  return join(root, name)
+}
+
 export interface RegisteredWorkspace {
   readonly workspaceId: string
   readonly name: string
@@ -80,6 +113,8 @@ export interface RegisteredWorkspace {
   /** Epoch milliseconds of the last session started here; null until one is. */
   readonly lastUsedAt: number | null
   readonly availability: 'available' | 'missing' | 'inaccessible'
+  /** Set on the environment's own "No project" workspace only. */
+  readonly kind?: 'scratch'
 }
 
 export type WorkspacePathResult =
@@ -117,6 +152,15 @@ export interface WorkspaceRegistryOptions {
    * client keep the last state that was written until the next observation.
    */
   onObservationError?: (workspaceId: string, error: unknown) => void
+  /**
+   * Where the "No project" workspace lives: registered (and its folder made)
+   * on open when given. Left out when the environment offers none, as when
+   * its data directory sits inside a git checkout; one registered before
+   * stays usable.
+   */
+  scratchRoot?: string
+  /** The "No project" workspace could not be registered; the environment runs without it. */
+  onScratchError?: (error: unknown) => void
 }
 
 function hasCode(error: unknown, ...codes: string[]): boolean {
@@ -197,6 +241,7 @@ export function openWorkspaceRegistry(
           root: workspace.path,
           lastUsedAt: workspace.lastUsedAt === null ? null : Date.parse(workspace.lastUsedAt),
           availability: workspace.availability ?? (workspace.exists ? 'available' : 'missing'),
+          ...(workspace.kind ? { kind: workspace.kind } : {}),
         }),
       )
     } else if (event.name === 'workspace.removed') {
@@ -223,6 +268,15 @@ export function openWorkspaceRegistry(
    * now, so routing never follows a stale row, even when the write failed.
    */
   const observe = (workspace: RegisteredWorkspace): RegisteredWorkspace => {
+    // The environment owns the scratch folder: one deleted from outside is
+    // made again rather than reported missing, so "No project" always runs.
+    if (workspace.kind === 'scratch') {
+      try {
+        mkdirSync(workspace.root, { recursive: true })
+      } catch {
+        /* observed below as missing or inaccessible */
+      }
+    }
     const availability = availabilityOf(workspace.root)
     const reading = availability === 'available' ? readGitReading(workspace.root) : undefined
     const row = readWorkspaceRow(database, workspace.workspaceId)
@@ -242,7 +296,10 @@ export function openWorkspaceRegistry(
     const existing = findByRoot(root)
     if (existing) {
       const current = observe(existing)
-      if (name === undefined || name === current.name) return current
+      // "No project" keeps its name: registering its folder again renames nothing.
+      if (name === undefined || name === current.name || current.kind === 'scratch') {
+        return current
+      }
       const row = readWorkspaceRow(database, existing.workspaceId)
       if (!row) throw new Error(`Workspace ${existing.workspaceId} has no row`)
       return write({ ...row, name })
@@ -258,6 +315,7 @@ export function openWorkspaceRegistry(
         availability,
         availability === 'available' ? readGitReading(root) : undefined,
       ),
+      kind: null,
     })
   }
 
@@ -270,6 +328,7 @@ export function openWorkspaceRegistry(
         root: row.path,
         lastUsedAt: row.last_used_at,
         availability: row.availability,
+        ...(row.kind ? { kind: row.kind } : {}),
       }),
     )
   }
@@ -284,6 +343,42 @@ export function openWorkspaceRegistry(
       throw error
     }
     if (!findByRoot(root)) upsert(root, undefined)
+  }
+  // A scratch folder that cannot be made costs "No project", never the start.
+  if (options.scratchRoot !== undefined) {
+    try {
+      ensureScratch(options.scratchRoot)
+    } catch (error) {
+      options.onScratchError?.(error)
+    }
+  }
+
+  /**
+   * Register the "No project" workspace at `configured`, making its folder.
+   * Once per environment: a later open finds it by its root. A folder a user
+   * had registered there already becomes it.
+   */
+  function ensureScratch(configured: string): void {
+    mkdirSync(configured, { recursive: true })
+    const root = canonicalizeRoot(configured)
+    const existing = findByRoot(root)
+    if (existing?.kind === 'scratch') return
+    const row = existing ? readWorkspaceRow(database, existing.workspaceId) : undefined
+    const availability = availabilityOf(root)
+    write({
+      ...(row ?? {
+        workspace_id: randomUUID(),
+        path: root,
+        last_used_at: null,
+      }),
+      name: SCRATCH_WORKSPACE_NAME,
+      availability,
+      git_json: gitJsonOf(
+        availability,
+        availability === 'available' ? readGitReading(root) : undefined,
+      ),
+      kind: 'scratch',
+    })
   }
 
   const rejectWorkspace = (
@@ -429,6 +524,18 @@ export function openWorkspaceRegistry(
       return workspace ? observe(workspace).availability : 'unknown'
     },
 
+    /**
+     * The folder a session runs in: the workspace root, or for "No project"
+     * the session's own subfolder, made here so the provider can start in
+     * it. Throws when that folder cannot be made.
+     */
+    sessionFolder(workspace: RegisteredWorkspace, sessionId: string): string {
+      if (workspace.kind !== 'scratch') return workspace.root
+      const folder = scratchSessionFolder(workspace.root, sessionId)
+      mkdirSync(folder, { recursive: true })
+      return folder
+    },
+
     /** Look a workspace up without auditing; for callers that will report a miss themselves. */
     get(workspaceId: string): RegisteredWorkspace | undefined {
       const workspace = byId.get(workspaceId)
@@ -557,6 +664,13 @@ export function openWorkspaceRegistry(
           const parsed = ProofCommandSchemas['workspace.remove'].safeParse(command)
           if (!parsed.success) {
             return errorResult(command.requestId, 'validation', 'Invalid workspace remove request.')
+          }
+          if (byId.get(parsed.data.payload.workspaceId)?.kind === 'scratch') {
+            return errorResult(
+              command.requestId,
+              'validation',
+              'No project belongs to the environment and cannot be removed.',
+            )
           }
           if (!unregister(parsed.data.payload.workspaceId)) {
             return errorResult(command.requestId, 'not_found', 'Workspace not found.')

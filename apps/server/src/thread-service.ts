@@ -99,6 +99,12 @@ export type WorkspaceRuntimeRoute = {
   providers?: readonly string[]
   cwd: string
   /**
+   * The folder one session runs in, when that is not `cwd` itself: the
+   * "No project" workspace gives each session a subfolder of its own. Made
+   * when asked, and throws when it cannot be; called on create and restore.
+   */
+  sessionCwd?: (sessionId: string) => string
+  /**
    * Called once the provider has actually opened a session in the workspace.
    * Bookkeeping only: the host owns reporting a failure, and a throw here
    * never affects the session the client already holds.
@@ -1047,11 +1053,17 @@ export function createThreadService(
       /* unavailable */
     }
     if (!target) return { refused: workspaceRefusal(session.workspaceId) }
+    let cwd: string
+    try {
+      cwd = target.sessionCwd?.(sessionId) ?? target.cwd
+    } catch {
+      return { refused: workspaceRefusal(session.workspaceId) }
+    }
     const restoredThreads = listThreadsForSession(database, sessionId)
     if (!restoredThreads.length) {
       return { refused: { code: 'not_found', message: 'Thread not found.' } }
     }
-    restoreSession(session, providerId, providerSessionId, target.cwd, restoredThreads)
+    restoreSession(session, providerId, providerSessionId, cwd, restoredThreads)
     return { session, threads: restoredThreads, at }
   }
 
@@ -3017,6 +3029,14 @@ export function createThreadService(
             'A session with this id already exists.',
           )
         }
+        // Before anything is announced: a folder that cannot be made leaves
+        // no session behind.
+        let cwd: string
+        try {
+          cwd = target.sessionCwd?.(sessionId) ?? target.cwd
+        } catch {
+          return rejectWorkspace(command.requestId, input.workspaceId, WORKSPACE_UNAVAILABLE)
+        }
         let draft: { event: ProofEvent; restore: () => void } | undefined
         if (input.draftId !== undefined) {
           if (!options.drafts) {
@@ -3093,7 +3113,7 @@ export function createThreadService(
           thread,
           providerId,
           titleSource: input.title !== undefined ? 'fallback' : undefined,
-          cwd: target.cwd,
+          cwd,
           runtimeSession,
           turns: [],
           messages: [],

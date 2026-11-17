@@ -107,7 +107,7 @@ import { createArtifactStore } from './artifacts.ts'
 import { createToolOutputReader } from './db/tool-output.ts'
 import { createUploadService } from './uploads.ts'
 import { attachWebSocket, SOCKET_CAPABILITIES } from './websocket.ts'
-import { openWorkspaceRegistry } from './workspaces.ts'
+import { insideGitCheckout, openWorkspaceRegistry } from './workspaces.ts'
 
 export const SERVER_CAPABILITIES = [
   ...SOCKET_CAPABILITIES,
@@ -271,6 +271,13 @@ export async function startServer(config: ServerConfig) {
     environmentId: identity.environmentId,
     appendAtomic: (events) => eventService.appendAtomic(events),
   })
+  // "No project" sessions run under the data directory, unless that sits in
+  // a git checkout (a dev data dir inside the repo): there every session would
+  // inherit the repository's status, so none is offered.
+  const scratchRoot =
+    config.scratchWorkspace === true && !insideGitCheckout(config.dataDir)
+      ? join(config.dataDir, 'scratch')
+      : undefined
   let workspaces
   try {
     workspaces = openWorkspaceRegistry(
@@ -284,6 +291,9 @@ export async function startServer(config: ServerConfig) {
       audit,
       {
         onUnregister: (workspaceId) => closeWorkspaceSessions(workspaceId),
+        ...(scratchRoot !== undefined ? { scratchRoot } : {}),
+        onScratchError: (error) =>
+          log('error', 'the No project folder could not be set up', { reason: String(error) }),
         onObservationError: (workspaceId, error) =>
           log('error', 'workspace observation was not saved', {
             workspaceId,
@@ -310,6 +320,9 @@ export async function startServer(config: ServerConfig) {
         providerId: 'opencode',
         providers: runnableProviders(),
         cwd: workspace.root,
+        ...(workspace.kind === 'scratch'
+          ? { sessionCwd: (sessionId: string) => workspaces.sessionFolder(workspace, sessionId) }
+          : {}),
         // "Last used" means a session actually started here, not merely was
         // asked for. The stamp is bookkeeping: a failure is logged, never fatal.
         onSessionStarted: () => {
