@@ -109,6 +109,14 @@ export function createEventProjector(
     ),
     // Only the user moves it, so no activity or settling touches this column.
     updateSessionPinned: database.prepare('UPDATE sessions SET pinned_at = ? WHERE session_id = ?'),
+    updateSessionCooking: database.prepare(
+      'UPDATE sessions SET cooking_at = ? WHERE session_id = ?',
+    ),
+    // Only what needs the user brings a cooking session back: a completed
+    // turn, a request, a failure. A turn starting does not.
+    uncookSession: database.prepare(
+      'UPDATE sessions SET cooking_at = NULL WHERE session_id = ? AND cooking_at IS NOT NULL',
+    ),
     // Work that needs the user brings a settled session back to the active list.
     unsettleSession: database.prepare(
       'UPDATE sessions SET settled_at = NULL WHERE session_id = ? AND settled_at IS NOT NULL',
@@ -626,6 +634,15 @@ export function createEventProjector(
         const movedAt =
           event.payload.updatedAt === undefined ? undefined : Date.parse(event.payload.updatedAt)
         if (event.payload.status !== undefined) {
+          // A session that starts asking or fails outside a turn needs the
+          // user. Only the change counts: a status restated leaves it be.
+          if (event.payload.status === 'waiting' || event.payload.status === 'error') {
+            const before = s.selectSessionStatus.get(event.payload.sessionId) as
+              { status: string } | undefined
+            if (before && before.status !== event.payload.status) {
+              s.uncookSession.run(event.payload.sessionId)
+            }
+          }
           if (
             s.updateSessionStatus.run(event.payload.status, movedAt ?? at, event.payload.sessionId)
               .changes !== 1
@@ -667,6 +684,13 @@ export function createEventProjector(
             event.payload.pinnedAt === null ? null : Date.parse(event.payload.pinnedAt)
           if (s.updateSessionPinned.run(pinnedAt, event.payload.sessionId).changes !== 1) {
             throw new ProjectionRefusal(`Cannot pin missing session ${event.payload.sessionId}`)
+          }
+        }
+        if (event.payload.cookingAt !== undefined) {
+          const cookingAt =
+            event.payload.cookingAt === null ? null : Date.parse(event.payload.cookingAt)
+          if (s.updateSessionCooking.run(cookingAt, event.payload.sessionId).changes !== 1) {
+            throw new ProjectionRefusal(`Cannot cook missing session ${event.payload.sessionId}`)
           }
         }
         if (event.payload.doneAt !== undefined) {
@@ -887,6 +911,7 @@ export function createEventProjector(
         }
         s.updateSessionStatus.run('waiting', at, event.scope.sessionId)
         s.unsettleSession.run(event.scope.sessionId)
+        s.uncookSession.run(event.scope.sessionId)
         return
       }
       case 'interaction.resolved':
@@ -987,6 +1012,10 @@ export function createEventProjector(
         if (event.name === 'turn.completed' && !working) {
           s.updateSessionDone.run(at, event.scope.sessionId)
         } else s.clearSessionDone.run(event.scope.sessionId)
+        // What is news brings a cooking session back: done, or failed.
+        if (failedHere || (event.name === 'turn.completed' && !working)) {
+          s.uncookSession.run(event.scope.sessionId)
+        }
         return
       }
       case 'message.reasoning':

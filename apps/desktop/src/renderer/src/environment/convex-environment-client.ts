@@ -104,6 +104,7 @@ export interface ConvexEnvironmentClientOptions {
 const UNSUPPORTED: ReadonlySet<EnvironmentCommandName> = new Set([
   'settleSession',
   'pinSession',
+  'cookSession',
   'acknowledgeSession',
   'stopBackgroundTasks',
   // The Convex backend has no chat queue; the composer sends as it always has.
@@ -1204,6 +1205,7 @@ export function createConvexEnvironmentClient(
     // Web only for now; the Convex host has no settled state to keep.
     settleSession: () => unsupported('settleSession'),
     pinSession: () => unsupported('pinSession'),
+    cookSession: () => unsupported('cookSession'),
     regenerateSessionTitle: () => unsupported('regenerateSessionTitle'),
     acknowledgeSession: () => unsupported('acknowledgeSession'),
     stopBackgroundTasks: () => unsupported('stopBackgroundTasks'),

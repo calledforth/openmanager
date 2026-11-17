@@ -79,6 +79,7 @@ export function groupSidebarSessions({
       ...(summary.updatedAt ? { updatedAt: summary.updatedAt } : {}),
       settledAt: summary.settledAt ?? null,
       pinnedAt: summary.pinnedAt ?? null,
+      cookingAt: summary.cookingAt ?? null,
       ...(unsentIds.has(summary.sessionId) ? { hasUnsentDraft: true } : {}),
       ...(summary.waitingOn ? { waitingOn: summary.waitingOn } : {}),
       ...(summary.inBackground ? { inBackground: true } : {}),
@@ -178,6 +179,7 @@ export function sidebarRowAbilities(client: Reader) {
     reachable: isEnvironmentReachable(client),
     canSettle: connection.phase === 'connected' && client.supports('settleSession'),
     canPin: connection.phase === 'connected' && client.supports('pinSession'),
+    canCook: connection.phase === 'connected' && client.supports('cookSession'),
     hasIcons:
       connection.capabilities.includes('workspace.icon') && client.supports('resolveWorkspaceIcon'),
   }
@@ -241,7 +243,7 @@ export function createSidebarRowsReader() {
     const facts = sameSidebarDraftFacts(previous?.facts ?? NO_DRAFT_FACTS, read)
       ? (previous?.facts ?? read)
       : read
-    const { reachable, canSettle, canPin, hasIcons } = sidebarRowAbilities(client)
+    const { reachable, canSettle, canPin, canCook, hasIcons } = sidebarRowAbilities(client)
     const unchanged =
       previous &&
       previous.rows.workspaces === workspaces &&
@@ -250,6 +252,7 @@ export function createSidebarRowsReader() {
       previous.rows.reachable === reachable &&
       previous.rows.canSettle === canSettle &&
       previous.rows.canPin === canPin &&
+      previous.rows.canCook === canCook &&
       previous.rows.hasIcons === hasIcons
     const rows: SidebarEnvironmentRows = unchanged
       ? previous.rows
@@ -261,6 +264,7 @@ export function createSidebarRowsReader() {
           reachable,
           canSettle,
           canPin,
+          canCook,
           hasIcons,
         }
     last = { inputs, rows, facts }

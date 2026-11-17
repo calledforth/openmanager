@@ -59,6 +59,8 @@ export interface SidebarSessionEntry {
   settledAt?: string | null
   /** ISO time the user pinned it; null or absent while it is not pinned. */
   pinnedAt?: string | null
+  /** ISO time the user sent it cooking; null or absent while it is not. */
+  cookingAt?: string | null
   /** Its composer holds text or an image that was not sent. Hosts whose
    * drafts do not sync leave it out. */
   hasUnsentDraft?: boolean
@@ -149,6 +151,13 @@ export interface SidebarDataValue {
     pinned: boolean,
     environmentId?: string,
   ) => Promise<void>
+  /** Send cooking (`true`) or bring back (`false`). Hosts without it leave it out. */
+  cookSession?: (
+    workspacePath: string,
+    externalId: string,
+    cooking: boolean,
+    environmentId?: string,
+  ) => Promise<void>
   deleteSession: (
     workspacePath: string,
     externalId: string,
@@ -206,6 +215,8 @@ export interface SidebarEnvironmentRows {
   canSettle: boolean
   /** Pinning can be offered, on the same terms. */
   canPin: boolean
+  /** Cooking can be offered, on the same terms. */
+  canCook: boolean
   /** Its project icons can be asked for. */
   hasIcons: boolean
 }
@@ -225,6 +236,7 @@ export interface SidebarRowEnvironment {
   reachable?: boolean
   canSettle: boolean
   canPin: boolean
+  canCook: boolean
   /** Nothing reaches it: its rows are what this device last saw of it, not news. */
   offline?: boolean
   /** Null where it has no icons to give. */

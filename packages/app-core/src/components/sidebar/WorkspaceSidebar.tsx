@@ -67,6 +67,7 @@ function useWorkspaceSidebarModel(closeSheet: MutableRefObject<() => void>) {
     renameSession,
     settleSession,
     pinSession,
+    cookSession,
     deleteSession,
     acknowledgeSessionDone,
   } = useSidebarData()
@@ -144,6 +145,11 @@ function useWorkspaceSidebarModel(closeSheet: MutableRefObject<() => void>) {
     onPinSession: pinSession
       ? (path: string, id: string, pinned: boolean, environmentId?: string) =>
           pinSession(path, id, pinned, environmentId)
+      : undefined,
+    // Likewise.
+    onCookSession: cookSession
+      ? (path: string, id: string, cooking: boolean, environmentId?: string) =>
+          cookSession(path, id, cooking, environmentId)
       : undefined,
     onDeleteSession: (...args: Parameters<typeof deleteSession>) => void deleteSession(...args),
     ...(drafts

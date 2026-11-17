@@ -102,6 +102,7 @@ export const COMMAND_ACCESS = Object.freeze({
   'session.title.regenerate': 'operate',
   'session.settle': 'operate',
   'session.pin': 'operate',
+  'session.cook': 'operate',
   'session.acknowledge': 'operate',
   'workspace.add': 'operate',
   'workspace.remove': 'operate',

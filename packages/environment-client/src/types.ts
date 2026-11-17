@@ -90,6 +90,11 @@ export interface SessionSummary extends Session {
   /** When the user pinned the session; null or absent while it is not pinned. */
   pinnedAt?: string | null
   /**
+   * When the user sent the session cooking; null or absent while it is not.
+   * The environment clears it when the session needs the user.
+   */
+  cookingAt?: string | null
+  /**
    * When the last turn completed, while nobody has opened the session since.
    * Null or absent means there is nothing unseen.
    */
@@ -621,6 +626,13 @@ export interface EnvironmentCommands {
    * at once; if the environment refuses, it goes back and this rejects.
    */
   pinSession(sessionId: string, pinned: boolean): Promise<void>
+  /**
+   * Send a session cooking (`true`): out of the active list while it works,
+   * back by itself when it finishes, asks or fails. `false` brings it back.
+   * The state shows the move at once; if the environment refuses, it goes
+   * back and this rejects.
+   */
+  cookSession(sessionId: string, cooking: boolean): Promise<void>
   /** The user has looked at a finished session; every client stops showing it as done. */
   acknowledgeSession(sessionId: string): Promise<void>
   /**

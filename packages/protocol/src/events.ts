@@ -56,8 +56,9 @@ const event = <N extends string, S extends z.ZodType, P extends z.ZodType>(
  * version cannot state (docs/sync-foundations.md §4.7.7).
  *
  * 6: `session.updated` carries `pullRequests`.
+ * 7: `session.updated` carries `cookingAt`.
  */
-export const EVENT_FORMAT_VERSION = 6 as const
+export const EVENT_FORMAT_VERSION = 7 as const
 
 /** A turn's state once an interaction event is applied: still asking, or running again. */
 export const InteractionTurnStateSchema = z.enum(['running', 'waiting'])
@@ -101,6 +102,8 @@ export const ProofEventSchemas = {
       settledAt: TimestampSchema.nullable().optional(),
       /** Present only when the session was pinned (a time) or unpinned (null). */
       pinnedAt: TimestampSchema.nullable().optional(),
+      /** Present only when the session went cooking (a time) or came back (null). */
+      cookingAt: TimestampSchema.nullable().optional(),
       /** Present only when a turn completed (a time) or the user acknowledged it (null). */
       doneAt: TimestampSchema.nullable().optional(),
       /** Present only when the session's background work changed: every task still running. */

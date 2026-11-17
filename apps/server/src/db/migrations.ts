@@ -1140,6 +1140,23 @@ export const MIGRATIONS: readonly Migration[] = [
       `)
     },
   },
+  {
+    version: 31,
+    name: 'session_cooking_at',
+    up(database) {
+      const columns = new Set(
+        (database.prepare('PRAGMA table_info(sessions)').all() as { name: string }[]).map(
+          (column) => column.name,
+        ),
+      )
+      if (!columns.has('cooking_at')) {
+        // When the user sent the session cooking, projected from `session.updated`.
+        // Null while it is not; the projection clears it when the session
+        // needs the user (a completed turn, a request, a failure).
+        database.exec('ALTER TABLE sessions ADD COLUMN cooking_at INTEGER')
+      }
+    },
+  },
 ]
 
 type RetainedActivityRow = {

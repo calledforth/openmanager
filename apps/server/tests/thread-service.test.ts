@@ -2672,6 +2672,59 @@ describe('durable session lifecycle', () => {
     }
   })
 
+  it('keeps a cooking session out of the way while it works and brings it back when done', async () => {
+    const h = setup()
+    try {
+      const { sessionId } = h.created.session
+      await h.service.resolveRuntimeSession(sessionId)
+      const listed = () => h.service.summaries()[0]
+      const cookingAt = ProofResponseSchemas['session.cook'].parse(
+        h.dispatch(h.service, 'session.cook', { sessionId, cooking: true }),
+      ).payload.cookingAt
+      expect(cookingAt).toEqual(expect.any(String))
+      h.events.flush()
+      expect(listed()).toMatchObject({ sessionId, cookingAt })
+      expect(h.published.at(-1)).toMatchObject({
+        name: 'session.updated',
+        payload: { sessionId, cookingAt },
+      })
+
+      // A message the user sends leaves it cooking.
+      h.dispatch(h.service, 'turn.send', { ...h.created.thread, text: 'Keep going' })
+      h.events.flush()
+      expect(listed()).toMatchObject({ status: 'running', cookingAt })
+
+      // Done is news: the session comes back, and every client hears it.
+      await vi.waitFor(() => expect(listed()).toMatchObject({ status: 'idle' }))
+      h.events.flush()
+      expect(listed()?.cookingAt ?? null).toBeNull()
+      expect(listed()?.doneAt).toEqual(expect.any(String))
+      expect(
+        h.published.some(
+          (event) =>
+            event.name === 'session.updated' &&
+            event.payload.sessionId === sessionId &&
+            event.payload.cookingAt === null,
+        ),
+      ).toBe(true)
+
+      // Brought back by hand, too.
+      h.dispatch(h.service, 'session.cook', { sessionId, cooking: true })
+      expect(
+        ProofResponseSchemas['session.cook'].parse(
+          h.dispatch(h.service, 'session.cook', { sessionId, cooking: false }),
+        ).payload,
+      ).toEqual({ cookingAt: null })
+      h.events.flush()
+      expect(listed()?.cookingAt ?? null).toBeNull()
+      expect(
+        h.dispatch(h.service, 'session.cook', { sessionId: 'missing', cooking: true }),
+      ).toMatchObject({ type: 'error', error: { code: 'not_found' } })
+    } finally {
+      h.close()
+    }
+  })
+
   it('refuses to settle a live session but still brings one back', async () => {
     const h = setup()
     try {

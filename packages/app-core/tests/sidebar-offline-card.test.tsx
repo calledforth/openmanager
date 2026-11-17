@@ -38,6 +38,7 @@ const laptop = (offline: boolean): SidebarRowEnvironment => ({
   name: 'Laptop',
   canSettle: false,
   canPin: false,
+  canCook: false,
   offline,
   iconLookup: null,
 })

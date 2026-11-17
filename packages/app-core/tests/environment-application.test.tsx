@@ -319,6 +319,7 @@ describe('the shared application over the environment client', () => {
           reachable: true,
           canSettle: true,
           canPin: true,
+          canCook: true,
           iconLookup: null,
         },
       },

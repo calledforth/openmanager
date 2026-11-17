@@ -81,6 +81,12 @@ export const proofCommands = [
   },
   {
     type: 'command',
+    requestId: 'cook',
+    name: 'session.cook',
+    payload: { sessionId: 'session-1', cooking: true },
+  },
+  {
+    type: 'command',
     requestId: 'acknowledge',
     name: 'session.acknowledge',
     payload: { sessionId: 'session-1' },
@@ -210,6 +216,11 @@ export const proofResponses = {
     type: 'response',
     requestId: 'pin',
     payload: { pinnedAt: '2026-09-24T10:00:00.000Z' },
+  },
+  'session.cook': {
+    type: 'response',
+    requestId: 'cook',
+    payload: { cookingAt: '2026-09-24T10:00:00.000Z' },
   },
   'session.acknowledge': { type: 'response', requestId: 'acknowledge', payload: null },
   'session.background.stop': { type: 'response', requestId: 'stop-background', payload: null },

@@ -21,6 +21,7 @@ const commands: EnvironmentCommands = {
   deleteSession: reject('deleteSession'),
   settleSession: reject('settleSession'),
   pinSession: reject('pinSession'),
+  cookSession: reject('cookSession'),
   acknowledgeSession: reject('acknowledgeSession'),
   stopBackgroundTasks: reject('stopBackgroundTasks'),
   sendTurn: reject('sendTurn'),
