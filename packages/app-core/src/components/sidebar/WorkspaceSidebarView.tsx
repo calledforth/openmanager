@@ -1736,14 +1736,20 @@ function SessionCardBody({
   const tone = offline ? null : lastSeen
   const moment = useStatusMoment(lastSeen, offline)
   // Live work cannot be settled. Anything can go cooking except a session
-  // already waiting on the user: only a new request would bring it back.
+  // that already needs the user (asking, done, or failed): what would bring
+  // it back has already happened.
   const canSettleHere =
     Boolean(settleHere) &&
     tone !== 'working' &&
     tone !== 'background' &&
     tone !== 'needs' &&
     tone !== 'question'
-  const canCookHere = Boolean(cookHere) && tone !== 'needs' && tone !== 'question'
+  const canCookHere =
+    Boolean(cookHere) &&
+    tone !== 'needs' &&
+    tone !== 'question' &&
+    tone !== 'done' &&
+    tone !== 'error'
   // The status makes room for the actions on hover, when there are any.
   const hasActions = canSettleHere || canCookHere
   const reduceMotion = useReducedMotion() ?? false

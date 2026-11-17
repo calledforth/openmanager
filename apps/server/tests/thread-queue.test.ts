@@ -225,6 +225,31 @@ describe('a chat queue', () => {
     expect(chat.queue().items).toEqual([])
   })
 
+  it('keeps a cooking session cooking while its queue runs, and brings it back after the last', async () => {
+    const chat = await setup()
+    const { sessionId } = chat.thread
+    const cooking = () =>
+      chat.database
+        .prepare('SELECT cooking_at FROM sessions WHERE session_id = ?')
+        .get(sessionId) as { cooking_at: number | null }
+    chat.send('One')
+    await chat.started(0)
+    chat.dispatch('queue.add', { ...chat.thread, text: 'Two', commandId: 'q-2' })
+    chat.dispatch('session.cook', { sessionId, cooking: true })
+    chat.events.flush()
+    expect(cooking().cooking_at).toEqual(expect.any(Number))
+
+    // The queued message is the user's own: the turn before it is not news.
+    await chat.completed('assistant-0')
+    await chat.started(1)
+    chat.events.flush()
+    expect(cooking().cooking_at).toEqual(expect.any(Number))
+
+    await chat.completed('assistant-1')
+    chat.events.flush()
+    expect(cooking().cooking_at).toBeNull()
+  })
+
   it('answers a retried add once, and runs a message added to an idle chat at once', async () => {
     const chat = await setup()
     chat.send('One')

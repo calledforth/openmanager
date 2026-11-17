@@ -2706,6 +2706,21 @@ describe('durable session lifecycle', () => {
         }),
       )
 
+      // Done already needs the user, so it cannot go cooking until it is seen.
+      expect(h.dispatch(h.service, 'session.cook', { sessionId, cooking: true })).toMatchObject({
+        type: 'error',
+        error: { code: 'conflict' },
+      })
+      h.dispatch(h.service, 'session.acknowledge', { sessionId })
+      h.events.flush()
+
+      // Settling puts it away for good: it leaves Cooking too.
+      h.dispatch(h.service, 'session.cook', { sessionId, cooking: true })
+      h.dispatch(h.service, 'session.settle', { sessionId, settled: true })
+      h.events.flush()
+      expect(listed()?.cookingAt ?? null).toBeNull()
+      h.dispatch(h.service, 'session.settle', { sessionId, settled: false })
+
       // Brought back by hand, too.
       h.dispatch(h.service, 'session.cook', { sessionId, cooking: true })
       expect(

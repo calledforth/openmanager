@@ -1536,10 +1536,13 @@ export function createMockEnvironmentClient(
         await run('cookSession', { sessionId, cooking }, () => {
           const session = store.getState().sessions[sessionId]
           if (!session) throw new EnvironmentClientError('not_found', 'Session not found.')
-          if (cooking && session.status === 'waiting') {
+          if (
+            cooking &&
+            (session.status === 'waiting' || session.status === 'error' || session.doneAt)
+          ) {
             throw new EnvironmentClientError(
               'conflict',
-              'A session waiting on you cannot be sent cooking.',
+              'A session that needs you cannot be sent cooking.',
             )
           }
           emit({

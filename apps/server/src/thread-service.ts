@@ -3365,13 +3365,17 @@ export function createThreadService(
         }
         const timestamp = new Date().toISOString()
         const settledAt = settled ? timestamp : null
+        // A settled session is put away for good: it leaves Cooking too, so
+        // moving it back, or a new turn, brings it to the active list.
+        const cooking =
+          record?.cookingAt !== undefined || ('cookingAt' in session && !!session.cookingAt)
         const event = ProofEventSchemas['session.updated'].parse({
           type: 'event',
           name: 'session.updated',
           eventId: randomUUID(),
           timestamp,
           scope: { type: 'environment', environmentId },
-          payload: { sessionId, settledAt },
+          payload: { sessionId, settledAt, ...(settled && cooking ? { cookingAt: null } : {}) },
         })
         try {
           appendEvent(event)
@@ -3386,6 +3390,7 @@ export function createThreadService(
         for (const item of threads.values()) {
           if (item.session.sessionId !== sessionId) continue
           item.settledAt = settled ? Date.parse(timestamp) : undefined
+          if (settled) item.cookingAt = undefined
         }
         return ProofResponseSchemas['session.settle'].parse({
           type: 'response',
@@ -3442,18 +3447,23 @@ export function createThreadService(
         options.flush?.()
         const { sessionId, cooking } = parsed.data.payload
         const record = sessions.get(sessionId)
-        const session =
-          record?.session ??
-          (options.database ? getSessionSummary(options.database, sessionId) : undefined)
-        if (!session) return errorResult(command.requestId, 'not_found', 'Session not found.')
-        // A session that asks the user already needs them: only a request
-        // brings a cooking session back, and this one has already been made.
-        const status = record?.status ?? ('status' in session ? session.status : 'idle')
-        if (cooking && status === 'waiting') {
+        const summary = options.database
+          ? getSessionSummary(options.database, sessionId)
+          : record
+            ? summaryOf(record)
+            : undefined
+        if (!summary) return errorResult(command.requestId, 'not_found', 'Session not found.')
+        // A session that already needs the user (asking, done, or failed)
+        // stays where they will see it: what would bring it back has already
+        // happened. This also catches a turn that ends just before the request.
+        if (
+          cooking &&
+          (summary.status === 'waiting' || summary.status === 'error' || summary.doneAt)
+        ) {
           return errorResult(
             command.requestId,
             'conflict',
-            'A session waiting on you cannot be sent cooking.',
+            'A session that needs you cannot be sent cooking.',
           )
         }
         const timestamp = new Date().toISOString()

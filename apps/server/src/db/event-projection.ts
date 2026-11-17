@@ -134,6 +134,7 @@ export function createEventProjector(
       'SELECT 1 FROM sessions WHERE session_id = ? AND background_tasks_json IS NOT NULL',
     ),
     selectSessionStatus: database.prepare('SELECT status FROM sessions WHERE session_id = ?'),
+    selectThreadQueue: database.prepare('SELECT queue_json FROM threads WHERE thread_id = ?'),
     // A session's pull requests, as the last `session.updated` that named
     // them stated: the whole list each time. `source` is set once, by the
     // write that creates the link, and kept.
@@ -470,6 +471,14 @@ export function createEventProjector(
     )
   }
 
+  /** Whether the thread's queue runs its next message once the turn ends. */
+  function queueWaiting(threadId: string): boolean {
+    const row = s.selectThreadQueue.get(threadId) as { queue_json: string | null } | undefined
+    if (!row?.queue_json) return false
+    const queue = JSON.parse(row.queue_json) as { items?: unknown[]; pausedBy?: string | null }
+    return (queue.items?.length ?? 0) > 0 && !queue.pausedBy
+  }
+
   /** Mirrors the client fold: adjacent text merges, tokens only ever grow. */
   function projectReasoning(event: MessageReasoning, at: number): void {
     const { messageId, turnId, phase, content, tokens } = event.payload
@@ -803,6 +812,8 @@ export function createEventProjector(
         return
       case 'thread.queue.updated':
         // The whole queue, so the row is replaced, never merged.
+        // (A queue still waiting keeps a cooking session cooking; see the
+        // terminal turn events.)
         if (
           s.updateThreadQueue.run(JSON.stringify(event.payload), event.scope.threadId).changes !== 1
         ) {
@@ -1012,8 +1023,13 @@ export function createEventProjector(
         if (event.name === 'turn.completed' && !working) {
           s.updateSessionDone.run(at, event.scope.sessionId)
         } else s.clearSessionDone.run(event.scope.sessionId)
-        // What is news brings a cooking session back: done, or failed.
-        if (failedHere || (event.name === 'turn.completed' && !working)) {
+        // What is news brings a cooking session back: done, or failed. A
+        // turn that ends with the user's queued messages still to run is not
+        // done with them: the next one starts as soon as this is written.
+        if (
+          failedHere ||
+          (event.name === 'turn.completed' && !working && !queueWaiting(event.scope.threadId))
+        ) {
           s.uncookSession.run(event.scope.sessionId)
         }
         return
