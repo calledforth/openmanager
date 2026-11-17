@@ -94,14 +94,16 @@ export function insideGitCheckout(dir: string): boolean {
  * The folder one session of the scratch workspace runs in: a direct child
  * of the scratch root, named from the session id alone, so a restart finds
  * it again without storing it. Session ids are chosen by clients and only
- * promise no whitespace, so anything beyond letters, digits, `-` and `_` is
- * replaced by a hash of the id: the name is always one segment that cannot
- * climb out of the root.
+ * promise no whitespace, so any id that is not lower-case letters, digits,
+ * `-` and `_` (a generated UUID is) is named `id.<hash>` instead: always one
+ * segment that cannot climb out of the root, never the name of a plain id
+ * (no plain id has a dot), and never two ids that differ only in case on a
+ * filesystem that ignores it.
  */
 export function scratchSessionFolder(root: string, sessionId: string): string {
-  const name = /^[A-Za-z0-9_-]{1,128}$/.test(sessionId)
+  const name = /^[a-z0-9_-]{1,128}$/.test(sessionId)
     ? sessionId
-    : createHash('sha256').update(sessionId).digest('hex').slice(0, 32)
+    : `id.${createHash('sha256').update(sessionId).digest('hex').slice(0, 40)}`
   return join(root, name)
 }
 
@@ -357,21 +359,23 @@ export function openWorkspaceRegistry(
   /**
    * Register the "No project" workspace at `configured`, making its folder.
    * Once per environment: a later open finds it by its root. A folder a user
-   * had registered there already becomes it.
+   * registered there as a project stays theirs, sessions and all, and the
+   * environment offers no "No project": converting it would move every one
+   * of its sessions into a subfolder of its own.
    */
   function ensureScratch(configured: string): void {
     mkdirSync(configured, { recursive: true })
     const root = canonicalizeRoot(configured)
     const existing = findByRoot(root)
     if (existing?.kind === 'scratch') return
-    const row = existing ? readWorkspaceRow(database, existing.workspaceId) : undefined
+    if (existing) {
+      throw new Error(`${root} is registered as a project, so No project is not offered`)
+    }
     const availability = availabilityOf(root)
     write({
-      ...(row ?? {
-        workspace_id: randomUUID(),
-        path: root,
-        last_used_at: null,
-      }),
+      workspace_id: randomUUID(),
+      path: root,
+      last_used_at: null,
       name: SCRATCH_WORKSPACE_NAME,
       availability,
       git_json: gitJsonOf(

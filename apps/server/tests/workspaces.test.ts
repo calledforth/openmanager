@@ -903,7 +903,7 @@ describe('No project workspace', () => {
     for (const hostile of ['../escape', '..', 'a/b', 'C:\\x', '.']) {
       const named = registry.sessionFolder(scratch, hostile)
       expect(named.startsWith(root + '/') || named.startsWith(root + '\\')).toBe(true)
-      expect(named.slice(root.length + 1)).toMatch(/^[0-9a-f]{32}$/)
+      expect(named.slice(root.length + 1)).toMatch(/^id\.[0-9a-f]{40}$/)
     }
   })
 
@@ -947,12 +947,26 @@ describe('No project workspace', () => {
     expect(onScratchError).toHaveBeenCalledOnce()
   })
 
-  it('names a session folder from any id as one safe segment', () => {
-    expect(scratchSessionFolder('/data/scratch', 'abc-DEF_123')).toBe(
-      join('/data/scratch', 'abc-DEF_123'),
-    )
-    expect(scratchSessionFolder('/data/scratch', '../x')).not.toBe(
-      scratchSessionFolder('/data/scratch', '..x'),
-    )
+  it('names a session folder from any id as one safe segment no other id gets', () => {
+    const folder = (id: string) => scratchSessionFolder('/data/scratch', id)
+    const uuid = '0b7c6a2e-5f1d-4c3a-9e8b-1a2b3c4d5e6f'
+    expect(folder(uuid)).toBe(join('/data/scratch', uuid))
+    expect(folder('../x')).not.toBe(folder('..x'))
+    // Ids that differ only in case get two folders, even where case is ignored.
+    expect(folder('Session').toLowerCase()).not.toBe(folder('session').toLowerCase())
+    // A hashed name is never a plain id's: the plain id of the same text stays itself.
+    const hashed = folder('a/b').slice('/data/scratch/'.length)
+    expect(folder(hashed)).not.toBe(folder('a/b'))
+  })
+
+  it('leaves a folder the user registered there as their project', async () => {
+    const { dataDir, open } = await fixture()
+    const scratchRoot = join(dataDir, 'scratch')
+    await mkdir(scratchRoot)
+    open([scratchRoot]).close()
+    const onScratchError = vi.fn()
+    const registry = open([], { scratchRoot, onScratchError })
+    expect(registry.list()).toEqual([listed('scratch', canonicalizeRoot(scratchRoot))])
+    expect(onScratchError).toHaveBeenCalledOnce()
   })
 })

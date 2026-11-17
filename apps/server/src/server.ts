@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
+import { realpathSync } from 'node:fs'
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http'
 import type { AddressInfo } from 'node:net'
 import {
@@ -274,7 +275,10 @@ export async function startServer(config: ServerConfig) {
   // "No project" sessions run under the data directory, unless that sits in
   // a git checkout (a dev data dir inside the repo): there every session would
   // inherit the repository's status, so none is offered.
-  const scratchInCheckout = config.scratchWorkspace === true && insideGitCheckout(config.dataDir)
+  // Judged where the data directory really is, so a link to one inside a
+  // checkout is caught too.
+  const scratchInCheckout =
+    config.scratchWorkspace === true && insideGitCheckout(realDirectory(config.dataDir))
   if (scratchInCheckout) {
     log('info', 'No project is not offered: the data directory is inside a git checkout', {
       dataDir: config.dataDir,
@@ -1087,5 +1091,14 @@ export async function startServer(config: ServerConfig) {
       }
       return closePromise
     },
+  }
+}
+
+/** Where `dir` really is, links followed; itself when it cannot be resolved. */
+function realDirectory(dir: string): string {
+  try {
+    return realpathSync(dir)
+  } catch {
+    return dir
   }
 }
