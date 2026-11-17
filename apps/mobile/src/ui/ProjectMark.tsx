@@ -3,12 +3,14 @@ import { useContext, useEffect, useState } from 'react'
 import { Image } from 'react-native'
 import { SvgXml } from 'react-native-svg'
 import {
+  SidebarDataContext,
   WORKSPACE_ICONS_UNSET,
   WorkspaceIconContext,
   type ViewActions,
 } from '@openmanager/app-core/logic'
 
 import { usePhoneTheme } from '../theme/ThemeProvider'
+import { NoProjectMark } from './NoProjectMark'
 import { svgOfDataUrl } from './project-icon'
 
 type Lookup = NonNullable<ViewActions['resolveWorkspaceIcon']>
@@ -18,6 +20,19 @@ type Lookup = NonNullable<ViewActions['resolveWorkspaceIcon']>
 const caches = new WeakMap<Lookup, Map<string, string | null>>()
 
 /** The icon a project declares (`workspace.icon`), as a data URL; null when it has none. */
+/**
+ * Whether this is the environment's "No project", as its workspace list says.
+ * Read here rather than passed in, so every row, chip and header that marks a
+ * project marks "No project" too.
+ */
+function useIsNoProject(workspaceId: string | null): boolean {
+  const workspaces = useContext(SidebarDataContext)?.workspaces
+  return (
+    !!workspaceId &&
+    workspaces?.some((workspace) => workspace.path === workspaceId && workspace.scratch) === true
+  )
+}
+
 function useDeclaredIcon(workspaceId: string | null): string | null {
   const provided = useContext(WorkspaceIconContext)
   const lookup = provided === WORKSPACE_ICONS_UNSET ? null : provided
@@ -63,8 +78,10 @@ export function ProjectMark({
   color?: string
 }) {
   const theme = usePhoneTheme()
-  const src = useDeclaredIcon(workspaceId)
+  const scratch = useIsNoProject(workspaceId)
+  const src = useDeclaredIcon(scratch ? null : workspaceId)
   const [failed, setFailed] = useState<string | null>(null)
+  if (scratch) return <NoProjectMark size={size} color={color ?? theme.muted} />
   const folder = <FolderSimpleIcon size={size} color={color ?? theme.muted} />
   if (!src || failed === src) return folder
   const svg = svgOfDataUrl(src)

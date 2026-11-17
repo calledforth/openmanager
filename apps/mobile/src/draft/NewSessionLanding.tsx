@@ -1,12 +1,13 @@
 import { CaretDownIcon, DesktopIcon, FolderPlusIcon } from 'phosphor-react-native'
 import { View } from 'react-native'
-import type { WorkspaceEntry } from '@openmanager/app-core/logic'
+import { isNoProject, type WorkspaceEntry } from '@openmanager/app-core/logic'
 
 import { ShimmerText } from '../components/chat/ShimmerText'
 import { AppText } from '../components/ui/AppText'
 import { usePhoneTheme } from '../theme/ThemeProvider'
 import { tap } from '../ui/haptics'
 import { Press } from '../ui/Press'
+import { NoProjectMark } from '../ui/NoProjectMark'
 import { ProjectMark } from '../ui/ProjectMark'
 
 /**
@@ -15,11 +16,14 @@ import { ProjectMark } from '../ui/ProjectMark'
 export function StartWithProject({
   environmentLabel,
   onAdd,
+  onStartWithoutProject,
   onPickEnvironment,
 }: {
   environmentLabel: string | null
   /** Add project; absent where the environment cannot. */
   onAdd?: () => void
+  /** Start in "No project"; absent where the environment offers none. */
+  onStartWithoutProject?: () => void
   /** Run it on another environment; absent with one saved. */
   onPickEnvironment?: () => void
 }) {
@@ -61,6 +65,32 @@ export function StartWithProject({
           <FolderPlusIcon size={15} color={theme.fg} />
           <AppText variant="text-14-medium" style={{ color: theme.fg }}>
             Add project
+          </AppText>
+        </Press>
+      ) : null}
+      {onStartWithoutProject ? (
+        <Press
+          accessibilityRole="button"
+          accessibilityLabel="Start without a project"
+          accessibilityHint="The session runs in a folder of its own"
+          onPress={() => {
+            tap()
+            onStartWithoutProject()
+          }}
+          style={({ pressed }) => ({
+            marginTop: 10,
+            flexDirection: 'row',
+            alignItems: 'center',
+            gap: 6,
+            paddingVertical: 9,
+            paddingHorizontal: 14,
+            borderRadius: 999,
+            backgroundColor: pressed ? theme.active : 'transparent',
+          })}
+        >
+          <NoProjectMark size={15} color={theme.muted} />
+          <AppText variant="text-14-medium" style={{ color: theme.muted }}>
+            Start without a project
           </AppText>
         </Press>
       ) : null}
@@ -131,7 +161,7 @@ export function NewSessionHead({
     <View style={{ paddingHorizontal: 22, paddingTop: 6, paddingBottom: 6, gap: 8 }}>
       <View className="flex-row flex-wrap items-center" style={{ gap: 6 }}>
         <AppText variant="text-16-medium" style={{ color: theme.fg }}>
-          Let’s build in
+          {isNoProject(workspace) ? 'Let’s build with' : 'Let’s build in'}
         </AppText>
         <Press
           accessibilityRole="button"
