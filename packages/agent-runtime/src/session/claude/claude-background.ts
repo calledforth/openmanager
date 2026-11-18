@@ -25,7 +25,7 @@ import { object, string } from '../wire.js'
 /** Bookkeeping tasks that are neither agents nor anything a user started. */
 const INERT_TASK_TYPES = new Set(['plan', 'dream'])
 
-function taskKind(taskType: string | undefined): BackgroundTaskKind {
+export function claudeTaskKind(taskType: string | undefined): BackgroundTaskKind {
   switch (taskType) {
     case 'local_bash':
     case 'shell':
@@ -56,7 +56,7 @@ export function claudeBackgroundTasks(message: SDKMessage): BackgroundTask[] | u
     const taskId = string(task.task_id)
     const taskType = string(task.task_type)
     if (!taskId || (taskType && INERT_TASK_TYPES.has(taskType))) return []
-    return [{ taskId, kind: taskKind(taskType), description: string(task.description) ?? '' }]
+    return [{ taskId, kind: claudeTaskKind(taskType), description: string(task.description) ?? '' }]
   })
 }
 

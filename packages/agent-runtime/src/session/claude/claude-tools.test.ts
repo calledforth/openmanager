@@ -7,6 +7,7 @@ import {
   claudeToolLocations,
   claudeToolTitle,
   planUpdateFromTodoWrite,
+  subtaskFromAgentOutput,
   subtaskFromClaudeTool,
 } from './claude-tools.js'
 
@@ -154,7 +155,39 @@ describe('planUpdateFromTodoWrite', () => {
 })
 
 describe('subtaskFromClaudeTool', () => {
-  it('claims a Task call and pulls its metadata out of the input', () => {
+  it('claims an Agent call, keyed by its id, and pulls its metadata out of the input', () => {
+    // The shape a real `Agent` tool_use has: AgentInput, as Claude Code sends it.
+    expect(
+      subtaskFromClaudeTool(
+        {
+          toolCallId: 'toolu_01Agent',
+          title: 'Agent',
+          status: 'pending',
+          rawInput: {
+            description: 'Survey the parser',
+            prompt: 'Read src/parser and report its entry points.',
+            subagent_type: 'Explore',
+            model: 'haiku',
+            run_in_background: true,
+          },
+        },
+        { phase: 'call', tracked: false },
+      ),
+    ).toEqual({
+      taskId: 'toolu_01Agent',
+      toolCallId: 'toolu_01Agent',
+      title: 'Survey the parser',
+      description: 'Survey the parser',
+      prompt: 'Read src/parser and report its entry points.',
+      subagentType: 'Explore',
+      modelId: 'haiku',
+      background: true,
+      status: 'pending',
+      statusSource: 'task_event',
+    })
+  })
+
+  it('claims the older Task name the same way', () => {
     expect(
       subtaskFromClaudeTool(
         {
@@ -167,7 +200,8 @@ describe('subtaskFromClaudeTool', () => {
       ),
     ).toEqual({
       taskId: 'toolu_1',
-      title: 'Task',
+      toolCallId: 'toolu_1',
+      title: 'Find it',
       description: 'Find it',
       prompt: 'go',
       subagentType: 'Explore',
@@ -176,9 +210,19 @@ describe('subtaskFromClaudeTool', () => {
     })
   })
 
+  it('opens without a title while the input has not arrived', () => {
+    // A streamed call opens with `{}`; an empty title would blank the card.
+    expect(
+      subtaskFromClaudeTool(
+        { toolCallId: 'toolu_1', title: 'Agent', status: 'pending', rawInput: {} },
+        { phase: 'call', tracked: false },
+      ),
+    ).not.toHaveProperty('title')
+  })
+
   it('keeps claiming an id it has already claimed, whatever the title says', () => {
     // A tool_result update carries no title; identification has to come from
-    // the id, or a claimed Task's completion resurrects a raw tool row.
+    // the id, or a claimed call's completion resurrects a raw tool row.
     expect(
       subtaskFromClaudeTool(
         { toolCallId: 'toolu_1', status: 'completed' },
@@ -187,13 +231,67 @@ describe('subtaskFromClaudeTool', () => {
     ).toMatchObject({ taskId: 'toolu_1', status: 'completed' })
   })
 
-  it('passes on anything that is not a Task', () => {
+  it('passes on anything that is not a subagent', () => {
     expect(
       subtaskFromClaudeTool(
         { toolCallId: 'toolu_2', title: 'Bash', status: 'pending' },
         { phase: 'call', tracked: false },
       ),
     ).toBeUndefined()
+  })
+})
+
+describe('subtaskFromAgentOutput', () => {
+  it("reads a finished run's answer and totals", () => {
+    expect(
+      subtaskFromAgentOutput({
+        status: 'completed',
+        agentId: 'a1b2c3d4e5f6a7b8c',
+        content: [
+          { type: 'text', text: 'The parser starts in parse.ts.' },
+          { type: 'text', text: 'It has two entry points.' },
+        ],
+        resolvedModel: 'claude-haiku-5',
+        totalToolUseCount: 4,
+        totalDurationMs: 9_000,
+        totalTokens: 12_345,
+        usage: {},
+        prompt: 'go',
+      }),
+    ).toEqual({
+      status: 'completed',
+      statusSource: 'task_event',
+      modelId: 'claude-haiku-5',
+      agentId: 'a1b2c3d4e5f6a7b8c',
+      providerTaskId: 'a1b2c3d4e5f6a7b8c',
+      resultText: 'The parser starts in parse.ts.\n\nIt has two entry points.',
+      tokens: 12_345,
+      toolCallCount: 4,
+      durationMs: 9_000,
+    })
+  })
+
+  it('reads a launch into the background as still running', () => {
+    expect(
+      subtaskFromAgentOutput({
+        status: 'async_launched',
+        agentId: 'a1b2c3d4e5f6a7b8c',
+        description: 'Survey',
+        prompt: 'go',
+        outputFile: '/tmp/out',
+      }),
+    ).toEqual({
+      status: 'running',
+      statusSource: 'task_event',
+      background: true,
+      agentId: 'a1b2c3d4e5f6a7b8c',
+      providerTaskId: 'a1b2c3d4e5f6a7b8c',
+    })
+  })
+
+  it('says nothing for anything else', () => {
+    expect(subtaskFromAgentOutput('Async agent launched successfully.')).toBeUndefined()
+    expect(subtaskFromAgentOutput(undefined)).toBeUndefined()
   })
 })
 
