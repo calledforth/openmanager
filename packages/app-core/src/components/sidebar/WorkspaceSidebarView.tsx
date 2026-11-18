@@ -20,6 +20,7 @@ import {
   FolderDashedIcon,
   FolderPlusIcon,
   GitBranchIcon,
+  RobotIcon,
   GitForkIcon,
   NotePencilIcon,
   PencilSimpleLineIcon,
@@ -111,6 +112,7 @@ const NewAgentIcon = phosphorIcon(NotePencilIcon)
 const AddProjectIcon = phosphorIcon(FolderPlusIcon)
 const ShowMoreIcon = phosphorIcon(CaretDownIcon)
 const ChildSessionIcon = phosphorIcon(GitBranchIcon)
+const SubagentSessionIcon = phosphorIcon(RobotIcon)
 const OpenDraftIcon = phosphorIcon(ArrowUpRightIcon)
 const DiscardDraftIcon = phosphorIcon(TrashIcon)
 
@@ -2132,7 +2134,11 @@ function ChildRow({
             : 'text-muted-foreground hover:bg-hover hover:text-foreground',
         )}
       >
-        <GitBranchIcon className="h-3 w-3 shrink-0 opacity-70" aria-hidden />
+        {session.subagent ? (
+          <RobotIcon className="h-3 w-3 shrink-0 opacity-70" aria-label="Subagent" />
+        ) : (
+          <GitBranchIcon className="h-3 w-3 shrink-0 opacity-70" aria-hidden />
+        )}
         <span className="truncate">{session.title || 'Subagent'}</span>
         <span className="ml-auto shrink-0 pl-2 text-[11px] text-faint">
           {tone ? <SessionBusyLoader tone={tone} /> : formatRelativeTime(session.updatedAt, now)}
@@ -2219,7 +2225,13 @@ function ShelfRow({
   return (
     <MotionMenuItem className="overflow-hidden" {...rowMotion}>
       <SidebarMenuButton
-        icon={depth > 0 ? ChildSessionIcon : projectIcon(workspace.path, iconLookup)}
+        icon={
+          depth > 0
+            ? session.subagent
+              ? SubagentSessionIcon
+              : ChildSessionIcon
+            : projectIcon(workspace.path, iconLookup)
+        }
         isActive={isActive}
         className="text-muted-foreground"
         style={depth > 0 ? { paddingLeft: 8 + Math.min(depth, 4) * 12 } : undefined}

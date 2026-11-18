@@ -1930,6 +1930,9 @@ export function createWebSocketEnvironmentClient(
     async stopBackgroundTasks(input) {
       await request('session.background.stop', input)
     },
+    async stopSubagent(input) {
+      await request('subagent.stop', input)
+    },
     async deleteSession(sessionId) {
       await removing(sessionId, 'session', () => request('session.delete', { sessionId }))
       for (const scope of sessionScopes(sessionId)) unsubscribe(scope)

@@ -29,6 +29,8 @@ export interface SidebarSession {
   /** Every host names it; the sidebar never guesses a provider (§4.7.2). */
   providerId: ProviderId
   parentExternalId?: string
+  /** It holds a subagent's work: its parent session's agent started it. */
+  subagent?: boolean
   /** Its project folder is unreachable, so the row cannot run until it is back. */
   workspaceUnavailable?: boolean
   /** ISO time of the last activity, when the host tracks it. */

@@ -38,6 +38,7 @@ import { useOpenEnvironmentId } from '../../providers/environment-client'
 import { PendingPermissionFallback } from '../permissions/InlinePermissionPrompt'
 import { NewSessionLanding } from './NewSessionLanding'
 import { ScrollToEndButton } from './ScrollToEndButton'
+import { DelegatedPromptRow, SubagentsFinishedNotice } from './TurnOriginRows'
 import {
   measurementsFromRememberedHeights,
   recallTimelinePosition,
@@ -936,6 +937,15 @@ const ResolvedMessage = memo(function ResolvedMessage(props: {
     props.role === 'assistant' && props.isFinal !== true
       ? streamingParts
       : (finalizedParts ?? lastStreamingPartsRef.current)
+
+  // A prompt nobody here typed: the parent agent's brief, or the
+  // environment's word that subagents finished.
+  if (props.role === 'user' && contentDoc?.origin === 'delegated') {
+    return <DelegatedPromptRow content={content} />
+  }
+  if (props.role === 'user' && contentDoc?.origin === 'subagents') {
+    return <SubagentsFinishedNotice content={content} />
+  }
 
   if (props.role === 'user') {
     return (

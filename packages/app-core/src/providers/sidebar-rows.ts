@@ -71,6 +71,7 @@ export function groupSidebarSessions({
       status: summary.status === 'idle' ? (summary.doneAt ? 'done' : 'ready') : summary.status,
       providerId: summary.providerId as ProviderId,
       ...(summary.parentSessionId ? { parentExternalId: summary.parentSessionId } : {}),
+      ...(summary.subagent ? { subagent: true } : {}),
       // ChatView still branches on `isDriven` for the Convex IPC overlay.
       // This path has one protocol-event stream and no `stream_chunks`
       // subscription, so the flag is always true. Desktop must drop the

@@ -46,9 +46,11 @@ export function partitionSettledTurnParts(parts: readonly StreamMessagePart[]): 
   // but never hide the result the user asked for inside "Worked". Notices
   // that change how to read the answer (the conversation before it was
   // compacted, another model wrote it, the model declined, a limit is close)
-  // stay out with it.
+  // stay out with it. So do the subagents it started: each is a chat of its
+  // own the reader goes to, and a background one is still at work.
   const lifted = beforeAnswer.filter(
     (part) =>
+      part.type === 'subagent' ||
       ((part.type === 'image' || part.type === 'video') && part.generated === true) ||
       (part.type === 'notice' && LIFTED_NOTICE_KINDS.has(noticeKind(part))),
   )

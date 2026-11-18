@@ -107,6 +107,7 @@ const UNSUPPORTED: ReadonlySet<EnvironmentCommandName> = new Set([
   'cookSession',
   'acknowledgeSession',
   'stopBackgroundTasks',
+  'stopSubagent',
   // The Convex backend has no chat queue; the composer sends as it always has.
   'queueMessage',
   'removeQueuedMessage',
@@ -1212,6 +1213,7 @@ export function createConvexEnvironmentClient(
     regenerateSessionTitle: () => unsupported('regenerateSessionTitle'),
     acknowledgeSession: () => unsupported('acknowledgeSession'),
     stopBackgroundTasks: () => unsupported('stopBackgroundTasks'),
+    stopSubagent: () => unsupported('stopSubagent'),
     queueMessage: () => unsupported('queueMessage'),
     removeQueuedMessage: () => unsupported('removeQueuedMessage'),
     resumeQueue: () => unsupported('resumeQueue'),

@@ -15,6 +15,7 @@ import {
   ProofCommandSchemas,
   ProviderCatalogEntrySchema,
   WorkspaceComposerPreferenceSchema,
+  isSettledSubagentStatus,
   SEARCH_RESULTS_DEFAULT,
   SCRATCHPAD_MAX_BYTES,
   ScratchpadSchema,
@@ -40,6 +41,8 @@ import {
   type ProviderCatalogEntry,
   type QueuedMessage,
   type Session,
+  type SessionSubagent,
+  type Subagent,
   type Thread,
   type ThreadQueue,
   type Turn,
@@ -101,6 +104,8 @@ import { UPLOAD_TICKET_COMMAND, WIRE_COMMANDS } from './wire'
 
 export interface MockSeedSession {
   session: Session
+  /** The subagent this session holds, for a child session. */
+  subagent?: SessionSubagent
   status?: SessionStatus
   providerId?: string
   updatedAt?: string
@@ -109,6 +114,8 @@ export interface MockSeedSession {
   messages?: Message[]
   /** What the chat already holds back, by thread id. */
   queues?: Record<string, ThreadQueue>
+  /** The subagents each chat's agent started, by thread id. */
+  subagents?: Record<string, Subagent[]>
 }
 
 export interface MockSeed {
@@ -1646,6 +1653,39 @@ export function createMockEnvironmentClient(
         })
         announceRecency(session.workspaceId)
       }),
+    stopSubagent: (input) =>
+      run('stopSubagent', input, () => {
+        const session = store.getState().sessions[input.sessionId]
+        if (!session) throw new EnvironmentClientError('not_found', 'Session not found.')
+        for (const threadId of session.threadIds) {
+          const held = store.getState().threads[threadId]
+          const subagent = held?.subagents?.find((item) => item.subagentId === input.subagentId)
+          if (!held || !subagent) continue
+          if (isSettledSubagentStatus(subagent.status)) return
+          if (!subagent.stoppable) {
+            throw new EnvironmentClientError('conflict', 'This subagent cannot be stopped.')
+          }
+          const at = now()
+          // Settled: nothing it waits on or is doing any more.
+          const stopped: Subagent = {
+            ...subagent,
+            status: 'cancelled',
+            statusReason: 'Stopped by the user.',
+            finishedAt: at,
+            updatedAt: at,
+          }
+          delete stopped.waitingOn
+          delete stopped.activity
+          emit({
+            ...base(),
+            name: 'subagent.updated',
+            scope: threadScope(held.thread),
+            payload: { subagent: stopped },
+          })
+          return
+        }
+        throw new EnvironmentClientError('not_found', 'Subagent not found.')
+      }),
     acknowledgeSession: (sessionId) =>
       run('acknowledgeSession', { sessionId }, () => {
         const session = store.getState().sessions[sessionId]
@@ -2379,6 +2419,7 @@ function seedState(
         ...entry.session,
         status: entry.status ?? 'idle',
         providerId: entry.providerId ?? 'opencode',
+        ...(entry.subagent ? { subagent: entry.subagent } : {}),
         updatedAt: entry.updatedAt ?? new Date(1_700_000_000_000 + index * 1_000).toISOString(),
       },
       threads,
@@ -2395,6 +2436,9 @@ function seedState(
               (message) => message.threadId === thread.threadId,
             ),
             ...(entry.queues?.[thread.threadId] ? { queue: entry.queues[thread.threadId]! } : {}),
+            ...(entry.subagents?.[thread.threadId]
+              ? { subagents: entry.subagents[thread.threadId]! }
+              : {}),
           },
         },
       }

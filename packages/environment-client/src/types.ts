@@ -35,7 +35,10 @@ import type {
   Session,
   SessionComposerState,
   SessionStatus,
+  SessionSubagent,
   SessionTitleSource,
+  Subagent,
+  SubagentStatus,
   Thread,
   ThreadQueue,
   ThreadQueuePause,
@@ -76,6 +79,9 @@ export type {
   ScratchpadSaveResult,
   SessionComposerState,
   SessionStatus,
+  SessionSubagent,
+  Subagent,
+  SubagentStatus,
   ThreadQueue,
   ThreadQueuePause,
   WorkspaceComposerPreference,
@@ -123,6 +129,12 @@ export interface SessionSummary extends Session {
    * when there are none.
    */
   pullRequests?: PullRequestSummary[]
+  /**
+   * Present on a child session that holds a subagent's work: which subagent,
+   * where it came from, and whether a person can prompt it. Kept from
+   * `session.created` and snapshots; `session.updated` never states it.
+   */
+  subagent?: SessionSubagent
   threadIds: string[]
 }
 
@@ -216,6 +228,13 @@ export interface ThreadState {
    * absent when there are none.
    */
   steeredQueueIds?: readonly string[]
+  /**
+   * The subagents this thread's agent started, each as `subagent.updated` or
+   * the thread snapshot last stated it (the newest `updatedAt` wins), oldest
+   * start first. Server state, replaced per record; absent from state that
+   * predates subagents. Read it through `selectThreadSubagents`.
+   */
+  subagents?: readonly Subagent[]
   hydration: HydrationState
 }
 
@@ -645,6 +664,12 @@ export interface EnvironmentCommands {
    * tasks leave `backgroundTasks` when the provider reports them gone.
    */
   stopBackgroundTasks(input: StopBackgroundTasksInput): Promise<void>
+  /**
+   * Stop one running subagent of the session's agent, from its card. One
+   * that already settled is not an error. Settles once the environment has
+   * asked; the card follows the subagent's own `subagent.updated`.
+   */
+  stopSubagent(input: StopSubagentInput): Promise<void>
   deleteSession(sessionId: string): Promise<void>
   sendTurn(input: SendTurnInput): Promise<{ turn: Turn; userMessage: Message }>
   interruptTurn(input: InterruptTurnInput): Promise<void>
@@ -810,6 +835,12 @@ export interface StopBackgroundTasksInput {
   sessionId: string
   /** Omit to stop every task. */
   taskIds?: string[]
+}
+
+export interface StopSubagentInput {
+  /** The parent session: the one whose agent started the subagent. */
+  sessionId: string
+  subagentId: string
 }
 
 export type EnvironmentCommandName = keyof EnvironmentCommands

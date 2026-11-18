@@ -51,6 +51,8 @@ export interface SidebarSessionEntry {
   providerId: ProviderId
   clientId?: string
   parentExternalId?: string
+  /** It holds a subagent's work: its parent session's agent started it. */
+  subagent?: boolean
   isDriven: boolean
   /**
    * Its project folder is not reachable right now, so the row is
