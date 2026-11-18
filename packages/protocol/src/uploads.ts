@@ -18,6 +18,30 @@ export const artifactPath = (sessionId: string, artifactId: string) =>
   `${ARTIFACT_PATH_PREFIX}${encodeURIComponent(sessionId)}/${encodeURIComponent(artifactId)}`
 
 /**
+ * Where a client asks to stream an artifact: `GET` it with the client's
+ * credential and the environment answers `ArtifactStreamGrantSchema`, a path
+ * a media player can read with no headers of its own.
+ */
+export const artifactStreamPath = (sessionId: string, artifactId: string) =>
+  `${artifactPath(sessionId, artifactId)}/stream`
+
+/**
+ * Streamed media is read at `GET /media/<grant>`, in byte ranges. The grant in
+ * the path is the credential: a `<video>` element, or a phone's player, cannot
+ * send an `Authorization` header. A grant names one artifact for one client,
+ * expires, and ends with that client's access.
+ */
+export const MEDIA_PATH_PREFIX = '/media/' as const
+
+export const ArtifactStreamGrantSchema = z.object({
+  /** Relative to the environment's HTTP origin, like `artifactPath`. */
+  path: z.string().startsWith(MEDIA_PATH_PREFIX),
+  /** When the grant stops answering, in ms since the epoch; ask again for a new one. */
+  expiresAt: z.number().int().positive(),
+})
+export type ArtifactStreamGrant = z.infer<typeof ArtifactStreamGrantSchema>
+
+/**
  * A new-session draft's images have no session yet. They are read back with
  * `GET /draft-artifacts/<draft-id>/<artifact-id>`, which answers only while
  * the draft names the image, so any device that can list the draft can show it.

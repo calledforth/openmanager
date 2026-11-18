@@ -107,6 +107,7 @@ import { createBudgetKey } from './budget-key.ts'
 import { createArtifactStore } from './artifacts.ts'
 import { createToolOutputReader } from './db/tool-output.ts'
 import { createUploadService } from './uploads.ts'
+import { createShareFileTool } from './share-file-tool.ts'
 import { attachWebSocket, SOCKET_CAPABILITIES } from './websocket.ts'
 import { insideGitCheckout, openWorkspaceRegistry } from './workspaces.ts'
 
@@ -362,9 +363,23 @@ export async function startServer(config: ServerConfig) {
     anyClientConnected: () => anyClientConnected(),
     log,
   })
+  // `share_file` needs the thread service and the artifact store, which are
+  // made below; until then no session can be running a turn to call it.
+  let shareFileInto: Parameters<typeof createShareFileTool>[0] = {
+    agentTurnOf: () => undefined,
+    share: () => Promise.reject(new Error('The environment is starting.')),
+    present: () => false,
+    discard: () => undefined,
+  }
+  const shareFileTool = createShareFileTool({
+    agentTurnOf: (threadId) => shareFileInto.agentTurnOf(threadId),
+    share: (sessionId, workspaceId, path) => shareFileInto.share(sessionId, workspaceId, path),
+    present: (threadId, turnId, metadata) => shareFileInto.present(threadId, turnId, metadata),
+    discard: (metadata) => shareFileInto.discard(metadata),
+  })
   const agentTools = createAgentToolsEndpoint({
     serverName: 'openmanager',
-    tools: pullRequests.tools,
+    tools: [...pullRequests.tools, shareFileTool],
     port: () => listeningPort(),
     version: serverVersion(),
     log,
@@ -526,6 +541,13 @@ export async function startServer(config: ServerConfig) {
         }),
     },
   )
+  shareFileInto = {
+    agentTurnOf: (threadId) => threadService.agentTurnOf(threadId),
+    share: (sessionId, workspaceId, path) => artifacts.share(sessionId, workspaceId, path),
+    present: (threadId, turnId, metadata) =>
+      threadService.presentArtifact(threadId, turnId, metadata),
+    discard: (metadata) => artifacts.discard(metadata),
+  }
   closeWorkspaceSessions = (workspaceId) => {
     // Flush before the registry cascades deletion of the projected thread rows.
     eventService.flush()

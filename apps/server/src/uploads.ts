@@ -6,6 +6,7 @@ import type { DatabaseSync } from 'node:sqlite'
 import {
   ARTIFACT_PATH_PREFIX,
   DRAFT_ARTIFACT_PATH_PREFIX,
+  MEDIA_PATH_PREFIX,
   TOOL_OUTPUT_PATH_PREFIX,
   UPLOAD_PATH_PREFIX,
   UPLOAD_TICKET_CAPABILITY,
@@ -20,6 +21,7 @@ import { auditValue, type AuditLog, type AuditValue } from './audit.ts'
 import type { AuthenticatedClient } from './authorized-clients.ts'
 import type { CommandContext } from './command-context.ts'
 import type { Logger } from './logger.ts'
+import { createMediaGrants, sendFile, type MediaGrants } from './media-stream.ts'
 import { remoteAddressKey, type BudgetKey } from './budget-key.ts'
 import type { RateLimiter } from './rate-limit.ts'
 import { isAllowedUploadType, isOversizedUpload, MAX_ATTACHMENT_BYTES } from './upload-limits.ts'
@@ -106,6 +108,8 @@ export function createUploadService(options: {
   clock?: () => number
   ticketTtlMs?: number
   transferTimeoutMs?: number
+  /** Grants that let a media player stream an artifact; see `media-stream.ts`. */
+  mediaGrants?: MediaGrants
 }) {
   const clock = options.clock ?? (() => Date.now())
   const ticketTtlMs = options.ticketTtlMs ?? UPLOAD_TICKET_TTL_MS
@@ -113,6 +117,7 @@ export function createUploadService(options: {
   const blobDirectory = join(options.dataDir, UPLOAD_DIRECTORY)
   const partialDirectory = join(blobDirectory, UPLOAD_PARTIAL_DIRECTORY)
   const tickets = new Map<string, Ticket>()
+  const mediaGrants = options.mediaGrants ?? createMediaGrants({ clock })
   /** In-flight transfers and the client each belongs to. */
   const transfers = new Map<(reason?: string) => void, string>()
 
@@ -393,6 +398,53 @@ export function createUploadService(options: {
     request.pipe(file)
   }
 
+  /**
+   * `GET /media/<grant>`: an artifact a player streams in ranges. The grant
+   * is the credential, and access is checked again on every range, so a
+   * client that loses the project stops mid-video.
+   */
+  const streamMedia = (request: IncomingMessage, response: ServerResponse, token: string) => {
+    if (request.method === 'OPTIONS') {
+      response.writeHead(204, {
+        'access-control-allow-methods': 'GET, HEAD',
+        'access-control-allow-headers': 'range',
+        'access-control-max-age': '600',
+        'cache-control': 'no-store',
+      })
+      response.end()
+      return
+    }
+    if (request.method !== 'GET' && request.method !== 'HEAD') {
+      respond(response, 405, errorResult(null, 'validation', 'Media uses GET.'), {
+        allow: 'GET, HEAD',
+      })
+      return
+    }
+    const grant = mediaGrants.lookup(token)
+    const metadata = grant ? artifacts.get(grant.sessionId, grant.artifactId) : undefined
+    const reachable =
+      grant &&
+      metadata &&
+      !!options.resolveWorkspace(metadata.workspaceId, {
+        clientId: grant.clientId,
+        command: `GET ${MEDIA_PATH_PREFIX}`,
+      })
+    if (!metadata || !reachable) {
+      respond(response, 404, errorResult(null, 'not_found', 'Media not found.'))
+      return
+    }
+    try {
+      sendFile(
+        request,
+        response,
+        { ...artifacts.file(metadata), mimeType: metadata.mimeType },
+        { 'content-disposition': 'inline' },
+      )
+    } catch {
+      respond(response, 404, errorResult(null, 'not_found', 'Media bytes are unavailable.'))
+    }
+  }
+
   return {
     get pendingTicketCount() {
       pruneExpired()
@@ -406,6 +458,10 @@ export function createUploadService(options: {
     /** Handle an upload route. Returns false when the request is not one. */
     handle(request: IncomingMessage, response: ServerResponse): boolean {
       const path = request.url?.split('?')[0] ?? ''
+      if (path.startsWith(MEDIA_PATH_PREFIX)) {
+        streamMedia(request, response, path.slice(MEDIA_PATH_PREFIX.length))
+        return true
+      }
       const draftDownload = path.startsWith(DRAFT_ARTIFACT_PATH_PREFIX)
       const toolOutputRead = path.startsWith(TOOL_OUTPUT_PATH_PREFIX)
       const download = draftDownload || toolOutputRead || path.startsWith(ARTIFACT_PATH_PREFIX)
@@ -517,7 +573,7 @@ export function createUploadService(options: {
         // image at /draft-artifacts/<draft-id>/<artifact-id>[/metadata], which
         // answers only while that draft names it: whoever may list the draft
         // may see its images. No client paths reach disk.
-        const match = /^\/(draft-)?artifacts\/([^/]+)\/([^/]+)(\/metadata)?$/.exec(path)
+        const match = /^\/(draft-)?artifacts\/([^/]+)\/([^/]+)(\/metadata|\/stream)?$/.exec(path)
         const metadata = !match
           ? undefined
           : draftDownload
@@ -532,23 +588,39 @@ export function createUploadService(options: {
           respond(response, 404, errorResult(null, 'not_found', 'Artifact not found.'))
           return true
         }
-        if (match![4]) {
+        if (match![4] === '/metadata') {
           respond(response, 200, metadata)
           return true
         }
-        try {
-          const bytes = artifacts.read(metadata)
-          // Never cached: the browser keys its cache by URL, not credential,
-          // so a stored copy would outlive a revoked credential and answer
-          // another client on the same machine. Reuse lives in the client.
-          response.writeHead(200, {
-            'content-type': metadata.mimeType,
-            'content-length': bytes.length,
-            'cache-control': 'no-store',
-            'x-content-type-options': 'nosniff',
-            'content-disposition': 'attachment',
+        if (match![4] === '/stream') {
+          // A draft's image is only ever shown whole; it has nothing to stream.
+          if (draftDownload) {
+            respond(response, 404, errorResult(null, 'not_found', 'Artifact not found.'))
+            return true
+          }
+          const grant = mediaGrants.mint({
+            clientId: client.clientId,
+            sessionId: match![2]!,
+            artifactId: metadata.artifactId,
           })
-          response.end(bytes)
+          respond(response, 200, {
+            path: `${MEDIA_PATH_PREFIX}${grant.token}`,
+            expiresAt: grant.expiresAt,
+          })
+          return true
+        }
+        try {
+          // Sent from disk, in the range asked for, so a shared video is
+          // never read whole into memory. Never cached: the browser keys its
+          // cache by URL, not credential, so a stored copy would outlive a
+          // revoked credential and answer another client on the same
+          // machine. Reuse lives in the client.
+          sendFile(
+            request,
+            response,
+            { ...artifacts.file(metadata), mimeType: metadata.mimeType },
+            { 'content-disposition': 'attachment' },
+          )
         } catch {
           respond(response, 404, errorResult(null, 'not_found', 'Artifact bytes are unavailable.'))
         }
@@ -636,6 +708,7 @@ export function createUploadService(options: {
      * tickets are dropped and transfers already past authentication are cut.
      */
     revokeClient(clientId: string): void {
+      mediaGrants.revokeClient(clientId)
       for (const [key, ticket] of tickets) if (ticket.clientId === clientId) tickets.delete(key)
       for (const [cut, owner] of [...transfers]) if (owner === clientId) cut('revoked')
     },

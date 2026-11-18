@@ -48,6 +48,13 @@
           "cameraPermission": "OpenManager uses the camera to scan the pairing QR code your computer shows and to take photos you attach to a message.",
           "microphonePermission": false
         }
+      ],
+      [
+        "expo-video",
+        {
+          "supportsBackgroundPlayback": false,
+          "supportsPictureInPicture": false
+        }
       ]
     ]
   }

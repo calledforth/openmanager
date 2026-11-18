@@ -2094,6 +2094,16 @@ export function createMockEnvironmentClient(
       if (!blob) throw new EnvironmentClientError('not_found', 'Artifact not found.')
       return blob
     },
+    artifactStreamUrl: async (input) => {
+      await new Promise<void>((resolve) => schedule(resolve, latencyMs))
+      const blob = artifacts[input.artifactId]
+      if (!blob) throw new EnvironmentClientError('not_found', 'Artifact not found.')
+      // An object URL stands in for the environment's media route.
+      if (typeof URL.createObjectURL !== 'function') {
+        throw new EnvironmentClientError('unavailable', 'The artifact cannot be streamed.')
+      }
+      return { url: URL.createObjectURL(blob), expiresAt: Date.now() + 60 * 60_000 }
+    },
     uploadArtifact: async (input) => {
       await new Promise<void>((resolve) => schedule(resolve, latencyMs))
       if (!uploads) throw EnvironmentClientError.unsupported(UPLOAD_TICKET_COMMAND)

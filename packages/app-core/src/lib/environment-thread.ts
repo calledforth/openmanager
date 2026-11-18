@@ -79,7 +79,7 @@ export function contentText(blocks: readonly ContentBlock[]): string {
     .join('')
 }
 
-function imageParts(message: Message, sessionId: string): MessagePart[] {
+function mediaParts(message: Message, sessionId: string): MessagePart[] {
   return message.content.flatMap((block, index): MessagePart[] => {
     if (block.type === 'image') {
       return [
@@ -103,6 +103,21 @@ function imageParts(message: Message, sessionId: string): MessagePart[] {
           artifact: { sessionId, artifactId: block.artifactId },
           name: block.name,
           // What the agent produced is answer content, not part of its work trace.
+          ...(message.role === 'assistant' ? { generated: true } : {}),
+        },
+      ]
+    }
+    // A video the agent shared is streamed by the player as it plays; the
+    // row only names it.
+    if (block.type === 'artifact' && block.mimeType.startsWith('video/')) {
+      return [
+        {
+          type: 'video',
+          id: `${message.messageId}:artifact:${block.artifactId}`,
+          artifact: { sessionId, artifactId: block.artifactId },
+          name: block.name,
+          mimeType: block.mimeType,
+          sizeBytes: block.sizeBytes,
           ...(message.role === 'assistant' ? { generated: true } : {}),
         },
       ]
@@ -200,7 +215,7 @@ function textParts(message: Message, sessionId: string): MessagePart[] {
   if (!parts) {
     parts = [
       { type: 'text', id: message.messageId, text: contentText(message.content) },
-      ...imageParts(message, sessionId),
+      ...mediaParts(message, sessionId),
     ]
     textPartsByMessage.set(message, parts)
   }
@@ -323,7 +338,7 @@ function projectTurn(
       return
     }
     const content = contentText(message.content)
-    const parts = imageParts(message, sessionId)
+    const parts = mediaParts(message, sessionId)
     entries.push({
       message: {
         externalId: message.messageId,

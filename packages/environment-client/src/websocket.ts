@@ -20,6 +20,8 @@ import {
   SubscriptionTransientSchema,
   advanceClientLiveness,
   artifactPath,
+  artifactStreamPath,
+  ArtifactStreamGrantSchema,
   createClientLivenessState,
   draftArtifactPath,
   toolOutputPath,
@@ -2188,6 +2190,37 @@ export function createWebSocketEnvironmentClient(
         throw await artifactTransferError(response, 'The artifact could not be read.')
       }
       return response.blob()
+    },
+    async artifactStreamUrl(input, init) {
+      // The credential goes only where a handshake is holding, as for bytes.
+      if (!ready) {
+        throw new EnvironmentClientError('unavailable', 'Not connected to the environment.')
+      }
+      const fetchGrant = options.fetch ?? globalThis.fetch
+      let response: Response
+      try {
+        response = await fetchGrant(
+          environmentHttpUrl(options.url, artifactStreamPath(input.sessionId, input.artifactId)),
+          {
+            headers: options.credential ? { authorization: `Bearer ${options.credential}` } : {},
+            signal: init?.signal,
+          },
+        )
+      } catch (error) {
+        if (init?.signal?.aborted) throw error
+        throw new EnvironmentClientError('unavailable', 'The environment could not be reached.')
+      }
+      if (!response.ok) {
+        throw await artifactTransferError(response, 'The artifact cannot be streamed.')
+      }
+      const grant = ArtifactStreamGrantSchema.safeParse(await response.json().catch(() => null))
+      if (!grant.success) {
+        throw new EnvironmentClientError('unavailable', 'The artifact cannot be streamed.')
+      }
+      return {
+        url: environmentHttpUrl(options.url, grant.data.path),
+        expiresAt: grant.data.expiresAt,
+      }
     },
     async fetchToolOutput(input, init) {
       // As with an artifact, the token goes only where a handshake is holding.

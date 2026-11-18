@@ -32,6 +32,7 @@ export * from './providers/view-actions'
 
 // Stores and view-model helpers.
 export * from './lib/artifact-preview'
+export * from './lib/artifact-stream'
 export * from './lib/attachments'
 export * from './lib/environment-thread'
 export * from './lib/provider-health-view'

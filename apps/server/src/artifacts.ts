@@ -1,8 +1,23 @@
 import { randomUUID } from 'node:crypto'
-import { mkdirSync, readFileSync, statSync, renameSync, rmSync, writeFileSync } from 'node:fs'
-import { join } from 'node:path'
+import { constants, mkdirSync, readFileSync, statSync, renameSync, rmSync, writeFileSync } from 'node:fs'
+import { copyFile, open, stat, statfs } from 'node:fs/promises'
+import { basename, join } from 'node:path'
 import type { DatabaseSync } from 'node:sqlite'
-import { isAllowedUploadType, MAX_ATTACHMENT_BYTES } from './upload-limits.ts'
+import { extensionOf, sniffMedia, SNIFF_BYTES } from './media-sniff.ts'
+import {
+  isAllowedUploadType,
+  MAX_ATTACHMENT_BYTES,
+  MAX_SHARED_BYTES_PER_SESSION,
+  MAX_SHARED_FILE_BYTES,
+  MAX_SHARED_IMAGE_BYTES,
+  megabytes,
+  SHARE_DISK_HEADROOM_BYTES,
+  SHAREABLE_NAMES,
+  type ShareableType,
+} from './upload-limits.ts'
+
+/** Why a file an agent shared was refused, in words the agent can act on. */
+export class ShareRefusedError extends Error {}
 
 export type ArtifactMetadata = {
   artifactId: string
@@ -51,7 +66,13 @@ const NAMED_BY_A_DRAFT = `EXISTS (
 )`
 
 /** Shared environment-owned metadata and bytes for uploads and provider output. */
-export function createArtifactStore(database: DatabaseSync, dataDir: string) {
+export function createArtifactStore(
+  database: DatabaseSync,
+  dataDir: string,
+  /** What one session may share in all; tests lower it. */
+  limits: { sharedBytesPerSession?: number } = {},
+) {
+  const sessionQuota = limits.sharedBytesPerSession ?? MAX_SHARED_BYTES_PER_SESSION
   const directory = join(dataDir, 'uploads')
   mkdirSync(directory, { recursive: true })
   const lookup = database.prepare(`
@@ -120,6 +141,17 @@ export function createArtifactStore(database: DatabaseSync, dataDir: string) {
   `)
   const get = (sessionId: string, artifactId: string) =>
     lookup.get(artifactId, sessionId) as ArtifactMetadata | undefined
+  const sharedBytes = database.prepare(`
+    SELECT COALESCE(SUM(size_bytes), 0) AS total FROM attachments
+    WHERE session_id = ? AND source = 'generated'
+  `)
+  const deleteOwned = database.prepare(
+    'DELETE FROM attachments WHERE attachment_id = ? AND session_id = ?',
+  )
+  /** Bytes of shares still being copied, by session, so two at once both count. */
+  const sharing = new Map<string, number>()
+  /** The same, across every session, against the room left on the disk. */
+  let copying = 0
   const path = (artifactId: string) => {
     // Only IDs minted by this store may name files, including after a restart.
     if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(artifactId)) {
@@ -264,7 +296,7 @@ export function createArtifactStore(database: DatabaseSync, dataDir: string) {
       const artifactId = randomUUID()
       const normalized = mimeType.toLowerCase()
       const metadata: ArtifactMetadata = { artifactId, sessionId, workspaceId,
-        name: `generated-${artifactId}.${normalized === 'image/jpeg' ? 'jpg' : normalized.split('/')[1]}`,
+        name: `generated-${artifactId}.${extensionOf(normalized as ShareableType)}`,
         mimeType: normalized, sizeBytes: bytes.length, createdAt: Date.now(), source: 'generated' }
       const finalPath = path(artifactId)
       const partialDirectory = join(directory, 'partial')
@@ -280,6 +312,122 @@ export function createArtifactStore(database: DatabaseSync, dataDir: string) {
         throw error
       }
       return metadata
+    },
+    /**
+     * Copy a file an agent shared into the store, as the session's own: the
+     * chat keeps showing it after the agent moves or deletes the original.
+     * What it is comes from its bytes (`sniffMedia`), never its name, and it
+     * is checked on the copy, so a file rewritten mid-copy is judged as kept.
+     */
+    async share(sessionId: string, workspaceId: string, sourcePath: string) {
+      let source
+      try {
+        source = await stat(sourcePath)
+      } catch {
+        throw new ShareRefusedError(`There is no file at ${sourcePath}.`)
+      }
+      if (!source.isFile()) throw new ShareRefusedError(`${sourcePath} is not a file.`)
+      if (source.size === 0) throw new ShareRefusedError(`${sourcePath} is empty.`)
+      const tooLarge = () =>
+        new ShareRefusedError(
+          `${sourcePath} is larger than ${megabytes(MAX_SHARED_FILE_BYTES)}, the most a shared file may be.`,
+        )
+      if (source.size > MAX_SHARED_FILE_BYTES) throw tooLarge()
+      // Checked and reserved in one step, with no await between: two shares
+      // at once cannot both pass against the same room.
+      const stored = () => (sharedBytes.get(sessionId) as { total: number }).total
+      const held = stored() + (sharing.get(sessionId) ?? 0)
+      if (held + source.size > sessionQuota) {
+        throw new ShareRefusedError(
+          `This session has already shared ${megabytes(held)}; sharing ${sourcePath} would pass the ${megabytes(sessionQuota)} a session may share.`,
+        )
+      }
+      sharing.set(sessionId, (sharing.get(sessionId) ?? 0) + source.size)
+      copying += source.size
+      const settle = () => {
+        copying -= source.size
+        const left = (sharing.get(sessionId) ?? 0) - source.size
+        if (left > 0) sharing.set(sessionId, left)
+        else sharing.delete(sessionId)
+      }
+      const artifactId = randomUUID()
+      const partialDirectory = join(directory, 'partial')
+      const partialPath = join(partialDirectory, artifactId)
+      const finalPath = path(artifactId)
+      try {
+        // Every copy under way, in any session, is room already spoken for.
+        const disk = await statfs(directory)
+        if (disk.bavail * disk.bsize < copying + SHARE_DISK_HEADROOM_BYTES) {
+          throw new ShareRefusedError(
+            `The environment's disk is nearly full, so ${sourcePath} was not copied.`,
+          )
+        }
+        mkdirSync(partialDirectory, { recursive: true })
+        await copyFile(sourcePath, partialPath, constants.COPYFILE_EXCL)
+        const copied = await stat(partialPath)
+        if (copied.size === 0 || copied.size > MAX_SHARED_FILE_BYTES) throw tooLarge()
+        // A file that grew while it was copied is held to the quota as kept.
+        const others = (sharing.get(sessionId) ?? 0) - source.size
+        if (stored() + others + copied.size > sessionQuota) {
+          throw new ShareRefusedError(
+            `${sourcePath} grew while it was copied, past the ${megabytes(sessionQuota)} a session may share.`,
+          )
+        }
+        const head = new Uint8Array(SNIFF_BYTES)
+        const handle = await open(partialPath, 'r')
+        try {
+          await handle.read(head, 0, SNIFF_BYTES, 0)
+        } finally {
+          await handle.close()
+        }
+        const mimeType = sniffMedia(head)
+        if (!mimeType) {
+          throw new ShareRefusedError(
+            `${sourcePath} is not a video or image the chat can show (${SHAREABLE_NAMES}).`,
+          )
+        }
+        // An image is read whole wherever it is shown; only video streams.
+        if (mimeType.startsWith('image/') && copied.size > MAX_SHARED_IMAGE_BYTES) {
+          throw new ShareRefusedError(
+            `${sourcePath} is an image larger than ${megabytes(MAX_SHARED_IMAGE_BYTES)}, the most a shared image may be. Shrink or compress it and share it again.`,
+          )
+        }
+        // The original's name, for the viewer and a download; never a path here.
+        const stem = basename(sourcePath).replace(/\.[^.]*$/, '').slice(0, 200) || 'shared'
+        const metadata: ArtifactMetadata = {
+          artifactId, sessionId, workspaceId,
+          name: `${stem}.${extensionOf(mimeType)}`,
+          mimeType, sizeBytes: copied.size, createdAt: Date.now(), source: 'generated',
+        }
+        renameSync(partialPath, finalPath)
+        record(metadata)
+        return metadata
+      } catch (error) {
+        rmSync(partialPath, { force: true })
+        rmSync(finalPath, { force: true })
+        throw error
+      } finally {
+        settle()
+      }
+    },
+    /** Remove a shared copy that never reached the transcript: row, then bytes. */
+    discard(metadata: Pick<ArtifactMetadata, 'artifactId' | 'sessionId'>) {
+      if (deleteOwned.run(metadata.artifactId, metadata.sessionId).changes === 1) {
+        removeBytes(metadata.artifactId)
+      }
+    },
+    /**
+     * Where an artifact's bytes are, for a reply that sends them in ranges
+     * rather than reading them whole: checked as `read` checks, against the
+     * shared-file ceiling instead of the attachment one.
+     */
+    file(metadata: Pick<ArtifactMetadata, 'artifactId' | 'sizeBytes'>) {
+      const filePath = path(metadata.artifactId)
+      const found = statSync(filePath)
+      if (!found.isFile() || found.size !== metadata.sizeBytes || found.size > MAX_SHARED_FILE_BYTES) {
+        throw new Error('Artifact size mismatch')
+      }
+      return { path: filePath, sizeBytes: found.size }
     },
   }
 }
