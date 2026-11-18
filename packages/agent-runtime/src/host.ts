@@ -41,6 +41,16 @@ export type HostDeps = {
     workspacePath: string
     threadId: string
   }) => DesiredSessionConfig | undefined
+  /** Text the host wants every agent of this workspace to be told, read when
+   * a session's process starts (a pull, like `desiredSessionConfig`, so a
+   * process started later reads what is current then). It reaches the agent
+   * as `SessionRuntimeSpec.instructions` says. Absent, or answering
+   * undefined, agents are told nothing extra. */
+  sessionInstructions?: (args: {
+    providerId: ProviderId
+    workspacePath: string
+    threadId: string
+  }) => string | undefined
   /** Tools the host serves to every session as one MCP server (its own
    * actions, such as linking a pull request to the session). Absent, agents
    * get none. The probe runtimes never get them: a probe is no session. */

@@ -834,6 +834,31 @@ export class AgentRuntime {
     })
   }
 
+  /** What the host wants this session's agent told, asked as the process is
+   * opened, like `durableDesired`: a process started later asks again, so a
+   * change on the host's side reaches the next process, never a live one.
+   * A host that throws here costs the agent its instructions, not its start. */
+  private instructionsFor(args: RuntimeRoute): string | undefined {
+    const workspacePath = args.workspaceId ?? args.cwd
+    if (!workspacePath || !this.host.sessionInstructions) return undefined
+    try {
+      const text = this.host.sessionInstructions({
+        providerId: args.providerId,
+        workspacePath,
+        threadId: args.threadId,
+      })
+      return text?.trim() ? text : undefined
+    } catch (error) {
+      this.host.log({
+        scope: 'agent-runtime',
+        level: 'warn',
+        message: 'Session instructions could not be read; starting without them',
+        data: { providerId: args.providerId, error: String(error) },
+      })
+      return undefined
+    }
+  }
+
   /** Record what a respawn of this thread would need. Called on every
    * successful `ensureSession`, which is the only place all of it is known. */
   private remember(args: RuntimeSessionArgs, sessionId: string): void {
@@ -856,6 +881,7 @@ export class AgentRuntime {
     this.rememberCwd(args)
     const rebound = await this.rebind(args)
     if (rebound) return rebound
+    const instructions = this.instructionsFor(args)
     try {
       const started = await this.registry.ensureStarted({
         threadId: args.threadId,
@@ -866,6 +892,7 @@ export class AgentRuntime {
         ...(args.load ? { load: args.load } : {}),
         resumeCursor: args.resumeCursor,
         ...(desired ? { desiredConfig: desired } : {}),
+        ...(instructions ? { instructions } : {}),
       })
       // Spawn, handshake, auth and session bootstrap all just succeeded
       // against this CLI. That is a stronger and more recent observation than

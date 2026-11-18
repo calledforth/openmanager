@@ -30,6 +30,8 @@ import type {
   PullRequestDetail,
   PullRequestSummary,
   QueuedMessage,
+  Scratchpad,
+  ScratchpadSaveResult,
   Session,
   SessionComposerState,
   SessionStatus,
@@ -70,6 +72,8 @@ export type {
   PullRequestDetail,
   PullRequestSummary,
   QueuedMessage,
+  Scratchpad,
+  ScratchpadSaveResult,
   SessionComposerState,
   SessionStatus,
   ThreadQueue,
@@ -709,6 +713,20 @@ export interface EnvironmentCommands {
     repository: string
     number: number
   }): Promise<PullRequestDetail>
+  /**
+   * A project's scratchpad, and this connection told of every later change
+   * to it (`onScratchpadChanged`) until the connection closes: a client that
+   * reconnects asks again. Not stored. "No project" has none (`validation`).
+   */
+  getScratchpad(workspaceId: string): Promise<Scratchpad>
+  /**
+   * Write the scratchpad, if it is still at `baseVersion` (null: no file
+   * yet). Otherwise nothing is written and the answer is `conflict`, with
+   * the scratchpad as it is now to merge into.
+   */
+  saveScratchpad(input: SaveScratchpadInput): Promise<ScratchpadSaveResult>
+  /** Turn telling the project's agents about its scratchpad on or off. */
+  setScratchpadSharing(input: SetScratchpadSharingInput): Promise<Scratchpad>
   /** Settings the environment shares with every client. Not stored. */
   getEnvironmentSettings(): Promise<EnvironmentSettings>
   /** A patch: settings left out keep their value. Resolves with all of them. */
@@ -777,6 +795,17 @@ export interface RedeemPairingLinkInput {
   capabilities?: AccessCapability[]
 }
 
+export interface SaveScratchpadInput {
+  workspaceId: string
+  content: string
+  baseVersion: string | null
+}
+
+export interface SetScratchpadSharingInput {
+  workspaceId: string
+  shareWithAgents: boolean
+}
+
 export interface StopBackgroundTasksInput {
   sessionId: string
   /** Omit to stop every task. */
@@ -842,6 +871,11 @@ export interface EnvironmentClient {
    * clients holding `admin` are told. Absent where the client cannot listen.
    */
   onAuthorizedClientsChanged?(listener: (list: AuthorizedClientList) => void): Unsubscribe
+  /**
+   * Hear a scratchpad this connection read (`getScratchpad`) whenever it
+   * changes, whoever changed it. Absent where the client cannot listen.
+   */
+  onScratchpadChanged?(listener: (scratchpad: Scratchpad) => void): Unsubscribe
   /** Local selection; does not hydrate. Use `commands.openSession` for that. */
   setActiveSession(sessionId: string | null): void
   setActiveThread(threadId: string | null): void

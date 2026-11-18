@@ -13,6 +13,14 @@ export const DEFAULT_ENVIRONMENT_SETTINGS: EnvironmentSettings = Object.freeze({
   titleGeneration: Object.freeze({ provider: 'codex', model: '' }),
 })
 
+/**
+ * The projects whose agents are not told about their scratchpad, in a row of
+ * its own beside the shared settings: it is the scratchpad's, read by the
+ * environment rather than by Settings, so it is not in `EnvironmentSettings`.
+ * Only a project someone turned off has an entry; every other one shares.
+ */
+const SCRATCHPAD_SHARING_KEY = 'scratchpad.sharing'
+
 type SettingKey = keyof EnvironmentSettings
 type SettingRow = { key: string; value_json: string }
 
@@ -33,6 +41,23 @@ export function openEnvironmentSettings(dataDir: string, clock: () => number = D
       value_json = excluded.value_json,
       updated_at = excluded.updated_at
   `)
+
+  const readOne = database.prepare('SELECT value_json FROM environment_settings WHERE key = ?')
+
+  /** Every project's sharing choice that differs from the default (on). */
+  const scratchpadSharing = (): Record<string, boolean> => {
+    const row = readOne.get(SCRATCHPAD_SHARING_KEY) as { value_json: string } | undefined
+    if (!row) return {}
+    try {
+      const value: unknown = JSON.parse(row.value_json)
+      if (!value || typeof value !== 'object' || Array.isArray(value)) return {}
+      return Object.fromEntries(
+        Object.entries(value).filter(([, share]) => typeof share === 'boolean'),
+      ) as Record<string, boolean>
+    } catch {
+      return {}
+    }
+  }
 
   const get = (): EnvironmentSettings => {
     const settings: Record<string, unknown> = { ...DEFAULT_ENVIRONMENT_SETTINGS }
@@ -68,6 +93,19 @@ export function openEnvironmentSettings(dataDir: string, clock: () => number = D
         throw error
       }
       return next
+    },
+
+    /** Whether agents in this project are told about its scratchpad. */
+    sharesScratchpad(workspaceId: string): boolean {
+      return scratchpadSharing()[workspaceId] ?? true
+    },
+
+    setScratchpadSharing(workspaceId: string, share: boolean) {
+      const next = scratchpadSharing()
+      // Only the exception is kept, so a project switched back on leaves no trace.
+      if (share) delete next[workspaceId]
+      else next[workspaceId] = false
+      write.run(SCRATCHPAD_SHARING_KEY, JSON.stringify(next), clock())
     },
 
     close() {

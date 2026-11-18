@@ -539,6 +539,16 @@ export class ClaudeSessionRuntime implements ManagedSessionRuntime {
       // and it is why hook frames have to be filtered out of session-id
       // capture below.
       settingSources: ['user', 'project', 'local'],
+      // The host's instructions, as the system prompt. Not the `claude_code`
+      // preset with `append`: with no `systemPrompt` at all the SDK sends an
+      // empty custom one (the CLI then adds only its short base, ~140 tokens,
+      // measured on 0.3.220), and that is what every session here runs on.
+      // The preset is ~2,450 tokens of Claude Code's own prompt; switching
+      // to it only while the host has something to say would change the
+      // whole prompt on a setting that means to add one paragraph. A string
+      // stands in for the empty one and keeps the base, so it adds exactly
+      // the instructions.
+      ...(this.spec.instructions ? { systemPrompt: this.spec.instructions } : {}),
       // Token-level assistant text. Without it the first thing the UI sees is
       // a whole finished message.
       includePartialMessages: true,

@@ -40,6 +40,9 @@ import {
   PAIRING_REDEEM_CAPABILITY,
   PAIRING_REVOKE_CAPABILITY,
   PULL_REQUEST_GET_CAPABILITY,
+  SCRATCHPAD_GET_CAPABILITY,
+  SCRATCHPAD_SAVE_CAPABILITY,
+  SCRATCHPAD_SHARING_SET_CAPABILITY,
   type DurableEvent,
   type ProofEvent,
   type WorkspaceComposerPreference,
@@ -60,6 +63,7 @@ import { createMessageSearch } from './message-search.ts'
 import { createGitHubReader, createGitHubToken } from './pull-requests/github.ts'
 import { createAgentToolsEndpoint } from './pull-requests/mcp-endpoint.ts'
 import { createPullRequestService } from './pull-requests/service.ts'
+import { createScratchpadService } from './scratchpad.ts'
 import { serverVersion } from './standalone/version.ts'
 import { auditValue, createAuditLog } from './audit.ts'
 import type { ServerConfig } from './config.ts'
@@ -153,6 +157,9 @@ export const SERVER_CAPABILITIES = [
   ENVIRONMENT_SETTINGS_SET_CAPABILITY,
   SEARCH_MESSAGES_CAPABILITY,
   PULL_REQUEST_GET_CAPABILITY,
+  SCRATCHPAD_GET_CAPABILITY,
+  SCRATCHPAD_SAVE_CAPABILITY,
+  SCRATCHPAD_SHARING_SET_CAPABILITY,
   DRAFT_LIST_CAPABILITY,
   DRAFT_SAVE_CAPABILITY,
   DRAFT_DELETE_CAPABILITY,
@@ -384,6 +391,18 @@ export async function startServer(config: ServerConfig) {
     version: serverVersion(),
     log,
   })
+  // Each project's scratchpad file, and the note that points agents at it.
+  // It reaches sockets only once they exist; nobody can follow it before.
+  let clientSockets: ClientSockets | undefined
+  const scratchpad = createScratchpadService({
+    workspaces,
+    sharing: environmentSettings,
+    sockets: () => {
+      if (!clientSockets) throw new Error('The socket server is not ready.')
+      return clientSockets
+    },
+    log,
+  })
   let onRuntimeEvent: HostDeps['emitEvent'] = () => undefined
   // What a message queued now would run with; the composer service answers
   // once it exists, and nothing can queue before then.
@@ -399,6 +418,9 @@ export async function startServer(config: ServerConfig) {
     (args) => desiredConfigFor(args),
     config.runtimeOptions,
     agentTools.host,
+    // Read as each agent process starts: a project that turns sharing off,
+    // or empties its scratchpad, stops being pointed out from the next one.
+    ({ workspacePath }) => scratchpad.agentNote(workspacePath),
   )
   let observeProviderCatalog: (providerId: string, result: RuntimeProviderBootstrap) => void = () =>
     undefined
@@ -527,6 +549,7 @@ export async function startServer(config: ServerConfig) {
       },
       onQueueProblem: (message, data) => log('warn', message, data),
       watchToolInput: (input) => pullRequests.wantsToolInput(input),
+      onToolInput: (call) => scratchpad.observeToolInput(call),
       onWatchedToolSettled: ({ sessionId, toolCallId, text, startedAt }) =>
         // After the settling update is appended, so its stored text is there to read.
         setImmediate(() => {
@@ -552,6 +575,7 @@ export async function startServer(config: ServerConfig) {
     // Flush before the registry cascades deletion of the projected thread rows.
     eventService.flush()
     threadService.closeWorkspaceSessions(workspaceId)
+    scratchpad.forget(workspaceId)
   }
   const composerService = createComposerService(
     runtime,
@@ -894,7 +918,6 @@ export async function startServer(config: ServerConfig) {
     response.writeHead(404, { 'content-type': 'text/plain; charset=utf-8' })
     response.end('Not found\n')
   }
-  let clientSockets: ClientSockets | undefined
   const environmentName = createEnvironmentNameService({
     dataDir: config.dataDir,
     identity: () => identity,
@@ -952,6 +975,7 @@ export async function startServer(config: ServerConfig) {
       filesystem.dispatch(command, context) ??
       messageSearch.dispatch(command) ??
       pullRequests.dispatch(command) ??
+      scratchpad.dispatch(command, context) ??
       drafts.dispatch(command, context) ??
       pairing.dispatch(command, context) ??
       clientService.dispatch(command, context) ??
@@ -989,6 +1013,7 @@ export async function startServer(config: ServerConfig) {
     })
   } catch (error) {
     clientService.stop()
+    scratchpad.close()
     await sockets.close()
     stopHealthEvents()
     stopLimitsEvents()
@@ -1054,6 +1079,7 @@ export async function startServer(config: ServerConfig) {
     composerService,
     composerStore,
     pullRequests,
+    scratchpad,
     agentTools,
     environmentSettings,
     uploads,
@@ -1079,6 +1105,7 @@ export async function startServer(config: ServerConfig) {
     close: () => {
       if (!closePromise) {
         clientService.stop()
+        scratchpad.close()
         const socketClose = sockets.close()
         // Before the listener: an in-flight PUT is cut and its partial file removed.
         uploads.close()

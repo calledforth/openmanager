@@ -40,6 +40,13 @@ export type SessionRuntimeSpec = {
   /** Applied once, immediately after the session exists, while the cache is
    * warm from the `session/new` response. Not re-applied per prompt. */
   desiredConfig?: DesiredSessionConfig
+  /** What the host wants the agent told beyond the user's own messages
+   * (`HostDeps.sessionInstructions`), fixed for the process's life like
+   * everything else here. Each transport puts it where its agent reads
+   * standing instructions: Claude Code's system prompt, OpenCode's
+   * `instructions`, or, for an agent with no such place, a block ahead of the
+   * first message of a new session that the transcript never shows. */
+  instructions?: string
 }
 
 /** The per-session runtime: one child process, one session, one applied state

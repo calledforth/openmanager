@@ -34,7 +34,7 @@ Keep the look; change how it is **reached**.
 
 ## Decisions
 - Scratchpad is **per project**, not per session
-- Agents get it in context; they edit it with the \`scratchpad\` MCP tools
+- Agents are told where it is (\`.openmanager/scratchpad.md\`) and read it with their own tools
 - Keys only answer while the panel shows and nobody is typing
 
 ## Links
