@@ -67,6 +67,7 @@ import { useConnection } from '../providers/connection-provider'
 import { useEnvironmentClients } from '../providers/environment-client-provider'
 import { addressOf, AddressLookupProvider, useFindAddress } from '../providers/address-environment'
 import { AddWorkspaceDialog } from './add-workspace-dialog'
+import { QuickAgentWebHost } from './quick-agent-host'
 import {
   ConnectionBanner,
   ConnectionScreen,
@@ -184,10 +185,12 @@ function ShellCommandPalette({
  */
 function ConnectedOverlays({
   client,
+  environmentId,
   addingWorkspace,
   closeAddWorkspace,
 }: {
   client: EnvironmentClient
+  environmentId: string | null
   addingWorkspace: boolean
   closeAddWorkspace: () => void
 }) {
@@ -298,7 +301,7 @@ function ConnectedOverlays({
   return (
     <>
       <ShellCommandPalette commands={commands} />
-      <QuickAgentPalette />
+      <QuickAgentPalette {...(environmentId ? { environmentId } : {})} />
       <AddWorkspaceDialog
         client={client}
         open={addingWorkspace}
@@ -398,6 +401,7 @@ function ConnectedShell({
         {children}
         <ConnectedOverlays
           client={client}
+          environmentId={environmentId}
           addingWorkspace={addingWorkspace}
           closeAddWorkspace={closeAddWorkspace}
         />
@@ -555,27 +559,31 @@ export function AppShell() {
               </Sidebar>
             }
           >
-            {client ? (
-              // By environment, not by client: its drafts and page state are that
-              // environment's, while a client replaced on the same environment keeps
-              // the page as it is.
-              <ConnectedShell
-                key={shellEnvironmentId}
-                client={client}
-                environmentId={shellEnvironmentId}
-                availability={availability}
-                pathname={pathname}
-                landingDraftId={address?.kind === 'draft' ? address.id : null}
-                holdLandingDraft={address?.kind === 'draft' && lookup.status === 'searching'}
-              >
-                {main}
-              </ConnectedShell>
-            ) : (
-              <>
-                {main}
-                <ShellCommandPalette />
-              </>
-            )}
+            {/* Above the shell keyed by environment: the New agent card's draft
+                outlives the page's environment and can move to another. */}
+            <QuickAgentWebHost shellEnvironmentId={client ? shellEnvironmentId : null}>
+              {client ? (
+                // By environment, not by client: its drafts and page state are that
+                // environment's, while a client replaced on the same environment keeps
+                // the page as it is.
+                <ConnectedShell
+                  key={shellEnvironmentId}
+                  client={client}
+                  environmentId={shellEnvironmentId}
+                  availability={availability}
+                  pathname={pathname}
+                  landingDraftId={address?.kind === 'draft' ? address.id : null}
+                  holdLandingDraft={address?.kind === 'draft' && lookup.status === 'searching'}
+                >
+                  {main}
+                </ConnectedShell>
+              ) : (
+                <>
+                  {main}
+                  <ShellCommandPalette />
+                </>
+              )}
+            </QuickAgentWebHost>
           </EnvironmentsSidebarHost>
         </AddressLookupProvider>
       </EnvironmentClientProvider>

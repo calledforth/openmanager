@@ -305,6 +305,17 @@ export interface EnvironmentChoiceValue {
     from: { draftId: string; environmentId: string } | null,
     workspaceId?: string,
   ) => boolean
+  /**
+   * Carry a draft to another environment without going there, as `choose`
+   * does with the page's: its text starts a new draft there, in the project
+   * last picked there, and the original goes once the copy is saved. Gives
+   * the new draft's ids (minted, and nothing saved, when there was no text to
+   * carry), or false if it cannot go there now; the user is told why.
+   */
+  carry?: (
+    environmentId: string,
+    from: { draftId: string; environmentId: string },
+  ) => { draftId: string; sessionId: string; workspaceId: string | null } | false
   /** A project `choose` was asked to open, until that environment's page takes it. */
   opening: { environmentId: string; workspaceId: string } | null
   /** The page has opened it. */
