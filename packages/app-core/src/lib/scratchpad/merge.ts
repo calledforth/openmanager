@@ -13,21 +13,43 @@
  * so nothing the user typed is ever lost to an agent's edit, and an agent's
  * edit to any line the user did not touch survives the user's.
  *
- * The diff is Myers' (linear space, no size cutoff): unlike the display diff
- * it never gives up and calls the whole document replaced, which would make
- * every outside change look like a clash. The file is capped at 60 KB, so
- * the realistic cost is small; the merge only runs when two edits race.
+ * The diff is Myers' (linear space): unlike the display diff it never
+ * calls the whole document replaced to save effort, which would make every
+ * outside change look like a clash. Its cost grows with how much changed,
+ * and two very different texts can take seconds, on the page's thread. So
+ * it works to a budget (`MERGE_WORK_BUDGET`) and, past it, merges nothing:
+ * `mergeLines` answers null and the caller keeps the user's text unsaved
+ * rather than guessing. Edits that race are small in practice and cost a
+ * tiny fraction of it.
  */
+
+/**
+ * Steps of the diff search one merge may take, both diffs together: tens of
+ * milliseconds, where an unbounded search of a 60 KB scratchpad rewritten
+ * end to end takes seconds.
+ */
+export const MERGE_WORK_BUDGET = 4_000_000
+
+/** Thrown inside the diff when its budget runs out. */
+class OverBudget extends Error {}
 
 /** An empty document has no lines, not one empty line. */
 const linesOf = (text: string): string[] => (text === '' ? [] : text.split('\n'))
 
+/** What a diff may still spend; shared by the two diffs of one merge. */
+type Budget = { left: number }
+
 /**
  * The lines of `a` and `b` that a shortest edit script keeps, as pairs of
  * indices in order. Myers' O((N+M)D) algorithm, split at the middle snake
- * (as diff-match-patch does), so its memory stays linear.
+ * (as diff-match-patch does), so its memory stays linear. Throws once it
+ * has spent `budget`.
  */
-export function matchLines(a: readonly number[], b: readonly number[]): Array<[number, number]> {
+export function matchLines(
+  a: readonly number[],
+  b: readonly number[],
+  budget: Budget = { left: Infinity },
+): Array<[number, number]> {
   const pairs: Array<[number, number]> = []
   const walk = (aLo: number, aHi: number, bLo: number, bHi: number) => {
     // Common head and tail are matched without searching.
@@ -35,7 +57,7 @@ export function matchLines(a: readonly number[], b: readonly number[]): Array<[n
     let tail = 0
     while (aHi - tail > aLo && bHi - tail > bLo && a[aHi - 1 - tail] === b[bHi - 1 - tail]) tail++
     if (aLo < aHi - tail && bLo < bHi - tail) {
-      const split = middleSnake(a, aLo, aHi - tail, b, bLo, bHi - tail)
+      const split = middleSnake(a, aLo, aHi - tail, b, bLo, bHi - tail, budget)
       if (split) {
         const [x, y] = split
         walk(aLo, aLo + x, bLo, bLo + y)
@@ -59,6 +81,7 @@ function middleSnake(
   b: readonly number[],
   bLo: number,
   bHi: number,
+  budget: Budget,
 ): [number, number] | null {
   const n = aHi - aLo
   const m = bHi - bLo
@@ -77,6 +100,9 @@ function middleSnake(
   let k2Start = 0
   let k2End = 0
   for (let d = 0; d < maxD; d++) {
+    // Each round looks at up to 2d + 1 diagonals each way, snakes aside.
+    budget.left -= 4 * d + 2
+    if (budget.left < 0) throw new OverBudget('The merge would take too long.')
     for (let k1 = -d + k1Start; k1 <= d - k1End; k1 += 2) {
       const k1Offset = offset + k1
       let x1 =
@@ -87,6 +113,7 @@ function middleSnake(
       while (x1 < n && y1 < m && a[aLo + x1] === b[bLo + y1]) {
         x1++
         y1++
+        budget.left--
       }
       forward[k1Offset] = x1
       if (x1 > n) k1End += 2
@@ -108,6 +135,7 @@ function middleSnake(
       while (x2 < n && y2 < m && a[aHi - 1 - x2] === b[bHi - 1 - y2]) {
         x2++
         y2++
+        budget.left--
       }
       backward[k2Offset] = x2
       if (x2 > n) k2End += 2
@@ -133,7 +161,12 @@ function middleSnake(
  * added ones is paired line for line, the extra added lines inserted after
  * the pairs, so a change to one line of a run is that line's change alone.
  */
-function changesOf(base: readonly number[], after: readonly number[], text: readonly string[]) {
+function changesOf(
+  base: readonly number[],
+  after: readonly number[],
+  text: readonly string[],
+  budget: Budget,
+) {
   const n = base.length
   const replaced: Array<string[] | undefined> = new Array(n).fill(undefined)
   const inserted: string[][] = Array.from({ length: n + 1 }, () => [])
@@ -149,7 +182,7 @@ function changesOf(base: readonly number[], after: readonly number[], text: read
     i = toI
     j = toJ
   }
-  for (const [baseIndex, afterIndex] of matchLines(base, after)) {
+  for (const [baseIndex, afterIndex] of matchLines(base, after, budget)) {
     gap(baseIndex, afterIndex)
     i = baseIndex + 1
     j = afterIndex + 1
@@ -161,8 +194,16 @@ function changesOf(base: readonly number[], after: readonly number[], text: read
 const sameLines = (a: readonly string[], b: readonly string[]) =>
   a.length === b.length && a.every((line, index) => line === b[index])
 
-/** Merge two edits of `base`; see the top of this file for the rule. */
-export function mergeLines(base: string, mine: string, theirs: string): string {
+/**
+ * Merge two edits of `base`; see the top of this file for the rule. Null
+ * when the texts are too different to merge within `budget` steps.
+ */
+export function mergeLines(
+  base: string,
+  mine: string,
+  theirs: string,
+  budget: number = MERGE_WORK_BUDGET,
+): string | null {
   if (mine === theirs || theirs === base) return mine
   if (mine === base) return theirs
   const baseLines = linesOf(base)
@@ -177,8 +218,16 @@ export function mergeLines(base: string, mine: string, theirs: string): string {
       return id
     })
   const baseIds = idsOf(baseLines)
-  const ours = changesOf(baseIds, idsOf(mineLines), mineLines)
-  const others = changesOf(baseIds, idsOf(theirLines), theirLines)
+  const work = { left: budget }
+  let ours: ReturnType<typeof changesOf>
+  let others: ReturnType<typeof changesOf>
+  try {
+    ours = changesOf(baseIds, idsOf(mineLines), mineLines, work)
+    others = changesOf(baseIds, idsOf(theirLines), theirLines, work)
+  } catch (error) {
+    if (error instanceof OverBudget) return null
+    throw error
+  }
   const out: string[] = []
   for (let i = 0; i <= baseLines.length; i++) {
     const own = ours.inserted[i]!

@@ -11,6 +11,7 @@ import { EnvironmentClientProvider } from '../src/providers/environment-client'
 import { matchLines, mergeLines } from '../src/lib/scratchpad/merge'
 import {
   createScratchpadController,
+  scratchpadControllerFor,
   scratchpadSeenKey,
   scratchpadUnsavedKey,
   useScratchpad,
@@ -138,6 +139,16 @@ describe('merging two edits of the scratchpad', () => {
         }
       })
     }
+  })
+
+  it('gives up, rather than freeze the page, on texts too different to merge quickly', () => {
+    // A near-limit scratchpad rewritten end to end while an agent changed one line.
+    const base = Array.from({ length: 19_999 }, (_, i) => `${i % 100}`).join('\n')
+    const mine = Array.from({ length: 19_999 }, (_, i) => `m${i % 97}`).join('\n')
+    const theirs = base.replace(/^0$/m, 'X')
+    const started = performance.now()
+    expect(mergeLines(base, mine, theirs)).toBeNull()
+    expect(performance.now() - started).toBeLessThan(1_000)
   })
 
   it('starts from nothing', () => {
@@ -320,6 +331,84 @@ describe('the scratchpad on one client', () => {
     await settle()
     expect(view().saveState).toBe('error')
     expect(client.calls.some((call) => call.command === 'saveScratchpad')).toBe(false)
+  })
+
+  it('keeps one controller per project while a closed one is still saving', async () => {
+    const client = createMockEnvironmentClient({ seed: { workspaces: [WORKSPACE] } })
+    client.editScratchpad('workspace-1', 'one\n')
+    const options = {
+      client,
+      workspaceId: 'workspace-1',
+      environmentId: 'env-1',
+      seen: memoryStore(),
+      saveDelayMs: 0,
+    }
+    const first = scratchpadControllerFor(options)
+    first.open()
+    await first.load()
+    first.edit('one\ntwo\n')
+    first.flush()
+    first.dispose()
+    // The panel comes back before the save lands: it is the same controller,
+    // with the save and the text it holds, not a second one racing it.
+    const again = scratchpadControllerFor(options)
+    expect(again).toBe(first)
+    again.open()
+    expect(again.getSnapshot().content).toBe('one\ntwo\n')
+    again.edit('one\nTWO\n')
+    for (let i = 0; i < 5; i += 1) {
+      await client.settle()
+      await tick()
+    }
+    expect((await client.commands.getScratchpad('workspace-1')).content).toBe('one\nTWO\n')
+    // Closed with nothing left to send, it is let go.
+    again.dispose()
+    expect(scratchpadControllerFor(options)).not.toBe(first)
+  })
+
+  it('drops kept text whose save landed after all, rather than save it twice', async () => {
+    const seen = memoryStore()
+    const { client, settle } = setup({ content: 'a\nb\n', seen })
+    // A panel closed mid-save kept its text, and the save then landed.
+    seen.set(
+      scratchpadUnsavedKey('env-1', 'workspace-1'),
+      JSON.stringify({ draft: 'a\nb\nc\n', base: { version: 'old', content: 'a\nb\n' } }),
+    )
+    client.editScratchpad('workspace-1', 'a\nb\nc\n', { kind: 'you' })
+    const again = createScratchpadController({
+      client,
+      workspaceId: 'workspace-1',
+      environmentId: 'env-1',
+      seen,
+      saveDelayMs: 0,
+    })
+    await again.load()
+    await settle()
+    expect(again.getSnapshot()).toMatchObject({ content: 'a\nb\nc\n', saveState: 'saved' })
+    expect(client.calls.some((call) => call.command === 'saveScratchpad')).toBe(false)
+    expect(seen.get(scratchpadUnsavedKey('env-1', 'workspace-1'))).toBe('')
+  })
+
+  it('keeps text it cannot merge quickly, and lets the user discard it', async () => {
+    // Within the size cap, and far too different to merge to the budget.
+    const base = Array.from({ length: 9_000 }, (_, i) => `${i % 100}`).join('\n')
+    const { client, controller, view, settle } = setup({ content: base })
+    await controller.load()
+    const mine = Array.from({ length: 9_000 }, (_, i) => `m${i % 97}`).join('\n')
+    controller.edit(mine)
+    client.editScratchpad('workspace-1', base.replace(/^0$/m, 'X'))
+    await settle()
+    expect(view()).toMatchObject({
+      content: mine,
+      saveState: 'error',
+      error: expect.stringContaining('too much to merge'),
+    })
+    controller.discard()
+    expect(view()).toMatchObject({
+      content: base.replace(/^0$/m, 'X'),
+      saveState: 'saved',
+      error: null,
+    })
   })
 
   it('turns sharing with agents off and on', async () => {

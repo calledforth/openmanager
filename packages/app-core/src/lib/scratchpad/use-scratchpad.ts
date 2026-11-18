@@ -100,6 +100,8 @@ export interface ScratchpadControllerOptions {
   saveDelayMs?: number
   /** An agent's name for the panel, from its provider id. */
   providerName?: (providerId: string) => string
+  /** Called once a closed controller has nothing left to save. */
+  onRetire?: () => void
 }
 
 export const scratchpadSeenKey = (environmentId: string, workspaceId: string) =>
@@ -133,7 +135,10 @@ const readUnsaved = (raw: string | null): { draft: string; base: Base } | null =
 
 /** Why the panel will not merge: the file is there but too large for it to read. */
 const TOO_LARGE_TO_MERGE =
-  'The scratchpad grew too large to show here, so your text was not saved over it. It is kept here; copy it out.'
+  'The scratchpad grew too large to show here, so your text was not saved over it. It is kept here: copy it out, then discard it.'
+/** Why the panel will not merge: the two texts differ too much to merge on this page. */
+const TOO_DIFFERENT_TO_MERGE =
+  'The scratchpad changed elsewhere too much to merge with your text, so yours was not saved. It is kept here: copy it out, then discard it.'
 
 /**
  * The scratchpad of one project on one client, outside React so its timing
@@ -170,6 +175,14 @@ export function createScratchpadController(options: ScratchpadControllerOptions)
    * way, and any text typed after it, still goes out (merging if it must).
    */
   let disposed = false
+  /** A closed controller with nothing left to send lets its registry forget it. */
+  let retired = false
+  const retireIfIdle = () => {
+    if (!disposed || retired || saving || timer) return
+    if (draft !== null && saveState !== 'error') return
+    retired = true
+    options.onRetire?.()
+  }
   /** Whether the device holds unsaved text for this project, to drop once it is saved. */
   let stored = left !== null
   /** Keep (or drop) the text a closed panel has not saved yet. */
@@ -239,6 +252,15 @@ export function createScratchpadController(options: ScratchpadControllerOptions)
     if (seen === null) markSeen(next.content)
     // The user's own writes, from here or another tab, are seen as written.
     if (next.lastEdit?.by.kind === 'you') markSeen(next.content)
+    // Text that is already the file's (a kept draft whose save landed after
+    // all) is not a draft: saving it again could only bring back lines
+    // since removed.
+    if (draft !== null && !saving && !next.tooLarge && next.content === draft) {
+      draft = null
+      saveState = 'saved'
+      error = null
+      keepUnsaved()
+    }
     if (draft === null)
       base = next.tooLarge ? null : { version: next.version, content: next.content }
   }
@@ -251,6 +273,7 @@ export function createScratchpadController(options: ScratchpadControllerOptions)
     if (scratchpadBytes(draft) > SCRATCHPAD_MAX_BYTES) {
       saveState = 'error'
       render()
+      retireIfIdle()
       return
     }
     // Typed before the file could be read: nothing to name or merge from yet.
@@ -284,10 +307,17 @@ export function createScratchpadController(options: ScratchpadControllerOptions)
         // Someone wrote first. Their text and the user's are merged from the
         // version the user typed over, and that goes out at once, over theirs.
         const theirs = result.scratchpad
-        draft = mergeLines(base.content, draft ?? sent, theirs.content)
+        const merged = mergeLines(base.content, draft ?? sent, theirs.content)
         server = theirs
-        base = { version: theirs.version, content: theirs.content }
-        saveState = 'saving'
+        if (merged === null) {
+          // Too different to merge here: kept, not guessed at.
+          saveState = 'error'
+          error = TOO_DIFFERENT_TO_MERGE
+        } else {
+          draft = merged
+          base = { version: theirs.version, content: theirs.content }
+          saveState = 'saving'
+        }
       }
     } catch {
       // Kept in the editor; the next edit, or the next connection, tries again.
@@ -299,6 +329,7 @@ export function createScratchpadController(options: ScratchpadControllerOptions)
     if (disposed || stored) keepUnsaved()
     render()
     if (draft !== null && saveState !== 'error') schedule(0)
+    else retireIfIdle()
   }
 
   const schedule = (ms: number) => {
@@ -350,6 +381,27 @@ export function createScratchpadController(options: ScratchpadControllerOptions)
       else if (timer) clearTimeout(timer)
     },
 
+    /**
+     * Drop the text that could not be saved (after copying it out) and show
+     * the file as it is. The way out of a refused merge.
+     */
+    discard() {
+      if (timer) clearTimeout(timer)
+      timer = undefined
+      draft = null
+      error = null
+      saveState = 'saved'
+      base =
+        server && !server.tooLarge ? { version: server.version, content: server.content } : null
+      keepUnsaved()
+      render()
+    },
+
+    /** A panel shows this controller again; see `scratchpadControllerFor`. */
+    open() {
+      disposed = false
+    },
+
     /** The user has looked at the file as it is now. */
     markSeen() {
       if (server) markSeen(server.content)
@@ -385,8 +437,38 @@ export function createScratchpadController(options: ScratchpadControllerOptions)
       disposed = true
       listeners.clear()
       keepUnsaved()
+      retireIfIdle()
     },
   }
+}
+
+/**
+ * Every controller still alive, closed ones still saving included, by
+ * client and project. A panel opened for a project whose last panel is
+ * still saving takes that same controller back, so a project never has two
+ * saves racing each other (the second would read the first as someone
+ * else's edit and merge deleted lines back in).
+ */
+const controllers = new WeakMap<EnvironmentClient, Map<string, ScratchpadController>>()
+
+/** The project's controller on this client: the live one if there is one, else a new one. */
+export function scratchpadControllerFor(
+  options: ScratchpadControllerOptions,
+): ScratchpadController {
+  let byProject = controllers.get(options.client)
+  if (!byProject) controllers.set(options.client, (byProject = new Map()))
+  const key = scratchpadUnsavedKey(options.environmentId, options.workspaceId)
+  const live = byProject.get(key)
+  if (live) return live
+  const created = createScratchpadController({
+    ...options,
+    onRetire: () => {
+      if (byProject.get(key) === created) byProject.delete(key)
+      options.onRetire?.()
+    },
+  })
+  byProject.set(key, created)
+  return created
 }
 
 export type ScratchpadController = ReturnType<typeof createScratchpadController>
@@ -396,6 +478,8 @@ const selectConnected = (state: EnvironmentState) => state.connection.phase === 
 const selectEnvironmentId = (state: EnvironmentState) => state.environment?.environmentId ?? null
 
 export interface ScratchpadActions {
+  /** Drop text that could not be saved, once the user has copied it out. */
+  onDiscard: () => void
   onChange: (content: string) => void
   onMarkSeen: () => void
   onShareWithAgentsChange: (next: boolean) => void
@@ -437,7 +521,7 @@ export function useScratchpad(
   const controller = useMemo(
     () =>
       client && workspaceId && environmentId
-        ? createScratchpadController({
+        ? scratchpadControllerFor({
             client,
             workspaceId,
             environmentId,
@@ -449,7 +533,13 @@ export function useScratchpad(
         : null,
     [client, workspaceId, environmentId, seen, saveDelayMs],
   )
-  useEffect(() => () => controller?.dispose(), [controller])
+  // Shown from mount to unmount; closed, it may still be finishing a save,
+  // and the next panel for the project takes it back.
+  useEffect(() => {
+    if (!controller) return
+    controller.open()
+    return () => controller.dispose()
+  }, [controller])
   useEffect(() => {
     if (!controller || !client?.onScratchpadChanged) return
     return client.onScratchpadChanged((next) => controller.receive(next))
@@ -467,6 +557,7 @@ export function useScratchpad(
   )
   const onChange = useCallback((content: string) => controller?.edit(content), [controller])
   const onMarkSeen = useCallback(() => controller?.markSeen(), [controller])
+  const onDiscard = useCallback(() => controller?.discard(), [controller])
   const onShareWithAgentsChange = useCallback(
     (next: boolean) => void controller?.setShareWithAgents(next),
     [controller],
@@ -475,6 +566,7 @@ export function useScratchpad(
     ...(supported ? view : EMPTY_VIEW),
     onChange,
     onMarkSeen,
+    onDiscard,
     onShareWithAgentsChange,
   }
 }

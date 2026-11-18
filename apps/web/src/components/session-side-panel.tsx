@@ -211,7 +211,7 @@ function useScratchpadView(
   const now = useNow()
   const scratchpad = useScratchpad(project?.workspaceId ?? null)
   // The hook's handlers are stable per project; the panel takes them as they are.
-  const { onChange, onMarkSeen, onShareWithAgentsChange } = scratchpad
+  const { onChange, onMarkSeen, onDiscard, onShareWithAgentsChange } = scratchpad
   if (!project || !scratchpad.supported) return null
   return {
     id: SCRATCHPAD,
@@ -241,12 +241,23 @@ function useScratchpadView(
       <div className="flex h-full min-h-0 flex-col">
         {/* Why text is not being saved (the file outgrew the panel), above the text kept. */}
         {scratchpad.error ? (
-          <p
+          <div
             role="alert"
-            className="mx-2 mb-1 shrink-0 rounded-lg bg-hover px-2.5 py-1.5 text-12-regular leading-[1.5] text-[var(--basis-status-error)]"
+            className="mx-2 mb-1 flex shrink-0 items-start gap-2 rounded-lg bg-hover py-1.5 pr-1.5 pl-2.5"
           >
-            {scratchpad.error}
-          </p>
+            <p className="min-w-0 flex-1 text-12-regular leading-[1.5] text-[var(--basis-status-error)]">
+              {scratchpad.error}
+            </p>
+            {scratchpad.saveState === 'error' ? (
+              <button
+                type="button"
+                onClick={onDiscard}
+                className="h-6 shrink-0 cursor-pointer rounded-md px-2 text-11-medium text-[var(--basis-text-muted)] transition-colors hover:bg-hover hover:text-[var(--basis-text-strong)] focus-visible:outline-2 focus-visible:outline-ring"
+              >
+                Discard mine
+              </button>
+            ) : null}
+          </div>
         ) : null}
         <ScratchpadPanel
           projectName={project.name}
