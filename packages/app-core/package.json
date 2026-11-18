@@ -101,6 +101,7 @@
     "./components/questions/ComposerQuestionPrompt": "./src/components/questions/ComposerQuestionPrompt.tsx",
     "./components/questions/questionFlow": "./src/components/questions/questionFlow.ts",
     "./components/questions/useQuestionFlow": "./src/components/questions/useQuestionFlow.ts",
+    "./components/side-panel/PanelDeck": "./src/components/side-panel/PanelDeck.tsx",
     "./components/side-panel/SidePanel": "./src/components/side-panel/SidePanel.tsx",
     "./components/pull-requests": "./src/components/pull-requests/index.ts",
     "./components/sidebar/DraftDiscardToast": "./src/components/sidebar/DraftDiscardToast.tsx",

@@ -1,7 +1,8 @@
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useState } from 'react'
 import type { EnvironmentState } from '@openmanager/environment-client'
 import { useEnvironmentState } from '@openmanager/app-core/providers/environment-client'
 import { SidePanel, useSidePanel } from '@openmanager/app-core/components/side-panel/SidePanel'
+import { PanelKeys } from '@openmanager/app-core/components/side-panel/PanelDeck'
 import {
   PullRequestPill,
   PullRequestsPanel,
@@ -67,43 +68,41 @@ function Content({
   pullRequests: readonly PullRequestSummary[]
 }) {
   const environmentName = useEnvironmentState(selectEnvironmentName)
-  // The newest link first: it is usually the one the agent just opened.
-  const newest = pullRequests[pullRequests.length - 1]
-  const [selectedKey, setSelectedKey] = useState<string | null>(
-    newest ? pullRequestKey(newest) : null,
-  )
-  const selected = pullRequests.find((pr) => pullRequestKey(pr) === selectedKey) ?? newest ?? null
-  // A newly linked pull request takes the selection, like a new message
-  // takes the chat's attention.
-  const newestKey = newest ? pullRequestKey(newest) : null
-  useEffect(() => {
-    if (newestKey) setSelectedKey(newestKey)
-  }, [newestKey])
+  // Several open on the list; the one opened from it is shown in full. With
+  // a single pull request there is no list, and that one is the page.
+  const [openKey, setOpenKey] = useState<string | null>(null)
+  const opened =
+    pullRequests.find((pr) => pullRequestKey(pr) === openKey) ??
+    (pullRequests.length === 1 ? pullRequests[0] : undefined) ??
+    null
 
   // The collapsed rail stays mounted on desktop: only an open panel is viewing.
   const { open } = useSidePanel()
   const { detail, loading, error } = usePullRequestDetail(
     null,
     sessionId,
-    selected?.repository,
-    selected?.number,
+    opened?.repository,
+    opened?.number,
     { viewing: open },
   )
   const openOnGitHub = useCallback((url: string) => {
     window.open(url, '_blank', 'noopener,noreferrer')
   }, [])
 
+  // J/K, Enter and Esc move through the list and pages while the panel shows.
   return (
-    <PullRequestsPanel
-      pullRequests={pullRequests as PullRequestSummary[]}
-      selectedKey={selected ? pullRequestKey(selected) : null}
-      onSelect={setSelectedKey}
-      detail={detail ?? null}
-      detailLoading={loading}
-      detailError={error}
-      onOpenOnGitHub={openOnGitHub}
-      environmentLabel={environmentName}
-      className="h-full"
-    />
+    <PanelKeys active={open}>
+      <PullRequestsPanel
+        pullRequests={pullRequests as PullRequestSummary[]}
+        openKey={openKey}
+        onOpen={setOpenKey}
+        detail={detail ?? null}
+        detailLoading={loading}
+        detailError={error}
+        onOpenOnGitHub={openOnGitHub}
+        environmentLabel={environmentName}
+        className="h-full"
+      />
+    </PanelKeys>
   )
 }

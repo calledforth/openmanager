@@ -1,5 +1,9 @@
 export { PullRequestPill } from './PullRequestPill'
-export { PullRequestsPanel, type PullRequestsPanelProps } from './PullRequestsPanel'
+export {
+  PullRequestsPanel,
+  pullRequestsSummary,
+  type PullRequestsPanelProps,
+} from './PullRequestsPanel'
 export {
   PullRequestDetailView,
   StateChip as PullRequestStateChip,
