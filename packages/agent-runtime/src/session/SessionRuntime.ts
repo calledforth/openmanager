@@ -119,6 +119,9 @@ export interface SessionRuntime {
   /** Stop the named background tasks, or every live one. Absent on providers
    * that run nothing in the background. */
   stopBackgroundTasks?(taskIds?: readonly string[]): Promise<void>
+  /** Stop one running subagent, by the `taskId` its `subtask_update` named.
+   * Absent on providers that cannot stop one subagent alone. */
+  stopSubtask?(taskId: string): Promise<void>
 
   /** Paginated `session/list` for this runtime's own `cwd`, on this runtime's
    * own connection. ~55ms once the process is up, and it reads no model or

@@ -191,6 +191,23 @@ export const BackgroundTaskSchema = z.object({
 })
 export const BackgroundTaskListSchema = z.array(BackgroundTaskSchema).max(BACKGROUND_TASKS_MAX)
 /**
+ * Where a subagent came from: the provider's own (`native`), or started
+ * through the environment's `spawn_agent` tool (`openmanager`). See
+ * `subagents.ts`.
+ */
+export const SubagentOriginSchema = z.enum(['native', 'openmanager'])
+/**
+ * What a child session says about the subagent it holds. Rides on the session
+ * summary so a child page and the sidebar know what it is without the
+ * parent's thread. `promptable` is false when only the parent agent can reach
+ * the child (Claude Code and Cursor subagents).
+ */
+export const SessionSubagentSchema = z.object({
+  subagentId: EntityIdSchema,
+  origin: SubagentOriginSchema,
+  promptable: z.boolean(),
+})
+/**
  * Sidebar row. Deliberately excludes threads and messages so a list or
  * environment snapshot cannot pull a transcript across the wire.
  */
@@ -250,6 +267,11 @@ export const SessionSummarySchema = SessionSchema.extend({
    * are none, and on older environments. See `pull-requests.ts`.
    */
   pullRequests: PullRequestSummaryListSchema.optional(),
+  /**
+   * Present on a child session that holds a subagent's work. Absent on
+   * top-level sessions, and on older environments.
+   */
+  subagent: SessionSubagentSchema.optional(),
 })
 export const ThreadSchema = z.object({ threadId: EntityIdSchema, sessionId: EntityIdSchema })
 
@@ -327,8 +349,14 @@ export const TurnSchema = z.object({
    * Who began the turn. `background` is a turn the provider started by itself:
    * a background task finished and the agent is acting on the result. Absent
    * on a turn the user sent, and on older environments.
+   *
+   * `delegated`: a subagent's turn in its child session, begun by the parent
+   * agent, not by a person; its user message is what the parent asked.
+   * `subagents`: a turn the environment began in a parent session to tell its
+   * agent that subagents it started have finished; its user message is that
+   * notice.
    */
-  origin: z.enum(['background']).optional(),
+  origin: z.enum(['background', 'delegated', 'subagents']).optional(),
   /**
    * The command that started the turn, so a client matches its own send to
    * the turn by id rather than by text. Absent on a turn nobody sent.
@@ -712,6 +740,8 @@ export type DurableTurnNotice = z.infer<typeof DurableTurnNoticeSchema>
 export type TurnStart = z.infer<typeof TurnStartSchema>
 export type TurnStarted = z.infer<typeof TurnStartedSchema>
 export type BackgroundTask = z.infer<typeof BackgroundTaskSchema>
+export type SubagentOrigin = z.infer<typeof SubagentOriginSchema>
+export type SessionSubagent = z.infer<typeof SessionSubagentSchema>
 export type ContentBlock = z.infer<typeof ContentBlockSchema>
 export type Interaction = z.infer<typeof InteractionSchema>
 export type InteractionResponse = z.infer<typeof InteractionResponseSchema>

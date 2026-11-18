@@ -34,6 +34,7 @@ import {
 import { DraftSchema, DraftTombstoneSchema } from './drafts.js'
 import { ThreadQueueSchema } from './queue.js'
 import { PullRequestSummaryListSchema } from './pull-requests.js'
+import { SubagentSchema } from './subagents.js'
 
 const event = <N extends string, S extends z.ZodType, P extends z.ZodType>(
   name: N,
@@ -58,8 +59,10 @@ const event = <N extends string, S extends z.ZodType, P extends z.ZodType>(
  * 6: `session.updated` carries `pullRequests`.
  * 7: `workspace.updated` carries `kind` ("No project").
  * 8: `session.updated` carries `cookingAt`.
+ * 9: `subagent.updated`; a `session.created` summary can carry `subagent`; a turn's `origin` can be `delegated` or `subagents`; a queued
+ *    message can carry `origin`.
  */
-export const EVENT_FORMAT_VERSION = 8 as const
+export const EVENT_FORMAT_VERSION = 9 as const
 
 /** A turn's state once an interaction event is applied: still asking, or running again. */
 export const InteractionTurnStateSchema = z.enum(['running', 'waiting'])
@@ -258,6 +261,17 @@ export const ProofEventSchemas = {
     }),
   ),
   'tool.updated': event('tool.updated', ThreadScopeSchema, ToolCallUpdateSchema),
+  /**
+   * A subagent this thread's agent started, whole, as it is now: on the
+   * parent's thread, so the card in the parent chat follows it. Its child
+   * session's own transcript travels on the child's thread. Whole, so
+   * applying one twice is safe and the newest wins.
+   */
+  'subagent.updated': event(
+    'subagent.updated',
+    ThreadScopeSchema,
+    z.object({ subagent: SubagentSchema }),
+  ),
   'interaction.requested': event(
     'interaction.requested',
     ThreadScopeSchema,
@@ -337,6 +351,7 @@ export const ProofEventSchema = z.discriminatedUnion('name', [
   ProofEventSchemas['message.delta'],
   ProofEventSchemas['message.reasoning'],
   ProofEventSchemas['tool.updated'],
+  ProofEventSchemas['subagent.updated'],
   ProofEventSchemas['interaction.requested'],
   ProofEventSchemas['interaction.resolved'],
   ProofEventSchemas['interaction.expired'],

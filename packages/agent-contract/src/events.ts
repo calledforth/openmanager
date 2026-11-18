@@ -92,6 +92,15 @@ export type AgentEventBase = {
   providerId: ProviderId
   workspaceId?: string
   sessionId?: string
+  /**
+   * Set when this event is the work of a subagent, not of the session's own
+   * agent: the `taskId` of the `subtask_update` that names that subagent. The
+   * host files the event in the subagent's child session instead of the
+   * parent's transcript. Stream, tool, permission and question events can
+   * carry it; a provider that cannot tell a subagent's work apart sends none.
+   * See docs/decisions/subagents.md.
+   */
+  subtaskId?: string
 }
 
 export type AgentInfo = {
@@ -274,7 +283,11 @@ export type SubtaskStatusSource = 'task_event' | 'turn_result'
 /** Incremental update for one delegated child-agent task. Updates sharing a
  * taskId merge onto the same subtask; undefined fields keep their prior value. */
 export type SubtaskUpdate = {
-  /** Provider-stable task identity (the delegating tool call's id). */
+  /** Provider-stable task identity, unique within the session. The runtime
+   * picks it and keeps it for the subagent's whole life, revivals included:
+   * Claude Code uses the spawning `Agent` tool call's id, which every frame of
+   * the subagent carries as `parent_tool_use_id` even after a `SendMessage`
+   * revives it. Events of the subagent's own work carry it as `subtaskId`. */
   taskId: string
   status?: SubtaskStatus
   /** Provider event used to establish the status, retained for diagnostics. */
@@ -293,6 +306,25 @@ export type SubtaskUpdate = {
   /** Latest child activity, for providers that stream it (e.g. Claude Code). */
   currentActivity?: string
   toolCallCount?: number
+  /** The parent's tool call that started it; the card takes that call's place.
+   * Defaults to `taskId` when the provider keys subagents by tool call. */
+  toolCallId?: string
+  /** The `taskId` of the subagent that started this one, for a nested one. */
+  parentTaskId?: string
+  /** 1 under the session's own agent, 2 under a subagent, and so on. */
+  depth?: number
+  /** True when it runs on after the turn that started it ended. */
+  background?: boolean
+  /** Running token total. */
+  tokens?: number
+  /** The provider's own id for the subagent, when it differs from `taskId`
+   * (Claude Code's `agentId`). Diagnostics and history lookup only. */
+  providerTaskId?: string
+  /** Whether `stopSubtask` can stop it. */
+  stoppable?: boolean
+  /** Whether a person can prompt its child: true only when `childSessionId`
+   * names a session the provider can load and prompt (OpenCode). */
+  promptable?: boolean
 }
 
 /** What a background task is, in terms a client can label. Provider task types

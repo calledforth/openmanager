@@ -41,6 +41,12 @@ export const QueuedMessageSchema = z.strictObject({
   settings: QueuedMessageSettingsSchema,
   delivery: z.enum(['queued', 'steering']),
   createdAt: TimestampSchema,
+  /**
+   * Who queued it. Absent: a person. `subagents`: the environment, to tell
+   * the agent that subagents it started have finished; it runs as a turn
+   * whose `origin` is `subagents`.
+   */
+  origin: z.enum(['subagents']).optional(),
 })
 
 /**
