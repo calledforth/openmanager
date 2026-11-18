@@ -43,10 +43,11 @@ export const QueuedMessageSchema = z.strictObject({
   createdAt: TimestampSchema,
   /**
    * Who queued it. Absent: a person. `subagents`: the environment, to tell
-   * the agent that subagents it started have finished; it runs as a turn
-   * whose `origin` is `subagents`.
+   * the agent that subagents it started have finished. `delegated`: the
+   * parent agent of this subagent's session (`send_agent`). It runs as a turn
+   * with the same `origin`, and only its sender takes it back.
    */
-  origin: z.enum(['subagents']).optional(),
+  origin: z.enum(['subagents', 'delegated']).optional(),
 })
 
 /**

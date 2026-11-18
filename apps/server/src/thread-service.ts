@@ -4,6 +4,7 @@ import {
   ProofCommandSchemas,
   ProofEventSchemas,
   ProofResponseSchemas,
+  SubagentSchema,
   STEER_SEND_NOW_CAPABILITY,
   SteerCommandSchemas,
   SteerResponseSchemas,
@@ -2728,10 +2729,67 @@ export function createThreadService(
   const settleWaiters = new Map<string, Set<() => void>>()
   const spawnedSyncs = new Set<ThreadRecord>()
 
+  /**
+   * A child of ours, from memory or, after a restart, from the rows: no
+   * runtime reports it again, so nothing else would bring its record back.
+   */
+  const recallSpawned = (
+    parentSessionId: string,
+    subagentId: string,
+  ): SubagentEntry | undefined => {
+    const known = subagentsById.get(subagentId)
+    if (known || !options.database) return known
+    options.flush?.()
+    const stored = findSubagentByTask(options.database, parentSessionId, subagentId)
+    if (!stored || stored.record.origin !== 'openmanager') return undefined
+    const loaded = (sessionId: string) => {
+      if (!sessions.has(sessionId)) loadSession(sessionId)
+      return sessions.get(sessionId)
+    }
+    const owner = loaded(parentSessionId)
+    if (!owner) return undefined
+    const childSessionId = findSubagentSessionId(options.database, subagentId)
+    const child = childSessionId ? loaded(childSessionId) : undefined
+    const entry: SubagentEntry = {
+      key: subagentKey(owner, subagentId),
+      taskId: subagentId,
+      owner,
+      holder: owner,
+      report: reportOf(subagentId, stored.record),
+      record: stored.record,
+      ...(child ? { child } : {}),
+    }
+    rememberSubagent(entry)
+    return entry
+  }
+
   const spawnedEntry = (child: ThreadRecord): SubagentEntry | undefined =>
-    child.subagent?.origin === 'openmanager'
-      ? subagentsById.get(child.subagent.subagentId)
+    child.subagent?.origin === 'openmanager' && child.session.parentSessionId
+      ? recallSpawned(child.session.parentSessionId, child.subagent.subagentId)
       : undefined
+
+  /** Every child of ours a session started, live or stored, oldest first. */
+  const spawnedOf = (parentSessionId: string): Subagent[] => {
+    const records = new Map<string, Subagent>()
+    if (options.database) {
+      options.flush?.()
+      const rows = options.database
+        .prepare('SELECT record_json FROM subagents WHERE owner_session_id = ?')
+        .all(parentSessionId) as { record_json: string }[]
+      for (const row of rows) {
+        const parsed = SubagentSchema.safeParse(JSON.parse(row.record_json))
+        if (parsed.success && parsed.data.origin === 'openmanager') {
+          records.set(parsed.data.subagentId, parsed.data)
+        }
+      }
+    }
+    for (const entry of subagentsById.values()) {
+      if (entry.record.origin === 'openmanager' && entry.record.parentSessionId === parentSessionId) {
+        records.set(entry.record.subagentId, entry.record)
+      }
+    }
+    return [...records.values()].sort((left, right) => left.startedAt.localeCompare(right.startedAt))
+  }
 
   const spawnedResult = (subagentId: string): string | undefined => {
     const child = subagentsById.get(subagentId)?.child
@@ -2739,8 +2797,34 @@ export function createThreadService(
     return text || undefined
   }
 
+  /** The children each queued notice names, by parent and queue item, until it runs. */
+  const wakeItems = new Map<string, Map<string, Set<string>>>()
+
+  /**
+   * The parent read a child's answer itself (`wait_agent`) after a notice
+   * naming it was queued: a notice left naming nobody new is taken back, so
+   * the parent is not told twice.
+   */
+  const withdrawWake = (parentSessionId: string, subagentId: string) => {
+    const items = wakeItems.get(parentSessionId)
+    const parent = sessions.get(parentSessionId)
+    if (!items || !parent) return
+    for (const [queueItemId, ids] of items) {
+      if (!ids.delete(subagentId) || ids.size > 0) continue
+      items.delete(queueItemId)
+      const waiting = parent.queue.items.find(
+        (item) => item.queueItemId === queueItemId && item.delivery === 'queued',
+      )
+      if (waiting) writeQueue(parent, withoutItem(parent.queue, queueItemId))
+    }
+  }
+
   /** Queue the parent the environment's notice, and run it now if nothing holds the parent. */
-  const wakeParent = (parentSessionId: string, text: string): boolean => {
+  const wakeParent = (
+    parentSessionId: string,
+    text: string,
+    subagentIds: readonly string[],
+  ): boolean => {
     let parent = sessions.get(parentSessionId)
     if (!parent) {
       const loaded = loadSession(parentSessionId)
@@ -2748,10 +2832,11 @@ export function createThreadService(
       parent = sessions.get(parentSessionId)
     }
     if (!parent || parent.detached) return false
+    const queueItemId = randomUUID()
     const added = enqueue(
       parent,
       'subagents-finished',
-      { text, commandId: randomUUID(), origin: 'subagents' },
+      { text, commandId: queueItemId, origin: 'subagents' },
       'queued',
     )
     if ('type' in added) {
@@ -2761,12 +2846,16 @@ export function createThreadService(
       })
       return false
     }
+    let items = wakeItems.get(parentSessionId)
+    if (!items) wakeItems.set(parentSessionId, (items = new Map()))
+    items.set(queueItemId, new Set(subagentIds))
     drain(parent)
     return true
   }
 
   const wake = createSubagentWake({
-    enqueue: (parentSessionId, text) => wakeParent(parentSessionId, text),
+    enqueue: (parentSessionId, text, subagentIds) =>
+      wakeParent(parentSessionId, text, subagentIds),
     get: (_parent, subagentId) => subagentsById.get(subagentId)?.record,
     resultOf: (_parent, subagentId) => spawnedResult(subagentId),
   })
@@ -2802,6 +2891,8 @@ export function createThreadService(
     }
     spawnedRuns.set(childId, run)
     const last = child.turns.at(-1)
+    // Restored after a restart and not run since: its record already says how it ended.
+    if (!active && !last) return
     const status: SubtaskUpdate['status'] = active
       ? 'running'
       : !last || last.state === 'running' || last.state === 'waiting'
@@ -2864,7 +2955,9 @@ export function createThreadService(
 
   /**
    * The parent's call of `spawn_agent` the card takes the place of: the
-   * newest call of it in the running turn that no card has claimed.
+   * oldest call of it in the running turn that no card has claimed. Calls
+   * made in one message all arrive before the first one runs, and run in
+   * the order they were made.
    */
   const pendingSpawnCall = (parent: ThreadRecord): string | undefined => {
     const active = parent.activeTurn
@@ -2874,12 +2967,7 @@ export function createThreadService(
         .filter((entry) => entry.record.turnId === active.turn.turnId)
         .map((entry) => entry.record.toolCallId),
     )
-    const calls = [...(active.spawnCalls ?? [])]
-    for (let index = calls.length - 1; index >= 0; index--) {
-      const toolCallId = calls[index]!
-      if (!claimed.has(toolCallId)) return toolCallId
-    }
-    return undefined
+    return (active.spawnCalls ?? []).find((toolCallId) => !claimed.has(toolCallId))
   }
 
   const callerOf = (record: ThreadRecord): SpawnCaller => {
@@ -3022,7 +3110,7 @@ export function createThreadService(
   }
 
   const ownSpawned = (parentSessionId: string, subagentId: string) => {
-    const entry = subagentsById.get(subagentId)
+    const entry = recallSpawned(parentSessionId, subagentId)
     return entry?.record.origin === 'openmanager' &&
       entry.record.parentSessionId === parentSessionId
       ? entry
@@ -3036,15 +3124,7 @@ export function createThreadService(
     },
     providers: () => options.spawnProviders?.() ?? [],
     spawn: spawnChild,
-    list: (parentSessionId) =>
-      [...subagentsById.values()]
-        .filter(
-          (entry) =>
-            entry.record.origin === 'openmanager' &&
-            entry.record.parentSessionId === parentSessionId,
-        )
-        .map((entry) => entry.record)
-        .sort((left, right) => left.startedAt.localeCompare(right.startedAt)),
+    list: spawnedOf,
     get: (parentSessionId, subagentId) => ownSpawned(parentSessionId, subagentId)?.record,
     waitSettled: (parentSessionId, subagentId, timeoutMs) => {
       const entry = ownSpawned(parentSessionId, subagentId)
@@ -3064,7 +3144,10 @@ export function createThreadService(
     },
     resultOf: (parentSessionId, subagentId) =>
       ownSpawned(parentSessionId, subagentId) ? spawnedResult(subagentId) : undefined,
-    markDelivered: (parentSessionId, subagentId) => wake.markDelivered(parentSessionId, subagentId),
+    markDelivered: (parentSessionId, subagentId) => {
+      wake.markDelivered(parentSessionId, subagentId)
+      withdrawWake(parentSessionId, subagentId)
+    },
     send: async (parentSessionId, subagentId, message) => {
       const child = ownSpawned(parentSessionId, subagentId)?.child
       if (!child) throw new Error('Its session was deleted.')
@@ -3080,7 +3163,12 @@ export function createThreadService(
         )
         if (started.type !== 'error') return 'started'
       }
-      const added = enqueue(child, 'send_agent', { text: message, commandId }, 'queued')
+      const added = enqueue(
+        child,
+        'send_agent',
+        { text: message, commandId, origin: 'delegated' },
+        'queued',
+      )
       if ('type' in added) {
         parentAsked.delete(commandId)
         throw new Error(added.error.message)
@@ -4875,6 +4963,14 @@ export function createThreadService(
             'This message is already with the agent. It joins at the next step.',
           )
         }
+        // The parent agent or the environment sent it, and was told it will run.
+        if (item.origin) {
+          return errorResult(
+            command.requestId,
+            'conflict',
+            'An agent sent this message, so only it can take it back.',
+          )
+        }
         if (!writeQueue(target, withoutItem(target.queue, input.queueItemId))) {
           return errorResult(command.requestId, 'unavailable', 'The queue could not be saved.')
         }
@@ -5283,7 +5379,7 @@ export function createThreadService(
       // A runtime that created a session where it meant to load one (no
       // identity, or one the agent had forgotten), including a respawn inside
       // a prompt: stamped now, synchronously, before that prompt is sent.
-      if (event.event === 'session_created' && event.sessionId && !record.session.parentSessionId) {
+      if (event.event === 'session_created' && event.sessionId && !loadOnly(record)) {
         try {
           stampIdentity(record, event.sessionId)
         } catch (error) {

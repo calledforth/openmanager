@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from 'react'
 import { ArrowLeftIcon, ArrowUpRightIcon, LockSimpleIcon } from '@phosphor-icons/react'
-import type { Subagent } from '@openmanager/protocol'
+import { isSettledSubagentStatus, type Subagent, type Turn } from '@openmanager/protocol'
 import {
   selectSubagentOfSession,
   type EnvironmentState,
@@ -37,17 +37,44 @@ export interface SubagentIdentity {
   record?: Pick<Subagent, 'status' | 'stats' | 'startedAt' | 'finishedAt'>
 }
 
-const STATUS_FROM_SESSION: Record<string, Subagent['status']> = {
-  running: 'running',
-  waiting: 'waiting',
-  error: 'failed',
-  idle: 'completed',
+/** How the child's own last turn ended, in the record's terms. */
+const STATUS_FROM_TURN: Partial<Record<Turn['state'], Subagent['status']>> = {
+  completed: 'completed',
+  failed: 'failed',
+  interrupted: 'interrupted',
+}
+
+/**
+ * Where the subagent stands, from what the child page holds live: the
+ * child's own session status and its last turn. The parent's record stops
+ * updating once the parent's thread is let go (opening the child does), so
+ * it is believed only where these say nothing.
+ */
+export function liveSubagentStatus(
+  child: Pick<SessionSummary, 'status' | 'waitingOn'>,
+  lastTurn: Turn['state'] | undefined,
+  record: Subagent | null,
+): Pick<SubagentIdentity, 'status' | 'waitingOn'> {
+  if (child.status === 'waiting') {
+    return { status: 'waiting', ...(child.waitingOn ? { waitingOn: child.waitingOn } : {}) }
+  }
+  if (child.status === 'running') return { status: 'running' }
+  if (child.status === 'error') return { status: 'failed' }
+  const ended = lastTurn ? STATUS_FROM_TURN[lastTurn] : undefined
+  // A stopped subagent's turn reads `interrupted`; its record says `cancelled`.
+  if (ended === 'interrupted' && record?.status === 'cancelled') return { status: 'cancelled' }
+  if (ended) return { status: ended }
+  if (record && isSettledSubagentStatus(record.status)) return { status: record.status }
+  // Idle, with neither its turns nor a settled record to say how it ended.
+  return { status: record?.status === 'pending' ? 'pending' : 'interrupted' }
 }
 
 export function subagentIdentity(
   child: Pick<SessionSummary, 'title' | 'providerId' | 'status' | 'waitingOn' | 'composer'>,
   record: Subagent | null,
+  lastTurn?: Turn['state'],
 ): SubagentIdentity {
+  const live = liveSubagentStatus(child, lastTurn, record)
   if (record) {
     return {
       title: record.title || child.title || 'Subagent',
@@ -56,10 +83,9 @@ export function subagentIdentity(
       ...(subagentModelLabel(record.modelId ?? child.composer?.modelId)
         ? { model: subagentModelLabel(record.modelId ?? child.composer?.modelId) }
         : {}),
-      status: record.status,
-      ...(record.waitingOn ? { waitingOn: record.waitingOn } : {}),
+      ...live,
       ...(record.background ? { background: true } : {}),
-      record,
+      record: { ...record, status: live.status },
     }
   }
   const model = subagentModelLabel(child.composer?.modelId)
@@ -67,8 +93,7 @@ export function subagentIdentity(
     title: child.title || 'Subagent',
     providerId: child.providerId,
     ...(model ? { model } : {}),
-    status: STATUS_FROM_SESSION[child.status] ?? 'completed',
-    ...(child.waitingOn ? { waitingOn: child.waitingOn } : {}),
+    ...live,
   }
 }
 
@@ -234,12 +259,15 @@ export function useChildSessionView(): ChildSessionView | null {
       if (!child?.parentSessionId) return null
       const parent = state.sessions[child.parentSessionId]
       const record = selectSubagentOfSession(state, child.sessionId)
+      const lastTurn = child.threadIds
+        .map((threadId) => state.threads[threadId]?.turns.at(-1)?.state)
+        .find((turnState) => turnState !== undefined)
       return {
         parentSessionId: child.parentSessionId,
         parentTitle: parent?.title || 'Parent session',
         // An older environment says nothing: its children were transcripts only.
         promptable: child.subagent?.promptable ?? record?.promptable ?? false,
-        identity: subagentIdentity(child, record),
+        identity: subagentIdentity(child, record, lastTurn),
       }
     }, []),
     sameView,

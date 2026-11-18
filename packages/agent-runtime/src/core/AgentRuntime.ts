@@ -573,7 +573,11 @@ export class AgentRuntime {
     if (event.event === 'process_exited') this.subtaskMessageIds.delete(event.threadId)
     if (event.event === 'subtask_update') {
       const update = event.data as SubtaskUpdate
-      if (update.status && SETTLED_SUBTASK.has(update.status))
+      // A settled run closes its message; so does a run starting (the
+      // provider names the agent then), in case its last one was settled by
+      // the host rather than reported, so a revival never reuses the old one.
+      const starting = update.status === 'running' && update.providerTaskId !== undefined
+      if (starting || (update.status && SETTLED_SUBTASK.has(update.status)))
         this.subtaskMessageIds.get(event.threadId)?.delete(update.taskId)
     }
   }

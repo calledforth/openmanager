@@ -144,9 +144,10 @@ export function QueuedMessagesView({
             <ul className="custom-scrollbar flex max-h-[148px] flex-col overflow-y-auto">
               <AnimatePresence initial={false}>
                 {queue.items.map((item) => {
-                  // The environment's word that subagents finished: it runs as
-                  // a notice, and only the environment takes it back.
-                  if (item.origin === 'subagents') {
+                  // Sent by the environment (subagents finished) or by this
+                  // subagent's parent agent: no person queued it, so no person
+                  // edits or takes it back.
+                  if (item.origin) {
                     return (
                       <motion.li
                         key={item.queueItemId}
@@ -155,7 +156,7 @@ export function QueuedMessagesView({
                         animate={{ opacity: 1, height: 28 }}
                         exit={{ opacity: 0, height: 0 }}
                         transition={transition}
-                        data-queue-origin="subagents"
+                        data-queue-origin={item.origin}
                         className="flex min-w-0 items-center gap-1.5 overflow-hidden pl-2.5 pr-2.5"
                       >
                         <FlowArrowIcon
@@ -167,7 +168,9 @@ export function QueuedMessagesView({
                           className="min-w-0 flex-1 truncate text-11-regular leading-5 text-[var(--basis-text-muted)]"
                           title={item.text || undefined}
                         >
-                          {subagentsNoticeLine(item.text).title}
+                          {item.origin === 'subagents'
+                            ? subagentsNoticeLine(item.text).title
+                            : `From the parent agent: ${item.text.trim().split('\n')[0] ?? ''}`}
                         </span>
                         <span className="shrink-0 text-11-regular leading-none text-[var(--basis-text-faint)]">
                           Next

@@ -1033,6 +1033,9 @@ export class ClaudeMessageTranslator {
     record.settled = false
     record.answered = false
     if (typeof raw.is_backgrounded === 'boolean') record.background = raw.is_backgrounded
+    // A revival (`SendMessage`) runs on its own, after the call that revived
+    // it returned: it must not end with whatever parent turn is running.
+    else if (!fresh) record.background = true
     const description = string(raw.description)
     const prompt = string(raw.prompt)
     const subagentType = string(raw.subagent_type)
@@ -1201,6 +1204,11 @@ export class ClaudeMessageTranslator {
         this.agentTaskIds.set(agentId, record.taskId)
       }
       if (fields.background) record.background = true
+      // Stopped first, answered after: the stop stands, the answer is kept.
+      if (fields.status === 'completed' && record.settled) {
+        record.answered = true
+        return { ...withoutStatus(update), ...withoutStatus(fields), stoppable: false }
+      }
       if (fields.status === 'completed') {
         record.settled = true
         record.answered = true

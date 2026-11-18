@@ -967,6 +967,21 @@ describe('ClaudeMessageTranslator subagents', () => {
     expect(subtasks(events).at(-1)?.data).not.toHaveProperty('status')
   })
 
+  it('keeps a stopped subagent cancelled when its answer arrives afterwards', () => {
+    const { events, feed } = build({ subtasks: true })
+    spawn(feed, 0, 'toolu_A')
+    feed(taskStarted('agent00000000000a', 'toolu_A'))
+    feed(system('task_notification', { task_id: 'agent00000000000a', status: 'stopped' }))
+    feed(
+      toolResult('toolu_A', 'partial answer', null, {
+        structured: completed('agent00000000000a', 'partial answer'),
+      }),
+    )
+    const last = subtasks(events).at(-1)?.data
+    expect(last).not.toHaveProperty('status')
+    expect(last).toMatchObject({ resultText: 'partial answer', stoppable: false })
+  })
+
   it("reads a foreground run's end from its call's structured result", () => {
     const { events, feed } = build({ subtasks: true })
     spawn(feed, 0, 'toolu_A')

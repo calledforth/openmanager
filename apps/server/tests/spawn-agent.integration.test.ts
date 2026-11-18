@@ -11,6 +11,7 @@ import { runMigrations } from '../src/db/migrate.js'
 import { MIGRATIONS } from '../src/db/migrations.js'
 import { createPersistentEventService } from '../src/event-service.js'
 import { createThreadService, type WorkspaceRuntimeResolver } from '../src/thread-service.js'
+import { reconcileAfterRestart } from '../src/db/boot-reconcile.js'
 import { createSpawnAgentTools } from '../src/subagents/spawn-tools.js'
 
 /**
@@ -63,7 +64,8 @@ function setup() {
     respondPermission: vi.fn(),
     stopSubtask: vi.fn(async () => undefined),
   }
-  const service = createThreadService(
+  const make = () => {
+    const created = createThreadService(
     runtime as unknown as Pick<
       AgentRuntime,
       'ensureSession' | 'prompt' | 'cancel' | 'respondPermission'
@@ -82,7 +84,16 @@ function setup() {
       ],
     },
   )
-  service.setEnvironmentId(ENVIRONMENT)
+    created.setEnvironmentId(ENVIRONMENT)
+    return created
+  }
+  let service = make()
+  /** A new service on the same rows is a new process, booted as the host boots. */
+  const restart = () => {
+    events.flush()
+    reconcileAfterRestart(database, events.repository, ENVIRONMENT)
+    service = make()
+  }
   const dispatch = (name: string, payload: CommandEnvelope['payload']) =>
     service.dispatch({ type: 'command', requestId: name.replaceAll('.', '-'), name, payload })
   const parent = ProofResponseSchemas['session.create'].parse(
@@ -141,9 +152,8 @@ function setup() {
     return prompts.filter((args) => args.threadId === threadId)[nth]!
   }
 
-  const tools = createSpawnAgentTools(service.spawnHost)
   const call = (name: string, input: Record<string, unknown>) =>
-    tools
+    createSpawnAgentTools(service.spawnHost)
       .find((tool) => tool.name === name)!
       .call(input, { threadId: parent.threadId, providerId: 'claude' })
 
@@ -183,7 +193,12 @@ function setup() {
   return {
     database,
     published,
-    service,
+    get service() {
+      return service
+    },
+    restart,
+    dispatch,
+    events,
     parent,
     emit,
     promptStarted,
@@ -367,5 +382,118 @@ describe('spawn_agent on the thread service', () => {
         ),
     )
     expect(woke).toBe(false)
+  })
+})
+
+describe('spawn_agent, as the review found it', () => {
+  const childThreadOf = (t: ReturnType<typeof setup>, card: Subagent) =>
+    (
+      t.database
+        .prepare('SELECT thread_id FROM threads WHERE session_id = ?')
+        .get(card.childSessionId!) as { thread_id: string }
+    ).thread_id
+  const parentQueue = (t: ReturnType<typeof setup>) =>
+    t.published
+      .filter(
+        (event) =>
+          event.name === 'thread.queue.updated' &&
+          (event.scope as { threadId?: string }).threadId === t.parent.threadId,
+      )
+      .at(-1)?.payload as { items: { origin?: string }[] } | undefined
+
+  it('gives each of two calls made in one message its own card, in order', async () => {
+    const t = setup()
+    const args = await t.parentTurn()
+    t.emit(
+      t.parent.threadId,
+      'claude',
+      {
+        category: 'tool',
+        event: 'tool_call',
+        data: {
+          toolCallId: 'toolu_spawn_2',
+          title: 'spawn_agent',
+          toolName: 'mcp__openmanager__spawn_agent',
+          status: 'in_progress',
+        },
+      },
+      `run-${args.userMessageId}`,
+    )
+    await t.call('spawn_agent', { provider: 'opencode', prompt: 'First', title: 'First' })
+    await t.call('spawn_agent', { provider: 'opencode', prompt: 'Second', title: 'Second' })
+    const calls = [
+      ...new Set(
+        t.published
+          .filter((event) => event.name === 'tool.updated')
+          .map((event) => (event.payload as { toolCallId: string }).toolCallId),
+      ),
+    ]
+    const byTitle = new Map(t.records(t.parent.threadId).map((record) => [record.title, record]))
+    expect([byTitle.get('First')!.toolCallId, byTitle.get('Second')!.toolCallId]).toEqual(calls)
+  })
+
+  it('takes back a queued notice once the parent read the answer itself', async () => {
+    const t = setup()
+    await t.parentTurn()
+    await t.call('spawn_agent', { provider: 'opencode', prompt: 'Review', title: 'Review' })
+    const card = t.latest(t.parent.threadId)
+    const child = await t.promptOn(childThreadOf(t, card))
+    t.promptStarted(child)
+    t.finish(child)
+    await vi.waitFor(() => expect(parentQueue(t)?.items[0]?.origin).toBe('subagents'), {
+      timeout: 4000,
+    })
+    const read = await t.call('wait_agent', { id: card.subagentId })
+    expect(read.text).toContain('[completed]')
+    expect(parentQueue(t)?.items).toEqual([])
+  })
+
+  it('finds its children again after a restart, and a follow-up runs them again', async () => {
+    const t = setup()
+    const parentArgs = await t.parentTurn()
+    await t.call('spawn_agent', { provider: 'opencode', prompt: 'Review', title: 'Review' })
+    const card = t.latest(t.parent.threadId)
+    const child = await t.promptOn(childThreadOf(t, card))
+    t.promptStarted(child)
+    t.finish(child)
+    await vi.waitFor(() => expect(t.latest(t.parent.threadId).status).toBe('completed'))
+    t.call('wait_agent', { id: card.subagentId })
+    t.finish(parentArgs)
+
+    t.restart()
+    t.dispatch('session.open', { sessionId: t.parent.sessionId })
+    const listed = await t.call('list_agents', {})
+    expect(listed.text).toContain(`${card.subagentId} [completed]`)
+    const sent = await t.call('send_agent', { id: card.subagentId, message: 'One more check' })
+    expect(sent.isError).toBeUndefined()
+    const again = await t.promptOn(childThreadOf(t, card), 1)
+    expect(again.prompt.text).toBe('One more check')
+    await vi.waitFor(() => expect(t.latest(t.parent.threadId).status).toBe('running'))
+  })
+
+  it('queues a follow-up for a busy child as the parent’s, which a person cannot take back', async () => {
+    const t = setup()
+    await t.parentTurn()
+    await t.call('spawn_agent', { provider: 'opencode', prompt: 'Long job', title: 'Long' })
+    const card = t.latest(t.parent.threadId)
+    const childThread = childThreadOf(t, card)
+    t.promptStarted(await t.promptOn(childThread))
+    const sent = await t.call('send_agent', { id: card.subagentId, message: 'Also check X' })
+    expect(sent.text).toContain('Queued')
+    const queued = t.published
+      .filter(
+        (event) =>
+          event.name === 'thread.queue.updated' &&
+          (event.scope as { threadId?: string }).threadId === childThread,
+      )
+      .at(-1)?.payload as { items: { queueItemId: string; origin?: string }[] }
+    expect(queued.items[0]!.origin).toBe('delegated')
+    const removed = t.dispatch('queue.remove', {
+      sessionId: card.childSessionId!,
+      threadId: childThread,
+      queueItemId: queued.items[0]!.queueItemId,
+    }) as { type: string; error?: { message: string } }
+    expect(removed.type).toBe('error')
+    expect(removed.error?.message).toContain('only it can take it back')
   })
 })
