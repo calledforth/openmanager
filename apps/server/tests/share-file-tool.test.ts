@@ -1,3 +1,4 @@
+import { join, resolve } from 'node:path'
 import { describe, expect, it, vi } from 'vitest'
 import type { ArtifactMetadata } from '../src/artifacts.js'
 import { ShareRefusedError } from '../src/artifacts.js'
@@ -13,7 +14,9 @@ const METADATA: ArtifactMetadata = {
   createdAt: 1,
   source: 'generated',
 }
-const TURN = { sessionId: 'session-1', workspaceId: 'workspace-1', cwd: '/work', turnId: 'turn-1' }
+// A rooted folder on every platform: `/work`, or `D:\work` on Windows.
+const CWD = resolve('/work')
+const TURN = { sessionId: 'session-1', workspaceId: 'workspace-1', cwd: CWD, turnId: 'turn-1' }
 const context = { threadId: 'thread-1', providerId: 'claude' as const }
 
 function tool(overrides: Partial<Parameters<typeof createShareFileTool>[0]> = {}) {
@@ -31,7 +34,11 @@ describe('share_file', () => {
   it('resolves a relative path in the working directory and files it into that turn', async () => {
     const { deps, tool: share } = tool()
     const result = await share.call({ path: 'recordings/flow.mp4' }, context)
-    expect(deps.share).toHaveBeenCalledWith('session-1', 'workspace-1', '/work/recordings/flow.mp4')
+    expect(deps.share).toHaveBeenCalledWith(
+      'session-1',
+      'workspace-1',
+      join(CWD, 'recordings', 'flow.mp4'),
+    )
     expect(deps.present).toHaveBeenCalledWith('thread-1', 'turn-1', METADATA)
     expect(result).toEqual({
       text: expect.stringMatching(/^Shared flow\.mp4 \(video, 3\.0 MB\) in the chat/),
@@ -40,7 +47,7 @@ describe('share_file', () => {
 
   it('throws the copy away when its turn ended while it was being made', async () => {
     const { deps, tool: share } = tool({ present: vi.fn(() => false) })
-    const result = await share.call({ path: '/work/flow.mp4' }, context)
+    const result = await share.call({ path: join(CWD, 'flow.mp4') }, context)
     expect(result.isError).toBe(true)
     expect(deps.discard).toHaveBeenCalledWith(METADATA)
   })
