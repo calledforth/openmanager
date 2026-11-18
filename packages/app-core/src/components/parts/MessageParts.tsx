@@ -12,6 +12,7 @@ import { AskedQuestionPart } from '../questions/AskedQuestionPart'
 import { readAskedQuestions } from '../questions/askedQuestion'
 import { ImageGenerationToolPart } from './ImageGenerationToolPart'
 import { GeneratedImages } from './GeneratedImagePart'
+import { GeneratedVideoPart } from './GeneratedVideoPart'
 import { TurnFailurePart, TurnNoticePart } from './TurnNoticePart'
 import type { FailurePart, NoticePart } from '../../lib/turn-notice-parts'
 
@@ -106,6 +107,13 @@ function renderPart(part: Part, index: number, isStreaming?: boolean): ReactNode
         <GeneratedImages
           key={key}
           parts={[part as Parameters<typeof GeneratedImages>[0]['parts'][number]]}
+        />
+      )
+    case 'video':
+      return (
+        <GeneratedVideoPart
+          key={key}
+          part={part as Parameters<typeof GeneratedVideoPart>[0]['part']}
         />
       )
     case 'retry':

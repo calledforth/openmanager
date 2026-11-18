@@ -704,6 +704,36 @@ describe('artifact references', () => {
     ])
   })
 
+  it('projects a video the agent shared as a part its player streams', () => {
+    const projection = projectThread(
+      thread({
+        turns: [{ turnId: 't1', threadId: THREAD.threadId, state: 'completed' }],
+        messages: [
+          {
+            messageId: 'a1',
+            threadId: THREAD.threadId,
+            turnId: 't1',
+            role: 'assistant',
+            content: [
+              { ...reference, artifactId: 'artifact-4', mimeType: 'video/mp4', name: 'flow.mp4' },
+            ],
+          },
+        ],
+      }),
+    )
+    expect(projection.byId.get('a1')?.content.parts).toEqual([
+      { type: 'text', id: 'a1', text: '' },
+      {
+        type: 'video',
+        id: 'a1:artifact:artifact-4',
+        artifact: { sessionId: THREAD.sessionId, artifactId: 'artifact-4' },
+        name: 'flow.mp4',
+        mimeType: 'video/mp4',
+        generated: true,
+      },
+    ])
+  })
+
   it('shows the attachments of a send the environment has not confirmed yet', () => {
     const projection = projectThread(
       thread({

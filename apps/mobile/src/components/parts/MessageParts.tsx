@@ -17,6 +17,7 @@ import { usePhoneTheme } from '../../theme/ThemeProvider'
 import { AppText } from '../ui/AppText'
 import { ImageGroup, useTranscriptWidth, type GalleryImage } from './ImageGroup'
 import { TextPart } from './TextPart'
+import { VideoPart, type TranscriptVideo } from './VideoPart'
 import { ThinkingPart } from './ThinkingPart'
 import { ToolRow, type ToolPartData } from './ToolRow'
 import { TurnFailureRow, TurnNoticeRow } from './TurnNoticeRow'
@@ -101,6 +102,17 @@ function renderPart(part: Part, isStreaming: boolean | undefined, width: number)
       // A run of images is gathered into one gallery before it gets here; one
       // on its own is a gallery of one.
       return <ImageGroup images={[galleryImage(part)]} width={width} />
+    case 'video':
+      return (
+        <VideoPart
+          video={{
+            id: part.id,
+            artifact: part.artifact as TranscriptVideo['artifact'],
+            name: typeof part.name === 'string' ? part.name : undefined,
+          }}
+          width={width}
+        />
+      )
     case 'reasoning': {
       const partTime =
         part.time && typeof part.time === 'object'

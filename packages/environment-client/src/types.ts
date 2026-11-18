@@ -805,6 +805,17 @@ export interface EnvironmentClient {
    */
   fetchArtifact?(input: ArtifactTarget, init?: { signal?: AbortSignal }): Promise<Blob>
   /**
+   * A URL a media player can stream a session's artifact from, in byte
+   * ranges, with no headers of its own: a `<video>` element, or a phone's
+   * player. It works until `expiresAt`; ask again for a new one. Clients
+   * whose environment has no such route leave this out, or it rejects, and a
+   * view falls back to `fetchArtifact`.
+   */
+  artifactStreamUrl?(
+    input: { sessionId: string; artifactId: string },
+    init?: { signal?: AbortSignal },
+  ): Promise<{ url: string; expiresAt: number }>
+  /**
    * Read a settled tool's output over the same authorized HTTP route family.
    * The text is the environment's and never changes once a tool has settled,
    * so what comes back is shown as it is and kept by nobody but the view.

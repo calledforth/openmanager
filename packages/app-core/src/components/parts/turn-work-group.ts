@@ -49,7 +49,7 @@ export function partitionSettledTurnParts(parts: readonly StreamMessagePart[]): 
   // stay out with it.
   const lifted = beforeAnswer.filter(
     (part) =>
-      (part.type === 'image' && part.generated === true) ||
+      ((part.type === 'image' || part.type === 'video') && part.generated === true) ||
       (part.type === 'notice' && LIFTED_NOTICE_KINDS.has(noticeKind(part))),
   )
   return {
