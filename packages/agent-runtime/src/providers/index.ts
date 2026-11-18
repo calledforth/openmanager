@@ -120,6 +120,19 @@ export type AcpProviderConfig = ProviderConfigBase & {
     env: Readonly<Record<string, string>>,
   ) => Record<string, string>
 
+  /**
+   * Environment that puts the session's instructions
+   * (`SessionRuntimeSpec.instructions`, written to `file`) into the agent's
+   * own standing instructions, for a provider that reads them from config.
+   * `env` is the environment it will be merged into, as for
+   * `allowHostTools`. An empty answer (a user's setting that cannot be
+   * extended) says they could not go there.
+   *
+   * Absent, or answering empty, the runtime puts them ahead of the first
+   * message of a new session instead: ACP itself has no system prompt.
+   */
+  instructionsEnv?: (file: string, env: Readonly<Record<string, string>>) => Record<string, string>
+
   /** What the provider can say about its models outside a session. Both are
    * optional, and independent of each other. */
   models?: {

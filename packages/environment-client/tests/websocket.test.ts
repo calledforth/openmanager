@@ -1334,6 +1334,74 @@ describe('websocket environment client', () => {
     expect(heard).toHaveLength(1)
   })
 
+  it('reads, saves and shares a scratchpad, and hears it change', async () => {
+    const scratchpadCommands = ['scratchpad.get', 'scratchpad.save', 'scratchpad.sharing.set']
+    const { client, socket } = await connected([...FULL_CAPABILITIES, ...scratchpadCommands])
+    expect(client.supports('getScratchpad')).toBe(true)
+    const empty = {
+      workspaceId: 'workspace-1',
+      exists: false,
+      content: '',
+      tooLarge: false,
+      version: null,
+      modifiedAt: null,
+      lastEdit: null,
+      shareWithAgents: true,
+    }
+    const written = {
+      ...empty,
+      exists: true,
+      content: '# Plan\n',
+      version: 'abc',
+      modifiedAt: '2026-11-18T10:00:00.000Z',
+      lastEdit: { by: { kind: 'you' }, at: '2026-11-18T10:00:00.000Z' },
+    }
+    const heard: unknown[] = []
+    const stop = client.onScratchpadChanged!((scratchpad) => heard.push(scratchpad))
+
+    const read = client.commands.getScratchpad('workspace-1')
+    expect(socket.last('scratchpad.get').payload).toEqual({ workspaceId: 'workspace-1' })
+    socket.respond('scratchpad.get', { scratchpad: empty })
+    await expect(read).resolves.toEqual(empty)
+
+    const saved = client.commands.saveScratchpad({
+      workspaceId: 'workspace-1',
+      content: '# Plan\n',
+      baseVersion: null,
+    })
+    expect(socket.last('scratchpad.save').payload).toEqual({
+      workspaceId: 'workspace-1',
+      content: '# Plan\n',
+      baseVersion: null,
+    })
+    socket.respond('scratchpad.save', { outcome: 'saved', scratchpad: written })
+    await expect(saved).resolves.toEqual({ outcome: 'saved', scratchpad: written })
+
+    const shared = client.commands.setScratchpadSharing({
+      workspaceId: 'workspace-1',
+      shareWithAgents: false,
+    })
+    socket.respond('scratchpad.sharing.set', {
+      scratchpad: { ...written, shareWithAgents: false },
+    })
+    await expect(shared).resolves.toMatchObject({ shareWithAgents: false })
+
+    const byAgent = {
+      ...written,
+      content: '# Plan\n- [x] done\n',
+      version: 'def',
+      lastEdit: {
+        by: { kind: 'agent', sessionId: 'session-1', providerId: 'claude' },
+        at: '2026-11-18T10:01:00.000Z',
+      },
+    }
+    socket.receive({ type: 'event', name: 'scratchpad.changed', payload: { scratchpad: byAgent } })
+    expect(heard).toEqual([byAgent])
+    stop()
+    socket.receive({ type: 'event', name: 'scratchpad.changed', payload: { scratchpad: written } })
+    expect(heard).toHaveLength(1)
+  })
+
   it('creates, lists, withdraws and redeems pairing links', async () => {
     const pairingCommands = ['pairing.create', 'pairing.list', 'pairing.revoke', 'pairing.redeem']
     const { client, socket } = await connected([...FULL_CAPABILITIES, ...pairingCommands])

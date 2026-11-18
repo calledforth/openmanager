@@ -12,7 +12,12 @@ import { Kbd } from '../side-panel/Kbd'
 import { PanelSubheader, usePanelKeys } from '../side-panel/PanelDeck'
 import { diffLines, diffStat } from './line-diff'
 
-export type ScratchpadAuthor = { kind: 'you' } | { kind: 'agent'; name: string }
+/**
+ * Who changed it: you (on any of your devices), an agent, or something the
+ * environment could not name (an editor, a script), shown as "elsewhere".
+ */
+export type ScratchpadAuthor =
+  { kind: 'you' } | { kind: 'agent'; name: string } | { kind: 'external' }
 
 export interface ScratchpadEdit {
   by: ScratchpadAuthor
@@ -28,12 +33,12 @@ export interface ScratchpadPanelProps {
   onChange: (content: string) => void
   lastEdit: ScratchpadEdit | null
   /**
-   * Agent edits you have not looked at: the text before them, and the last
-   * of them. Null once seen.
+   * Edits someone else made that you have not looked at: the text before
+   * them, and the last of them. Null once seen.
    */
   unseen: (ScratchpadEdit & { before: string }) | null
   onMarkSeen: () => void
-  /** Whether agents in the project get it in their context. */
+  /** Whether agents in the project are told it exists. */
   shareWithAgents: boolean
   onShareWithAgentsChange: (next: boolean) => void
   saveState?: 'saved' | 'saving' | 'error'
@@ -45,7 +50,7 @@ type Mode = 'read' | 'edit' | 'changes'
 /**
  * The project's scratchpad: one markdown page you and the project's agents
  * share. It reads as rendered markdown; E (or a double-click) edits the
- * source in place, Esc leaves. When an agent has changed it since you last
+ * source in place, Esc leaves. When someone else has changed it since you last
  * looked, a line at the top says who and how much, and D shows the change as
  * a diff.
  */
@@ -224,7 +229,7 @@ function ModeToggle({
   onChanges,
 }: {
   mode: ToggleMode
-  /** Offer the Changes segment: there is an agent edit you have not read. */
+  /** Offer the Changes segment: there is an edit by someone else you have not read. */
   changes: boolean
   onRead: () => void
   onEdit: () => void
@@ -297,6 +302,7 @@ function ChangeStat({ added, removed }: { added: number; removed: number }) {
 
 function AuthorName({ by }: { by: ScratchpadAuthor }) {
   if (by.kind === 'you') return <>You</>
+  if (by.kind === 'external') return <>Edited elsewhere</>
   return (
     <span className="inline-flex items-center gap-1 align-[-1px]">
       <SparkleIcon
@@ -330,7 +336,8 @@ function UnseenNotice({
             <AuthorName by={edit.by} />
           </span>
           <span className="truncate text-[var(--basis-text-muted)]">
-            edited {ago(edit.at, now)}
+            {/* "Edited elsewhere" already says what happened. */}
+            {edit.by.kind === 'external' ? ago(edit.at, now) : `edited ${ago(edit.at, now)}`}
           </span>
           <ChangeStat {...stat} />
         </span>
@@ -353,7 +360,7 @@ function UnseenNotice({
   )
 }
 
-/** The agent's change as a unified diff, with the unchanged runs folded. */
+/** The unseen change as a unified diff, with the unchanged runs folded. */
 function ChangesView({
   before,
   after,
@@ -483,8 +490,8 @@ function EmptyState({ projectName, onStart }: { projectName: string; onStart: ()
           A notebook for {projectName}
         </p>
         <p className="text-12-regular leading-[1.5] text-[var(--basis-text-muted)]">
-          Plans, decisions, links, the things you keep re-explaining. Agents in this project read it
-          and can add to it.
+          Plans, decisions, links, the things you keep re-explaining. Agents in this project know
+          where it is and read it when it&apos;s relevant.
         </p>
       </div>
       <button
@@ -536,8 +543,8 @@ function Footer({
         side="top"
         content={
           shareWithAgents
-            ? `Agents in ${projectName} get this page in their context and can edit it`
-            : 'Only you see this page; agents can’t read it'
+            ? `Agents in ${projectName} are told about this page and read it when it’s relevant`
+            : `Agents in ${projectName} aren’t told about this page`
         }
       >
         <span className="flex items-center gap-2">

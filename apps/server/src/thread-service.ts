@@ -530,6 +530,18 @@ export function createThreadService(
      * when the update carries it. Called before the update is appended.
      */
     watchToolInput?: (input: unknown) => boolean
+    /**
+     * Every tool update that carries input, with the session and project it
+     * ran in, before it is appended: for a host that wants to know which
+     * agent touched what (the scratchpad's author). Must be cheap.
+     */
+    onToolInput?: (call: {
+      sessionId: string
+      workspaceId: string
+      providerId: string
+      kind: string | undefined
+      input: unknown
+    }) => void
     onWatchedToolSettled?: (args: {
       sessionId: string
       toolCallId: string
@@ -1348,6 +1360,19 @@ export function createThreadService(
       const text = toolCalls?.takeBody(projected.payload.toolCallId)
       if (text !== undefined) withSettledText(projected, text)
       const { toolCallId, input, status } = projected.payload
+      if (input !== undefined && options.onToolInput) {
+        try {
+          options.onToolInput({
+            sessionId: record.session.sessionId,
+            workspaceId: record.session.workspaceId,
+            providerId: record.providerId,
+            kind: projected.payload.kind ?? toolCalls?.known(toolCallId).kind,
+            input,
+          })
+        } catch {
+          // A host's bookkeeping must not cost the agent its tool update.
+        }
+      }
       if (
         active &&
         input !== undefined &&

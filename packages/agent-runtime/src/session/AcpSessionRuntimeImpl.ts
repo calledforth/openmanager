@@ -1,3 +1,6 @@
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import type * as acp from '@agentclientprotocol/sdk'
 import type {
   AuthMethod,
@@ -170,6 +173,15 @@ export class AcpSessionRuntimeImpl implements ManagedSessionRuntime {
   private remoteTools: RemoteAgentTools | undefined
   /** Tail of the dispatch gate — see `withDispatchGate`. */
   private dispatchGate: Promise<unknown> = Promise.resolve()
+  /** Whether the spec's instructions went into the agent's own config at
+   * spawn (`instructionsEnv`), so no message needs to carry them. */
+  private instructionsInConfig = false
+  /** The private folder holding this process's instructions file, removed when it exits. */
+  private instructionsDir: string | undefined
+  /** The instructions block still to go ahead of this session's first
+   * message: set when `session/new` created the session, cleared once a
+   * prompt carrying it is dispatched. */
+  private pendingInstructions: string | undefined
 
   private readonly config: AcpProviderConfig
   private readonly host: Pick<HostDeps, 'log' | 'onSessionTitle' | 'agentTools'>
@@ -578,6 +590,11 @@ export class AcpSessionRuntimeImpl implements ManagedSessionRuntime {
       this.sessionIdValue = sessionId
       this.resumeCursorValue = this.spec.resumeCursor
       this.appliedCache.refresh(state.configOptions, 'session/new')
+      // A new session has heard nothing yet; one loaded already holds the
+      // block in its own history from when it was new.
+      if (this.spec.instructions && !this.instructionsInConfig) {
+        this.pendingInstructions = instructionsBlock(this.spec.instructions)
+      }
       this.emit(routeEvent(this.route(), sessionId, 'lifecycle', 'session_created', state))
       return { sessionId, state: 'created', resumeCursor: this.spec.resumeCursor }
     } catch (error) {
@@ -589,11 +606,36 @@ export class AcpSessionRuntimeImpl implements ManagedSessionRuntime {
   /** The agent's environment: the provider's, plus what lets the host's own
    * tools run unasked where the provider needs telling (see `allowHostTools`). */
   private processEnvironment(): Record<string, string> {
-    const env = environment(this.config.command.env)
+    const env = this.withInstructions(environment(this.config.command.env))
     const host = this.host.agentTools
     if (!this.config.allowHostTools || !host?.openRemote || host.tools.length === 0) return env
     const tools = { serverName: host.serverName, toolNames: host.tools.map((tool) => tool.name) }
     return { ...env, ...this.config.allowHostTools(tools, env) }
+  }
+
+  /** `env` with the spec's instructions in the agent's own config, where the
+   * provider reads instructions from a file its config names. A file that
+   * cannot be written leaves them to the first message instead. */
+  private withInstructions(env: Record<string, string>): Record<string, string> {
+    const instructions = this.spec.instructions
+    if (!instructions || !this.config.instructionsEnv) return env
+    let file: string
+    try {
+      const written = writeInstructionsFile(instructions)
+      this.instructionsDir = written.dir
+      file = written.file
+    } catch (error) {
+      this.host.log({
+        scope: 'acp',
+        level: 'warn',
+        message: 'Session instructions could not be written; sending them with the first message',
+        data: { providerId: this.providerId, error: errorMessage(error) },
+      })
+      return env
+    }
+    const extended = this.config.instructionsEnv(file, env)
+    this.instructionsInConfig = Object.keys(extended).length > 0
+    return { ...env, ...extended }
   }
 
   /** The host's tools for this session, granted once and revoked on exit.
@@ -665,6 +707,11 @@ export class AcpSessionRuntimeImpl implements ManagedSessionRuntime {
     // The process that held the grant is gone; nothing may use it again.
     this.remoteTools?.close()
     this.remoteTools = undefined
+    // Nor its instructions, which only it read.
+    if (this.instructionsDir) {
+      rmSync(this.instructionsDir, { recursive: true, force: true })
+      this.instructionsDir = undefined
+    }
     if (emitted)
       this.emit(
         routeEvent(this.route(), this.sessionIdValue, 'lifecycle', 'process_exited', {
@@ -722,10 +769,17 @@ export class AcpSessionRuntimeImpl implements ManagedSessionRuntime {
       // from out here, and cutting one off would destroy the user's work,
       // which is the exact failure the rest of this file exists to avoid.
       // Liveness still bounds it: the child's own exit rejects this call.
+      // The instructions go to the agent only: `prompt_started` above, which
+      // is what the transcript records, carries the user's text alone.
+      const instructions = this.pendingInstructions
+      this.pendingInstructions = undefined
+      const blocks = instructions
+        ? [{ type: 'text' as const, text: instructions }, ...args.prompt.blocks]
+        : args.prompt.blocks
       return {
         inFlight: this.connection().prompt({
           sessionId,
-          prompt: args.prompt.blocks as unknown as acp.ContentBlock[],
+          prompt: blocks as unknown as acp.ContentBlock[],
         }),
       }
     })
@@ -1252,6 +1306,9 @@ export class AcpSessionRuntimeImpl implements ManagedSessionRuntime {
       return
     }
     if (kind === 'user_message_chunk' || kind === 'agent_message_chunk') {
+      // An agent that echoes the user's message back (or replays it on a
+      // load) would show the instructions block as if the user had typed it.
+      if (kind === 'user_message_chunk' && isInstructionsBlock(update.content)) return
       this.emit(
         routeEvent(this.route(), sessionId, 'stream', kind, {
           messageId: string(update.messageId),
@@ -1768,6 +1825,43 @@ export class AcpSessionRuntimeImpl implements ManagedSessionRuntime {
 function withCurrentValue(option: SessionConfigOption, value: string): SessionConfigOption {
   if (option.type === 'boolean') return { ...option, currentValue: value === 'true' }
   return { ...option, currentValue: value }
+}
+
+/** The instructions as a block of their own ahead of the user's message,
+ * marked as context rather than something the user said. */
+export function instructionsBlock(instructions: string): string {
+  return `${INSTRUCTIONS_OPEN}\n${instructions.trim()}\n${INSTRUCTIONS_CLOSE}`
+}
+const INSTRUCTIONS_OPEN = '<system-reminder>'
+const INSTRUCTIONS_CLOSE = '</system-reminder>'
+
+/** Whether an echoed content block is the instructions block, by its whole text. */
+function isInstructionsBlock(content: unknown): boolean {
+  const block = object(content)
+  if (string(block.type) !== 'text') return false
+  const text = (string(block.text) ?? '').trim()
+  return text.startsWith(INSTRUCTIONS_OPEN) && text.endsWith(INSTRUCTIONS_CLOSE)
+}
+
+/**
+ * Write the instructions where a provider's config can name them, for one
+ * process. The temp folder is shared with every user of the machine, so
+ * nothing in it is at a name anyone could guess or make first: `mkdtemp`
+ * makes a new folder only this user can enter (0700), and the file is
+ * created in it, never opened if something is already there (`wx`), and
+ * readable only by this user (0600). The runtime removes the folder when
+ * its process exits; the agent reads the file for as long as it runs.
+ */
+export function writeInstructionsFile(instructions: string): { dir: string; file: string } {
+  const dir = mkdtempSync(join(tmpdir(), 'openmanager-instructions-'))
+  const file = join(dir, 'instructions.md')
+  try {
+    writeFileSync(file, instructions, { flag: 'wx', mode: 0o600 })
+  } catch (error) {
+    rmSync(dir, { recursive: true, force: true })
+    throw error
+  }
+  return { dir, file }
 }
 
 /** `process.env` merged with the provider's overrides, minus the undefined

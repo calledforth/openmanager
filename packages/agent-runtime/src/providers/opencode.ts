@@ -73,17 +73,8 @@ export function opencodeAllowHostTools(
   env: Readonly<Record<string, string>>,
 ): Record<string, string> {
   const sanitize = (name: string) => name.replace(/[^a-zA-Z0-9_-]/g, '_')
-  let content: Record<string, unknown> = {}
-  const existing = env.OPENCODE_CONFIG_CONTENT?.trim()
-  if (existing) {
-    try {
-      const parsed: unknown = JSON.parse(existing)
-      if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return {}
-      content = parsed as Record<string, unknown>
-    } catch {
-      return {}
-    }
-  }
+  const content = configContentOf(env)
+  if (!content) return {}
   const current = content.permission
   // A bare string is OpenCode's shorthand for every permission.
   const permission: Record<string, unknown> =
@@ -96,6 +87,46 @@ export function opencodeAllowHostTools(
     permission[`${sanitize(tools.serverName)}_${sanitize(name)}`] = 'allow'
   }
   return { OPENCODE_CONFIG_CONTENT: JSON.stringify({ ...content, permission }) }
+}
+
+/**
+ * The config a user already passes in `OPENCODE_CONFIG_CONTENT`, to extend:
+ * empty when there is none, undefined when it is not a JSON object (it is
+ * then left alone).
+ */
+function configContentOf(
+  env: Readonly<Record<string, string>>,
+): Record<string, unknown> | undefined {
+  const existing = env.OPENCODE_CONFIG_CONTENT?.trim()
+  if (!existing) return {}
+  try {
+    const parsed: unknown = JSON.parse(existing)
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return undefined
+    return parsed as Record<string, unknown>
+  } catch {
+    return undefined
+  }
+}
+
+/**
+ * OpenCode reads standing instructions from files its config lists under
+ * `instructions`, and puts each one in the system prompt as
+ * "Instructions from: <path>" followed by the file (verified with 1.3.0: an
+ * absolute path given through `OPENCODE_CONFIG_CONTENT` lands in the
+ * request's system message). Merged like `opencodeAllowHostTools`: a list
+ * the user already passes in the variable is kept and extended.
+ */
+export function opencodeInstructionsEnv(
+  file: string,
+  env: Readonly<Record<string, string>>,
+): Record<string, string> {
+  const content = configContentOf(env)
+  if (!content) return {}
+  const listed = Array.isArray(content.instructions)
+    ? content.instructions.filter((item): item is string => typeof item === 'string')
+    : []
+  const instructions = listed.includes(file) ? listed : [...listed, file]
+  return { OPENCODE_CONFIG_CONTENT: JSON.stringify({ ...content, instructions }) }
 }
 
 export const opencode: AcpProviderConfig = {
@@ -117,6 +148,7 @@ export const opencode: AcpProviderConfig = {
   },
   quirks: { suppressPlanUpdates: true, nativeQuestions: 'opencode' },
   allowHostTools: opencodeAllowHostTools,
+  instructionsEnv: opencodeInstructionsEnv,
   capabilities: {
     canSetModel: true,
     canSetMode: true,

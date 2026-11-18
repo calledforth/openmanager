@@ -16,9 +16,14 @@ import {
   ProviderCatalogEntrySchema,
   WorkspaceComposerPreferenceSchema,
   SEARCH_RESULTS_DEFAULT,
+  SCRATCHPAD_MAX_BYTES,
+  ScratchpadSchema,
+  scratchpadBytes,
   type MessageSearchHit,
   type PullRequestDetail,
   type PullRequestSummary,
+  type Scratchpad,
+  type ScratchpadAuthor,
   type AuthorizedClient,
   type AuthorizedClientList,
   type AccessCapability,
@@ -249,6 +254,11 @@ export interface MockEnvironmentClient extends EnvironmentClient {
    * reason in `details.reason`, as the environment would answer.
    */
   pairDevice(token: string, label?: string): AuthorizedClient
+  /**
+   * The scratchpad changed outside this client: an agent's edit, another
+   * device, or an editor (the default). Heard by `onScratchpadChanged`.
+   */
+  editScratchpad(workspaceId: string, content: string, by?: ScratchpadAuthor): Scratchpad
 }
 
 const ALL_COMMANDS = Object.keys(WIRE_COMMANDS) as EnvironmentCommandName[]
@@ -571,6 +581,57 @@ export function createMockEnvironmentClient(
       throw new EnvironmentClientError('not_found', 'Thread not found.')
     }
     return thread
+  }
+
+  // Each project's scratchpad, as the environment would hold the file.
+  const scratchpads = new Map<string, Scratchpad>()
+  const scratchpadListeners = new Set<(scratchpad: Scratchpad) => void>()
+  /** A version that names the text, as the environment's hash does. */
+  const scratchpadVersion = (content: string) => {
+    let hash = 5381
+    for (let i = 0; i < content.length; i += 1) hash = (hash * 33) ^ content.charCodeAt(i)
+    return `v${(hash >>> 0).toString(16)}-${content.length}`
+  }
+  const scratchpadOf = (workspaceId: string): Scratchpad => {
+    const workspace = store.getState().workspaces[workspaceId]
+    if (!workspace) {
+      throw new EnvironmentClientError('not_found', 'That project is not registered.')
+    }
+    if (workspace.kind === 'scratch') {
+      throw new EnvironmentClientError('validation', 'No project has no scratchpad.')
+    }
+    return (
+      scratchpads.get(workspaceId) ?? {
+        workspaceId,
+        exists: false,
+        content: '',
+        tooLarge: false,
+        version: null,
+        modifiedAt: null,
+        lastEdit: null,
+        shareWithAgents: true,
+      }
+    )
+  }
+  const writeScratchpad = (next: Scratchpad) => {
+    const parsed = ScratchpadSchema.parse(next)
+    scratchpads.set(parsed.workspaceId, parsed)
+    for (const listener of [...scratchpadListeners]) listener(parsed)
+    return parsed
+  }
+  const writeScratchpadText = (workspaceId: string, content: string, by: ScratchpadAuthor) => {
+    const at = now()
+    // Past the cap the environment sends no text, only that it is too large.
+    const tooLarge = scratchpadBytes(content) > SCRATCHPAD_MAX_BYTES
+    return writeScratchpad({
+      ...scratchpadOf(workspaceId),
+      exists: true,
+      content: tooLarge ? '' : content,
+      tooLarge,
+      version: scratchpadVersion(content),
+      modifiedAt: at,
+      lastEdit: { by, at },
+    })
   }
 
   const gate = (command: EnvironmentCommandName) => {
@@ -2020,6 +2081,32 @@ export function createMockEnvironmentClient(
         announceClients()
         return { clientId: caller.clientId, clientLabel: caller.label, grant, grantChanged }
       }),
+    getScratchpad: (workspaceId) =>
+      run('getScratchpad', { workspaceId }, () => scratchpadOf(workspaceId)),
+    saveScratchpad: (input) =>
+      run('saveScratchpad', input, () => {
+        const current = scratchpadOf(input.workspaceId)
+        if (scratchpadBytes(input.content) > SCRATCHPAD_MAX_BYTES) {
+          throw new EnvironmentClientError('validation', 'The scratchpad is too large to save.')
+        }
+        if (current.version !== input.baseVersion || current.tooLarge) {
+          return { outcome: 'conflict' as const, scratchpad: current }
+        }
+        if (!current.exists && input.content === '') {
+          return { outcome: 'saved' as const, scratchpad: current }
+        }
+        return {
+          outcome: 'saved' as const,
+          scratchpad: writeScratchpadText(input.workspaceId, input.content, { kind: 'you' }),
+        }
+      }),
+    setScratchpadSharing: (input) =>
+      run('setScratchpadSharing', input, () =>
+        writeScratchpad({
+          ...scratchpadOf(input.workspaceId),
+          shareWithAgents: input.shareWithAgents,
+        }),
+      ),
     getEnvironmentSettings: () =>
       run('getEnvironmentSettings', null, () => ({ ...environmentSettings })),
     setEnvironmentSettings: (patch) =>
@@ -2087,6 +2174,14 @@ export function createMockEnvironmentClient(
         clientListListeners.delete(listener)
       }
     },
+    onScratchpadChanged(listener) {
+      scratchpadListeners.add(listener)
+      return () => {
+        scratchpadListeners.delete(listener)
+      }
+    },
+    editScratchpad: (workspaceId, content, by = { kind: 'external' }) =>
+      writeScratchpadText(workspaceId, content, by),
     fetchToolOutput: async () => 'Output of the mock tool.',
     fetchArtifact: async (input) => {
       await new Promise<void>((resolve) => schedule(resolve, latencyMs))

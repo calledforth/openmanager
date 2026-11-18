@@ -3,6 +3,7 @@ import {
   CLIENT_REVOKED_CLOSE_CODE,
   CLIENT_REVOKED_CLOSE_REASON,
   ClientListChangedEventSchema,
+  ScratchpadChangedEventSchema,
   ErrorEnvelopeSchema,
   PROTOCOL_VERSION,
   SESSION_CREATE_EXPLICIT_CAPABILITY,
@@ -29,6 +30,7 @@ import {
   parseReplayResult,
   utf8Length,
   type AuthorizedClientList,
+  type Scratchpad,
   type ClientLivenessState,
   type ReplayResponse,
   type Cursor,
@@ -408,6 +410,7 @@ export function createWebSocketEnvironmentClient(
   let connectionGeneration = 0
   const pending = new Map<string, Pending>()
   const clientListListeners = new Set<(list: AuthorizedClientList) => void>()
+  const scratchpadListeners = new Set<(scratchpad: Scratchpad) => void>()
   const queued: Array<() => void> = []
   const subscriptions = new Map<string, Subscription>()
 
@@ -1014,6 +1017,12 @@ export function createWebSocketEnvironmentClient(
     const clientList = ClientListChangedEventSchema.safeParse(raw)
     if (clientList.success) {
       for (const listener of [...clientListListeners]) listener(clientList.data.payload)
+      return
+    }
+    // A scratchpad goes, whole, to the connections that read it.
+    const scratchpad = ScratchpadChangedEventSchema.safeParse(raw)
+    if (scratchpad.success) {
+      for (const listener of [...scratchpadListeners]) listener(scratchpad.data.payload.scratchpad)
       return
     }
     // Health is broadcast to every socket outside any scope: it is a current
@@ -2082,6 +2091,23 @@ export function createWebSocketEnvironmentClient(
       store.update((state) => applyPullRequestDetail(state, pullRequest))
       return pullRequest
     },
+    async getScratchpad(workspaceId) {
+      return (await request('scratchpad.get', { workspaceId })).scratchpad
+    },
+    saveScratchpad: (input) =>
+      request('scratchpad.save', {
+        workspaceId: input.workspaceId,
+        content: input.content,
+        baseVersion: input.baseVersion,
+      }),
+    async setScratchpadSharing(input) {
+      return (
+        await request('scratchpad.sharing.set', {
+          workspaceId: input.workspaceId,
+          shareWithAgents: input.shareWithAgents,
+        })
+      ).scratchpad
+    },
     async getEnvironmentSettings() {
       return (await request('environment.settings.get', null)).settings
     },
@@ -2159,6 +2185,12 @@ export function createWebSocketEnvironmentClient(
       clientListListeners.add(listener)
       return () => {
         clientListListeners.delete(listener)
+      }
+    },
+    onScratchpadChanged(listener) {
+      scratchpadListeners.add(listener)
+      return () => {
+        scratchpadListeners.delete(listener)
       }
     },
     async fetchArtifact(input, init) {
@@ -2325,6 +2357,7 @@ export function createWebSocketEnvironmentClient(
       if (disposed) return
       disposed = true
       clientListListeners.clear()
+      scratchpadListeners.clear()
       // Waiting edits stay in the store for the client that takes it over.
       drafts.dispose()
       connectionGeneration += 1

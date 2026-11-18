@@ -32,6 +32,12 @@ import {
 import { SEARCH_MESSAGES_CAPABILITY, SearchCommandSchemas } from './search.js'
 import { STEER_SEND_NOW_CAPABILITY, SteerCommandSchemas } from './steer.js'
 import { PULL_REQUEST_GET_CAPABILITY, PullRequestCommandSchemas } from './pull-requests.js'
+import {
+  SCRATCHPAD_GET_CAPABILITY,
+  SCRATCHPAD_SAVE_CAPABILITY,
+  SCRATCHPAD_SHARING_SET_CAPABILITY,
+  ScratchpadCommandSchemas,
+} from './scratchpad.js'
 // Type-only: pairing.ts imports AccessGrantSchema from here.
 import type { PairingCommandSchemas } from './pairing.js'
 
@@ -62,6 +68,7 @@ export type CommandName =
   | keyof typeof SearchCommandSchemas
   | keyof typeof SteerCommandSchemas
   | keyof typeof PullRequestCommandSchemas
+  | keyof typeof ScratchpadCommandSchemas
   | keyof typeof PairingCommandSchemas
   | keyof typeof ClientCommandSchemas
   | keyof typeof EnvironmentNameCommandSchemas
@@ -95,6 +102,8 @@ export const COMMAND_ACCESS = Object.freeze({
   [SEARCH_MESSAGES_CAPABILITY]: 'read',
   // Reads what the session summary already lists, in full.
   [PULL_REQUEST_GET_CAPABILITY]: 'read',
+  // A project's notes, which its agents can already read in the project.
+  [SCRATCHPAD_GET_CAPABILITY]: 'read',
   'session.create': 'operate',
   'session.rename': 'operate',
   'session.delete': 'operate',
@@ -116,6 +125,11 @@ export const COMMAND_ACCESS = Object.freeze({
   // and sending needs `agent` on its own.
   [DRAFT_SAVE_CAPABILITY]: 'operate',
   [DRAFT_DELETE_CAPABILITY]: 'operate',
+  // Writing the notes is not running the agent: an agent only reads them in
+  // a turn, and starting one needs `agent` on its own. Whether agents are
+  // told the notes exist is the same kind of choice.
+  [SCRATCHPAD_SAVE_CAPABILITY]: 'operate',
+  [SCRATCHPAD_SHARING_SET_CAPABILITY]: 'operate',
   'turn.send': 'agent',
   'turn.interrupt': 'agent',
   // A queued or steered message reaches the agent, as a send does.
