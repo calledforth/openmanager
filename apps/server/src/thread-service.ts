@@ -323,7 +323,38 @@ type ThreadRecord = {
    * the draft it restores has its images.
    */
   claimedArtifacts?: string[]
+  /**
+   * Set once the session moved to another workspace in this process: its
+   * provider session is then only ever resumed, never replaced by a fresh
+   * one, so a transcript the new folder cannot find fails loudly instead of
+   * starting a blank chat under the old id.
+   */
+  moved?: boolean
 }
+
+/**
+ * A move the session's agent asked for (`move_session`), applied when the
+ * turn that asked completes: the provider's process is pointed at one folder
+ * for its whole life, so the new one takes over from the next turn.
+ */
+type PendingMove = {
+  workspaceId: string
+  /** The thread whose turn asked, and that turn: only its completion applies the move. */
+  threadId: string
+  turnId: string
+}
+
+/** What `requestMove` answers the tool: the move it filed, or why it filed none. */
+export type MoveRequest =
+  | { ok: true; workspaceId: string; cwd: string }
+  | { ok: false; message: string }
+
+/**
+ * Providers proven to resume a session from another folder by its id alone.
+ * Claude Code finds a transcript in any project folder; OpenCode and Cursor
+ * file sessions by project and are not known to, so theirs stay put.
+ */
+export const MOVABLE_PROVIDERS: readonly string[] = ['claude']
 
 /** Why a session the rows hold could not be loaded: the answer an open gives. */
 export type LoadRefusal = { code: ErrorCode; message: string; details?: unknown }
@@ -522,6 +553,10 @@ export function createThreadService(
     }) => QueuedMessageSettings
     /** Something the queue could not do that nobody is waiting on an answer for. */
     onQueueProblem?: (message: string, data: Record<string, unknown>) => void
+    /** The providers whose sessions may move to another folder; `MOVABLE_PROVIDERS` by default. */
+    movableProviders?: readonly string[]
+    /** A move a session's agent asked for that could not be applied when its turn completed. */
+    onMoveProblem?: (message: string, data: Record<string, unknown>) => void
     /**
      * Tool calls the host wants to hear about when they end, by their input
      * (a shell command running `gh pr create`). Asked of every tool update
@@ -555,6 +590,8 @@ export function createThreadService(
   const threads = new Map<string, ThreadRecord>()
   /** Host session per `providerId:providerSessionId` registered as a child this process. */
   const childSessionIds = new Map<string, string>()
+  /** Moves asked for by a session's agent, by root session id, until their turn completes. */
+  const pendingMoves = new Map<string, PendingMove>()
   /**
    * Children the user deleted while this process runs, by the same key. The
    * parent turn that delegated them may still report the subtask, and that
@@ -574,7 +611,7 @@ export function createThreadService(
     // A sub-agent's transcript lives in the agent: a fresh session in its
     // place would lose it, so the runtime may only load it, on every start and
     // every respawn (docs/sync-foundations.md §4.7.4 (e)).
-    ...(record.session.parentSessionId ? { load: 'require' as const } : {}),
+    ...(record.session.parentSessionId || record.moved ? { load: 'require' as const } : {}),
   })
 
   /**
@@ -724,7 +761,12 @@ export function createThreadService(
         const ended = event.name
         const restarted =
           event.name === 'turn.interrupted' && event.payload.reason === 'server_restarted'
-        queueMicrotask(() => settleQueue(record, ended, restarted))
+        const turnId = event.payload.turnId
+        queueMicrotask(() => {
+          // Before the queue: a message waiting behind this turn runs in the new folder.
+          settleMove(record, turnId, ended === 'turn.completed')
+          settleQueue(record, ended, restarted)
+        })
       }
       // The requests the turn left open were closed by `interaction.cancelled`
       // events committed with its end (db/turn-closure.ts). Memory follows
@@ -2392,6 +2434,145 @@ export function createThreadService(
    * the same write that starts its turn. One that cannot start stays first in
    * line and pauses the queue, so the next one does not jump it.
    */
+  /**
+   * The session and every sub-agent session under it: a child always shares
+   * its parent's workspace, so a move takes the whole tree. Read from the rows
+   * when there are any (a child need not be loaded), else from memory.
+   */
+  const sessionTree = (sessionId: string): string[] => {
+    if (options.database) {
+      options.flush?.()
+      return (
+        options.database
+          .prepare(
+            `WITH RECURSIVE tree(session_id) AS (
+               SELECT ? UNION SELECT s.session_id FROM sessions s
+                 JOIN tree t ON s.parent_session_id = t.session_id)
+             SELECT session_id FROM tree`,
+          )
+          .all(sessionId) as { session_id: string }[]
+      ).map((row) => row.session_id)
+    }
+    const tree = new Set([sessionId])
+    for (let grew = true; grew; ) {
+      grew = false
+      for (const item of threads.values()) {
+        const parent = item.session.parentSessionId
+        if (parent && tree.has(parent) && !tree.has(item.session.sessionId)) {
+          tree.add(item.session.sessionId)
+          grew = true
+        }
+      }
+    }
+    return [...tree]
+  }
+
+  /**
+   * File a move to another workspace for the session whose agent is working
+   * in `threadId` now. Applied when that turn completes (`settleMove`); a
+   * second call in the same turn replaces the first.
+   */
+  const requestMove = (threadId: string, workspaceId: string): MoveRequest => {
+    const record = threads.get(threadId)
+    if (!record?.activeTurn) {
+      return { ok: false, message: 'This session has no turn under way to move from.' }
+    }
+    if (record.session.parentSessionId) {
+      return {
+        ok: false,
+        message: 'A sub-agent cannot move its session; the agent that started it can.',
+      }
+    }
+    if (!(options.movableProviders ?? MOVABLE_PROVIDERS).includes(record.providerId)) {
+      return {
+        ok: false,
+        message: `Moving a session to another folder is not supported for ${record.providerId} yet.`,
+      }
+    }
+    let target: WorkspaceRuntimeRoute | undefined
+    try {
+      target = resolveWorkspace(workspaceId)
+    } catch {
+      /* unavailable */
+    }
+    if (!target) return { ok: false, message: 'That folder cannot be opened on this environment.' }
+    // "No project" gives each session a folder of its own under the
+    // environment's data directory; nothing moves into it.
+    if (target.sessionCwd) {
+      return { ok: false, message: 'A session cannot move into "No project"; name a project folder.' }
+    }
+    if (workspaceId === record.session.workspaceId) {
+      pendingMoves.delete(record.session.sessionId)
+      return { ok: false, message: `This session already works in ${target.cwd}.` }
+    }
+    pendingMoves.set(record.session.sessionId, {
+      workspaceId,
+      threadId,
+      turnId: record.activeTurn.turn.turnId,
+    })
+    return { ok: true, workspaceId, cwd: target.cwd }
+  }
+
+  /**
+   * A turn ended: apply the move it asked for once it completed. A turn that
+   * failed or was stopped drops it; the agent asks again if it still wants
+   * it. A plan build or steered turn that already followed holds it until
+   * the session is idle, as long as it is the turn that asked.
+   */
+  const settleMove = (record: ThreadRecord, turnId: string, completed: boolean) => {
+    const sessionId = record.session.sessionId
+    const move = pendingMoves.get(sessionId)
+    if (!move || move.threadId !== record.thread.threadId || move.turnId !== turnId) return
+    pendingMoves.delete(sessionId)
+    if (!completed || threads.get(record.thread.threadId) !== record) return
+    let target: WorkspaceRuntimeRoute | undefined
+    try {
+      target = resolveWorkspace(move.workspaceId)
+    } catch {
+      /* unavailable */
+    }
+    if (!target || target.sessionCwd) {
+      options.onMoveProblem?.('a session could not move: its new folder is unavailable', {
+        sessionId,
+        workspaceId: move.workspaceId,
+      })
+      return
+    }
+    const tree = sessionTree(sessionId)
+    const timestamp = new Date().toISOString()
+    const events = tree.map((id) =>
+      ProofEventSchemas['session.updated'].parse({
+        type: 'event',
+        name: 'session.updated',
+        eventId: randomUUID(),
+        timestamp,
+        scope: { type: 'environment', environmentId },
+        payload: { sessionId: id, workspaceId: move.workspaceId },
+      }),
+    )
+    try {
+      if (options.appendAtomic) options.appendAtomic(events)
+      else events.forEach(appendEvent)
+    } catch (error) {
+      options.onPersistenceError?.(error, 'session.updated')
+      return
+    }
+    // Memory follows the committed rows: every thread of the tree runs in the
+    // new folder from its next prompt, which supersedes the process it had.
+    const moved = new Set(tree)
+    for (const item of threads.values()) {
+      if (!moved.has(item.session.sessionId)) continue
+      item.session.workspaceId = move.workspaceId
+      item.cwd = target.cwd
+      item.moved = true
+    }
+    try {
+      target.onSessionStarted?.()
+    } catch {
+      /* bookkeeping only */
+    }
+  }
+
   const drain = (record: ThreadRecord) => {
     if (threads.get(record.thread.threadId) !== record) return
     const queue = record.queue
@@ -4095,6 +4276,8 @@ export function createThreadService(
       return undefined
     },
 
+    requestMove,
+
     /**
      * The session a runtime thread is working for right now, for a tool the
      * agent calls mid-turn (`share_file`). Undefined between turns: what an
@@ -4242,6 +4425,17 @@ export function createThreadService(
           (!active.runtimeMessageId && event.event !== 'process_exited') ||
           (event.messageId !== undefined && event.messageId !== active.runtimeMessageId))
       ) {
+        return
+      } else if (
+        event.event === 'process_exited' &&
+        event.data.expected &&
+        active &&
+        !active.runtimeMessageId
+      ) {
+        // A process the host stopped before this turn's prompt reached the
+        // provider: the one a moved session left in its old folder, replaced
+        // as the prompt opens a new one. It is not this turn's process; if
+        // the new one cannot start, the prompt itself fails the turn.
         return
       }
 

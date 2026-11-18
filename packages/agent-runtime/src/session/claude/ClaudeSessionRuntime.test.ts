@@ -101,6 +101,20 @@ describe('ClaudeSessionRuntime startup', () => {
     expect(names(events)).toEqual(['process_spawned', 'initialized', 'session_loaded'])
   })
 
+  it('resumes a transcript filed under the folder the session moved from', async () => {
+    // `move_session` points the session at another folder; the CLI kept the
+    // transcript under the project it started in and resumes it by id.
+    const { runtime, events, sdk } = build({ sessionId: 'moved-session' })
+    sdk.knows('moved-session', '/somewhere/else')
+    const result = await runtime.start()
+
+    expect(result).toMatchObject({ sessionId: 'moved-session', state: 'loaded' })
+    expect(sdk.last.options.resume).toBe('moved-session')
+    // Its own folder first, then every project.
+    expect(sdk.sessionInfoDirs).toEqual([sdk.last.options.cwd, undefined])
+    expect(names(events)).toContain('session_loaded')
+  })
+
   it('falls back to a fresh session when the transcript is genuinely gone', async () => {
     // `getSessionInfo` answers undefined, which is the one resume failure that
     // may be replaced silently — there was nothing to lose.

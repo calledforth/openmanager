@@ -111,6 +111,7 @@ import { createBudgetKey } from './budget-key.ts'
 import { createArtifactStore } from './artifacts.ts'
 import { createToolOutputReader } from './db/tool-output.ts'
 import { createUploadService } from './uploads.ts'
+import { createMoveSessionTool } from './move-session-tool.ts'
 import { createShareFileTool } from './share-file-tool.ts'
 import { attachWebSocket, SOCKET_CAPABILITIES } from './websocket.ts'
 import { insideGitCheckout, openWorkspaceRegistry } from './workspaces.ts'
@@ -384,9 +385,22 @@ export async function startServer(config: ServerConfig) {
     present: (threadId, turnId, metadata) => shareFileInto.present(threadId, turnId, metadata),
     discard: (metadata) => shareFileInto.discard(metadata),
   })
+  // `move_session` needs the thread service too, made below like `share_file`'s.
+  let moveSessionInto: Pick<
+    Parameters<typeof createMoveSessionTool>[0],
+    'agentTurnOf' | 'requestMove'
+  > = {
+    agentTurnOf: () => undefined,
+    requestMove: () => ({ ok: false, message: 'The environment is starting.' }),
+  }
+  const moveSessionTool = createMoveSessionTool({
+    agentTurnOf: (threadId) => moveSessionInto.agentTurnOf(threadId),
+    register: (path) => workspaces.register({ path }),
+    requestMove: (threadId, workspaceId) => moveSessionInto.requestMove(threadId, workspaceId),
+  })
   const agentTools = createAgentToolsEndpoint({
     serverName: 'openmanager',
-    tools: [...pullRequests.tools, shareFileTool],
+    tools: [...pullRequests.tools, shareFileTool, moveSessionTool],
     port: () => listeningPort(),
     version: serverVersion(),
     log,
@@ -548,6 +562,8 @@ export async function startServer(config: ServerConfig) {
         }
       },
       onQueueProblem: (message, data) => log('warn', message, data),
+      onMoveProblem: (message, data) => log('warn', message, data),
+      ...(config.movableProviders ? { movableProviders: config.movableProviders } : {}),
       watchToolInput: (input) => pullRequests.wantsToolInput(input),
       onToolInput: (call) => scratchpad.observeToolInput(call),
       onWatchedToolSettled: ({ sessionId, toolCallId, text, startedAt }) =>
@@ -570,6 +586,10 @@ export async function startServer(config: ServerConfig) {
     present: (threadId, turnId, metadata) =>
       threadService.presentArtifact(threadId, turnId, metadata),
     discard: (metadata) => artifacts.discard(metadata),
+  }
+  moveSessionInto = {
+    agentTurnOf: (threadId) => threadService.agentTurnOf(threadId),
+    requestMove: (threadId, workspaceId) => threadService.requestMove(threadId, workspaceId),
   }
   closeWorkspaceSessions = (workspaceId) => {
     // Flush before the registry cascades deletion of the projected thread rows.

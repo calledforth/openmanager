@@ -59,6 +59,8 @@ export interface ServerConfig {
   runtimeOptions?: AgentRuntimeOptions
   /** Test-only workspace → provider routing. Production resolves through the workspace registry. */
   resolveWorkspace?: WorkspaceRuntimeResolver
+  /** Test-only: the providers whose sessions `move_session` may move (production: Claude Code). */
+  movableProviders?: readonly string[]
   /**
    * Process-scoped proof shared with the first-party localhost web process.
    * It is intentionally environment-only so it cannot leak through arguments.

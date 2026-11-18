@@ -204,22 +204,30 @@ export function createEventRepository(
     lastTimestamp: string
   }
 
-  /** The workspace an event can move the recency of, read before it is projected. */
-  const recencyWorkspaceOf = (event: DurableProofEvent, session?: string): string | undefined => {
+  /** The workspaces an event can move the recency of, read before it is projected. */
+  const recencyWorkspacesOf = (event: DurableProofEvent, session?: string): string[] => {
     switch (event.name) {
       case 'workspace.updated':
-        return event.payload.workspace.workspaceId
+        return [event.payload.workspace.workspaceId]
       case 'workspace.removed':
-        return event.payload.workspaceId
+        return [event.payload.workspaceId]
       case 'session.created':
-        return event.payload.session.workspaceId
+        return [event.payload.session.workspaceId]
       case 'session.deleted':
         session = event.payload.sessionId
+        break
+      case 'session.updated':
+        // A move leaves one workspace and joins another: both lists change.
+        session = event.payload.sessionId
     }
-    if (!session) return undefined
+    if (!session) return []
     const row = statements.selectSessionWorkspace.get(session) as
       { workspace_id: string } | undefined
-    return row?.workspace_id
+    const moved = event.name === 'session.updated' ? event.payload.workspaceId : undefined
+    return [
+      ...(row ? [row.workspace_id] : []),
+      ...(moved !== undefined && moved !== row?.workspace_id ? [moved] : []),
+    ]
   }
 
   const writeScope = (
@@ -349,20 +357,23 @@ export function createEventRepository(
           transaction!.tracked.set(sessionId, entry)
         }
       }
-      const workspaceId = transaction ? recencyWorkspaceOf(event, sessionId) : undefined
-      let place = workspaceId ? transaction!.workspaces.get(workspaceId) : undefined
-      if (workspaceId && !place) {
-        place = {
-          environmentId: scope.environmentId,
-          announced: readWorkspace(database, workspaceId)?.lastActivityAt ?? null,
-          removed: false,
-          lastEventId: event.eventId,
-          lastTimestamp: event.timestamp,
+      const places: TrackedWorkspace[] = []
+      for (const workspaceId of transaction ? recencyWorkspacesOf(event, sessionId) : []) {
+        let place = transaction!.workspaces.get(workspaceId)
+        if (!place) {
+          place = {
+            environmentId: scope.environmentId,
+            announced: readWorkspace(database, workspaceId)?.lastActivityAt ?? null,
+            removed: false,
+            lastEventId: event.eventId,
+            lastTimestamp: event.timestamp,
+          }
+          transaction!.workspaces.set(workspaceId, place)
         }
-        transaction!.workspaces.set(workspaceId, place)
+        places.push(place)
       }
       project(event, writeOptions)
-      if (place) {
+      for (const place of places) {
         place.lastEventId = event.eventId
         place.lastTimestamp = event.timestamp
         if (event.name === 'workspace.updated') {
@@ -457,16 +468,22 @@ export function createEventRepository(
     // A workspace's recency follows its sessions and its own last use, read
     // from the rows with the registry's own reader. Announced when it moved,
     // backwards too: deleting the newest session lowers it.
+    // One event can move two workspaces (a session moving from one to the
+    // other), so the second derived id names its workspace.
+    const recencyIds = new Set<string>()
     for (const [workspaceId, place] of transaction.workspaces) {
       if (place.removed) continue
       const workspace = readWorkspace(database, workspaceId)
       if (!workspace || workspace.lastActivityAt === place.announced) continue
+      let eventId = `${place.lastEventId}:recency`
+      if (recencyIds.has(eventId)) eventId = `${eventId}:${workspaceId}`
+      recencyIds.add(eventId)
       add(
         place.environmentId,
         ProofEventSchemas['workspace.updated'].parse({
           type: 'event',
           name: 'workspace.updated',
-          eventId: `${place.lastEventId}:recency`,
+          eventId,
           timestamp: place.lastTimestamp,
           scope: { type: 'environment', environmentId: place.environmentId },
           payload: { workspace },

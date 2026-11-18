@@ -272,7 +272,14 @@ function legacyActivity(state: EnvironmentState, event: ProofEvent): Environment
       return touchWorkspaceActivity(state, event.scope.sessionId, event.timestamp)
     case 'session.updated': {
       const session = state.sessions[event.payload.sessionId]
-      const { title, status, updatedAt } = event.payload
+      const { title, status, updatedAt, workspaceId } = event.payload
+      if (session && workspaceId !== undefined && workspaceId !== session.workspaceId) {
+        // Its agent moved it to another project: it lists under that one now.
+        return {
+          ...state,
+          sessions: { ...state.sessions, [session.sessionId]: { ...session, workspaceId } },
+        }
+      }
       if (!session || updatedAt !== undefined || (title === undefined && status === undefined)) {
         return state
       }

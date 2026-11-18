@@ -728,11 +728,18 @@ export class ClaudeSessionRuntime implements ManagedSessionRuntime {
     if (!requested || !this.config.capabilities.canLoadSession) return required()
     const sdk = this.sdk
     if (!sdk) return undefined
-    const info = await withTimeout(
-      sdk.getSessionInfo(requested, { dir: this.cwd }),
-      this.timeouts.controlRequestMs,
-      () => new RpcTimeoutError(this.providerId, 'getSessionInfo', this.timeouts.controlRequestMs),
-    )
+    const lookup = (options?: { dir: string }) =>
+      withTimeout(
+        sdk.getSessionInfo(requested, options),
+        this.timeouts.controlRequestMs,
+        () =>
+          new RpcTimeoutError(this.providerId, 'getSessionInfo', this.timeouts.controlRequestMs),
+      )
+    // The folder the session runs in first, which reads one file. A session
+    // moved to another folder (`move_session`) left its transcript under the
+    // folder it started in, and the CLI resumes it from there by id alone, so
+    // a miss looks in every project before calling the session unknown.
+    const info = (await lookup({ dir: this.cwd })) ?? (await lookup())
     if (info) return requested
     this.host.log({
       scope: 'claude',

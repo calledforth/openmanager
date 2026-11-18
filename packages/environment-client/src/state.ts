@@ -391,6 +391,7 @@ export function applyEvent(state: EnvironmentState, event: ProofEvent): Environm
         doneAt,
         backgroundTasks,
         pullRequests,
+        workspaceId,
       } = event.payload
       const {
         backgroundTasks: heldTasks,
@@ -426,6 +427,8 @@ export function applyEvent(state: EnvironmentState, event: ProofEvent): Environm
         ...(pinnedAt !== undefined ? { pinnedAt } : {}),
         ...(cookingAt !== undefined ? { cookingAt } : {}),
         ...(doneAt !== undefined ? { doneAt } : {}),
+        // A session its agent moved to another project now lists under it.
+        ...(workspaceId !== undefined ? { workspaceId } : {}),
         // The session's place moves only when the environment says so (§4.7.1).
         ...(updatedAt !== undefined ? { updatedAt } : {}),
       }
