@@ -3,7 +3,12 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { act, useState } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 import { GitPullRequestIcon, NotePencilIcon } from '@phosphor-icons/react'
-import { PanelDeck, usePanelKeys, type PanelView } from '../src/components/side-panel/PanelDeck'
+import {
+  PanelDeck,
+  PanelKeys,
+  usePanelKeys,
+  type PanelView,
+} from '../src/components/side-panel/PanelDeck'
 import { TooltipProvider } from '../src/components/fluid/ui/tooltip'
 import { diffLines, diffStat } from '../src/components/scratchpad/line-diff'
 
@@ -23,6 +28,12 @@ describe('diffLines', () => {
       { kind: 'added', text: '- [x] ship' },
       { kind: 'same', text: 'notes' },
     ])
+  })
+
+  it('treats an empty page as no lines', () => {
+    expect(diffLines('', 'hello')).toEqual([{ kind: 'added', text: 'hello' }])
+    expect(diffLines('hello', '')).toEqual([{ kind: 'removed', text: 'hello' }])
+    expect(diffLines('', '')).toEqual([])
   })
 
   it('treats identical text as unchanged', () => {
@@ -134,5 +145,51 @@ describe('PanelDeck', () => {
     act(() => root.render(<Harness active={false} />))
     press('p')
     expect(current()).toBe('home')
+  })
+
+  it('gives no keys to a view on its way out', () => {
+    act(() => root.render(<Harness />))
+    press('p')
+    press('Escape')
+    expect(current()).toBe('home')
+    press('j')
+    expect(viewKeys).toEqual([])
+  })
+
+  it('leaves Enter to a focused button', () => {
+    act(() => root.render(<Harness />))
+    const card = container.querySelector('ul[aria-label="Open in the panel"] button')!
+    press('Enter', card)
+    expect(current()).toBe('home')
+  })
+})
+
+describe('PanelKeys', () => {
+  beforeEach(() => {
+    viewKeys = []
+  })
+
+  it("answers a lone view's keys while active", () => {
+    act(() =>
+      root.render(
+        <PanelKeys active>
+          <PrView />
+        </PanelKeys>,
+      ),
+    )
+    press('j')
+    expect(viewKeys).toEqual(['j'])
+  })
+
+  it('stays quiet while inactive', () => {
+    act(() =>
+      root.render(
+        <PanelKeys active={false}>
+          <PrView />
+        </PanelKeys>,
+      ),
+    )
+    press('j')
+    expect(viewKeys).toEqual([])
   })
 })

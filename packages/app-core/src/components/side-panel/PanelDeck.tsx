@@ -4,6 +4,7 @@ import {
   useContext,
   useEffect,
   useLayoutEffect,
+  useMemo,
   useRef,
   useState,
   type ReactNode,
@@ -58,13 +59,21 @@ export interface PanelDeckProps {
 
 type KeyHandler = (event: KeyboardEvent) => boolean
 
+/** A view's key handler, and which view registered it (undefined: no deck). */
+interface KeyEntry {
+  handler: { current: KeyHandler }
+  scope: string | undefined
+}
+
 interface DeckContextValue {
-  register: (handler: { current: KeyHandler }) => () => void
+  register: (entry: KeyEntry) => () => void
   back: () => void
   active: boolean
 }
 
 const DeckContext = createContext<DeckContextValue | null>(null)
+/** The view a subtree belongs to, so a view still animating out takes no keys. */
+const ViewScopeContext = createContext<string | undefined>(undefined)
 
 /**
  * Keys for the view showing. Return true from the handler to take the key
@@ -72,12 +81,81 @@ const DeckContext = createContext<DeckContextValue | null>(null)
  */
 export function usePanelKeys(handler: KeyHandler) {
   const deck = useContext(DeckContext)
+  const scope = useContext(ViewScopeContext)
   const ref = useRef(handler)
   useLayoutEffect(() => {
     ref.current = handler
   })
   const register = deck?.register
-  useEffect(() => register?.(ref), [register])
+  useEffect(() => register?.({ handler: ref, scope }), [register, scope])
+}
+
+/**
+ * Whether a key press is the panel's to take: no modifier, nobody typing,
+ * no other dialog or menu holding the keyboard, and not Enter or Space on a
+ * focused control, which belong to that control.
+ */
+function panelMayTake(event: KeyboardEvent, root: HTMLElement | null): boolean {
+  if (event.defaultPrevented || event.isComposing) return false
+  if (event.metaKey || event.ctrlKey || event.altKey) return false
+  if (isTypingTarget(event.target)) return false
+  const target = event.target as HTMLElement | null
+  const modal = target?.closest?.('[role="dialog"],[role="menu"],[role="alertdialog"]')
+  if (modal && root && !modal.contains(root)) return false
+  if (
+    (event.key === 'Enter' || event.key === ' ') &&
+    target?.closest?.(
+      'button,a[href],[role="button"],[role="switch"],[role="radio"],[role="option"]',
+    )
+  )
+    return false
+  return true
+}
+
+/** Offers a key to the handlers, newest first, keeping only those of `scope`. */
+function offer(entries: readonly KeyEntry[], scope: string | undefined, event: KeyboardEvent) {
+  for (const entry of [...entries].reverse()) {
+    if (entry.scope !== undefined && entry.scope !== scope) continue
+    if (entry.handler.current(event)) {
+      event.preventDefault()
+      return true
+    }
+  }
+  return false
+}
+
+/**
+ * Panel keys for a single view shown without a deck (the web app's pull
+ * request panel): its usePanelKeys handlers answer while `active`.
+ */
+export function PanelKeys({ active, children }: { active: boolean; children: ReactNode }) {
+  const rootRef = useRef<HTMLDivElement>(null)
+  const entries = useRef<KeyEntry[]>([])
+  const register = useCallback((entry: KeyEntry) => {
+    entries.current.push(entry)
+    return () => {
+      entries.current = entries.current.filter((item) => item !== entry)
+    }
+  }, [])
+  useEffect(() => {
+    if (!active) return
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (panelMayTake(event, rootRef.current)) offer(entries.current, undefined, event)
+    }
+    window.addEventListener('keydown', onKeyDown)
+    return () => window.removeEventListener('keydown', onKeyDown)
+  }, [active])
+  const value = useMemo<DeckContextValue>(
+    () => ({ register, back: () => undefined, active }),
+    [register, active],
+  )
+  return (
+    <DeckContext.Provider value={value}>
+      <div ref={rootRef} className="contents">
+        {children}
+      </div>
+    </DeckContext.Provider>
+  )
 }
 
 /** Step back out of the view (to home). For a view's own back button. */
@@ -135,10 +213,12 @@ export function isTypingTarget(target: EventTarget | null): boolean {
   )
 }
 
+const HOME_SCOPE = '__home'
+
 export function PanelDeck({ views, current, onNavigate, active, className }: PanelDeckProps) {
   const reduceMotion = useReducedMotion()
   const rootRef = useRef<HTMLElement>(null)
-  const handlers = useRef<{ current: KeyHandler }[]>([])
+  const entries = useRef<KeyEntry[]>([])
   const shown = views.find((view) => view.id === current) ?? null
   const shownId = shown?.id ?? null
 
@@ -153,10 +233,10 @@ export function PanelDeck({ views, current, onNavigate, active, className }: Pan
 
   const [highlight, setHighlight] = useState(0)
 
-  const register = useCallback((handler: { current: KeyHandler }) => {
-    handlers.current.push(handler)
+  const register = useCallback((entry: KeyEntry) => {
+    entries.current.push(entry)
     return () => {
-      handlers.current = handlers.current.filter((entry) => entry !== handler)
+      entries.current = entries.current.filter((item) => item !== entry)
     }
   }, [])
   const back = useCallback(() => onNavigate(null), [onNavigate])
@@ -164,21 +244,9 @@ export function PanelDeck({ views, current, onNavigate, active, className }: Pan
   useEffect(() => {
     if (!active) return
     const onKeyDown = (event: KeyboardEvent) => {
-      if (event.defaultPrevented || event.isComposing) return
-      if (event.metaKey || event.ctrlKey || event.altKey) return
-      if (isTypingTarget(event.target)) return
-      // A dialog or menu that is not the panel's own sheet has the keyboard.
-      const target = event.target as HTMLElement | null
-      const modal = target?.closest?.('[role="dialog"],[role="menu"],[role="alertdialog"]')
-      if (modal && rootRef.current && !modal.contains(rootRef.current)) return
-
-      // The view showing first, newest registration first.
-      for (const handler of [...handlers.current].reverse()) {
-        if (handler.current(event)) {
-          event.preventDefault()
-          return
-        }
-      }
+      if (!panelMayTake(event, rootRef.current)) return
+      // The view showing first (not one still animating out), newest first.
+      if (offer(entries.current, shownId ?? HOME_SCOPE, event)) return
       const key = event.key.toLowerCase()
       const target_ = views.find((view) => view.shortcut.toLowerCase() === key)
       if (target_ && !event.shiftKey) {
@@ -240,16 +308,18 @@ export function PanelDeck({ views, current, onNavigate, active, className }: Pan
               transition={reduceMotion ? { duration: 0 } : spring.moderate}
               className="absolute inset-0 flex min-h-0 flex-col"
             >
-              {shown ? (
-                shown.content
-              ) : (
-                <Home
-                  views={views}
-                  highlight={highlight}
-                  onHighlight={setHighlight}
-                  onOpen={onNavigate}
-                />
-              )}
+              <ViewScopeContext.Provider value={shownId ?? HOME_SCOPE}>
+                {shown ? (
+                  shown.content
+                ) : (
+                  <Home
+                    views={views}
+                    highlight={highlight}
+                    onHighlight={setHighlight}
+                    onOpen={onNavigate}
+                  />
+                )}
+              </ViewScopeContext.Provider>
             </motion.div>
           </AnimatePresence>
         </div>

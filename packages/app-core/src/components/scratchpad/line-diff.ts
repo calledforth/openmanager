@@ -3,14 +3,17 @@ export type DiffLine = { kind: 'same' | 'added' | 'removed'; text: string }
 /** Past this many lines a side the diff gives up and shows a replace. */
 const MAX_LINES = 2000
 
+/** An empty document has no lines, not one empty line. */
+const linesOf = (text: string): string[] => (text === '' ? [] : text.split('\n'))
+
 /**
  * A line diff by longest common subsequence: what `after` added to and
  * removed from `before`, in order. A scratchpad is small enough for the
  * quadratic table.
  */
 export function diffLines(before: string, after: string): DiffLine[] {
-  const a = before.split('\n')
-  const b = after.split('\n')
+  const a = linesOf(before)
+  const b = linesOf(after)
   if (a.length > MAX_LINES || b.length > MAX_LINES) {
     return [
       ...a.map((text) => ({ kind: 'removed' as const, text })),

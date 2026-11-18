@@ -2,6 +2,7 @@ import { useCallback, useState } from 'react'
 import type { EnvironmentState } from '@openmanager/environment-client'
 import { useEnvironmentState } from '@openmanager/app-core/providers/environment-client'
 import { SidePanel, useSidePanel } from '@openmanager/app-core/components/side-panel/SidePanel'
+import { PanelKeys } from '@openmanager/app-core/components/side-panel/PanelDeck'
 import {
   PullRequestPill,
   PullRequestsPanel,
@@ -88,17 +89,20 @@ function Content({
     window.open(url, '_blank', 'noopener,noreferrer')
   }, [])
 
+  // J/K, Enter and Esc move through the list and pages while the panel shows.
   return (
-    <PullRequestsPanel
-      pullRequests={pullRequests as PullRequestSummary[]}
-      openKey={openKey}
-      onOpen={setOpenKey}
-      detail={detail ?? null}
-      detailLoading={loading}
-      detailError={error}
-      onOpenOnGitHub={openOnGitHub}
-      environmentLabel={environmentName}
-      className="h-full"
-    />
+    <PanelKeys active={open}>
+      <PullRequestsPanel
+        pullRequests={pullRequests as PullRequestSummary[]}
+        openKey={openKey}
+        onOpen={setOpenKey}
+        detail={detail ?? null}
+        detailLoading={loading}
+        detailError={error}
+        onOpenOnGitHub={openOnGitHub}
+        environmentLabel={environmentName}
+        className="h-full"
+      />
+    </PanelKeys>
   )
 }
