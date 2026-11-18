@@ -1,13 +1,19 @@
 import { randomUUID } from 'node:crypto'
 import { constants, mkdirSync, readFileSync, statSync, renameSync, rmSync, writeFileSync } from 'node:fs'
-import { copyFile, open, stat } from 'node:fs/promises'
+import { copyFile, open, stat, statfs } from 'node:fs/promises'
 import { basename, join } from 'node:path'
 import type { DatabaseSync } from 'node:sqlite'
 import { extensionOf, sniffMedia, SNIFF_BYTES } from './media-sniff.ts'
 import {
   isAllowedUploadType,
   MAX_ATTACHMENT_BYTES,
+  MAX_SHARED_BYTES_PER_SESSION,
   MAX_SHARED_FILE_BYTES,
+  MAX_SHARED_IMAGE_BYTES,
+  megabytes,
+  SHARE_DISK_HEADROOM_BYTES,
+  SHAREABLE_NAMES,
+  type ShareableType,
 } from './upload-limits.ts'
 
 /** Why a file an agent shared was refused, in words the agent can act on. */
@@ -129,6 +135,15 @@ export function createArtifactStore(database: DatabaseSync, dataDir: string) {
   `)
   const get = (sessionId: string, artifactId: string) =>
     lookup.get(artifactId, sessionId) as ArtifactMetadata | undefined
+  const sharedBytes = database.prepare(`
+    SELECT COALESCE(SUM(size_bytes), 0) AS total FROM attachments
+    WHERE session_id = ? AND source = 'generated'
+  `)
+  const deleteOwned = database.prepare(
+    'DELETE FROM attachments WHERE attachment_id = ? AND session_id = ?',
+  )
+  /** Bytes of shares still being copied, by session, so two at once both count. */
+  const sharing = new Map<string, number>()
   const path = (artifactId: string) => {
     // Only IDs minted by this store may name files, including after a restart.
     if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(artifactId)) {
@@ -273,7 +288,7 @@ export function createArtifactStore(database: DatabaseSync, dataDir: string) {
       const artifactId = randomUUID()
       const normalized = mimeType.toLowerCase()
       const metadata: ArtifactMetadata = { artifactId, sessionId, workspaceId,
-        name: `generated-${artifactId}.${normalized === 'image/jpeg' ? 'jpg' : normalized.split('/')[1]}`,
+        name: `generated-${artifactId}.${extensionOf(normalized as ShareableType)}`,
         mimeType: normalized, sizeBytes: bytes.length, createdAt: Date.now(), source: 'generated' }
       const finalPath = path(artifactId)
       const partialDirectory = join(directory, 'partial')
@@ -307,15 +322,34 @@ export function createArtifactStore(database: DatabaseSync, dataDir: string) {
       if (source.size === 0) throw new ShareRefusedError(`${sourcePath} is empty.`)
       const tooLarge = () =>
         new ShareRefusedError(
-          `${sourcePath} is larger than ${MAX_SHARED_FILE_BYTES / 1024 / 1024} MB, the most a shared file may be.`,
+          `${sourcePath} is larger than ${megabytes(MAX_SHARED_FILE_BYTES)}, the most a shared file may be.`,
         )
       if (source.size > MAX_SHARED_FILE_BYTES) throw tooLarge()
+      const held =
+        (sharedBytes.get(sessionId) as { total: number }).total + (sharing.get(sessionId) ?? 0)
+      if (held + source.size > MAX_SHARED_BYTES_PER_SESSION) {
+        throw new ShareRefusedError(
+          `This session has already shared ${megabytes(held)}; sharing ${sourcePath} would pass the ${megabytes(MAX_SHARED_BYTES_PER_SESSION)} a session may share.`,
+        )
+      }
+      const disk = await statfs(directory)
+      if (disk.bavail * disk.bsize < source.size + SHARE_DISK_HEADROOM_BYTES) {
+        throw new ShareRefusedError(
+          `The environment's disk is nearly full, so ${sourcePath} was not copied.`,
+        )
+      }
+      sharing.set(sessionId, (sharing.get(sessionId) ?? 0) + source.size)
+      const settle = () => {
+        const left = (sharing.get(sessionId) ?? 0) - source.size
+        if (left > 0) sharing.set(sessionId, left)
+        else sharing.delete(sessionId)
+      }
       const artifactId = randomUUID()
       const partialDirectory = join(directory, 'partial')
-      mkdirSync(partialDirectory, { recursive: true })
       const partialPath = join(partialDirectory, artifactId)
       const finalPath = path(artifactId)
       try {
+        mkdirSync(partialDirectory, { recursive: true })
         await copyFile(sourcePath, partialPath, constants.COPYFILE_EXCL)
         const copied = await stat(partialPath)
         if (copied.size === 0 || copied.size > MAX_SHARED_FILE_BYTES) throw tooLarge()
@@ -329,7 +363,13 @@ export function createArtifactStore(database: DatabaseSync, dataDir: string) {
         const mimeType = sniffMedia(head)
         if (!mimeType) {
           throw new ShareRefusedError(
-            `${sourcePath} is not a video or image the chat can show (MP4, WebM, MOV, PNG, JPEG, WebP or GIF).`,
+            `${sourcePath} is not a video or image the chat can show (${SHAREABLE_NAMES}).`,
+          )
+        }
+        // An image is read whole wherever it is shown; only video streams.
+        if (mimeType.startsWith('image/') && copied.size > MAX_SHARED_IMAGE_BYTES) {
+          throw new ShareRefusedError(
+            `${sourcePath} is an image larger than ${megabytes(MAX_SHARED_IMAGE_BYTES)}, the most a shared image may be. Shrink or compress it and share it again.`,
           )
         }
         // The original's name, for the viewer and a download; never a path here.
@@ -346,6 +386,14 @@ export function createArtifactStore(database: DatabaseSync, dataDir: string) {
         rmSync(partialPath, { force: true })
         rmSync(finalPath, { force: true })
         throw error
+      } finally {
+        settle()
+      }
+    },
+    /** Remove a shared copy that never reached the transcript: row, then bytes. */
+    discard(metadata: Pick<ArtifactMetadata, 'artifactId' | 'sessionId'>) {
+      if (deleteOwned.run(metadata.artifactId, metadata.sessionId).changes === 1) {
+        removeBytes(metadata.artifactId)
       }
     },
     /**

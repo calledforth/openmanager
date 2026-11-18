@@ -1,12 +1,17 @@
 import { useCallback, useEffect, useState } from 'react'
-import type { EnvironmentClient } from '@openmanager/environment-client'
+import { isEnvironmentClientError, type EnvironmentClient } from '@openmanager/environment-client'
 import { useEnvironmentClientOptional } from '../providers/environment-client'
 
 export type ArtifactStream = {
   /** A URL a media player streams from; absent while it is asked for. */
   url?: string
-  /** The environment cannot stream it: an older one, or the artifact is gone. */
+  /** It cannot be streamed: the artifact is gone, or asking kept failing. */
   failed: boolean
+  /**
+   * This client has no way to ask for a stream at all (an older or a
+   * desktop client), as opposed to one that asked and was refused.
+   */
+  unsupported: boolean
   /** Ask for a new URL, as a player whose URL expired mid-video does. */
   retry: () => void
 }
@@ -16,6 +21,11 @@ type Grant = { url: string; expiresAt: number }
 
 /** A grant this close to expiring is not handed to a new player. */
 const GRANT_MARGIN_MS = 5 * 60_000
+/**
+ * Waits before asking again after a failure that may pass (the socket is
+ * reconnecting, a request dropped). After the last, the stream has failed.
+ */
+const BACKOFF_MS = [1_000, 2_000, 4_000, 8_000, 15_000, 30_000]
 
 /**
  * Grants by client, then by artifact. A transcript re-lays a turn out when it
@@ -32,56 +42,95 @@ function heldGrant(client: EnvironmentClient, key: string): Grant | undefined {
   return grant && grant.expiresAt - Date.now() > GRANT_MARGIN_MS ? grant : undefined
 }
 
+/** Whether asking again could get a different answer. */
+const mayPass = (error: unknown) =>
+  !isEnvironmentClientError(error) ||
+  error.code === 'unavailable' ||
+  error.code === 'internal'
+
+type State = { key?: string; url?: string; failed: boolean; unsupported: boolean }
+const WAITING: State = { failed: false, unsupported: false }
+
 /**
  * A streaming URL for a session's artifact (`artifactStreamUrl`), for a
  * player that reads it in ranges as it plays, rather than the whole file up
- * front. Asked for while the view is on screen.
+ * front. Asked for while the view is on screen; a failure that may pass is
+ * asked again, with growing waits, before the stream counts as failed.
  */
 export function useArtifactStream(artifact: Target | undefined): ArtifactStream {
   const client = useEnvironmentClientOptional()
   const sessionId = artifact?.sessionId
   const artifactId = artifact?.artifactId
   const key = sessionId && artifactId ? keyOf({ sessionId, artifactId }) : undefined
-  const [attempt, setAttempt] = useState(0)
-  const [state, setState] = useState<{ key?: string; url?: string; failed: boolean }>(() => {
+  // `fresh` skips a held grant: the player said the one it had stopped working.
+  const [request, setRequest] = useState({ count: 0, fresh: false, failures: 0 })
+  const [state, setState] = useState<State>(() => {
     const held = client && key ? heldGrant(client, key) : undefined
-    return held ? { key, url: held.url, failed: false } : { failed: false }
+    return held ? { key, url: held.url, failed: false, unsupported: false } : WAITING
   })
 
   useEffect(() => {
     if (!sessionId || !artifactId) return
     const current = keyOf({ sessionId, artifactId })
     if (!client?.artifactStreamUrl) {
-      setState({ key: current, failed: true })
+      setState({ key: current, failed: true, unsupported: true })
       return
     }
-    const held = attempt === 0 ? heldGrant(client, current) : undefined
+    const held = request.fresh ? undefined : heldGrant(client, current)
     if (held) {
       setState((previous) =>
         previous.key === current && previous.url === held.url
           ? previous
-          : { key: current, url: held.url, failed: false },
+          : { key: current, url: held.url, failed: false, unsupported: false },
       )
       return
     }
     const controller = new AbortController()
+    let timer: ReturnType<typeof setTimeout> | undefined
     client.artifactStreamUrl({ sessionId, artifactId }, { signal: controller.signal }).then(
       (grant) => {
         const byKey = grants.get(client) ?? new Map<string, Grant>()
         grants.set(client, byKey)
         byKey.set(current, grant)
-        if (!controller.signal.aborted) setState({ key: current, url: grant.url, failed: false })
+        if (!controller.signal.aborted) {
+          setState({ key: current, url: grant.url, failed: false, unsupported: false })
+        }
       },
-      () => {
-        if (!controller.signal.aborted) setState({ key: current, failed: true })
+      (error: unknown) => {
+        if (controller.signal.aborted) return
+        const wait = mayPass(error) ? BACKOFF_MS[request.failures] : undefined
+        if (wait === undefined) {
+          setState({ key: current, failed: true, unsupported: false })
+          return
+        }
+        timer = setTimeout(
+          () =>
+            setRequest((previous) => ({
+              count: previous.count + 1,
+              fresh: previous.fresh,
+              failures: previous.failures + 1,
+            })),
+          wait,
+        )
       },
     )
-    return () => controller.abort()
-  }, [artifactId, attempt, client, sessionId])
+    return () => {
+      controller.abort()
+      clearTimeout(timer)
+    }
+  }, [artifactId, client, request, sessionId])
 
-  const retry = useCallback(() => setAttempt((count) => count + 1), [])
+  // A client that comes back (a new socket) starts the waits over.
+  useEffect(() => {
+    setRequest((previous) => (previous.failures === 0 ? previous : { ...previous, failures: 0 }))
+  }, [client])
+
+  const retry = useCallback(
+    () => setRequest((previous) => ({ count: previous.count + 1, fresh: true, failures: 0 })),
+    [],
+  )
   // A view reused for another artifact must not play the previous one.
-  return state.key === key ? { url: state.url, failed: state.failed, retry } : { failed: false, retry }
+  return state.key === key ? { ...state, retry } : { ...WAITING, retry }
 }
 
 export type PlaybackPosition = { time: number; playing: boolean }

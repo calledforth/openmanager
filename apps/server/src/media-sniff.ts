@@ -3,6 +3,12 @@ import type { ShareableType } from './upload-limits.ts'
 /** How many leading bytes `sniffMedia` reads. */
 export const SNIFF_BYTES = 16
 
+/** `ftyp` major brands of MP4 video, as cameras, browsers and encoders write them. */
+const MP4_VIDEO_BRANDS = new Set([
+  'isom', 'iso2', 'iso4', 'iso5', 'iso6', 'mp41', 'mp42', 'avc1', 'dash', 'mmp4',
+  'M4V ', 'M4VP', 'MSNV', 'NDAS', '3gp4', '3gp5', '3gp6', '3g2a',
+])
+
 const ascii = (bytes: Uint8Array, start: number, end: number) =>
   String.fromCharCode(...bytes.subarray(start, end))
 
@@ -30,13 +36,18 @@ export function sniffMedia(head: Uint8Array): ShareableType | undefined {
   if (head[0] === 0x1a && head[1] === 0x45 && head[2] === 0xdf && head[3] === 0xa3) {
     return 'video/webm'
   }
-  // ISO base media: the `ftyp` box names the brand. QuickTime's own is `qt  `;
-  // an older movie opens with another top-level atom instead.
+  // ISO base media: the `ftyp` box names the brand, and only video brands
+  // pass. HEIC, AVIF and M4A share the container and are not video.
   const box = ascii(head, 4, 8)
-  if (box === 'ftyp') return ascii(head, 8, 12) === 'qt  ' ? 'video/quicktime' : 'video/mp4'
-  if (box === 'moov' || box === 'mdat' || box === 'wide' || box === 'free') {
-    return 'video/quicktime'
+  if (box === 'ftyp') {
+    const brand = ascii(head, 8, 12)
+    if (brand === 'qt  ') return 'video/quicktime'
+    return MP4_VIDEO_BRANDS.has(brand) ? 'video/mp4' : undefined
   }
+  // A QuickTime movie from before `ftyp` opens on its movie atom, or on the
+  // `wide` padding atom that precedes its media data.
+  if (box === 'moov') return 'video/quicktime'
+  if (box === 'wide' && ascii(head, 12, 16) === 'mdat') return 'video/quicktime'
   return undefined
 }
 

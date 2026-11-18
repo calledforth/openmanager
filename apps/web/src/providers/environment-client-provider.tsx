@@ -72,6 +72,7 @@ function cachedView(client: EnvironmentClient): EnvironmentClient {
   return {
     ...client,
     fetchArtifact: undefined,
+    artifactStreamUrl: undefined,
     fetchToolOutput: undefined,
     uploadArtifact: undefined,
   }

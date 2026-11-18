@@ -1,4 +1,3 @@
-import { useEvent } from 'expo'
 import { useVideoPlayer, VideoView } from 'expo-video'
 import { FilmStripIcon, WarningCircleIcon } from 'phosphor-react-native'
 import { memo, useEffect, useRef, useState } from 'react'
@@ -14,6 +13,9 @@ export interface TranscriptVideo {
   artifact?: { sessionId: string; artifactId: string }
   name?: string
 }
+
+/** Grants a mounted player renews before it counts the video as broken. */
+const MAX_RETRIES = 3
 
 /** A card is no wider than this, as an image card is not. */
 const CARD_MAX_WIDTH = 360
@@ -37,6 +39,7 @@ export const VideoPart = memo(function VideoPart({
 }) {
   const theme = usePhoneTheme()
   const stream = useArtifactStream(video.artifact)
+  const { retry } = stream
   const name = video.name?.trim() || 'Video'
   const cardWidth = Math.min(width, CARD_MAX_WIDTH)
   const [ratio, setRatio] = useState(DEFAULT_RATIO)
@@ -49,12 +52,15 @@ export const VideoPart = memo(function VideoPart({
     // Where it is, a few times a second, for the position kept below.
     created.timeUpdateEventInterval = 0.5
   })
-  const { status } = useEvent(player, 'statusChange', { status: player.status })
   const resumeAt = useRef<number | null>(null)
-  const retriedFor = useRef<string | null>(null)
+  // Set by a retry, cleared once the new source is ready: a second error in
+  // between is the file, not the grant. A player renews a few times at most.
+  const retrying = useRef(false)
+  const retries = useRef(0)
+  const [unplayable, setUnplayable] = useState(false)
   // Read from events, not the player: when the part unmounts the player is
   // released before this component's own cleanup runs.
-  const position = useRef({ time: 0, playing: false })
+  const position = useRef({ time: 0, playing: false, ended: false })
   const sessionId = video.artifact?.sessionId
   const artifactId = video.artifact?.artifactId
 
@@ -76,33 +82,47 @@ export const VideoPart = memo(function VideoPart({
     })
     const playing = player.addListener('playingChange', (event) => {
       position.current.playing = event.isPlaying
+      if (event.isPlaying) position.current.ended = false
+    })
+    const ended = player.addListener('playToEnd', () => {
+      position.current.ended = true
+    })
+    // This player's own status, never a previous one's: each URL gets a new
+    // player. A grant that ran out while the video sat paused fails the next
+    // range: ask for a new one and carry on where it was.
+    const status = player.addListener('statusChange', (event) => {
+      if (event.status === 'readyToPlay') retrying.current = false
+      if (event.status !== 'error') return
+      if (retrying.current || retries.current >= MAX_RETRIES) {
+        setUnplayable(true)
+        return
+      }
+      retrying.current = true
+      retries.current += 1
+      resumeAt.current = position.current.time
+      retry()
     })
     return () => {
       loaded.remove()
       timed.remove()
       playing.remove()
+      ended.remove()
+      status.remove()
     }
-  }, [artifactId, player, sessionId])
+  }, [artifactId, player, retry, sessionId])
 
   useEffect(() => {
     if (!sessionId || !artifactId) return
     const kept = position.current
     return () => {
-      if (kept.time > 0) playbackMemory.save({ sessionId, artifactId }, { ...kept })
+      // A video watched to the end starts again from the top, as on web.
+      if (kept.time > 0 && !kept.ended) {
+        playbackMemory.save({ sessionId, artifactId }, { time: kept.time, playing: kept.playing })
+      }
     }
   }, [artifactId, sessionId])
 
-  // A grant that ran out while the video sat paused fails the next range:
-  // ask for a new one, once per URL, and carry on where it was.
-  const { url, retry } = stream
-  useEffect(() => {
-    if (status !== 'error' || !url || retriedFor.current === url) return
-    retriedFor.current = url
-    resumeAt.current = player.currentTime
-    retry()
-  }, [player, retry, status, url])
-
-  const failed = stream.failed || (status === 'error' && retriedFor.current === stream.url)
+  const failed = stream.failed || unplayable
   return (
     <View style={{ marginVertical: 6, width: cardWidth }}>
       <View
@@ -137,7 +157,7 @@ export const VideoPart = memo(function VideoPart({
           numberOfLines={1}
           style={{ color: theme.faint, flexShrink: 1 }}
         >
-          {failed ? `${name} is unavailable` : name}
+          {unplayable ? `${name} cannot be played here` : failed ? `${name} is unavailable` : name}
         </AppText>
       </View>
     </View>

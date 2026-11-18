@@ -3,6 +3,12 @@ import { isAbsolute, join, resolve } from 'node:path'
 import type { AgentTool } from '@agentpack/runtime/node'
 import { z } from 'zod'
 import { ShareRefusedError, type ArtifactMetadata } from './artifacts.ts'
+import {
+  MAX_SHARED_FILE_BYTES,
+  MAX_SHARED_IMAGE_BYTES,
+  megabytes,
+  SHAREABLE_NAMES,
+} from './upload-limits.ts'
 
 export const SHARE_FILE_TOOL = 'share_file'
 
@@ -10,9 +16,7 @@ const DESCRIPTION = `Show the user a video or image file inline in the chat, as 
 
 Use it whenever the user should see a recording or picture you made: a screen recording of a UI flow (for example Playwright's \`recordVideo\`), a demo clip, a rendered chart or a screenshot. The file goes to the user only; none of its bytes enter your context, so sharing a large video costs you nothing.
 
-Takes MP4, WebM, MOV, PNG, JPEG, WebP or GIF, up to 1 GB. The file is copied when shared, so you may delete or overwrite it afterwards. Prefer MP4 (H.264) or WebM for video: every browser and phone plays them.`
-
-const megabytes = (bytes: number) => `${(bytes / 1024 / 1024).toFixed(bytes < 10 * 1024 * 1024 ? 1 : 0)} MB`
+Takes ${SHAREABLE_NAMES}: videos up to ${megabytes(MAX_SHARED_FILE_BYTES)}, images up to ${megabytes(MAX_SHARED_IMAGE_BYTES)}. The file is copied when shared, so you may delete or overwrite it afterwards. Prefer MP4 (H.264) or WebM for video: every browser and phone plays them.`
 
 /**
  * `share_file`: an agent puts a file it made into the chat. The bytes go to
@@ -23,9 +27,12 @@ export function createShareFileTool(deps: {
   /** The session the thread is working for, while it has a turn under way. */
   agentTurnOf: (
     threadId: string,
-  ) => { sessionId: string; workspaceId: string; cwd: string } | undefined
+  ) => { sessionId: string; workspaceId: string; cwd: string; turnId: string } | undefined
   share: (sessionId: string, workspaceId: string, path: string) => Promise<ArtifactMetadata>
-  present: (threadId: string, metadata: ArtifactMetadata) => boolean
+  /** File it into turn `turnId`; false when that turn is no longer the live one. */
+  present: (threadId: string, turnId: string, metadata: ArtifactMetadata) => boolean
+  /** Throw away a copy that never reached the transcript. */
+  discard: (metadata: ArtifactMetadata) => void
 }): AgentTool {
   return {
     name: SHARE_FILE_TOOL,
@@ -56,9 +63,8 @@ export function createShareFileTool(deps: {
         if (error instanceof ShareRefusedError) return { text: error.message, isError: true }
         throw error
       }
-      // A copy that never reached the transcript stays the session's, and
-      // goes with it.
-      if (!deps.present(context.threadId, metadata)) {
+      if (!deps.present(context.threadId, turn.turnId, metadata)) {
+        deps.discard(metadata)
         return {
           text: 'The turn ended before the file could be shown. Nothing was shared.',
           isError: true,

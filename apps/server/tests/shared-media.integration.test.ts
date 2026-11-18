@@ -188,6 +188,17 @@ describe('share_file', () => {
     ).toBe(false)
   }, 30_000)
 
+  it('holds a shared image to the ceiling of an attached one', async () => {
+    const answers: ToolAnswer[] = []
+    const host = await startStubHost(sharingAgent('huge.png', answers))
+    const png = Buffer.alloc(26 * 1024 * 1024)
+    Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]).copy(png)
+    await writeFile(join(host.workspaceRoot, 'huge.png'), png)
+    await runTurn(host)
+    expect(answers[0]).toMatchObject({ isError: true })
+    expect(answers[0]?.content[0]?.text).toMatch(/an image larger than 25 MB/)
+  }, 30_000)
+
   it('says when there is no such file', async () => {
     const answers: ToolAnswer[] = []
     const host = await startStubHost(sharingAgent('missing.webm', answers))

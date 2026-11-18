@@ -369,11 +369,13 @@ export async function startServer(config: ServerConfig) {
     agentTurnOf: () => undefined,
     share: () => Promise.reject(new Error('The environment is starting.')),
     present: () => false,
+    discard: () => undefined,
   }
   const shareFileTool = createShareFileTool({
     agentTurnOf: (threadId) => shareFileInto.agentTurnOf(threadId),
     share: (sessionId, workspaceId, path) => shareFileInto.share(sessionId, workspaceId, path),
-    present: (threadId, metadata) => shareFileInto.present(threadId, metadata),
+    present: (threadId, turnId, metadata) => shareFileInto.present(threadId, turnId, metadata),
+    discard: (metadata) => shareFileInto.discard(metadata),
   })
   const agentTools = createAgentToolsEndpoint({
     serverName: 'openmanager',
@@ -542,7 +544,9 @@ export async function startServer(config: ServerConfig) {
   shareFileInto = {
     agentTurnOf: (threadId) => threadService.agentTurnOf(threadId),
     share: (sessionId, workspaceId, path) => artifacts.share(sessionId, workspaceId, path),
-    present: (threadId, metadata) => threadService.presentArtifact(threadId, metadata),
+    present: (threadId, turnId, metadata) =>
+      threadService.presentArtifact(threadId, turnId, metadata),
+    discard: (metadata) => artifacts.discard(metadata),
   }
   closeWorkspaceSessions = (workspaceId) => {
     // Flush before the registry cascades deletion of the projected thread rows.

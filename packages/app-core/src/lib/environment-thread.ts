@@ -117,6 +117,7 @@ function mediaParts(message: Message, sessionId: string): MessagePart[] {
           artifact: { sessionId, artifactId: block.artifactId },
           name: block.name,
           mimeType: block.mimeType,
+          sizeBytes: block.sizeBytes,
           ...(message.role === 'assistant' ? { generated: true } : {}),
         },
       ]

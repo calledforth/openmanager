@@ -70,6 +70,17 @@ describe('sniffMedia', () => {
     expect(sniffMedia(bytes('RIFF', [1, 2, 3, 4], 'WEBPVP8 '))).toBe('image/webp')
   })
 
+  it('refuses what shares the MP4 container but is not video', () => {
+    for (const brand of ['heic', 'avif', 'mif1', 'M4A ', 'jp2 ']) {
+      expect(sniffMedia(bytes([0, 0, 0, 0x18], `ftyp${brand}`, [0, 0, 0, 0]))).toBeUndefined()
+    }
+    // A pre-`ftyp` movie passes; a file that merely has `free` there does not.
+    expect(sniffMedia(bytes([0, 0, 0, 8], 'moov', 'xxxxxxxx'))).toBe('video/quicktime')
+    expect(sniffMedia(bytes([0, 0, 0, 8], 'wide', [0, 0, 0, 8], 'mdat'))).toBe('video/quicktime')
+    expect(sniffMedia(bytes([0, 0, 0, 8], 'free', 'xxxxxxxx'))).toBeUndefined()
+    expect(sniffMedia(bytes([0, 0, 0, 8], 'mdat', 'xxxxxxxx'))).toBeUndefined()
+  })
+
   it('refuses anything else, whatever it is named', () => {
     expect(sniffMedia(bytes('-----BEGIN OPENSSH PRIVATE KEY-----'))).toBeUndefined()
     expect(sniffMedia(bytes('<svg xmlns="http://www.w3.org/2000/svg">'))).toBeUndefined()

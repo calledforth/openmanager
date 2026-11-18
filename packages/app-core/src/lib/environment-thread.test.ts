@@ -729,6 +729,7 @@ describe('artifact references', () => {
         artifact: { sessionId: THREAD.sessionId, artifactId: 'artifact-4' },
         name: 'flow.mp4',
         mimeType: 'video/mp4',
+        sizeBytes: 12,
         generated: true,
       },
     ])

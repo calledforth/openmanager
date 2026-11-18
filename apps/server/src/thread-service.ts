@@ -4082,18 +4082,20 @@ export function createThreadService(
         sessionId: record.session.sessionId,
         workspaceId: record.session.workspaceId,
         cwd: record.cwd,
+        turnId: record.activeTurn.turn.turnId,
       }
     },
 
     /**
      * File a stored artifact the agent shared into its live turn, as a reply
      * message of its own, where an image a tool returned would be: the client
-     * reads it by reference, so no bytes enter the event log.
+     * reads it by reference, so no bytes enter the event log. Only into the
+     * turn the share began in: a copy that outlived it belongs to no reply.
      */
-    presentArtifact(threadId: string, metadata: ArtifactMetadata): boolean {
+    presentArtifact(threadId: string, turnId: string, metadata: ArtifactMetadata): boolean {
       const record = threads.get(threadId)
       const active = record?.activeTurn
-      if (!record || !active || !options.artifacts) return false
+      if (!record || !active || active.turn.turnId !== turnId || !options.artifacts) return false
       const timestamp = new Date().toISOString()
       // Its own message: text the agent writes next starts a new one after it.
       active.textRunId = undefined
