@@ -25,7 +25,12 @@ import {
   type WriteOptions,
 } from './event-repository.ts'
 import { prepareDraftProjection } from './draft-projection.ts'
-import { OPEN_TURN_FOR_SESSION_SQL } from './queries.ts'
+import {
+  OPEN_TURN_FOR_SESSION_SQL,
+  PENDING_INTERACTIONS_FOR_NATIVE_SUBAGENTS_SQL,
+  PENDING_INTERACTIONS_FOR_SESSION_SQL,
+  THREAD_IN_SESSION_SQL,
+} from './queries.ts'
 import { getSessionSummary } from './session-store.ts'
 import { gitJsonOf, readWorkspace } from './workspace-rows.ts'
 import { createToolOutputStore, settledTextOf } from './tool-output.ts'
@@ -59,8 +64,9 @@ export function createEventProjector(
     insertSession: database.prepare(
       `INSERT INTO sessions (
          session_id, workspace_id, parent_session_id, provider_id, provider_session_id, title,
-         title_source, title_generated, status, created_at, updated_at
-       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'idle', ?, ?)`,
+         title_source, title_generated, status, created_at, updated_at, subagent_id,
+         subagent_origin, subagent_promptable
+       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'idle', ?, ?, ?, ?, ?)`,
     ),
     // The registry's one writer (docs/sync-foundations.md §4.7.11): a
     // registration inserts, every later change rewrites what the event states.
@@ -156,6 +162,24 @@ export function createEventProjector(
       'DELETE FROM session_pull_requests WHERE session_id = ? AND repository = ? AND number = ?',
     ),
     openTurnForSession: database.prepare(OPEN_TURN_FOR_SESSION_SQL),
+    pendingForSession: database.prepare(PENDING_INTERACTIONS_FOR_SESSION_SQL),
+    pendingForNativeSubagents: database.prepare(PENDING_INTERACTIONS_FOR_NATIVE_SUBAGENTS_SQL),
+    // The session a native subagent's child is filed under: its provider runs it.
+    nativeParentOf: database.prepare(
+      "SELECT parent_session_id FROM sessions WHERE session_id = ? AND subagent_origin = 'native'",
+    ),
+    threadInSession: database.prepare(THREAD_IN_SESSION_SQL),
+    // A record is restated whole; the thread it was first filed on keeps it.
+    updateSubagent: database.prepare(
+      `UPDATE subagents SET status = ?, record_json = ?, updated_at = ?
+       WHERE subagent_id = ? AND thread_id = ?`,
+    ),
+    insertSubagent: database.prepare(
+      `INSERT INTO subagents (
+         subagent_id, thread_id, owner_session_id, task_id, status, record_json, created_at,
+         updated_at
+       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+    ),
     // Not a sidebar-ordering change, so `updated_at` stays put.
     updateSessionComposer: database.prepare(
       'UPDATE sessions SET composer_json = ? WHERE session_id = ?',
@@ -359,7 +383,11 @@ export function createEventProjector(
     if (event.payload.userMessage) {
       insertMessage(event.payload.userMessage, thread.workspace_id, true, at)
     }
-    s.updateSessionStatus.run('running', at, event.scope.sessionId)
+    s.updateSessionStatus.run(
+      withSubagentsWaiting(event.scope.sessionId, 'running'),
+      at,
+      event.scope.sessionId,
+    )
     s.unsettleSession.run(event.scope.sessionId)
     // The earlier result is superseded by the turn now running.
     s.clearSessionDone.run(event.scope.sessionId)
@@ -559,6 +587,47 @@ export function createEventProjector(
     )
   }
 
+  /** Whether a native subagent under the session, at any depth, waits on a request. */
+  const subagentsWaiting = (sessionId: string) =>
+    s.pendingForNativeSubagents.get(sessionId) !== undefined
+
+  /**
+   * A resting or running session whose native subagent waits on the user
+   * waits too: its provider is blocked on that request
+   * (docs/decisions/subagents.md, Permissions and questions).
+   */
+  const withSubagentsWaiting = (sessionId: string, status: string) =>
+    (status === 'running' || status === 'idle') && subagentsWaiting(sessionId) ? 'waiting' : status
+
+  /**
+   * Restate each session above a native subagent's child once one of the
+   * child's requests opened or settled: waiting while any request under it
+   * (or its own) is open, and back to what its own turns and background work
+   * say once none is. A failed session stays failed.
+   */
+  function refreshParentsOf(sessionId: string, at: number): void {
+    let child = sessionId
+    // Bounded by how deep providers nest; a cycle cannot be filed, but a
+    // loop over rows must still end.
+    for (let depth = 0; depth < 16; depth++) {
+      const parent = (s.nativeParentOf.get(child) as { parent_session_id: string | null } | undefined)
+        ?.parent_session_id
+      if (!parent) return
+      const row = s.selectSessionStatus.get(parent) as { status: string } | undefined
+      if (!row) return
+      const waiting = s.pendingForSession.get(parent) !== undefined || subagentsWaiting(parent)
+      if (waiting && (row.status === 'running' || row.status === 'idle')) {
+        s.updateSessionStatus.run('waiting', at, parent)
+        s.unsettleSession.run(parent)
+        s.uncookSession.run(parent)
+      } else if (!waiting && row.status === 'waiting') {
+        const working = !!s.openTurnForSession.get(parent) || !!s.hasBackgroundTasks.get(parent)
+        s.updateSessionStatus.run(working ? 'running' : 'idle', at, parent)
+      }
+      child = parent
+    }
+  }
+
   return function projectEvent(event: DurableProofEvent, write?: WriteOptions): void {
     const at = Date.parse(event.timestamp)
     switch (event.name) {
@@ -582,6 +651,9 @@ export function createEventProjector(
           source === 'generated' ? 1 : 0,
           at,
           at,
+          session.subagent?.subagentId ?? null,
+          session.subagent?.origin ?? null,
+          session.subagent ? (session.subagent.promptable ? 1 : 0) : null,
         )
         // Built from the row the projection wrote, checked rather than
         // assumed: what a listing reads back equals what the event said.
@@ -926,6 +998,7 @@ export function createEventProjector(
         s.updateSessionStatus.run('waiting', at, event.scope.sessionId)
         s.unsettleSession.run(event.scope.sessionId)
         s.uncookSession.run(event.scope.sessionId)
+        refreshParentsOf(event.scope.sessionId, at)
         return
       }
       case 'interaction.resolved':
@@ -961,7 +1034,12 @@ export function createEventProjector(
         if (s.updateOpenTurnState.run(status, at, turnId, event.scope.threadId).changes !== 1) {
           throw new ProjectionRefusal(`Cannot resume missing or finished turn ${turnId}`)
         }
-        s.updateSessionStatus.run(status, at, event.scope.sessionId)
+        s.updateSessionStatus.run(
+          withSubagentsWaiting(event.scope.sessionId, status),
+          at,
+          event.scope.sessionId,
+        )
+        refreshParentsOf(event.scope.sessionId, at)
         return
       }
       case 'turn.completed':
@@ -1010,7 +1088,9 @@ export function createEventProjector(
           event.name === 'turn.failed' ||
           (event.name === 'turn.interrupted' && event.payload.reason === 'server_restarted')
         const session = s.updateSessionStatus.run(
-          failedHere ? 'error' : working ? 'running' : 'idle',
+          failedHere
+            ? 'error'
+            : withSubagentsWaiting(event.scope.sessionId, working ? 'running' : 'idle'),
           at,
           event.scope.sessionId,
         )
@@ -1046,6 +1126,47 @@ export function createEventProjector(
       case 'turn.notice.recorded':
         projectNotice(event, at)
         return
+      case 'subagent.updated': {
+        // Filed on the thread whose transcript holds the call that started
+        // it, which belongs to the session the record names as its parent.
+        const { subagent } = event.payload
+        if (
+          subagent.parentSessionId !== event.scope.sessionId ||
+          !s.threadInSession.get(event.scope.threadId, event.scope.sessionId)
+        ) {
+          throw new ProjectionRefusal(
+            `Subagent ${subagent.subagentId} does not belong to thread ${event.scope.threadId}`,
+          )
+        }
+        const json = JSON.stringify(subagent)
+        const updated = s.updateSubagent.run(
+          subagent.status,
+          json,
+          at,
+          subagent.subagentId,
+          event.scope.threadId,
+        )
+        if (updated.changes === 1) return
+        // A new record says which report of its runtime it is; only the
+        // write creating it can.
+        const task = write?.subagentTasks?.[subagent.subagentId]
+        if (!task) {
+          throw new ProjectionRefusal(
+            `Subagent ${subagent.subagentId} is new, or filed elsewhere, and names no task`,
+          )
+        }
+        s.insertSubagent.run(
+          subagent.subagentId,
+          event.scope.threadId,
+          task.ownerSessionId,
+          task.taskId,
+          subagent.status,
+          json,
+          at,
+          at,
+        )
+        return
+      }
     }
   }
 }

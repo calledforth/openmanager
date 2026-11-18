@@ -40,6 +40,10 @@ import {
   type QueuedMessageSettings,
   type ThreadQueue,
   type ThreadQueuePause,
+  isSettledSubagentStatus,
+  type SessionSubagent,
+  type Subagent,
+  type SubagentStatus,
 } from '@openmanager/protocol/node'
 import {
   projectAgentEvent,
@@ -54,8 +58,10 @@ import {
 import {
   cancelledInteractionIds,
   findOpenTurnId,
-  findSessionIdByProviderSession,
+  findSubagentByTask,
+  findSubagentSessionId,
   findTurnByCommandId,
+  getStoredSubagent,
   getProviderSessionId,
   getSessionSummary,
   hasInteraction,
@@ -65,6 +71,15 @@ import {
   readThreadState,
   type ThreadState,
 } from './db/session-store.ts'
+import {
+  mergeReport,
+  preview,
+  reportOf,
+  sameRecord,
+  subagentRecord,
+  subagentStatusOf,
+  type SubtaskUpdate,
+} from './subagent-records.ts'
 import type { ArtifactMetadata, ArtifactStore } from './artifacts.ts'
 import { withSettledText } from './db/tool-output.ts'
 import { waitingKind } from './db/session-activity.ts'
@@ -87,6 +102,7 @@ const WORKSPACE_UNAVAILABLE =
 const SESSION_WORKSPACE_UNAVAILABLE =
   'The session folder is missing, moved, or inaccessible on this environment. Restore the original folder path or its permissions, then try again. Your session is still listed.'
 const ARTIFACTS_UNAVAILABLE = 'These images are no longer available. Attach them again.'
+const ONLY_ITS_AGENT = 'Only the agent that started this subagent can reach it.'
 const SEND_WORKSPACE_UNAVAILABLE =
   'The session folder is unavailable. Restore the original folder path or its permissions, then reopen the session.'
 type RuntimeEvent = Parameters<HostDeps['emitEvent']>[0]
@@ -258,6 +274,7 @@ type InteractionRuntime = Pick<AgentRuntime, 'ensureSession' | 'prompt' | 'cance
       | 'respondQuestion'
       | 'respondPlan'
       | 'stopBackgroundTasks'
+      | 'stopSubtask'
       | 'closeThread'
       | 'steer'
       | 'withdrawSteer'
@@ -318,11 +335,41 @@ type ThreadRecord = {
   cancellation?: Promise<void>
   pendingBuild?: boolean
   /**
+   * Set on a child session that holds a subagent's work, as its summary
+   * says it (docs/decisions/subagents.md, Child sessions).
+   */
+  subagent?: SessionSubagent
+  /**
+   * A child with no provider session of its own: its parent's runtime fills
+   * it, and nothing may prompt, load or stop it as a session.
+   */
+  detached?: boolean
+  /**
    * The draft images this session's launch claimed. A rolled-back launch
    * hands them back before the session's deletion would take them along, so
    * the draft it restores has its images.
    */
   claimedArtifacts?: string[]
+}
+
+/**
+ * One subagent a runtime reported, as this process knows it. Keyed by the
+ * session whose runtime reports it and the runtime's `taskId`
+ * (docs/decisions/subagents.md, Identity).
+ */
+type SubagentEntry = {
+  key: string
+  taskId: string
+  /** The record whose runtime reports it: its events arrive on this thread. */
+  owner: ThreadRecord
+  /** The record whose thread the record is filed on (its parent's transcript). */
+  holder: ThreadRecord
+  /** Everything the runtime reported, merged. */
+  report: SubtaskUpdate
+  /** As last announced. */
+  record: Subagent
+  /** The child session holding its work, unless the user deleted it. */
+  child?: ThreadRecord
 }
 
 /** Why a session the rows hold could not be loaded: the answer an open gives. */
@@ -553,14 +600,28 @@ export function createThreadService(
 ) {
   const sessions = new Map<string, ThreadRecord>()
   const threads = new Map<string, ThreadRecord>()
-  /** Host session per `providerId:providerSessionId` registered as a child this process. */
-  const childSessionIds = new Map<string, string>()
+  /** Every subagent this process has heard of, by `subagentKey`. */
+  const subagentEntries = new Map<string, SubagentEntry>()
+  const subagentsById = new Map<string, SubagentEntry>()
   /**
-   * Children the user deleted while this process runs, by the same key. The
-   * parent turn that delegated them may still report the subtask, and that
-   * report must not quietly recreate what the user removed.
+   * Subagents whose child the user deleted while this process runs, by the
+   * same key. The runtime may still report the subagent, and that report
+   * must not quietly recreate what the user removed. After a restart the
+   * stored record, naming a child that is gone, says the same.
    */
   const forgottenChildren = new Set<string>()
+  /**
+   * The child that raised each open request of a subagent, by provider and
+   * the provider's request id, so the request's settlement reaches that
+   * child even when the runtime does not tag it.
+   */
+  const childRequests = new Map<string, ThreadRecord>()
+  /**
+   * Subagents whose record went with a deleted child it was filed on (a
+   * nested subagent's parent subagent). Nothing is left to show it on, so
+   * later reports of it are dropped rather than filed somewhere else.
+   */
+  const droppedSubagents = new Set<string>()
   // Supplied after construction so the service can be assembled before the
   // WebSocket publisher exists.
   let environmentId = ''
@@ -576,6 +637,19 @@ export function createThreadService(
     // every respawn (docs/sync-foundations.md §4.7.4 (e)).
     ...(record.session.parentSessionId ? { load: 'require' as const } : {}),
   })
+
+  /**
+   * The provider session of a child its parent's runtime fills: none. Every
+   * path that would prompt, load or stop it as a session refuses it first;
+   * this only keeps one that slips through from reaching a provider.
+   */
+  const detachedSession = () => {
+    const none = Promise.reject(
+      new Error(ONLY_ITS_AGENT),
+    )
+    none.catch(() => undefined)
+    return none
+  }
 
   /**
    * Sessions this process learned it can never open: a sub-agent's chat the
@@ -718,6 +792,17 @@ export function createThreadService(
       // Deferred until the caller has marked the turn completed, which it
       // does right after announcing it.
       if (record && event.name === 'turn.completed') queueMicrotask(() => refineTitle(record))
+      // A subagent running in the foreground ends with the turn that ran it,
+      // whatever its runtime says after; one in the background runs on.
+      if (record && event.name !== 'turn.completed') {
+        queueMicrotask(() =>
+          interruptSubagentsOf(
+            record,
+            (entry) => !entry.record.background,
+            'The turn that started it ended.',
+          ),
+        )
+      }
       // The queue follows the turn's end, deferred for the same reason: the
       // next turn may only start once this one is off the record.
       if (record && committed) {
@@ -853,6 +938,10 @@ export function createThreadService(
       alongside?: readonly ProofEvent[]
       /** The provider's own id for the session, when it is known before the row exists (a child). */
       identity?: string
+      /** What the child holds, for a subagent's child session. */
+      subagent?: SessionSubagent
+      /** The runtime's key of each subagent record `alongside` creates; see WriteOptions. */
+      subagentTasks?: WriteOptions['subagentTasks']
     },
   ): string => {
     const timestamp = new Date().toISOString()
@@ -874,6 +963,7 @@ export function createThreadService(
           updatedAt: timestamp,
           settledAt: null,
           doneAt: null,
+          ...(created.subagent ? { subagent: created.subagent } : {}),
         },
       },
     })
@@ -887,9 +977,13 @@ export function createThreadService(
     })
     const alongside = created.alongside ?? []
     if (options.appendAtomic) {
+      const write: WriteOptions = {
+        ...(created.identity ? { identities: { [session.sessionId]: created.identity } } : {}),
+        ...(created.subagentTasks ? { subagentTasks: created.subagentTasks } : {}),
+      }
       options.appendAtomic(
         [announced, threadCreated, ...alongside],
-        created.identity ? { identities: { [session.sessionId]: created.identity } } : undefined,
+        Object.keys(write).length > 0 ? write : undefined,
       )
       return timestamp
     }
@@ -926,8 +1020,15 @@ export function createThreadService(
         dropped.push(item)
       }
     }
-    for (const [key, hostId] of childSessionIds) {
-      if (seen.has(hostId)) childSessionIds.delete(key)
+    for (const [key, entry] of subagentEntries) {
+      if (seen.has(entry.owner.session.sessionId) || seen.has(entry.holder.session.sessionId)) {
+        subagentEntries.delete(key)
+        subagentsById.delete(entry.record.subagentId)
+        if (!seen.has(entry.owner.session.sessionId)) droppedSubagents.add(key)
+      } else if (entry.child && seen.has(entry.child.session.sessionId)) entry.child = undefined
+    }
+    for (const [key, child] of childRequests) {
+      if (seen.has(child.session.sessionId)) childRequests.delete(key)
     }
     return dropped
   }
@@ -980,6 +1081,9 @@ export function createThreadService(
     restoredThreads: Thread[],
   ) => {
     const records: ThreadRecord[] = []
+    // A subagent's child with no provider session of its own is only ever
+    // filled by its parent's runtime: there is nothing to load.
+    const detached = !!session.subagent && !providerSessionId
     for (const thread of restoredThreads) {
       const record: ThreadRecord = {
         session: {
@@ -991,12 +1095,16 @@ export function createThreadService(
         thread,
         providerId,
         cwd,
-        runtimeSession: Promise.resolve().then(() => {
-          if (threads.get(thread.threadId) !== record) throw new Error('Session was closed.')
-          return runtime
-            .ensureSession(route(record, providerSessionId))
-            .then((result) => stampIdentity(record, result.sessionId))
-        }),
+        runtimeSession: detached
+          ? detachedSession()
+          : Promise.resolve().then(() => {
+              if (threads.get(thread.threadId) !== record) throw new Error('Session was closed.')
+              return runtime
+                .ensureSession(route(record, providerSessionId))
+                .then((result) => stampIdentity(record, result.sessionId))
+            }),
+        ...(session.subagent ? { subagent: session.subagent } : {}),
+        ...(detached ? { detached: true } : {}),
         turns: [],
         messages: [],
         commandTurns: new Map(),
@@ -1010,7 +1118,7 @@ export function createThreadService(
         status: session.status,
         updatedAt: Date.parse(session.updatedAt),
       }
-      void record.runtimeSession.catch((error: unknown) => {
+      if (!detached) void record.runtimeSession.catch((error: unknown) => {
         // A sub-agent's chat the agent no longer knows can never be opened:
         // nothing was created in its place and its identity is kept.
         if (error instanceof SessionUnknownError) unrecoverable.add(session.sessionId)
@@ -1049,7 +1157,11 @@ export function createThreadService(
     // created now and stamped before any prompt (§4.7.4); a sub-agent's
     // cannot be, because its transcript would be lost.
     const providerSessionId = getProviderSessionId(database, sessionId) ?? undefined
-    if (!providerSessionId && session.parentSessionId) return { refused: UNRECOVERABLE }
+    // A native subagent's child holds what its parent's runtime filed, and
+    // nothing more: it opens from the rows alone.
+    if (!providerSessionId && session.parentSessionId && !session.subagent) {
+      return { refused: UNRECOVERABLE }
+    }
     if (
       !providers[providerId] ||
       (providerSessionId && !providers[providerId].capabilities.canLoadSession)
@@ -1489,6 +1601,7 @@ export function createThreadService(
         })
       }
       touch(record, 'waiting')
+      if (record.subagent) childRequestsChanged(record, providerInteractionId, true)
     } else if (
       active &&
       (projected.name === 'interaction.resolved' || projected.name === 'interaction.expired')
@@ -1550,6 +1663,7 @@ export function createThreadService(
       }
       active.pendingInteractions.delete(projected.payload.response.interactionId)
       touch(record, active.pendingInteractions.size > 0 ? 'waiting' : 'running')
+      if (record.subagent) childRequestsChanged(record, providerInteractionId, false)
     }
   }
 
@@ -1678,9 +1792,15 @@ export function createThreadService(
     touch(record, 'running')
   }
 
-  const touch = (record: ThreadRecord, status?: SessionStatus) => {
+  const touch = (record: ThreadRecord, requested?: SessionStatus) => {
     record.updatedAt = Date.now()
-    if (!status) return
+    if (!requested) return
+    // Its provider is blocked on a native subagent's request, so the session
+    // waits with it, as the rows say (event-projection.ts).
+    const status =
+      (requested === 'running' || requested === 'idle') && subagentsWaiting(record)
+        ? 'waiting'
+        : requested
     const changed = record.status !== status
     record.status = status
     // SQLite emits status from its transaction. The in-memory test seam
@@ -1699,10 +1819,7 @@ export function createThreadService(
 
   /** The in-memory reading of `readSessionActivity`; see db/session-activity.ts. */
   const activityOf = (record: ThreadRecord, status: SessionStatus): StatusActivity => ({
-    waitingOn:
-      status === 'waiting'
-        ? (waitingKind(record.activeTurn?.pendingInteractions.values() ?? []) ?? null)
-        : null,
+    waitingOn: status === 'waiting' ? (waitingKind(requestsUnder(record)) ?? null) : null,
     inBackground: status === 'running' && !record.activeTurn && !!record.backgroundTasks?.length,
   })
 
@@ -1979,60 +2096,466 @@ export function createThreadService(
     )
   }
 
+  // ------------------------------------------------------------ subagents
+  //
+  // docs/decisions/subagents.md. A runtime reports each subagent with
+  // `subtask_update` under a `taskId` of its own, and tags the subagent's work
+  // with `subtaskId`. Each subagent is one record, filed on the thread whose
+  // transcript holds the call that started it, and one child session, filed
+  // under that thread's session, holding its work as the child's own turns.
+
+  const subagentKey = (owner: ThreadRecord, taskId: string) =>
+    `${owner.session.sessionId}\n${taskId}`
+
+  /** Events a subagent's work is made of; the rest belong to its runtime. */
+  const SUBAGENT_WORK: ReadonlySet<RuntimeEvent['event']> = new Set<RuntimeEvent['event']>([
+    'agent_message_chunk',
+    'agent_thought_chunk',
+    'tool_call',
+    'tool_call_update',
+    'tool_call_content',
+    'permission_request',
+    'permission_resolved',
+    'question_request',
+    'question_resolved',
+    'plan_review_request',
+    'plan_review_resolved',
+    'plan_update',
+    'provider_notice',
+  ])
+
+  /** The provider's request id an event settles, for a request a child raised. */
+  const settledRequestKey = (event: RuntimeEvent) =>
+    event.event === 'permission_resolved' ||
+    event.event === 'question_resolved' ||
+    event.event === 'plan_review_resolved'
+      ? `${event.providerId}\n${event.data.requestId}`
+      : undefined
+
+  /** Native subagents filed directly under a record, in memory. */
+  const nativeChildrenOf = (record: ThreadRecord) =>
+    [...threads.values()].filter(
+      (item) =>
+        item.subagent?.origin === 'native' &&
+        item.session.parentSessionId === record.session.sessionId,
+    )
+
   /**
-   * File the provider's child session (a subagent transcript) as a host
-   * session under the parent, once. The provider repeats the subtask across
-   * updates and after reconnects, so the child is looked up in memory and
-   * then in SQLite before a new identity is minted. The provider session id
-   * is stamped in the same step as the rows, so the child can be resumed
-   * after a restart exactly like a session the user created.
+   * The requests a record waits on: its turn's own, and those of its native
+   * subagents at any depth, whose provider is this record's and is blocked
+   * on them (docs/decisions/subagents.md, Permissions and questions).
    */
-  const registerChildSession = (
-    parent: ThreadRecord,
-    providerSessionId: string,
-    title: string | null,
-  ) => {
-    const key = `${parent.providerId}:${providerSessionId}`
-    if (childSessionIds.has(key) || forgottenChildren.has(key)) return
+  const requestsUnder = (
+    record: ThreadRecord,
+    depth = 0,
+  ): { kind: InteractionKind; createdAt: number }[] => [
+    ...(record.activeTurn?.pendingInteractions.values() ?? []),
+    ...(depth < 16
+      ? nativeChildrenOf(record).flatMap((child) => requestsUnder(child, depth + 1))
+      : []),
+  ]
+
+  const subagentsWaiting = (record: ThreadRecord) =>
+    nativeChildrenOf(record).some((child) => requestsUnder(child).length > 0)
+
+  /**
+   * Restate each session above a native subagent's child once the child's
+   * requests changed: waiting while one is open under it, and what its own
+   * turn and background work say once none is (`touch` lays the subagents'
+   * requests over it). The rows do the same in their own transaction
+   * (event-projection.ts `refreshParentsOf`).
+   */
+  const refreshParentsWaiting = (child: ThreadRecord) => {
+    let item = child
+    for (let depth = 0; depth < 16; depth++) {
+      if (item.subagent?.origin !== 'native' || !item.session.parentSessionId) return
+      const parent = sessions.get(item.session.parentSessionId)
+      if (!parent) return
+      if (parent.status === 'waiting' || parent.status === 'running' || parent.status === 'idle') {
+        touch(
+          parent,
+          parent.activeTurn?.pendingInteractions.size
+            ? 'waiting'
+            : parent.activeTurn
+              ? 'running'
+              : resting(parent),
+        )
+      }
+      item = parent
+    }
+  }
+
+  const subagentEvent = (holder: ThreadRecord, subagent: Subagent, timestamp: string) =>
+    ProofEventSchemas['subagent.updated'].parse({
+      type: 'event',
+      name: 'subagent.updated',
+      eventId: randomUUID(),
+      timestamp,
+      scope: threadScope(holder),
+      payload: { subagent },
+    })
+
+  /** The record as it stands now: what the runtime reported, where it is filed, what its child waits on. */
+  const restate = (entry: SubagentEntry, at: string): Subagent => {
+    const previous = entry.record
+    const waitingOn = entry.child?.activeTurn
+      ? waitingKind(entry.child.activeTurn.pendingInteractions.values())
+      : undefined
+    return subagentRecord(
+      entry.report,
+      {
+        subagentId: previous.subagentId,
+        parentSessionId: previous.parentSessionId,
+        turnId: previous.turnId,
+        ...(previous.toolCallId ? { toolCallId: previous.toolCallId } : {}),
+        ...(previous.parentSubagentId ? { parentSubagentId: previous.parentSubagentId } : {}),
+        depth: previous.depth,
+        origin: previous.origin,
+        providerId: previous.providerId,
+        ...(entry.child ? { childSessionId: entry.child.session.sessionId } : {}),
+      },
+      {
+        startedAt: previous.startedAt,
+        finishedAt: previous.finishedAt ?? at,
+        updatedAt: at,
+      },
+      waitingOn,
+    )
+  }
+
+  /**
+   * Announce the record when it says something new. Whole, on the thread
+   * that holds the call that started it, so a client applying it twice, or
+   * only the newest, holds the same card.
+   */
+  const announceSubagent = (entry: SubagentEntry, at = new Date().toISOString()) => {
+    const next = restate(entry, at)
+    if (sameRecord(entry.record, next)) return
+    // Memory follows the report either way: the batcher keeps a write that
+    // failed and writes it before anything later, and the next restatement
+    // is whole.
+    appendRuntimeEvent(subagentEvent(entry.holder, next, at))
+    entry.record = next
+  }
+
+  const rememberSubagent = (entry: SubagentEntry) => {
+    subagentEntries.set(entry.key, entry)
+    subagentsById.set(entry.record.subagentId, entry)
+  }
+
+  /**
+   * A delegated turn: begun by the parent agent, its user message what the
+   * parent asked. A runtime that has not said the prompt yet has said what
+   * the subagent is for, and that stands in for it.
+   */
+  const delegatedTurn = (thread: Thread, asked: string, at: string) => {
+    const turn: Turn = {
+      turnId: randomUUID(),
+      threadId: thread.threadId,
+      state: 'running',
+      startedAt: at,
+      origin: 'delegated',
+    }
+    const userMessage: Message = {
+      messageId: randomUUID(),
+      threadId: thread.threadId,
+      turnId: turn.turnId,
+      role: 'user',
+      content: [{ type: 'text', text: asked }],
+    }
+    const event = ProofEventSchemas['turn.started'].parse({
+      type: 'event',
+      name: 'turn.started',
+      eventId: randomUUID(),
+      timestamp: at,
+      scope: { type: 'thread', environmentId, sessionId: thread.sessionId, threadId: thread.threadId },
+      payload: { turn, userMessage },
+    })
+    return { turn, userMessage, event }
+  }
+
+  /** Hold a delegated turn that was written as the child's active turn. */
+  const beginDelegatedTurn = (child: ThreadRecord, start: ReturnType<typeof delegatedTurn>) => {
+    child.turns.push(start.turn)
+    child.messages.push(start.userMessage)
+    child.activeTurn = {
+      turn: start.turn,
+      userMessage: start.userMessage,
+      interruptRequested: false,
+      promptStarted: true,
+      toolIds: new Map(),
+      interactionIds: new Map(),
+      pendingInteractions: new Map(),
+    }
+    touch(child, 'running')
+  }
+
+  /** Open a turn in the child for a subagent that started again (`SendMessage` revived it). */
+  const openDelegatedTurn = (child: ThreadRecord, asked: string, at: string) => {
+    const start = delegatedTurn(child.thread, asked, at)
+    try {
+      // Written before anything is filed under it, as any turn's start is.
+      if (options.appendAtomic) options.appendAtomic([start.event])
+      else appendEvent(start.event)
+    } catch (error) {
+      // The next report tries again; what arrives meanwhile has no turn to go to.
+      options.onPersistenceError?.(error, 'turn.started')
+      return
+    }
+    beginDelegatedTurn(child, start)
+  }
+
+  /** End the child's delegated turn the way its subagent ended. */
+  const settleDelegatedTurn = (child: ThreadRecord, status: SubagentStatus, reason?: string) => {
+    const active = child.activeTurn
+    if (!active || active.turn.origin !== 'delegated') return
+    const timestamp = new Date().toISOString()
+    closeOpenReasoning(child, active, timestamp)
+    const scope = threadScope(child)
+    const { turnId } = active.turn
+    const base = { type: 'event', eventId: randomUUID(), timestamp, scope } as const
+    appendRuntimeEvent(
+      status === 'completed'
+        ? ProofEventSchemas['turn.completed'].parse({
+            ...base,
+            name: 'turn.completed',
+            payload: { turnId },
+          })
+        : status === 'failed'
+          ? ProofEventSchemas['turn.failed'].parse({
+              ...base,
+              name: 'turn.failed',
+              payload: {
+                turnId,
+                reason: 'provider_error',
+                message: TURN_FAILURE_MESSAGES.provider_error,
+                ...(reason?.trim() ? { detail: preview(reason.trim(), 1000) } : {}),
+              },
+            })
+          : ProofEventSchemas['turn.interrupted'].parse({
+              ...base,
+              name: 'turn.interrupted',
+              payload: { turnId, reason: 'user' },
+            }),
+    )
+    active.turn.state =
+      status === 'completed' ? 'completed' : status === 'failed' ? 'failed' : 'interrupted'
+    child.activeTurn = undefined
+    for (const [key, item] of childRequests) if (item === child) childRequests.delete(key)
+    touch(child, status === 'failed' ? 'error' : resting(child))
+    refreshParentsWaiting(child)
+  }
+
+  /**
+   * A child filed before its provider named a session of its own (OpenCode
+   * names it once its task runs): from now on it can be loaded and
+   * prompted. Host-private and not activity, like any identity's stamp.
+   */
+  const attachChildSession = (child: ThreadRecord, providerSessionId: string) => {
     if (options.database) {
-      options.flush?.()
-      const persisted = findSessionIdByProviderSession(
-        options.database,
-        parent.providerId,
-        providerSessionId,
-      )
-      if (persisted) {
-        childSessionIds.set(key, persisted)
+      try {
+        options.database
+          .prepare(
+            'UPDATE sessions SET provider_session_id = ? WHERE session_id = ? AND provider_session_id IS NULL',
+          )
+          .run(providerSessionId, child.session.sessionId)
+      } catch (error) {
+        options.onPersistenceError?.(error, 'session.created')
         return
       }
     }
-    const session: Session = {
-      sessionId: randomUUID(),
-      workspaceId: parent.session.workspaceId,
-      title,
-      parentSessionId: parent.session.sessionId,
+    child.detached = undefined
+    child.runtimeSession = Promise.resolve(providerSessionId)
+  }
+
+  /**
+   * The records of a child session the rows hold and memory does not. A
+   * child with a provider session of its own resumes it on its first prompt,
+   * as it did when it was filed; one without is its parent runtime's to fill.
+   */
+  const restoreChildRecord = (sessionId: string, cwd: string): ThreadRecord | undefined => {
+    const existing = sessions.get(sessionId)
+    if (existing || !options.database) return existing
+    const summary = getSessionSummary(options.database, sessionId)
+    if (!summary) return undefined
+    const providerSessionId = getProviderSessionId(options.database, sessionId)
+    for (const thread of listThreadsForSession(options.database, sessionId)) {
+      const record: ThreadRecord = {
+        session: {
+          sessionId,
+          workspaceId: summary.workspaceId,
+          title: summary.title,
+          ...(summary.parentSessionId ? { parentSessionId: summary.parentSessionId } : {}),
+        },
+        thread,
+        providerId: summary.providerId as ProviderId,
+        cwd,
+        runtimeSession: providerSessionId
+          ? Promise.resolve(providerSessionId)
+          : detachedSession(),
+        ...(providerSessionId ? {} : { detached: true }),
+        ...(summary.subagent ? { subagent: summary.subagent } : {}),
+        turns: [],
+        messages: [],
+        commandTurns: new Map(),
+        interactions: new Map(),
+        queue: readThreadQueue(options.database, thread.threadId),
+        titleSource: summary.titleSource,
+        status: summary.status,
+        updatedAt: Date.parse(summary.updatedAt),
+      }
+      threads.set(thread.threadId, record)
+      if (!sessions.has(sessionId)) sessions.set(sessionId, record)
     }
-    const thread: Thread = { threadId: randomUUID(), sessionId: session.sessionId }
+    return sessions.get(sessionId)
+  }
+
+  /**
+   * A subagent the rows hold under this runtime's key and memory does not:
+   * one reported before a restart, reported again (a revival, or a late
+   * update). A record whose child is gone was the user's to delete.
+   */
+  const recallSubagent = (owner: ThreadRecord, taskId: string): SubagentEntry | undefined => {
+    const database = options.database
+    if (!database) return undefined
+    options.flush?.()
+    const stored = findSubagentByTask(database, owner.session.sessionId, taskId)
+    if (!stored) return undefined
+    // A nested subagent's record is filed on its parent subagent's child.
+    if (!threads.has(stored.threadId)) restoreChildRecord(stored.record.parentSessionId, owner.cwd)
+    const holder = threads.get(stored.threadId)
+    if (!holder) return undefined
+    const childSessionId = findSubagentSessionId(database, stored.record.subagentId)
+    const child = childSessionId ? restoreChildRecord(childSessionId, owner.cwd) : undefined
+    const key = subagentKey(owner, taskId)
+    if (!child) forgottenChildren.add(key)
+    const entry: SubagentEntry = {
+      key,
+      taskId,
+      owner,
+      holder,
+      report: reportOf(taskId, stored.record),
+      record: stored.record,
+      ...(child ? { child } : {}),
+    }
+    rememberSubagent(entry)
+    return entry
+  }
+
+  /** The last turn a thread holds, for a subagent reported while none runs. */
+  const lastTurnOf = (record: ThreadRecord): string | undefined => {
+    const remembered = record.turns.at(-1)?.turnId
+    if (remembered || !options.database) return remembered
+    options.flush?.()
+    const row = options.database
+      .prepare('SELECT turn_id FROM turns WHERE thread_id = ? ORDER BY started_at DESC, turn_id DESC LIMIT 1')
+      .get(record.thread.threadId) as { turn_id: string } | undefined
+    return row?.turn_id
+  }
+
+  /**
+   * File a subagent the first time its runtime reports it: the record on
+   * the thread whose transcript holds the call that started it, and its
+   * child session under that thread's session, with the child's first turn,
+   * in one write. A nested subagent is filed on its parent subagent's child,
+   * so the sidebar tree follows the agent tree.
+   */
+  const fileSubagent = (
+    owner: ThreadRecord,
+    update: SubtaskUpdate,
+    at: string,
+    parentTaskId: string | undefined,
+  ): SubagentEntry | undefined => {
+    const key = subagentKey(owner, update.taskId)
+    const parent =
+      parentTaskId === undefined || parentTaskId === update.taskId
+        ? undefined
+        : (subagentEntries.get(subagentKey(owner, parentTaskId)) ??
+          recallSubagent(owner, parentTaskId))
+    const holder = parent?.child ?? owner
+    const turnId = holder.activeTurn?.turn.turnId ?? lastTurnOf(holder)
+    // Nothing in this thread could have started it.
+    if (!turnId) return undefined
+    const report = mergeReport({ taskId: update.taskId }, update)
+    const subagentId = randomUUID()
+    const toolCallId = holder.activeTurn
+      ? stableId(holder.activeTurn.toolIds, update.toolCallId ?? update.taskId)
+      : undefined
+    const childSession: Session | undefined = forgottenChildren.has(key)
+      ? undefined
+      : {
+          sessionId: randomUUID(),
+          workspaceId: holder.session.workspaceId,
+          title: null,
+          parentSessionId: holder.session.sessionId,
+        }
+    const record = subagentRecord(
+      report,
+      {
+        subagentId,
+        parentSessionId: holder.session.sessionId,
+        turnId,
+        ...(toolCallId ? { toolCallId } : {}),
+        ...(parent ? { parentSubagentId: parent.record.subagentId } : {}),
+        depth: (parent?.record.depth ?? 0) + 1,
+        origin: 'native',
+        providerId: owner.providerId,
+        ...(childSession ? { childSessionId: childSession.sessionId } : {}),
+      },
+      { startedAt: at, finishedAt: at, updatedAt: at },
+      undefined,
+    )
+    const announced = subagentEvent(holder, record, at)
+    const subagentTasks = {
+      [subagentId]: { ownerSessionId: owner.session.sessionId, taskId: update.taskId },
+    }
+    const entry: SubagentEntry = { key, taskId: update.taskId, owner, holder, report, record }
+    if (!childSession) {
+      try {
+        if (options.appendAtomic) options.appendAtomic([announced], { subagentTasks })
+        else appendEvent(announced)
+      } catch (error) {
+        options.onPersistenceError?.(error, 'subagent.updated')
+        return undefined
+      }
+      rememberSubagent(entry)
+      return entry
+    }
+    childSession.title = record.title
+    const thread: Thread = { threadId: randomUUID(), sessionId: childSession.sessionId }
+    const subagent: SessionSubagent = { subagentId, origin: 'native', promptable: record.promptable }
+    const start = isSettledSubagentStatus(record.status)
+      ? undefined
+      : delegatedTurn(thread, report.prompt?.trim() ? report.prompt : record.title, at)
     try {
-      // The identity is stored by the same write that creates the row, so a
-      // child is never durable without what it resumes and deduplicates by.
-      persistCreatedThread(session, thread, {
-        providerId: parent.providerId,
-        ...(title ? { titleSource: 'provider' as const } : {}),
-        identity: providerSessionId,
+      // The row, its thread, the record that names it and its first turn are
+      // one write, so neither a card without its child nor a child without
+      // its card is ever durable. A provider session the child already has
+      // is stored by the same write, as a resumable child's always is.
+      persistCreatedThread(childSession, thread, {
+        providerId: owner.providerId,
+        titleSource: 'provider',
+        ...(report.childSessionId ? { identity: report.childSessionId } : {}),
+        subagent,
+        subagentTasks,
+        alongside: [announced, ...(start ? [start.event] : [])],
       })
     } catch (error) {
-      // The parent turn carries on; the child is offered again on the next update.
+      // The parent carries on; the subagent is filed on its next report.
       options.onPersistenceError?.(error, 'session.created')
-      return
+      return undefined
     }
-    const record: ThreadRecord = {
-      session,
+    const child: ThreadRecord = {
+      session: childSession,
       thread,
-      providerId: parent.providerId,
-      titleSource: title ? 'provider' : undefined,
-      cwd: parent.cwd,
-      runtimeSession: Promise.resolve(providerSessionId),
+      providerId: owner.providerId,
+      titleSource: 'provider',
+      cwd: owner.cwd,
+      runtimeSession: report.childSessionId
+        ? Promise.resolve(report.childSessionId)
+        : detachedSession(),
+      ...(report.childSessionId ? {} : { detached: true }),
+      subagent,
       turns: [],
       messages: [],
       commandTurns: new Map(),
@@ -2041,26 +2564,135 @@ export function createThreadService(
       status: 'idle',
       updatedAt: Date.now(),
     }
-    sessions.set(session.sessionId, record)
-    threads.set(thread.threadId, record)
-    childSessionIds.set(key, session.sessionId)
+    sessions.set(childSession.sessionId, child)
+    threads.set(thread.threadId, child)
+    entry.child = child
+    rememberSubagent(entry)
+    if (start) beginDelegatedTurn(child, start)
+    return entry
   }
 
   /**
-   * Remember a child the user is deleting so a later report of the same
-   * provider child does not register it again. Read before the row goes.
+   * Take in one report of a subagent: file it the first time, then merge
+   * what is new, open its child's turn when it starts or is revived, and
+   * settle that turn when it ends. `under` is the subagent whose work the
+   * report arrived as, for a runtime that names a nested one's parent only
+   * that way.
+   */
+  const applySubtask = (
+    owner: ThreadRecord,
+    update: SubtaskUpdate,
+    at: string,
+    under?: string,
+  ): SubagentEntry | undefined => {
+    if (droppedSubagents.has(subagentKey(owner, update.taskId))) return undefined
+    const entry =
+      subagentEntries.get(subagentKey(owner, update.taskId)) ??
+      recallSubagent(owner, update.taskId)
+    if (!entry) return fileSubagent(owner, update, at, update.parentTaskId ?? under)
+    const before = entry.report
+    entry.report = mergeReport(before, update)
+    const child = entry.child
+    if (update.childSessionId && child?.detached) attachChildSession(child, update.childSessionId)
+    const status = subagentStatusOf(entry.report.status) ?? 'running'
+    const settled = isSettledSubagentStatus(status)
+    // Started again (revived), or its first turn could not be written: a
+    // person's turn in a child they can prompt holds it, and the subagent's
+    // work waits for its own turn.
+    if (child && !settled && !threadBusy(child)) {
+      openDelegatedTurn(
+        child,
+        update.prompt?.trim() ? update.prompt : restate(entry, at).title,
+        at,
+      )
+    }
+    if (child && update.title?.trim() && update.title !== before.title) {
+      applyTitle(child, preview(update.title.trim(), 500), 'provider')
+    }
+    announceSubagent(entry, at)
+    if (settled && child) settleDelegatedTurn(child, status, entry.report.statusReason)
+    return entry
+  }
+
+  /**
+   * File one event of a subagent's work in its child, projected as the
+   * child's own turn is. The child's turn scopes it: work that arrives once
+   * the subagent has settled, or while a person's turn holds its child, has
+   * no turn to go to.
+   */
+  const routeSubagentWork = (owner: ThreadRecord, event: RuntimeEvent, taskId: string) => {
+    if (!SUBAGENT_WORK.has(event.event)) return
+    const entry =
+      subagentEntries.get(subagentKey(owner, taskId)) ??
+      applySubtask(owner, { taskId }, event.timestamp)
+    const child = entry?.child
+    const active = child?.activeTurn
+    if (!child || !active || active.turn.origin !== 'delegated') return
+    projectRuntimeEvent(child, event, active)
+  }
+
+  /**
+   * A child's request opened or settled: the provider's settlement must find
+   * it, its card says what it waits on, and the sessions above it wait with it.
+   */
+  const childRequestsChanged = (
+    child: ThreadRecord,
+    providerRequestId: string | undefined,
+    open: boolean,
+  ) => {
+    if (providerRequestId !== undefined) {
+      const key = `${child.providerId}\n${providerRequestId}`
+      if (open) childRequests.set(key, child)
+      else childRequests.delete(key)
+    }
+    const entry = child.subagent ? subagentsById.get(child.subagent.subagentId) : undefined
+    if (entry) announceSubagent(entry)
+    refreshParentsWaiting(child)
+  }
+
+  /**
+   * End what an owner's runtime will no longer report: its process exited,
+   * or the turn that ran a subagent in the foreground was stopped or failed.
+   */
+  const interruptSubagentsOf = (
+    owner: ThreadRecord,
+    which: (entry: SubagentEntry) => boolean,
+    reason: string,
+  ) => {
+    for (const entry of [...subagentEntries.values()]) {
+      if (entry.owner !== owner || isSettledSubagentStatus(entry.record.status)) continue
+      if (!which(entry)) continue
+      applySubtask(
+        owner,
+        { taskId: entry.taskId, status: 'interrupted', statusReason: reason },
+        new Date().toISOString(),
+      )
+    }
+  }
+
+  /**
+   * Stop one subagent from its card. A settled one has nothing left to stop;
+   * the runtime reports the stop itself, as `subagent.updated`.
+   */
+  const stopSubagent = <T>(entry: SubagentEntry, requestId: string, stopped: () => T) => {
+    if (isSettledSubagentStatus(entry.record.status)) return stopped()
+    if (!entry.record.stoppable || !runtime.stopSubtask) {
+      return errorResult(requestId, 'capability_missing', 'This subagent cannot be stopped.')
+    }
+    return runtime.stopSubtask({ ...route(entry.owner), taskId: entry.taskId }).then(stopped, () =>
+      errorResult(requestId, 'unavailable', 'The subagent could not be stopped. Try again.'),
+    )
+  }
+
+  /**
+   * Remember a child the user is deleting, so a later report of its
+   * subagent does not file it again. Read before the row goes.
    */
   const forgetChild = (sessionId: string) => {
-    for (const [key, hostId] of childSessionIds) {
-      if (hostId !== sessionId) continue
-      forgottenChildren.add(key)
+    for (const entry of subagentEntries.values()) {
+      if (entry.child?.session.sessionId !== sessionId) continue
+      forgottenChildren.add(entry.key)
       return
-    }
-    if (!options.database) return
-    const summary = getSessionSummary(options.database, sessionId)
-    const providerSessionId = getProviderSessionId(options.database, sessionId)
-    if (summary && providerSessionId) {
-      forgottenChildren.add(`${summary.providerId}:${providerSessionId}`)
     }
   }
 
@@ -2080,6 +2712,7 @@ export function createThreadService(
       : { cookingAt: new Date(record.cookingAt).toISOString() }),
     doneAt: record.doneAt === undefined ? null : new Date(record.doneAt).toISOString(),
     ...(record.backgroundTasks?.length ? { backgroundTasks: record.backgroundTasks } : {}),
+    ...(record.subagent ? { subagent: record.subagent } : {}),
     ...summaryActivity(activityOf(record, record.status)),
   })
 
@@ -2125,6 +2758,7 @@ export function createThreadService(
     if (!record) {
       return errorResult(command.requestId, 'not_found', 'Thread not found.')
     }
+    if (record.detached) return errorResult(command.requestId, 'capability_missing', ONLY_ITS_AGENT)
     const providerRejection = rejectProvider(command.requestId, record.providerId)
     if (providerRejection) return providerRejection
     return startTurn(record, command.requestId, input, commandId, { modeId })
@@ -2730,6 +3364,7 @@ export function createThreadService(
       if (loaded && 'refused' in loaded) return refused(requestId, loaded.refused)
       record = recordOf()
     }
+    if (record?.detached) return errorResult(requestId, 'capability_missing', ONLY_ITS_AGENT)
     return record ?? errorResult(requestId, 'not_found', 'Thread not found.')
   }
 
@@ -2831,6 +3466,9 @@ export function createThreadService(
           .map((entry) => ({ turnId: entry.turnId, interaction: entry.interaction })),
         listing: {},
         queue: record.queue,
+        subagents: [...subagentEntries.values()]
+          .filter((entry) => entry.holder === record)
+          .map((entry) => entry.record),
       }
     },
 
@@ -2960,6 +3598,9 @@ export function createThreadService(
       if (loaded && 'refused' in loaded) return loaded.refused
       const record = sessions.get(sessionId)
       if (!record) return undefined
+      if (record.detached) {
+        return { code: 'capability_missing' as const, message: ONLY_ITS_AGENT }
+      }
       return record.runtimeSession.then((providerSessionId) => ({
         ...route(record),
         sessionId: providerSessionId,
@@ -3642,6 +4283,36 @@ export function createThreadService(
         )
       }
 
+      if (command.name === 'subagent.stop') {
+        const parsed = ProofCommandSchemas['subagent.stop'].safeParse(command)
+        if (!parsed.success)
+          return errorResult(command.requestId, 'validation', 'Invalid subagent request.')
+        options.flush?.()
+        const { sessionId, subagentId } = parsed.data.payload
+        const stopped = () =>
+          ProofResponseSchemas['subagent.stop'].parse({
+            type: 'response',
+            requestId: command.requestId,
+            payload: null,
+          })
+        const entry = subagentsById.get(subagentId)
+        if (entry) {
+          if (entry.record.parentSessionId !== sessionId) {
+            return errorResult(command.requestId, 'not_found', 'Subagent not found.')
+          }
+          return stopSubagent(entry, command.requestId, stopped)
+        }
+        // Known only to the rows: no runtime of this process runs it, and a
+        // restart settled what the last one left running.
+        const stored = options.database
+          ? getStoredSubagent(options.database, subagentId)
+          : undefined
+        if (stored?.record.parentSessionId !== sessionId) {
+          return errorResult(command.requestId, 'not_found', 'Subagent not found.')
+        }
+        return stopped()
+      }
+
       if (command.name === 'session.open') {
         const parsed = ProofCommandSchemas['session.open'].safeParse(command)
         if (!parsed.success) {
@@ -3667,16 +4338,19 @@ export function createThreadService(
         }
         const providerRejection = rejectProvider(command.requestId, record.providerId)
         if (providerRejection) return providerRejection
-        if (!providers[record.providerId].capabilities.canLoadSession) {
+        if (!record.detached && !providers[record.providerId].capabilities.canLoadSession) {
           return errorResult(
             command.requestId,
             'capability_missing',
             'Provider cannot resume sessions.',
           )
         }
-        void record.runtimeSession
-          .then((sessionId) => runtime.ensureSession(route(record, sessionId)))
-          .catch(() => undefined)
+        // A child its parent's runtime fills has no provider session to warm.
+        if (!record.detached) {
+          void record.runtimeSession
+            .then((sessionId) => runtime.ensureSession(route(record, sessionId)))
+            .catch(() => undefined)
+        }
         return ProofResponseSchemas['session.open'].parse({
           type: 'response',
           requestId: command.requestId,
@@ -3909,6 +4583,21 @@ export function createThreadService(
         const active = record.activeTurn
         if (!active || active.turn.turnId !== parsed.data.payload.turnId) {
           return errorResult(command.requestId, 'conflict', 'Turn is not in progress.')
+        }
+        // A subagent's turn runs in its parent's runtime: stopping it is
+        // stopping the subagent.
+        const delegated =
+          active.turn.origin === 'delegated' && record.subagent
+            ? subagentsById.get(record.subagent.subagentId)
+            : undefined
+        if (delegated) {
+          return stopSubagent(delegated, command.requestId, () =>
+            ProofResponseSchemas['turn.interrupt'].parse({
+              type: 'response',
+              requestId: command.requestId,
+              payload: { turnId: active.turn.turnId },
+            }),
+          )
         }
         interruptTurn(record, active)
         return ProofResponseSchemas['turn.interrupt'].parse({
@@ -4157,6 +4846,27 @@ export function createThreadService(
         }
       }
 
+      // A subagent's reports and its work go to its record and its child,
+      // whether or not this thread has a turn running: a background subagent
+      // outlives the turn that started it (docs/decisions/subagents.md, Routing).
+      if (event.event === 'subtask_update') {
+        applySubtask(record, event.data, event.timestamp, event.subtaskId)
+        return
+      }
+      if (event.subtaskId !== undefined) {
+        routeSubagentWork(record, event, event.subtaskId)
+        return
+      }
+      const settledRequest = settledRequestKey(event)
+      const requester = settledRequest ? childRequests.get(settledRequest) : undefined
+      if (requester) {
+        if (requester.activeTurn) projectRuntimeEvent(requester, event, requester.activeTurn)
+        return
+      }
+      if (event.event === 'process_exited') {
+        interruptSubagentsOf(record, () => true, 'The agent process exited.')
+      }
+
       if (event.event === 'background_tasks_update') {
         applyBackgroundTasks(record, event.data.tasks)
         return
@@ -4217,7 +4927,6 @@ export function createThreadService(
         event.event === 'plan_review_request' ||
         event.event === 'plan_review_resolved' ||
         event.event === 'plan_update' ||
-        event.event === 'subtask_update' ||
         event.event === 'provider_notice' ||
         event.category === 'error' ||
         event.event === 'process_exited'
@@ -4247,19 +4956,6 @@ export function createThreadService(
 
       if (!active) {
         projectRuntimeEvent(record, event, undefined)
-        return
-      }
-
-      if (event.event === 'subtask_update') {
-        // Only a provider that exposes the child as a loadable session names
-        // one; the subtask itself has no protocol projection yet.
-        if (event.data.childSessionId) {
-          registerChildSession(
-            record,
-            event.data.childSessionId,
-            event.data.title ?? event.data.description ?? null,
-          )
-        }
         return
       }
 

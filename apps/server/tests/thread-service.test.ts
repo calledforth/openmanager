@@ -1733,10 +1733,16 @@ describe('durable session lifecycle', () => {
       const { sessionId } = h.created.session
       await h.service.resolveRuntimeSession(sessionId)
 
-      // A subtask the provider cannot expose as a session registers nothing.
+      // A subtask is filed as a child at once; until the provider names a
+      // session of its own the child has no identity.
       await delegate(h, h.service, 'assistant-1', { title: 'Anonymous work' })
-      expect(sessionCount(h)).toBe(1)
-      expect(childRow(h)).toBeUndefined()
+      expect(sessionCount(h)).toBe(2)
+      expect(childRow(h)).toMatchObject({
+        parent_session_id: sessionId,
+        provider_session_id: null,
+        title: 'Anonymous work',
+      })
+      const filed = childRow(h)!
 
       h.published.length = 0
       h.service.onRuntimeEvent({
@@ -1752,27 +1758,18 @@ describe('durable session lifecycle', () => {
         event: 'subtask_update',
         data: { taskId: 'task-1', title: 'Explore the repo', childSessionId: 'provider-child' },
       })
+      h.events.flush()
 
+      // The same child, now with the provider's session and its own title.
       const child = childRow(h)!
       expect(child).toMatchObject({
+        session_id: filed.session_id,
         parent_session_id: sessionId,
         provider_session_id: 'provider-child',
         workspace_id: '/workspace/project',
         title: 'Explore the repo',
       })
-      expect(h.published.filter((event) => event.name === 'session.created')).toMatchObject([
-        {
-          scope: { type: 'environment' },
-          payload: {
-            session: {
-              sessionId: child.session_id,
-              workspaceId: '/workspace/project',
-              parentSessionId: sessionId,
-              title: 'Explore the repo',
-            },
-          },
-        },
-      ])
+      expect(h.published.filter((event) => event.name === 'session.created')).toEqual([])
       expect(
         listed(h, h.service).find((item) => item.sessionId === child.session_id),
       ).toMatchObject({ parentSessionId: sessionId, workspaceId: '/workspace/project' })
@@ -1871,7 +1868,11 @@ describe('durable session lifecycle', () => {
       expect(ERROR_RETRY_POLICY.session_unrecoverable).toBe('never')
       // A legacy sub-agent row with no identity is refused before anything starts.
       h.database
-        .prepare('UPDATE sessions SET provider_session_id = NULL WHERE session_id = ?')
+        .prepare(
+          `UPDATE sessions SET provider_session_id = NULL, subagent_id = NULL,
+             subagent_origin = NULL, subagent_promptable = NULL
+           WHERE session_id = ?`,
+        )
         .run(child.session_id)
       h.runtime.ensureSession.mockClear()
       expect(h.dispatch(h.fresh(), 'session.open', { sessionId: child.session_id })).toMatchObject({
@@ -1889,9 +1890,11 @@ describe('durable session lifecycle', () => {
     try {
       const { sessionId } = h.created.session
       await h.service.resolveRuntimeSession(sessionId)
+      // Finished, so its own turn no longer holds the child a person can prompt.
       await delegate(h, h.service, 'assistant-1', {
         title: 'Explore the repo',
         childSessionId: 'provider-child',
+        status: 'completed',
       })
       const child = childRow(h)!
       expect(h.dispatch(h.service, 'session.open', { sessionId: child.session_id })).toMatchObject({
@@ -1974,8 +1977,6 @@ describe('durable session lifecycle', () => {
     try {
       const { sessionId } = h.created.session
       await service.resolveRuntimeSession(sessionId)
-      await delegate(h, service, 'assistant-1', { title: 'Anonymous work' })
-      expect(sessionCount(h)).toBe(1)
 
       const subtask = (id: string, seq: number) =>
         service.onRuntimeEvent({
@@ -1997,7 +1998,10 @@ describe('durable session lifecycle', () => {
       h.database.exec(`CREATE TEMP TRIGGER refuse_child BEFORE INSERT ON sessions
         WHEN NEW.parent_session_id IS NOT NULL BEGIN SELECT RAISE(ABORT, 'disk full'); END`)
       try {
-        subtask('assistant-1-subtask-failing', 3)
+        await delegate(h, service, 'assistant-1', {
+          title: 'Explore the repo',
+          childSessionId: 'provider-child',
+        })
       } finally {
         h.database.exec('DROP TRIGGER refuse_child')
       }

@@ -1,6 +1,10 @@
 import type { DatabaseSync, StatementSync } from 'node:sqlite'
 import type { InteractionKind } from '@openmanager/protocol/node'
-import { OPEN_TURN_FOR_SESSION_SQL, PENDING_INTERACTIONS_FOR_SESSION_SQL } from './queries.ts'
+import {
+  OPEN_TURN_FOR_SESSION_SQL,
+  PENDING_INTERACTIONS_FOR_NATIVE_SUBAGENTS_SQL,
+  PENDING_INTERACTIONS_FOR_SESSION_SQL,
+} from './queries.ts'
 
 /**
  * What a session's status alone does not say: what a waiting session waits
@@ -10,7 +14,7 @@ import { OPEN_TURN_FOR_SESSION_SQL, PENDING_INTERACTIONS_FOR_SESSION_SQL } from 
  */
 export type SessionActivity = { waitingOn?: InteractionKind; inBackground?: true }
 
-type Statements = { pending: StatementSync; openTurn: StatementSync }
+type Statements = { pending: StatementSync; subagentsPending: StatementSync; openTurn: StatementSync }
 const statements = new WeakMap<DatabaseSync, Statements>()
 
 function prepared(database: DatabaseSync): Statements {
@@ -18,6 +22,7 @@ function prepared(database: DatabaseSync): Statements {
   if (!cached) {
     cached = {
       pending: database.prepare(PENDING_INTERACTIONS_FOR_SESSION_SQL),
+      subagentsPending: database.prepare(PENDING_INTERACTIONS_FOR_NATIVE_SUBAGENTS_SQL),
       openTurn: database.prepare(OPEN_TURN_FOR_SESSION_SQL),
     }
     statements.set(database, cached)
@@ -37,17 +42,30 @@ export function waitingKind(
   return oldest?.kind
 }
 
+type PendingRow = { kind: InteractionKind; created_at: number }
+
+/**
+ * The requests a session waits on: its own, and those of its native
+ * subagents, whose provider is the session's own and is blocked on them.
+ */
+export function pendingRequestsOf(
+  database: DatabaseSync,
+  sessionId: string,
+): { kind: InteractionKind; createdAt: number }[] {
+  const statements = prepared(database)
+  return [
+    ...(statements.pending.all(sessionId) as PendingRow[]),
+    ...(statements.subagentsPending.all(sessionId) as PendingRow[]),
+  ].map((row) => ({ kind: row.kind, createdAt: row.created_at }))
+}
+
 /** Only waiting and running sessions are looked into, so a listing stays cheap. */
 export function readSessionActivity(
   database: DatabaseSync,
   session: { session_id: string; status: string; background_tasks_json?: string | null },
 ): SessionActivity {
   if (session.status === 'waiting') {
-    const rows = prepared(database).pending.all(session.session_id) as {
-      kind: InteractionKind
-      created_at: number
-    }[]
-    const kind = waitingKind(rows.map((row) => ({ kind: row.kind, createdAt: row.created_at })))
+    const kind = waitingKind(pendingRequestsOf(database, session.session_id))
     return kind ? { waitingOn: kind } : {}
   }
   if (session.status === 'running' && session.background_tasks_json) {

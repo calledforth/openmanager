@@ -1173,6 +1173,82 @@ export const MIGRATIONS: readonly Migration[] = [
       }
     },
   },
+  {
+    version: 33,
+    name: 'subagents',
+    up(database) {
+      // Subagents (docs/decisions/subagents.md).
+      //
+      // A child session that holds a subagent's work says so on its row:
+      // `subagent_id`, `subagent_origin` and `subagent_promptable` are the
+      // summary's `subagent`, written once by `session.created`. A native
+      // child is filed under the session whose agent started it, so a
+      // permission it raises also leaves that session waiting (its provider
+      // is blocked), which `subagent_origin` lets the status reads find.
+      //
+      // `subagents` holds each record as the last `subagent.updated` stated
+      // it, on the thread that event went to: the parent's, or for a nested
+      // subagent its parent subagent's child thread. `owner_session_id` and
+      // `task_id` are host-private: the session whose runtime reports the
+      // subagent and the runtime's own key for it, given to the write that
+      // creates the row (WriteOptions), so a restart maps a later report of
+      // the same subagent back to it.
+      //
+      // `turns.origin` gains `delegated` and `subagents`. SQLite cannot widen
+      // a CHECK in place and `turns` is referenced by every message, request
+      // and activity row, so the column is replaced rather than the table.
+      const sessionColumns = new Set(
+        (database.prepare('PRAGMA table_info(sessions)').all() as { name: string }[]).map(
+          (column) => column.name,
+        ),
+      )
+      if (!sessionColumns.has('subagent_id')) {
+        database.exec(`
+          ALTER TABLE sessions ADD COLUMN subagent_id TEXT;
+          ALTER TABLE sessions ADD COLUMN subagent_origin TEXT
+            CHECK (subagent_origin IS NULL OR subagent_origin IN ('native', 'openmanager'));
+          ALTER TABLE sessions ADD COLUMN subagent_promptable INTEGER
+            CHECK (subagent_promptable IS NULL OR subagent_promptable IN (0, 1));
+          CREATE UNIQUE INDEX IF NOT EXISTS sessions_subagent_id_idx
+            ON sessions(subagent_id) WHERE subagent_id IS NOT NULL;
+        `)
+      }
+      database.exec(`
+        CREATE TABLE IF NOT EXISTS subagents (
+          subagent_id TEXT PRIMARY KEY NOT NULL,
+          thread_id TEXT NOT NULL REFERENCES threads(thread_id) ON DELETE CASCADE,
+          owner_session_id TEXT NOT NULL REFERENCES sessions(session_id) ON DELETE CASCADE,
+          task_id TEXT NOT NULL,
+          status TEXT NOT NULL CHECK (
+            status IN ('pending', 'running', 'waiting', 'completed', 'failed', 'cancelled',
+              'interrupted')
+          ),
+          record_json TEXT NOT NULL CHECK (json_valid(record_json)),
+          created_at INTEGER NOT NULL,
+          updated_at INTEGER NOT NULL,
+          UNIQUE (owner_session_id, task_id)
+        ) STRICT;
+        CREATE INDEX IF NOT EXISTS subagents_thread_created_idx
+          ON subagents(thread_id, created_at, subagent_id);
+        CREATE INDEX IF NOT EXISTS subagents_unsettled_idx
+          ON subagents(status) WHERE status IN ('pending', 'running', 'waiting');
+      `)
+      const turnSql = (
+        database.prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'turns'").get() as
+          | { sql: string }
+          | undefined
+      )?.sql
+      if (turnSql && !turnSql.includes("'delegated'")) {
+        database.exec(`
+          ALTER TABLE turns ADD COLUMN origin_v33 TEXT
+            CHECK (origin_v33 IS NULL OR origin_v33 IN ('background', 'delegated', 'subagents'));
+          UPDATE turns SET origin_v33 = origin WHERE origin IS NOT NULL;
+          ALTER TABLE turns DROP COLUMN origin;
+          ALTER TABLE turns RENAME COLUMN origin_v33 TO origin;
+        `)
+      }
+    },
+  },
 ]
 
 type RetainedActivityRow = {
