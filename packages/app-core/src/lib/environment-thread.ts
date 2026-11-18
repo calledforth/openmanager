@@ -1,6 +1,6 @@
 import { isTurnSettled } from '@agentpack/view'
 export { isTurnSettled } from '@agentpack/view'
-import type { ContentBlock, Message, Turn } from '@openmanager/protocol'
+import type { ContentBlock, Message, Subagent, Turn } from '@openmanager/protocol'
 import {
   resendablePrompt,
   selectActiveThread,
@@ -16,6 +16,7 @@ import {
 } from '@openmanager/environment-client'
 import type { LocalStreamingMessage, MessagePart } from './streaming-messages-store'
 import { failurePart, noticePart } from './turn-notice-parts'
+import { subagentPart } from '../components/parts/subagent-card'
 import type { TurnRuntimeMetadata } from '../components/parts/turn-work-group'
 import type {
   MessageContentSnapshot,
@@ -285,6 +286,7 @@ function projectTurn(
   const tools = byTurn(thread.tools, turn.turnId)
   const notices = byTurn(thread.notices, turn.turnId)
   const order = byTurn(thread.order, turn.turnId)
+  const subagents = byTurn(thread.subagents ?? EMPTY, turn.turnId)
   // The turn says why it failed, live and after a reload alike.
   const failure = turn.failure
   // What the provider is doing about a hiccup right now.
@@ -314,6 +316,7 @@ function projectTurn(
     ...tools,
     ...notices,
     ...order,
+    ...subagents,
     ...userRowKeys.values(),
   ]
   if (previous && shallowEqualArray(previous.deps, deps)) return previous
@@ -339,6 +342,12 @@ function projectTurn(
     }
     const content = contentText(message.content)
     const parts = mediaParts(message, sessionId)
+    // The prompt of a turn nobody typed: the parent agent's, or the
+    // environment's word that subagents finished.
+    const origin =
+      message === prompt && (turn.origin === 'delegated' || turn.origin === 'subagents')
+        ? turn.origin
+        : undefined
     entries.push({
       message: {
         externalId: message.messageId,
@@ -347,7 +356,7 @@ function projectTurn(
         isFinal: true,
         sequenceNum,
       },
-      content: { content, ...(parts.length ? { parts } : {}) },
+      content: { content, ...(parts.length ? { parts } : {}), ...(origin ? { origin } : {}) },
       streaming: { content, parts, hasCompleteHistory: true },
     })
     sequenceNum += 1
@@ -377,6 +386,17 @@ function projectTurn(
   const toolsById = new Map(tools.map((tool) => [tool.toolCallId, tool]))
   const assistantById = new Map(assistantMessages.map((message) => [message.messageId, message]))
   const noticesById = new Map(notices.map((notice) => [notice.noticeId, notice]))
+  // A subagent's card stands where the tool call that started it would.
+  const subagentsByCall = new Map<string, Subagent>()
+  for (const subagent of subagents) {
+    if (subagent.toolCallId && toolsById.has(subagent.toolCallId)) {
+      subagentsByCall.set(subagent.toolCallId, subagent)
+    }
+  }
+  const toolOrCard = (tool: ToolState): MessagePart => {
+    const subagent = subagentsByCall.get(tool.toolCallId)
+    return subagent ? subagentPart(subagent) : toolPart(tool, sessionId)
+  }
   // The transcript follows the order things happened in: a thought, the tools
   // it led to, the text that followed. Anything the order does not place (a
   // page from an environment that keeps no order) falls back to the grouped
@@ -403,7 +423,7 @@ function projectTurn(
       placedParts = entry ? [reasoningPart(entry, settled)] : undefined
     } else if (ref.kind === 'tool') {
       const tool = toolsById.get(ref.id)
-      placedParts = tool ? [toolPart(tool, sessionId)] : undefined
+      placedParts = tool ? [toolOrCard(tool)] : undefined
     } else if (ref.kind === 'notice') {
       const notice = noticesById.get(ref.id)
       placedParts = notice ? [noticePart(notice)] : undefined
@@ -425,9 +445,11 @@ function projectTurn(
     ...reasoning
       .filter((entry) => !placed.has(`reasoning:${entry.messageId}`))
       .map((entry) => reasoningPart(entry, settled)),
-    ...tools
-      .filter((tool) => !placed.has(`tool:${tool.toolCallId}`))
-      .map((tool) => toolPart(tool, sessionId)),
+    ...tools.filter((tool) => !placed.has(`tool:${tool.toolCallId}`)).map(toolOrCard),
+    // One whose call the turn does not hold shows where the turn's work is.
+    ...subagents
+      .filter((subagent) => !subagent.toolCallId || !subagentsByCall.has(subagent.toolCallId))
+      .map(subagentPart),
     ...unplacedTexts.flatMap((message) => textParts(message, sessionId)),
     ...notices
       .filter((notice) => !placed.has(`notice:${notice.noticeId}`))

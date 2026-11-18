@@ -7,6 +7,8 @@ import { ToolRow, type ToolRowPart } from './ToolRow'
 import { ThinkingPart } from './ThinkingPart'
 import { ActivityGroup } from './ActivityGroup'
 import { SubtaskCard } from './SubtaskCard'
+import { SubagentCard, SubagentGroup } from './SubagentCard'
+import type { SubagentPart } from './subagent-card'
 import { resolveTool } from '@openmanager/shared/lib/tool-presenter'
 import { AskedQuestionPart } from '../questions/AskedQuestionPart'
 import { readAskedQuestions } from '../questions/askedQuestion'
@@ -124,6 +126,8 @@ function renderPart(part: Part, index: number, isStreaming?: boolean): ReactNode
       )
     case 'subtask':
       return <SubtaskCard key={key} part={part as Parameters<typeof SubtaskCard>[0]['part']} />
+    case 'subagent':
+      return <SubagentCard key={key} part={part as unknown as SubagentPart} />
     case 'compaction':
       return (
         <div key={key} className="py-0.5 text-ui-xs italic text-[var(--basis-text-muted)]">
@@ -248,6 +252,28 @@ export function MessageParts({ parts, isStreaming }: { parts: Part[]; isStreamin
           key={getPartKey(run[0], start)}
           parts={run as unknown as Parameters<typeof GeneratedImages>[0]['parts']}
         />,
+      )
+      continue
+    }
+    // Subagents started back to back share one surface, a compact row each.
+    if (node.kind === 'part' && node.part.type === 'subagent') {
+      const start = idx
+      const run: Part[] = [node.part]
+      while (idx + 1 < activityNodes.length) {
+        const next = activityNodes[idx + 1]
+        if (next.kind !== 'part' || next.part.type !== 'subagent') break
+        run.push(next.part)
+        idx++
+      }
+      rendered.push(
+        run.length === 1 ? (
+          <PartNode key={getPartKey(run[0], start)} part={run[0]} index={start} />
+        ) : (
+          <SubagentGroup
+            key={`subagents:${getPartKey(run[0], start)}`}
+            parts={run as unknown as SubagentPart[]}
+          />
+        ),
       )
       continue
     }

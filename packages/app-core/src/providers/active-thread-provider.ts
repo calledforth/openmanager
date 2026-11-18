@@ -89,6 +89,12 @@ export interface MessageContentSnapshot {
   content: string
   parts?: MessagePart[]
   runtime?: TurnRuntimeMetadata
+  /**
+   * A user row nobody typed: `delegated` is the prompt a parent agent gave its
+   * subagent, `subagents` the environment telling the agent its subagents
+   * finished. Absent on what a person sent.
+   */
+  origin?: 'delegated' | 'subagents'
 }
 
 /** External store of persisted message bodies, keyed by message ID.

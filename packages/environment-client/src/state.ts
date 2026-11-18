@@ -23,6 +23,7 @@ import type {
   ScopeSnapshot,
   Session,
   SessionSummary as ProtocolSessionSummary,
+  Subagent,
   SubscriptionScope,
   Thread,
   ThreadQueue,
@@ -576,6 +577,12 @@ export function applyEvent(state: EnvironmentState, event: ProofEvent): Environm
         const listing = share(current.listing, { ...current.listing, ...event.payload })
         return listing === current.listing ? current : { ...current, listing }
       })
+    case 'subagent.updated':
+      // Whole every time: the newest wins, so a repeat or a late arrival changes nothing.
+      return patchThread(state, thread, (current) => {
+        const subagents = fileSubagent(current.subagents, event.payload.subagent)
+        return subagents === current.subagents ? current : { ...current, subagents }
+      })
     case 'thread.queue.updated':
       // The whole queue every time: replaced, so a repeat changes nothing.
       return patchThread(state, thread, (current) => {
@@ -658,6 +665,8 @@ export function applySnapshot(state: EnvironmentState, snapshot: ScopeSnapshot):
     listing: share(existing.listing, snapshotState.listing),
     queue: share(existing.queue, snapshotState.queue),
   }
+  const subagents = subagentsStated(existing.subagents, snapshotState.subagents)
+  if (subagents) replaced.subagents = subagents
   const steered = steeredIn(existing.steeredQueueIds, replaced.queue)
   if (steered) replaced.steeredQueueIds = steered
   return { ...withThread, threads: { ...withThread.threads, [thread.threadId]: replaced } }
@@ -962,6 +971,64 @@ function steeredIn(
   return previous && shallowEqualArray(previous, ids) ? previous : ids
 }
 
+const NO_SUBAGENTS: readonly Subagent[] = []
+
+const instant = (iso: string) => {
+  const at = Date.parse(iso)
+  return Number.isNaN(at) ? 0 : at
+}
+
+/** Oldest start first, then by id, so every client lists a thread's subagents alike. */
+function byStart(left: Subagent, right: Subagent): number {
+  return (
+    instant(left.startedAt) - instant(right.startedAt) ||
+    (left.subagentId < right.subagentId ? -1 : left.subagentId > right.subagentId ? 1 : 0)
+  )
+}
+
+/**
+ * A thread's subagents with `next` filed by its id. A record older than the
+ * one held is ignored (they travel whole, so the newest says everything), and
+ * one that says what is held changes nothing: the list a reader holds stays.
+ */
+export function fileSubagent(
+  held: readonly Subagent[] | undefined,
+  next: Subagent,
+): readonly Subagent[] {
+  const list = held ?? NO_SUBAGENTS
+  const index = list.findIndex((item) => item.subagentId === next.subagentId)
+  if (index === -1) return [...list, next].sort(byStart)
+  const current = list[index]!
+  if (instant(next.updatedAt) < instant(current.updatedAt)) return list
+  const shared = share(current, next)
+  if (shared === current) return list
+  const copy = list.slice()
+  copy[index] = shared
+  return copy.sort(byStart)
+}
+
+/**
+ * The subagents a thread snapshot states, each kept as held when what is held
+ * is newer. Undefined when the snapshot says nothing (an older environment)
+ * and nothing is held.
+ */
+function subagentsStated(
+  held: readonly Subagent[] | undefined,
+  stated: readonly Subagent[] | undefined,
+): readonly Subagent[] | undefined {
+  if (!stated) return held
+  const heldById = new Map((held ?? NO_SUBAGENTS).map((item) => [item.subagentId, item]))
+  const merged = stated
+    .map((item) => {
+      const current = heldById.get(item.subagentId)
+      return current && instant(current.updatedAt) > instant(item.updatedAt)
+        ? current
+        : share(current, item)
+    })
+    .sort(byStart)
+  return held && shallowEqualArray(held, merged) ? held : merged
+}
+
 /** The thread with `queue` as its queue, and its steered messages followed. */
 function withQueue(current: ThreadState, queue: ThreadQueue): ThreadState {
   const steered = steeredIn(current.steeredQueueIds, queue)
@@ -1127,6 +1194,7 @@ export function applySessionCreated(
             doneAt: existing.doneAt ?? null,
             ...(existing.backgroundTasks ? { backgroundTasks: existing.backgroundTasks } : {}),
             ...(existing.pullRequests ? { pullRequests: existing.pullRequests } : {}),
+            ...(existing.subagent ? { subagent: existing.subagent } : {}),
             ...(existing.waitingOn ? { waitingOn: existing.waitingOn } : {}),
             ...(existing.inBackground ? { inBackground: existing.inBackground } : {}),
           }
@@ -1689,6 +1757,51 @@ export function selectThreadQueue(
   threadId: string | null = state.activeThreadId,
 ): ThreadQueue {
   return (threadId && state.threads[threadId]?.queue) || EMPTY_THREAD_QUEUE
+}
+
+/**
+ * The subagents a thread's agent started, oldest first: the open chat's by
+ * default. Empty for a chat not held, and for one with none.
+ */
+export function selectThreadSubagents(
+  state: EnvironmentState,
+  threadId: string | null = state.activeThreadId,
+): readonly Subagent[] {
+  return (threadId && state.threads[threadId]?.subagents) || NO_SUBAGENTS
+}
+
+/** One subagent of a thread by its id, or null when the thread holds no such record. */
+export function selectSubagent(
+  state: EnvironmentState,
+  threadId: string,
+  subagentId: string,
+): Subagent | null {
+  return (
+    selectThreadSubagents(state, threadId).find((item) => item.subagentId === subagentId) ?? null
+  )
+}
+
+/**
+ * The record of the subagent a child session holds, read from the thread it
+ * travels on: its parent session's. Null while that thread is not held (the
+ * child page then reads what the child's own summary says), and for a session
+ * that holds no subagent.
+ */
+export function selectSubagentOfSession(
+  state: EnvironmentState,
+  sessionId: string | null | undefined,
+): Subagent | null {
+  const session = sessionId ? state.sessions[sessionId] : undefined
+  const parent = session?.parentSessionId ? state.sessions[session.parentSessionId] : undefined
+  if (!session || !parent) return null
+  const subagentId = session.subagent?.subagentId
+  for (const threadId of parent.threadIds) {
+    const found = state.threads[threadId]?.subagents?.find((item) =>
+      subagentId ? item.subagentId === subagentId : item.childSessionId === session.sessionId,
+    )
+    if (found) return found
+  }
+  return null
 }
 
 export function selectConnection(state: EnvironmentState): ConnectionState {
