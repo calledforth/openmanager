@@ -66,7 +66,13 @@ const NAMED_BY_A_DRAFT = `EXISTS (
 )`
 
 /** Shared environment-owned metadata and bytes for uploads and provider output. */
-export function createArtifactStore(database: DatabaseSync, dataDir: string) {
+export function createArtifactStore(
+  database: DatabaseSync,
+  dataDir: string,
+  /** What one session may share in all; tests lower it. */
+  limits: { sharedBytesPerSession?: number } = {},
+) {
+  const sessionQuota = limits.sharedBytesPerSession ?? MAX_SHARED_BYTES_PER_SESSION
   const directory = join(dataDir, 'uploads')
   mkdirSync(directory, { recursive: true })
   const lookup = database.prepare(`
@@ -144,6 +150,8 @@ export function createArtifactStore(database: DatabaseSync, dataDir: string) {
   )
   /** Bytes of shares still being copied, by session, so two at once both count. */
   const sharing = new Map<string, number>()
+  /** The same, across every session, against the room left on the disk. */
+  let copying = 0
   const path = (artifactId: string) => {
     // Only IDs minted by this store may name files, including after a restart.
     if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(artifactId)) {
@@ -325,21 +333,19 @@ export function createArtifactStore(database: DatabaseSync, dataDir: string) {
           `${sourcePath} is larger than ${megabytes(MAX_SHARED_FILE_BYTES)}, the most a shared file may be.`,
         )
       if (source.size > MAX_SHARED_FILE_BYTES) throw tooLarge()
-      const held =
-        (sharedBytes.get(sessionId) as { total: number }).total + (sharing.get(sessionId) ?? 0)
-      if (held + source.size > MAX_SHARED_BYTES_PER_SESSION) {
+      // Checked and reserved in one step, with no await between: two shares
+      // at once cannot both pass against the same room.
+      const stored = () => (sharedBytes.get(sessionId) as { total: number }).total
+      const held = stored() + (sharing.get(sessionId) ?? 0)
+      if (held + source.size > sessionQuota) {
         throw new ShareRefusedError(
-          `This session has already shared ${megabytes(held)}; sharing ${sourcePath} would pass the ${megabytes(MAX_SHARED_BYTES_PER_SESSION)} a session may share.`,
-        )
-      }
-      const disk = await statfs(directory)
-      if (disk.bavail * disk.bsize < source.size + SHARE_DISK_HEADROOM_BYTES) {
-        throw new ShareRefusedError(
-          `The environment's disk is nearly full, so ${sourcePath} was not copied.`,
+          `This session has already shared ${megabytes(held)}; sharing ${sourcePath} would pass the ${megabytes(sessionQuota)} a session may share.`,
         )
       }
       sharing.set(sessionId, (sharing.get(sessionId) ?? 0) + source.size)
+      copying += source.size
       const settle = () => {
+        copying -= source.size
         const left = (sharing.get(sessionId) ?? 0) - source.size
         if (left > 0) sharing.set(sessionId, left)
         else sharing.delete(sessionId)
@@ -349,10 +355,24 @@ export function createArtifactStore(database: DatabaseSync, dataDir: string) {
       const partialPath = join(partialDirectory, artifactId)
       const finalPath = path(artifactId)
       try {
+        // Every copy under way, in any session, is room already spoken for.
+        const disk = await statfs(directory)
+        if (disk.bavail * disk.bsize < copying + SHARE_DISK_HEADROOM_BYTES) {
+          throw new ShareRefusedError(
+            `The environment's disk is nearly full, so ${sourcePath} was not copied.`,
+          )
+        }
         mkdirSync(partialDirectory, { recursive: true })
         await copyFile(sourcePath, partialPath, constants.COPYFILE_EXCL)
         const copied = await stat(partialPath)
         if (copied.size === 0 || copied.size > MAX_SHARED_FILE_BYTES) throw tooLarge()
+        // A file that grew while it was copied is held to the quota as kept.
+        const others = (sharing.get(sessionId) ?? 0) - source.size
+        if (stored() + others + copied.size > sessionQuota) {
+          throw new ShareRefusedError(
+            `${sourcePath} grew while it was copied, past the ${megabytes(sessionQuota)} a session may share.`,
+          )
+        }
         const head = new Uint8Array(SNIFF_BYTES)
         const handle = await open(partialPath, 'r')
         try {
