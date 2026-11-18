@@ -732,7 +732,15 @@ describe('the MCP endpoint', () => {
       const listed = await post({ jsonrpc: '2.0', id: 2, method: 'tools/list', params: {} })
       const tools = ((await listed.json()) as { result: { tools: { name: string }[] } }).result
         .tools
-      expect(tools.map((tool) => tool.name)).toEqual(['link_pull_request', 'share_file'])
+      expect(tools.map((tool) => tool.name)).toEqual([
+        'link_pull_request',
+        'share_file',
+        'spawn_agent',
+        'wait_agent',
+        'send_agent',
+        'list_agents',
+        'stop_agent',
+      ])
       const called = await post({
         jsonrpc: '2.0',
         id: 3,

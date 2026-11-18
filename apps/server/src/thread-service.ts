@@ -80,6 +80,8 @@ import {
   subagentStatusOf,
   type SubtaskUpdate,
 } from './subagent-records.ts'
+import { createSubagentWake } from './subagents/subagent-wake.ts'
+import type { SpawnCaller, SpawnHost, SpawnProvider } from './subagents/spawn-tools.ts'
 import type { ArtifactMetadata, ArtifactStore } from './artifacts.ts'
 import { withSettledText } from './db/tool-output.ts'
 import { waitingKind } from './db/session-activity.ts'
@@ -177,6 +179,8 @@ type ActiveTurn = {
    */
   watchedTools?: Map<string, number>
   toolIds: Map<string, string>
+  /** Host ids of this turn's `spawn_agent` calls, in order: a card takes the place of each. */
+  spawnCalls?: string[]
   interactionIds: Map<string, string>
   /** Each open request's kind and when it was raised, by host id. */
   pendingInteractions: Map<string, { kind: InteractionKind; createdAt: number }>
@@ -569,6 +573,8 @@ export function createThreadService(
     }) => QueuedMessageSettings
     /** Something the queue could not do that nobody is waiting on an answer for. */
     onQueueProblem?: (message: string, data: Record<string, unknown>) => void
+    /** The providers and models `spawn_agent` can start a child on. */
+    spawnProviders?: () => readonly SpawnProvider[]
     /**
      * Tool calls the host wants to hear about when they end, by their input
      * (a shell command running `gh pr create`). Asked of every tool update
@@ -626,6 +632,14 @@ export function createThreadService(
   // WebSocket publisher exists.
   let environmentId = ''
 
+  /**
+   * A child whose transcript lives in its parent's agent (a provider's own
+   * subagent) is only ever loaded. A child of ours (`spawn_agent`) is an
+   * ordinary session on its own provider, created like any other.
+   */
+  const loadOnly = (record: ThreadRecord) =>
+    !!record.session.parentSessionId && record.subagent?.origin !== 'openmanager'
+
   const route = (record: ThreadRecord, sessionId?: string): RuntimeSessionArgs => ({
     providerId: record.providerId,
     threadId: record.thread.threadId,
@@ -635,7 +649,7 @@ export function createThreadService(
     // A sub-agent's transcript lives in the agent: a fresh session in its
     // place would lose it, so the runtime may only load it, on every start and
     // every respawn (docs/sync-foundations.md §4.7.4 (e)).
-    ...(record.session.parentSessionId ? { load: 'require' as const } : {}),
+    ...(loadOnly(record) ? { load: 'require' as const } : {}),
   })
 
   /**
@@ -672,7 +686,7 @@ export function createThreadService(
    */
   const stampIdentity = (record: ThreadRecord, providerSessionId: string): string => {
     // A sub-agent's session is only ever loaded, never created (see `route`).
-    if (!options.database || record.session.parentSessionId) return providerSessionId
+    if (!options.database || loadOnly(record)) return providerSessionId
     const row = options.database
       .prepare('SELECT provider_session_id FROM sessions WHERE session_id = ?')
       .get(record.session.sessionId) as { provider_session_id: string | null } | undefined
@@ -1083,7 +1097,7 @@ export function createThreadService(
     const records: ThreadRecord[] = []
     // A subagent's child with no provider session of its own is only ever
     // filled by its parent's runtime: there is nothing to load.
-    const detached = !!session.subagent && !providerSessionId
+    const detached = session.subagent?.origin === 'native' && !providerSessionId
     for (const thread of restoredThreads) {
       const record: ThreadRecord = {
         session: {
@@ -1803,6 +1817,7 @@ export function createThreadService(
         : requested
     const changed = record.status !== status
     record.status = status
+    if (record.subagent?.origin === 'openmanager') syncSpawnedSoon(record)
     // SQLite emits status from its transaction. The in-memory test seam
     // still models the same server-owned environment event, which also goes
     // out when only what the session waits on, or works for, has changed.
@@ -2661,6 +2676,8 @@ export function createThreadService(
   ) => {
     for (const entry of [...subagentEntries.values()]) {
       if (entry.owner !== owner || isSettledSubagentStatus(entry.record.status)) continue
+      // A child of ours runs in a process of its own and ends with its own turns.
+      if (entry.record.origin !== 'native') continue
       if (!which(entry)) continue
       applySubtask(
         owner,
@@ -2676,12 +2693,405 @@ export function createThreadService(
    */
   const stopSubagent = <T>(entry: SubagentEntry, requestId: string, stopped: () => T) => {
     if (isSettledSubagentStatus(entry.record.status)) return stopped()
+    if (entry.record.origin === 'openmanager') {
+      stopSpawned(entry)
+      return stopped()
+    }
     if (!entry.record.stoppable || !runtime.stopSubtask) {
       return errorResult(requestId, 'capability_missing', 'This subagent cannot be stopped.')
     }
     return runtime.stopSubtask({ ...route(entry.owner), taskId: entry.taskId }).then(stopped, () =>
       errorResult(requestId, 'unavailable', 'The subagent could not be stopped. Try again.'),
     )
+  }
+
+  // ------------------------------------------- subagents of ours (spawn_agent)
+  //
+  // docs/decisions/subagents.md, The spawn tool. A child of ours is an
+  // ordinary session on its own provider, filed under the session that
+  // started it. Its record follows its own turns: running while one runs,
+  // settled as its last one ended. Its answer is the text of its last run.
+
+  /** What a child of ours did in its current run, which its turns alone do not keep. */
+  type SpawnedRun = {
+    turnId?: string
+    text: string
+    toolCalls: number
+    activity?: string
+    /** Someone stopped it: its run ends `cancelled`, not `interrupted`. */
+    stopped?: boolean
+  }
+  const SPAWNED_TEXT_MAX = 200_000
+  const spawnedRuns = new Map<string, SpawnedRun>()
+  /** Turns the parent agent started in a child (`spawn_agent`, `send_agent`), by command id. */
+  const parentAsked = new Set<string>()
+  const settleWaiters = new Map<string, Set<() => void>>()
+  const spawnedSyncs = new Set<ThreadRecord>()
+
+  const spawnedEntry = (child: ThreadRecord): SubagentEntry | undefined =>
+    child.subagent?.origin === 'openmanager'
+      ? subagentsById.get(child.subagent.subagentId)
+      : undefined
+
+  const spawnedResult = (subagentId: string): string | undefined => {
+    const child = subagentsById.get(subagentId)?.child
+    const text = child ? spawnedRuns.get(child.session.sessionId)?.text.trim() : undefined
+    return text || undefined
+  }
+
+  /** Queue the parent the environment's notice, and run it now if nothing holds the parent. */
+  const wakeParent = (parentSessionId: string, text: string): boolean => {
+    let parent = sessions.get(parentSessionId)
+    if (!parent) {
+      const loaded = loadSession(parentSessionId)
+      if (loaded && 'refused' in loaded) return false
+      parent = sessions.get(parentSessionId)
+    }
+    if (!parent || parent.detached) return false
+    const added = enqueue(
+      parent,
+      'subagents-finished',
+      { text, commandId: randomUUID(), origin: 'subagents' },
+      'queued',
+    )
+    if ('type' in added) {
+      options.onQueueProblem?.('subagents finished but the parent could not be told', {
+        sessionId: parentSessionId,
+        reason: added.error.message,
+      })
+      return false
+    }
+    drain(parent)
+    return true
+  }
+
+  const wake = createSubagentWake({
+    enqueue: (parentSessionId, text) => wakeParent(parentSessionId, text),
+    get: (_parent, subagentId) => subagentsById.get(subagentId)?.record,
+    resultOf: (_parent, subagentId) => spawnedResult(subagentId),
+  })
+
+  /**
+   * Restate a child of ours from its own turns. Called whenever its status is
+   * touched and as its tools run; deferred to a microtask so the turn that
+   * touched it has finished saying how it ended.
+   */
+  const syncSpawnedSoon = (child: ThreadRecord) => {
+    if (spawnedSyncs.has(child)) return
+    spawnedSyncs.add(child)
+    queueMicrotask(() => {
+      spawnedSyncs.delete(child)
+      syncSpawned(child)
+    })
+  }
+
+  const syncSpawned = (child: ThreadRecord) => {
+    const entry = spawnedEntry(child)
+    if (!entry) return
+    const childId = child.session.sessionId
+    let run = spawnedRuns.get(childId) ?? { text: '', toolCalls: 0 }
+    const active = child.activeTurn
+    if (active && run.turnId !== active.turn.turnId) {
+      // A new run. One the parent asked for owes it the answer again; one a
+      // person started in the child is theirs, and wakes nobody.
+      const asked =
+        active.turn.commandId !== undefined && parentAsked.delete(active.turn.commandId)
+      run = { turnId: active.turn.turnId, text: '', toolCalls: 0 }
+      if (asked) wake.reopen(entry.record.parentSessionId, entry.record.subagentId)
+      else wake.markDelivered(entry.record.parentSessionId, entry.record.subagentId)
+    }
+    spawnedRuns.set(childId, run)
+    const last = child.turns.at(-1)
+    const status: SubtaskUpdate['status'] = active
+      ? 'running'
+      : !last || last.state === 'running' || last.state === 'waiting'
+        ? 'running'
+        : last.state === 'completed'
+          ? 'completed'
+          : last.state === 'failed'
+            ? 'failed'
+            : run.stopped
+              ? 'cancelled'
+              : 'interrupted'
+    const settled = isSettledSubagentStatus(status)
+    entry.report = mergeReport(entry.report, {
+      taskId: entry.taskId,
+      status,
+      toolCallCount: run.toolCalls,
+      ...(run.activity ? { currentActivity: run.activity } : {}),
+      ...(settled && run.text.trim() ? { resultText: run.text.trim() } : {}),
+      ...(settled && last?.failure?.detail ? { statusReason: last.failure.detail } : {}),
+      durationMs: Math.max(0, Date.now() - Date.parse(entry.record.startedAt)),
+    })
+    announceSubagent(entry)
+    if (settled) {
+      const waiters = settleWaiters.get(entry.record.subagentId)
+      settleWaiters.delete(entry.record.subagentId)
+      for (const resolve of waiters ?? []) resolve()
+    }
+    wake.observe(entry.record)
+  }
+
+  /** What a child of ours says and does, kept for its card and its answer. */
+  const observeSpawnedEvent = (child: ThreadRecord, event: RuntimeEvent) => {
+    if (event.subtaskId !== undefined) return
+    const run = spawnedRuns.get(child.session.sessionId)
+    if (!run || !child.activeTurn || run.turnId !== child.activeTurn.turn.turnId) return
+    if (event.event === 'agent_message_chunk') {
+      const content = event.data.content
+      if (content.type === 'text' && run.text.length < SPAWNED_TEXT_MAX) {
+        run.text = (run.text + content.text).slice(0, SPAWNED_TEXT_MAX)
+      }
+      return
+    }
+    if (event.event === 'tool_call') {
+      run.toolCalls += 1
+      const title = event.data.title?.trim()
+      if (title) run.activity = title
+      syncSpawnedSoon(child)
+    }
+  }
+
+  const stopSpawned = (entry: SubagentEntry) => {
+    const child = entry.child
+    if (!child?.activeTurn) return
+    const run = spawnedRuns.get(child.session.sessionId)
+    if (run) run.stopped = true
+    // The user or the agent stopped it on purpose: nobody needs telling.
+    wake.markDelivered(entry.record.parentSessionId, entry.record.subagentId)
+    interruptTurn(child, child.activeTurn)
+  }
+
+  /**
+   * The parent's call of `spawn_agent` the card takes the place of: the
+   * newest call of it in the running turn that no card has claimed.
+   */
+  const pendingSpawnCall = (parent: ThreadRecord): string | undefined => {
+    const active = parent.activeTurn
+    if (!active) return undefined
+    const claimed = new Set(
+      [...subagentsById.values()]
+        .filter((entry) => entry.record.turnId === active.turn.turnId)
+        .map((entry) => entry.record.toolCallId),
+    )
+    const calls = [...(active.spawnCalls ?? [])]
+    for (let index = calls.length - 1; index >= 0; index--) {
+      const toolCallId = calls[index]!
+      if (!claimed.has(toolCallId)) return toolCallId
+    }
+    return undefined
+  }
+
+  const callerOf = (record: ThreadRecord): SpawnCaller => {
+    let depth = 0
+    let item: ThreadRecord | undefined = record
+    while (item?.session.parentSessionId && depth < 16) {
+      depth += 1
+      item = sessions.get(item.session.parentSessionId)
+    }
+    return {
+      sessionId: record.session.sessionId,
+      providerId: record.providerId,
+      ...(record.activeTurn ? { turnId: record.activeTurn.turn.turnId } : {}),
+      depth,
+    }
+  }
+
+  const spawnChild = async (args: Parameters<SpawnHost['spawn']>[0]): Promise<Subagent> => {
+    const parent = sessions.get(args.parent.sessionId)
+    if (!parent) throw new Error('This session is not known to OpenManager any more.')
+    if (!Object.hasOwn(providers, args.providerId)) {
+      throw new Error(`This environment cannot run ${args.providerId}.`)
+    }
+    const rejection = providerGate.rejection(args.providerId)
+    if (rejection) throw new Error(rejection.message)
+    const providerId = args.providerId as ProviderId
+    const turnId = parent.activeTurn?.turn.turnId ?? lastTurnOf(parent)
+    if (!turnId) throw new Error('This session has no turn to file the subagent in.')
+    const at = new Date().toISOString()
+    const subagentId = randomUUID()
+    const toolCallId = pendingSpawnCall(parent)
+    const depth = args.parent.depth + 1
+    const report: SubtaskUpdate = {
+      taskId: subagentId,
+      status: 'running',
+      title: args.title,
+      prompt: args.prompt,
+      ...(args.modelId ? { modelId: args.modelId } : {}),
+      background: args.background,
+      depth,
+      stoppable: true,
+      promptable: true,
+    }
+    const session: Session = {
+      sessionId: randomUUID(),
+      workspaceId: parent.session.workspaceId,
+      title: preview(args.title, 500),
+      parentSessionId: parent.session.sessionId,
+    }
+    const thread: Thread = { threadId: randomUUID(), sessionId: session.sessionId }
+    const subagent: SessionSubagent = { subagentId, origin: 'openmanager', promptable: true }
+    const record = subagentRecord(
+      report,
+      {
+        subagentId,
+        parentSessionId: parent.session.sessionId,
+        turnId,
+        ...(toolCallId ? { toolCallId } : {}),
+        depth,
+        origin: 'openmanager',
+        providerId,
+        childSessionId: session.sessionId,
+      },
+      { startedAt: at, updatedAt: at },
+      undefined,
+    )
+    // The row, the card and the key it is found by are one write.
+    persistCreatedThread(session, thread, {
+      providerId,
+      titleSource: 'provider',
+      subagent,
+      subagentTasks: {
+        [subagentId]: { ownerSessionId: parent.session.sessionId, taskId: subagentId },
+      },
+      alongside: [subagentEvent(parent, record, at)],
+    })
+    let child!: ThreadRecord
+    const runtimeSession = Promise.resolve()
+      .then(() => {
+        if (sessions.get(session.sessionId) !== child) throw new Error('The subagent was removed.')
+        return runtime.ensureSession(route(child))
+      })
+      .then((result) => persistRuntimeSession(child, result.sessionId))
+    runtimeSession.catch(() => undefined)
+    child = {
+      session,
+      thread,
+      providerId,
+      titleSource: 'provider',
+      cwd: parent.cwd,
+      runtimeSession,
+      subagent,
+      turns: [],
+      messages: [],
+      commandTurns: new Map(),
+      interactions: new Map(),
+      queue: EMPTY_THREAD_QUEUE,
+      status: 'idle',
+      updatedAt: Date.now(),
+    }
+    sessions.set(session.sessionId, child)
+    threads.set(thread.threadId, child)
+    const entry: SubagentEntry = {
+      key: subagentKey(parent, subagentId),
+      taskId: subagentId,
+      owner: parent,
+      holder: parent,
+      report,
+      record,
+      child,
+    }
+    rememberSubagent(entry)
+    if (args.modelId) {
+      try {
+        options.seedSessionComposer?.(session.sessionId, { modelId: args.modelId })
+      } catch (error) {
+        options.onPersistenceError?.(error, 'session.composer.updated')
+      }
+    }
+    const commandId = randomUUID()
+    parentAsked.add(commandId)
+    const started = startTurn(
+      child,
+      'spawn_agent',
+      { sessionId: session.sessionId, threadId: thread.threadId, text: args.prompt },
+      commandId,
+      { origin: 'delegated', ...(args.modelId ? { settings: { modelId: args.modelId } } : {}) },
+    )
+    if (started.type === 'error') {
+      parentAsked.delete(commandId)
+      entry.report = mergeReport(entry.report, {
+        taskId: subagentId,
+        status: 'failed',
+        statusReason: started.error.message,
+      })
+      announceSubagent(entry)
+      throw new Error(started.error.message)
+    }
+    return entry.record
+  }
+
+  const ownSpawned = (parentSessionId: string, subagentId: string) => {
+    const entry = subagentsById.get(subagentId)
+    return entry?.record.origin === 'openmanager' &&
+      entry.record.parentSessionId === parentSessionId
+      ? entry
+      : undefined
+  }
+
+  const spawnHost: SpawnHost = {
+    callerOf: (threadId) => {
+      const record = threads.get(threadId)
+      return record ? callerOf(record) : undefined
+    },
+    providers: () => options.spawnProviders?.() ?? [],
+    spawn: spawnChild,
+    list: (parentSessionId) =>
+      [...subagentsById.values()]
+        .filter(
+          (entry) =>
+            entry.record.origin === 'openmanager' &&
+            entry.record.parentSessionId === parentSessionId,
+        )
+        .map((entry) => entry.record)
+        .sort((left, right) => left.startedAt.localeCompare(right.startedAt)),
+    get: (parentSessionId, subagentId) => ownSpawned(parentSessionId, subagentId)?.record,
+    waitSettled: (parentSessionId, subagentId, timeoutMs) => {
+      const entry = ownSpawned(parentSessionId, subagentId)
+      if (!entry) return Promise.reject(new Error('No such subagent.'))
+      if (isSettledSubagentStatus(entry.record.status)) return Promise.resolve(entry.record)
+      return new Promise<Subagent>((resolve) => {
+        let waiters = settleWaiters.get(subagentId)
+        if (!waiters) settleWaiters.set(subagentId, (waiters = new Set()))
+        const done = () => {
+          clearTimeout(timer)
+          waiters!.delete(done)
+          resolve(entry.record)
+        }
+        const timer = setTimeout(done, timeoutMs)
+        waiters.add(done)
+      })
+    },
+    resultOf: (parentSessionId, subagentId) =>
+      ownSpawned(parentSessionId, subagentId) ? spawnedResult(subagentId) : undefined,
+    markDelivered: (parentSessionId, subagentId) => wake.markDelivered(parentSessionId, subagentId),
+    send: async (parentSessionId, subagentId, message) => {
+      const child = ownSpawned(parentSessionId, subagentId)?.child
+      if (!child) throw new Error('Its session was deleted.')
+      const commandId = randomUUID()
+      parentAsked.add(commandId)
+      if (!threadBusy(child) && child.queue.items.length === 0) {
+        const started = startTurn(
+          child,
+          'send_agent',
+          { sessionId: child.session.sessionId, threadId: child.thread.threadId, text: message },
+          commandId,
+          { origin: 'delegated' },
+        )
+        if (started.type !== 'error') return 'started'
+      }
+      const added = enqueue(child, 'send_agent', { text: message, commandId }, 'queued')
+      if ('type' in added) {
+        parentAsked.delete(commandId)
+        throw new Error(added.error.message)
+      }
+      drain(child)
+      return 'queued'
+    },
+    stop: async (parentSessionId, subagentId) => {
+      const entry = ownSpawned(parentSessionId, subagentId)
+      if (entry) stopSpawned(entry)
+    },
   }
 
   /**
@@ -2817,7 +3227,13 @@ export function createThreadService(
     requestId: string,
     input: { sessionId: string; threadId: string; text: string; artifactIds?: string[] },
     commandId: string,
-    opts: { modeId?: string; settings?: QueuedMessageSettings; queueAfter?: ThreadQueue } = {},
+    opts: {
+      modeId?: string
+      settings?: QueuedMessageSettings
+      queueAfter?: ThreadQueue
+      /** A turn no person sent here: a parent agent's (`delegated`), or the environment's (`subagents`). */
+      origin?: 'delegated' | 'subagents'
+    } = {},
   ) => {
     const { modeId } = opts
     if (threadBusy(record)) {
@@ -2847,6 +3263,7 @@ export function createThreadService(
       state: 'running',
       startedAt,
       commandId,
+      ...(opts.origin ? { origin: opts.origin } : {}),
     }
     const userMessage: Message = {
       messageId: randomUUID(),
@@ -2891,9 +3308,12 @@ export function createThreadService(
     record.turns.push(turn)
     record.messages.push(userMessage)
     record.commandTurns.set(commandId, started)
-    const title = titleFromPrompt(input.text)
-    if (title) applyTitle(record, title, 'fallback')
-    titleFromFirstPrompt(record, userMessage)
+    // The environment's notice is not what the chat is about.
+    if (opts.origin !== 'subagents') {
+      const title = titleFromPrompt(input.text)
+      if (title) applyTitle(record, title, 'fallback')
+      titleFromFirstPrompt(record, userMessage)
+    }
     const active: ActiveTurn = {
       turn,
       userMessage,
@@ -3043,7 +3463,11 @@ export function createThreadService(
         ...(next.artifactIds ? { artifactIds: next.artifactIds } : {}),
       },
       next.queueItemId,
-      { settings: next.settings, queueAfter: withoutItem(queue, next.queueItemId) },
+      {
+        settings: next.settings,
+        queueAfter: withoutItem(queue, next.queueItemId),
+        ...(next.origin ? { origin: next.origin } : {}),
+      },
     )
     if (result.type !== 'error') return
     options.onQueueProblem?.('a queued message could not start', {
@@ -3377,7 +3801,12 @@ export function createThreadService(
   const enqueue = (
     record: ThreadRecord,
     requestId: string,
-    input: { text: string; commandId: string; artifactIds?: string[] },
+    input: {
+      text: string
+      commandId: string
+      artifactIds?: string[]
+      origin?: QueuedMessage['origin']
+    },
     delivery: QueuedMessage['delivery'],
   ):
     | { item: QueuedMessage; images: { type: 'image'; mimeType: string; data: string }[] }
@@ -3408,6 +3837,7 @@ export function createThreadService(
         }) ?? {},
       delivery,
       createdAt: new Date().toISOString(),
+      ...(input.origin ? { origin: input.origin } : {}),
     }
     if (
       !writeQueue(record, { items: [...record.queue.items, item], pausedBy: record.queue.pausedBy })
@@ -3418,6 +3848,8 @@ export function createThreadService(
   }
 
   const service = {
+    /** What `spawn_agent` and its sibling tools act through. */
+    spawnHost,
     setEnvironmentId(id: string) {
       environmentId = id
     },
@@ -4834,6 +5266,19 @@ export function createThreadService(
     onRuntimeEvent(event: RuntimeEvent) {
       const record = threads.get(event.threadId)
       if (!record) return
+
+      if (record.subagent?.origin === 'openmanager') observeSpawnedEvent(record, event)
+      // A call of our own spawn tool: the card it files takes its place.
+      if (
+        event.event === 'tool_call' &&
+        event.subtaskId === undefined &&
+        record.activeTurn &&
+        /(^|[^a-z])spawn_agent$/.test(event.data.toolName ?? event.data.title ?? '')
+      ) {
+        const hostId = stableId(record.activeTurn.toolIds, event.data.toolCallId)
+        const calls = (record.activeTurn.spawnCalls ??= [])
+        if (hostId && !calls.includes(hostId)) calls.push(hostId)
+      }
 
       // A runtime that created a session where it meant to load one (no
       // identity, or one the agent had forgotten), including a respawn inside

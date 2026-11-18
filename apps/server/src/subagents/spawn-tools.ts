@@ -80,11 +80,7 @@ export interface SpawnHost {
 
 const fail = (text: string): AgentToolResult => ({ text, isError: true })
 
-const idSchema = z
-  .string()
-  .min(1)
-  .max(256)
-  .describe('The subagent id `spawn_agent` returned.')
+const idSchema = z.string().min(1).max(256).describe('The subagent id `spawn_agent` returned.')
 
 function line(subagent: Subagent): string {
   const parts = [
@@ -131,7 +127,9 @@ export function createSpawnAgentTools(host: SpawnHost): readonly AgentTool[] {
         const models = provider.models
           .slice(0, 12)
           .map((model) =>
-            model.modelId === provider.defaultModelId ? `${model.modelId} (default)` : model.modelId,
+            model.modelId === provider.defaultModelId
+              ? `${model.modelId} (default)`
+              : model.modelId,
           )
           .join(', ')
         const state = provider.available ? '' : ' (unavailable)'
@@ -144,8 +142,17 @@ export function createSpawnAgentTools(host: SpawnHost): readonly AgentTool[] {
     description:
       'Start a subagent on any provider OpenManager runs (Claude, Cursor, OpenCode, ...) to do one task. It starts with only `prompt`, none of your history, in your working directory. The user sees it as a card in this chat and can open it and talk to it. Runs in the background by default and you are told when it finishes. For work on your own provider, your own subagent tool is usually better; use this for another provider, or a child the user may want to talk to. `list_agents` lists providers and models.',
     inputSchema: {
-      provider: z.string().min(1).max(64).describe('Provider id, e.g. `opencode`, `cursor`, `claude`.'),
-      model: z.string().min(1).max(200).optional().describe("Model id; omit for the provider's default."),
+      provider: z
+        .string()
+        .min(1)
+        .max(64)
+        .describe('Provider id, e.g. `opencode`, `cursor`, `claude`.'),
+      model: z
+        .string()
+        .min(1)
+        .max(200)
+        .optional()
+        .describe("Model id; omit for the provider's default."),
       prompt: z
         .string()
         .min(1)
@@ -173,10 +180,16 @@ export function createSpawnAgentTools(host: SpawnHost): readonly AgentTool[] {
         return fail(`There is no provider "${providerId}". Providers:\n${providerList()}`)
       }
       if (!provider.available) {
-        return fail(`${provider.name} is not available on this machine right now. Providers:\n${providerList()}`)
+        return fail(
+          `${provider.name} is not available on this machine right now. Providers:\n${providerList()}`,
+        )
       }
       const modelId = typeof input.model === 'string' ? input.model : undefined
-      if (modelId && provider.models.length > 0 && !provider.models.some((m) => m.modelId === modelId)) {
+      if (
+        modelId &&
+        provider.models.length > 0 &&
+        !provider.models.some((m) => m.modelId === modelId)
+      ) {
         return fail(
           `${provider.name} has no model "${modelId}". Its models: ${provider.models.map((m) => m.modelId).join(', ')}`,
         )
@@ -206,12 +219,16 @@ export function createSpawnAgentTools(host: SpawnHost): readonly AgentTool[] {
           background,
         })
       } catch (error) {
-        return fail(`The subagent did not start: ${error instanceof Error ? error.message : String(error)}`)
+        return fail(
+          `The subagent did not start: ${error instanceof Error ? error.message : String(error)}`,
+        )
       }
       if (background) return { text: `Started ${line(child)}.\n${RUNNING_NEXT}` }
       const settled = await host.waitSettled(caller.sessionId, child.subagentId, WAIT_MAX_MS)
       if (!isSettledSubagentStatus(settled.status)) {
-        return { text: `${describeSubagent(settled, undefined)}\nStill running after 45 s. ${RUNNING_NEXT}` }
+        return {
+          text: `${describeSubagent(settled, undefined)}\nStill running after 45 s. ${RUNNING_NEXT}`,
+        }
       }
       host.markDelivered(caller.sessionId, child.subagentId)
       return { text: describeSubagent(settled, host.resultOf(caller.sessionId, child.subagentId)) }
@@ -232,7 +249,11 @@ export function createSpawnAgentTools(host: SpawnHost): readonly AgentTool[] {
       const id = String(input.id)
       if (!host.get(caller.sessionId, id)) return fail(`This session has no subagent "${id}".`)
       const seconds = typeof input.timeoutSeconds === 'number' ? input.timeoutSeconds : 45
-      const settled = await host.waitSettled(caller.sessionId, id, Math.min(seconds * 1000, WAIT_MAX_MS))
+      const settled = await host.waitSettled(
+        caller.sessionId,
+        id,
+        Math.min(seconds * 1000, WAIT_MAX_MS),
+      )
       if (!isSettledSubagentStatus(settled.status)) {
         return { text: `${describeSubagent(settled, undefined)}\nStill running. ${RUNNING_NEXT}` }
       }
@@ -293,7 +314,8 @@ export function createSpawnAgentTools(host: SpawnHost): readonly AgentTool[] {
       const id = String(input.id)
       const child = host.get(caller.sessionId, id)
       if (!child) return fail(`This session has no subagent "${id}".`)
-      if (isSettledSubagentStatus(child.status)) return { text: `${line(child)} had already finished.` }
+      if (isSettledSubagentStatus(child.status))
+        return { text: `${line(child)} had already finished.` }
       try {
         await host.stop(caller.sessionId, id)
       } catch (error) {

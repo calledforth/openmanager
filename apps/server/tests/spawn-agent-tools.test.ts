@@ -8,7 +8,12 @@ import {
 } from '../src/subagents/spawn-tools.js'
 import { createSubagentWake, wakeMessage } from '../src/subagents/subagent-wake.js'
 
-const caller: SpawnCaller = { sessionId: 'parent', providerId: 'claude', turnId: 'turn-1', depth: 0 }
+const caller: SpawnCaller = {
+  sessionId: 'parent',
+  providerId: 'claude',
+  turnId: 'turn-1',
+  depth: 0,
+}
 
 function record(overrides: Partial<Subagent> = {}): Subagent {
   return {

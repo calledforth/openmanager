@@ -113,6 +113,7 @@ import { createArtifactStore } from './artifacts.ts'
 import { createToolOutputReader } from './db/tool-output.ts'
 import { createUploadService } from './uploads.ts'
 import { createShareFileTool } from './share-file-tool.ts'
+import { createSpawnAgentTools, type SpawnHost } from './subagents/spawn-tools.ts'
 import { attachWebSocket, SOCKET_CAPABILITIES } from './websocket.ts'
 import { insideGitCheckout, openWorkspaceRegistry } from './workspaces.ts'
 
@@ -387,9 +388,40 @@ export async function startServer(config: ServerConfig) {
     present: (threadId, turnId, metadata) => shareFileInto.present(threadId, turnId, metadata),
     discard: (metadata) => shareFileInto.discard(metadata),
   })
+  // The spawn tools act through the thread service, made below; until then
+  // no session can be running a turn to call them.
+  let spawnInto: SpawnHost | undefined
+  const notYet = () => {
+    throw new Error('The environment is starting.')
+  }
+  const spawnTools = createSpawnAgentTools({
+    callerOf: (threadId) => spawnInto?.callerOf(threadId),
+    providers: () => spawnInto?.providers() ?? [],
+    spawn: (args) => (spawnInto ? spawnInto.spawn(args) : Promise.reject(notYet())),
+    list: (parentSessionId) => spawnInto?.list(parentSessionId) ?? [],
+    get: (parentSessionId, subagentId) => spawnInto?.get(parentSessionId, subagentId),
+    waitSettled: (parentSessionId, subagentId, timeoutMs) =>
+      spawnInto
+        ? spawnInto.waitSettled(parentSessionId, subagentId, timeoutMs)
+        : Promise.reject(notYet()),
+    resultOf: (parentSessionId, subagentId) => spawnInto?.resultOf(parentSessionId, subagentId),
+    markDelivered: (parentSessionId, subagentId) =>
+      spawnInto?.markDelivered(parentSessionId, subagentId),
+    send: (parentSessionId, subagentId, message) =>
+      spawnInto
+        ? spawnInto.send(parentSessionId, subagentId, message)
+        : Promise.reject(notYet()),
+    stop: (parentSessionId, subagentId) =>
+      spawnInto ? spawnInto.stop(parentSessionId, subagentId) : Promise.reject(notYet()),
+  })
   const agentTools = createAgentToolsEndpoint({
     serverName: 'openmanager',
-    tools: [...pullRequests.tools, shareFileTool],
+    tools: [
+      ...pullRequests.tools,
+      shareFileTool,
+      // On unless the environment turns them off (docs/decisions/subagents.md).
+      ...(process.env.OPENMANAGER_SPAWN_AGENT === '0' ? [] : spawnTools),
+    ],
     port: () => listeningPort(),
     version: serverVersion(),
     log,
@@ -551,6 +583,20 @@ export async function startServer(config: ServerConfig) {
         }
       },
       onQueueProblem: (message, data) => log('warn', message, data),
+      spawnProviders: () =>
+        providerService.snapshot().map((provider) => {
+          const profile = composerStore.getProfile(provider.id)
+          return {
+            providerId: provider.id,
+            name: provider.displayName,
+            available: provider.health.available,
+            models: (profile?.availableModels ?? []).map((model) => ({
+              modelId: model.modelId,
+              name: model.name,
+            })),
+            ...(profile?.defaultModelId ? { defaultModelId: profile.defaultModelId } : {}),
+          }
+        }),
       watchToolInput: (input) => pullRequests.wantsToolInput(input),
       onToolInput: (call) => scratchpad.observeToolInput(call),
       onWatchedToolSettled: ({ sessionId, toolCallId, text, startedAt }) =>
@@ -567,6 +613,7 @@ export async function startServer(config: ServerConfig) {
         }),
     },
   )
+  spawnInto = threadService.spawnHost
   shareFileInto = {
     agentTurnOf: (threadId) => threadService.agentTurnOf(threadId),
     share: (sessionId, workspaceId, path) => artifacts.share(sessionId, workspaceId, path),

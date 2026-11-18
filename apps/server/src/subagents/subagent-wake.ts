@@ -76,7 +76,8 @@ export function createSubagentWake(deps: WakeDeps) {
       return { cancel: () => clearTimeout(handle) }
     })
 
-  const key = (parentSessionId: string, subagentId: string) => `${parentSessionId}\u0000${subagentId}`
+  const key = (parentSessionId: string, subagentId: string) =>
+    `${parentSessionId}\u0000${subagentId}`
 
   const flush = (parentSessionId: string) => {
     timers.delete(parentSessionId)
