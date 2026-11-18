@@ -135,13 +135,15 @@ function Panel({
 }) {
   const [selectedKey, setSelectedKey] = useState<string | null>(initialKey ?? null)
   const selected =
-    pullRequests.find((pr) => pullRequestKey(pr) === selectedKey) ?? pullRequests[0] ?? null
+    pullRequests.find((pr) => pullRequestKey(pr) === selectedKey) ??
+    (pullRequests.length === 1 ? pullRequests[0] : null) ??
+    null
   const detail = selected && !loading ? (details[pullRequestKey(selected)] ?? null) : null
   return (
     <PullRequestsPanel
       pullRequests={pullRequests}
-      selectedKey={selectedKey}
-      onSelect={setSelectedKey}
+      openKey={selectedKey}
+      onOpen={setSelectedKey}
       detail={detail}
       detailLoading={loading}
       detailError={error}
