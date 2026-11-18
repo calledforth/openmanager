@@ -67,6 +67,8 @@ export interface ScratchpadView {
   supported: boolean
   /** Nothing read yet. */
   loading: boolean
+  /** The file has been read at least once (a later read may still have failed). */
+  read: boolean
   /** Why the last read failed; null once one works. */
   error: string | null
   /** The file grew past what the panel can carry; it is not shown. */
@@ -82,6 +84,7 @@ export interface ScratchpadView {
 const EMPTY_VIEW: ScratchpadView = {
   supported: false,
   loading: false,
+  read: false,
   error: null,
   tooLarge: false,
   content: '',
@@ -232,6 +235,7 @@ export function createScratchpadController(options: ScratchpadControllerOptions)
     view = {
       supported: true,
       loading: server === null && error === null,
+      read: server !== null,
       error,
       // A draft is shown even over a file too large to show: it is the user's.
       tooLarge: (server?.tooLarge ?? false) && draft === null,
@@ -472,6 +476,23 @@ export function scratchpadControllerFor(
 }
 
 export type ScratchpadController = ReturnType<typeof createScratchpadController>
+
+/**
+ * What the scratchpad view shows: nothing yet, a note in place of the
+ * editor (a file too large for it, or one that could never be read), or the
+ * editor. Text the user typed always gets the editor, even empty text a
+ * refused merge left behind: that is where its reason and "Discard mine" are.
+ */
+export function scratchpadShows(
+  view: Pick<ScratchpadView, 'loading' | 'read' | 'error' | 'tooLarge' | 'content' | 'saveState'>,
+): 'loading' | 'too_large' | 'unreadable' | 'editor' {
+  if (view.loading) return 'loading'
+  if (view.tooLarge) return 'too_large'
+  if (view.error && !view.read && view.content === '' && view.saveState !== 'error') {
+    return 'unreadable'
+  }
+  return 'editor'
+}
 
 const subscribeToNothing = () => () => undefined
 const selectConnected = (state: EnvironmentState) => state.connection.phase === 'connected'

@@ -18,7 +18,7 @@ import {
   usePullRequestDetail,
   useSessionPullRequests,
 } from '@openmanager/app-core/lib/pull-requests'
-import { useScratchpad } from '@openmanager/app-core/lib/scratchpad'
+import { scratchpadShows, useScratchpad } from '@openmanager/app-core/lib/scratchpad'
 import { useNow } from '@openmanager/app-core/lib/relative-time'
 import { SCRATCHPAD_PATH, type PullRequestSummary } from '@openmanager/protocol'
 
@@ -213,6 +213,7 @@ function useScratchpadView(
   // The hook's handlers are stable per project; the panel takes them as they are.
   const { onChange, onMarkSeen, onDiscard, onShareWithAgentsChange } = scratchpad
   if (!project || !scratchpad.supported) return null
+  const shows = scratchpadShows(scratchpad)
   return {
     id: SCRATCHPAD,
     shortcut: 's',
@@ -224,55 +225,52 @@ function useScratchpadView(
         ? 'Too large to show here'
         : scratchpadSummary(scratchpad.content, scratchpad.lastEdit, now),
     attention: scratchpad.unseen ? 'notice' : null,
-    content: scratchpad.loading ? (
-      // Read on every connection; nothing to show until the first answer.
-      <div className="h-full" aria-busy />
-    ) : scratchpad.tooLarge || (scratchpad.error && scratchpad.content === '') ? (
-      <ScratchpadNotice>
-        {scratchpad.tooLarge ? (
-          <>
-            <code>{SCRATCHPAD_PATH}</code> is too large to edit here. Open it in an editor.
-          </>
-        ) : (
-          scratchpad.error
-        )}
-      </ScratchpadNotice>
-    ) : (
-      <div className="flex h-full min-h-0 flex-col">
-        {/* Why text is not being saved (the file outgrew the panel), above the text kept. */}
-        {scratchpad.error ? (
-          <div
-            role="alert"
-            className="mx-2 mb-1 flex shrink-0 items-start gap-2 rounded-lg bg-hover py-1.5 pr-1.5 pl-2.5"
-          >
-            <p className="min-w-0 flex-1 text-12-regular leading-[1.5] text-[var(--basis-status-error)]">
-              {scratchpad.error}
-            </p>
-            {scratchpad.saveState === 'error' ? (
-              <button
-                type="button"
-                onClick={onDiscard}
-                className="h-6 shrink-0 cursor-pointer rounded-md px-2 text-11-medium text-[var(--basis-text-muted)] transition-colors hover:bg-hover hover:text-[var(--basis-text-strong)] focus-visible:outline-2 focus-visible:outline-ring"
-              >
-                Discard mine
-              </button>
-            ) : null}
-          </div>
-        ) : null}
-        <ScratchpadPanel
-          projectName={project.name}
-          content={scratchpad.content}
-          onChange={onChange}
-          lastEdit={scratchpad.lastEdit}
-          unseen={scratchpad.unseen}
-          onMarkSeen={onMarkSeen}
-          shareWithAgents={scratchpad.shareWithAgents}
-          onShareWithAgentsChange={onShareWithAgentsChange}
-          saveState={scratchpad.saveState}
-          className="min-h-0 flex-1"
-        />
-      </div>
-    ),
+    content:
+      shows === 'loading' ? (
+        // Read on every connection; nothing to show until the first answer.
+        <div className="h-full" aria-busy />
+      ) : shows === 'too_large' ? (
+        <ScratchpadNotice>
+          <code>{SCRATCHPAD_PATH}</code> is too large to edit here. Open it in an editor.
+        </ScratchpadNotice>
+      ) : shows === 'unreadable' ? (
+        <ScratchpadNotice>{scratchpad.error}</ScratchpadNotice>
+      ) : (
+        <div className="flex h-full min-h-0 flex-col">
+          {/* Why text is not being saved (the file outgrew the panel), above the text kept. */}
+          {scratchpad.error ? (
+            <div
+              role="alert"
+              className="mx-2 mb-1 flex shrink-0 items-start gap-2 rounded-lg bg-hover py-1.5 pr-1.5 pl-2.5"
+            >
+              <p className="min-w-0 flex-1 text-12-regular leading-[1.5] text-[var(--basis-status-error)]">
+                {scratchpad.error}
+              </p>
+              {scratchpad.saveState === 'error' ? (
+                <button
+                  type="button"
+                  onClick={onDiscard}
+                  className="h-6 shrink-0 cursor-pointer rounded-md px-2 text-11-medium text-[var(--basis-text-muted)] transition-colors hover:bg-hover hover:text-[var(--basis-text-strong)] focus-visible:outline-2 focus-visible:outline-ring"
+                >
+                  Discard mine
+                </button>
+              ) : null}
+            </div>
+          ) : null}
+          <ScratchpadPanel
+            projectName={project.name}
+            content={scratchpad.content}
+            onChange={onChange}
+            lastEdit={scratchpad.lastEdit}
+            unseen={scratchpad.unseen}
+            onMarkSeen={onMarkSeen}
+            shareWithAgents={scratchpad.shareWithAgents}
+            onShareWithAgentsChange={onShareWithAgentsChange}
+            saveState={scratchpad.saveState}
+            className="min-h-0 flex-1"
+          />
+        </div>
+      ),
   }
 }
 

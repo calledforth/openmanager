@@ -13,6 +13,7 @@ import {
   createScratchpadController,
   scratchpadControllerFor,
   scratchpadSeenKey,
+  scratchpadShows,
   scratchpadUnsavedKey,
   useScratchpad,
   type ScratchpadSeenStore,
@@ -409,6 +410,38 @@ describe('the scratchpad on one client', () => {
       saveState: 'saved',
       error: null,
     })
+  })
+
+  it('keeps the editor, and its way out, for an emptied draft it could not merge', async () => {
+    const base = Array.from({ length: 9_000 }, (_, i) => `${i % 100}`).join('\n')
+    const { client, controller, view, settle } = setup({ content: base })
+    await controller.load()
+    // The user clears the page while an agent rewrites all of it.
+    controller.edit('')
+    client.editScratchpad(
+      'workspace-1',
+      Array.from({ length: 9_000 }, (_, i) => `r${i % 89}`).join('\n'),
+    )
+    await settle()
+    expect(view()).toMatchObject({ content: '', saveState: 'error', read: true })
+    expect(scratchpadShows(view())).toBe('editor')
+  })
+
+  it('shows a note in place of the editor only for a file it never read or cannot show', () => {
+    const view = {
+      loading: false,
+      read: false,
+      error: 'offline',
+      tooLarge: false,
+      content: '',
+      saveState: 'saved' as const,
+    }
+    expect(scratchpadShows({ ...view, loading: true, error: null })).toBe('loading')
+    expect(scratchpadShows(view)).toBe('unreadable')
+    expect(scratchpadShows({ ...view, read: true })).toBe('editor')
+    expect(scratchpadShows({ ...view, saveState: 'error' })).toBe('editor')
+    expect(scratchpadShows({ ...view, content: 'kept' })).toBe('editor')
+    expect(scratchpadShows({ ...view, error: null, tooLarge: true })).toBe('too_large')
   })
 
   it('turns sharing with agents off and on', async () => {
