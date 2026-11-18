@@ -613,10 +613,12 @@ describe('§8.4 scenarios on main', () => {
   )
 
   /**
-   * Guard since F3 (§4.7.4 (e)): a child's provider identity is stored by the
-   * write that creates its row, so there is no second write for a time to
-   * move in. On main the stamp followed the insert as its own write and
-   * moved `updatedAt` whenever the clock crossed a millisecond in between.
+   * Guard since F3 (§4.7.4 (e)): a child's provider identity never moves its
+   * time. On main the stamp followed the insert as its own write and moved
+   * `updatedAt` whenever the clock crossed a millisecond in between. Since
+   * subagents (docs/decisions/subagents.md) the child is filed when its task
+   * is first reported, before OpenCode names its session, and the identity
+   * is stamped on that row once it does: host-private, and no activity.
    */
   scenario(
     'S8 (child) a child session registered through subtask_update (guard)',
@@ -646,12 +648,21 @@ describe('§8.4 scenarios on main', () => {
       await finish(rig, a, parent, turnId)
       // The recency the turn moved is announced too (X1, §4.7.1).
       await expectConverges('S8 (child)', rig, b)
-      // One write to the child's row: its insert, identity included.
+      // The child's row is inserted, its identity stamped once, and that stamp
+      // leaves its time where it was.
       const { provenance } = await witnessOf(rig, b)
       const writes = provenance.audit.filter(
         (row) => row.kind === 'session' && row.sessionId === child.sessionId,
       )
-      expect(writes).toMatchObject([{ op: 'insert', newProvider: 'fake-child-1' }])
+      expect(writes[0]).toMatchObject({ op: 'insert' })
+      const stamps = writes.filter(
+        (row) => row.kind === 'session' && row.oldProvider !== row.newProvider,
+      )
+      expect(stamps).toMatchObject([
+        { op: 'update', oldProvider: null, newProvider: 'fake-child-1' },
+      ])
+      const stamp = stamps[0] as { old: number | null; new: number | null }
+      expect(stamp.new).toBe(stamp.old)
     },
   )
 

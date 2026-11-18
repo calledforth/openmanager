@@ -1,5 +1,9 @@
 import type { DatabaseSync } from 'node:sqlite'
-import { ProofEventSchemas, type SubscriptionScope } from '@openmanager/protocol/node'
+import {
+  ProofEventSchemas,
+  SubagentSchema,
+  type SubscriptionScope,
+} from '@openmanager/protocol/node'
 import type { DurableEvent } from '@openmanager/protocol/node'
 import type { DurableProofEvent, EventRepository } from './event-repository.ts'
 import { createToolOutputStore } from './tool-output.ts'
@@ -13,11 +17,13 @@ export interface BootReconcileReport {
   toolsCancelled: number
   thoughtsClosed: number
   questionsCancelled: number
+  /** Subagents the last process left running, now settled as interrupted. */
+  subagentsInterrupted: number
   /** Threads whose ended turns the legacy repair closed children in (one transaction each). */
   threadsRepaired: number
   eventsWritten: number
   /** Turns or threads whose write failed: left as they are, retried next boot. */
-  failures: { kind: 'recovery' | 'repair'; ids: Record<string, string>; reason: string }[]
+  failures: { kind: 'recovery' | 'repair' | 'subagent'; ids: Record<string, string>; reason: string }[]
   durationMs: number
 }
 
@@ -41,7 +47,10 @@ type LegacyChildRow = {
  *    still be live. Each gets `turn.interrupted {reason: 'server_restarted'}`
  *    through the terminal path, which first closes every open tool, thought
  *    and request (turn-closure.ts), in one transaction per turn.
- * 2. **The legacy repair.** Turns that ended before servers closed their
+ * 2. **Subagents.** A subagent the last process left running ran in a
+ *    provider process that is gone. Each record is restated as
+ *    `interrupted`; its child's turn was ended by step 1.
+ * 3. **The legacy repair.** Turns that ended before servers closed their
  *    children still have open tools and thoughts. One transaction per thread
  *    writes their closes, with ids derived from the child, so a second run
  *    finds nothing to do.
@@ -61,6 +70,7 @@ export function reconcileAfterRestart(
     toolsCancelled: 0,
     thoughtsClosed: 0,
     questionsCancelled: 0,
+    subagentsInterrupted: 0,
     threadsRepaired: 0,
     eventsWritten: 0,
     failures: [],
@@ -109,6 +119,57 @@ export function reconcileAfterRestart(
       report.failures.push({
         kind: 'recovery',
         ids: { sessionId: row.session_id, threadId: row.thread_id, turnId: row.turn_id },
+        reason: String(error),
+      })
+    }
+  }
+
+  const unsettled = database
+    .prepare(
+      `SELECT subagents.subagent_id, subagents.thread_id, subagents.record_json,
+              subagents.updated_at, threads.session_id
+       FROM subagents INDEXED BY subagents_unsettled_idx
+       JOIN threads ON threads.thread_id = subagents.thread_id
+       WHERE subagents.status IN ('pending', 'running', 'waiting')
+       ORDER BY subagents.created_at, subagents.subagent_id`,
+    )
+    .all() as {
+    subagent_id: string
+    thread_id: string
+    record_json: string
+    updated_at: number
+    session_id: string
+  }[]
+  for (const row of unsettled) {
+    const scope = scopeOf(row)
+    try {
+      const timestamp = new Date(now()).toISOString()
+      const record = SubagentSchema.parse(JSON.parse(row.record_json))
+      delete record.waitingOn
+      const event = ProofEventSchemas['subagent.updated'].parse({
+        type: 'event',
+        name: 'subagent.updated',
+        // Derived from the record as it stood, so a retried boot writes it
+        // once, and a subagent revived and cut off again gets a new one.
+        eventId: `recover:subagent:${row.subagent_id}:${row.updated_at}`,
+        timestamp,
+        scope,
+        payload: {
+          subagent: {
+            ...record,
+            status: 'interrupted',
+            statusReason: 'The environment restarted while it ran.',
+            finishedAt: timestamp,
+            updatedAt: timestamp,
+          },
+        },
+      })
+      count(repository.appendEvents(scope, [event]))
+      report.subagentsInterrupted += 1
+    } catch (error) {
+      report.failures.push({
+        kind: 'subagent',
+        ids: { sessionId: row.session_id, threadId: row.thread_id, subagentId: row.subagent_id },
         reason: String(error),
       })
     }

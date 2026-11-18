@@ -144,7 +144,7 @@ export const ProofCommandSchemas = {
   ),
   // Stops one running subagent of the session's agent, from its card. A
   // subagent that already settled is not an error. Refused with
-  // `unsupported` when the subagent is not `stoppable`. The change reaches
+  // `capability_missing` when the subagent is not `stoppable`. The change reaches
   // every client as `subagent.updated`.
   'subagent.stop': command(
     'subagent.stop',

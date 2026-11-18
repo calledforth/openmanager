@@ -1167,6 +1167,20 @@ export class AgentRuntime {
     await entry.runtime.stopBackgroundTasks?.(args.taskIds)
   }
 
+  /** Stop one subagent on a thread, by the `taskId` its `subtask_update` named.
+   *
+   * Never respawns: a subagent runs inside the provider process, so a thread
+   * with no live process has none left to stop. Throws when the provider
+   * cannot stop one subagent alone. */
+  async stopSubtask(args: RuntimeRoute & { taskId: string }): Promise<void> {
+    const entry = this.registry.get(args.threadId)
+    if (!entry || entry.providerId !== args.providerId || !isRuntimeAlive(entry.runtime.phase))
+      return
+    if (!entry.runtime.stopSubtask)
+      throw new Error(`Provider ${args.providerId} cannot stop one subagent`)
+    await entry.runtime.stopSubtask(args.taskId)
+  }
+
   /** The thread is gone for good — the user deleted the session.
    *
    * Stops its process now rather than leaving a CLI holding a session nobody

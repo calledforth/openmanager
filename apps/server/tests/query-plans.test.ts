@@ -24,8 +24,10 @@ import {
   FIRST_UNEXPIRED_SEQUENCE_SQL,
   MESSAGE_PARTS_SQL,
   OPEN_TURN_FOR_SESSION_SQL,
+  PENDING_INTERACTIONS_FOR_NATIVE_SUBAGENTS_SQL,
   PENDING_INTERACTIONS_FOR_SESSION_SQL,
   STREAM_BOUNDS_SQL,
+  SUBAGENTS_FOR_THREAD_SQL,
   THREAD_IN_SESSION_SQL,
   THREADS_FOR_SESSION_SQL,
   TURN_FOR_COMMAND_ID_SQL,
@@ -80,6 +82,28 @@ describe('bounded query plans', () => {
     const open = plan(database, OPEN_TURN_FOR_SESSION_SQL)
     expectIndexed(open, 'threads_session_')
     expectIndexed(open, 'turns_thread_state_idx')
+  })
+
+  it("reads what a session's native subagents wait on from its child sessions down", async () => {
+    const database = await createDatabase()
+    const steps = plan(database, PENDING_INTERACTIONS_FOR_NATIVE_SUBAGENTS_SQL)
+    // The recursive walk reads its own small queue; every table is searched.
+    const tables = steps.filter((step) => !step.includes(' tree'))
+    expect(tables.some((step) => step.startsWith('SCAN'))).toBe(false)
+    expect(steps.some((step) => step.includes('TEMP B-TREE'))).toBe(false)
+    for (const index of [
+      'sessions_parent_session_id_idx',
+      'threads_session_',
+      'turns_thread_state_idx',
+      'interactions_turn_id_idx',
+    ]) {
+      expect(steps.some((step) => step.includes(`INDEX ${index}`))).toBe(true)
+    }
+  })
+
+  it("lists a thread's subagents newest first from its index", async () => {
+    const database = await createDatabase()
+    expectIndexed(plan(database, SUBAGENTS_FOR_THREAD_SQL), 'subagents_thread_created_idx')
   })
 
   it('replays a deduplicated send from indexed turns and messages', async () => {

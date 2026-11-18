@@ -10,6 +10,8 @@ import {
   InteractionSchema,
   ReasoningBlockSchema,
   SessionSummarySchema,
+  SubagentSchema,
+  SUBAGENTS_PER_THREAD_MAX,
   ToolCallStateSchema,
   TurnSchema,
   TURN_FAILURE_MESSAGES,
@@ -22,6 +24,7 @@ import {
   type ToolCallState,
   type SessionStatus,
   type SessionSummary,
+  type Subagent,
   type Thread,
   type Turn,
   type TurnFailureReason,
@@ -38,6 +41,7 @@ import {
   MESSAGE_PARTS_SQL,
   MESSAGES_FOR_THREAD_SQL,
   PENDING_INTERACTIONS_FOR_THREAD_SQL,
+  SUBAGENTS_FOR_THREAD_SQL,
   THREAD_IN_SESSION_SQL,
   THREAD_LISTING_SQL,
   THREAD_QUEUE_SQL,
@@ -72,6 +76,8 @@ export interface ThreadState {
   listing: ComposerListing
   /** The messages the chat holds back. */
   queue: ThreadQueue
+  /** Every subagent this thread's agent started, oldest first. */
+  subagents: Subagent[]
 }
 
 type SessionRow = {
@@ -91,6 +97,9 @@ type SessionRow = {
   cooking_at?: number | null
   done_at?: number | null
   updated_at: number
+  subagent_id?: string | null
+  subagent_origin?: string | null
+  subagent_promptable?: number | null
 }
 
 type ThreadRow = { thread_id: string; session_id: string }
@@ -204,6 +213,15 @@ export function sessionRowToSummary(database: DatabaseSync, row: SessionRow): Se
       ? { backgroundTasks: JSON.parse(row.background_tasks_json) }
       : {}),
     ...(row.composer_json ? { composer: JSON.parse(row.composer_json) } : {}),
+    ...(row.subagent_id
+      ? {
+          subagent: {
+            subagentId: row.subagent_id,
+            origin: row.subagent_origin,
+            promptable: row.subagent_promptable === 1,
+          },
+        }
+      : {}),
     ...readSessionActivity(database, row),
     ...readSessionPullRequests(database, row.session_id),
   })
@@ -253,28 +271,12 @@ export function getSessionSummary(
   const row = database
     .prepare(
       `SELECT session_id, workspace_id, parent_session_id, provider_id, title, title_source, title_generated, status,
-              composer_json, background_tasks_json, settled_at, pinned_at, cooking_at, done_at, updated_at
+              composer_json, background_tasks_json, settled_at, pinned_at, cooking_at, done_at, updated_at,
+              subagent_id, subagent_origin, subagent_promptable
        FROM sessions WHERE session_id = ?`,
     )
     .get(sessionId) as SessionRow | undefined
   return row ? sessionRowToSummary(database, row) : undefined
-}
-
-/**
- * The host session already registered for a provider's own session id, if
- * any. Child sessions are registered from provider subtask events, which
- * repeat across turns and reconnects, so registration must find its earlier
- * self instead of filing a second host session for the same provider thread.
- */
-export function findSessionIdByProviderSession(
-  database: DatabaseSync,
-  providerId: string,
-  providerSessionId: string,
-): string | undefined {
-  const row = database
-    .prepare('SELECT session_id FROM sessions WHERE provider_id = ? AND provider_session_id = ?')
-    .get(providerId, providerSessionId) as { session_id: string } | undefined
-  return row?.session_id
 }
 
 /**
@@ -379,7 +381,102 @@ export function readThreadState(
     interactions,
     listing: readThreadListing(database, query.threadId, log) ?? {},
     queue: readThreadQueue(database, query.threadId, log),
+    subagents: readThreadSubagents(database, query.threadId, log),
   }
+}
+
+/**
+ * The subagents a thread's agent started, as the last `subagent.updated` of
+ * each stated it, oldest first: the newest the snapshot can carry. A record
+ * that no longer parses is skipped with a log line, never the whole thread.
+ */
+export function readThreadSubagents(
+  database: DatabaseSync,
+  threadId: string,
+  log?: Logger,
+): Subagent[] {
+  const rows = database
+    .prepare(SUBAGENTS_FOR_THREAD_SQL)
+    .all(threadId, SUBAGENTS_PER_THREAD_MAX) as { record_json: string }[]
+  return rows.reverse().flatMap((row) => {
+    const parsed = SubagentSchema.safeParse(JSON.parse(row.record_json))
+    if (parsed.success) return [parsed.data]
+    log?.('warn', 'a stored subagent does not read; skipping it', { threadId })
+    return []
+  })
+}
+
+/** A subagent as stored, with the thread it is filed on and the runtime's key for it. */
+export type StoredSubagent = {
+  record: Subagent
+  threadId: string
+  ownerSessionId: string
+  taskId: string
+}
+
+type SubagentRow = {
+  record_json: string
+  thread_id: string
+  owner_session_id: string
+  task_id: string
+}
+
+const storedSubagent = (row: SubagentRow | undefined): StoredSubagent | undefined => {
+  if (!row) return undefined
+  const parsed = SubagentSchema.safeParse(JSON.parse(row.record_json))
+  return parsed.success
+    ? {
+        record: parsed.data,
+        threadId: row.thread_id,
+        ownerSessionId: row.owner_session_id,
+        taskId: row.task_id,
+      }
+    : undefined
+}
+
+/**
+ * The subagent a runtime already reported under this key, if any. The
+ * runtime repeats a subagent across updates, revivals and restarts, so a
+ * report is looked up here before a new record and child are filed.
+ */
+export function findSubagentByTask(
+  database: DatabaseSync,
+  ownerSessionId: string,
+  taskId: string,
+): StoredSubagent | undefined {
+  return storedSubagent(
+    database
+      .prepare(
+        `SELECT record_json, thread_id, owner_session_id, task_id
+         FROM subagents WHERE owner_session_id = ? AND task_id = ?`,
+      )
+      .get(ownerSessionId, taskId) as SubagentRow | undefined,
+  )
+}
+
+export function getStoredSubagent(
+  database: DatabaseSync,
+  subagentId: string,
+): StoredSubagent | undefined {
+  return storedSubagent(
+    database
+      .prepare(
+        `SELECT record_json, thread_id, owner_session_id, task_id
+         FROM subagents WHERE subagent_id = ?`,
+      )
+      .get(subagentId) as SubagentRow | undefined,
+  )
+}
+
+/** The child session that holds a subagent's work, while it has one. */
+export function findSubagentSessionId(
+  database: DatabaseSync,
+  subagentId: string,
+): string | undefined {
+  const row = database
+    .prepare('SELECT session_id FROM sessions WHERE subagent_id = ?')
+    .get(subagentId) as { session_id: string } | undefined
+  return row?.session_id
 }
 
 /**
