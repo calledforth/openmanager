@@ -1,5 +1,4 @@
-import { createHash } from 'node:crypto'
-import { mkdirSync, writeFileSync } from 'node:fs'
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import type * as acp from '@agentclientprotocol/sdk'
@@ -177,6 +176,8 @@ export class AcpSessionRuntimeImpl implements ManagedSessionRuntime {
   /** Whether the spec's instructions went into the agent's own config at
    * spawn (`instructionsEnv`), so no message needs to carry them. */
   private instructionsInConfig = false
+  /** The private folder holding this process's instructions file, removed when it exits. */
+  private instructionsDir: string | undefined
   /** The instructions block still to go ahead of this session's first
    * message: set when `session/new` created the session, cleared once a
    * prompt carrying it is dispatched. */
@@ -620,7 +621,9 @@ export class AcpSessionRuntimeImpl implements ManagedSessionRuntime {
     if (!instructions || !this.config.instructionsEnv) return env
     let file: string
     try {
-      file = writeInstructionsFile(instructions)
+      const written = writeInstructionsFile(instructions)
+      this.instructionsDir = written.dir
+      file = written.file
     } catch (error) {
       this.host.log({
         scope: 'acp',
@@ -704,6 +707,11 @@ export class AcpSessionRuntimeImpl implements ManagedSessionRuntime {
     // The process that held the grant is gone; nothing may use it again.
     this.remoteTools?.close()
     this.remoteTools = undefined
+    // Nor its instructions, which only it read.
+    if (this.instructionsDir) {
+      rmSync(this.instructionsDir, { recursive: true, force: true })
+      this.instructionsDir = undefined
+    }
     if (emitted)
       this.emit(
         routeEvent(this.route(), this.sessionIdValue, 'lifecycle', 'process_exited', {
@@ -1836,19 +1844,24 @@ function isInstructionsBlock(content: unknown): boolean {
 }
 
 /**
- * Write the instructions where a provider's config can name them, and say
- * where. Named by their hash, so every session with the same instructions
- * shares one file, and rewritten on every spawn, so a temp cleaner that
- * removed it between sessions costs nothing. The agent reads the file
- * itself, so it lives as long as the system's temp folder keeps it.
+ * Write the instructions where a provider's config can name them, for one
+ * process. The temp folder is shared with every user of the machine, so
+ * nothing in it is at a name anyone could guess or make first: `mkdtemp`
+ * makes a new folder only this user can enter (0700), and the file is
+ * created in it, never opened if something is already there (`wx`), and
+ * readable only by this user (0600). The runtime removes the folder when
+ * its process exits; the agent reads the file for as long as it runs.
  */
-function writeInstructionsFile(instructions: string): string {
-  const dir = join(tmpdir(), 'openmanager-instructions')
-  mkdirSync(dir, { recursive: true })
-  const name = createHash('sha256').update(instructions).digest('hex').slice(0, 24)
-  const file = join(dir, `${name}.md`)
-  writeFileSync(file, instructions)
-  return file
+export function writeInstructionsFile(instructions: string): { dir: string; file: string } {
+  const dir = mkdtempSync(join(tmpdir(), 'openmanager-instructions-'))
+  const file = join(dir, 'instructions.md')
+  try {
+    writeFileSync(file, instructions, { flag: 'wx', mode: 0o600 })
+  } catch (error) {
+    rmSync(dir, { recursive: true, force: true })
+    throw error
+  }
+  return { dir, file }
 }
 
 /** `process.env` merged with the provider's overrides, minus the undefined

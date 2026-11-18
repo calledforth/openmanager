@@ -69,8 +69,29 @@ describe('the scratchpad on the wire', () => {
     expect(COMMAND_ACCESS['scratchpad.sharing.set']).toBe('operate')
   })
 
-  it('counts its limit in UTF-8 bytes', () => {
-    expect(scratchpadBytes('é')).toBe(2)
-    expect(scratchpadBytes('x'.repeat(SCRATCHPAD_MAX_BYTES))).toBe(SCRATCHPAD_MAX_BYTES)
+  it('counts its limit as a save carries the text, escapes and all', () => {
+    expect(scratchpadBytes('é')).toBe(4)
+    expect(scratchpadBytes('a"b\\c\n')).toBe(JSON.stringify('a"b\\c\n').length)
+    // 10,000 lines of `"x"`: 40,000 bytes on disk, over 60,000 in a save.
+    const quoted = '"x"\n'.repeat(10_000)
+    expect(new TextEncoder().encode(quoted).length).toBe(40_000)
+    expect(scratchpadBytes(quoted)).toBeGreaterThan(SCRATCHPAD_MAX_BYTES)
+  })
+
+  it('fits any scratchpad within the cap in one message the environment accepts', () => {
+    // The worst text per byte it carries: escapes, then a control character.
+    for (const unit of ['"', '\\', '\n', '\u0001', 'é', '😀']) {
+      // As many as fit: two bytes are the quotes around the string.
+      const each = scratchpadBytes(unit) - 2
+      const content = unit.repeat(Math.floor((SCRATCHPAD_MAX_BYTES - 2) / each))
+      expect(scratchpadBytes(content)).toBeLessThanOrEqual(SCRATCHPAD_MAX_BYTES)
+      const message = JSON.stringify({
+        type: 'command',
+        requestId: 'r'.repeat(64),
+        name: 'scratchpad.save',
+        payload: { workspaceId: 'w'.repeat(256), content, baseVersion: 'v'.repeat(128) },
+      })
+      expect(new TextEncoder().encode(message).length).toBeLessThanOrEqual(65_536)
+    }
   })
 })

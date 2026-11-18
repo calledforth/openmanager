@@ -19,6 +19,7 @@ import {
   SCRATCHPAD_SAVE_CAPABILITY,
   SCRATCHPAD_SHARING_SET_CAPABILITY,
   ScratchpadChangedEventSchema,
+  scratchpadBytes,
   ScratchpadCommandSchemas,
   ScratchpadResponseSchemas,
   type CommandEnvelope,
@@ -206,11 +207,16 @@ export function createScratchpadService(deps: ScratchpadServiceDeps) {
     })
     if (stat.size > SCRATCHPAD_MAX_BYTES) return large(stat.size)
     const bytes = readFileSync(file)
-    // Grown between the stat and the read.
-    if (bytes.length > SCRATCHPAD_MAX_BYTES) return large(bytes.length)
+    const content = bytes.toString('utf8')
+    // Grown between the stat and the read, or within the cap on disk but
+    // over it as a save would carry it (quotes, backslashes, line breaks):
+    // a client is only ever shown a scratchpad it could save back.
+    if (bytes.length > SCRATCHPAD_MAX_BYTES || scratchpadBytes(content) > SCRATCHPAD_MAX_BYTES) {
+      return large(bytes.length)
+    }
     return {
       exists: true,
-      content: bytes.toString('utf8'),
+      content,
       tooLarge: false,
       version: versionOf(bytes),
       modifiedAt: stat.mtimeMs,
@@ -431,6 +437,9 @@ export function createScratchpadService(deps: ScratchpadServiceDeps) {
     const { workspaceId } = parsed.data.payload
     const target = workspaceFor(command.requestId, workspaceId, context)
     if ('error' in target) return target.error
+    // An agent or an editor may have made the folder: it stays out of git
+    // however it came to be. Idempotent, and only once there is a folder.
+    if (existsSync(dirname(target.file))) excludeFromGit(target.workspace.root, deps.log)
     const { reading, changed } = observe(workspaceId, target.file)
     // Changed while nobody watched: whoever still follows it hears too.
     if (changed) publish(workspaceId, reading)
@@ -447,10 +456,10 @@ export function createScratchpadService(deps: ScratchpadServiceDeps) {
       return errorResult(command.requestId, 'validation', 'Invalid scratchpad save.')
     }
     const { workspaceId, content, baseVersion } = parsed.data.payload
-    const bytes = Buffer.from(content, 'utf8')
-    if (bytes.length > SCRATCHPAD_MAX_BYTES) {
+    if (scratchpadBytes(content) > SCRATCHPAD_MAX_BYTES) {
       return errorResult(command.requestId, 'validation', 'The scratchpad is too large to save.')
     }
+    const bytes = Buffer.from(content, 'utf8')
     const target = workspaceFor(command.requestId, workspaceId, context)
     if ('error' in target) return target.error
     const current = observe(workspaceId, target.file)
@@ -458,7 +467,10 @@ export function createScratchpadService(deps: ScratchpadServiceDeps) {
     const currentVersion = current.reading.exists ? current.reading.version : null
     // Edited from a version that is no longer there: someone else wrote
     // since. Nothing is written; the client merges into what is there now.
-    if (currentVersion !== baseVersion) {
+    // A file too large to send is never written over from the panel, whose
+    // user has not seen it: that is a conflict too, and the client keeps its
+    // text rather than merging into one it cannot read.
+    if (currentVersion !== baseVersion || (current.reading.exists && current.reading.tooLarge)) {
       return answer(SCRATCHPAD_SAVE_CAPABILITY, command.requestId, {
         outcome: 'conflict',
         scratchpad: toWire(workspaceId, current.reading, context?.clientId),
@@ -472,10 +484,9 @@ export function createScratchpadService(deps: ScratchpadServiceDeps) {
       })
     }
     const folder = dirname(target.file)
-    if (!existsSync(folder)) {
-      mkdirSync(folder, { recursive: true })
-      excludeFromGit(target.workspace.root, deps.log)
-    }
+    mkdirSync(folder, { recursive: true })
+    // Whoever made the folder (this save, an agent, an editor), it stays out of git.
+    excludeFromGit(target.workspace.root, deps.log)
     // Written beside the file and renamed over it, so an agent reading it
     // mid-save sees the old text or the new, never half of one.
     const temporary = join(folder, `.scratchpad.${randomUUID()}.tmp`)

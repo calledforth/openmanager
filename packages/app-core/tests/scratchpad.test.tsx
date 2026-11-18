@@ -6,12 +6,13 @@ import {
   createMockEnvironmentClient,
   type MockEnvironmentClient,
 } from '@openmanager/environment-client'
-import type { Workspace } from '@openmanager/protocol'
+import { SCRATCHPAD_MAX_BYTES, type Workspace } from '@openmanager/protocol'
 import { EnvironmentClientProvider } from '../src/providers/environment-client'
-import { mergeLines } from '../src/lib/scratchpad/merge'
+import { matchLines, mergeLines } from '../src/lib/scratchpad/merge'
 import {
   createScratchpadController,
   scratchpadSeenKey,
+  scratchpadUnsavedKey,
   useScratchpad,
   type ScratchpadSeenStore,
   type ScratchpadView,
@@ -95,6 +96,48 @@ describe('merging two edits of the scratchpad', () => {
     const both = `${base}- same\n`
     expect(mergeLines(base, both, both)).toBe(both)
     expect(mergeLines(base, `- top\n${base}`, `${base}- same\n`)).toBe(`- top\n${base}- same\n`)
+  })
+
+  it('keeps an outside change to a line the user did not touch, beside one both made', () => {
+    expect(mergeLines('a\nb\nc', 'a\nB\nc', 'A\nB\nc')).toBe('A\nB\nc')
+    expect(mergeLines('a\nb\nc', 'a\nB\nc', 'A\nX\nc')).toBe('A\nB\nc')
+  })
+
+  it('keeps both ends of a long scratchpad when each side changed one', () => {
+    const lines = Array.from({ length: 5_000 }, (_, index) => `line ${index}`)
+    const base = lines.join('\n')
+    const mine = ['FIRST', ...lines.slice(1)].join('\n')
+    const theirs = [...lines.slice(0, -1), 'LAST'].join('\n')
+    expect(mergeLines(base, mine, theirs)).toBe(['FIRST', ...lines.slice(1, -1), 'LAST'].join('\n'))
+  })
+
+  it('finds a longest common run of lines, whatever the inputs', () => {
+    // Checked against the quadratic table on small random inputs.
+    let seed = 7
+    const random = () => (seed = (seed * 1103515245 + 12345) % 2 ** 31) / 2 ** 31
+    const lcs = (a: number[], b: number[]) => {
+      const table = Array.from({ length: a.length + 1 }, () => new Array(b.length + 1).fill(0))
+      for (let i = a.length - 1; i >= 0; i--)
+        for (let j = b.length - 1; j >= 0; j--)
+          table[i]![j] =
+            a[i] === b[j]
+              ? table[i + 1]![j + 1]! + 1
+              : Math.max(table[i + 1]![j]!, table[i]![j + 1]!)
+      return table[0]![0]!
+    }
+    for (let round = 0; round < 300; round++) {
+      const a = Array.from({ length: Math.floor(random() * 30) }, () => Math.floor(random() * 5))
+      const b = Array.from({ length: Math.floor(random() * 30) }, () => Math.floor(random() * 5))
+      const pairs = matchLines(a, b)
+      expect(pairs).toHaveLength(lcs(a, b))
+      pairs.forEach(([i, j], index) => {
+        expect(a[i]).toBe(b[j])
+        if (index > 0) {
+          expect(i).toBeGreaterThan(pairs[index - 1]![0])
+          expect(j).toBeGreaterThan(pairs[index - 1]![1])
+        }
+      })
+    }
   })
 
   it('starts from nothing', () => {
@@ -197,6 +240,86 @@ describe('the scratchpad on one client', () => {
     await controller.load()
     await settle()
     expect(view()).toMatchObject({ content: 'unsaved\n', saveState: 'saved' })
+  })
+
+  it('keeps saving after the panel closes, newer typing and merges included', async () => {
+    const { client, controller, settle, seen } = setup({ content: 'a\nb\n' })
+    await controller.load()
+    controller.edit('a\nb\none\n')
+    // The first save is out (latency zero still waits a turn) when more is typed...
+    controller.flush()
+    controller.edit('a\nb\none\ntwo\n')
+    // ...an agent writes the top line meanwhile, and the user opens another session.
+    client.editScratchpad('workspace-1', 'A\nb\n', {
+      kind: 'agent',
+      sessionId: 'session-1',
+      providerId: 'claude',
+    })
+    controller.dispose()
+    await settle()
+    expect((await client.commands.getScratchpad('workspace-1')).content).toBe('A\nb\none\ntwo\n')
+    // Saved, so nothing is left waiting on the device.
+    expect(seen.get(scratchpadUnsavedKey('env-1', 'workspace-1')) ?? '').toBe('')
+  })
+
+  it('keeps text a closed panel could not save, for the next panel to save', async () => {
+    const seen = memoryStore()
+    const first = setup({ content: 'one\n', seen })
+    await first.controller.load()
+    const original = first.client.commands.saveScratchpad
+    first.client.commands.saveScratchpad = () => Promise.reject(new Error('offline'))
+    first.controller.edit('one\ntwo\n')
+    first.controller.dispose()
+    await first.settle()
+    expect(seen.get(scratchpadUnsavedKey('env-1', 'workspace-1'))).toContain('one\\ntwo')
+    first.client.commands.saveScratchpad = original
+    const again = createScratchpadController({
+      client: first.client,
+      workspaceId: 'workspace-1',
+      environmentId: 'env-1',
+      seen,
+      saveDelayMs: 0,
+    })
+    expect(again.getSnapshot().content).toBe('')
+    await again.load()
+    expect(again.getSnapshot().content).toBe('one\ntwo\n')
+    await first.settle()
+    expect((await first.client.commands.getScratchpad('workspace-1')).content).toBe('one\ntwo\n')
+    expect(again.getSnapshot().saveState).toBe('saved')
+    expect(seen.get(scratchpadUnsavedKey('env-1', 'workspace-1'))).toBe('')
+  })
+
+  it('never merges into a file grown too large to show, and keeps the text', async () => {
+    const { client, controller, view, settle } = setup({ content: 'notes\n' })
+    await controller.load()
+    controller.edit('notes\nmine\n')
+    // An agent grows the file past the cap before the save goes out.
+    const large = 'x'.repeat(SCRATCHPAD_MAX_BYTES + 10)
+    client.editScratchpad('workspace-1', large, {
+      kind: 'agent',
+      sessionId: 'session-1',
+      providerId: 'claude',
+    })
+    await settle()
+    expect(view()).toMatchObject({
+      content: 'notes\nmine\n',
+      tooLarge: false,
+      saveState: 'error',
+      error: expect.stringContaining('too large'),
+    })
+    // Only the refused save went out; nothing was written over the agent's notes.
+    expect(client.calls.filter((call) => call.command === 'saveScratchpad')).toHaveLength(1)
+    expect((await client.commands.getScratchpad('workspace-1')).tooLarge).toBe(true)
+  })
+
+  it('refuses text too large to save before sending it, counting escapes', async () => {
+    const { client, controller, view, settle } = setup()
+    await controller.load()
+    // 45,000 bytes on disk, more than the cap once quoted for the wire.
+    controller.edit('"\\\n'.repeat(15_000))
+    await settle()
+    expect(view().saveState).toBe('error')
+    expect(client.calls.some((call) => call.command === 'saveScratchpad')).toBe(false)
   })
 
   it('turns sharing with agents off and on', async () => {

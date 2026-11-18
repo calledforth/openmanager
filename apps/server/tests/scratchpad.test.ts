@@ -226,6 +226,33 @@ describe('reading and writing the scratchpad', () => {
     expect(get()).toMatchObject({ exists: true, tooLarge: true, content: '' })
   })
 
+  it('counts the cap as a save carries the text, so what it shows it can save', async () => {
+    const { get, file, run } = await setup()
+    await mkdir(join(file, '..'), { recursive: true })
+    // 40,000 bytes on disk; over 60,000 as a JSON string.
+    const quoted = '"x"\n'.repeat(10_000)
+    await writeFile(file, quoted)
+    expect(get()).toMatchObject({ exists: true, tooLarge: true, content: '' })
+    expect(
+      run('client-a', 'scratchpad.save', {
+        workspaceId: 'workspace-1',
+        content: quoted,
+        baseVersion: null,
+      }),
+    ).toMatchObject({ type: 'error', error: { code: 'validation' } })
+  })
+
+  it('never writes over a file too large to show', async () => {
+    const { get, save, file } = await setup()
+    await mkdir(join(file, '..'), { recursive: true })
+    const large = 'x'.repeat(SCRATCHPAD_MAX_BYTES + 10)
+    await writeFile(file, large)
+    const shown = get()
+    // Even naming the version it was told, the panel cannot replace notes it never saw.
+    expect(save('small\n', shown.version).outcome).toBe('conflict')
+    expect(await readFile(file, 'utf8')).toBe(large)
+  })
+
   it('has no scratchpad for No project', async () => {
     const { run, service } = await setup({ kind: 'scratch' })
     expect(run('client-a', 'scratchpad.get', { workspaceId: 'workspace-1' })).toMatchObject({
@@ -262,6 +289,22 @@ describe('keeping .openmanager out of git', () => {
     get()
     save('again\n', null)
     expect(await readFile(join(root, '.git', 'info', 'exclude'), 'utf8')).toBe(exclude)
+  })
+
+  it('adds the line whoever made the folder first', async () => {
+    const { get, save, root, file } = await setup({ git: true })
+    const exclude = join(root, '.git', 'info', 'exclude')
+    // An agent made the folder and the file before the panel ever saved.
+    await mkdir(join(file, '..'), { recursive: true })
+    await writeFile(file, 'from the agent\n')
+    const read = get()
+    expect(await readFile(exclude, 'utf8')).toContain('.openmanager/\n')
+    // Removed by hand, it comes back with the next save, once.
+    await writeFile(exclude, '')
+    save('mine\n', read.version)
+    expect(await readFile(exclude, 'utf8')).toBe(
+      "# OpenManager's per-project scratchpad\n.openmanager/\n",
+    )
   })
 
   it('writes nothing outside a checkout', async () => {
@@ -436,6 +479,20 @@ describe('the scratchpad over the socket', () => {
     const heard = await nextChange(reader)
     expect(heard).toMatchObject({ content: 'hello\n', lastEdit: { by: { kind: 'you' } } })
     expect(await readFile(join(host.workspaceRoot, SCRATCHPAD_PATH), 'utf8')).toBe('hello\n')
+
+    // The largest scratchpad, made of the characters that grow most in a
+    // message, still goes in one the environment accepts.
+    const heavy = '"\\\n'.repeat(Math.floor((SCRATCHPAD_MAX_BYTES - 2) / 6))
+    const heavyId = writer.command('scratchpad.save', {
+      workspaceId: host.workspaceId,
+      content: heavy,
+      baseVersion: saved.scratchpad.version,
+    })
+    expect(
+      ScratchpadResponseSchemas['scratchpad.save'].parse(await nextResponse(writer, heavyId))
+        .payload.outcome,
+    ).toBe('saved')
+    expect((await nextChange(reader)).content).toBe(heavy)
 
     await writeFile(join(host.workspaceRoot, SCRATCHPAD_PATH), 'hello\nfrom an editor\n')
     host.server.scratchpad.refreshAll()

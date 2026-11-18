@@ -1,4 +1,5 @@
-import { readFileSync } from 'node:fs'
+import { existsSync, readFileSync, statSync } from 'node:fs'
+import { dirname } from 'node:path'
 import type { AgentEvent, PromptInput } from '@agentpack/contract'
 import { describe, expect, it, vi } from 'vitest'
 import type { BackendEvent } from '../backends/Backend.js'
@@ -58,6 +59,30 @@ describe('instructions over ACP', () => {
     expect(readFileSync(config.instructions[0]!, 'utf8')).toBe(INSTRUCTIONS)
     await runtime.prompt({ prompt: PROMPT })
     expect(prompts).toEqual([PROMPT.blocks])
+  })
+
+  it('are written where no other user can reach, and gone once the process is', async () => {
+    const fileOf = (connections: FakeConnectionFactory) =>
+      (
+        JSON.parse(connections.last!.spec.env!.OPENCODE_CONFIG_CONTENT!) as {
+          instructions: string[]
+        }
+      ).instructions[0]!
+    const first = acp(opencode, { instructions: INSTRUCTIONS })
+    const second = acp(opencode, { instructions: INSTRUCTIONS, threadId: 'thread-2' })
+    await first.runtime.start()
+    await second.runtime.start()
+    const file = fileOf(first.connections)
+    // A folder of its own per process, at a name nobody could make first.
+    expect(dirname(file)).not.toBe(dirname(fileOf(second.connections)))
+    if (process.platform !== 'win32') {
+      expect(statSync(dirname(file)).mode & 0o777).toBe(0o700)
+      expect(statSync(file).mode & 0o777).toBe(0o600)
+    }
+    await first.runtime.stop({ reason: 'disposed' })
+    expect(existsSync(dirname(file))).toBe(false)
+    expect(existsSync(fileOf(second.connections))).toBe(true)
+    await second.runtime.stop({ reason: 'disposed' })
   })
 
   it('keep a list the user already passes OpenCode, and leave a config that is not JSON alone', () => {

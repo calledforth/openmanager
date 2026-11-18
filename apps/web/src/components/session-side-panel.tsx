@@ -238,18 +238,29 @@ function useScratchpadView(
         )}
       </ScratchpadNotice>
     ) : (
-      <ScratchpadPanel
-        projectName={project.name}
-        content={scratchpad.content}
-        onChange={onChange}
-        lastEdit={scratchpad.lastEdit}
-        unseen={scratchpad.unseen}
-        onMarkSeen={onMarkSeen}
-        shareWithAgents={scratchpad.shareWithAgents}
-        onShareWithAgentsChange={onShareWithAgentsChange}
-        saveState={scratchpad.saveState}
-        className="h-full"
-      />
+      <div className="flex h-full min-h-0 flex-col">
+        {/* Why text is not being saved (the file outgrew the panel), above the text kept. */}
+        {scratchpad.error ? (
+          <p
+            role="alert"
+            className="mx-2 mb-1 shrink-0 rounded-lg bg-hover px-2.5 py-1.5 text-12-regular leading-[1.5] text-[var(--basis-status-error)]"
+          >
+            {scratchpad.error}
+          </p>
+        ) : null}
+        <ScratchpadPanel
+          projectName={project.name}
+          content={scratchpad.content}
+          onChange={onChange}
+          lastEdit={scratchpad.lastEdit}
+          unseen={scratchpad.unseen}
+          onMarkSeen={onMarkSeen}
+          shareWithAgents={scratchpad.shareWithAgents}
+          onShareWithAgentsChange={onShareWithAgentsChange}
+          saveState={scratchpad.saveState}
+          className="min-h-0 flex-1"
+        />
+      </div>
     ),
   }
 }

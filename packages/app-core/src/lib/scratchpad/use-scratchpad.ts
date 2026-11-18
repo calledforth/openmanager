@@ -106,6 +106,36 @@ export const scratchpadSeenKey = (environmentId: string, workspaceId: string) =>
   `openmanager:scratchpad-seen:${environmentId}:${workspaceId}`
 
 /**
+ * Where text not yet saved waits when its panel goes away (the user opened
+ * another session) before the save landed, with the version it was typed
+ * over. The next panel for the project picks it up and saves it.
+ */
+export const scratchpadUnsavedKey = (environmentId: string, workspaceId: string) =>
+  `openmanager:scratchpad-unsaved:${environmentId}:${workspaceId}`
+
+type Base = { version: string | null; content: string }
+
+const readUnsaved = (raw: string | null): { draft: string; base: Base } | null => {
+  if (!raw) return null
+  try {
+    const value = JSON.parse(raw) as {
+      draft?: unknown
+      base?: { version?: unknown; content?: unknown }
+    }
+    if (typeof value.draft !== 'string' || typeof value.base?.content !== 'string') return null
+    const version = value.base.version
+    if (version !== null && typeof version !== 'string') return null
+    return { draft: value.draft, base: { version, content: value.base.content } }
+  } catch {
+    return null
+  }
+}
+
+/** Why the panel will not merge: the file is there but too large for it to read. */
+const TOO_LARGE_TO_MERGE =
+  'The scratchpad grew too large to show here, so your text was not saved over it. It is kept here; copy it out.'
+
+/**
  * The scratchpad of one project on one client, outside React so its timing
  * can be tested on its own. `useScratchpad` binds one to a view.
  */
@@ -113,21 +143,42 @@ export function createScratchpadController(options: ScratchpadControllerOptions)
   const { client, workspaceId } = options
   const seenStore = options.seen ?? localSeenStore
   const seenKey = scratchpadSeenKey(options.environmentId, workspaceId)
+  const unsavedKey = scratchpadUnsavedKey(options.environmentId, workspaceId)
   const delay = options.saveDelayMs ?? SCRATCHPAD_SAVE_DELAY_MS
   const listeners = new Set<() => void>()
 
   /** The environment's file, as last heard. */
   let server: Scratchpad | null = null
+  /**
+   * What `draft` was typed over: the version a save names, and the text a
+   * merge starts from. Null until the panel has read a file it can show: a
+   * merge never starts from text it does not have.
+   */
+  let base: Base | null = null
+  // Text a closed panel for this project left unsaved comes back to be saved.
+  const left = readUnsaved(seenStore.get(unsavedKey))
   /** The text typed and not yet saved; null when the editor shows the file. */
-  let draft: string | null = null
-  /** What `draft` was typed over: the version a save names, and the text a merge starts from. */
-  let base: { version: string | null; content: string } = { version: null, content: '' }
+  let draft: string | null = left?.draft ?? null
+  if (left) base = left.base
   let seen: string | null = seenStore.get(seenKey)
-  let saveState: ScratchpadView['saveState'] = 'saved'
+  let saveState: ScratchpadView['saveState'] = left ? 'saving' : 'saved'
   let error: string | null = null
   let saving = false
   let timer: ReturnType<typeof setTimeout> | undefined
+  /**
+   * The panel is gone: nothing is shown or heard any more, but a save under
+   * way, and any text typed after it, still goes out (merging if it must).
+   */
   let disposed = false
+  /** Whether the device holds unsaved text for this project, to drop once it is saved. */
+  let stored = left !== null
+  /** Keep (or drop) the text a closed panel has not saved yet. */
+  const keepUnsaved = () => {
+    const keep = draft !== null && base !== null
+    if (!keep && !stored) return
+    seenStore.set(unsavedKey, keep ? JSON.stringify({ draft, base }) : '')
+    stored = keep
+  }
   let view: ScratchpadView = { ...EMPTY_VIEW, supported: true, loading: true }
 
   const authorOf = (edit: ScratchpadEditRecord): ScratchpadEdit => {
@@ -169,7 +220,8 @@ export function createScratchpadController(options: ScratchpadControllerOptions)
       supported: true,
       loading: server === null && error === null,
       error,
-      tooLarge: server?.tooLarge ?? false,
+      // A draft is shown even over a file too large to show: it is the user's.
+      tooLarge: (server?.tooLarge ?? false) && draft === null,
       content,
       lastEdit,
       unseen,
@@ -187,19 +239,22 @@ export function createScratchpadController(options: ScratchpadControllerOptions)
     if (seen === null) markSeen(next.content)
     // The user's own writes, from here or another tab, are seen as written.
     if (next.lastEdit?.by.kind === 'you') markSeen(next.content)
-    if (draft === null) base = { version: next.version, content: next.content }
+    if (draft === null)
+      base = next.tooLarge ? null : { version: next.version, content: next.content }
   }
 
   const fail = (reason: unknown, fallback: string) =>
     reason instanceof Error && reason.message ? reason.message : fallback
 
   const save = async () => {
-    if (disposed || saving || draft === null) return
+    if (saving || draft === null) return
     if (scratchpadBytes(draft) > SCRATCHPAD_MAX_BYTES) {
       saveState = 'error'
       render()
       return
     }
+    // Typed before the file could be read: nothing to name or merge from yet.
+    if (!base) return
     saving = true
     const sent = draft
     try {
@@ -208,7 +263,6 @@ export function createScratchpadController(options: ScratchpadControllerOptions)
         content: sent,
         baseVersion: base.version,
       })
-      if (disposed) return
       if (result.outcome === 'saved') {
         accept(result.scratchpad)
         markSeen(result.scratchpad.content)
@@ -217,7 +271,15 @@ export function createScratchpadController(options: ScratchpadControllerOptions)
         if (draft === sent) {
           draft = null
           saveState = 'saved'
+          error = null
         }
+      } else if (result.scratchpad.tooLarge) {
+        // The file grew past what the panel can read. There is no text to
+        // merge with, and saving over it would replace notes nobody here
+        // has seen: the user's text stays put, unsaved, and the panel says why.
+        server = result.scratchpad
+        saveState = 'error'
+        error = TOO_LARGE_TO_MERGE
       } else {
         // Someone wrote first. Their text and the user's are merged from the
         // version the user typed over, and that goes out at once, over theirs.
@@ -228,12 +290,13 @@ export function createScratchpadController(options: ScratchpadControllerOptions)
         saveState = 'saving'
       }
     } catch {
-      if (disposed) return
       // Kept in the editor; the next edit, or the next connection, tries again.
       saveState = 'error'
     } finally {
       saving = false
     }
+    // Kept for a closed panel; dropped once what was kept is saved.
+    if (disposed || stored) keepUnsaved()
     render()
     if (draft !== null && saveState !== 'error') schedule(0)
   }
@@ -280,7 +343,7 @@ export function createScratchpadController(options: ScratchpadControllerOptions)
 
     edit(content: string) {
       if (disposed) return
-      draft = content === (server?.content ?? '') && !saving ? null : content
+      draft = content === (server?.content ?? '') && !saving && !server?.tooLarge ? null : content
       saveState = draft === null ? 'saved' : 'saving'
       render()
       if (draft !== null) schedule(delay)
@@ -311,10 +374,17 @@ export function createScratchpadController(options: ScratchpadControllerOptions)
       }
     },
 
+    /**
+     * The panel is going away. What is waiting is sent now, and a save
+     * already out carries on to the end (a merge included). Whatever is
+     * still unsaved is kept on the device for the project's next panel,
+     * until a save lands.
+     */
     dispose() {
       this.flush()
       disposed = true
       listeners.clear()
+      keepUnsaved()
     },
   }
 }

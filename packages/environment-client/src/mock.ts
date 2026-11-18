@@ -621,10 +621,13 @@ export function createMockEnvironmentClient(
   }
   const writeScratchpadText = (workspaceId: string, content: string, by: ScratchpadAuthor) => {
     const at = now()
+    // Past the cap the environment sends no text, only that it is too large.
+    const tooLarge = scratchpadBytes(content) > SCRATCHPAD_MAX_BYTES
     return writeScratchpad({
       ...scratchpadOf(workspaceId),
       exists: true,
-      content,
+      content: tooLarge ? '' : content,
+      tooLarge,
       version: scratchpadVersion(content),
       modifiedAt: at,
       lastEdit: { by, at },
@@ -2086,7 +2089,7 @@ export function createMockEnvironmentClient(
         if (scratchpadBytes(input.content) > SCRATCHPAD_MAX_BYTES) {
           throw new EnvironmentClientError('validation', 'The scratchpad is too large to save.')
         }
-        if (current.version !== input.baseVersion) {
+        if (current.version !== input.baseVersion || current.tooLarge) {
           return { outcome: 'conflict' as const, scratchpad: current }
         }
         if (!current.exists && input.content === '') {

@@ -30,10 +30,12 @@ export const SCRATCHPAD_CHANGED_EVENT = 'scratchpad.changed' as const
 export const SCRATCHPAD_PATH = '.openmanager/scratchpad.md'
 
 /**
- * The largest scratchpad, in UTF-8 bytes: what one `scratchpad.save` can
- * carry under the environment's 64 KiB message limit, with room for the
- * envelope. A file grown past it outside the panel is reported `tooLarge`
- * and its text is not sent.
+ * The largest scratchpad, as `scratchpadBytes` counts it: the text as one
+ * `scratchpad.save` carries it, a JSON string, so a quote, a backslash or a
+ * line break counts for the two bytes it takes there. That leaves room for
+ * the rest of the message under the environment's 64 KiB limit whatever the
+ * text holds. A file past it is reported `tooLarge` and its text is not
+ * sent, so every scratchpad a client is shown is one it can save.
  */
 export const SCRATCHPAD_MAX_BYTES = 60_000
 
@@ -137,8 +139,12 @@ export const ScratchpadChangedEventSchema = EventEnvelopeSchema.extend({
   payload: z.strictObject({ scratchpad: ScratchpadSchema }),
 })
 
-/** The scratchpad's size as `SCRATCHPAD_MAX_BYTES` counts it. */
-export const scratchpadBytes = (text: string): number => utf8Length(text)
+/**
+ * The scratchpad's size as `SCRATCHPAD_MAX_BYTES` counts it: the UTF-8 bytes
+ * of the text encoded as a JSON string, quotes included. Never less than the
+ * file's own size, so a file within the cap on disk can still be over it.
+ */
+export const scratchpadBytes = (text: string): number => utf8Length(JSON.stringify(text))
 
 export type ScratchpadAuthor = z.infer<typeof ScratchpadAuthorSchema>
 export type ScratchpadEditRecord = z.infer<typeof ScratchpadEditSchema>
