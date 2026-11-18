@@ -214,7 +214,7 @@ describe('subagent wake', () => {
     const [parent, text, ids] = enqueue.mock.calls[0]!
     expect(parent).toBe('parent')
     expect(ids).toEqual(['a', 'b'])
-    expect(text).toContain('2 subagents you started have finished')
+    expect(text).toContain('Subagents finished: Review the parser (completed), Review the parser (failed).')
     expect(text).toContain('A done')
     expect(text).toContain('Reason: crashed')
   })

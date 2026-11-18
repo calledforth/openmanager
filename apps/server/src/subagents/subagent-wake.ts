@@ -26,10 +26,9 @@ export function wakeMessage(
   children: readonly Subagent[],
   resultOf: (subagentId: string) => string | undefined,
 ): string {
-  const head =
-    children.length === 1
-      ? 'A subagent you started has finished.'
-      : `${children.length} subagents you started have finished.`
+  // The first line is also the notice's one-line summary in the chat.
+  const names = children.map((child) => `${child.title} (${child.status})`).join(', ')
+  const head = `${children.length === 1 ? 'Subagent' : 'Subagents'} finished: ${names}.`
   let budget = WAKE_MESSAGE_MAX - head.length
   const blocks = children.map((child) => {
     const label = `${child.subagentId} (${child.title}) on ${child.providerId}${child.modelId ? `/${child.modelId}` : ''}: ${child.status}`

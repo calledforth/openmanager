@@ -92,10 +92,11 @@ export function DelegatedPrompt({ content, from }: { content: string; from?: Del
 
 /** The summary line of a "subagents finished" notice: its first line, without a trailing colon. */
 export function subagentsNoticeLine(content: string): { title: string; more: boolean } {
+  // The environment wraps the notice in a tag the agent reads; it says nothing to a person.
   const lines = content
     .split('\n')
     .map((line) => line.trim())
-    .filter(Boolean)
+    .filter((line) => line && !/^<\/?[a-z-]+>$/.test(line))
   const first = (lines[0] ?? 'Subagents finished').replace(/[:.]\s*$/, '')
   return { title: first, more: lines.length > 1 }
 }

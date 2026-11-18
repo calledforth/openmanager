@@ -589,7 +589,10 @@ export async function startServer(config: ServerConfig) {
           return {
             providerId: provider.id,
             name: provider.displayName,
-            available: provider.health.available,
+            // A provider nothing has probed yet reads `unknown`, and a chat can
+            // still start there; only a known problem rules it out, as it does
+            // for a person starting a chat.
+            available: provider.health.summary !== 'error',
             models: (profile?.availableModels ?? []).map((model) => ({
               modelId: model.modelId,
               name: model.name,
