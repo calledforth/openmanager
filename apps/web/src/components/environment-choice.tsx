@@ -300,6 +300,89 @@ export function EnvironmentChoiceHost({ children }: { children: ReactNode }) {
     [tell, track],
   )
 
+  // The quick New agent palette's move: the same copy and handover as
+  // `choose`, with no page to go to. The palette carries on with the copy.
+  const carry = useCallback<NonNullable<EnvironmentChoiceValue['carry']>>(
+    (environmentId, from) => {
+      const { clients, links, handovers, labelOf, storage } = liveRef.current
+      const target = clients[environmentId]
+      const link = links.find((item) => item.environmentId === environmentId)
+      if (
+        environmentId === from.environmentId ||
+        !target ||
+        !isEnvironmentReachable(target) ||
+        (link && environmentIsDown(link.ui))
+      ) {
+        return false
+      }
+      // Nowhere to keep it there: the palette writes into drafts.
+      if (!target.drafts || !target.supports('saveDraft')) {
+        tell(`${labelOf(environmentId)} doesn't keep drafts`)
+        return false
+      }
+      const copying = handovers.find(
+        (handover) =>
+          handover.left.draftId === from.draftId &&
+          handover.left.environmentId === from.environmentId &&
+          isRecentDraftHandover(handover),
+      )
+      if (copying) {
+        tell(
+          `This draft is moving to ${labelOf(copying.environmentId)}. The original on ${labelOf(copying.left.environmentId)} goes once the copy is saved`,
+        )
+        return false
+      }
+      const source = clients[from.environmentId]
+      const state = source?.getState()
+      // A draft being sent is the send's: it becomes a session where it was written.
+      if (state?.draftEdits[from.draftId]?.launching) return false
+      const content = state ? selectDraftContent(state, from.draftId) : undefined
+      const images = content
+        ? (content.artifactIds?.length ?? 0) + (source?.drafts?.holdsImage?.(from.draftId) ? 1 : 0)
+        : 0
+      const targetState = target.getState()
+      const workspaceId =
+        selectLandingWorkspaceId(targetState, storage) ?? targetState.workspaceOrder[0] ?? null
+      const copy = { draftId: crypto.randomUUID(), sessionId: crypto.randomUUID() }
+      const offerDiscard = () => ({
+        action: `Discard it on ${labelOf(from.environmentId)}`,
+        onOpen: () => {
+          if (source) discards?.begin(source, from.draftId, { environmentId: from.environmentId })
+        },
+      })
+      if (content && state && content.text.trim()) {
+        target.drafts.edit(
+          copy.draftId,
+          { type: 'new_session', workspaceId, sessionId: copy.sessionId },
+          { text: content.text },
+        )
+        // Saved now rather than after the pause in typing: the original waits on it.
+        void target.drafts.flush()
+        track({
+          environmentId,
+          copy,
+          // No page goes with it.
+          arrival: '',
+          left: {
+            draftId: from.draftId,
+            environmentId: from.environmentId,
+            revision: state.drafts[from.draftId]?.revision ?? 0,
+            text: content.text,
+            images,
+          },
+          createdAt: Date.now(),
+        })
+        if (images > 0) {
+          tell(`Its images stayed with the draft on ${labelOf(from.environmentId)}`, offerDiscard())
+        }
+      } else if (images > 0) {
+        tell(`The draft and its images stayed on ${labelOf(from.environmentId)}`, offerDiscard())
+      }
+      return { ...copy, workspaceId }
+    },
+    [discards, tell, track],
+  )
+
   useEffect(() => {
     if (!move) return
     // Gone somewhere else meanwhile: the page is off. Its handover is not: a
@@ -474,8 +557,8 @@ export function EnvironmentChoiceHost({ children }: { children: ReactNode }) {
     [],
   )
   const value = useMemo<EnvironmentChoiceValue | null>(
-    () => (options ? { environments: options, selectedId, choose, opening, opened } : null),
-    [choose, opened, opening, options, selectedId],
+    () => (options ? { environments: options, selectedId, choose, carry, opening, opened } : null),
+    [carry, choose, opened, opening, options, selectedId],
   )
   return (
     <EnvironmentChoiceContext.Provider value={value}>

@@ -1,33 +1,60 @@
 import {
+  createContext,
   useCallback,
   useContext,
   useEffect,
   useLayoutEffect,
+  useMemo,
   useRef,
   useState,
   useSyncExternalStore,
   type CSSProperties,
+  type Dispatch,
+  type MutableRefObject,
   type ReactNode,
+  type SetStateAction,
 } from 'react'
 import { createPortal } from 'react-dom'
 import { AnimatePresence, motion, useReducedMotion } from 'motion/react'
 import {
   ArrowsOutSimpleIcon,
   CaretRightIcon,
+  CheckIcon,
   CircleNotchIcon,
+  FileDashedIcon,
   FolderPlusIcon,
+  ImageIcon,
   PaperclipIcon,
+  PlusIcon,
   XIcon,
 } from '@phosphor-icons/react'
 import {
   hasDraftContent,
   selectDraftContent,
   selectDraftTarget,
+  type EnvironmentClient,
 } from '@openmanager/environment-client'
 import { cn } from '../../lib/utils'
 import { useAnchorBox, useNoticeAnchor } from '../../lib/notice-anchors'
 import { spring } from '../fluid/lib/springs'
-import { CommandMenuShortcut, matchesShortcut, parseShortcut } from '../fluid/ui/command-menu'
+import {
+  CommandMenu,
+  CommandMenuEmpty,
+  CommandMenuInput,
+  CommandMenuItem,
+  CommandMenuList,
+  CommandMenuShortcut,
+  matchesShortcut,
+  parseShortcut,
+  type CommandMenuItemData,
+} from '../fluid/ui/command-menu'
+import { useHoldFocus } from './pickerRegistry'
+import { usePortaledMenu } from '../ui/usePortaledMenu'
+import { EnvironmentPicker } from '../chat/EnvironmentPicker'
+import { ProviderIcon } from '../providers/ProviderIcon'
+import { selectSidebarDrafts, type SidebarDraft } from '../sidebar/sidebar-sessions'
+import { DEFAULT_PROVIDER_ID } from '../../providers/draft-provider'
+import { formatRelativeTime, useNow } from '../../lib/relative-time'
 import { Tooltip } from '../ui/Tooltip'
 import { useMessageInputBinding } from '../chat/MessageInput'
 import { ComposerImageStrip, useMessageInputController } from '../chat/MessageInputView'
@@ -47,7 +74,13 @@ import {
   type QuickAgentStarted,
 } from '../../providers/environment-quick-agent'
 import { useSessionState } from '../../providers/session-provider'
-import { useSidebarData, type WorkspaceEntry } from '../../providers/sidebar-provider'
+import {
+  useSidebarData,
+  useSidebarDrafts,
+  type EnvironmentChoiceValue,
+  type EnvironmentOption,
+  type WorkspaceEntry,
+} from '../../providers/sidebar-provider'
 import { isNoProject } from '../../lib/no-project'
 import type { EnvironmentDistro, EnvironmentPlatform } from '@openmanager/protocol'
 
@@ -157,6 +190,14 @@ export interface QuickAgentPaletteViewProps {
   onClose: () => void
   /** The project the agent starts in. */
   project: ReactNode
+  /** Where it runs, before the project; only on a host with several environments. */
+  environment?: ReactNode
+  /** The last step of the breadcrumb. @default "New agent" */
+  title?: string
+  /** The Drafts button, by Expand and Close. */
+  drafts?: ReactNode
+  /** Alt+] and Alt+[: the next or the previous draft. */
+  onStepDraft?: (by: 1 | -1) => void
   /** Opens the draft as a full page; left out, no button shows. */
   onExpand?: () => void
   /** The form: what to do, its images and settings, and its actions. */
@@ -177,6 +218,10 @@ export function QuickAgentPaletteView({
   open,
   onClose,
   project,
+  environment,
+  title = 'New agent',
+  drafts,
+  onStepDraft,
   onExpand,
   children,
 }: QuickAgentPaletteViewProps) {
@@ -184,6 +229,8 @@ export function QuickAgentPaletteView({
   const panelRef = useRef<HTMLDivElement>(null)
   const onCloseRef = useRef(onClose)
   onCloseRef.current = onClose
+  const onStepDraftRef = useRef(onStepDraft)
+  onStepDraftRef.current = onStepDraft
 
   // Focus goes into the composer on open, and back where it was on close.
   useLayoutEffect(() => {
@@ -262,17 +309,38 @@ export function QuickAgentPaletteView({
             initial={reduceMotion ? false : { opacity: 0, scale: 0.97, y: 6 }}
             animate={{ opacity: 1, scale: 1, y: 0, transition: spring.moderate }}
             exit={{ opacity: 0, scale: 0.98, y: 4, transition: spring.moderate.exit }}
+            onKeyDown={(event) => {
+              // By the key's place, not its character: Alt+[ types a quote on a Mac.
+              if (!event.altKey || event.ctrlKey || event.metaKey || event.shiftKey) return
+              if (event.code !== 'BracketRight' && event.code !== 'BracketLeft') return
+              if (!onStepDraftRef.current) return
+              event.preventDefault()
+              onStepDraftRef.current(event.code === 'BracketRight' ? 1 : -1)
+            }}
           >
             <header className="flex items-center gap-1 px-3 pt-3">
               <div className="flex min-w-0 flex-1 items-center gap-0.5 text-[13px]">
+                {environment ? (
+                  <>
+                    {environment}
+                    <CaretRightIcon
+                      aria-hidden
+                      weight="bold"
+                      className="h-3 w-3 shrink-0 text-[var(--basis-text-faint)]"
+                    />
+                  </>
+                ) : null}
                 {project}
                 <CaretRightIcon
                   aria-hidden
                   weight="bold"
                   className="h-3 w-3 shrink-0 text-[var(--basis-text-faint)]"
                 />
-                <span className="truncate px-1.5 text-[var(--basis-text-strong)]">New agent</span>
+                <span className="min-w-0 truncate px-1.5 text-[var(--basis-text-strong)]">
+                  {title}
+                </span>
               </div>
+              {drafts}
               {onExpand ? (
                 <Tooltip content="Open as a page" side="bottom">
                   <button
@@ -288,7 +356,7 @@ export function QuickAgentPaletteView({
               <Tooltip
                 content={
                   <span className="flex items-center gap-2">
-                    Close
+                    Close, keeping it as a draft
                     <CommandMenuShortcut keys="Esc" className="ml-0" />
                   </span>
                 }
@@ -452,6 +520,218 @@ function QuickAgentNotice({
 }
 
 // ---------------------------------------------------------------------------
+// The host: which draft the card shows, and on which environment.
+// ---------------------------------------------------------------------------
+
+/** The draft the card shows, and where. */
+export interface QuickAgentOpen {
+  /** The environment it is kept on; null on a host that names none. */
+  environmentId: string | null
+  draft: QuickAgentDraft
+  /** The breadcrumb's last step: a draft picked from the list says what it is. */
+  title?: string
+}
+
+/**
+ * What a host with several environments lends the palette, so it can show
+ * the drafts kept on each, move one to another, and open what is elsewhere.
+ * Everything that opens goes through the address, wherever it is kept.
+ */
+export interface QuickAgentEnvironments {
+  /** Every environment saved, in order. */
+  environments: readonly EnvironmentOption[]
+  clientOf: (environmentId: string) => EnvironmentClient | undefined
+  carry: NonNullable<EnvironmentChoiceValue['carry']>
+  openDraft: (environmentId: string, draftId: string) => void
+  openSession: (environmentId: string, sessionId: string) => void
+  /** That environment's new session page, in that project. */
+  openNewSession: (environmentId: string, workspaceId: string) => void
+}
+
+interface QuickAgentHostValue {
+  open: QuickAgentOpen | null
+  setOpen: Dispatch<SetStateAction<QuickAgentOpen | null>>
+  show: (notice: Omit<QuickAgentNoticeData, 'key'>) => void
+  /** Closes the card as Escape would; set by the palette that shows it. */
+  closer: MutableRefObject<(() => void) | null>
+  /** The draft on the page, if one is: it is the page's, not the card's to open. */
+  pageDraft: MutableRefObject<{ environmentId: string | null; draftId: string } | null>
+  /** Start another: Enter leaves a fresh card, in the same project. */
+  startAnother: boolean
+  setStartAnother: (next: boolean) => void
+  environments: QuickAgentEnvironments | null
+}
+
+const QuickAgentHostContext = createContext<QuickAgentHostValue | null>(null)
+
+const START_ANOTHER_KEY = 'openmanager.quick-agent.start-another'
+
+function readStartAnother() {
+  try {
+    return globalThis.localStorage?.getItem(START_ANOTHER_KEY) === '1'
+  } catch {
+    return false
+  }
+}
+
+/**
+ * Holds the card's draft above any one environment's providers, so the card
+ * can move between environments while the page stays where it is: the host
+ * mounts the palette of the environment the card is on (`useQuickAgentOpen`).
+ * The notices are said here, so they outlive the card. Without a host the
+ * palette keeps its own, on its one environment.
+ */
+export function QuickAgentHost({
+  environments = null,
+  children,
+}: {
+  environments?: QuickAgentEnvironments | null
+  children: ReactNode
+}) {
+  const [open, setOpen] = useState<QuickAgentOpen | null>(null)
+  const [notice, setNotice] = useState<QuickAgentNoticeData | null>(null)
+  const [startAnother, setStartAnotherState] = useState(readStartAnother)
+  const noticeKey = useRef(0)
+  const closer = useRef<(() => void) | null>(null)
+  const pageDraft = useRef<{ environmentId: string | null; draftId: string } | null>(null)
+  const show = useCallback((next: Omit<QuickAgentNoticeData, 'key'>) => {
+    noticeKey.current += 1
+    setNotice({ ...next, key: noticeKey.current })
+  }, [])
+  const setStartAnother = useCallback((next: boolean) => {
+    setStartAnotherState(next)
+    try {
+      globalThis.localStorage?.setItem(START_ANOTHER_KEY, next ? '1' : '0')
+    } catch {
+      // Kept for this page only.
+    }
+  }, [])
+  const dismissNotice = useCallback(
+    (key: number) => setNotice((current) => (current?.key === key ? null : current)),
+    [],
+  )
+  const value = useMemo<QuickAgentHostValue>(
+    () => ({
+      open,
+      setOpen,
+      show,
+      closer,
+      pageDraft,
+      startAnother,
+      setStartAnother,
+      environments,
+    }),
+    [environments, open, setStartAnother, show, startAnother],
+  )
+  return (
+    <QuickAgentHostContext.Provider value={value}>
+      {children}
+      <QuickAgentNoticeView notice={notice} onDismiss={dismissNotice} />
+    </QuickAgentHostContext.Provider>
+  )
+}
+
+/** The draft the card shows and its environment; null while it is closed. */
+export function useQuickAgentOpen(): QuickAgentOpen | null {
+  return useContext(QuickAgentHostContext)?.open ?? null
+}
+
+// ---------------------------------------------------------------------------
+// The drafts list: every environment's, read live while the card is up.
+// ---------------------------------------------------------------------------
+
+interface DraftSource {
+  environmentId: string | null
+  label?: string
+  /** Can be written to now; the one the card is on always can. */
+  reachable: boolean
+  client: EnvironmentClient
+}
+
+interface QuickDraftCard extends SidebarDraft {
+  /** Where it is kept: its source's. */
+  sourceId: string | null
+  projectName?: string
+}
+
+interface DraftGroup {
+  environmentId: string | null
+  label?: string
+  reachable: boolean
+  drafts: readonly QuickDraftCard[]
+}
+
+const NO_GROUPS: readonly DraftGroup[] = []
+const NO_SUBSCRIPTION = () => () => undefined
+
+/**
+ * Each source's drafts, newest first, as the sidebar lists them, less the
+ * ones being sent. Read only while `enabled`, and recomputed for a source
+ * only when its drafts, sessions or projects change, not for a streamed token.
+ */
+function useDraftGroups(sources: readonly DraftSource[], enabled: boolean) {
+  const cache = useRef(
+    new WeakMap<EnvironmentClient, { inputs: readonly unknown[]; drafts: QuickDraftCard[] }>(),
+  )
+  const last = useRef(NO_GROUPS)
+  const subscribe = useCallback(
+    (listener: () => void) => {
+      if (!enabled) return () => undefined
+      const leave = sources.map((source) => source.client.subscribe(listener))
+      return () => {
+        for (const stop of leave) stop()
+      }
+    },
+    [enabled, sources],
+  )
+  const read = useCallback(() => {
+    if (!enabled) return NO_GROUPS
+    const groups = sources.map((source): DraftGroup => {
+      const state = source.client.getState()
+      const inputs = [state.drafts, state.draftEdits, state.sessions, state.workspaces]
+      let entry = cache.current.get(source.client)
+      if (!entry || !entry.inputs.every((input, index) => input === inputs[index])) {
+        const drafts = selectSidebarDrafts(state, null, null, DEFAULT_PROVIDER_ID)
+          .cards.filter((card) => !card.sending)
+          .map((card) => {
+            const projectName = card.workspaceId
+              ? state.workspaces[card.workspaceId]?.name
+              : undefined
+            return {
+              ...card,
+              sourceId: source.environmentId,
+              ...(projectName ? { projectName } : {}),
+            }
+          })
+        entry = { inputs, drafts }
+        cache.current.set(source.client, entry)
+      }
+      return {
+        environmentId: source.environmentId,
+        ...(source.label ? { label: source.label } : {}),
+        reachable: source.reachable,
+        drafts: entry.drafts,
+      }
+    })
+    const previous = last.current
+    const same =
+      previous.length === groups.length &&
+      groups.every((group, index) => {
+        const before = previous[index]!
+        return (
+          before.environmentId === group.environmentId &&
+          before.label === group.label &&
+          before.reachable === group.reachable &&
+          before.drafts === group.drafts
+        )
+      })
+    if (!same) last.current = groups
+    return last.current
+  }, [enabled, sources])
+  return useSyncExternalStore(enabled ? subscribe : NO_SUBSCRIPTION, read, read)
+}
+
+// ---------------------------------------------------------------------------
 // Bound to the environment.
 // ---------------------------------------------------------------------------
 
@@ -465,6 +745,20 @@ const hostable = (workspace: WorkspaceEntry | undefined): workspace is Workspace
 const hostableProject = (workspace: WorkspaceEntry | undefined): workspace is WorkspaceEntry =>
   hostable(workspace) && !isNoProject(workspace)
 
+export interface QuickAgentPaletteProps {
+  /**
+   * The environment these providers are for, on a host with several: the
+   * card shows here only while its draft is kept here.
+   */
+  environmentId?: string
+  /**
+   * The page's own palette, which takes the shortcuts and the command
+   * palette's New agent. A host mounts others, for a card moved to another
+   * environment, with this off. @default true
+   */
+  primary?: boolean
+}
+
 /**
  * Start an agent without leaving the chat you are in: ⌘⇧O (or N outside a
  * field) opens a composer over the page. Enter starts the agent in the
@@ -473,19 +767,33 @@ const hostableProject = (workspace: WorkspaceEntry | undefined): workspace is Wo
  * only not on a page: images, models and slash commands work as they do
  * there, and ⤢ carries the draft onto its own page.
  *
+ * Drafts switches the card to another draft, kept here or, under a
+ * `QuickAgentHost` with several environments, on another one; the
+ * environment chip moves the card's draft to another environment.
+ *
  * Render inside the environment providers. Where the environment keeps no
  * drafts there is nothing to keep an unsent agent in, so it does not mount.
  */
-export function QuickAgentPalette() {
+export function QuickAgentPalette(props: QuickAgentPaletteProps) {
   const client = useEnvironmentClient()
-  const sync = client.drafts
-  if (!sync) return null
-  return <QuickAgentPaletteBound />
+  const host = useContext(QuickAgentHostContext)
+  if (!client.drafts) return null
+  if (!host) {
+    return (
+      <QuickAgentHost>
+        <QuickAgentPaletteBound {...props} />
+      </QuickAgentHost>
+    )
+  }
+  return <QuickAgentPaletteBound {...props} />
 }
 
-function QuickAgentPaletteBound() {
+function QuickAgentPaletteBound({ environmentId, primary = true }: QuickAgentPaletteProps) {
   const client = useEnvironmentClient()
   const sync = client.drafts!
+  const host = useContext(QuickAgentHostContext)!
+  const { open: opened, setOpen, show, closer, pageDraft, environments: elsewhere } = host
+  const here = environmentId ?? null
   const {
     workspaces,
     recentWorkspaces = NO_WORKSPACES,
@@ -495,12 +803,33 @@ function QuickAgentPaletteBound() {
   } = useSidebarData()
   const { selectSession, createSession } = useSessionState()
   const navigation = useContext(DraftPageNavigationContext)
-  const [draft, setDraft] = useState<QuickAgentDraft | null>(null)
-  const [notice, setNotice] = useState<QuickAgentNoticeData | null>(null)
-  const noticeKey = useRef(0)
+  const pageDrafts = useSidebarDrafts()
+  const mine = opened && opened.environmentId === here ? opened : null
+  const draft = mine?.draft ?? null
 
-  const live = useRef({ workspaces, recentWorkspaces, activeWorkspacePath, draft })
-  live.current = { workspaces, recentWorkspaces, activeWorkspacePath, draft }
+  const live = useRef({
+    workspaces,
+    recentWorkspaces,
+    activeWorkspacePath,
+    draft,
+    opened,
+    startAnother: host.startAnother,
+  })
+  live.current = {
+    workspaces,
+    recentWorkspaces,
+    activeWorkspacePath,
+    draft,
+    opened,
+    startAnother: host.startAnother,
+  }
+
+  // The draft on the page is the page's: the card does not offer it.
+  const pageDraftId = primary ? (pageDrafts?.openDraftId ?? null) : undefined
+  useEffect(() => {
+    if (pageDraftId === undefined) return
+    pageDraft.current = pageDraftId ? { environmentId: here, draftId: pageDraftId } : null
+  }, [here, pageDraft, pageDraftId])
 
   const nameOf = useCallback(
     (workspaceId: string | null) =>
@@ -510,12 +839,11 @@ function QuickAgentPaletteBound() {
     [],
   )
 
-  const open = useCallback(() => {
-    if (live.current.draft) return
+  /** Where a new agent starts: where you are, else where you last worked. */
+  const defaultWorkspace = useCallback(() => {
     const { workspaces, recentWorkspaces, activeWorkspacePath } = live.current
-    // Where you are, else where you last worked, else the first one there;
     // "No project" only when you are in it or there is no project at all.
-    const workspaceId =
+    return (
       (hostable(workspaces.find((workspace) => workspace.path === activeWorkspacePath))
         ? activeWorkspacePath
         : null) ??
@@ -523,19 +851,36 @@ function QuickAgentPaletteBound() {
       workspaces.find(hostableProject)?.path ??
       workspaces.find(hostable)?.path ??
       null
-    setDraft(mintQuickAgentDraft(workspaceId))
+    )
   }, [])
 
-  const show = useCallback((next: Omit<QuickAgentNoticeData, 'key'>) => {
-    noticeKey.current += 1
-    setNotice({ ...next, key: noticeKey.current })
-  }, [])
+  const open = useCallback(() => {
+    if (live.current.opened) return
+    setOpen({ environmentId: here, draft: mintQuickAgentDraft(defaultWorkspace()) })
+  }, [defaultWorkspace, here, setOpen])
+
+  // The page's own palette opens drafts and sessions as the page does; one
+  // the host mounted for another environment goes through the address.
+  const openDraftPage = useCallback(
+    (draftId: string) => {
+      if (!primary && elsewhere && here) elsewhere.openDraft(here, draftId)
+      else navigation?.openDraftPage(draftId)
+    },
+    [elsewhere, here, navigation, primary],
+  )
+  const openSession = useCallback(
+    (workspaceId: string, sessionId: string) => {
+      if (!primary && elsewhere && here) elsewhere.openSession(here, sessionId)
+      else selectSession(workspaceId, sessionId)
+    },
+    [elsewhere, here, primary, selectSession],
+  )
 
   /** Closed without sending: what was written stays, as a draft. */
   const close = useCallback(() => {
     const current = live.current.draft
     if (!current) return
-    setDraft(null)
+    setOpen(null)
     const state = client.getState()
     if (!hasDraftContent(selectDraftContent(state, current.draftId))) return
     // Saved now rather than after the pause in typing: the page may be
@@ -546,114 +891,262 @@ function QuickAgentPaletteBound() {
     show({
       kind: 'saved',
       project: nameOf(workspaceId),
-      onOpen: () => navigation?.openDraftPage(current.draftId),
+      onOpen: () => openDraftPage(current.draftId),
     })
-  }, [client, nameOf, navigation, show, sync])
+  }, [client, nameOf, openDraftPage, setOpen, show, sync])
+
+  // Whichever palette shows the card closes it for the shortcut.
+  const closeRef = useRef(close)
+  closeRef.current = close
+  useEffect(() => {
+    if (!mine) return
+    const closeHere = () => closeRef.current()
+    closer.current = closeHere
+    return () => {
+      if (closer.current === closeHere) closer.current = null
+    }
+  }, [closer, mine])
 
   const toggle = useCallback(() => {
-    if (live.current.draft) close()
-    else open()
-  }, [close, open])
+    if (!live.current.opened) return open()
+    // Its palette went with its environment: nothing is left to save from here.
+    if (closer.current) closer.current()
+    else setOpen(null)
+  }, [closer, open, setOpen])
 
-  useQuickAgentShortcuts(toggle, open, true)
-  useRegisterQuickAgent(open, true)
+  useQuickAgentShortcuts(toggle, open, primary)
+  useRegisterQuickAgent(open, primary)
 
   const onStarted = useCallback(
     (started: QuickAgentStarted) => {
-      // Only the palette that sent it: a send that finishes after the
-      // palette was closed and opened again leaves the new one alone.
-      setDraft((current) => (current?.draftId === started.draftId ? null : current))
+      // Only the card that sent it: a send that finishes after the card was
+      // closed and opened again leaves the new one alone. Start another
+      // leaves a fresh card in the same project.
+      setOpen((current) =>
+        current?.draft.draftId === started.draftId
+          ? live.current.startAnother
+            ? { environmentId: here, draft: mintQuickAgentDraft(started.workspaceId) }
+            : null
+          : current,
+      )
       show({
         kind: 'started',
         project: nameOf(started.workspaceId),
-        onOpen: () => selectSession(started.workspaceId, started.sessionId),
+        onOpen: () => openSession(started.workspaceId, started.sessionId),
       })
     },
-    [nameOf, selectSession, show],
+    [here, nameOf, openSession, setOpen, show],
   )
 
   const onWorkspaceChange = useCallback(
     (workspaceId: string) =>
-      setDraft((current) => (current ? { ...current, workspaceId } : current)),
-    [],
+      setOpen((current) =>
+        current && current.environmentId === here
+          ? { ...current, draft: { ...current.draft, workspaceId } }
+          : current,
+      ),
+    [here, setOpen],
   )
 
   /** Carry the draft onto its own page, as it stands. */
   const expand = useCallback(() => {
     const current = live.current.draft
     if (!current) return
-    setDraft(null)
+    setOpen(null)
     const state = client.getState()
-    if (hasDraftContent(selectDraftContent(state, current.draftId)) && navigation) {
-      navigation.openDraftPage(current.draftId)
+    if (hasDraftContent(selectDraftContent(state, current.draftId))) {
+      openDraftPage(current.draftId)
       return
     }
     // Nothing written yet: a blank page in the same project.
-    if (current.workspaceId) void createSession(current.workspaceId)
-  }, [client, createSession, navigation])
+    if (!current.workspaceId) return
+    if (!primary && elsewhere && here) elsewhere.openNewSession(here, current.workspaceId)
+    else void createSession(current.workspaceId)
+  }, [client, createSession, elsewhere, here, openDraftPage, primary, setOpen])
 
-  const dismissNotice = useCallback(
-    (key: number) => setNotice((current) => (current?.key === key ? null : current)),
-    [],
+  // The drafts the card can switch to: this environment's, then the others'.
+  const several = !!elsewhere && elsewhere.environments.length > 1 && here !== null
+  const sources = useMemo<readonly DraftSource[]>(() => {
+    if (!several || !elsewhere) return [{ environmentId: here, reachable: true, client }]
+    return elsewhere.environments.flatMap((option): DraftSource[] => {
+      const own = option.environmentId === here
+      const source = own ? client : elsewhere.clientOf(option.environmentId)
+      if (!source?.drafts) return []
+      return [
+        {
+          environmentId: option.environmentId,
+          label: option.label,
+          reachable: own || option.reachable,
+          client: source,
+        },
+      ]
+    })
+  }, [client, elsewhere, here, several])
+  const groups = useDraftGroups(sources, mine !== null)
+  // This environment's first: what is nearest comes first.
+  const ordered = useMemo(
+    () => [
+      ...groups.filter((group) => group.environmentId === here),
+      ...groups.filter((group) => group.environmentId !== here),
+    ],
+    [groups, here],
+  )
+  const steps = useMemo(() => {
+    const page = pageDraft.current
+    return ordered.flatMap((group) =>
+      group.reachable
+        ? group.drafts.filter(
+            (card) =>
+              !(page && page.environmentId === card.sourceId && page.draftId === card.draftId),
+          )
+        : [],
+    )
+    // `pageDraft` is read as the list is built: it moves only with the page.
+  }, [ordered, pageDraft])
+
+  const switchTo = useCallback(
+    (card: QuickDraftCard) => {
+      const current = live.current.draft
+      if (current?.draftId === card.draftId && card.sourceId === here) return
+      // What was written stays, as it is: saved now, as Escape would.
+      if (current && hasDraftContent(selectDraftContent(client.getState(), current.draftId))) {
+        void sync.flush()
+      }
+      setOpen({
+        environmentId: card.sourceId,
+        draft: { draftId: card.draftId, sessionId: card.sessionId, workspaceId: card.workspaceId },
+        ...(card.preview ? { title: card.preview } : {}),
+      })
+    },
+    [client, here, setOpen, sync],
+  )
+
+  const newDraft = useCallback(() => {
+    const current = live.current.draft
+    if (current && hasDraftContent(selectDraftContent(client.getState(), current.draftId))) {
+      void sync.flush()
+    }
+    setOpen({
+      environmentId: here,
+      draft: mintQuickAgentDraft(current?.workspaceId ?? defaultWorkspace()),
+    })
+  }, [client, defaultWorkspace, here, setOpen, sync])
+
+  const stepDraft = useCallback(
+    (by: 1 | -1) => {
+      const current = live.current.draft
+      if (steps.length === 0) return
+      const at = steps.findIndex(
+        (card) => card.draftId === current?.draftId && card.sourceId === here,
+      )
+      const next =
+        at === -1
+          ? by === 1
+            ? steps[0]
+            : steps.at(-1)
+          : steps[(at + by + steps.length) % steps.length]
+      if (next) switchTo(next)
+    },
+    [here, steps, switchTo],
+  )
+
+  /** Move the card's draft to another environment: its text goes, the page stays. */
+  const moveTo = useCallback(
+    (environmentId: string) => {
+      const current = live.current.draft
+      if (!current || !elsewhere || !here || environmentId === here) return
+      void sync.flush()
+      const next = elsewhere.carry(environmentId, { draftId: current.draftId, environmentId: here })
+      if (next) setOpen({ environmentId, draft: next })
+    },
+    [elsewhere, here, setOpen, sync],
   )
 
   // "No project" is somewhere to start too, so only its absence leaves nothing.
   const noProjects = workspaces.length === 0
+  if (!draft) {
+    return (
+      <QuickAgentPaletteView open={false} onClose={close} project={null}>
+        {null}
+      </QuickAgentPaletteView>
+    )
+  }
   return (
-    <>
-      {draft ? (
-        <QuickAgentScope
-          key={draft.draftId}
-          draft={draft}
-          onWorkspaceChange={onWorkspaceChange}
-          onStarted={onStarted}
-        >
-          <QuickAgentPaletteContent
-            draft={draft}
-            noProjects={noProjects}
-            workspaces={workspaces}
-            recentWorkspaces={recentWorkspaces}
-            environmentLabel={environment?.label}
-            environmentPlatform={environment?.platform}
-            environmentDistro={environment?.distro}
-            onClose={close}
-            onExpand={navigation ? expand : undefined}
-            onAddWorkspace={() => {
-              setDraft(null)
-              void addWorkspace()
-            }}
+    <QuickAgentScope
+      key={draft.draftId}
+      draft={draft}
+      onWorkspaceChange={onWorkspaceChange}
+      onStarted={onStarted}
+    >
+      <QuickAgentPaletteContent
+        draft={draft}
+        title={mine?.title}
+        noProjects={noProjects}
+        workspaces={workspaces}
+        recentWorkspaces={recentWorkspaces}
+        environmentLabel={environment?.label}
+        environmentPlatform={environment?.platform}
+        environmentDistro={environment?.distro}
+        environmentPicker={
+          several && elsewhere && here ? (
+            <EnvironmentPicker
+              variant="chip"
+              environments={elsewhere.environments}
+              selectedId={here}
+              onSelect={moveTo}
+            />
+          ) : undefined
+        }
+        draftsMenu={
+          <QuickAgentDraftsMenu
+            groups={ordered}
+            several={several}
+            current={{ environmentId: here, draftId: draft.draftId }}
+            pageDraft={pageDraft.current}
+            onPick={switchTo}
+            onNew={newDraft}
           />
-        </QuickAgentScope>
-      ) : (
-        <QuickAgentPaletteView open={false} onClose={close} project={null}>
-          {null}
-        </QuickAgentPaletteView>
-      )}
-      <QuickAgentNoticeView notice={notice} onDismiss={dismissNotice} />
-    </>
+        }
+        onStepDraft={stepDraft}
+        onClose={close}
+        onExpand={navigation || elsewhere ? expand : undefined}
+        onAddWorkspace={() => {
+          setOpen(null)
+          void addWorkspace()
+        }}
+      />
+    </QuickAgentScope>
   )
 }
 
 /** The palette inside its draft's scope, where session state is the draft's. */
 function QuickAgentPaletteContent({
   draft,
+  title,
   noProjects,
   workspaces,
   recentWorkspaces,
   environmentLabel,
   environmentPlatform,
   environmentDistro,
+  environmentPicker,
+  draftsMenu,
+  onStepDraft,
   onClose,
   onExpand,
   onAddWorkspace,
 }: {
   draft: QuickAgentDraft
+  title?: string
   noProjects: boolean
   workspaces: WorkspaceEntry[]
   recentWorkspaces: WorkspaceEntry[]
   environmentLabel?: string
   environmentPlatform?: EnvironmentPlatform
   environmentDistro?: EnvironmentDistro
+  environmentPicker?: ReactNode
+  draftsMenu?: ReactNode
+  onStepDraft?: (by: 1 | -1) => void
   onClose: () => void
   onExpand?: () => void
   onAddWorkspace: () => void
@@ -666,6 +1159,10 @@ function QuickAgentPaletteContent({
       open
       onClose={onClose}
       onExpand={noProjects ? undefined : onExpand}
+      environment={environmentPicker}
+      {...(title ? { title } : {})}
+      drafts={draftsMenu}
+      {...(onStepDraft ? { onStepDraft } : {})}
       project={
         noProjects ? (
           <span className="px-2 text-[13px] text-[var(--basis-text-muted)]">No projects</span>
@@ -695,9 +1192,252 @@ function QuickAgentPaletteContent({
   )
 }
 
-/** Linear's property chip: a hairline pill, quiet until pointed at. */
+// ---------------------------------------------------------------------------
+// The Drafts menu, after Linear's: switch the card to another draft.
+// ---------------------------------------------------------------------------
+
+const DRAFTS_MENU_WIDTH = 380
+const NEW_DRAFT = 'new-draft'
+const keyOf = (environmentId: string | null, draftId: string) => `${environmentId ?? ''}:${draftId}`
+
+function QuickAgentDraftsMenu({
+  groups,
+  several,
+  current,
+  pageDraft,
+  onPick,
+  onNew,
+}: {
+  groups: readonly DraftGroup[]
+  /** Headed by environment, on a host with several. */
+  several: boolean
+  current: { environmentId: string | null; draftId: string }
+  pageDraft: { environmentId: string | null; draftId: string } | null
+  onPick: (card: QuickDraftCard) => void
+  onNew: () => void
+}) {
+  const [query, setQuery] = useState('')
+  const { open, toggle, close, menuCoords, wrapRef, triggerRef, menuRef } = usePortaledMenu({
+    placement: 'below',
+    minWidth: DRAFTS_MENU_WIDTH,
+    align: 'end',
+  })
+  const now = useNow()
+  const searchRef = useRef<HTMLInputElement>(null)
+  useLayoutEffect(() => {
+    if (open && menuCoords) searchRef.current?.focus()
+  }, [open, menuCoords])
+  useEffect(() => {
+    if (!open) setQuery('')
+  }, [open])
+  const releaseFocus = useHoldFocus(open, menuRef, searchRef)
+
+  const listed = useMemo(
+    () =>
+      groups.map((group) => ({
+        ...group,
+        drafts: group.drafts.filter(
+          (card) =>
+            !(
+              pageDraft &&
+              pageDraft.environmentId === card.sourceId &&
+              pageDraft.draftId === card.draftId
+            ),
+        ),
+      })),
+    [groups, pageDraft],
+  )
+  const cards = useMemo(() => {
+    const byKey = new Map<string, QuickDraftCard>()
+    for (const group of listed) {
+      for (const card of group.drafts) byKey.set(keyOf(card.sourceId, card.draftId), card)
+    }
+    return byKey
+  }, [listed])
+  const currentKey = keyOf(current.environmentId, current.draftId)
+  // The card's own draft is listed (checked) but not counted: it is here already.
+  const others = [...cards.keys()].filter((key) => key !== currentKey).length
+
+  const items = useMemo<CommandMenuItemData[]>(
+    () => [
+      { value: NEW_DRAFT, label: 'New draft', keywords: ['new', 'blank', 'agent'] },
+      ...listed.flatMap((group) =>
+        group.drafts.map((card) => ({
+          value: keyOf(card.sourceId, card.draftId),
+          label: card.preview || 'Images only',
+          ...(card.projectName ? { description: card.projectName } : {}),
+          keywords: [card.projectName, group.label].filter((word): word is string => !!word),
+          ...(several && group.label ? { group: `On ${group.label}` } : {}),
+          ...(group.reachable ? {} : { disabled: true }),
+        })),
+      ),
+    ],
+    [listed, several],
+  )
+
+  if (others === 0) return null
+
+  const dismiss = () => {
+    releaseFocus()
+    close()
+    triggerRef.current?.focus()
+  }
+  const pick = (value: string) => {
+    releaseFocus()
+    close()
+    if (value === NEW_DRAFT) return onNew()
+    const card = cards.get(value)
+    if (card) onPick(card)
+  }
+
+  const menu =
+    open &&
+    menuCoords &&
+    createPortal(
+      <div
+        ref={menuRef}
+        role="dialog"
+        aria-label="Switch to a draft"
+        className="fixed z-[200] flex max-h-[min(440px,60vh)] flex-col overflow-hidden rounded-float bg-float text-left shadow-float"
+        style={{ left: menuCoords.left, top: menuCoords.top, width: menuCoords.width }}
+      >
+        <CommandMenu
+          items={items}
+          query={query}
+          onQueryChange={setQuery}
+          onSelect={(item) => pick(item.value)}
+          defaultHighlight={cards.has(currentKey) ? currentKey : NEW_DRAFT}
+        >
+          <CommandMenuInput
+            ref={searchRef}
+            placeholder="Switch to a draft…"
+            onKeyDown={(event) => {
+              if (event.key !== 'Escape') return
+              event.preventDefault()
+              dismiss()
+            }}
+          />
+          <CommandMenuList
+            className="gap-0 px-1.5 pb-1.5 pt-0.5"
+            renderItem={(item) =>
+              item.value === NEW_DRAFT ? (
+                <CommandMenuItem
+                  value={item.value}
+                  className="h-9 gap-2.5 px-2.5 text-[13px] text-foreground"
+                >
+                  <PlusIcon aria-hidden className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+                  <span className="flex-1">New draft</span>
+                </CommandMenuItem>
+              ) : (
+                <DraftRow
+                  item={item}
+                  card={cards.get(item.value)}
+                  active={item.value === currentKey}
+                  now={now}
+                />
+              )
+            }
+          >
+            <CommandMenuEmpty>No drafts</CommandMenuEmpty>
+          </CommandMenuList>
+          <footer className="flex items-center gap-3 px-3 pb-2 pt-1.5 text-[11px] text-[var(--basis-text-faint)]">
+            <span className="flex items-center gap-1">
+              <CommandMenuShortcut keys="alt+[" className="ml-0" />
+              <CommandMenuShortcut keys="alt+]" className="ml-0" />
+              step through drafts
+            </span>
+          </footer>
+        </CommandMenu>
+      </div>,
+      document.body,
+    )
+
+  return (
+    <div ref={wrapRef} className="relative inline-flex shrink-0">
+      <Tooltip
+        content={
+          <span className="flex items-center gap-2">
+            Switch draft
+            <CommandMenuShortcut keys="alt+]" className="ml-0" />
+          </span>
+        }
+        side="bottom"
+      >
+        <button
+          ref={triggerRef}
+          type="button"
+          onClick={toggle}
+          aria-haspopup="dialog"
+          aria-expanded={open}
+          aria-label={`Drafts: ${others} more`}
+          className={cn(
+            'inline-flex h-7 shrink-0 items-center gap-1.5 rounded-md pl-2 pr-1.5 text-[12px] text-[var(--basis-text-muted)] outline-none transition-colors duration-80 hover:bg-hover hover:text-[var(--basis-text)] focus-visible:ring-1 focus-visible:ring-focus-ring',
+            open && 'bg-hover text-[var(--basis-text)]',
+          )}
+        >
+          <FileDashedIcon aria-hidden className="h-3.5 w-3.5" />
+          Drafts
+          <span className="min-w-4 rounded bg-[color-mix(in_srgb,var(--basis-text)_8%,transparent)] px-1 text-center font-mono text-[10.5px] leading-4 text-[var(--basis-text)]">
+            {others}
+          </span>
+        </button>
+      </Tooltip>
+      {menu}
+    </div>
+  )
+}
+
+function DraftRow({
+  item,
+  card,
+  active,
+  now,
+}: {
+  item: CommandMenuItemData
+  card: QuickDraftCard | undefined
+  active: boolean
+  now: number
+}) {
+  return (
+    <CommandMenuItem value={item.value} className="h-auto min-h-11 gap-2.5 px-2.5 py-1.5">
+      <span className="flex w-3.5 shrink-0 justify-center">
+        {active ? (
+          <CheckIcon aria-label="This draft" size={14} weight="bold" className="text-foreground" />
+        ) : null}
+      </span>
+      <span className="flex min-w-0 flex-1 flex-col">
+        <span
+          className={cn(
+            'truncate text-[13px]',
+            card?.preview ? 'text-foreground' : 'italic text-muted-foreground',
+          )}
+        >
+          {item.label}
+        </span>
+        <span className="flex min-w-0 items-center gap-1.5 text-[11.5px] text-muted-foreground">
+          {card ? <ProviderIcon providerId={card.providerId} className="h-3 w-3" /> : null}
+          <span className="truncate">{card?.projectName ?? 'No project'}</span>
+          {card && card.imageCount > 0 ? (
+            <span className="flex shrink-0 items-center gap-0.5">
+              <ImageIcon aria-hidden className="h-3 w-3" />
+              {card.imageCount}
+            </span>
+          ) : null}
+          {item.disabled ? <span className="shrink-0">· Not connected</span> : null}
+        </span>
+      </span>
+      {card ? (
+        <span className="shrink-0 self-start pt-0.5 text-[11px] text-[var(--basis-text-faint)]">
+          {formatRelativeTime(new Date(card.editedAt).toISOString(), now)}
+        </span>
+      ) : null}
+    </CommandMenuItem>
+  )
+}
+
+/** Linear's property pill: no outline, a faint fill, a little more when pointed at. */
 const propertyChip =
-  'h-7 rounded-md border border-[var(--basis-border-muted)] bg-transparent px-2 text-[12px] text-[var(--basis-text)] hover:bg-hover'
+  'h-7 rounded-md border-0 bg-[color-mix(in_srgb,var(--basis-text)_5%,transparent)] px-2 text-[12px] text-[var(--basis-text)] hover:bg-[color-mix(in_srgb,var(--basis-text)_9%,transparent)]'
 
 /**
  * The New agent form, after Linear's New issue: the ask, written straight
@@ -845,7 +1585,7 @@ function QuickAgentForm() {
             triggerClassName={propertyChip}
           />
         ) : null}
-        <div className="[&_button]:h-7 [&_button]:rounded-md [&_button]:border [&_button]:border-[var(--basis-border-muted)] [&_button]:px-2 [&_button]:text-[12px]">
+        <div className="[&_button]:h-7 [&_button]:rounded-md [&_button]:border-0 [&_button]:bg-[color-mix(in_srgb,var(--basis-text)_5%,transparent)] [&_button]:px-2 [&_button]:text-[12px] [&_button:hover]:bg-[color-mix(in_srgb,var(--basis-text)_9%,transparent)]">
           <ModelSettingsControl
             options={configOptions}
             effort={effortControl}
@@ -854,7 +1594,8 @@ function QuickAgentForm() {
           />
         </div>
       </div>
-      <footer className="flex items-center gap-2 border-t border-[var(--basis-border-muted)] px-3 py-2.5">
+      {/* No rule above it: the space under the pills is the break, as in Linear's. */}
+      <footer className="flex items-center gap-2 px-3 pb-3 pt-0.5">
         <Tooltip content={imageSupportMessage ?? 'Attach images'}>
           <button
             type="button"
@@ -867,21 +1608,19 @@ function QuickAgentForm() {
           </button>
         </Tooltip>
         <DraftSyncIndicator store={draftStore} draftKey={draftKey} />
-        <span className="ml-auto hidden items-center gap-1 text-[11px] text-[var(--basis-text-faint)] sm:flex">
-          <CommandMenuShortcut keys="Esc" className="ml-0" /> save as draft
-        </span>
+        <StartAnotherSwitch />
         <button
           type="button"
           onClick={() => void send()}
           disabled={!sendActive}
-          className="ml-2 inline-flex h-8 shrink-0 items-center gap-2 rounded-md bg-[var(--basis-action-bg)] px-3 text-[13px] font-medium text-[var(--basis-action-fg)] transition-colors hover:bg-[var(--basis-action-hover)] disabled:opacity-40 max-sm:ml-auto"
+          className="inline-flex h-[26px] shrink-0 items-center gap-1.5 rounded-md bg-[var(--basis-action-bg)] pl-2.5 pr-1.5 text-[12px] font-medium text-[var(--basis-action-fg)] transition-colors hover:bg-[var(--basis-action-hover)] disabled:opacity-40"
         >
-          {starting ? <CircleNotchIcon className="h-3.5 w-3.5 animate-spin" /> : null}
-          {starting ? 'Starting…' : 'Start agent'}
+          {starting ? <CircleNotchIcon className="h-3 w-3 animate-spin" /> : null}
+          {starting ? 'Starting…' : 'Start'}
           {starting ? null : (
             <kbd
               aria-hidden
-              className="rounded bg-[color-mix(in_srgb,currentColor_16%,transparent)] px-1 font-sans text-[11px] leading-4"
+              className="rounded bg-[color-mix(in_srgb,currentColor_16%,transparent)] px-1 font-sans text-[10.5px] leading-4"
             >
               ⏎
             </kbd>
@@ -889,6 +1628,44 @@ function QuickAgentForm() {
         </button>
       </footer>
     </div>
+  )
+}
+
+/** Linear's Create more: Enter starts the agent and leaves a fresh card. */
+function StartAnotherSwitch() {
+  const host = useContext(QuickAgentHostContext)
+  if (!host) return null
+  const { startAnother, setStartAnother } = host
+  return (
+    <Tooltip content="Keep the card open for the next agent">
+      <button
+        type="button"
+        role="switch"
+        aria-checked={startAnother}
+        onClick={() => setStartAnother(!startAnother)}
+        className="ml-auto mr-1 inline-flex h-7 shrink-0 items-center gap-2 rounded-md px-1.5 text-[12px] text-[var(--basis-text-muted)] outline-none transition-colors duration-80 hover:text-[var(--basis-text)] focus-visible:ring-1 focus-visible:ring-focus-ring"
+      >
+        <span
+          aria-hidden
+          className={cn(
+            'relative h-3.5 w-6 rounded-full transition-colors duration-150',
+            startAnother
+              ? 'bg-[var(--basis-action-bg)]'
+              : 'bg-[color-mix(in_srgb,var(--basis-text)_14%,transparent)]',
+          )}
+        >
+          <span
+            className={cn(
+              'absolute left-0.5 top-0.5 h-2.5 w-2.5 rounded-full transition-transform duration-150',
+              startAnother
+                ? 'translate-x-2.5 bg-[var(--basis-action-fg)]'
+                : 'bg-[var(--basis-text-muted)]',
+            )}
+          />
+        </span>
+        Start another
+      </button>
+    </Tooltip>
   )
 }
 

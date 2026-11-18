@@ -16,7 +16,13 @@ import { EnvironmentClientProvider } from '../src/providers/environment-client'
 import { EnvironmentApplicationProviders } from '../src/providers/environment-application'
 import { ThemeProvider } from '../src/providers/theme-provider'
 import { ChatWorkspace } from '../src/components/chat/ChatWorkspace'
-import { QuickAgentPalette, requestQuickAgent } from '../src/components/command/QuickAgentPalette'
+import {
+  QuickAgentHost,
+  QuickAgentPalette,
+  requestQuickAgent,
+  useQuickAgentOpen,
+  type QuickAgentEnvironments,
+} from '../src/components/command/QuickAgentPalette'
 
 vi.mock('../src/components/ui/Tooltip', () => ({
   Tooltip: ({ children }: { children: unknown }) => children,
@@ -104,6 +110,18 @@ let navigations: string[] = []
 
 beforeEach(() => {
   vi.stubGlobal('IS_REACT_ACT_ENVIRONMENT', true)
+  // A fresh store per test: Start another is remembered there.
+  const stored = new Map<string, string>()
+  vi.stubGlobal('localStorage', {
+    getItem: (key: string) => stored.get(key) ?? null,
+    setItem: (key: string, value: string) => void stored.set(key, value),
+    removeItem: (key: string) => void stored.delete(key),
+    clear: () => stored.clear(),
+    key: (index: number) => [...stored.keys()][index] ?? null,
+    get length() {
+      return stored.size
+    },
+  })
   vi.stubGlobal('matchMedia', (query: string) => ({
     matches: false,
     media: query,
@@ -363,5 +381,207 @@ describe('quick New agent palette', () => {
 
     await press(paletteField(), 'Escape')
     expect(palette()).toBeNull()
+  })
+
+  it('switches to another draft from the Drafts menu, keeping the one it left', async () => {
+    const client = createMockEnvironmentClient({ seed: SEED })
+    await mount(client)
+    const saved = 'saved-draft'
+    await act(() => {
+      client.drafts!.edit(
+        saved,
+        { type: 'new_session', workspaceId: BETA.workspaceId, sessionId: 'saved-session' },
+        { text: 'Tidy the README' },
+      )
+    })
+    await act(() => client.drafts!.flush())
+    await settle(client)
+
+    await press(document.body, 'n')
+    await type(paletteField(), 'Something new')
+    await settle(client)
+    const drafts = palette()!.querySelector<HTMLButtonElement>('button[aria-label^="Drafts"]')!
+    // The card's own draft is not counted: the other one is.
+    expect(drafts.getAttribute('aria-label')).toBe('Drafts: 1 more')
+
+    await act(() => {
+      drafts.click()
+    })
+    const row = [...document.querySelectorAll<HTMLElement>('[role="option"]')].find((option) =>
+      option.textContent?.includes('Tidy the README'),
+    )!
+    expect(row.textContent).toContain('beta')
+    await act(() => {
+      row.click()
+    })
+    await settle(client)
+    expect(paletteField().value).toBe('Tidy the README')
+    expect(palette()!.textContent).toContain('beta')
+    // What was being written stays, as a draft of its own.
+    const left = selectNewSessionDraftIds(client.getState()).filter((id) => id !== saved)
+    expect(left).toHaveLength(1)
+    expect(selectDraftContent(client.getState(), left[0]!)?.text).toBe('Something new')
+    // The page underneath is untouched.
+    expect(navigations).toEqual([])
+    expect(client.getState().activeSessionId).toBe(SESSION.sessionId)
+
+    // Enter starts the draft that was switched to.
+    await press(paletteField(), 'Enter')
+    await settle(client)
+    expect(client.calls.find((call) => call.command === 'createSession')?.input).toMatchObject({
+      workspaceId: BETA.workspaceId,
+      firstMessage: 'Tidy the README',
+      draftId: saved,
+    })
+  })
+
+  it('steps through drafts with Alt+] and Alt+[', async () => {
+    const client = createMockEnvironmentClient({ seed: SEED })
+    await mount(client)
+    await act(() => {
+      client.drafts!.edit(
+        'first',
+        { type: 'new_session', workspaceId: ALPHA.workspaceId, sessionId: 'first-session' },
+        { text: 'First draft' },
+      )
+    })
+    await settle(client)
+    await press(document.body, 'n')
+    await press(paletteField(), ']', { altKey: true, code: 'BracketRight' } as KeyboardEventInit)
+    await settle(client)
+    expect(paletteField().value).toBe('First draft')
+  })
+
+  it('leaves a fresh card after starting one, with Start another on', async () => {
+    const client = createMockEnvironmentClient({ seed: SEED })
+    await mount(client)
+    await press(document.body, 'n')
+    const toggle = palette()!.querySelector<HTMLButtonElement>('[role="switch"]')!
+    expect(toggle.getAttribute('aria-checked')).toBe('false')
+    await act(() => {
+      toggle.click()
+    })
+    expect(toggle.getAttribute('aria-checked')).toBe('true')
+
+    await type(paletteField(), 'One of several')
+    await press(paletteField(), 'Enter')
+    await settle(client)
+    expect(client.calls.filter((call) => call.command === 'createSession')).toHaveLength(1)
+    expect(notice()).toContain('Agent started in alpha')
+    // Still open, empty, in the same project, for the next one.
+    expect(palette()).not.toBeNull()
+    expect(paletteField().value).toBe('')
+    expect(palette()!.textContent).toContain('alpha')
+  })
+})
+
+describe('quick New agent palette across environments', () => {
+  const GAMMA = project('gamma', { lastActivityAt: '2026-10-03T10:00:00.000Z' })
+
+  /** The page on `here`, and a card that can move to `there` without the page moving. */
+  function TwoEnvironments({
+    here,
+    there,
+    environments,
+  }: {
+    here: MockEnvironmentClient
+    there: MockEnvironmentClient
+    environments: QuickAgentEnvironments
+  }) {
+    return (
+      <QuickAgentHost environments={environments}>
+        <EnvironmentClientProvider client={here}>
+          <EnvironmentApplicationProviders environmentId="here">
+            <QuickAgentPalette environmentId="here" />
+          </EnvironmentApplicationProviders>
+        </EnvironmentClientProvider>
+        <Elsewhere there={there} />
+      </QuickAgentHost>
+    )
+  }
+  function Elsewhere({ there }: { there: MockEnvironmentClient }) {
+    const open = useQuickAgentOpen()
+    if (open?.environmentId !== 'there') return null
+    return (
+      <EnvironmentClientProvider client={there}>
+        <EnvironmentApplicationProviders environmentId="there">
+          <QuickAgentPalette environmentId="there" primary={false} />
+        </EnvironmentApplicationProviders>
+      </EnvironmentClientProvider>
+    )
+  }
+
+  it('moves the draft to another environment, text and all, and starts it there', async () => {
+    const here = createMockEnvironmentClient({
+      seed: { ...SEED, environment: { environmentId: 'here', name: 'Here' } },
+    })
+    const there = createMockEnvironmentClient({
+      seed: {
+        workspaces: [GAMMA],
+        providers: [OPENCODE],
+        environment: { environmentId: 'there', name: 'There' },
+      },
+    })
+    const carried: string[] = []
+    const environments: QuickAgentEnvironments = {
+      environments: [
+        { environmentId: 'here', label: 'Here', reachable: true },
+        { environmentId: 'there', label: 'There', reachable: true },
+      ],
+      clientOf: (environmentId) => (environmentId === 'there' ? there : here),
+      carry: (environmentId, from) => {
+        carried.push(`${from.environmentId}->${environmentId}`)
+        const text = selectDraftContent(here.getState(), from.draftId)?.text ?? ''
+        const copy = { draftId: 'copy', sessionId: 'copy-session', workspaceId: GAMMA.workspaceId }
+        there.drafts!.edit(
+          copy.draftId,
+          { type: 'new_session', workspaceId: copy.workspaceId, sessionId: copy.sessionId },
+          { text },
+        )
+        return copy
+      },
+      openDraft: () => undefined,
+      openSession: () => undefined,
+      openNewSession: () => undefined,
+    }
+    await act(() =>
+      root.render(
+        <ThemeProvider>
+          <TwoEnvironments here={here} there={there} environments={environments} />
+        </ThemeProvider>,
+      ),
+    )
+    await settle(here)
+    await settle(there)
+
+    await press(document.body, 'n')
+    expect(palette()!.textContent).toContain('Here')
+    await type(paletteField(), 'Run it over there')
+    await settle(here)
+
+    await act(() => {
+      palette()!.querySelector<HTMLButtonElement>('button[aria-label^="Environment"]')!.click()
+    })
+    const option = [...document.querySelectorAll<HTMLElement>('[role="option"]')].find((row) =>
+      row.textContent?.includes('There'),
+    )!
+    await act(() => {
+      option.click()
+    })
+    await settle(there)
+    expect(carried).toEqual(['here->there'])
+    expect(document.querySelectorAll('[data-quick-agent]')).toHaveLength(1)
+    expect(paletteField().value).toBe('Run it over there')
+    expect(palette()!.textContent).toContain('gamma')
+
+    await press(paletteField(), 'Enter')
+    await settle(there)
+    expect(there.calls.find((call) => call.command === 'createSession')?.input).toMatchObject({
+      workspaceId: GAMMA.workspaceId,
+      firstMessage: 'Run it over there',
+      draftId: 'copy',
+    })
+    expect(here.calls.some((call) => call.command === 'createSession')).toBe(false)
+    expect(notice()).toContain('Agent started in gamma')
   })
 })

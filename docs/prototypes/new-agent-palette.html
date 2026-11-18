@@ -1,0 +1,499 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<title>New agent palette — polish, drafts, environments</title>
+<link rel="stylesheet" href="https://unpkg.com/@phosphor-icons/web@2.1.1/src/regular/style.css" />
+<link rel="stylesheet" href="https://unpkg.com/@phosphor-icons/web@2.1.1/src/bold/style.css" />
+<link rel="stylesheet" href="https://unpkg.com/@phosphor-icons/web@2.1.1/src/fill/style.css" />
+<link href="https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet" />
+<style>
+  /* Carbon tokens, as in packages/app-core/src/styles/fluid.css */
+  :root{
+    --bg:#141414; --float:#222; --hover:rgb(255 255 255/.06); --active:rgb(255 255 255/.09);
+    --rule:rgb(255 255 255/.07); --border:rgb(255 255 255/.1);
+    --text:#e6e6e6; --strong:#fdfdfd; --muted:#8f8f8f; --faint:#5a5a5a;
+    --tint:#c5f23a; --tint-soft:rgb(197 242 58/.16); --amber:#f5b453; --claude:#d97757; --codex:#9aa7ff;
+    --shadow: inset 0 1px 0 0 rgb(255 255 255/.05), inset 0 0 0 1px rgb(255 255 255/.035),
+      0 0 0 1px rgb(0 0 0/.32), 0 2px 4px rgb(0 0 0/.14), 0 8px 18px -4px rgb(0 0 0/.22), 0 24px 56px -12px rgb(0 0 0/.5);
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:#0b0b0b;color:var(--text);font:13px/1.45 'Geist',ui-sans-serif,system-ui,sans-serif;-webkit-font-smoothing:antialiased}
+  main{max-width:1180px;margin:0 auto;padding:36px 28px 140px}
+  h1{font-size:19px;font-weight:500;color:var(--strong);margin:0 0 6px}
+  h2{font-size:14px;font-weight:500;color:var(--strong);margin:64px 0 4px;display:flex;align-items:center;gap:10px}
+  h2 b{font:500 11px 'JetBrains Mono',monospace;color:var(--tint)}
+  h2 .tag{font:500 10.5px 'JetBrains Mono',monospace;color:#111;background:var(--tint);border-radius:4px;padding:1px 6px}
+  p.lede{color:var(--muted);margin:0 0 16px;max-width:82ch}
+  kbd,.k{font:500 10.5px 'JetBrains Mono',monospace;border:1px solid var(--border);border-radius:4px;padding:0 5px;color:var(--text);background:rgb(255 255 255/.03)}
+  ul.notes{color:var(--muted);margin:14px 0 0;padding-left:18px;max-width:86ch}
+  ul.notes li{margin:3px 0} ul.notes b{color:var(--text);font-weight:500}
+  .pair{display:grid;grid-template-columns:1fr 1fr;gap:18px}
+  .cap{font:500 11px 'JetBrains Mono',monospace;color:var(--muted);margin:0 0 8px;display:flex;gap:8px;align-items:center}
+  .cap.bad::before{content:'';width:6px;height:6px;border-radius:9px;background:#ff6b6b}
+  .cap.good::before{content:'';width:6px;height:6px;border-radius:9px;background:var(--tint)}
+
+  /* A slice of the app behind the card, dimmed by the scrim. */
+  .stage{position:relative;background:var(--bg);border:1px solid #1d1d1d;border-radius:14px;overflow:hidden;
+    display:flex;justify-content:center;align-items:flex-start;padding:56px 24px 64px;min-height:420px}
+  .stage::before{content:'';position:absolute;inset:0;pointer-events:none;
+    background:
+      linear-gradient(90deg,#111 0 200px,transparent 200px),
+      repeating-linear-gradient(180deg,transparent 0 30px,rgb(255 255 255/.018) 30px 31px);}
+  .stage::after{content:'';position:absolute;inset:0;background:rgb(0 0 0/.24);pointer-events:none}
+  .stage>*{position:relative;z-index:1}
+  .stage.tall{min-height:520px}
+
+  /* ── the card ─────────────────────────────────────────── */
+  .card{width:100%;max-width:640px;background:var(--float);border-radius:12px;box-shadow:var(--shadow);display:flex;flex-direction:column;position:relative}
+  .hdr{display:flex;align-items:center;gap:2px;padding:10px 10px 0 12px}
+  .crumbs{display:flex;align-items:center;gap:1px;flex:1;min-width:0;font-size:13px}
+  .chip{display:inline-flex;align-items:center;gap:6px;height:26px;padding:0 8px;border-radius:6px;color:var(--text);white-space:nowrap;cursor:pointer;border:0;background:none;font:inherit}
+  .chip:hover,.chip.on{background:var(--hover)}
+  .chip i{font-size:14px;color:var(--muted)}
+  .chip .sq{width:16px;height:16px;border-radius:4px;display:grid;place-items:center;font:600 9.5px 'Geist';color:#111}
+  .sep{color:var(--faint);font-size:11px;padding:0 1px}
+  .crumb-title{padding:0 6px;color:var(--strong)}
+  .ib{width:28px;height:28px;display:grid;place-items:center;border-radius:6px;color:var(--muted);cursor:pointer;border:0;background:none}
+  .ib:hover{background:var(--hover);color:var(--text)} .ib i{font-size:14px}
+  textarea.ask{margin:12px 20px 0;min-height:84px;resize:none;background:transparent;border:0;outline:0;color:var(--strong);font:15px/24px 'Geist',ui-sans-serif,system-ui;padding:0}
+  textarea.ask::placeholder{color:var(--faint)}
+  .props{display:flex;flex-wrap:wrap;gap:6px;padding:12px 20px 12px}
+  .prop{height:28px;display:inline-flex;align-items:center;gap:6px;padding:0 8px;border-radius:6px;border:1px solid var(--rule);font-size:12px;color:var(--text);cursor:pointer;background:transparent}
+  .prop:hover{background:var(--hover)} .prop i{font-size:13px;color:var(--muted)}
+  .prop .dot{width:8px;height:8px;border-radius:9px}
+  /* v2: chips without outlines, Linear's newer pills */
+  .card.v2 .prop{border-color:transparent;background:rgb(255 255 255/.045)}
+  .card.v2 .prop:hover{background:rgb(255 255 255/.08)}
+  .foot{display:flex;align-items:center;gap:8px;padding:10px 12px}
+  .foot.ruled{border-top:1px solid var(--rule)}
+  .sync{font-size:11.5px;color:var(--faint);display:flex;align-items:center;gap:5px}
+  .hint{margin-left:auto;font-size:11px;color:var(--faint);display:flex;align-items:center;gap:5px}
+  .start{display:inline-flex;align-items:center;gap:8px;border:0;cursor:pointer;font-family:inherit;background:var(--tint);color:#141414;font-weight:500}
+  .start.big{height:32px;padding:0 12px;border-radius:6px;font-size:13px;margin-left:8px}
+  .start.slim{height:26px;padding:0 6px 0 10px;border-radius:6px;font-size:12px;gap:6px}
+  .start kbd{border:0;background:rgb(0 0 0/.14);color:inherit;padding:0 4px;font-size:10.5px;line-height:16px}
+  .start:hover{filter:brightness(1.06)}
+  .toggle{display:inline-flex;align-items:center;gap:7px;font-size:12px;color:var(--muted);cursor:pointer;user-select:none}
+  .sw{width:24px;height:14px;border-radius:9px;background:rgb(255 255 255/.12);position:relative;transition:background .15s}
+  .sw::after{content:'';position:absolute;top:2px;left:2px;width:10px;height:10px;border-radius:9px;background:#bbb;transition:transform .15s}
+  .toggle.on .sw{background:var(--tint)} .toggle.on .sw::after{transform:translateX(10px);background:#141414}
+
+  /* the drafts button in the header */
+  .drafts-btn{display:inline-flex;align-items:center;gap:6px;height:26px;padding:0 6px 0 8px;border-radius:6px;font-size:12px;color:var(--muted);cursor:pointer;border:0;background:none;font-family:inherit}
+  .drafts-btn:hover,.drafts-btn.on{background:var(--hover);color:var(--text)}
+  .count{min-width:16px;height:16px;border-radius:5px;background:rgb(255 255 255/.08);display:grid;place-items:center;font:500 10.5px 'JetBrains Mono';color:var(--text);padding:0 4px}
+
+  /* menus */
+  .menu{position:absolute;z-index:5;background:#2a2a2a;border-radius:10px;box-shadow:var(--shadow);padding:4px;width:360px;display:none}
+  .menu.open{display:block}
+  .menu input{width:100%;height:32px;background:transparent;border:0;outline:0;color:var(--strong);font:13px 'Geist';padding:0 8px;border-bottom:1px solid var(--rule);margin-bottom:4px}
+  .menu input::placeholder{color:var(--faint)}
+  .mrow{display:flex;align-items:center;gap:10px;padding:7px 8px;border-radius:6px;cursor:pointer}
+  .mrow:hover,.mrow.kb{background:var(--active)}
+  .mrow .main{flex:1;min-width:0}
+  .mrow .t{color:var(--strong);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;font-size:13px}
+  .mrow .t.empty{color:var(--faint);font-style:italic}
+  .mrow .s{color:var(--muted);font-size:11.5px;display:flex;gap:6px;align-items:center}
+  .mrow .r{font-size:11px;color:var(--faint);white-space:nowrap;display:flex;gap:6px;align-items:center}
+  .mrow.dis{opacity:.45;cursor:default} .mrow.dis:hover{background:none}
+  .mrow .chk{width:14px;color:var(--strong)}
+  .mlabel{font:500 10.5px 'Geist';color:var(--faint);padding:8px 8px 4px;letter-spacing:.02em}
+  .prov{width:14px;height:14px;border-radius:4px;display:inline-grid;place-items:center;font:600 8.5px 'Geist';color:#141414;flex:none}
+  .prov.c{background:var(--claude)} .prov.x{background:var(--codex)}
+  .mfoot{display:flex;gap:12px;padding:8px 8px 4px;border-top:1px solid var(--rule);margin-top:4px;font-size:11px;color:var(--faint)}
+
+  /* option B: tabs */
+  .tabs{display:flex;align-items:center;gap:2px;padding:8px 8px 0;overflow:hidden}
+  .tab{display:flex;align-items:center;gap:6px;height:28px;padding:0 6px 0 9px;border-radius:7px;font-size:12px;color:var(--muted);max-width:180px;cursor:pointer;flex:none}
+  .tab span{overflow:hidden;white-space:nowrap;text-overflow:ellipsis}
+  .tab:hover{background:var(--hover);color:var(--text)}
+  .tab.on{background:rgb(255 255 255/.075);color:var(--strong)}
+  .tab .x{opacity:0;font-size:11px;color:var(--muted);width:16px;height:16px;display:grid;place-items:center;border-radius:4px}
+  .tab:hover .x,.tab.on .x{opacity:1} .tab .x:hover{background:var(--hover)}
+  .tab .d{width:6px;height:6px;border-radius:9px;flex:none}
+
+  /* option C: rail */
+  .card.wide{max-width:900px;flex-direction:row}
+  .rail{width:240px;flex:none;border-right:1px solid var(--rule);padding:8px;display:flex;flex-direction:column;gap:1px}
+  .rail .head{display:flex;align-items:center;justify-content:space-between;padding:4px 6px 8px;font-size:12px;color:var(--muted)}
+  .ritem{padding:7px 8px;border-radius:7px;cursor:pointer}
+  .ritem:hover{background:var(--hover)} .ritem.on{background:rgb(255 255 255/.075)}
+  .ritem .t{font-size:12.5px;color:var(--text);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .ritem.on .t{color:var(--strong)}
+  .ritem .s{font-size:11px;color:var(--faint);display:flex;gap:6px;align-items:center;margin-top:1px}
+  .card.wide .body{flex:1;min-width:0;display:flex;flex-direction:column}
+
+  .note-pill{position:absolute;bottom:-34px;left:50%;transform:translateX(-50%);background:var(--float);box-shadow:var(--shadow);border-radius:10px;padding:5px 6px 5px 12px;font-size:12.5px;display:flex;gap:6px;align-items:center;white-space:nowrap}
+  .note-pill button{height:24px;border:0;background:none;color:var(--strong);font:500 12.5px 'Geist';padding:0 8px;border-radius:6px;cursor:pointer}
+  .note-pill button:hover{background:var(--hover)}
+  .anno{position:absolute;font:500 10.5px 'JetBrains Mono',monospace;color:var(--tint);display:flex;align-items:center;gap:6px;white-space:nowrap}
+  .anno::before{content:'';width:18px;height:1px;background:var(--tint)}
+  .anno.l{flex-direction:row-reverse}
+  .tabsw{display:flex;gap:6px;margin:0 0 12px}
+  .tabsw button{height:28px;padding:0 12px;border-radius:7px;border:1px solid var(--border);background:none;color:var(--muted);font:12px 'Geist';cursor:pointer}
+  .tabsw button.on{color:var(--strong);background:var(--hover)}
+</style>
+</head>
+<body>
+<main>
+  <h1>New agent palette: polish, switching drafts, switching environments</h1>
+  <p class="lede">Mockups only. Carbon theme tokens, real data shape (each draft has a project, provider, first line, image count, edited time and environment). The menus, tabs, rail and toggles all work: click around, and in section 2 try <kbd>Alt</kbd>+<kbd>[</kbd> / <kbd>Alt</kbd>+<kbd>]</kbd> while the card has focus.</p>
+
+  <!-- ─────────────────────────────── 1. polish ─────────────────────────────── -->
+  <h2><b>01</b> The card itself: before → after</h2>
+  <p class="lede">The divider above the footer goes, the Start button gets slimmer, and it picks up the small Linear touches it's missing: the environment in the breadcrumb, borderless property pills, and a "Start another" switch (Linear's "Create more") that keeps the card open after you start one.</p>
+  <div class="pair">
+    <div>
+      <div class="cap bad">Now</div>
+      <div class="stage">
+        <div class="card">
+          <div class="hdr">
+            <div class="crumbs">
+              <button class="chip"><span class="sq" style="background:#7dd3fc">O</span>openmanager<i class="ph ph-caret-down" style="font-size:11px"></i></button>
+              <i class="ph-bold ph-caret-right sep"></i>
+              <span class="crumb-title">New agent</span>
+            </div>
+            <button class="ib"><i class="ph ph-arrows-out-simple"></i></button>
+            <button class="ib"><i class="ph ph-x"></i></button>
+          </div>
+          <textarea class="ask" placeholder="What should the agent do?"></textarea>
+          <div class="props">
+            <button class="prop"><span class="prov c">C</span>Opus 4.5</button>
+            <button class="prop">High effort</button>
+          </div>
+          <div class="foot ruled">
+            <button class="ib"><i class="ph ph-paperclip" style="font-size:16px"></i></button>
+            <span class="hint"><span class="k">Esc</span> save as draft</span>
+            <button class="start big">Start agent <kbd>⏎</kbd></button>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div>
+      <div class="cap good">Proposed</div>
+      <div class="stage">
+        <div class="card v2">
+          <div class="hdr">
+            <div class="crumbs">
+              <button class="chip"><i class="ph ph-linux-logo"></i>WSL</button>
+              <i class="ph-bold ph-caret-right sep"></i>
+              <button class="chip"><span class="sq" style="background:#7dd3fc">O</span>openmanager</button>
+              <i class="ph-bold ph-caret-right sep"></i>
+              <span class="crumb-title">New agent</span>
+            </div>
+            <button class="drafts-btn"><i class="ph ph-file-dashed" style="font-size:14px"></i>Drafts<span class="count">3</span></button>
+            <button class="ib"><i class="ph ph-arrows-out-simple"></i></button>
+            <button class="ib"><i class="ph ph-x"></i></button>
+          </div>
+          <textarea class="ask" placeholder="What should the agent do?"></textarea>
+          <div class="props">
+            <button class="prop"><span class="prov c">C</span>Opus 4.5</button>
+            <button class="prop"><i class="ph ph-gauge"></i>High</button>
+            <button class="prop"><i class="ph ph-shield-check"></i>Ask first</button>
+          </div>
+          <div class="foot">
+            <button class="ib"><i class="ph ph-paperclip" style="font-size:15px"></i></button>
+            <span class="sync"><i class="ph ph-check"></i>Saved</span>
+            <span class="hint" style="margin-right:6px">
+              <span class="toggle" onclick="this.classList.toggle('on')"><span class="sw"></span>Start another</span>
+            </span>
+            <button class="start slim">Start <kbd>⏎</kbd></button>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+  <ul class="notes">
+    <li><b>No footer divider.</b> The footer sits on the card. Spacing alone separates it from the property pills.</li>
+    <li><b>Slimmer Start button.</b> It drops from 32px to 26px and says "Start" instead of "Start agent". The ⏎ hint stays. The "Esc save as draft" hint moves into the Close tooltip, which already shows Esc.</li>
+    <li><b>Borderless pills.</b> The pills lose their outline and get a faint fill, like Linear's current property pills. Effort and permissions get small icons so the row scans quickly.</li>
+    <li><b>Start another.</b> When it's on, Enter starts the agent and leaves an empty card in the same project, ready for the next one.</li>
+  </ul>
+
+  <!-- ─────────────────────────────── 2. drafts menu ─────────────────────────────── -->
+  <h2><b>02</b> Switching drafts: a Drafts menu in the header <span class="tag">recommended</span></h2>
+  <p class="lede">This is what Linear does: its New issue modal has a Drafts button. Pick a draft and it opens in this same card, in place, without leaving the page you're on. The draft you were writing stays saved, as it already is. <kbd>Alt</kbd>+<kbd>[</kbd> / <kbd>]</kbd> steps through drafts without opening the menu.</p>
+  <div class="stage tall" id="dm-stage">
+    <div class="card v2" id="dm-card" tabindex="-1">
+      <div class="hdr">
+        <div class="crumbs">
+          <button class="chip"><i class="ph ph-linux-logo"></i>WSL</button>
+          <i class="ph-bold ph-caret-right sep"></i>
+          <button class="chip" id="dm-proj"><span class="sq" style="background:#7dd3fc">O</span>openmanager</button>
+          <i class="ph-bold ph-caret-right sep"></i>
+          <span class="crumb-title" id="dm-title">New agent</span>
+        </div>
+        <button class="drafts-btn" id="dm-btn"><i class="ph ph-file-dashed" style="font-size:14px"></i>Drafts<span class="count" id="dm-count">4</span></button>
+        <button class="ib"><i class="ph ph-arrows-out-simple"></i></button>
+        <button class="ib"><i class="ph ph-x"></i></button>
+      </div>
+      <div class="menu" id="dm-menu" style="top:40px;right:44px">
+        <input id="dm-q" placeholder="Switch to a draft…" />
+        <div id="dm-list"></div>
+        <div class="mfoot"><span><span class="k">↑↓</span> move</span><span><span class="k">⏎</span> switch</span><span><span class="k">Alt [ ]</span> step</span><span style="margin-left:auto"><span class="k">⌘⌫</span> discard</span></div>
+      </div>
+      <textarea class="ask" id="dm-text" placeholder="What should the agent do?"></textarea>
+      <div class="props">
+        <button class="prop" id="dm-model"><span class="prov c">C</span>Opus 4.5</button>
+        <button class="prop"><i class="ph ph-gauge"></i>High</button>
+        <span id="dm-imgs"></span>
+      </div>
+      <div class="foot">
+        <button class="ib"><i class="ph ph-paperclip" style="font-size:15px"></i></button>
+        <span class="sync"><i class="ph ph-check"></i>Saved</span>
+        <span class="hint" style="margin-right:6px"><span class="toggle"><span class="sw"></span>Start another</span></span>
+        <button class="start slim">Start <kbd>⏎</kbd></button>
+      </div>
+    </div>
+  </div>
+  <ul class="notes">
+    <li><b>Where the list comes from.</b> It's the same list as the sidebar's draft cards, newest first, so nothing new has to be stored.</li>
+    <li><b>Breadcrumb follows the draft.</b> Its title becomes the draft's first line, and the project chip changes to the draft's project.</li>
+    <li><b>Switching away.</b> A draft with text or images stays saved and listed. A blank one is dropped, as it is today.</li>
+    <li><b>New draft</b> is the first row. <kbd>⌘⇧O</kbd> still opens and closes the card.</li>
+    <li><b>Other environments.</b> Drafts saved on another machine show under their own heading. Picking one also switches the card's environment (see 05).</li>
+  </ul>
+
+  <!-- ─────────────────────────────── 3. tabs ─────────────────────────────── -->
+  <h2><b>03</b> Alternative: drafts as tabs across the card</h2>
+  <p class="lede">Every draft gets a tab along the top, plus a + tab for a new one. You can see them all at a glance, but it gets crowded past about five drafts, and the top of the card looks like a browser.</p>
+  <div class="stage">
+    <div class="card v2" id="tb-card">
+      <div class="tabs" id="tb-tabs"></div>
+      <div class="hdr" style="padding-top:6px">
+        <div class="crumbs">
+          <button class="chip"><i class="ph ph-linux-logo"></i>WSL</button>
+          <i class="ph-bold ph-caret-right sep"></i>
+          <button class="chip" id="tb-proj"></button>
+        </div>
+        <button class="ib"><i class="ph ph-arrows-out-simple"></i></button>
+        <button class="ib"><i class="ph ph-x"></i></button>
+      </div>
+      <textarea class="ask" id="tb-text" placeholder="What should the agent do?"></textarea>
+      <div class="props">
+        <button class="prop" id="tb-model"></button>
+        <button class="prop"><i class="ph ph-gauge"></i>High</button>
+      </div>
+      <div class="foot">
+        <button class="ib"><i class="ph ph-paperclip" style="font-size:15px"></i></button>
+        <span class="sync"><i class="ph ph-check"></i>Saved</span>
+        <span class="hint"></span>
+        <button class="start slim">Start <kbd>⏎</kbd></button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ─────────────────────────────── 4. rail ─────────────────────────────── -->
+  <h2><b>04</b> Alternative: a drafts rail inside a wider card</h2>
+  <p class="lede">A list on the left and the composer on the right, like a mail client. It's the best fit if you keep a lot of drafts, but it's the heaviest of the three and covers most of the page.</p>
+  <div class="stage">
+    <div class="card v2 wide" id="rl-card">
+      <div class="rail">
+        <div class="head"><span>Drafts</span><button class="ib" style="width:24px;height:24px" id="rl-new"><i class="ph ph-plus"></i></button></div>
+        <div id="rl-list"></div>
+      </div>
+      <div class="body">
+        <div class="hdr">
+          <div class="crumbs">
+            <button class="chip"><i class="ph ph-linux-logo"></i>WSL</button>
+            <i class="ph-bold ph-caret-right sep"></i>
+            <button class="chip" id="rl-proj"></button>
+            <i class="ph-bold ph-caret-right sep"></i>
+            <span class="crumb-title" id="rl-title"></span>
+          </div>
+          <button class="ib"><i class="ph ph-arrows-out-simple"></i></button>
+          <button class="ib"><i class="ph ph-x"></i></button>
+        </div>
+        <textarea class="ask" id="rl-text" placeholder="What should the agent do?" style="min-height:150px"></textarea>
+        <div class="props">
+          <button class="prop" id="rl-model"></button>
+          <button class="prop"><i class="ph ph-gauge"></i>High</button>
+        </div>
+        <div class="foot" style="margin-top:auto">
+          <button class="ib"><i class="ph ph-paperclip" style="font-size:15px"></i></button>
+          <span class="sync"><i class="ph ph-check"></i>Saved</span>
+          <span class="hint"></span>
+          <button class="start slim">Start <kbd>⏎</kbd></button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ─────────────────────────────── 5. environments ─────────────────────────────── -->
+  <h2><b>05</b> Switching environments from the card</h2>
+  <p class="lede">Today the card always uses the environment you're in. This puts the environment first in the breadcrumb, with the same menu as the new-session page. Picking another one moves the card there, and the page you're on stays put. Your text goes with it. Images stay behind, the same as when you switch environments on the new-session page.</p>
+  <div class="stage tall">
+    <div class="card v2" id="ev-card">
+      <div class="hdr">
+        <div class="crumbs">
+          <button class="chip" id="ev-btn"><i class="ph ph-linux-logo" id="ev-icon"></i><span id="ev-name">WSL</span><i class="ph ph-caret-down" style="font-size:10px"></i></button>
+          <i class="ph-bold ph-caret-right sep"></i>
+          <button class="chip" id="ev-proj"><span class="sq" style="background:#7dd3fc">O</span>openmanager</button>
+          <i class="ph-bold ph-caret-right sep"></i>
+          <span class="crumb-title">New agent</span>
+        </div>
+        <button class="drafts-btn"><i class="ph ph-file-dashed" style="font-size:14px"></i>Drafts<span class="count">3</span></button>
+        <button class="ib"><i class="ph ph-arrows-out-simple"></i></button>
+        <button class="ib"><i class="ph ph-x"></i></button>
+      </div>
+      <div class="menu" id="ev-menu" style="top:40px;left:10px;width:300px">
+        <input placeholder="Run on…" />
+        <div id="ev-list"></div>
+      </div>
+      <textarea class="ask" placeholder="What should the agent do?">Bump node to 22 in the CI image and fix whatever breaks</textarea>
+      <div class="props">
+        <button class="prop"><span class="prov c">C</span>Opus 4.5</button>
+        <button class="prop"><i class="ph ph-gauge"></i>High</button>
+      </div>
+      <div class="foot">
+        <button class="ib"><i class="ph ph-paperclip" style="font-size:15px"></i></button>
+        <span class="sync" id="ev-sync"><i class="ph ph-check"></i>Saved</span>
+        <span class="hint" style="margin-right:6px"><span class="toggle"><span class="sw"></span>Start another</span></span>
+        <button class="start slim">Start <kbd>⏎</kbd></button>
+      </div>
+      <div class="note-pill" id="ev-note" style="display:none"><span id="ev-note-t"></span><button>Undo</button></div>
+    </div>
+  </div>
+  <ul class="notes">
+    <li><b>Project chip.</b> It switches to the new environment's most recent project, which is what the new-session page does.</li>
+    <li><b>Unreachable environments</b> stay in the list, greyed out, with "Not connected".</li>
+    <li><b>Only one environment saved</b> (always the case on desktop): the chip shows as a plain label, or is hidden.</li>
+  </ul>
+</main>
+
+<script>
+const PROJECTS = {
+  openmanager:{name:'openmanager',color:'#7dd3fc',letter:'O'},
+  website:{name:'website',color:'#fda4af',letter:'W'},
+  infra:{name:'infra',color:'#c4b5fd',letter:'I'},
+};
+const DRAFTS = [
+  {id:'new',proj:'openmanager',prov:'c',model:'Opus 4.5',text:'',when:'now',imgs:0,env:'WSL'},
+  {id:'a',proj:'openmanager',prov:'c',model:'Opus 4.5',text:'Fix the drafts sidebar flicker when a send fails halfway through',when:'2m',imgs:0,env:'WSL'},
+  {id:'b',proj:'openmanager',prov:'x',model:'GPT-5.2 Codex',text:'Add a "Start another" toggle to the quick agent palette, like Linear\'s Create more',when:'14m',imgs:1,env:'WSL'},
+  {id:'c',proj:'website',prov:'c',model:'Sonnet 4.5',text:'Rewrite the pricing page hero, keep it under 12 words',when:'1h',imgs:0,env:'WSL'},
+  {id:'d',proj:'infra',prov:'c',model:'Opus 4.5',text:'Bump node to 22 in the CI image',when:'Yesterday',imgs:0,env:'MacBook'},
+];
+const esc = s => s.replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+const projChip = p => `<span class="sq" style="background:${PROJECTS[p].color}">${PROJECTS[p].letter}</span>${PROJECTS[p].name}`;
+const modelChip = d => `<span class="prov ${d.prov}">${d.prov==='c'?'C':'X'}</span>${d.model}`;
+const firstLine = d => d.text ? d.text : 'New agent';
+
+/* ── 02 drafts menu ── */
+(() => {
+  let cur = 0, kb = 0, q = '';
+  const $ = id => document.getElementById(id);
+  const menu = $('dm-menu'), btn = $('dm-btn');
+  const visible = () => DRAFTS.map((d,i)=>({d,i})).filter(({d,i}) => i===0 || !q || (d.text+' '+d.proj).toLowerCase().includes(q.toLowerCase()));
+  function show(i){
+    cur = i; const d = DRAFTS[i];
+    $('dm-text').value = d.text;
+    $('dm-proj').innerHTML = projChip(d.proj);
+    $('dm-title').textContent = d.text ? (d.text.length>34? d.text.slice(0,34)+'…' : d.text) : 'New agent';
+    $('dm-model').innerHTML = modelChip(d);
+    $('dm-imgs').innerHTML = d.imgs ? `<button class="prop"><i class="ph ph-image"></i>${d.imgs} image</button>` : '';
+    $('dm-count').textContent = DRAFTS.length-1;
+    render();
+  }
+  function render(){
+    const rows = visible(); kb = Math.min(kb, rows.length-1);
+    let html = '', lastEnv = 'WSL';
+    rows.forEach(({d,i},n) => {
+      if (i===0) { html += row(d,i,n,true); html += '<div class="mlabel">On WSL</div>'; return; }
+      if (d.env !== lastEnv) { html += `<div class="mlabel">On ${d.env}</div>`; lastEnv = d.env; }
+      html += row(d,i,n,false);
+    });
+    $('dm-list').innerHTML = html;
+    $('dm-list').querySelectorAll('.mrow').forEach(el => el.onclick = () => { show(+el.dataset.i); close(); });
+  }
+  function row(d,i,n,isNew){
+    if (isNew) return `<div class="mrow ${n===kb?'kb':''}" data-i="0"><i class="ph ph-plus chk"></i><div class="main"><div class="t">New draft</div></div><span class="r"><span class="k">⌘⇧O</span></span></div>`;
+    return `<div class="mrow ${n===kb?'kb':''}" data-i="${i}">
+      <i class="ph-bold ${i===cur?'ph-check':''} chk"></i>
+      <div class="main"><div class="t">${esc(d.text)}</div>
+        <div class="s"><span class="prov ${d.prov}" style="width:12px;height:12px;font-size:7.5px">${d.prov==='c'?'C':'X'}</span>${PROJECTS[d.proj].name}${d.imgs?` · <i class="ph ph-image"></i>${d.imgs}`:''}</div></div>
+      <span class="r">${d.when}</span></div>`;
+  }
+  function open(){ menu.classList.add('open'); btn.classList.add('on'); q=''; $('dm-q').value=''; kb = Math.max(0, visible().findIndex(r=>r.i===cur)); render(); $('dm-q').focus({preventScroll:true}); }
+  function close(){ menu.classList.remove('open'); btn.classList.remove('on'); $('dm-text').focus({preventScroll:true}); }
+  btn.onclick = e => { e.stopPropagation(); menu.classList.contains('open') ? close() : open(); };
+  menu.onclick = e => e.stopPropagation();
+  document.addEventListener('click', () => menu.classList.contains('open') && close());
+  $('dm-q').oninput = e => { q = e.target.value; kb = 0; render(); };
+  $('dm-q').onkeydown = e => {
+    const rows = visible();
+    if (e.key==='ArrowDown'){ kb=(kb+1)%rows.length; render(); e.preventDefault(); }
+    if (e.key==='ArrowUp'){ kb=(kb-1+rows.length)%rows.length; render(); e.preventDefault(); }
+    if (e.key==='Enter'){ show(rows[kb].i); close(); e.preventDefault(); }
+    if (e.key==='Escape'){ close(); e.preventDefault(); }
+  };
+  $('dm-card').addEventListener('keydown', e => {
+    if (e.altKey && (e.code==='BracketRight' || e.code==='BracketLeft')) {
+      e.preventDefault(); show((cur + (e.code==='BracketRight'?1:-1) + DRAFTS.length) % DRAFTS.length);
+    }
+  });
+  show(1); open();
+})();
+
+/* ── 03 tabs ── */
+(() => {
+  let cur = 1; const $ = id => document.getElementById(id);
+  function render(){
+    const d = DRAFTS[cur];
+    $('tb-tabs').innerHTML = DRAFTS.map((t,i) => i===0 ? '' :
+      `<div class="tab ${i===cur?'on':''}" data-i="${i}"><span class="d" style="background:${PROJECTS[t.proj].color}"></span><span>${esc(t.text||'New agent')}</span><i class="ph ph-x x"></i></div>`).join('')
+      + `<div class="tab ${cur===0?'on':''}" data-i="0" style="padding:0 8px">${cur===0?'<span>New agent</span>':''}<i class="ph ph-plus" style="font-size:12px"></i></div>`;
+    $('tb-tabs').querySelectorAll('.tab').forEach(el => el.onclick = () => { cur = +el.dataset.i; render(); });
+    $('tb-text').value = d.text; $('tb-proj').innerHTML = projChip(d.proj); $('tb-model').innerHTML = modelChip(d);
+  }
+  render();
+})();
+
+/* ── 04 rail ── */
+(() => {
+  let cur = 1; const $ = id => document.getElementById(id);
+  function render(){
+    const d = DRAFTS[cur];
+    $('rl-list').innerHTML = DRAFTS.map((t,i) => (i===0 && cur!==0) ? '' :
+      `<div class="ritem ${i===cur?'on':''}" data-i="${i}"><div class="t">${esc(t.text||'New agent')}</div>
+       <div class="s"><span class="sq" style="width:10px;height:10px;border-radius:3px;background:${PROJECTS[t.proj].color}"></span>${PROJECTS[t.proj].name}${t.env!=='WSL'?' · '+t.env:''}<span style="margin-left:auto">${t.when}</span></div></div>`).join('');
+    $('rl-list').querySelectorAll('.ritem').forEach(el => el.onclick = () => { cur = +el.dataset.i; render(); });
+    $('rl-text').value = d.text; $('rl-proj').innerHTML = projChip(d.proj); $('rl-model').innerHTML = modelChip(d);
+    $('rl-title').textContent = d.text ? (d.text.length>30? d.text.slice(0,30)+'…' : d.text) : 'New agent';
+  }
+  $('rl-new').onclick = () => { cur = 0; render(); };
+  render();
+})();
+
+/* ── 05 environments ── */
+(() => {
+  const ENVS = [
+    {name:'WSL',detail:'Ubuntu 24.04 · this PC',icon:'ph-linux-logo',ok:true,proj:'openmanager'},
+    {name:'MacBook',detail:'macOS · paired',icon:'ph-apple-logo',ok:true,proj:'infra'},
+    {name:'Cloud box',detail:'Debian · fly.io',icon:'ph-cloud',ok:false,proj:'website'},
+  ];
+  let cur = 0, prev = 0; const $ = id => document.getElementById(id);
+  const menu = $('ev-menu');
+  function render(){
+    $('ev-list').innerHTML = ENVS.map((e,i)=>`<div class="mrow ${e.ok||i===cur?'':'dis'}" data-i="${i}">
+      <i class="ph-bold ${i===cur?'ph-check':''} chk"></i><i class="ph ${e.icon}" style="color:var(--muted);font-size:15px"></i>
+      <div class="main"><div class="t">${e.name}</div><div class="s">${e.detail}${e.ok?'':' · Not connected'}</div></div></div>`).join('');
+    $('ev-list').querySelectorAll('.mrow:not(.dis)').forEach(el => el.onclick = () => pick(+el.dataset.i));
+  }
+  function pick(i){
+    menu.classList.remove('open'); $('ev-btn').classList.remove('on');
+    if (i===cur) return; prev = cur; cur = i; const e = ENVS[i];
+    $('ev-icon').className = 'ph '+e.icon; $('ev-name').textContent = e.name; $('ev-proj').innerHTML = projChip(e.proj);
+    $('ev-note-t').textContent = `Moved to ${e.name}`; $('ev-note').style.display='flex';
+    clearTimeout(pick.t); pick.t = setTimeout(()=>$('ev-note').style.display='none', 4000);
+  }
+  $('ev-note').querySelector('button').onclick = () => pick(prev);
+  $('ev-btn').onclick = e => { e.stopPropagation(); render(); menu.classList.toggle('open'); $('ev-btn').classList.toggle('on'); };
+  menu.onclick = e => e.stopPropagation();
+  document.addEventListener('click', () => { menu.classList.remove('open'); $('ev-btn').classList.remove('on'); });
+  render(); menu.classList.add('open'); $('ev-btn').classList.add('on');
+})();
+</script>
+</body>
+</html>

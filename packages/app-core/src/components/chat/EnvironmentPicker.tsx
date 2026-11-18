@@ -33,6 +33,7 @@ export function EnvironmentPicker({
   environments,
   selectedId,
   disabled = false,
+  variant = 'line',
   onSelect,
 }: {
   environments: readonly EnvironmentOption[]
@@ -40,13 +41,17 @@ export function EnvironmentPicker({
   selectedId: string
   /** A session is starting from this page. */
   disabled?: boolean
+  /** `line` is the new session page's small line; `chip` a breadcrumb chip,
+   * as the quick New agent palette's project is. */
+  variant?: 'line' | 'chip'
   onSelect: (environmentId: string) => void
 }) {
+  const chip = variant === 'chip'
   const [query, setQuery] = useState('')
   const { open, toggle, close, menuCoords, wrapRef, triggerRef, menuRef } = usePortaledMenu({
     placement: 'below',
     minWidth: MENU_WIDTH,
-    align: 'center',
+    align: chip ? 'start' : 'center',
   })
   const selected = environments.find(({ environmentId }) => environmentId === selectedId)
   const label = selected?.label ?? selectedId
@@ -153,7 +158,7 @@ export function EnvironmentPicker({
 
   return (
     <div ref={wrapRef} className="relative inline-flex min-w-0 max-w-[240px]">
-      <Tooltip content={`Sessions run on ${label}`} side="bottom">
+      <Tooltip content={chip ? `Runs on ${label}` : `Sessions run on ${label}`} side="bottom">
         <button
           ref={triggerRef}
           type="button"
@@ -163,9 +168,11 @@ export function EnvironmentPicker({
           aria-expanded={open}
           aria-label={`Environment: ${label}. Choose an environment`}
           className={cn(
-            'inline-flex min-w-0 max-w-full items-center gap-1 rounded-md border-0 bg-transparent px-1 py-0.5 text-[var(--basis-text-faint)] transition-colors',
-            'hover:bg-hover hover:text-[var(--basis-text-muted)] disabled:pointer-events-none',
-            open && 'bg-hover text-[var(--basis-text-muted)]',
+            'inline-flex min-w-0 max-w-full items-center rounded-md border-0 bg-transparent transition-colors disabled:pointer-events-none',
+            chip
+              ? 'h-7 gap-1.5 px-2 text-[13px] text-[var(--basis-text)] hover:bg-hover'
+              : 'gap-1 px-1 py-0.5 text-[var(--basis-text-faint)] hover:bg-hover hover:text-[var(--basis-text-muted)]',
+            open && (chip ? 'bg-hover' : 'bg-hover text-[var(--basis-text-muted)]'),
           )}
         >
           <EnvironmentPlatformIcon
@@ -173,14 +180,26 @@ export function EnvironmentPicker({
             distro={selected?.distro}
             muted={selected ? !selected.reachable : false}
             aria-hidden
-            fallback={<HardDrivesIcon weight="light" aria-hidden className="h-3 w-3 shrink-0" />}
+            className={chip ? 'h-3.5 w-3.5 text-[var(--basis-text-muted)]' : undefined}
+            fallback={
+              <HardDrivesIcon
+                weight="light"
+                aria-hidden
+                className={cn(
+                  'shrink-0',
+                  chip ? 'h-3.5 w-3.5 text-[var(--basis-text-muted)]' : 'h-3 w-3',
+                )}
+              />
+            }
           />
           <span className="truncate">{shownLabel}</span>
-          <CaretDownIcon
-            weight="light"
-            aria-hidden
-            className={cn('h-3 w-3 shrink-0 transition-transform', open && 'rotate-180')}
-          />
+          {chip ? null : (
+            <CaretDownIcon
+              weight="light"
+              aria-hidden
+              className={cn('h-3 w-3 shrink-0 transition-transform', open && 'rotate-180')}
+            />
+          )}
         </button>
       </Tooltip>
       {menu}
