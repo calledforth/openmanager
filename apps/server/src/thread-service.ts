@@ -339,14 +339,24 @@ type ThreadRecord = {
  */
 type PendingMove = {
   workspaceId: string
-  /** The thread whose turn asked, and that turn: only its completion applies the move. */
+  /**
+   * The thread whose turn asked, and that turn: only its completion applies
+   * the move. Undefined once a steered message took over from it: the next
+   * turn of the thread to complete applies it.
+   */
   threadId: string
-  turnId: string
+  turnId: string | undefined
 }
 
 /** What `requestMove` answers the tool: the move it filed, or why it filed none. */
 export type MoveRequest =
-  | { ok: true; workspaceId: string; cwd: string }
+  | {
+      ok: true
+      workspaceId: string
+      cwd: string
+      /** Background work the session has running, which stops when it moves. */
+      backgroundTasks: number
+    }
   | { ok: false; message: string }
 
 /**
@@ -2468,27 +2478,31 @@ export function createThreadService(
   }
 
   /**
+   * Why the session whose agent is working in `threadId` now cannot move, if
+   * it cannot: asked before the folder is added as a project, so a refused
+   * move adds nothing.
+   */
+  const moveRefusal = (threadId: string): string | undefined => {
+    const record = threads.get(threadId)
+    if (!record?.activeTurn) return 'This session has no turn under way to move from.'
+    if (record.session.parentSessionId) {
+      return 'A sub-agent cannot move its session; the agent that started it can.'
+    }
+    if (!(options.movableProviders ?? MOVABLE_PROVIDERS).includes(record.providerId)) {
+      return `Moving a session to another folder is not supported for ${record.providerId} yet.`
+    }
+    return undefined
+  }
+
+  /**
    * File a move to another workspace for the session whose agent is working
    * in `threadId` now. Applied when that turn completes (`settleMove`); a
    * second call in the same turn replaces the first.
    */
   const requestMove = (threadId: string, workspaceId: string): MoveRequest => {
-    const record = threads.get(threadId)
-    if (!record?.activeTurn) {
-      return { ok: false, message: 'This session has no turn under way to move from.' }
-    }
-    if (record.session.parentSessionId) {
-      return {
-        ok: false,
-        message: 'A sub-agent cannot move its session; the agent that started it can.',
-      }
-    }
-    if (!(options.movableProviders ?? MOVABLE_PROVIDERS).includes(record.providerId)) {
-      return {
-        ok: false,
-        message: `Moving a session to another folder is not supported for ${record.providerId} yet.`,
-      }
-    }
+    const refusal = moveRefusal(threadId)
+    if (refusal) return { ok: false, message: refusal }
+    const record = threads.get(threadId)!
     let target: WorkspaceRuntimeRoute | undefined
     try {
       target = resolveWorkspace(workspaceId)
@@ -2508,21 +2522,31 @@ export function createThreadService(
     pendingMoves.set(record.session.sessionId, {
       workspaceId,
       threadId,
-      turnId: record.activeTurn.turn.turnId,
+      turnId: record.activeTurn!.turn.turnId,
     })
-    return { ok: true, workspaceId, cwd: target.cwd }
+    return {
+      ok: true,
+      workspaceId,
+      cwd: target.cwd,
+      backgroundTasks: record.backgroundTasks?.length ?? 0,
+    }
   }
 
   /**
    * A turn ended: apply the move it asked for once it completed. A turn that
    * failed or was stopped drops it; the agent asks again if it still wants
-   * it. A plan build or steered turn that already followed holds it until
-   * the session is idle, as long as it is the turn that asked.
+   * it. A steered message about to run in the same process takes the move
+   * with it, so the session moves once that turn completes instead.
    */
   const settleMove = (record: ThreadRecord, turnId: string, completed: boolean) => {
     const sessionId = record.session.sessionId
     const move = pendingMoves.get(sessionId)
-    if (!move || move.threadId !== record.thread.threadId || move.turnId !== turnId) return
+    if (!move || move.threadId !== record.thread.threadId) return
+    if (move.turnId !== undefined && move.turnId !== turnId) return
+    if (completed && record.queue.items.some((item) => item.delivery === 'steering')) {
+      move.turnId = undefined
+      return
+    }
     pendingMoves.delete(sessionId)
     if (!completed || threads.get(record.thread.threadId) !== record) return
     let target: WorkspaceRuntimeRoute | undefined
@@ -2538,33 +2562,50 @@ export function createThreadService(
       })
       return
     }
-    const tree = sessionTree(sessionId)
-    const timestamp = new Date().toISOString()
-    const events = tree.map((id) =>
-      ProofEventSchemas['session.updated'].parse({
-        type: 'event',
-        name: 'session.updated',
-        eventId: randomUUID(),
-        timestamp,
-        scope: { type: 'environment', environmentId },
-        payload: { sessionId: id, workspaceId: move.workspaceId },
-      }),
-    )
+    // What the session runs with now becomes its own choice, so the new
+    // project's preferences do not change its model halfway through.
     try {
+      const current = options.queuedSettings?.({
+        providerId: record.providerId,
+        workspaceId: record.session.workspaceId,
+        threadId: record.thread.threadId,
+      })
+      if (current?.modelId || current?.configValues) {
+        options.seedSessionComposer?.(sessionId, {
+          ...(current.modelId ? { modelId: current.modelId } : {}),
+          ...(current.configValues ? { configValues: current.configValues } : {}),
+        })
+      }
+    } catch {
+      /* the move matters more than keeping the model */
+    }
+    try {
+      const tree = sessionTree(sessionId)
+      const timestamp = new Date().toISOString()
+      const events = tree.map((id) =>
+        ProofEventSchemas['session.updated'].parse({
+          type: 'event',
+          name: 'session.updated',
+          eventId: randomUUID(),
+          timestamp,
+          scope: { type: 'environment', environmentId },
+          payload: { sessionId: id, workspaceId: move.workspaceId },
+        }),
+      )
       if (options.appendAtomic) options.appendAtomic(events)
       else events.forEach(appendEvent)
+      // Memory follows the committed rows: every thread of the tree runs in
+      // the new folder from its next prompt, which supersedes its process.
+      const moved = new Set(tree)
+      for (const item of threads.values()) {
+        if (!moved.has(item.session.sessionId)) continue
+        item.session.workspaceId = move.workspaceId
+        item.cwd = target.cwd
+        item.moved = true
+      }
     } catch (error) {
       options.onPersistenceError?.(error, 'session.updated')
       return
-    }
-    // Memory follows the committed rows: every thread of the tree runs in the
-    // new folder from its next prompt, which supersedes the process it had.
-    const moved = new Set(tree)
-    for (const item of threads.values()) {
-      if (!moved.has(item.session.sessionId)) continue
-      item.session.workspaceId = move.workspaceId
-      item.cwd = target.cwd
-      item.moved = true
     }
     try {
       target.onSessionStarted?.()
@@ -4276,6 +4317,7 @@ export function createThreadService(
       return undefined
     },
 
+    moveRefusal,
     requestMove,
 
     /**

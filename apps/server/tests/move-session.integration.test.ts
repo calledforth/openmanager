@@ -206,22 +206,36 @@ describe('move_session', () => {
     })
     const { sessionId, send } = await openSession(host)
     await send('make me an app')
-    const records = await collectThreadRecords(watcher, environmentSubscription, (seen) =>
-      seen.some(
+    type Seen = Awaited<ReturnType<typeof collectThreadRecords>>
+    const moveOf = (seen: Seen) =>
+      seen.find(
         (record) =>
           record.event.name === 'session.updated' &&
           (record.event.payload as { workspaceId?: string }).workspaceId !== undefined,
-      ),
+      )
+    // The project it joined is announced with its new recency in the same
+    // write, under an id the repository can find again on a retried write.
+    const joinedOf = (seen: Seen) => {
+      const moved = moveOf(seen)
+      const workspaceId = (moved?.event.payload as { workspaceId?: string } | undefined)?.workspaceId
+      return seen.find(
+        (record) =>
+          record.event.name === 'workspace.updated' &&
+          (record.event.payload as { workspace: { workspaceId: string } }).workspace
+            .workspaceId === workspaceId &&
+          record.event.eventId.startsWith(`${moved!.event.eventId}:`),
+      )
+    }
+    const records = await collectThreadRecords(watcher, environmentSubscription, (seen) =>
+      Boolean(joinedOf(seen)),
     )
-    const moved = records.find(
-      (record) =>
-        record.event.name === 'session.updated' &&
-        (record.event.payload as { workspaceId?: string }).workspaceId !== undefined,
-    )!
+    const moved = moveOf(records)!
     const added = host.server.workspaces
       .list()
       .find((workspace) => workspace.workspaceId !== host.workspaceId && workspace.kind !== 'scratch')
     expect(moved.event.payload).toEqual({ sessionId, workspaceId: added!.workspaceId })
+    const joined = joinedOf(records)
+    expect(joined?.event.eventId).toMatch(/:recency(-to)?$/)
   })
 
   it('refuses a folder that does not exist, and moves nothing', async () => {
@@ -253,6 +267,25 @@ describe('move_session', () => {
     expect(answers[0]).toMatchObject({ isError: true })
     expect(answers[0]?.content[0]?.text).toMatch(/not supported for opencode/)
     expect(rowWorkspaces(host, sessionId)).toEqual(new Set([host.workspaceId]))
+    // Refused before the folder was looked at: it is not added as a project.
+    expect(host.server.workspaces.list().map((workspace) => workspace.path)).not.toContain(
+      await realpath(project),
+    )
+  })
+
+  it('resolves a relative path against the folder the agent works in', async () => {
+    const answers: ToolAnswer[] = []
+    const { connections, opened } = movingAgent(() => '../sibling/./app', answers)
+    const host = await startHost(connections)
+    await mkdir(join(host.dataDir, 'sibling', 'app'), { recursive: true })
+    const { send } = await openSession(host)
+
+    await send('make me an app')
+    const canonical = await realpath(join(host.dataDir, 'sibling', 'app'))
+    expect(answers[0]?.isError).toBeFalsy()
+    expect(answers[0]?.content[0]?.text).toContain(canonical)
+    await send('carry on')
+    expect(opened.at(-1)).toMatchObject({ method: 'load', cwd: canonical })
   })
 
   it('refuses the folder the session already works in', async () => {

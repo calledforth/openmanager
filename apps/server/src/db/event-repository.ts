@@ -468,15 +468,19 @@ export function createEventRepository(
     // A workspace's recency follows its sessions and its own last use, read
     // from the rows with the registry's own reader. Announced when it moved,
     // backwards too: deleting the newest session lowers it.
-    // One event can move two workspaces (a session moving from one to the
-    // other), so the second derived id names its workspace.
+    // One event can move two workspaces, a session leaving one for the
+    // other; the second gets a suffix of its own, so a retried write finds
+    // both again (DERIVED_SUFFIXES).
     const recencyIds = new Set<string>()
     for (const [workspaceId, place] of transaction.workspaces) {
       if (place.removed) continue
       const workspace = readWorkspace(database, workspaceId)
       if (!workspace || workspace.lastActivityAt === place.announced) continue
       let eventId = `${place.lastEventId}:recency`
-      if (recencyIds.has(eventId)) eventId = `${eventId}:${workspaceId}`
+      if (recencyIds.has(eventId)) eventId = `${place.lastEventId}:recency-to`
+      if (recencyIds.has(eventId)) {
+        throw new ProjectionRefusal(`Event ${place.lastEventId} moved more than two workspaces`)
+      }
       recencyIds.add(eventId)
       add(
         place.environmentId,
@@ -603,7 +607,7 @@ export function isTerminal(event: ProofEvent): event is TerminalEvent {
 }
 
 /** The ids of a source event's derived records: its session's status, its workspace's recency. */
-const DERIVED_SUFFIXES = [':status', ':recency'] as const
+const DERIVED_SUFFIXES = [':status', ':recency', ':recency-to'] as const
 
 /** Whether the repository's own pass wrote this record, rather than a producer. */
 export function isDerivedRecord(event: { eventId: string }): boolean {

@@ -388,13 +388,15 @@ export async function startServer(config: ServerConfig) {
   // `move_session` needs the thread service too, made below like `share_file`'s.
   let moveSessionInto: Pick<
     Parameters<typeof createMoveSessionTool>[0],
-    'agentTurnOf' | 'requestMove'
+    'agentTurnOf' | 'moveRefusal' | 'requestMove'
   > = {
     agentTurnOf: () => undefined,
+    moveRefusal: () => 'The environment is starting.',
     requestMove: () => ({ ok: false, message: 'The environment is starting.' }),
   }
   const moveSessionTool = createMoveSessionTool({
     agentTurnOf: (threadId) => moveSessionInto.agentTurnOf(threadId),
+    moveRefusal: (threadId) => moveSessionInto.moveRefusal(threadId),
     register: (path) => workspaces.register({ path }),
     requestMove: (threadId, workspaceId) => moveSessionInto.requestMove(threadId, workspaceId),
   })
@@ -589,6 +591,7 @@ export async function startServer(config: ServerConfig) {
   }
   moveSessionInto = {
     agentTurnOf: (threadId) => threadService.agentTurnOf(threadId),
+    moveRefusal: (threadId) => threadService.moveRefusal(threadId),
     requestMove: (threadId, workspaceId) => threadService.requestMove(threadId, workspaceId),
   }
   closeWorkspaceSessions = (workspaceId) => {
