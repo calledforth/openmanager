@@ -30,6 +30,7 @@ const TOOL_KINDS: Readonly<Record<string, ToolKind>> = {
   WebSearch: 'fetch',
   TodoWrite: 'think',
   Task: 'other',
+  Agent: 'other',
 }
 
 export function claudeToolKind(toolName: string): ToolKind {
@@ -222,8 +223,12 @@ export function planUpdateFromTodoWrite(input: unknown): PlanUpdate | undefined 
   return { entries }
 }
 
-/** The `Task` tool is Claude Code's subagent delegation, and the only tool that
- * becomes a `SubtaskUpdate` instead of a tool row.
+/** The tools that start a Claude Code subagent. `Agent` is the current name;
+ * `Task` is what older CLIs and older transcripts call the same tool. */
+export const CLAUDE_SUBAGENT_TOOLS: ReadonlySet<string> = new Set(['Agent', 'Task'])
+
+/** A call to `Agent` (or the older `Task`) is a subagent, and becomes a
+ * `SubtaskUpdate` instead of a tool row.
  *
  * Shaped as a `SubtaskAdapter['fromToolCall']` so it plugs into exactly the
  * tracking `AcpSessionRuntimeImpl.subtaskFromTool` already implements: the first
@@ -231,27 +236,77 @@ export function planUpdateFromTodoWrite(input: unknown): PlanUpdate | undefined 
  * is routed back through here (with `tracked: true`) so a status-only update
  * still lands on the subtask row rather than resurrecting a raw tool row.
  *
- * `tracked` is what makes the update phase work at all: by then the title is
- * still `Task` but the raw input may not be repeated, so identification has to
- * come from the id we already claimed. */
+ * `tracked` is what makes the update phase work at all: a tool result carries
+ * no input, so identification has to come from the id we already claimed.
+ *
+ * The call's id is the subagent's `taskId` for its whole life: every frame the
+ * subagent produces names it as `parent_tool_use_id`, revivals included. */
 export function subtaskFromClaudeTool(
   tool: ToolCall | ToolCallUpdate,
   context: { phase: 'call' | 'update'; tracked: boolean },
 ): SubtaskUpdate | undefined {
   if (!tool.toolCallId) return undefined
-  if (tool.title !== 'Task' && !context.tracked) return undefined
+  if (!CLAUDE_SUBAGENT_TOOLS.has(tool.title ?? '') && !context.tracked) return undefined
   const input = object(tool.rawInput)
   const description = string(input.description)
   const prompt = string(input.prompt)
   const subagentType = string(input.subagent_type)
+  const model = string(input.model)
+  const background = input.run_in_background
   const status = subtaskStatusFromTool(tool.status)
   return {
     taskId: tool.toolCallId,
-    title: 'Task',
-    ...(description ? { description } : {}),
+    toolCallId: tool.toolCallId,
+    ...(description ? { title: description, description } : {}),
     ...(prompt ? { prompt } : {}),
     ...(subagentType ? { subagentType } : {}),
-    ...(string(input.model) ? { modelId: string(input.model) } : {}),
+    ...(model ? { modelId: model } : {}),
+    ...(typeof background === 'boolean' ? { background } : {}),
     ...(status ? { status, statusSource: 'task_event' as const } : {}),
   }
+}
+
+/** What an `Agent` call's structured result (`AgentOutput`) says about the
+ * subagent. Undefined for anything that is not one.
+ *
+ * `completed` is the foreground run's end, with its answer and totals.
+ * `async_launched` and `remote_launched` are the opposite: the call returned
+ * because the subagent went to the background, so it is still running and its
+ * end arrives later as a `task_notification`. */
+export function subtaskFromAgentOutput(
+  output: unknown,
+): (Omit<SubtaskUpdate, 'taskId'> & { agentId?: string }) | undefined {
+  const value = object(output)
+  const status = string(value.status)
+  const resolvedModel = string(value.resolvedModel)
+  const model = resolvedModel ? { modelId: resolvedModel } : {}
+  if (status === 'completed') {
+    const agentId = string(value.agentId)
+    const content = Array.isArray(value.content) ? value.content : []
+    const text = content
+      .map((block) => string(object(block).text) ?? '')
+      .filter(Boolean)
+      .join('\n\n')
+    return {
+      status: 'completed',
+      statusSource: 'task_event',
+      ...model,
+      ...(agentId ? { agentId, providerTaskId: agentId } : {}),
+      ...(text ? { resultText: text } : {}),
+      ...(isCount(value.totalTokens) ? { tokens: value.totalTokens } : {}),
+      ...(isCount(value.totalToolUseCount) ? { toolCallCount: value.totalToolUseCount } : {}),
+      ...(isCount(value.totalDurationMs) ? { durationMs: value.totalDurationMs } : {}),
+    }
+  }
+  if (status === 'async_launched' || status === 'remote_launched') {
+    const agentId = string(value.agentId) ?? string(value.taskId)
+    return {
+      status: 'running',
+      statusSource: 'task_event',
+      background: true,
+      ...model,
+      ...(agentId ? { agentId, providerTaskId: agentId } : {}),
+    }
+  }
+  return undefined
 }

@@ -13,6 +13,9 @@ type Pending = {
   threadId: string
   workspaceId?: string
   sessionId: string
+  /** The subagent asking, when it is not the session's own agent; carried
+   * onto the settlement so the resolution lands where the request did. */
+  subtaskId?: string
   options: PermissionOption[]
   resolve: (value: ProtocolResponse) => void
   timer: NodeJS.Timeout
@@ -23,6 +26,7 @@ export type PermissionSettlement = {
   threadId: string
   workspaceId?: string
   sessionId: string
+  subtaskId?: string
   outcome: PermissionOutcome
 }
 export class PermissionBroker {
@@ -106,6 +110,7 @@ export class PermissionBroker {
       threadId: request.threadId,
       workspaceId: request.workspaceId,
       sessionId: request.sessionId,
+      ...(request.subtaskId !== undefined ? { subtaskId: request.subtaskId } : {}),
       outcome,
     })
   }

@@ -45,6 +45,9 @@ type Pending = {
    * park an interaction without a wire method — an SDK permission callback has
    * no method name to report. */
   method?: string
+  /** The subagent asking, when it is not the session's own agent; carried
+   * onto the settlement so the resolution lands where the request did. */
+  subtaskId?: string
   resolve: (outcome: InteractionOutcome) => void
   timer: NodeJS.Timeout
 }
@@ -57,6 +60,7 @@ export type InteractionSettlement = {
   workspaceId?: string
   sessionId: string
   method?: string
+  subtaskId?: string
   outcome: InteractionOutcome
   resolution?: InteractionResolution
 }
@@ -187,6 +191,7 @@ export class InteractionBroker {
       workspaceId: request.workspaceId,
       sessionId: request.sessionId,
       ...(request.method !== undefined ? { method: request.method } : {}),
+      ...(request.subtaskId !== undefined ? { subtaskId: request.subtaskId } : {}),
       outcome,
       ...(settled ? { resolution: settled } : {}),
     })

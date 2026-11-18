@@ -12,6 +12,8 @@ import type {
   ProviderId,
   ProviderSessionInfo,
   QuestionOutcome,
+  SubtaskStatus,
+  SubtaskUpdate,
   UsageLimitsResult,
 } from '@agentpack/contract'
 import { isRecoverableError } from '@agentpack/contract'
@@ -118,6 +120,14 @@ type ThreadResume = Omit<SessionResumeRecord, 'threadId' | 'sessionId' | 'desire
  * title refreshes. Invariant 13 — they must never create a session runtime,
  * because a runtime means a ~230 MB CLI bound to an ACP session that nobody
  * will ever prompt or reap on purpose. Those callers use probe runtimes. */
+/** Statuses a subagent's run ends in. A revival reports `running` again. */
+const SETTLED_SUBTASK: ReadonlySet<SubtaskStatus> = new Set([
+  'completed',
+  'failed',
+  'cancelled',
+  'interrupted',
+])
+
 const PSEUDO_THREAD_PREFIXES = ['desktop-bootstrap:', 'session-metadata:'] as const
 
 export function isPseudoThreadId(threadId: string): boolean {
@@ -209,6 +219,12 @@ export class AgentRuntime {
   private readonly threadProviders = new Map<string, ProviderId>()
   private readonly promptQueues = new Map<string, Promise<void>>()
   private readonly activeMessageIds = new Map<string, string>()
+  /** The message each running subagent files its output under, by thread and
+   * then by `subtaskId`. A subagent's work is its own turn in its own child
+   * session, so it cannot share the parent turn's message, and a background
+   * one outlives that turn anyway. Opened by its first event, closed when its
+   * `subtask_update` settles, so a revival starts a fresh message. */
+  private readonly subtaskMessageIds = new Map<string, Map<string, string>>()
   private readonly configs: Readonly<Record<ProviderId, ProviderConfig>>
   /** The ACP transport. Seeded by `options.connections` in tests and otherwise
    * built on first use — see `acpConnections`. */
@@ -258,6 +274,7 @@ export class AgentRuntime {
         threadId: settlement.threadId,
         workspaceId: settlement.workspaceId,
         sessionId: settlement.sessionId,
+        ...(settlement.subtaskId !== undefined ? { subtaskId: settlement.subtaskId } : {}),
         category: 'permission',
         event: 'permission_resolved',
         data: { requestId: settlement.requestId, outcome: settlement.outcome },
@@ -479,6 +496,7 @@ export class AgentRuntime {
       threadId: settlement.threadId,
       workspaceId: settlement.workspaceId,
       sessionId: settlement.sessionId,
+      ...(settlement.subtaskId !== undefined ? { subtaskId: settlement.subtaskId } : {}),
     }
     const resolution = settlement.resolution
     if (resolution?.kind === 'question') {
@@ -522,7 +540,9 @@ export class AgentRuntime {
     ) {
       this.activeMessageIds.set(event.threadId, `agent_asst_${id}`)
     }
-    const messageId = this.activeMessageIds.get(event.threadId)
+    const messageId = event.subtaskId
+      ? this.subtaskMessageId(event.threadId, event.subtaskId, id)
+      : this.activeMessageIds.get(event.threadId)
     // `BackendEvent` is `Omit<AgentEvent, …>`, which collapses the union into
     // one merged object type, so its `data` cannot be narrowed by `event`.
     // The stamped event is the real discriminated union again.
@@ -550,6 +570,25 @@ export class AgentRuntime {
     ) {
       this.activeMessageIds.delete(event.threadId)
     }
+    if (event.event === 'process_exited') this.subtaskMessageIds.delete(event.threadId)
+    if (event.event === 'subtask_update') {
+      const update = event.data as SubtaskUpdate
+      if (update.status && SETTLED_SUBTASK.has(update.status))
+        this.subtaskMessageIds.get(event.threadId)?.delete(update.taskId)
+    }
+  }
+  private subtaskMessageId(threadId: string, subtaskId: string, eventId: string): string {
+    let byTask = this.subtaskMessageIds.get(threadId)
+    if (!byTask) {
+      byTask = new Map()
+      this.subtaskMessageIds.set(threadId, byTask)
+    }
+    let messageId = byTask.get(subtaskId)
+    if (!messageId) {
+      messageId = `agent_asst_${eventId}`
+      byTask.set(subtaskId, messageId)
+    }
+    return messageId
   }
   private missing(args: RuntimeRoute, capability: CapabilityKey, operation: string): never {
     const error = new CapabilityMissingError(args.providerId, capability, operation)
@@ -982,6 +1021,7 @@ export class AgentRuntime {
     this.threadProviders.delete(threadId)
     this.sequences.delete(threadId)
     this.activeMessageIds.delete(threadId)
+    this.subtaskMessageIds.delete(threadId)
     this.promptQueues.delete(threadId)
   }
 
@@ -1271,6 +1311,7 @@ export class AgentRuntime {
     this.promptQueues.clear()
     this.threadProviders.clear()
     this.activeMessageIds.clear()
+    this.subtaskMessageIds.clear()
     this.resumes.clear()
   }
 
