@@ -1308,17 +1308,30 @@ function QuickAgentDraftsMenu({
           onSelect={(item) => pick(item.value)}
           defaultHighlight={cards.has(currentKey) ? currentKey : NEW_DRAFT}
         >
-          <CommandMenuInput
-            ref={searchRef}
-            placeholder="Switch to a draft…"
-            onKeyDown={(event) => {
-              if (event.key !== 'Escape') return
-              event.preventDefault()
-              dismiss()
-            }}
-          />
+          {/* No bar at rest: the field holds the keys (arrows, Enter, typing to
+              filter) and shows only once something is typed, as a slim line. */}
+          <div
+            className={
+              query
+                ? 'border-b border-[var(--basis-border-muted)] [&_[data-slot=command-menu-input]]:h-8 [&_[data-slot=command-menu-input]]:px-3'
+                : 'sr-only'
+            }
+          >
+            <CommandMenuInput
+              ref={searchRef}
+              icon={null}
+              aria-label="Switch to a draft"
+              placeholder="Filter drafts…"
+              className="text-[12.5px]"
+              onKeyDown={(event) => {
+                if (event.key !== 'Escape') return
+                event.preventDefault()
+                dismiss()
+              }}
+            />
+          </div>
           <CommandMenuList
-            className="gap-0 px-1.5 pb-1.5 pt-0.5"
+            className="gap-0 p-1.5"
             renderItem={(item) =>
               item.value === NEW_DRAFT ? (
                 <CommandMenuItem
@@ -1340,13 +1353,6 @@ function QuickAgentDraftsMenu({
           >
             <CommandMenuEmpty>No drafts</CommandMenuEmpty>
           </CommandMenuList>
-          <footer className="flex items-center gap-3 px-3 pb-2 pt-1.5 text-[11px] text-[var(--basis-text-faint)]">
-            <span className="flex items-center gap-1">
-              <CommandMenuShortcut keys="alt+[" className="ml-0" />
-              <CommandMenuShortcut keys="alt+]" className="ml-0" />
-              step through drafts
-            </span>
-          </footer>
         </CommandMenu>
       </div>,
       document.body,
@@ -1570,7 +1576,20 @@ function QuickAgentForm() {
           {notice}
         </p>
       ) : null}
-      <div className="flex flex-wrap items-center gap-1.5 px-5 pb-3 pt-3">
+      {/* One row under the ask: attach, the model and its settings, then Start.
+          No rule above it: the space under the text is the break, as in Linear's. */}
+      <footer className="flex flex-wrap items-center gap-1.5 px-3 pb-3 pt-3">
+        <Tooltip content={imageSupportMessage ?? 'Attach images'}>
+          <button
+            type="button"
+            aria-label="Attach images"
+            onClick={() => fileInputRef.current?.click()}
+            disabled={!imageUploadEnabled || starting}
+            className={cn(iconButton, 'disabled:opacity-40 disabled:hover:bg-transparent')}
+          >
+            <PaperclipIcon className="h-4 w-4" />
+          </button>
+        </Tooltip>
         {showModelControl ? (
           <ProviderModelPicker
             groups={providerModelGroups}
@@ -1585,7 +1604,7 @@ function QuickAgentForm() {
             triggerClassName={propertyChip}
           />
         ) : null}
-        <div className="[&_button]:h-7 [&_button]:rounded-md [&_button]:border-0 [&_button]:bg-[color-mix(in_srgb,var(--basis-text)_5%,transparent)] [&_button]:px-2 [&_button]:text-[12px] [&_button:hover]:bg-[color-mix(in_srgb,var(--basis-text)_9%,transparent)]">
+        <div className="flex items-center gap-1.5 [&_button]:h-7 [&_button]:rounded-md [&_button]:border-0 [&_button]:bg-[color-mix(in_srgb,var(--basis-text)_5%,transparent)] [&_button]:px-2 [&_button]:text-[12px] [&_button:hover]:bg-[color-mix(in_srgb,var(--basis-text)_9%,transparent)]">
           <ModelSettingsControl
             options={configOptions}
             effort={effortControl}
@@ -1593,20 +1612,6 @@ function QuickAgentForm() {
             disabled={!canChangeSettings}
           />
         </div>
-      </div>
-      {/* No rule above it: the space under the pills is the break, as in Linear's. */}
-      <footer className="flex items-center gap-2 px-3 pb-3 pt-0.5">
-        <Tooltip content={imageSupportMessage ?? 'Attach images'}>
-          <button
-            type="button"
-            aria-label="Attach images"
-            onClick={() => fileInputRef.current?.click()}
-            disabled={!imageUploadEnabled || starting}
-            className={cn(iconButton, 'disabled:opacity-40 disabled:hover:bg-transparent')}
-          >
-            <PaperclipIcon className="h-4 w-4" />
-          </button>
-        </Tooltip>
         <DraftSyncIndicator store={draftStore} draftKey={draftKey} />
         <StartAnotherSwitch />
         <button
