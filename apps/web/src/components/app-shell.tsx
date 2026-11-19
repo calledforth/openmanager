@@ -3,7 +3,6 @@ import { Outlet, useNavigate, useRouterState } from '@tanstack/react-router'
 import {
   EnvironmentClientProvider,
   useEnvironmentClientOptional,
-  useEnvironmentState,
 } from '@openmanager/app-core/providers/environment-client'
 import { EnvironmentApplicationProviders } from '@openmanager/app-core/providers/environment-application'
 import { useSessionState } from '@openmanager/app-core/providers/session-provider'
@@ -12,7 +11,7 @@ import {
   type EnvironmentAvailability,
 } from '@openmanager/app-core/providers/environment-availability'
 import { useSidebarData } from '@openmanager/app-core/providers/sidebar-provider'
-import { ProjectIcon } from '@openmanager/app-core/components/sidebar/ProjectIcon'
+import { SessionTrail } from '@openmanager/app-core/components/chat/SessionTrail'
 import { phosphorIcon, useIcon } from '@openmanager/app-core/components/fluid/lib/icon-context'
 import {
   CommandPalette,
@@ -56,7 +55,7 @@ import {
   SidebarWorkspaceHeader,
   WorkspaceTile,
 } from '@openmanager/app-core/components/fluid/sidebar-app/workspace-header'
-import type { EnvironmentClient, EnvironmentState } from '@openmanager/environment-client'
+import type { EnvironmentClient } from '@openmanager/environment-client'
 import {
   otherEnvironmentsNotice,
   placeConnectionUi,
@@ -309,39 +308,6 @@ function ConnectedOverlays({
         onAdded={openAdded}
       />
     </>
-  )
-}
-
-const selectActiveTitle = (state: EnvironmentState) =>
-  state.activeSessionId ? (state.sessions[state.activeSessionId]?.title ?? null) : null
-
-/** Project / session for the chat pane's topbar; reads the sidebar contract,
- *  so it only renders inside the environment providers. The title is read on
- *  its own: the session list changes far more often than the open session's
- *  name, and the topbar has no business rendering for the rest. */
-function SessionTrail() {
-  const { workspaces, activeWorkspacePath, activeSessionId } = useSidebarData()
-  const sessionTitle = useEnvironmentState(selectActiveTitle)
-  const project = workspaces.find((workspace) => workspace.path === activeWorkspacePath)
-  const title = (activeSessionId && sessionTitle) || 'New session'
-  return (
-    <div
-      className="flex min-w-0 items-center gap-1.5 text-[13px] text-muted-foreground"
-      title={project ? `${project.name} / ${title}` : title}
-    >
-      {project ? (
-        <>
-          <ProjectIcon
-            workspacePath={project.path}
-            scratch={project.scratch}
-            className="h-3.5 w-3.5 shrink-0 opacity-80"
-          />
-          <span className="min-w-0 shrink truncate">{project.name}</span>
-          <span className="shrink-0 text-faint">/</span>
-        </>
-      ) : null}
-      <span className="min-w-0 truncate text-foreground">{title}</span>
-    </div>
   )
 }
 

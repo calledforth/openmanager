@@ -1,6 +1,10 @@
+// @vitest-environment jsdom
+import { createElement } from 'react'
+import { renderToStaticMarkup } from 'react-dom/server'
 import { describe, expect, it } from 'vitest'
 import type { Subagent } from '@openmanager/protocol'
-import { liveSubagentStatus } from './SubagentSession'
+import { ThemeProvider } from '../../providers/theme-provider'
+import { liveSubagentStatus, SubagentReadOnlyFooter, subagentIdentity } from './SubagentSession'
 
 const record = (status: Subagent['status']): Subagent => ({
   subagentId: 'sub-1',
@@ -49,5 +53,50 @@ describe('liveSubagentStatus', () => {
       status: 'interrupted',
     })
     expect(liveSubagentStatus({ status: 'error' }, undefined, null)).toEqual({ status: 'failed' })
+  })
+})
+
+describe('the read-only footer', () => {
+  const footer = (identity: ReturnType<typeof subagentIdentity>) =>
+    renderToStaticMarkup(
+      createElement(
+        ThemeProvider,
+        null,
+        createElement(SubagentReadOnlyFooter, {
+          parentTitle: 'Harden auth',
+          identity,
+          onOpenParent: () => undefined,
+        }),
+      ),
+    )
+
+  it('says what the subagent ran on, how it ended and for how long', () => {
+    const done = {
+      ...record('completed'),
+      agentType: 'Explore',
+      modelId: 'claude-opus-5-5-20261101',
+      stats: { durationMs: 15_000 },
+    }
+    const identity = subagentIdentity(
+      { title: 'Map callers', providerId: 'claude', status: 'idle' },
+      done,
+      'completed',
+    )
+    expect(identity).toMatchObject({ agentType: 'Explore', model: 'claude-opus-5-5' })
+    const html = footer(identity)
+    expect(html).toContain('Only the parent agent can message this subagent.')
+    expect(html).toContain('claude-opus-5-5')
+    expect(html).toContain('Done 15s')
+    expect(html).toContain('Open parent')
+  })
+
+  it('names what a waiting one waits on', () => {
+    const html = footer(
+      subagentIdentity(
+        { title: 'Deploy', providerId: 'claude', status: 'waiting', waitingOn: 'permission' },
+        record('running'),
+      ),
+    )
+    expect(html).toContain('Needs permission')
   })
 })

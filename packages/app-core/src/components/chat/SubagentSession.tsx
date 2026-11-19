@@ -1,5 +1,5 @@
-import { useCallback, useEffect, useState } from 'react'
-import { ArrowLeftIcon, ArrowUpRightIcon, LockSimpleIcon } from '@phosphor-icons/react'
+import { useCallback } from 'react'
+import { ArrowUpRightIcon, LockSimpleIcon } from '@phosphor-icons/react'
 import { isSettledSubagentStatus, type Subagent, type Turn } from '@openmanager/protocol'
 import {
   selectSubagentOfSession,
@@ -8,9 +8,10 @@ import {
 } from '@openmanager/environment-client'
 import { cn } from '../../lib/utils'
 import { useEnvironmentState } from '../../providers/environment-client'
+import { useSessionState } from '../../providers/session-provider'
 import { ProviderIcon } from '../providers/ProviderIcon'
 import type { ProviderIconId } from '../providers/providerIconId'
-import { SubagentStatusGlyph } from '../parts/SubagentCard'
+import { subagentStatusColor, useTick } from '../parts/SubagentCard'
 import {
   formatElapsed,
   providerName,
@@ -32,7 +33,6 @@ export interface SubagentIdentity {
   model?: string
   status: Subagent['status']
   waitingOn?: Subagent['waitingOn']
-  background?: boolean
   /** When it started and how it stands, for the clock; absent without the record. */
   record?: Pick<Subagent, 'status' | 'stats' | 'startedAt' | 'finishedAt'>
 }
@@ -76,15 +76,13 @@ export function subagentIdentity(
 ): SubagentIdentity {
   const live = liveSubagentStatus(child, lastTurn, record)
   if (record) {
+    const model = subagentModelLabel(record.modelId ?? child.composer?.modelId)
     return {
       title: record.title || child.title || 'Subagent',
       ...(record.agentType ? { agentType: record.agentType } : {}),
       providerId: record.providerId,
-      ...(subagentModelLabel(record.modelId ?? child.composer?.modelId)
-        ? { model: subagentModelLabel(record.modelId ?? child.composer?.modelId) }
-        : {}),
+      ...(model ? { model } : {}),
       ...live,
-      ...(record.background ? { background: true } : {}),
       record: { ...record, status: live.status },
     }
   }
@@ -97,121 +95,76 @@ export function subagentIdentity(
   }
 }
 
-function useTick(active: boolean): number {
-  const [now, setNow] = useState(() => Date.now())
-  useEffect(() => {
-    if (!active) return
-    const timer = setInterval(() => setNow(Date.now()), 1000)
-    return () => clearInterval(timer)
-  }, [active])
-  return now
-}
-
 /**
- * The strip at the top of a subagent's page: the way back to the session that
- * started it, then who this is (status, name, kind) and what it runs on.
+ * What the subagent runs on and how it stands, at the foot of its page: the
+ * model, then its status and how long it ran, ticking while it runs.
  */
-export function SubagentSessionHeaderView({
-  parentTitle,
+export function SubagentStatusLine({
   identity,
-  onBack,
+  className,
 }: {
-  parentTitle: string
   identity: SubagentIdentity
-  onBack?: () => void
+  className?: string
 }) {
   const tone = subagentTone(identity.status)
-  const live = tone === 'running' || tone === 'waiting'
-  const now = useTick(live)
+  const now = useTick(tone === 'running' || tone === 'waiting')
   const elapsed = identity.record ? subagentElapsedMs(identity.record, now) : undefined
-  const statusColor =
-    tone === 'waiting'
-      ? identity.waitingOn === 'question'
-        ? 'var(--basis-status-question)'
-        : 'var(--basis-status-needs)'
-      : tone === 'failed'
-        ? 'var(--basis-status-error)'
-        : undefined
+  // Done needs no colour here; what still needs someone, or went wrong, does.
+  const color = tone === 'done' ? undefined : subagentStatusColor(identity)
   return (
-    <div className="mx-auto w-full max-w-[48rem] shrink-0 px-4 pt-2" data-subagent-header>
-      <div className="flex h-9 w-full min-w-0 items-center gap-2 rounded-[10px] bg-[var(--basis-surface)] pl-1 pr-3 text-ui-sm">
-        <button
-          type="button"
-          onClick={onBack}
-          disabled={!onBack}
-          className="flex h-7 min-w-0 max-w-[40%] shrink cursor-pointer items-center gap-1.5 rounded-md px-2 text-[var(--basis-text-muted)] transition-colors hover:bg-[var(--basis-surface-hover)] hover:text-[var(--basis-text)] focus-visible:outline focus-visible:outline-2 focus-visible:outline-ring disabled:cursor-default disabled:hover:bg-transparent"
-          title={`Back to ${parentTitle}`}
-        >
-          <ArrowLeftIcon size={12} aria-hidden className="shrink-0" />
-          <span className="truncate">{parentTitle}</span>
-        </button>
-        <span aria-hidden className="shrink-0 text-[var(--basis-text-faint)]">
-          /
-        </span>
-        <SubagentStatusGlyph subagent={identity} />
-        <span className="min-w-0 truncate font-medium text-[var(--basis-text)]">
-          {identity.title}
-        </span>
-        {identity.agentType && identity.agentType !== identity.title ? (
-          <span className="inline-flex h-[18px] shrink-0 items-center rounded-[5px] bg-[var(--basis-surface-hover)] px-1.5 text-[11px] leading-none text-[var(--basis-text-muted)]">
-            {identity.agentType}
-          </span>
-        ) : null}
-        {identity.background ? (
-          <span
-            className="inline-flex h-[18px] shrink-0 items-center rounded-[5px] px-1.5 text-[11px] leading-none"
-            style={{
-              color: 'var(--basis-status-background)',
-              background: 'color-mix(in srgb, var(--basis-status-background) 13%, transparent)',
-            }}
-          >
-            Background
-          </span>
-        ) : null}
-        <span className="ml-auto flex shrink-0 items-center gap-1.5 pl-2 text-[var(--basis-text-faint)]">
-          <ProviderIcon providerId={identity.providerId as ProviderIconId} className="size-3" />
-          <span className="max-w-[12rem] truncate">
-            {identity.model ?? providerName(identity.providerId)}
-          </span>
-          <span aria-hidden>·</span>
-          <span
-            className={cn(tone === 'running' && 'text-[var(--basis-text-muted)]')}
-            style={statusColor ? { color: statusColor } : undefined}
-          >
-            {subagentStatusLabel(identity)}
-          </span>
-          {elapsed !== undefined ? (
-            <span className="tabular-nums">{formatElapsed(elapsed)}</span>
-          ) : null}
-        </span>
-      </div>
-    </div>
+    <span
+      className={cn(
+        'flex min-w-0 items-center gap-1.5 tabular-nums text-[var(--basis-text-faint)]',
+        className,
+      )}
+      data-subagent-status-line
+    >
+      <ProviderIcon
+        providerId={identity.providerId as ProviderIconId}
+        className="size-3 shrink-0 opacity-90"
+      />
+      <span className="min-w-0 max-w-[12rem] truncate">
+        {identity.model ?? providerName(identity.providerId)}
+      </span>
+      <span aria-hidden>·</span>
+      <span
+        className={cn('shrink-0', tone === 'running' && 'text-[var(--basis-text-muted)]')}
+        style={color ? { color } : undefined}
+      >
+        {subagentStatusLabel(identity)}
+        {elapsed !== undefined ? ` ${formatElapsed(elapsed)}` : ''}
+      </span>
+    </span>
   )
 }
 
 /**
  * In place of the composer on a subagent only its parent agent can reach.
- * Quiet, since there is nothing wrong: it says why, and where to go instead.
+ * Quiet, since there is nothing wrong: it says why, what the subagent runs on
+ * and how it stands, and offers the way back.
  */
 export function SubagentReadOnlyFooter({
   parentTitle,
+  identity,
   onOpenParent,
 }: {
   parentTitle?: string
+  identity?: SubagentIdentity
   onOpenParent?: () => void
 }) {
   return (
     <div
       role="note"
-      className="mb-1 flex min-w-0 items-center gap-2.5 rounded-[10px] bg-[var(--basis-surface)] py-2 pl-3 pr-2 text-ui-sm leading-[18px] text-[var(--basis-text-muted)]"
+      className="mb-1 flex h-9 min-w-0 items-center gap-2.5 rounded-[10px] bg-[var(--basis-surface)] pr-1.5 pl-3 text-ui-sm leading-[18px] text-[var(--basis-text-muted)]"
     >
       <LockSimpleIcon size={13} aria-hidden className="shrink-0 text-[var(--basis-text-faint)]" />
-      <span className="min-w-0 flex-1">
-        Only the parent agent can message this subagent.{' '}
-        <span className="text-[var(--basis-text-faint)]">
-          To follow up, ask it to relay your message.
-        </span>
+      <span
+        className="min-w-0 flex-1 truncate"
+        title="Only the parent agent can message this subagent. To follow up, ask it to relay your message."
+      >
+        Only the parent agent can message this subagent.
       </span>
+      {identity ? <SubagentStatusLine identity={identity} className="shrink-0" /> : null}
       {onOpenParent ? (
         <button
           type="button"
@@ -272,4 +225,27 @@ export function useChildSessionView(): ChildSessionView | null {
     }, []),
     sameView,
   )
+}
+
+/**
+ * The open session's place in the title bar's trail when it is a child: the
+ * parent to go back to, and the subagent's kind to set beside its title.
+ * Null on a top-level session. Needs an environment client.
+ */
+export interface ChildSessionTrail {
+  parentTitle: string
+  agentType?: string
+  openParent: () => void
+}
+
+export function useChildSessionTrail(): ChildSessionTrail | null {
+  const child = useChildSessionView()
+  const { closeChildSession } = useSessionState()
+  if (!child) return null
+  const agentType = child.identity.agentType
+  return {
+    parentTitle: child.parentTitle,
+    ...(agentType && agentType !== child.identity.title ? { agentType } : {}),
+    openParent: () => closeChildSession(child.parentSessionId),
+  }
 }

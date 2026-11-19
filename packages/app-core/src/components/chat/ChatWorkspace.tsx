@@ -11,7 +11,6 @@ import { usePlanStateOptional } from '../../providers/plan-provider'
 import { useQuestionStateOptional } from '../../providers/question-provider'
 import {
   SubagentReadOnlyFooter,
-  SubagentSessionHeaderView,
   useChildSessionView,
   type ChildSessionView,
 } from './SubagentSession'
@@ -218,19 +217,18 @@ function ChatWorkspaceBody({
   const asking = Boolean(pendingQuestion || pendingPlan)
   const readOnly = backToParent !== undefined && !child?.promptable && !asking
 
+  // A subagent's page has no header of its own: the host's title bar trail
+  // names its parent, and the footer says what it runs on and how it stands.
   return (
     <>
-      {child ? (
-        <SubagentSessionHeaderView
-          parentTitle={child.parentTitle}
-          identity={child.identity}
-          onBack={backToParent}
-        />
-      ) : null}
       <ChatView />
       {readOnly && child ? (
         <FloatingChatComposer>
-          <SubagentReadOnlyFooter parentTitle={child.parentTitle} onOpenParent={backToParent} />
+          <SubagentReadOnlyFooter
+            parentTitle={child.parentTitle}
+            identity={child.identity}
+            onOpenParent={backToParent}
+          />
         </FloatingChatComposer>
       ) : readOnly && backToParent ? (
         <ChildSessionBanner onBack={backToParent} />
