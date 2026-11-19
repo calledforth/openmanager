@@ -242,7 +242,7 @@ describe('MessageParts', () => {
     expect(html).toContain('Edited 2 files, ran 1 command')
   })
 
-  it('splits a tool run around reasoning', () => {
+  it('folds a thought into the tool run it sits in, in its place', () => {
     const html = renderToStaticMarkup(
       <MessageParts
         parts={[
@@ -256,9 +256,66 @@ describe('MessageParts', () => {
       />,
     )
 
-    expect(html).toContain('Explored 2 files')
-    expect(html).toContain('Ran 2 commands')
+    // One group: the thought neither splits the run nor joins its summary.
+    expect(html).toContain('Explored 2 files, ran 2 commands')
+    expect(html.match(/data-activity-group=/g)).toHaveLength(1)
+    // Opened, it reads in order: the reads, the thought, the commands.
+    const body = html.slice(html.indexOf('data-activity-group-body'))
+    expect(body.indexOf('Thought')).toBeGreaterThan(body.indexOf('Read'))
+    expect(body.indexOf('Thought')).toBeLessThan(body.indexOf('Ran'))
+  })
+
+  it('hangs a thought in progress under its group, and only it shimmers', () => {
+    const html = renderToStaticMarkup(
+      <MessageParts
+        parts={[
+          { type: 'tool', id: 'tool-1', tool: 'Bash', state: { status: 'completed', input: {} } },
+          { type: 'reasoning', id: 'r1', text: 'weighing the options' },
+        ]}
+        isStreaming
+      />,
+    )
+
+    expect(html).toContain('Ran 1 command')
+    const branch = html.slice(html.indexOf('data-tree-branch'))
+    expect(branch).toContain('Thinking')
+    expect(branch).toContain('weighing the options')
+    // The header does not shimmer; the thought does.
+    const header = html.slice(0, html.indexOf('data-activity-group-body'))
+    expect(header).not.toContain('basis-tool-shimmer')
+    expect(branch).toContain('basis-tool-shimmer')
+  })
+
+  it('reads a thought the work has moved past as had', () => {
+    const html = renderToStaticMarkup(
+      <MessageParts
+        parts={[
+          { type: 'reasoning', id: 'r1', text: 'first' },
+          { type: 'tool', id: 'tool-1', tool: 'Bash', state: { status: 'completed', input: {} } },
+        ]}
+        isStreaming
+      />,
+    )
+
+    expect(html).not.toContain('data-tree-branch')
+    expect(html).not.toContain('Thinking')
     expect(html).toContain('Thought')
+  })
+
+  it('shows a thought with no calls around it as its own row', () => {
+    const html = renderToStaticMarkup(
+      <MessageParts
+        parts={[
+          { type: 'reasoning', id: 'r1', text: 'just thinking', time: { start: 1, end: 2 } },
+          { type: 'text', id: 'answer', text: 'Answer.' },
+        ]}
+        isStreaming={false}
+      />,
+    )
+
+    expect(html).not.toContain('data-activity-group=')
+    expect(html).toContain('Thought')
+    expect(html).toContain('Answer.')
   })
 
   it('renders non-envelope structured OpenCode output as readable JSON', () => {

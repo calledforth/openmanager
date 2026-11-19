@@ -2706,7 +2706,19 @@ export function createThreadService(
     const entry =
       subagentEntries.get(subagentKey(owner, update.taskId)) ??
       recallSubagent(owner, update.taskId)
-    if (!entry) return fileSubagent(owner, update, at, update.parentTaskId ?? under)
+    if (!entry) {
+      const filed = fileSubagent(owner, update, at, update.parentTaskId ?? under)
+      // The subagent's card takes its place in the holder's transcript here,
+      // so the text and thought it interrupts end: what the agent writes or
+      // thinks once it returns starts below the card, as after a tool call.
+      const active = filed?.holder.activeTurn
+      if (active && filed.record.toolCallId) {
+        active.textRunId = undefined
+        active.reasoningRunId = undefined
+        closeOpenReasoning(filed.holder, active, at)
+      }
+      return filed
+    }
     const before = entry.report
     entry.report = mergeReport(before, update)
     const child = entry.child

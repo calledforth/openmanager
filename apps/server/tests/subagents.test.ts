@@ -37,9 +37,7 @@ function setup() {
      VALUES ('${WORKSPACE}', 'Project', '${WORKSPACE}', 1, 1)`,
   )
   const published: ProofEvent[] = []
-  const events = createPersistentEventService(database, (record) =>
-    published.push(record.event),
-  )
+  const events = createPersistentEventService(database, (record) => published.push(record.event))
   const runtime = {
     ensureSession: vi.fn().mockResolvedValue({ sessionId: 'provider-parent', state: 'created' }),
     // The parent's turn runs until the test lets it end.
@@ -142,14 +140,10 @@ function setup() {
       .get(sessionId) as { thread_id: string }
     return { sessionId, threadId: row.thread_id }
   }
-  const stateOf = (target: { sessionId: string; threadId: string }) =>
-    service.threadState(target)!
+  const stateOf = (target: { sessionId: string; threadId: string }) => service.threadState(target)!
   const records = (target: { threadId: string }): Subagent[] =>
     published
-      .filter(
-        (event) =>
-          event.name === 'subagent.updated' && threadIdOf(event) === target.threadId,
-      )
+      .filter((event) => event.name === 'subagent.updated' && threadIdOf(event) === target.threadId)
       .map((event) => (event.payload as { subagent: Subagent }).subagent)
   const summary = (sessionId: string) =>
     service.summaries().find((item) => item.sessionId === sessionId)
@@ -260,7 +254,9 @@ describe('subagents', () => {
       expect(child.messages).toMatchObject([
         {
           role: 'user',
-          content: [{ type: 'text', text: 'Find where sessions are stored and say how they are keyed.' }],
+          content: [
+            { type: 'text', text: 'Find where sessions are stored and say how they are keyed.' },
+          ],
         },
       ])
       // Reported again, it stays one subagent with one child.
@@ -273,9 +269,10 @@ describe('subagents', () => {
         activity: 'Grep',
       })
       // Only the agent that started it can reach it.
-      expect(
-        h.dispatch('turn.send', { ...h.threadOf(childId), text: 'Hello' }),
-      ).toMatchObject({ type: 'error', error: { code: 'capability_missing' } })
+      expect(h.dispatch('turn.send', { ...h.threadOf(childId), text: 'Hello' })).toMatchObject({
+        type: 'error',
+        error: { code: 'capability_missing' },
+      })
     } finally {
       h.close()
     }
@@ -292,7 +289,12 @@ describe('subagents', () => {
         category: 'tool',
         event: 'tool_call',
         subtaskId: 'toolu_agent_1',
-        data: { toolCallId: 'toolu_grep', title: 'Grep sessions', kind: 'search', status: 'in_progress' },
+        data: {
+          toolCallId: 'toolu_grep',
+          title: 'Grep sessions',
+          kind: 'search',
+          status: 'in_progress',
+        },
       })
       h.emit({
         category: 'tool',
@@ -312,7 +314,9 @@ describe('subagents', () => {
       const childState = h.stateOf(child)
       expect(childState.turns).toMatchObject([{ state: 'completed', origin: 'delegated' }])
       expect(
-        childState.messages.filter((message) => message.role === 'assistant').map((message) => message.content),
+        childState.messages
+          .filter((message) => message.role === 'assistant')
+          .map((message) => message.content),
       ).toEqual([
         [{ type: 'text', text: 'Looking in src/db.' }],
         [{ type: 'text', text: 'Sessions are keyed by id.' }],
@@ -415,9 +419,7 @@ describe('subagents', () => {
       })
       expect(inner.turnId).toBe(h.stateOf(outerThread).turns[0]!.turnId)
       // The parent's card list holds its direct subagents only.
-      expect(h.records(h.parent).map((record) => record.subagentId)).not.toContain(
-        inner.subagentId,
-      )
+      expect(h.records(h.parent).map((record) => record.subagentId)).not.toContain(inner.subagentId)
       expect(h.stateOf(outerThread).subagents.map((record) => record.subagentId)).toEqual([
         inner.subagentId,
       ])
@@ -444,6 +446,70 @@ describe('subagents', () => {
       h.subtask({ taskId: 'toolu_agent_1', status: 'completed' })
       h.events.flush()
       expect(h.database.prepare('SELECT COUNT(*) AS n FROM sessions').get()).toEqual({ n: 0 })
+    } finally {
+      h.close()
+    }
+  })
+
+  it('places a native subagent where its claimed call happened, in the snapshot order', async () => {
+    const h = setup()
+    try {
+      const tool = (toolCallId: string) =>
+        h.emit({
+          category: 'tool',
+          event: 'tool_call',
+          data: { toolCallId, title: 'Read', toolName: 'Read', status: 'completed' },
+        })
+      await h.startParentTurn()
+      tool('toolu_read_1')
+      // The runtime claimed the Agent call: only its subtask_update arrives.
+      h.subtask({ taskId: 'toolu_agent_1', status: 'running', description: 'Find it' })
+      tool('toolu_read_2')
+      h.events.flush()
+
+      const state = h.stateOf(h.parent)
+      const [record] = state.subagents ?? []
+      expect(record?.toolCallId).toBeDefined()
+      expect(state.tools.some((item) => item.toolCallId === record!.toolCallId)).toBe(false)
+      const toolRefs = state.order.filter((ref) => ref.kind === 'tool').map((ref) => ref.id)
+      const [read1, read2] = state.tools.map((item) => item.toolCallId)
+      expect(toolRefs).toEqual([read1, record!.toolCallId, read2])
+    } finally {
+      h.close()
+    }
+  })
+
+  it('starts the text and thought after a native subagent below its card', async () => {
+    const h = setup()
+    try {
+      const thought = (text: string, phase?: string) =>
+        h.emit({
+          category: 'stream',
+          event: 'agent_thought_chunk',
+          data: { content: { type: 'text', text }, phase: phase ?? 'delta' },
+        })
+      await h.startParentTurn()
+      h.text(undefined, 'I will have an agent look. ')
+      thought('weighing it')
+      h.subtask({ taskId: 'toolu_agent_1', status: 'running', description: 'Find it' })
+      thought('it came back')
+      h.text(undefined, 'Found it.')
+      h.events.flush()
+
+      const state = h.stateOf(h.parent)
+      const [record] = state.subagents ?? []
+      const placed = state.order.filter(
+        (ref) => ref.kind !== 'message' || ref.id !== state.messages[0]?.messageId,
+      )
+      const at = placed.findIndex((ref) => ref.kind === 'tool' && ref.id === record!.toolCallId)
+      // Before the card: the first text and thought. After it: new ones.
+      const before = placed.slice(0, at).map((ref) => ref.kind)
+      const after = placed.slice(at + 1).map((ref) => ref.kind)
+      expect(before).toEqual(['message', 'reasoning'])
+      expect(after).toEqual(['reasoning', 'message'])
+      // The thought the subagent interrupted ended there.
+      const first = state.reasoning.find((entry) => entry.messageId === placed[1]!.id)
+      expect(first?.phase).toBe('stop')
     } finally {
       h.close()
     }
@@ -570,7 +636,10 @@ describe('subagents', () => {
       h.emit({
         category: 'permission',
         event: 'permission_resolved',
-        data: { requestId: 'provider-permission', outcome: { outcome: 'selected', optionId: 'allow' } },
+        data: {
+          requestId: 'provider-permission',
+          outcome: { outcome: 'selected', optionId: 'allow' },
+        },
       })
       h.events.flush()
       expect(h.stateOf(child).interactions).toEqual([])
@@ -633,10 +702,14 @@ describe('subagents', () => {
     try {
       const childId = await delegate(h)
       const turnId = h.stateOf(h.parent).turns.at(-1)!.turnId
-      expect(
-        h.dispatch('turn.interrupt', { ...h.parent, turnId }),
-      ).toMatchObject({ type: 'response' })
-      h.emit({ category: 'lifecycle', event: 'prompt_completed', data: { stopReason: 'cancelled' } })
+      expect(h.dispatch('turn.interrupt', { ...h.parent, turnId })).toMatchObject({
+        type: 'response',
+      })
+      h.emit({
+        category: 'lifecycle',
+        event: 'prompt_completed',
+        data: { stopReason: 'cancelled' },
+      })
       await vi.waitFor(() =>
         expect(h.records(h.parent).at(-1)).toMatchObject({ status: 'interrupted' }),
       )

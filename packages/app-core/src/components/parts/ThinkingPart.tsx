@@ -83,7 +83,7 @@ export function ThinkingPart({ text, duration, tokens, isStreaming = false }: Th
     <details className={`group ${activityRow}`} open={isStreaming}>
       <summary className={activityDetailsSummary}>{summary}</summary>
       {body && (
-        <div className="relative mt-1">
+        <div className="relative ml-[5px] mt-0.5 border-l border-[var(--basis-border)] pl-3">
           {scrolled && (
             <div
               aria-hidden

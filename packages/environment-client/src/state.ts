@@ -584,7 +584,9 @@ export function applyEvent(state: EnvironmentState, event: ProofEvent): Environm
       // Whole every time: the newest wins, so a repeat or a late arrival changes nothing.
       return patchThread(state, thread, (current) => {
         const subagents = fileSubagent(current.subagents, event.payload.subagent)
-        return subagents === current.subagents ? current : { ...current, subagents }
+        if (subagents === current.subagents) return current
+        const order = placeSubagent(current, event.payload.subagent)
+        return { ...current, subagents, ...(order ? { order } : {}) }
       })
     case 'thread.queue.updated':
       // The whole queue every time: replaced, so a repeat changes nothing.
@@ -987,6 +989,22 @@ function byStart(left: Subagent, right: Subagent): number {
     instant(left.startedAt) - instant(right.startedAt) ||
     (left.subagentId < right.subagentId ? -1 : left.subagentId > right.subagentId ? 1 : 0)
   )
+}
+
+/**
+ * The order with a newly filed subagent placed where its call happened, as the
+ * environment places it when it files the record: a runtime claims a native
+ * subagent's call, so no tool row holds that place. Undefined when the order
+ * needs nothing: a record already held, one with no call, or one whose call
+ * has its own row (our spawn tool's).
+ */
+function placeSubagent(current: ThreadState, subagent: Subagent): ActivityRef[] | undefined {
+  const callId = subagent.toolCallId
+  if (!callId) return undefined
+  if (current.subagents?.some((item) => item.subagentId === subagent.subagentId)) return undefined
+  if (current.tools.some((tool) => tool.toolCallId === callId)) return undefined
+  const order = placeActivity(current.order, { kind: 'tool', id: callId, turnId: subagent.turnId })
+  return order === current.order ? undefined : order
 }
 
 /**

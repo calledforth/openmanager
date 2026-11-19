@@ -202,8 +202,8 @@ export function createEventProjector(
     insertSubagent: database.prepare(
       `INSERT INTO subagents (
          subagent_id, thread_id, owner_session_id, task_id, status, record_json, created_at,
-         updated_at
-       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+         updated_at, ordinal
+       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     ),
     // Not a sidebar-ordering change, so `updated_at` stays put.
     updateSessionComposer: database.prepare(
@@ -274,16 +274,18 @@ export function createEventProjector(
     selectMessage: database.prepare(
       'SELECT turn_id, thread_id, role, is_final FROM messages WHERE message_id = ?',
     ),
-    // One counter across messages, turn activity and notices, so sorting them
-    // on `ordinal` gives the order text, thoughts, tools and notices happened
-    // in. Activity rebuilt by migration 11 sits at fractional ordinals between
-    // messages, so the next live ordinal is the integer above whatever is
-    // highest. Notices reuse the second thread id.
+    // One counter across messages, turn activity, notices and subagents, so
+    // sorting them on `ordinal` gives the order text, thoughts, tools, notices
+    // and subagents happened in. Activity rebuilt by migration 11 sits at
+    // fractional ordinals between messages, so the next live ordinal is the
+    // integer above whatever is highest. Notices and subagents reuse the
+    // second thread id.
     nextMessageOrdinal: database.prepare(
       `SELECT CAST(MAX(
          COALESCE((SELECT MAX(ordinal) FROM messages WHERE thread_id = ?), -1),
          COALESCE((SELECT MAX(ordinal) FROM turn_activity WHERE thread_id = ?), -1),
-         COALESCE((SELECT MAX(ordinal) FROM turn_notices WHERE thread_id = ?2), -1)
+         COALESCE((SELECT MAX(ordinal) FROM turn_notices WHERE thread_id = ?2), -1),
+         COALESCE((SELECT MAX(ordinal) FROM subagents WHERE thread_id = ?2), -1)
        ) AS INTEGER) + 1 AS ordinal`,
     ),
     insertNotice: database.prepare(
@@ -635,8 +637,9 @@ export function createEventProjector(
     // Bounded by how deep providers nest; a cycle cannot be filed, but a
     // loop over rows must still end.
     for (let depth = 0; depth < 16; depth++) {
-      const parent = (s.nativeParentOf.get(child) as { parent_session_id: string | null } | undefined)
-        ?.parent_session_id
+      const parent = (
+        s.nativeParentOf.get(child) as { parent_session_id: string | null } | undefined
+      )?.parent_session_id
       if (!parent) return
       const row = s.selectSessionStatus.get(parent) as { status: string } | undefined
       if (!row) return
@@ -1196,6 +1199,12 @@ export function createEventProjector(
             `Subagent ${subagent.subagentId} is new, or filed elsewhere, and names no task`,
           )
         }
+        // Where its call happened: the runtime claims a native subagent's
+        // call, so no tool row holds that place (migration 34).
+        const { ordinal } = s.nextMessageOrdinal.get(
+          event.scope.threadId,
+          event.scope.threadId,
+        ) as { ordinal: number }
         s.insertSubagent.run(
           subagent.subagentId,
           event.scope.threadId,
@@ -1205,6 +1214,7 @@ export function createEventProjector(
           json,
           at,
           at,
+          ordinal,
         )
         return
       }

@@ -75,6 +75,17 @@ describe('subagent state', () => {
     expect(selectSubagent(state, THREAD.threadId, 'b')).toEqual(later)
   })
 
+  it('places a newly filed subagent where its call happened, once', () => {
+    let state = applyEvent(createInitialState(), updated(subagent({ subagentId: 'a' })))
+    state = applyEvent(
+      state,
+      updated(subagent({ subagentId: 'a', updatedAt: '2026-11-18T10:00:09.000Z', activity: 'x' })),
+    )
+    expect(state.threads[THREAD.threadId]?.order).toEqual([
+      { kind: 'tool', id: 'call-a', turnId: 'turn-1' },
+    ])
+  })
+
   it('keeps the newest record: a repeat or an older one changes nothing', () => {
     const running = subagent({ subagentId: 'a', activity: 'Reading auth.ts' })
     const done = subagent({
@@ -139,7 +150,10 @@ describe('subagent state', () => {
         payload: { session: SESSION_CREATED },
       }),
     )
-    state = applyEvent(state, event({ name: 'thread.created', scope: threadScope, payload: { thread: THREAD } }))
+    state = applyEvent(
+      state,
+      event({ name: 'thread.created', scope: threadScope, payload: { thread: THREAD } }),
+    )
     state = applyEvent(
       state,
       event<Extract<ProofEvent, { name: 'session.created' }>>({

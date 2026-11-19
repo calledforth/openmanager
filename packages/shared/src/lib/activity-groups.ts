@@ -4,9 +4,11 @@
 // `@agentpack/view`, but operates on the rendered message-part list instead of
 // raw agent events, and covers every tool category rather than reads alone.
 //
-// Reasoning, assistant text, plans and anything the user must read or act on
+// Assistant text, plans and anything the user must read or act on
 // (permission prompts, failures) act as barriers: they stay on their own row
-// and split the surrounding tools into separate groups.
+// and split the surrounding tools into separate groups. Reasoning is a
+// barrier too, unless `absorbReasoning` folds it into the run it sits in,
+// where it keeps its place among the calls but adds nothing to the summary.
 
 import { canonicalizeToolName } from './tool-meta'
 import {
@@ -29,6 +31,8 @@ export interface ActivitySummary {
   diffRemoved: number
   isRunning: boolean
   toolCount: number
+  /** Thoughts folded into the run (`absorbReasoning`); zero otherwise. */
+  thoughtCount: number
 }
 
 export type ActivityNode<T> =
@@ -43,6 +47,11 @@ export interface GroupActivityOptions {
    * the run grows rather than listing each call as it lands.
    */
   minGroupSize?: number
+  /**
+   * Fold reasoning into the run it sits in rather than splitting the run
+   * around it. A run may then hold thoughts alone (one that ends in text).
+   */
+  absorbReasoning?: boolean
 }
 
 interface ToolPartShape {
@@ -119,11 +128,20 @@ function isGroupable(part: ToolPartShape, pendingPermissionCallId?: string | nul
   return true
 }
 
-function summarise(items: readonly ToolPartShape[]): ActivitySummary {
+function summarise(members: readonly ToolPartShape[]): ActivitySummary {
   const counts = new Map<ActivityCategory, number>()
   let diffAdded = 0
   let diffRemoved = 0
   let isRunning = false
+  let thoughtCount = 0
+  const items: ToolPartShape[] = []
+  for (const member of members) {
+    if (member.type !== 'reasoning') {
+      items.push(member)
+      continue
+    }
+    thoughtCount += 1
+  }
 
   for (const item of items) {
     const category = toolCategory(item)
@@ -185,6 +203,7 @@ function summarise(items: readonly ToolPartShape[]): ActivitySummary {
     diffRemoved,
     isRunning,
     toolCount: items.length,
+    thoughtCount,
   }
 }
 
@@ -218,7 +237,10 @@ export function groupActivityParts<T extends { type: string; id: string }>(
   }
 
   for (const part of parts) {
-    if (isGroupable(part as unknown as ToolPartShape, options.pendingPermissionCallId)) {
+    if (
+      (options.absorbReasoning && part.type === 'reasoning') ||
+      isGroupable(part as unknown as ToolPartShape, options.pendingPermissionCallId)
+    ) {
       run.push(part)
       continue
     }
