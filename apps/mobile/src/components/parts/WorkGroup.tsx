@@ -10,17 +10,50 @@ import { AppText } from '../ui/AppText'
 import { DisclosureChevron, revealBody } from './Disclosure'
 
 /**
+ * One branch of a work group's tree: an L from the header into the row it
+ * holds, the way a file tree hangs a file under its folder (web's `TreeBranch`).
+ */
+export function TreeBranch({ children }: { children: ReactNode }) {
+  const theme = usePhoneTheme()
+  return (
+    <View style={{ paddingLeft: 18 }}>
+      <View
+        pointerEvents="none"
+        style={{
+          position: 'absolute',
+          left: 5,
+          top: 0,
+          width: 8,
+          height: 10,
+          borderLeftWidth: 1,
+          borderBottomWidth: 1,
+          borderBottomLeftRadius: 4,
+          borderColor: theme.border,
+        }}
+      />
+      {children}
+    </View>
+  )
+}
+
+/**
  * A fold of work on a fill (no outline): a chevron, what the work was, and
  * on the right how much of it or how long. A live run of tools shows its
  * rows; a settled turn's work stays folded under "Worked for 14s" until the
  * reader opens it. The reader's tap is the only thing that folds or unfolds
  * it, and only then does the body fade in.
+ *
+ * A thought the agent is having right now (`live`) hangs under the folded
+ * header on its own branch, its words streaming beneath it, and only it
+ * shimmers. Once it ends it folds into the group, kept in its place among
+ * the calls.
  */
 export function WorkGroup({
   label,
   meta,
   running = false,
   defaultOpen = false,
+  live,
   children,
 }: {
   label: string
@@ -28,6 +61,8 @@ export function WorkGroup({
   /** The label shimmers while the work is still going. */
   running?: boolean
   defaultOpen?: boolean
+  /** The thought streaming now, drawn under the header while it is folded. */
+  live?: ReactNode
   children: ReactNode
 }) {
   countRender('WorkGroup')
@@ -79,10 +114,22 @@ export function WorkGroup({
       {open ? (
         <Animated.View
           entering={revealedRef.current ? revealBody : undefined}
-          style={{ paddingBottom: 8, gap: 6 }}
+          // The group's spine, which the live thought's branch hangs from.
+          style={{
+            marginBottom: 8,
+            marginLeft: 5,
+            paddingLeft: 12,
+            borderLeftWidth: 1,
+            borderColor: theme.border,
+            gap: 6,
+          }}
         >
           {children}
         </Animated.View>
+      ) : live ? (
+        <View style={{ paddingBottom: 8 }}>
+          <TreeBranch>{live}</TreeBranch>
+        </View>
       ) : null}
     </View>
   )

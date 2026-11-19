@@ -260,9 +260,17 @@ describe('work groups', () => {
     const reply = projection.messages.find((message) => message.role === 'assistant')!
     const fold = foldSettledTurn(projection.byId.get(reply.externalId)!.content.parts ?? [])
     expect(fold.toolCount).toBe(3)
-    expect(fold.work.map((part) => part.type)).toEqual(['reasoning', 'tool', 'tool', 'tool'])
+    // Each subagent stays where it ran, and both head the answer as its summary.
+    expect(fold.work.map((part) => part.type)).toEqual([
+      'reasoning',
+      'tool',
+      'tool',
+      'subagent',
+      'subagent',
+      'tool',
+    ])
     // The compaction notice changes how to read the answer, so it stays out with it.
-    expect(fold.answer.map((part) => part.type)).toEqual(['notice', 'text'])
+    expect(fold.answer.map((part) => part.type)).toEqual(['subagent', 'subagent', 'notice', 'text'])
   })
 
   it('labels a run as a line, live or settled', () => {

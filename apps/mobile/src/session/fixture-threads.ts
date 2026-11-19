@@ -9,7 +9,7 @@
  * one starts from the recorded live run (`recorded-thread.ts`). Only for the
  * fixture; nothing here reaches a server.
  */
-import type { ContentBlock, Turn } from '@openmanager/protocol'
+import type { ContentBlock, Subagent, Turn } from '@openmanager/protocol'
 import type { ThreadState } from '@openmanager/environment-client'
 
 import { fixturePng } from './fixture-images'
@@ -106,6 +106,39 @@ class ThreadBuilder {
     return this
   }
 
+  /**
+   * A subagent the turn started, placed where its call was: a native one's
+   * runtime claims the call, so no tool row stands there, only the card.
+   */
+  subagent(
+    turnId: string,
+    subagentId: string,
+    fields: Pick<Subagent, 'title' | 'status' | 'startedAt'> & Partial<Subagent>,
+  ) {
+    const toolCallId = fields.toolCallId ?? `call-${subagentId}`
+    this.state.subagents = [
+      ...(this.state.subagents ?? []),
+      {
+        subagentId,
+        parentSessionId: this.state.thread.sessionId,
+        turnId,
+        toolCallId,
+        depth: 1,
+        origin: 'native',
+        providerId: 'claude',
+        agentType: 'Explore',
+        background: false,
+        promptable: false,
+        stoppable: false,
+        stats: {},
+        updatedAt: fields.startedAt,
+        ...fields,
+      },
+    ]
+    this.place({ kind: 'tool', id: toolCallId, turnId })
+    return this
+  }
+
   /** A durable notice, in the place it happened. */
   notice(turnId: string, noticeId: string, fields: Omit<Notice, 'noticeId' | 'turnId'>) {
     this.state.notices.push({ noticeId, turnId, ...fields })
@@ -155,13 +188,25 @@ export function workingThread(now: number): ThreadState {
       locations: [{ path: 'packages/protocol/src/domains.ts' }],
       lineChanges: { added: 24, removed: 3 },
     })
+    .subagent(turn, 'live-sub', {
+      title: 'Contract tests for turn_activity',
+      agentType: 'general-purpose',
+      status: 'running',
+      startedAt: iso(now - 48_000),
+      childSessionId: 's-tool-payloads-tests',
+    })
     .tool(turn, 'live-t4', 'Bash', 'execute', 'in_progress', {
       toolName: 'Bash',
       input: { command: 'pnpm --filter @openmanager/protocol test' },
       output: ' RUN  v4.1.0 packages/protocol\n\n ✓ tests/tool-state.test.ts (12 tests)\n',
       startedAt: iso(now - 4_000),
     })
-    .thought(turn, 'live-thought-2', '', 'delta')
+    .thought(
+      turn,
+      'live-thought-2',
+      'The suite is green so far. If the tool-state tests pass, the payload shape holds end to end, and the only thing left is the web row reading `rawInput` instead of the title. Worth checking whether Cursor sends',
+      'delta',
+    )
   // A steer waiting on the running command, and a message queued behind it.
   live.state.queue = {
     items: [
@@ -287,6 +332,21 @@ export function doneThread(now: number): ThreadState {
     .tool(turn, 'd-t2', 'Grep', 'search', 'completed', {
       toolName: 'Grep',
       input: { pattern: 'TIERS', path: 'apps/site/src' },
+    })
+    .subagent(turn, 'd-sub1', {
+      title: 'Competitor pricing pages',
+      status: 'completed',
+      startedAt: iso(now - 4_210_000),
+      finishedAt: iso(now - 4_204_000),
+      stats: { durationMs: 6_000, toolCalls: 9 },
+    })
+    .subagent(turn, 'd-sub2', {
+      title: 'Plan names that read well',
+      agentType: 'general-purpose',
+      status: 'completed',
+      startedAt: iso(now - 4_210_000),
+      finishedAt: iso(now - 4_205_000),
+      stats: { durationMs: 5_000, toolCalls: 3 },
     })
     .tool(turn, 'd-t3', 'Edit', 'edit', 'completed', {
       toolName: 'Edit',
