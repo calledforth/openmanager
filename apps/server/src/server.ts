@@ -112,6 +112,7 @@ import { createBudgetKey } from './budget-key.ts'
 import { createArtifactStore } from './artifacts.ts'
 import { createToolOutputReader } from './db/tool-output.ts'
 import { createUploadService } from './uploads.ts'
+import { createMoveSessionTool } from './move-session-tool.ts'
 import { createShareFileTool } from './share-file-tool.ts'
 import { createSpawnAgentTools, type SpawnHost } from './subagents/spawn-tools.ts'
 import { attachWebSocket, SOCKET_CAPABILITIES } from './websocket.ts'
@@ -388,6 +389,22 @@ export async function startServer(config: ServerConfig) {
     present: (threadId, turnId, metadata) => shareFileInto.present(threadId, turnId, metadata),
     discard: (metadata) => shareFileInto.discard(metadata),
   })
+  // `move_session` needs the thread service too, made below like `share_file`'s.
+  let moveSessionInto: Pick<
+    Parameters<typeof createMoveSessionTool>[0],
+    'agentTurnOf' | 'moveRefusal' | 'requestMove'
+  > = {
+    agentTurnOf: () => undefined,
+    moveRefusal: () => 'The environment is starting.',
+    requestMove: () => ({ ok: false, message: 'The environment is starting.' }),
+  }
+  const moveSessionTool = createMoveSessionTool({
+    agentTurnOf: (threadId) => moveSessionInto.agentTurnOf(threadId),
+    moveRefusal: (threadId) => moveSessionInto.moveRefusal(threadId),
+    register: (path) => workspaces.register({ path }),
+    requestMove: (threadId, workspaceId, name) =>
+      moveSessionInto.requestMove(threadId, workspaceId, name),
+  })
   // The spawn tools act through the thread service, made below; until then
   // no session can be running a turn to call them.
   let spawnInto: SpawnHost | undefined
@@ -419,6 +436,7 @@ export async function startServer(config: ServerConfig) {
     tools: [
       ...pullRequests.tools,
       shareFileTool,
+      moveSessionTool,
       // On unless the environment turns them off (docs/decisions/subagents.md).
       ...(process.env.OPENMANAGER_SPAWN_AGENT === '0' ? [] : spawnTools),
     ],
@@ -583,6 +601,8 @@ export async function startServer(config: ServerConfig) {
         }
       },
       onQueueProblem: (message, data) => log('warn', message, data),
+      onMoveProblem: (message, data) => log('warn', message, data),
+      ...(config.movableProviders ? { movableProviders: config.movableProviders } : {}),
       spawnProviders: () =>
         providerService.snapshot().map((provider) => {
           const profile = composerStore.getProfile(provider.id)
@@ -623,6 +643,12 @@ export async function startServer(config: ServerConfig) {
     present: (threadId, turnId, metadata) =>
       threadService.presentArtifact(threadId, turnId, metadata),
     discard: (metadata) => artifacts.discard(metadata),
+  }
+  moveSessionInto = {
+    agentTurnOf: (threadId) => threadService.agentTurnOf(threadId),
+    moveRefusal: (threadId) => threadService.moveRefusal(threadId),
+    requestMove: (threadId, workspaceId, name) =>
+      threadService.requestMove(threadId, workspaceId, name),
   }
   closeWorkspaceSessions = (workspaceId) => {
     // Flush before the registry cascades deletion of the projected thread rows.

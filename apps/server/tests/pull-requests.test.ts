@@ -735,6 +735,7 @@ describe('the MCP endpoint', () => {
       expect(tools.map((tool) => tool.name)).toEqual([
         'link_pull_request',
         'share_file',
+        'move_session',
         'spawn_agent',
         'wait_agent',
         'send_agent',

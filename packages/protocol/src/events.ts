@@ -59,10 +59,12 @@ const event = <N extends string, S extends z.ZodType, P extends z.ZodType>(
  * 6: `session.updated` carries `pullRequests`.
  * 7: `workspace.updated` carries `kind` ("No project").
  * 8: `session.updated` carries `cookingAt`.
- * 9: `subagent.updated`; a `session.created` summary can carry `subagent`; a turn's `origin` can be `delegated` or `subagents`; a queued
- *    message can carry `origin`.
+ * 9: `session.updated` carries `workspaceId` (a session moved to another workspace), and
+ *    a durable notice carries `move` (where it went, on the turn that resumed it there).
+ * 10: `subagent.updated`; a `session.created` summary can carry `subagent`; a turn's
+ *     `origin` can be `delegated` or `subagents`; a queued message can carry `origin`.
  */
-export const EVENT_FORMAT_VERSION = 9 as const
+export const EVENT_FORMAT_VERSION = 10 as const
 
 /** A turn's state once an interaction event is applied: still asking, or running again. */
 export const InteractionTurnStateSchema = z.enum(['running', 'waiting'])
@@ -120,6 +122,13 @@ export const ProofEventSchemas = {
       inBackground: z.boolean().optional(),
       /** Present only when the session's linked pull requests changed: every one, as it is now. */
       pullRequests: PullRequestSummaryListSchema.optional(),
+      /**
+       * Present only when the session moved to another workspace (its agent
+       * called `move_session`): the workspace it belongs to from now on. Its
+       * sub-agent sessions move with it, each in an event of its own. A client
+       * that does not know the field keeps the old one until it reloads.
+       */
+      workspaceId: EntityIdSchema.optional(),
     }),
   ),
   'session.deleted': event(

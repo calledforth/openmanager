@@ -189,6 +189,7 @@ default-src 'self';
 script-src 'self' 'wasm-unsafe-eval';
 style-src 'self' 'unsafe-inline';
 img-src 'self' data: blob: https:;
+media-src 'self' blob: https: http://127.0.0.1:* http://localhost:*;
 font-src 'self' data:;
 connect-src 'self' https: wss: http://127.0.0.1:* ws://127.0.0.1:* http://localhost:* ws://localhost:*;
 worker-src 'none'; frame-src 'none'; object-src 'none';
@@ -228,6 +229,11 @@ The rest follows what the app loads:
   as `data:`, link favicons come from Google's favicon service, and Markdown
   from an agent may embed any `https` image. An agent already runs commands on
   the environment, so blocking its images would protect nothing.
+- `media-src blob: https: http://127.0.0.1:* http://localhost:*`: a video an
+  agent shares plays from a `/media/<grant>` URL on the environment, the same
+  hosts `connect-src` reaches, or from a `blob:` on a client that cannot
+  stream. Without it `<video>` falls back to `default-src 'self'` and every
+  shared video fails to load.
 - `font-src data:`: Vite inlines the smallest font subsets.
 - `worker-src`, `frame-src` and `object-src` are `'none'` because the app uses
   none of them.

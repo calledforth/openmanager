@@ -15,8 +15,8 @@ import { readAskedQuestions } from '../questions/askedQuestion'
 import { ImageGenerationToolPart } from './ImageGenerationToolPart'
 import { GeneratedImages } from './GeneratedImagePart'
 import { GeneratedVideoPart } from './GeneratedVideoPart'
-import { TurnFailurePart, TurnNoticePart } from './TurnNoticePart'
-import type { FailurePart, NoticePart } from '../../lib/turn-notice-parts'
+import { TurnFailurePart, TurnMovedPart, TurnNoticePart } from './TurnNoticePart'
+import { noticeMove, type FailurePart, type NoticePart } from '../../lib/turn-notice-parts'
 
 interface Part {
   type: string
@@ -136,6 +136,8 @@ function renderPart(part: Part, index: number, isStreaming?: boolean): ReactNode
       )
     case 'notice': {
       const notice = part as unknown as NoticePart
+      const move = noticeMove(notice.notice)
+      if (move) return <TurnMovedPart key={key} move={move} />
       return <TurnNoticePart key={key} notice={notice.notice} live={notice.live === true} />
     }
     case 'failure':

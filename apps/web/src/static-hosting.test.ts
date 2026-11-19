@@ -70,6 +70,13 @@ describe('static hosting', () => {
     expect(csp.has('upgrade-insecure-requests')).toBe(false)
   })
 
+  it('lets shared videos stream from the environment the page reaches', () => {
+    const media = csp.get('media-src') ?? []
+    for (const source of ["'self'", 'blob:', 'https:', 'http://127.0.0.1:*', 'http://localhost:*']) {
+      expect(media).toContain(source)
+    }
+  })
+
   it('caches hashed assets for good and nothing else', () => {
     expect(rules.get('/assets/*')?.get('cache-control')).toBe('public, max-age=31536000, immutable')
     expect(everyPage.has('cache-control')).toBe(false)

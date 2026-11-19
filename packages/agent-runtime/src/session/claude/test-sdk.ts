@@ -505,17 +505,30 @@ export class FakeClaudeSdk implements ClaudeSdk {
     return query
   }
 
-  async getSessionInfo(sessionId: string): Promise<SDKSessionInfo | undefined> {
+  /** The project folders `getSessionInfo` was asked to look in, `undefined` for every one. */
+  readonly sessionInfoDirs: (string | undefined)[] = []
+
+  async getSessionInfo(
+    sessionId: string,
+    options?: { dir?: string },
+  ): Promise<SDKSessionInfo | undefined> {
+    this.sessionInfoDirs.push(options?.dir)
     if (this.sessionInfoError) throw this.sessionInfoError
-    return this.sessions.get(sessionId)
+    const info = this.sessions.get(sessionId)
+    // A transcript filed under one folder is found there, or by a search of every folder.
+    if (info?.cwd !== undefined && options?.dir !== undefined && info.cwd !== options.dir) {
+      return undefined
+    }
+    return info
   }
 
-  /** Register a transcript so a resume of it succeeds. */
-  knows(sessionId: string): void {
+  /** Register a transcript so a resume of it succeeds; under `cwd`'s project only, when given. */
+  knows(sessionId: string, cwd?: string): void {
     this.sessions.set(sessionId, {
       sessionId,
       summary: 'A previous conversation',
       lastModified: Date.now(),
+      ...(cwd !== undefined ? { cwd } : {}),
     } as SDKSessionInfo)
   }
 

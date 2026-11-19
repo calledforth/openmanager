@@ -4,6 +4,7 @@ import {
   ArrowsInLineVerticalIcon,
   ArrowsLeftRightIcon,
   CaretRightIcon,
+  FolderSimpleIcon,
   GaugeIcon,
   InfoIcon,
   ProhibitIcon,
@@ -17,6 +18,7 @@ import {
   describeNotice,
   type FailurePart,
   type NoticeCopy,
+  type NoticeMove,
 } from '../../lib/turn-notice-parts'
 import { useTurnRecovery } from '../../providers/turn-recovery'
 import { activityDetailsSummary, activityRow, shimmerTextClass, shimmerTextStyle } from './ToolLine'
@@ -143,6 +145,42 @@ export function TurnNoticePart({ notice, live = false }: { notice: Notice; live?
         </div>
       ) : null}
     </details>
+  )
+}
+
+/**
+ * Where the environment moved the session to another project and resumed it:
+ * what follows runs in another folder, so the marker spans the transcript, a
+ * hairline either side of the project's name and folder, the way a chapter
+ * break reads. Quiet like the notices around it, only wider.
+ */
+export function TurnMovedPart({ move }: { move: NoticeMove }) {
+  const hairline = 'h-px min-w-6 flex-1 bg-[var(--basis-border-muted)]'
+  return (
+    <div
+      className="my-3 flex w-full min-w-0 items-center gap-3 text-ui-sm leading-snug"
+      data-notice-kind="moved"
+      role="note"
+      aria-label={`Moved to ${move.name} (${move.path}) and resumed there`}
+    >
+      <span aria-hidden className={hairline} />
+      <span aria-hidden className="flex min-w-0 max-w-[85%] items-center gap-1.5">
+        <FolderSimpleIcon size={13} className="shrink-0 text-[var(--basis-text-faint)]" />
+        <span className="shrink-0 whitespace-nowrap text-[var(--basis-text-muted)]">
+          Moved to <span className="font-medium text-[var(--basis-text)]">{move.name}</span>
+        </span>
+        <span
+          className="min-w-0 truncate text-ui-xs text-[var(--basis-text-faint)]"
+          title={move.path}
+        >
+          {move.path}
+        </span>
+        <span className="shrink-0 whitespace-nowrap text-ui-xs text-[var(--basis-text-faint)]">
+          · resumed here
+        </span>
+      </span>
+      <span aria-hidden className={hairline} />
+    </div>
   )
 }
 

@@ -107,6 +107,31 @@ export function createEventProjector(
           AND (?3 IN ('user', 'generated') OR title_source IS NULL OR title_source <> 'user')
           AND NOT ((?3 IS 'provider' OR ?3 IS 'fallback') AND title_generated = 1)`,
     ),
+    // A session moved to another workspace (`move_session`). The workspace is
+    // copied onto every row under the session so composite keys keep the
+    // tree in one workspace; the rows are rewritten parent first, so the
+    // foreign keys are checked at commit (`defer_foreign_keys`), once every
+    // row, and every sub-agent session moved in the same write, agrees again.
+    // Every composite key naming a workspace: a child session's parent
+    // (moved by its own event in the same write), threads → sessions,
+    // turns → threads, messages, turn activity and notices → turns, and
+    // attachments → messages. An attachment is found by its session and by
+    // its message: one migration 9 could not match to a session has only the
+    // message, and left behind it would fail the whole move at commit.
+    workspaceExists: database.prepare('SELECT 1 FROM workspaces WHERE workspace_id = ?'),
+    moveSession: [
+      'UPDATE sessions SET workspace_id = ?1 WHERE session_id = ?2',
+      'UPDATE threads SET workspace_id = ?1 WHERE session_id = ?2',
+      ...['turns', 'messages', 'turn_activity', 'turn_notices'].map(
+        (table) =>
+          `UPDATE ${table} SET workspace_id = ?1
+            WHERE thread_id IN (SELECT thread_id FROM threads WHERE session_id = ?2)`,
+      ),
+      `UPDATE attachments SET workspace_id = ?1
+        WHERE session_id = ?2
+           OR message_id IN (SELECT message_id FROM messages WHERE thread_id IN
+                (SELECT thread_id FROM threads WHERE session_id = ?2))`,
+    ].map((sql) => database.prepare(sql)),
     updateSessionStatus: database.prepare(
       'UPDATE sessions SET status = ?, updated_at = ? WHERE session_id = ?',
     ),
@@ -713,6 +738,22 @@ export function createEventProjector(
         return
       }
       case 'session.updated': {
+        if (event.payload.workspaceId !== undefined) {
+          const { sessionId, workspaceId } = event.payload
+          const row = s.selectSessionWorkspace.get(sessionId) as
+            { workspace_id: string } | undefined
+          if (!row) throw new ProjectionRefusal(`Cannot move missing session ${sessionId}`)
+          if (row.workspace_id !== workspaceId) {
+            if (!s.workspaceExists.get(workspaceId)) {
+              throw new ProjectionRefusal(
+                `Cannot move session ${sessionId} to missing workspace ${workspaceId}`,
+              )
+            }
+            // Ends with the transaction: the check runs once, at its commit.
+            database.exec('PRAGMA defer_foreign_keys = ON')
+            for (const statement of s.moveSession) statement.run(workspaceId, sessionId)
+          }
+        }
         // The activity time it states, when it states one: the status pass
         // restates the row's own, so projecting it again changes nothing.
         const movedAt =
