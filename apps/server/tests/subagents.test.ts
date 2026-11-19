@@ -479,6 +479,42 @@ describe('subagents', () => {
     }
   })
 
+  it('starts the text and thought after a native subagent below its card', async () => {
+    const h = setup()
+    try {
+      const thought = (text: string, phase?: string) =>
+        h.emit({
+          category: 'stream',
+          event: 'agent_thought_chunk',
+          data: { content: { type: 'text', text }, phase: phase ?? 'delta' },
+        })
+      await h.startParentTurn()
+      h.text(undefined, 'I will have an agent look. ')
+      thought('weighing it')
+      h.subtask({ taskId: 'toolu_agent_1', status: 'running', description: 'Find it' })
+      thought('it came back')
+      h.text(undefined, 'Found it.')
+      h.events.flush()
+
+      const state = h.stateOf(h.parent)
+      const [record] = state.subagents ?? []
+      const placed = state.order.filter(
+        (ref) => ref.kind !== 'message' || ref.id !== state.messages[0]?.messageId,
+      )
+      const at = placed.findIndex((ref) => ref.kind === 'tool' && ref.id === record!.toolCallId)
+      // Before the card: the first text and thought. After it: new ones.
+      const before = placed.slice(0, at).map((ref) => ref.kind)
+      const after = placed.slice(at + 1).map((ref) => ref.kind)
+      expect(before).toEqual(['message', 'reasoning'])
+      expect(after).toEqual(['reasoning', 'message'])
+      // The thought the subagent interrupted ended there.
+      const first = state.reasoning.find((entry) => entry.messageId === placed[1]!.id)
+      expect(first?.phase).toBe('stop')
+    } finally {
+      h.close()
+    }
+  })
+
   it('carries the records in the thread snapshot, and settles a running one after a restart', async () => {
     const h = setup()
     try {

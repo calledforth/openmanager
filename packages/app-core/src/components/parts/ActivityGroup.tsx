@@ -44,11 +44,14 @@ export function ActivityGroup({
   const [expanded, setExpanded] = useState(false)
   const bodyRef = useRef<HTMLDivElement>(null)
 
+  // Follow the tail when a member lands, not on every token of a thought:
+  // a reader who scrolled up inside the open group stays where they are.
+  const thinking = !!live
   useEffect(() => {
-    if ((summary.isRunning || live) && expanded && bodyRef.current) {
+    if ((summary.isRunning || thinking) && expanded && bodyRef.current) {
       bodyRef.current.scrollTop = bodyRef.current.scrollHeight
     }
-  }, [summary.isRunning, summary.toolCount, summary.thoughtCount, live, expanded])
+  }, [summary.isRunning, summary.toolCount, summary.thoughtCount, thinking, expanded])
 
   const hasDiffStat = summary.diffAdded > 0 || summary.diffRemoved > 0
 

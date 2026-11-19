@@ -749,9 +749,7 @@ export function createThreadService(
    * this only keeps one that slips through from reaching a provider.
    */
   const detachedSession = () => {
-    const none = Promise.reject(
-      new Error(ONLY_ITS_AGENT),
-    )
+    const none = Promise.reject(new Error(ONLY_ITS_AGENT))
     none.catch(() => undefined)
     return none
   }
@@ -1234,15 +1232,16 @@ export function createThreadService(
         status: session.status,
         updatedAt: Date.parse(session.updatedAt),
       }
-      if (!detached) void record.runtimeSession.catch((error: unknown) => {
-        // A sub-agent's chat the agent no longer knows can never be opened:
-        // nothing was created in its place and its identity is kept.
-        if (error instanceof SessionUnknownError) unrecoverable.add(session.sessionId)
-        // One thread failing to load leaves the session half attached, so the
-        // whole restore is abandoned and a later open retries it from SQLite.
-        const current = sessions.get(session.sessionId)
-        if (current && records.includes(current)) dropSessionRecords(session.sessionId)
-      })
+      if (!detached)
+        void record.runtimeSession.catch((error: unknown) => {
+          // A sub-agent's chat the agent no longer knows can never be opened:
+          // nothing was created in its place and its identity is kept.
+          if (error instanceof SessionUnknownError) unrecoverable.add(session.sessionId)
+          // One thread failing to load leaves the session half attached, so the
+          // whole restore is abandoned and a later open retries it from SQLite.
+          const current = sessions.get(session.sessionId)
+          if (current && records.includes(current)) dropSessionRecords(session.sessionId)
+        })
       records.push(record)
       threads.set(thread.threadId, record)
     }
@@ -2385,7 +2384,12 @@ export function createThreadService(
       name: 'turn.started',
       eventId: randomUUID(),
       timestamp: at,
-      scope: { type: 'thread', environmentId, sessionId: thread.sessionId, threadId: thread.threadId },
+      scope: {
+        type: 'thread',
+        environmentId,
+        sessionId: thread.sessionId,
+        threadId: thread.threadId,
+      },
       payload: { turn, userMessage },
     })
     return { turn, userMessage, event }
@@ -2507,9 +2511,7 @@ export function createThreadService(
         thread,
         providerId: summary.providerId as ProviderId,
         cwd,
-        runtimeSession: providerSessionId
-          ? Promise.resolve(providerSessionId)
-          : detachedSession(),
+        runtimeSession: providerSessionId ? Promise.resolve(providerSessionId) : detachedSession(),
         ...(providerSessionId ? {} : { detached: true }),
         ...(summary.subagent ? { subagent: summary.subagent } : {}),
         turns: [],
@@ -2565,7 +2567,9 @@ export function createThreadService(
     if (remembered || !options.database) return remembered
     options.flush?.()
     const row = options.database
-      .prepare('SELECT turn_id FROM turns WHERE thread_id = ? ORDER BY started_at DESC, turn_id DESC LIMIT 1')
+      .prepare(
+        'SELECT turn_id FROM turns WHERE thread_id = ? ORDER BY started_at DESC, turn_id DESC LIMIT 1',
+      )
       .get(record.thread.threadId) as { turn_id: string } | undefined
     return row?.turn_id
   }
@@ -2640,7 +2644,11 @@ export function createThreadService(
     }
     childSession.title = record.title
     const thread: Thread = { threadId: randomUUID(), sessionId: childSession.sessionId }
-    const subagent: SessionSubagent = { subagentId, origin: 'native', promptable: record.promptable }
+    const subagent: SessionSubagent = {
+      subagentId,
+      origin: 'native',
+      promptable: record.promptable,
+    }
     const start = isSettledSubagentStatus(record.status)
       ? undefined
       : delegatedTurn(thread, report.prompt?.trim() ? report.prompt : record.title, at)
@@ -2704,9 +2712,20 @@ export function createThreadService(
   ): SubagentEntry | undefined => {
     if (droppedSubagents.has(subagentKey(owner, update.taskId))) return undefined
     const entry =
-      subagentEntries.get(subagentKey(owner, update.taskId)) ??
-      recallSubagent(owner, update.taskId)
-    if (!entry) return fileSubagent(owner, update, at, update.parentTaskId ?? under)
+      subagentEntries.get(subagentKey(owner, update.taskId)) ?? recallSubagent(owner, update.taskId)
+    if (!entry) {
+      const filed = fileSubagent(owner, update, at, update.parentTaskId ?? under)
+      // The subagent's card takes its place in the holder's transcript here,
+      // so the text and thought it interrupts end: what the agent writes or
+      // thinks once it returns starts below the card, as after a tool call.
+      const active = filed?.holder.activeTurn
+      if (active && filed.record.toolCallId) {
+        active.textRunId = undefined
+        active.reasoningRunId = undefined
+        closeOpenReasoning(filed.holder, active, at)
+      }
+      return filed
+    }
     const before = entry.report
     entry.report = mergeReport(before, update)
     const child = entry.child
@@ -2717,11 +2736,7 @@ export function createThreadService(
     // person's turn in a child they can prompt holds it, and the subagent's
     // work waits for its own turn.
     if (child && !settled && !threadBusy(child)) {
-      openDelegatedTurn(
-        child,
-        update.prompt?.trim() ? update.prompt : restate(entry, at).title,
-        at,
-      )
+      openDelegatedTurn(child, update.prompt?.trim() ? update.prompt : restate(entry, at).title, at)
     }
     if (child && update.title?.trim() && update.title !== before.title) {
       applyTitle(child, preview(update.title.trim(), 500), 'provider')
@@ -2802,9 +2817,11 @@ export function createThreadService(
     if (!entry.record.stoppable || !runtime.stopSubtask) {
       return errorResult(requestId, 'capability_missing', 'This subagent cannot be stopped.')
     }
-    return runtime.stopSubtask({ ...route(entry.owner), taskId: entry.taskId }).then(stopped, () =>
-      errorResult(requestId, 'unavailable', 'The subagent could not be stopped. Try again.'),
-    )
+    return runtime
+      .stopSubtask({ ...route(entry.owner), taskId: entry.taskId })
+      .then(stopped, () =>
+        errorResult(requestId, 'unavailable', 'The subagent could not be stopped. Try again.'),
+      )
   }
 
   // ------------------------------------------- subagents of ours (spawn_agent)
@@ -2885,11 +2902,16 @@ export function createThreadService(
       }
     }
     for (const entry of subagentsById.values()) {
-      if (entry.record.origin === 'openmanager' && entry.record.parentSessionId === parentSessionId) {
+      if (
+        entry.record.origin === 'openmanager' &&
+        entry.record.parentSessionId === parentSessionId
+      ) {
         records.set(entry.record.subagentId, entry.record)
       }
     }
-    return [...records.values()].sort((left, right) => left.startedAt.localeCompare(right.startedAt))
+    return [...records.values()].sort((left, right) =>
+      left.startedAt.localeCompare(right.startedAt),
+    )
   }
 
   const spawnedResult = (subagentId: string): string | undefined => {
@@ -2955,8 +2977,7 @@ export function createThreadService(
   }
 
   const wake = createSubagentWake({
-    enqueue: (parentSessionId, text, subagentIds) =>
-      wakeParent(parentSessionId, text, subagentIds),
+    enqueue: (parentSessionId, text, subagentIds) => wakeParent(parentSessionId, text, subagentIds),
     get: (_parent, subagentId) => subagentsById.get(subagentId)?.record,
     resultOf: (_parent, subagentId) => spawnedResult(subagentId),
   })
@@ -2984,8 +3005,7 @@ export function createThreadService(
     if (active && run.turnId !== active.turn.turnId) {
       // A new run. One the parent asked for owes it the answer again; one a
       // person started in the child is theirs, and wakes nobody.
-      const asked =
-        active.turn.commandId !== undefined && parentAsked.delete(active.turn.commandId)
+      const asked = active.turn.commandId !== undefined && parentAsked.delete(active.turn.commandId)
       run = { turnId: active.turn.turnId, text: '', toolCalls: 0 }
       if (asked) wake.reopen(entry.record.parentSessionId, entry.record.subagentId)
       else wake.markDelivered(entry.record.parentSessionId, entry.record.subagentId)
@@ -3738,7 +3758,7 @@ export function createThreadService(
       ).map((row) => row.session_id)
     }
     const tree = new Set([sessionId])
-    for (let grew = true; grew; ) {
+    for (let grew = true; grew;) {
       grew = false
       for (const item of threads.values()) {
         const parent = item.session.parentSessionId
@@ -3787,7 +3807,10 @@ export function createThreadService(
     // "No project" gives each session a folder of its own under the
     // environment's data directory; nothing moves into it.
     if (target.sessionCwd) {
-      return { ok: false, message: 'A session cannot move into "No project"; name a project folder.' }
+      return {
+        ok: false,
+        message: 'A session cannot move into "No project"; name a project folder.',
+      }
     }
     if (workspaceId === record.session.workspaceId) {
       pendingMoves.delete(record.session.sessionId)
