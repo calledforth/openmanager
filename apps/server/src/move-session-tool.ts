@@ -7,16 +7,17 @@ import type { WorkspaceRegistration } from './workspaces.ts'
 
 export const MOVE_SESSION_TOOL = 'move_session'
 
-const DESCRIPTION = `Move this OpenManager session to another project folder, so the user finds it under that project and your later turns run there.
+const DESCRIPTION = `Move this OpenManager session to another project folder, so the user finds it under that project and your work continues there.
 
 Use it when the work belongs in a different folder from the one you are in: typically after you created a new project (for example from "No project"), or when the user asks you to continue in another repository. The folder must already exist; it is added to the user's projects if it is not one yet.
 
-The move happens when this turn completes, and your conversation carries over; if the turn is stopped or fails, the session stays where it is. Until then your working directory is unchanged, so finish this turn with absolute paths into the new folder, and tell the user where the session went. Background commands you started stop when the session moves.`
+The move happens when this turn completes, and then your next turn starts by itself in the new folder, with this conversation; that project's instructions and settings apply there. So after calling this, wrap up briefly: say where the session is moving and end your turn, and carry on with the work in that next turn. If the turn is stopped or fails, the session stays where it is and nothing resumes. Background commands you started stop when the session moves.`
 
 /**
  * `move_session`: an agent moves its session to another workspace, adding
- * the folder as one when it is not yet. The thread service files the move
- * and applies it when the turn completes (`requestMove`).
+ * the folder as one when it is not yet. The thread service files the move,
+ * applies it when the turn completes and starts the next turn in the new
+ * folder by itself (`requestMove`).
  */
 export function createMoveSessionTool(deps: {
   /** The folder the agent runs in while it has a turn under way. */
@@ -25,7 +26,7 @@ export function createMoveSessionTool(deps: {
   moveRefusal: (threadId: string) => string | undefined
   /** Find or add the workspace at an absolute path. */
   register: (path: string) => WorkspaceRegistration
-  requestMove: (threadId: string, workspaceId: string) => MoveRequest
+  requestMove: (threadId: string, workspaceId: string, name: string) => MoveRequest
 }): AgentTool {
   return {
     name: MOVE_SESSION_TOOL,
@@ -35,7 +36,9 @@ export function createMoveSessionTool(deps: {
         .string()
         .min(1)
         .max(4096)
-        .describe('The project folder to move to: absolute, or relative to your working directory.'),
+        .describe(
+          'The project folder to move to: absolute, or relative to your working directory.',
+        ),
     },
     async call(input, context) {
       const given = typeof input.path === 'string' ? input.path.trim() : ''
@@ -52,7 +55,7 @@ export function createMoveSessionTool(deps: {
       const registered = deps.register(resolve(turn.cwd, expanded))
       if (!registered.ok) return { text: registered.message, isError: true }
       const { workspace } = registered
-      const move = deps.requestMove(context.threadId, workspace.workspaceId)
+      const move = deps.requestMove(context.threadId, workspace.workspaceId, workspace.name)
       if (!move.ok) return { text: move.message, isError: true }
       const background =
         move.backgroundTasks > 0
@@ -60,8 +63,10 @@ export function createMoveSessionTool(deps: {
           : ''
       return {
         text:
-          `This session moves to the project "${workspace.name}" (${move.cwd}) when this turn completes. ` +
-          `Your next turn runs there, with this conversation. Until then you are still in ${turn.cwd}: use absolute paths into ${move.cwd}.` +
+          `This session moves to the project "${workspace.name}" (${move.cwd}) when this turn completes, ` +
+          `and your next turn then starts there by itself, with this conversation. ` +
+          `End this turn now: say in a sentence where the session is moving, and leave the rest of the work for that turn. ` +
+          `Until it ends you are still in ${turn.cwd}. If this turn is stopped or fails, the session stays where it is.` +
           background,
       }
     },

@@ -398,7 +398,8 @@ export async function startServer(config: ServerConfig) {
     agentTurnOf: (threadId) => moveSessionInto.agentTurnOf(threadId),
     moveRefusal: (threadId) => moveSessionInto.moveRefusal(threadId),
     register: (path) => workspaces.register({ path }),
-    requestMove: (threadId, workspaceId) => moveSessionInto.requestMove(threadId, workspaceId),
+    requestMove: (threadId, workspaceId, name) =>
+      moveSessionInto.requestMove(threadId, workspaceId, name),
   })
   const agentTools = createAgentToolsEndpoint({
     serverName: 'openmanager',
@@ -592,7 +593,8 @@ export async function startServer(config: ServerConfig) {
   moveSessionInto = {
     agentTurnOf: (threadId) => threadService.agentTurnOf(threadId),
     moveRefusal: (threadId) => threadService.moveRefusal(threadId),
-    requestMove: (threadId, workspaceId) => threadService.requestMove(threadId, workspaceId),
+    requestMove: (threadId, workspaceId, name) =>
+      threadService.requestMove(threadId, workspaceId, name),
   }
   closeWorkspaceSessions = (workspaceId) => {
     // Flush before the registry cascades deletion of the projected thread rows.

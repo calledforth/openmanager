@@ -58,7 +58,8 @@ const event = <N extends string, S extends z.ZodType, P extends z.ZodType>(
  * 6: `session.updated` carries `pullRequests`.
  * 7: `workspace.updated` carries `kind` ("No project").
  * 8: `session.updated` carries `cookingAt`.
- * 9: `session.updated` carries `workspaceId` (a session moved to another workspace).
+ * 9: `session.updated` carries `workspaceId` (a session moved to another workspace), and
+ *    a durable notice carries `move` (where it went, on the turn that resumed it there).
  */
 export const EVENT_FORMAT_VERSION = 9 as const
 

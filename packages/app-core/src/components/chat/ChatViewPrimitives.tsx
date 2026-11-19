@@ -10,6 +10,7 @@ import {
 } from '../parts/turn-work-group'
 import { TextPart } from '../parts/TextPart'
 import { cn } from '../../lib/utils'
+import { isMovedPart } from '../../lib/turn-notice-parts'
 import type { StreamMessagePart } from '@openmanager/shared/lib/remote-stream-parts'
 import { chatStreamInner } from './chatComposerStyles'
 import { SessionBusyLoader } from '../sidebar/SessionBusyLoader'
@@ -51,17 +52,24 @@ export function AssistantMessage({
   parts?: MessagePart[]
   runtime?: TurnRuntimeMetadata
 }) {
-  const hasParts = !!parts && parts.length > 0
+  // A turn the environment began after moving the session opens with the
+  // move's marker: it heads the row, above the work, never folded into it.
+  let leading = 0
+  while (parts && leading < parts.length && isMovedPart(parts[leading]!)) leading += 1
+  const markers = leading > 0 ? parts!.slice(0, leading) : []
+  const rest = leading > 0 ? parts!.slice(leading) : parts
+  const hasParts = !!rest && rest.length > 0
   const isStreaming = isFinal === false
-  const partition = hasParts && isFinal === true ? partitionSettledTurnParts(parts) : undefined
+  const partition = hasParts && isFinal === true ? partitionSettledTurnParts(rest) : undefined
   const workParts = partition?.workParts ?? []
   const finalParts = partition?.finalParts ?? []
   const hasWorkGroup = workParts.length > 0
-  const copyText = assistantCopyText(content, isFinal, parts)
+  const copyText = assistantCopyText(content, isFinal, rest)
 
   return (
     <div className="group/assistant py-1">
       <div className={cn(chatStreamInner, isStreaming ? 'opacity-90' : 'opacity-100')}>
+        {markers.length > 0 ? <MessageParts parts={markers} isStreaming={false} /> : null}
         {/* The work group's own label says it once the turn has one. */}
         {runtime?.unprompted && !hasWorkGroup ? (
           <div className="py-px text-ui-base leading-snug text-[var(--basis-text-muted)]">
@@ -74,8 +82,8 @@ export function AssistantMessage({
             {finalParts.length > 0 && <MessageParts parts={finalParts} isStreaming={false} />}
           </>
         ) : hasParts ? (
-          <MessageParts parts={parts} isStreaming={isStreaming} />
-        ) : (
+          <MessageParts parts={rest} isStreaming={isStreaming} />
+        ) : markers.length > 0 ? null : (
           <TextPart text={content} />
         )}
         {copyText && (

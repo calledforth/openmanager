@@ -1,5 +1,10 @@
 import { describe, expect, it } from 'vitest'
-import type { DurableTurnNotice, ProofEvent, ScopeSnapshot } from '@openmanager/protocol'
+import {
+  ProofEventSchema,
+  type DurableTurnNotice,
+  type ProofEvent,
+  type ScopeSnapshot,
+} from '@openmanager/protocol'
 import { cacheState } from '../src/cache-state'
 import { createMockEnvironmentClient } from '../src/mock'
 import {
@@ -72,6 +77,16 @@ describe('durable notices', () => {
     } as ScopeSnapshot)
     expect(thread(state).notices.map((notice) => notice.noticeId)).toEqual(['notice-1', 'notice-2'])
     expect(thread(state).notices[0]).toBe(held)
+  })
+
+  it('keeps where a moved session went, as the wire carries it and across a reload', () => {
+    const move = { workspaceId: 'workspace-2', name: 'my-app', path: '/home/me/my-app' }
+    const wire = ProofEventSchema.parse(
+      recorded('notice-moved', { kind: 'info', message: 'Moved to my-app', move }),
+    )
+    const state = applyEvent(seeded(), wire)
+    expect(thread(state).notices[0]).toMatchObject({ kind: 'info', move })
+    expect(thread(cacheState(state)).notices[0]?.move).toEqual(move)
   })
 
   it('survives a reload, unlike a live notice', () => {

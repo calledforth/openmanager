@@ -56,6 +56,26 @@ export function noticePart(
   return part
 }
 
+/** Where the session moved, on the notice that marks the move; see `TurnMovedPart`. */
+export type NoticeMove = NonNullable<DurableTurnNotice['move']>
+
+/**
+ * The move a notice marks: the environment moved the session to another
+ * project and resumed it there. Undefined for every other notice.
+ */
+export function noticeMove(
+  notice: DurableTurnNotice | TransientTurnNotice,
+): NoticeMove | undefined {
+  return notice.kind === 'info' ? notice.move : undefined
+}
+
+/** Whether a transcript part is the marker of a move. */
+export function isMovedPart(part: { type: string; [key: string]: unknown }): boolean {
+  if (part.type !== 'notice') return false
+  const notice = (part as NoticePart).notice as NoticePart['notice'] | undefined
+  return !!notice && noticeMove(notice) !== undefined
+}
+
 const failureParts = new WeakMap<TurnFailure, Map<string, FailurePart>>()
 
 export function failurePart(
@@ -180,7 +200,9 @@ export function describeNotice(
       }
     }
     case 'info':
-      return { label: notice.message, ...(body ? { body } : {}), tone: 'muted' }
+      return notice.move
+        ? { label: `Moved to ${notice.move.name}`, detail: notice.move.path, tone: 'muted' }
+        : { label: notice.message, ...(body ? { body } : {}), tone: 'muted' }
     case 'warning':
       return { label: notice.message, ...(body ? { body } : {}), tone: 'warning' }
   }

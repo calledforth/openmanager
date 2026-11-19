@@ -1,4 +1,5 @@
 import { createHash, randomUUID } from 'node:crypto'
+import { basename } from 'node:path'
 import type { DatabaseSync } from 'node:sqlite'
 import {
   ProofCommandSchemas,
@@ -15,6 +16,7 @@ import {
   type BackgroundTask,
   type CommandEnvelope,
   type DraftContent,
+  type DurableTurnNotice,
   type ErrorCode,
   type TransientEvent,
   type Interaction,
@@ -32,6 +34,7 @@ import {
   type TurnFailureReason,
   type Turn,
   type TurnStart,
+  type TurnStarted,
   type WorkspaceComposerPreference,
   type Cursor,
   EMPTY_THREAD_QUEUE,
@@ -117,8 +120,17 @@ export type WorkspaceRuntimeResolver = (
 ) => WorkspaceRuntimeRoute | undefined
 type ActiveTurn = {
   turn: Turn
-  /** Absent on a turn the provider began by itself; nobody prompted it. */
+  /**
+   * Absent on a turn nobody sent: one the provider began by itself, or one
+   * the environment prompted (`promptId`).
+   */
   userMessage?: Message
+  /**
+   * The id the environment's own prompt went to the provider under, on a
+   * turn it started with no user message (the one that resumes a moved
+   * session). Its `prompt_started` matches on it; the prompt is never shown.
+   */
+  promptId?: string
   interruptRequested: boolean
   promptStarted?: boolean
   /** Includes host terminal bookkeeping, not just the provider completion event. */
@@ -339,6 +351,8 @@ type ThreadRecord = {
  */
 type PendingMove = {
   workspaceId: string
+  /** The project's name when it was asked for, for the marker the move leaves. */
+  name?: string
   /**
    * The thread whose turn asked, and that turn: only its completion applies
    * the move. Undefined once a steered message took over from it: the next
@@ -365,6 +379,15 @@ export type MoveRequest =
  * file sessions by project and are not known to, so theirs stay put.
  */
 export const MOVABLE_PROVIDERS: readonly string[] = ['claude']
+
+/**
+ * What the provider reads on the turn that resumes a moved session: where it
+ * is now, and to carry on. The user never sees it; the transcript shows the
+ * move's marker instead.
+ */
+export const movedPrompt = (name: string, path: string) =>
+  `OpenManager moved this session to the project "${name}" at ${path}; that is your working directory now. ` +
+  `Carry on with the work there. If nothing is left to do, say in a sentence that the session is now in ${name}.`
 
 /** Why a session the rows hold could not be loaded: the answer an open gives. */
 export type LoadRefusal = { code: ErrorCode; message: string; details?: unknown }
@@ -2237,7 +2260,27 @@ export function createThreadService(
     commandId: string,
     opts: { modeId?: string; settings?: QueuedMessageSettings; queueAfter?: ThreadQueue } = {},
   ) => {
+    const opened = openTurn(record, requestId, input, { commandId }, opts)
+    return 'turn' in opened ? turnSendResult(requestId, opened as TurnStart) : opened
+  }
+
+  /**
+   * Open a turn and hand its prompt to the provider, then end it with the
+   * provider's answer. The prompt is a message someone sent (`commandId`,
+   * recorded as the turn's user message), or the environment's own on a turn
+   * nobody sent (`notices`): that one is never shown, the turn is a
+   * `background` one and opens with the notices given, written with its
+   * start. Answers the turn as announced, or why it could not start.
+   */
+  const openTurn = (
+    record: ThreadRecord,
+    requestId: string,
+    input: { sessionId: string; threadId: string; text: string; artifactIds?: string[] },
+    from: { commandId: string } | { notices: (turnId: string) => DurableTurnNotice[] },
+    opts: { modeId?: string; settings?: QueuedMessageSettings; queueAfter?: ThreadQueue } = {},
+  ): TurnStarted | ReturnType<typeof errorResult> => {
     const { modeId } = opts
+    const commandId = 'commandId' in from ? from.commandId : undefined
     if (threadBusy(record)) {
       return errorResult(requestId, 'conflict', 'A turn is already in progress.')
     }
@@ -2264,24 +2307,28 @@ export function createThreadService(
       threadId: record.thread.threadId,
       state: 'running',
       startedAt,
-      commandId,
+      ...(commandId ? { commandId } : { origin: 'background' as const }),
     }
-    const userMessage: Message = {
-      messageId: randomUUID(),
-      threadId: record.thread.threadId,
-      turnId: turn.turnId,
-      role: 'user',
-      // A caption-less image sends no empty text block alongside it.
-      content: [
-        ...(input.text ? [{ type: 'text' as const, text: input.text }] : []),
-        ...artifactContent,
-      ],
-    }
-    const started: TurnStart = { turn, userMessage, commandId }
-    // Without a database the provider's `prompt_started` announces the turn;
-    // the queue still says the message left it.
+    const userMessage: Message | undefined = commandId
+      ? {
+          messageId: randomUUID(),
+          threadId: record.thread.threadId,
+          turnId: turn.turnId,
+          role: 'user',
+          // A caption-less image sends no empty text block alongside it.
+          content: [
+            ...(input.text ? [{ type: 'text' as const, text: input.text }] : []),
+            ...artifactContent,
+          ],
+        }
+      : undefined
+    const started: TurnStarted = userMessage ? { turn, userMessage, commandId } : { turn }
+    // Without a database the provider's `prompt_started` announces a sent
+    // turn; the queue still says the message left it. One nobody sent is
+    // always announced here: its `prompt_started` would show the
+    // environment's prompt as the user's.
     const events: ProofEvent[] = []
-    if (options.database) {
+    if (options.database || !userMessage) {
       events.push(
         ProofEventSchemas['turn.started'].parse({
           type: 'event',
@@ -2292,6 +2339,20 @@ export function createThreadService(
           payload: started,
         }),
       )
+    }
+    if ('notices' in from) {
+      for (const notice of from.notices(turn.turnId)) {
+        events.push(
+          ProofEventSchemas['turn.notice.recorded'].parse({
+            type: 'event',
+            name: 'turn.notice.recorded',
+            eventId: randomUUID(),
+            timestamp: startedAt,
+            scope: threadScope(record),
+            payload: notice,
+          }),
+        )
+      }
     }
     if (opts.queueAfter) events.push(queueEvent(record, opts.queueAfter))
     if (events.length > 0) {
@@ -2307,14 +2368,16 @@ export function createThreadService(
       if (opts.queueAfter) record.queue = opts.queueAfter
     }
     record.turns.push(turn)
-    record.messages.push(userMessage)
-    record.commandTurns.set(commandId, started)
-    const title = titleFromPrompt(input.text)
-    if (title) applyTitle(record, title, 'fallback')
-    titleFromFirstPrompt(record, userMessage)
+    if (userMessage && commandId) {
+      record.messages.push(userMessage)
+      record.commandTurns.set(commandId, started as TurnStart)
+      const title = titleFromPrompt(input.text)
+      if (title) applyTitle(record, title, 'fallback')
+      titleFromFirstPrompt(record, userMessage)
+    }
     const active: ActiveTurn = {
       turn,
-      userMessage,
+      ...(userMessage ? { userMessage } : { promptId: randomUUID() }),
       interruptRequested: false,
       ...(modeId ? { modeId } : {}),
       toolIds: new Map(),
@@ -2358,7 +2421,7 @@ export function createThreadService(
               ...promptImages,
             ],
           },
-          userMessageId: userMessage.messageId,
+          userMessageId: userMessage?.messageId ?? active.promptId,
         })
       })
       .then(() => {
@@ -2384,7 +2447,7 @@ export function createThreadService(
           touch(record, active.interruptRequested ? resting(record) : 'error')
         }
       })
-    return turnSendResult(requestId, started)
+    return started
   }
 
   // ---------------------------------------------------------------- queue
@@ -2499,7 +2562,7 @@ export function createThreadService(
    * in `threadId` now. Applied when that turn completes (`settleMove`); a
    * second call in the same turn replaces the first.
    */
-  const requestMove = (threadId: string, workspaceId: string): MoveRequest => {
+  const requestMove = (threadId: string, workspaceId: string, name?: string): MoveRequest => {
     const refusal = moveRefusal(threadId)
     if (refusal) return { ok: false, message: refusal }
     const record = threads.get(threadId)!
@@ -2521,6 +2584,7 @@ export function createThreadService(
     }
     pendingMoves.set(record.session.sessionId, {
       workspaceId,
+      ...(name ? { name } : {}),
       threadId,
       turnId: record.activeTurn!.turn.turnId,
     })
@@ -2533,17 +2597,22 @@ export function createThreadService(
   }
 
   /**
-   * A turn ended: apply the move it asked for once it completed. A turn that
-   * failed or was stopped drops it; the agent asks again if it still wants
-   * it. A steered message about to run in the same process takes the move
-   * with it, so the session moves once that turn completes instead.
+   * A turn ended: apply the move it asked for once it completed, and resume
+   * the session in its new folder (`resumeMoved`). A turn that failed or was
+   * stopped drops it, and nothing resumes; the agent asks again if it still
+   * wants it. A steered message about to run in the same process takes the
+   * move with it, so the session moves once that turn completes instead.
    */
   const settleMove = (record: ThreadRecord, turnId: string, completed: boolean) => {
     const sessionId = record.session.sessionId
     const move = pendingMoves.get(sessionId)
     if (!move || move.threadId !== record.thread.threadId) return
     if (move.turnId !== undefined && move.turnId !== turnId) return
-    if (completed && record.queue.items.some((item) => item.delivery === 'steering')) {
+    // A steered message took over, or is about to: its turn carries the move.
+    if (
+      completed &&
+      (record.activeTurn || record.queue.items.some((item) => item.delivery === 'steering'))
+    ) {
       move.turnId = undefined
       return
     }
@@ -2612,6 +2681,52 @@ export function createThreadService(
     } catch {
       /* bookkeeping only */
     }
+    // Before the queue drains (`settleQueue` follows): a message the user
+    // queued meanwhile runs after the agent has picked up in the new folder.
+    resumeMoved(record, {
+      workspaceId: move.workspaceId,
+      name: move.name ?? (basename(target.cwd) || target.cwd),
+      path: target.cwd,
+    })
+  }
+
+  /**
+   * Start the turn that resumes a moved session in its new folder, the moment
+   * the move applies. Nobody sent it: the provider reads a short prompt saying
+   * where it is now, and the transcript shows the move's marker in its place,
+   * written with the turn's start. The move stands even when the turn cannot
+   * start; the host hears why.
+   */
+  const resumeMoved = (
+    record: ThreadRecord,
+    move: { workspaceId: string; name: string; path: string },
+  ) => {
+    const opened = openTurn(
+      record,
+      'move-resume',
+      {
+        sessionId: record.session.sessionId,
+        threadId: record.thread.threadId,
+        text: movedPrompt(move.name, move.path),
+      },
+      {
+        notices: (turnId) => [
+          {
+            noticeId: randomUUID(),
+            turnId,
+            kind: 'info',
+            message: `Moved to ${move.name} (${move.path}) and resumed there`,
+            move,
+          },
+        ],
+      },
+    )
+    if ('turn' in opened) return
+    options.onMoveProblem?.('a moved session could not resume in its new folder', {
+      sessionId: record.session.sessionId,
+      workspaceId: move.workspaceId,
+      reason: opened.error.message,
+    })
   }
 
   const drain = (record: ThreadRecord) => {
@@ -4409,12 +4524,15 @@ export function createThreadService(
 
       if (event.event === 'prompt_started') {
         const active = record.activeTurn
-        if (!active || event.data.userMessageId !== active.userMessage?.messageId) return
+        const promptId = active?.userMessage?.messageId ?? active?.promptId
+        if (!active || promptId === undefined || event.data.userMessageId !== promptId) return
         active.runtimeMessageId = event.messageId
         // Only now has the provider opened the session and accepted the mode.
         // A launch that fails before this leaves every composer where it was.
         if (active.modeId) options.onSessionMode?.(record.session.sessionId, active.modeId)
-        projectRuntimeEvent(record, event, active)
+        // The environment's own prompt is never shown: its turn was announced
+        // when it opened.
+        if (active.userMessage) projectRuntimeEvent(record, event, active)
         return
       }
 
@@ -4480,6 +4598,9 @@ export function createThreadService(
         // the new one cannot start, the prompt itself fails the turn.
         return
       }
+      // An agent echoing the environment's own prompt back: it is not the
+      // user's, and the turn has no user message to file it under.
+      if (event.event === 'user_message_chunk' && active?.promptId) return
 
       if (!active) {
         projectRuntimeEvent(record, event, undefined)

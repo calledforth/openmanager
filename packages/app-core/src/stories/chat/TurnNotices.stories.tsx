@@ -136,6 +136,57 @@ export const DurableNotices: Story = {
   ),
 }
 
+const moved = durable({
+  noticeId: 'm1',
+  kind: 'info',
+  message: 'Moved to my-app (/home/cletus/projects/my-app) and resumed there',
+  move: { workspaceId: 'w2', name: 'my-app', path: '/home/cletus/projects/my-app' },
+})
+
+/**
+ * The agent moved the session to another project: the turn that asked ends,
+ * and the environment resumes the session there. The marker heads the turn it
+ * started, above its work.
+ */
+export const MovedToProject: Story = {
+  render: () => (
+    <TurnRecoveryContext.Provider value={recovery}>
+      <div className="h-screen w-screen bg-background">
+        <ChatViewPanel>
+          <div className="mx-auto w-full max-w-2xl px-4 py-6">
+            <AssistantMessage
+              content=""
+              isFinal
+              parts={[
+                text(
+                  't0',
+                  'The project is scaffolded in ~/projects/my-app. Moving this session there to carry on.',
+                ),
+              ]}
+            />
+            <AssistantMessage
+              content=""
+              isFinal
+              parts={[
+                moved,
+                read('r1', 'package.json'),
+                read('r2', 'src/index.ts'),
+                text('t1', 'I am in my-app now. Next I will add the test setup and a first test.'),
+              ]}
+              runtime={{ startedAt: Date.now() - 42_000, completedAt: Date.now() }}
+            />
+          </div>
+        </ChatViewPanel>
+      </div>
+    </TurnRecoveryContext.Provider>
+  ),
+}
+
+/** The resume turn while it runs: the marker, then the agent at work. */
+export const MovedToProjectRunning: Story = {
+  render: () => <Frame isStreaming parts={[moved, read('r1', 'package.json')]} />,
+}
+
 /** A failure after some work: the work folds, the failure and its action stay. */
 export const Overloaded: Story = {
   render: () => (

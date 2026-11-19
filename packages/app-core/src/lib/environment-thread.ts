@@ -437,7 +437,10 @@ function projectTurn(
     ...(failure ? [failurePart(turn.turnId, failure, actionable, resendable)] : []),
   )
 
-  const runtime = turnRuntime(turn)
+  const runtime = turnRuntime(
+    turn,
+    notices.some((notice) => notice.move !== undefined),
+  )
   let firstRow = true
   segments.forEach((segment, index) => {
     if (segment.after) pushUserRow(segment.after)
@@ -493,13 +496,16 @@ function segmentRuntime(
 
 /**
  * When the turn ran, for the "Worked for 45s" label on its settled row. An
- * environment that reports no timing gets the plain label.
+ * environment that reports no timing gets the plain label. A turn nobody sent
+ * says so, unless it is the one the environment began after moving the
+ * session (`moved`): the move's marker introduces that one, and "after
+ * background work" would be wrong.
  */
-function turnRuntime(turn: Turn): TurnRuntimeMetadata | undefined {
+function turnRuntime(turn: Turn, moved: boolean): TurnRuntimeMetadata | undefined {
   const startedAt = turn.startedAt ? Date.parse(turn.startedAt) : Number.NaN
   const completedAt = turn.finishedAt ? Date.parse(turn.finishedAt) : Number.NaN
   const timed = Number.isFinite(startedAt) && Number.isFinite(completedAt)
-  const unprompted = turn.origin === 'background'
+  const unprompted = turn.origin === 'background' && !moved
   if (!timed && !unprompted) return undefined
   return { ...(timed ? { startedAt, completedAt } : {}), ...(unprompted ? { unprompted } : {}) }
 }
