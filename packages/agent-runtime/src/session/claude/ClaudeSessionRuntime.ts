@@ -80,6 +80,7 @@ import {
 import { claudePromptContent, CLAUDE_PROMPT_CAPABILITIES } from './claude-prompt.js'
 import { claudeToolKind } from './claude-tools.js'
 import { resolveClaudeExecutable } from './executable.js'
+import { findClaudeTranscript } from './transcript-path.js'
 import {
   loadClaudeSdk,
   type ClaudeFlagSettings,
@@ -137,6 +138,9 @@ export type ClaudeSessionRuntimeDeps = {
    * exercise both branches of `CLAUDE_CODE_BIN` without mutating the real
    * process environment. */
   env?: NodeJS.ProcessEnv
+  /** Find a session's transcript file in any project folder. Injectable so a
+   * test controls where a moved session's transcript is. */
+  findTranscript?: (sessionId: string, env: NodeJS.ProcessEnv) => Promise<string | undefined>
 }
 
 /** Which SDK `system` subtypes carry a session id that is NOT the durable one.
@@ -312,6 +316,7 @@ export class ClaudeSessionRuntime implements ManagedSessionRuntime {
   private readonly interactions: InteractionBroker
   private readonly timeouts: RuntimeTimeouts
   private readonly env: NodeJS.ProcessEnv
+  private readonly findTranscript: NonNullable<ClaudeSessionRuntimeDeps['findTranscript']>
   private readonly translator: ClaudeMessageTranslator
   private readonly listeners = new Set<BackendEventListener>()
   private readonly exitListeners = new Set<(exit: SessionRuntimeExit) => void>()
@@ -347,6 +352,7 @@ export class ClaudeSessionRuntime implements ManagedSessionRuntime {
     this.timeouts = { ...DEFAULT_RUNTIME_TIMEOUTS, ...deps.timeouts }
     this.sdk = deps.sdk
     this.env = deps.env ?? process.env
+    this.findTranscript = deps.findTranscript ?? findClaudeTranscript
     this.translator = new ClaudeMessageTranslator({
       route: () => this.route(),
       log: this.host.log,
@@ -517,7 +523,8 @@ export class ClaudeSessionRuntime implements ManagedSessionRuntime {
   private async bootstrap(): Promise<SessionResult> {
     const executable = resolveClaudeExecutable(this.config, this.env)
     this.sdk ??= await loadClaudeSdk()
-    const resumeId = await this.resolvableSessionId()
+    const resumable = await this.resolvableSessionId()
+    const resumeId = resumable?.sessionId
     // A fresh transcript gets its id from us rather than from the CLI, so the
     // id is known before the process exists and is the same one the caller
     // will persist. `sessionId` and `resume` are mutually exclusive in the SDK
@@ -533,7 +540,7 @@ export class ClaudeSessionRuntime implements ManagedSessionRuntime {
     const options: Options = {
       cwd: this.cwd,
       pathToClaudeCodeExecutable: executable,
-      ...(resumeId ? { resume: resumeId } : { sessionId }),
+      ...(resumable ? { resume: resumable.resume } : { sessionId }),
       // The user's real settings, hooks and CLAUDE.md files. This is what
       // makes driving the CLI worth doing at all instead of calling the API,
       // and it is why hook frames have to be filtered out of session-id
@@ -718,7 +725,7 @@ export class ClaudeSessionRuntime implements ManagedSessionRuntime {
    * one (there was nothing to lose), while a resume that failed for any other
    * reason must not silently become a blank transcript wearing the old id —
    * that is how a conversation gets thrown away. */
-  private async resolvableSessionId(): Promise<string | undefined> {
+  private async resolvableSessionId(): Promise<{ sessionId: string; resume: string } | undefined> {
     const requested = this.spec.sessionId
     // A session that must be loaded is never replaced by a fresh one.
     const required = () => {
@@ -735,12 +742,15 @@ export class ClaudeSessionRuntime implements ManagedSessionRuntime {
         () =>
           new RpcTimeoutError(this.providerId, 'getSessionInfo', this.timeouts.controlRequestMs),
       )
-    // The folder the session runs in first, which reads one file. A session
-    // moved to another folder (`move_session`) left its transcript under the
-    // folder it started in, and the CLI resumes it from there by id alone, so
-    // a miss looks in every project before calling the session unknown.
-    const info = (await lookup({ dir: this.cwd })) ?? (await lookup())
-    if (info) return requested
+    // The folder the session runs in first, which reads one file.
+    if (await lookup({ dir: this.cwd })) return { sessionId: requested, resume: requested }
+    // A session moved to another folder (`move_session`) left its transcript
+    // under the folder it started in. Not every CLI finds it there by id, but
+    // every one resumes from the file's path, under the same id.
+    if (await lookup()) {
+      const path = await this.findTranscript(requested, this.env).catch(() => undefined)
+      return { sessionId: requested, resume: path ?? requested }
+    }
     this.host.log({
       scope: 'claude',
       level: 'warn',
