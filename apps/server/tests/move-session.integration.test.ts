@@ -327,9 +327,12 @@ describe('move_session', () => {
 
     // It ran in the new folder, on the same provider session, with the
     // environment's prompt, which only the provider read.
-    expect(opened[0]).toMatchObject({ method: 'new', cwd: host.workspaceRoot })
+    expect(opened[0]).toMatchObject({ method: 'new', cwd: await realpath(host.workspaceRoot) })
     expect(opened.at(-1)).toEqual({ method: 'load', cwd: canonical, sessionId: 'stub-session' })
-    expect(prompts.map((prompt) => prompt.cwd)).toEqual([host.workspaceRoot, canonical])
+    expect(prompts.map((prompt) => prompt.cwd)).toEqual([
+      await realpath(host.workspaceRoot),
+      canonical,
+    ])
     expect(prompts[1]!.text).toBe(movedPrompt('my-app', canonical))
     expect(JSON.stringify(records)).not.toContain('OpenManager moved this session')
 
@@ -381,7 +384,9 @@ describe('move_session', () => {
 
     const next = await send('carry on')
     expect(turnsOf(next).map((turn) => turn.turn.origin)).toEqual([undefined])
-    expect(prompts.map((prompt) => prompt.cwd)).toEqual([host.workspaceRoot, host.workspaceRoot])
+    expect(prompts.map((prompt) => prompt.cwd)).toEqual(
+      Array(2).fill(await realpath(host.workspaceRoot)),
+    )
     expect(opened).toHaveLength(1)
   })
 
@@ -409,7 +414,10 @@ describe('move_session', () => {
     expect(rowWorkspaces(host, sessionId)).toEqual(new Set([host.workspaceId]))
 
     await send('carry on')
-    expect(agent.prompts.at(-1)).toEqual({ text: 'carry on', cwd: host.workspaceRoot })
+    expect(agent.prompts.at(-1)).toEqual({
+      text: 'carry on',
+      cwd: await realpath(host.workspaceRoot),
+    })
     expect(agent.opened).toHaveLength(1)
   })
 
@@ -442,7 +450,7 @@ describe('move_session', () => {
     expect(turns[1]!.notices).toHaveLength(1)
     expect(turns[2]!.userMessage?.content).toEqual([{ type: 'text', text: 'and add tests' }])
     expect(agent.prompts).toEqual([
-      { text: 'make me an app', cwd: host.workspaceRoot },
+      { text: 'make me an app', cwd: await realpath(host.workspaceRoot) },
       { text: movedPrompt('my-app', canonical), cwd: canonical },
       { text: 'and add tests', cwd: canonical },
     ])
@@ -474,7 +482,7 @@ describe('move_session', () => {
       turns.map((turn) => (turn.notices[0]?.move as { path: string } | undefined)?.path),
     ).toEqual([undefined, firstPath, secondPath])
     expect(agent.prompts.map((prompt) => prompt.cwd)).toEqual([
-      host.workspaceRoot,
+      await realpath(host.workspaceRoot),
       firstPath,
       secondPath,
     ])
