@@ -37,7 +37,7 @@ The issue proposed keying Claude on `agentId`. The tool call id is equivalent (t
 
 ## Child sessions
 
-Every subagent gets a `sessions` row with `parentSessionId` as soon as it is first reported, native ones included, so the child page is just a session page. The summary carries `subagent: { subagentId, origin, promptable }`. A child that cannot be prompted shows a read-only footer saying only the parent agent can reach it; its parent can still revive it (`SendMessage`), which opens a new turn in the same child. The row is idempotent on `(parent, taskId)` and respects `forgottenChildren`. The child of a nested subagent is filed under its parent subagent's child session, so the sidebar tree follows the agent tree.
+Every subagent gets a `sessions` row with `parentSessionId` as soon as it is first reported, native ones included, so the child page is just a session page. The summary carries `subagent: { subagentId, origin, promptable }`. A child that cannot be prompted shows a read-only footer saying only the parent agent can reach it; its parent can still revive it (`SendMessage`), which opens a new turn in the same child. The row is idempotent on `(parent, taskId)` and respects `forgottenChildren`. The child of a nested subagent is filed under its parent subagent's child session, so the session tree follows the agent tree. Clients do not list subagent sessions in the sidebar: the parent's card shows how many it has, its cards in the chat open them, and a child page's title bar trail reads project / parent / subagent with the parent as the way back.
 
 ## Routing
 

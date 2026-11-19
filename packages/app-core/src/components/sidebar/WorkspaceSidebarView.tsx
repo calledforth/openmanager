@@ -20,8 +20,8 @@ import {
   FolderDashedIcon,
   FolderPlusIcon,
   GitBranchIcon,
-  RobotIcon,
   GitForkIcon,
+  RobotIcon,
   NotePencilIcon,
   PencilSimpleLineIcon,
   PushPinIcon,
@@ -112,7 +112,6 @@ const NewAgentIcon = phosphorIcon(NotePencilIcon)
 const AddProjectIcon = phosphorIcon(FolderPlusIcon)
 const ShowMoreIcon = phosphorIcon(CaretDownIcon)
 const ChildSessionIcon = phosphorIcon(GitBranchIcon)
-const SubagentSessionIcon = phosphorIcon(RobotIcon)
 const OpenDraftIcon = phosphorIcon(ArrowUpRightIcon)
 const DiscardDraftIcon = phosphorIcon(TrashIcon)
 
@@ -1482,6 +1481,28 @@ function UnsentMark() {
   )
 }
 
+/**
+ * The subagents a session's agent started, as a count beside its provider:
+ * their sessions have no rows of their own. Tinted while any still runs.
+ */
+function SubagentCount({ count, live }: { count: number; live: number }) {
+  const label = `${count} ${count === 1 ? 'subagent' : 'subagents'}${live ? `, ${live} running` : ''}`
+  return (
+    <span
+      className={cn(
+        'flex shrink-0 items-center gap-0.5 tabular-nums',
+        live > 0 && 'text-[color:var(--basis-status-working)]',
+      )}
+      title={label}
+      data-subagent-count={count}
+    >
+      <RobotIcon className="h-3 w-3" aria-hidden />
+      <span aria-hidden>{count}</span>
+      <span className="sr-only">{label}</span>
+    </span>
+  )
+}
+
 /** Said for an offline environment's row: what's on it is from the last time it was seen. */
 const offlineExplanation = (name: string) => `${name} is offline. This is what was last seen.`
 
@@ -1632,7 +1653,8 @@ function SessionCardBody({
         )}
       >
         <StatusOrAge
-          tone={tone}
+          // Kept going only by its subagents: their count below says so.
+          tone={tone === 'background' && session.inBackgroundForSubagents ? null : tone}
           iso={session.updatedAt}
           now={now}
           moment={moment}
@@ -1653,6 +1675,9 @@ function SessionCardBody({
         <ProviderIcon providerId={providerId} className="h-3 w-3 opacity-80" />
         <span className="sr-only">{providerName}</span>
       </span>
+      {session.subagentCount ? (
+        <SubagentCount count={session.subagentCount} live={session.subagentsLive ?? 0} />
+      ) : null}
       {unsent ? <UnsentMark /> : null}
       {git ? (
         <span
@@ -2134,11 +2159,7 @@ function ChildRow({
             : 'text-muted-foreground hover:bg-hover hover:text-foreground',
         )}
       >
-        {session.subagent ? (
-          <RobotIcon className="h-3 w-3 shrink-0 opacity-70" aria-label="Subagent" />
-        ) : (
-          <GitBranchIcon className="h-3 w-3 shrink-0 opacity-70" aria-hidden />
-        )}
+        <GitBranchIcon className="h-3 w-3 shrink-0 opacity-70" aria-hidden />
         <span className="truncate">{session.title || 'Subagent'}</span>
         <span className="ml-auto shrink-0 pl-2 text-[11px] text-faint">
           {tone ? <SessionBusyLoader tone={tone} /> : formatRelativeTime(session.updatedAt, now)}
@@ -2225,13 +2246,7 @@ function ShelfRow({
   return (
     <MotionMenuItem className="overflow-hidden" {...rowMotion}>
       <SidebarMenuButton
-        icon={
-          depth > 0
-            ? session.subagent
-              ? SubagentSessionIcon
-              : ChildSessionIcon
-            : projectIcon(workspace.path, iconLookup)
-        }
+        icon={depth > 0 ? ChildSessionIcon : projectIcon(workspace.path, iconLookup)}
         isActive={isActive}
         className="text-muted-foreground"
         style={depth > 0 ? { paddingLeft: 8 + Math.min(depth, 4) * 12 } : undefined}

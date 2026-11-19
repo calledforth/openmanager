@@ -60,7 +60,22 @@ export function groupSidebarSessions({
       )
       .map((workspace) => workspace.path),
   )
+  // A subagent's session gets no row of its own: its parent's card counts it,
+  // and the parent chat's subagent cards open it.
+  const subagents = new Map<string, { count: number; live: number }>()
   for (const summary of sessions) {
+    if (!summary.subagent || !summary.parentSessionId) continue
+    const tally = subagents.get(summary.parentSessionId) ?? { count: 0, live: 0 }
+    tally.count += 1
+    if (summary.status === 'running' || summary.status === 'waiting') tally.live += 1
+    subagents.set(summary.parentSessionId, tally)
+  }
+  for (const summary of sessions) {
+    if (summary.subagent) continue
+    const tally = subagents.get(summary.sessionId)
+    // A subagent running in the background is shown by its card and counted
+    // above; only the rest of the background work is named here.
+    const background = summary.backgroundTasks?.filter((task) => task.kind !== 'agent') ?? []
     const entry: SidebarSessionEntry = {
       externalId: summary.sessionId,
       ...(environmentId ? { environmentId } : {}),
@@ -71,7 +86,8 @@ export function groupSidebarSessions({
       status: summary.status === 'idle' ? (summary.doneAt ? 'done' : 'ready') : summary.status,
       providerId: summary.providerId as ProviderId,
       ...(summary.parentSessionId ? { parentExternalId: summary.parentSessionId } : {}),
-      ...(summary.subagent ? { subagent: true } : {}),
+      ...(tally ? { subagentCount: tally.count } : {}),
+      ...(tally?.live ? { subagentsLive: tally.live } : {}),
       // ChatView still branches on `isDriven` for the Convex IPC overlay.
       // This path has one protocol-event stream and no `stream_chunks`
       // subscription, so the flag is always true. Desktop must drop the
@@ -85,13 +101,17 @@ export function groupSidebarSessions({
       ...(unsentIds.has(summary.sessionId) ? { hasUnsentDraft: true } : {}),
       ...(summary.waitingOn ? { waitingOn: summary.waitingOn } : {}),
       ...(summary.inBackground ? { inBackground: true } : {}),
+      // Kept going by its subagents alone: the row says so with their count,
+      // not as background work. Its status stays the server's, so it still
+      // reads as live work (no settling, no "finished" notice) until they end.
+      ...(summary.inBackground && summary.backgroundTasks?.length && background.length === 0
+        ? { inBackgroundForSubagents: true }
+        : {}),
       // Primitives, so an unchanged roster keeps the row as it was.
-      ...(summary.backgroundTasks?.length
+      ...(background.length
         ? {
-            backgroundTaskCount: summary.backgroundTasks.length,
-            backgroundTaskNames: summary.backgroundTasks
-              .map((task) => task.description || task.kind)
-              .join('\n'),
+            backgroundTaskCount: background.length,
+            backgroundTaskNames: background.map((task) => task.description || task.kind).join('\n'),
           }
         : {}),
     }

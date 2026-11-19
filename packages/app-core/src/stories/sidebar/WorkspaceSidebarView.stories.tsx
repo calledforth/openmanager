@@ -420,6 +420,75 @@ export const DraftNotSynced: Story = {
   render: () => <Demo drafts={[DRAFT_NOT_SYNCED]} />,
 }
 
+const SUBAGENT_COUNTS: SidebarWorkspace[] = [
+  {
+    path: '/workspace/openmanager',
+    name: 'openmanager',
+    git: { branch: 'main', worktree: false },
+    sessions: [
+      {
+        externalId: 'sub-working',
+        title: 'Harden session authentication',
+        status: 'running',
+        providerId: 'claude' as ProviderId,
+        subagentCount: 3,
+        subagentsLive: 2,
+        updatedAt: ago(1),
+      },
+      {
+        externalId: 'sub-background',
+        title: 'Audit session token leakage',
+        status: 'running',
+        inBackground: true,
+        // Only its subagents keep it going: no Background pill, the count says it.
+        inBackgroundForSubagents: true,
+        providerId: 'claude' as ProviderId,
+        subagentCount: 2,
+        subagentsLive: 1,
+        updatedAt: ago(2),
+      },
+      {
+        externalId: 'sub-shell',
+        title: 'Run the full e2e suite',
+        status: 'running',
+        inBackground: true,
+        // A command and a subagent in the background: only the command is counted here.
+        backgroundTaskCount: 1,
+        backgroundTaskNames: 'pnpm test:e2e',
+        providerId: 'claude' as ProviderId,
+        subagentCount: 1,
+        subagentsLive: 1,
+        updatedAt: ago(4),
+      },
+      {
+        externalId: 'sub-done',
+        title: 'Map every caller of verifySession',
+        status: 'done',
+        providerId: 'claude' as ProviderId,
+        subagentCount: 4,
+        updatedAt: ago(9),
+      },
+      {
+        externalId: 'sub-ready',
+        title: 'Tighten the theme picker',
+        status: 'ready',
+        providerId: 'cursor' as ProviderId,
+        subagentCount: 1,
+        updatedAt: ago(60 * 3),
+      },
+    ],
+  },
+]
+
+/**
+ * Sessions whose agents started subagents: the count beside the provider,
+ * tinted while any still runs. Subagents have no rows of their own, and one
+ * kept going only by its subagents does not read as background work.
+ */
+export const SubagentCounts: Story = {
+  render: () => <Demo workspaces={SUBAGENT_COUNTS} activeSessionId="sub-background" />,
+}
+
 /** A session whose composer holds unsent text: a quieter step of the draft tint, and a pen. */
 export const SessionWithUnsentDraft: Story = {
   render: () => <Demo workspaces={withUnsent('sess-103')} activeSessionId="sess-002" />,

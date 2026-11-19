@@ -51,8 +51,12 @@ export interface SidebarSessionEntry {
   providerId: ProviderId
   clientId?: string
   parentExternalId?: string
-  /** It holds a subagent's work: its parent session's agent started it. */
-  subagent?: boolean
+  /**
+   * How many subagents its agent started, and how many of those are running
+   * or waiting. Their sessions get no rows of their own. Absent when none.
+   */
+  subagentCount?: number
+  subagentsLive?: number
   isDriven: boolean
   /**
    * Its project folder is not reachable right now, so the row is
@@ -77,8 +81,11 @@ export interface SidebarSessionEntry {
   /** A `running` session with no turn in flight, kept going only by its
    * background work. Hosts that cannot tell leave it out. */
   inBackground?: boolean
+  /** In the background only for its subagents, which its subagent count
+   * already shows; nothing else is running. */
+  inBackgroundForSubagents?: boolean
   /** How many background tasks are running, and what they are, one per
-   * line. Absent when there are none. */
+   * line, leaving out subagents. Absent when there are none. */
   backgroundTaskCount?: number
   backgroundTaskNames?: string
 }
