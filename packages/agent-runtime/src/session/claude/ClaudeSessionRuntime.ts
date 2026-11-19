@@ -78,7 +78,7 @@ import {
   type ClaudeContextWindow,
 } from './claude-catalog.js'
 import { claudePromptContent, CLAUDE_PROMPT_CAPABILITIES } from './claude-prompt.js'
-import { claudeToolKind } from './claude-tools.js'
+import { CLAUDE_SUBAGENT_TOOLS, claudeToolKind } from './claude-tools.js'
 import { resolveClaudeExecutable } from './executable.js'
 import { findClaudeTranscript } from './transcript-path.js'
 import {
@@ -211,10 +211,6 @@ const STEER_TAKE_BACK_MS = 5_000
  * background. Past this the steer goes anyway: holding it longer is the very
  * delay steering exists to avoid. */
 const BACKGROUND_MOVE_MS = 5_000
-
-/** The tools that run a subagent in the foreground of the turn that called
- * them (`Task` is the name older CLIs gave `Agent`). */
-const SUBAGENT_TOOLS = new Set(['Agent', 'Task'])
 
 /** One Claude Code subprocess, one transcript, one thread.
  *
@@ -559,6 +555,12 @@ export class ClaudeSessionRuntime implements ManagedSessionRuntime {
       // Token-level assistant text. Without it the first thing the UI sees is
       // a whole finished message.
       includePartialMessages: true,
+      // A subagent's text and thinking, beside its tool calls, so its own
+      // session shows what it said and not only what it ran.
+      forwardSubagentText: true,
+      // A one-line "what it is doing now" on `task_progress` about every 30s,
+      // for the subagent's card. Runs on the subagent's model and cache.
+      agentProgressSummaries: true,
       persistSession: true,
       // The initial selection travels as launch options rather than as two
       // control requests after the fact: the first turn can start before a
@@ -1197,7 +1199,8 @@ export class ClaudeSessionRuntime implements ManagedSessionRuntime {
         const id = string(block.id)
         const name = string(block.name) ?? ''
         if (!id) continue
-        const subagent = SUBAGENT_TOOLS.has(name) && object(block.input).run_in_background !== true
+        const subagent =
+          CLAUDE_SUBAGENT_TOOLS.has(name) && object(block.input).run_in_background !== true
         this.runningTools.set(id, { subagent })
       } else if (message.type === 'user' && block.type === 'tool_result') {
         const id = string(block.tool_use_id)
@@ -1411,6 +1414,33 @@ export class ClaudeSessionRuntime implements ManagedSessionRuntime {
       // Not stopped as far as anyone knows: if one of these ends later, it
       // ended by itself and the model will be woken for it.
       for (const taskId of targets) this.stoppedBackgroundTasks.delete(taskId)
+      throw error
+    }
+  }
+
+  /** Stop one subagent, by the `taskId` its `subtask_update` named.
+   *
+   * The CLI stops it by `agentId`, known once its `task_started` arrived; an
+   * unknown or not-yet-started one is refused rather than guessed at. A
+   * background subagent stopped here is marked like one `stopBackgroundTasks`
+   * stopped, so its end does not count as work that wakes the model. */
+  async stopSubtask(taskId: string): Promise<void> {
+    if (this.exitSettlement) return
+    await this.ready()
+    const query = this.query
+    if (!query) return
+    const agentId = this.translator.agentIdForSubtask(taskId)
+    if (!agentId) throw new Error(`No running subagent ${taskId} to stop`)
+    const background = this.backgroundTasks.some((task) => task.taskId === agentId)
+    if (background) this.stoppedBackgroundTasks.add(agentId)
+    try {
+      await withTimeout(
+        query.stopTask(agentId),
+        this.timeouts.controlRequestMs,
+        () => new RpcTimeoutError(this.providerId, 'stopTask', this.timeouts.controlRequestMs),
+      )
+    } catch (error) {
+      if (background) this.stoppedBackgroundTasks.delete(agentId)
       throw error
     }
   }
@@ -2082,19 +2112,24 @@ export class ClaudeSessionRuntime implements ManagedSessionRuntime {
         data: { texts: parsed.pending.duplicateTexts },
       })
     this.questionContexts.set(requestId, parsed.pending)
+    const subtaskId = this.subtaskAsking(options)
     const outcome = await this.awaitInteraction({
       requestId,
       sessionId,
       kind: 'question',
       signal: options.signal,
+      subtaskId,
       emitRequest: () =>
         this.emit(
-          routeEvent(this.route(), sessionId, 'session', 'question_request', {
-            requestId,
-            sessionId,
-            ...(parsed.title ? { title: parsed.title } : {}),
-            questions: parsed.questions,
-          }),
+          withSubtask(
+            routeEvent(this.route(), sessionId, 'session', 'question_request', {
+              requestId,
+              sessionId,
+              ...(parsed.title ? { title: parsed.title } : {}),
+              questions: parsed.questions,
+            }),
+            subtaskId,
+          ),
         ),
     })
     if (outcome.outcome !== 'responded') return USER_CANCELLED
@@ -2124,21 +2159,26 @@ export class ClaudeSessionRuntime implements ManagedSessionRuntime {
     if (memo) return memo
     const requestId = crypto.randomUUID()
     this.planRequestIds.add(requestId)
+    const subtaskId = this.subtaskAsking(options)
     const outcome = await this.awaitInteraction({
       requestId,
       sessionId,
       kind: 'plan_review',
       signal: options.signal,
+      subtaskId,
       // A plan is read, not clicked through; the default interaction timeout is
       // far too short for one.
       timeoutMs: PLAN_REVIEW_TIMEOUT_MS,
       emitRequest: () =>
         this.emit(
-          routeEvent(this.route(), sessionId, 'session', 'plan_review_request', {
-            ...planFromExitPlanMode(input),
-            requestId,
-            sessionId,
-          }),
+          withSubtask(
+            routeEvent(this.route(), sessionId, 'session', 'plan_review_request', {
+              ...planFromExitPlanMode(input),
+              requestId,
+              sessionId,
+            }),
+            subtaskId,
+          ),
         ),
     })
     const review =
@@ -2178,6 +2218,7 @@ export class ClaudeSessionRuntime implements ManagedSessionRuntime {
     }
     if (options.signal.aborted) return USER_CANCELLED
     const requestId = crypto.randomUUID()
+    const subtaskId = this.subtaskAsking(options)
     const permissionOptions: PermissionOption[] = [
       { optionId: 'allow_once', name: 'Allow', kind: 'allow_once' },
       { optionId: 'allow_always', name: 'Always allow', kind: 'allow_always' },
@@ -2189,6 +2230,7 @@ export class ClaudeSessionRuntime implements ManagedSessionRuntime {
         threadId: this.threadIdValue,
         workspaceId: this.workspaceIdValue,
         sessionId,
+        ...(subtaskId ? { subtaskId } : {}),
         options: permissionOptions,
         resolve,
       }),
@@ -2196,29 +2238,32 @@ export class ClaudeSessionRuntime implements ManagedSessionRuntime {
     let detach: () => void = () => undefined
     try {
       this.emit(
-        routeEvent(this.route(), sessionId, 'permission', 'permission_request', {
-          requestId,
-          sessionId,
-          toolCall: {
-            toolCallId: options.toolUseID,
-            // The compact label. `convex-projector.upsertPermission` reads this as
-            // the tool name for the prompt's heading.
-            title: options.displayName ?? toolName,
-            kind: claudeToolKind(toolName),
-            rawInput: input,
-          },
-          options: permissionOptions,
-          expiresAt: new Date(Date.now() + PERMISSION_TIMEOUT_MS).toISOString(),
-          metadata: {
-            toolName,
-            // Read as the prompt's description downstream, which is exactly what
-            // the SDK says this field is for.
-            ...(options.title ? { title: options.title } : {}),
-            ...(options.description ? { description: options.description } : {}),
-            ...(options.decisionReason ? { decisionReason: options.decisionReason } : {}),
-            ...(options.blockedPath ? { filepath: options.blockedPath } : {}),
-          },
-        }),
+        withSubtask(
+          routeEvent(this.route(), sessionId, 'permission', 'permission_request', {
+            requestId,
+            sessionId,
+            toolCall: {
+              toolCallId: options.toolUseID,
+              // The compact label. `convex-projector.upsertPermission` reads this as
+              // the tool name for the prompt's heading.
+              title: options.displayName ?? toolName,
+              kind: claudeToolKind(toolName),
+              rawInput: input,
+            },
+            options: permissionOptions,
+            expiresAt: new Date(Date.now() + PERMISSION_TIMEOUT_MS).toISOString(),
+            metadata: {
+              toolName,
+              // Read as the prompt's description downstream, which is exactly what
+              // the SDK says this field is for.
+              ...(options.title ? { title: options.title } : {}),
+              ...(options.description ? { description: options.description } : {}),
+              ...(options.decisionReason ? { decisionReason: options.decisionReason } : {}),
+              ...(options.blockedPath ? { filepath: options.blockedPath } : {}),
+            },
+          }),
+          subtaskId,
+        ),
       )
       // Subscribed only once the request is out — see `awaitInteraction`.
       detach = this.onAbort(options.signal, () =>
@@ -2273,6 +2318,8 @@ export class ClaudeSessionRuntime implements ManagedSessionRuntime {
     sessionId: string
     kind: InteractionKind
     signal: AbortSignal
+    /** The subagent asking, when it is not the session's own agent. */
+    subtaskId?: string | undefined
     emitRequest: () => void
     timeoutMs?: number
   }): Promise<InteractionOutcome> {
@@ -2292,6 +2339,7 @@ export class ClaudeSessionRuntime implements ManagedSessionRuntime {
           threadId: this.threadIdValue,
           workspaceId: this.workspaceIdValue,
           sessionId: args.sessionId,
+          ...(args.subtaskId ? { subtaskId: args.subtaskId } : {}),
           resolve,
         },
         args.timeoutMs,
@@ -2322,6 +2370,13 @@ export class ClaudeSessionRuntime implements ManagedSessionRuntime {
   private forgetInteraction(requestId: string): void {
     this.questionContexts.delete(requestId)
     this.planRequestIds.delete(requestId)
+  }
+
+  /** The subagent a `canUseTool` call comes from, as the `taskId` its
+   * `subtask_update` named. The SDK names it by `agentID`, which the
+   * translator learned from that subagent's `task_started`. */
+  private subtaskAsking(options: CanUseToolOptions): string | undefined {
+    return options.agentID ? this.translator.subtaskIdForAgent(options.agentID) : undefined
   }
 
   /** Subscribe to an abort that may already have happened. Returns the detach,
@@ -2544,4 +2599,10 @@ class InputQueue {
       yield next
     }
   }
+}
+
+/** Mark an interaction request as a subagent's, so it is shown and answered
+ * in the subagent's session. */
+function withSubtask(event: BackendEvent, subtaskId: string | undefined): BackendEvent {
+  return subtaskId ? { ...event, subtaskId } : event
 }

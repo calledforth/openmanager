@@ -141,6 +141,7 @@ export const COMMAND_ACCESS = Object.freeze({
   [STEER_SEND_NOW_CAPABILITY]: 'agent',
   // Ends work the agent is doing, exactly as an interrupt does.
   'session.background.stop': 'agent',
+  'subagent.stop': 'agent',
   'interaction.respond': 'agent',
   'composer.model.set': 'agent',
   'composer.mode.set': 'agent',

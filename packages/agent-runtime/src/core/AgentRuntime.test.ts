@@ -1379,3 +1379,89 @@ describe('AgentRuntime recoverable errors', () => {
     expect(events.find((event) => event.event === 'agent_message_chunk')?.messageId).toBeUndefined()
   })
 })
+
+/** A subagent's events are filed in its own child session by `subtaskId`, so
+ * they cannot share the parent turn's message, and a background subagent keeps
+ * working after that message has closed. */
+describe('AgentRuntime subagent messages', () => {
+  const CLAUDE_ROUTE = {
+    providerId: 'claude' as const,
+    workspaceId: 'C:/workspace',
+    cwd: 'C:/workspace',
+    threadId: 'thread-1',
+  }
+  const AGENT = 'a59f0c2b3d4e5f601'
+
+  function buildClaude() {
+    vi.stubEnv('CLAUDE_CODE_BIN', process.execPath)
+    const events: AgentEvent[] = []
+    const claudeSdk = new FakeClaudeSdk()
+    const runtime = new AgentRuntime(
+      { emitEvent: (event) => events.push(event), log: vi.fn() },
+      configs,
+      { claudeSdk },
+    )
+    return { runtime, events, claudeSdk }
+  }
+
+  it("gives each run of a subagent its own message, apart from the turn's", async () => {
+    const { runtime, events, claudeSdk } = buildClaude()
+    await runtime.ensureSession(CLAUDE_ROUTE)
+    const query = claudeSdk.last
+    const turn = runtime.prompt({ ...CLAUDE_ROUTE, prompt: PROMPT })
+    await vi.waitFor(() => expect(query.prompts).toHaveLength(1))
+    query.emitAgentStarted(AGENT, 'toolu_agent', { is_backgrounded: true })
+    query.emitAssistantBlocks([{ type: 'text', text: 'first' }], 'toolu_agent')
+    query.emitResult()
+    await turn
+    // After the turn: the subagent is still on its first run.
+    query.emitAssistantBlocks([{ type: 'text', text: 'second' }], 'toolu_agent')
+    query.emitSystem('task_notification', query.sessionId, {
+      task_id: AGENT,
+      status: 'completed',
+      output_file: '/tmp/out',
+      summary: 'done',
+    })
+    // Revived: a new run, so a new message.
+    query.emitAgentStarted(AGENT, 'toolu_send')
+    query.emitAssistantBlocks([{ type: 'text', text: 'third' }], 'toolu_agent')
+    await vi.waitFor(() =>
+      expect(events.filter((event) => event.event === 'agent_message_chunk')).toHaveLength(3),
+    )
+
+    const turnMessage = events.find((event) => event.event === 'prompt_started')?.messageId
+    const [first, second, third] = events.filter((event) => event.event === 'agent_message_chunk')
+    expect(first?.subtaskId).toBe('toolu_agent')
+    expect(first?.messageId).toBeDefined()
+    expect(first?.messageId).not.toBe(turnMessage)
+    expect(second?.messageId).toBe(first?.messageId)
+    expect(third?.messageId).toBeDefined()
+    expect(third?.messageId).not.toBe(first?.messageId)
+    vi.unstubAllEnvs()
+  })
+
+  it('tags the resolution of a subagent permission like its request', async () => {
+    const { runtime, events, claudeSdk } = buildClaude()
+    await runtime.ensureSession(CLAUDE_ROUTE)
+    const query = claudeSdk.last
+    query.emitAgentStarted(AGENT, 'toolu_agent')
+    await vi.waitFor(() =>
+      expect(events.some((event) => event.event === 'subtask_update')).toBe(true),
+    )
+    query.useTool('Bash', { command: 'npm test' }, { agentID: AGENT })
+    await vi.waitFor(() =>
+      expect(events.some((event) => event.event === 'permission_request')).toBe(true),
+    )
+    const request = events.find((event) => event.event === 'permission_request')
+    runtime.respondPermission({
+      providerId: 'claude',
+      requestId: (request?.data as { requestId: string }).requestId,
+      outcome: { outcome: 'selected', optionId: 'allow_once' },
+    })
+    expect(request?.subtaskId).toBe('toolu_agent')
+    expect(events.find((event) => event.event === 'permission_resolved')?.subtaskId).toBe(
+      'toolu_agent',
+    )
+    vi.unstubAllEnvs()
+  })
+})

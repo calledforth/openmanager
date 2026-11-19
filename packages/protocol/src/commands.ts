@@ -142,6 +142,14 @@ export const ProofCommandSchemas = {
       taskIds: z.array(EntityIdSchema).min(1).max(BACKGROUND_TASKS_MAX).optional(),
     }),
   ),
+  // Stops one running subagent of the session's agent, from its card. A
+  // subagent that already settled is not an error. Refused with
+  // `capability_missing` when the subagent is not `stoppable`. The change reaches
+  // every client as `subagent.updated`.
+  'subagent.stop': command(
+    'subagent.stop',
+    SessionTargetSchema.extend({ subagentId: EntityIdSchema }),
+  ),
   // `commandId` makes a send retryable: the environment answers a repeat of an
   // id it has already run with that same turn instead of starting a second one.
   // Optional on the wire so an older client still sends; the environment mints
@@ -224,6 +232,7 @@ export const ProofCommandSchema = z.discriminatedUnion('name', [
   ProofCommandSchemas['session.cook'],
   ProofCommandSchemas['session.acknowledge'],
   ProofCommandSchemas['session.background.stop'],
+  ProofCommandSchemas['subagent.stop'],
   ProofCommandSchemas['turn.send'],
   ProofCommandSchemas['turn.interrupt'],
   ProofCommandSchemas['queue.add'],
@@ -279,6 +288,7 @@ export const ProofResponseSchemas = {
   'session.cook': response(z.object({ cookingAt: TimestampSchema.nullable() })),
   'session.acknowledge': response(z.null()),
   'session.background.stop': response(z.null()),
+  'subagent.stop': response(z.null()),
   'turn.send': response(TurnStartSchema),
   'turn.interrupt': response(z.object({ turnId: EntityIdSchema })),
   'queue.add': response(z.object({ queueItemId: EntityIdSchema })),

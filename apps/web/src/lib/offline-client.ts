@@ -24,6 +24,7 @@ const commands: EnvironmentCommands = {
   cookSession: reject('cookSession'),
   acknowledgeSession: reject('acknowledgeSession'),
   stopBackgroundTasks: reject('stopBackgroundTasks'),
+  stopSubagent: reject('stopSubagent'),
   sendTurn: reject('sendTurn'),
   interruptTurn: reject('interruptTurn'),
   queueMessage: reject('queueMessage'),

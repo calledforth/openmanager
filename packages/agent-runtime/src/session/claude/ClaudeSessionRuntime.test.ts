@@ -29,6 +29,7 @@ function build(spec: Partial<SessionRuntimeSpec> = {}, timeouts?: Partial<Runtim
       threadId: settlement.threadId,
       workspaceId: settlement.workspaceId,
       sessionId: settlement.sessionId,
+      ...(settlement.subtaskId ? { subtaskId: settlement.subtaskId } : {}),
       category: 'permission',
       event: 'permission_resolved',
       data: { requestId: settlement.requestId, outcome: settlement.outcome },
@@ -39,6 +40,7 @@ function build(spec: Partial<SessionRuntimeSpec> = {}, timeouts?: Partial<Runtim
       threadId: settlement.threadId,
       workspaceId: settlement.workspaceId,
       sessionId: settlement.sessionId,
+      ...(settlement.subtaskId ? { subtaskId: settlement.subtaskId } : {}),
       category: 'extension',
       event: 'extension_resolved',
       data: { requestId: settlement.requestId, method: settlement.method },
@@ -1525,6 +1527,164 @@ describe('ClaudeSessionRuntime background work', () => {
     expect(names(events)).toEqual(['background_tasks_update', 'process_exited'])
     expect(rosters(events)).toEqual([[]])
     expect(runtime.busy).toBe(false)
+  })
+})
+
+describe('ClaudeSessionRuntime subagents', () => {
+  const AGENT = 'a59f0c2b3d4e5f601'
+  const subtaskUpdates = (events: BackendEvent[]) =>
+    events
+      .filter((event) => event.event === 'subtask_update')
+      .map((event) => event.data as { taskId: string; status?: string; background?: boolean })
+
+  it("asks the CLI for subagents' text and progress summaries", async () => {
+    const { runtime, sdk } = build()
+    await runtime.start()
+    expect(sdk.last.options.forwardSubagentText).toBe(true)
+    expect(sdk.last.options.agentProgressSummaries).toBe(true)
+  })
+
+  it("files a background subagent's work in its own session after the turn ends", async () => {
+    const { runtime, events, sdk } = build()
+    await runtime.start()
+    const turn = runtime.prompt({ prompt: { text: 'review it', blocks: [] } })
+    await vi.waitFor(() => expect(sdk.last.prompts).toHaveLength(1))
+    sdk.last.emitMessageStart()
+    sdk.last.emitToolStart(0, 'toolu_agent', 'Agent')
+    sdk.last.emitToolInput(
+      0,
+      JSON.stringify({
+        description: 'Review the diff',
+        prompt: 'Review.',
+        run_in_background: true,
+      }),
+    )
+    sdk.last.emitAgentStarted(AGENT, 'toolu_agent', { is_backgrounded: true })
+    sdk.last.emitToolResult('toolu_agent', 'Async agent launched successfully.', false, {
+      structured: {
+        status: 'async_launched',
+        agentId: AGENT,
+        description: 'Review the diff',
+        prompt: 'Review.',
+        outputFile: '/tmp/out',
+      },
+    })
+    sdk.last.emitResult({ userMessageUuid: (sdk.last.prompts[0] as { uuid?: string }).uuid })
+    await turn
+    expect(subtaskUpdates(events).at(-1)).toMatchObject({
+      taskId: 'toolu_agent',
+      status: 'running',
+      background: true,
+    })
+    events.length = 0
+
+    sdk.last.emitAssistantBlocks(
+      [{ type: 'tool_use', id: 'toolu_inner', name: 'Read', input: { file_path: '/a.ts' } }],
+      'toolu_agent',
+    )
+    sdk.last.emitToolResult('toolu_inner', 'contents', false, { parentToolUseId: 'toolu_agent' })
+    sdk.last.emitAssistantBlocks([{ type: 'text', text: 'Looks fine.' }], 'toolu_agent')
+    sdk.last.emitSystem('task_notification', sdk.last.sessionId, {
+      task_id: AGENT,
+      tool_use_id: 'toolu_agent',
+      status: 'completed',
+      output_file: '/tmp/out',
+      summary: 'Looks fine.',
+    })
+
+    await vi.waitFor(() => expect(names(events)).toContain('subtask_update'))
+    // Its own work, tagged for its session; never a turn of the parent's.
+    expect(names(events)).toEqual([
+      'tool_call',
+      'tool_call_update',
+      'tool_call_update',
+      'agent_message_chunk',
+      'subtask_update',
+    ])
+    expect(events.slice(0, 4).every((event) => event.subtaskId === 'toolu_agent')).toBe(true)
+    expect(events[4]?.subtaskId).toBeUndefined()
+    expect(subtaskUpdates(events)[0]).toMatchObject({ taskId: 'toolu_agent', status: 'completed' })
+  })
+
+  it('files a permission a subagent asks for, and its answer, in its session', async () => {
+    const { runtime, events, sdk } = build()
+    await runtime.start()
+    sdk.last.emitAgentStarted(AGENT, 'toolu_agent')
+    await vi.waitFor(() => expect(names(events)).toContain('subtask_update'))
+
+    const { result } = sdk.last.useTool('Bash', { command: 'npm test' }, { agentID: AGENT })
+    await vi.waitFor(() => expect(names(events)).toContain('permission_request'))
+    const request = events.find((event) => event.event === 'permission_request')
+    expect(request?.subtaskId).toBe('toolu_agent')
+
+    runtime.respondPermission((request?.data as { requestId: string }).requestId, {
+      outcome: 'selected',
+      optionId: 'allow_once',
+    })
+    expect(await result).toEqual({ behavior: 'allow' })
+    expect(events.find((event) => event.event === 'permission_resolved')?.subtaskId).toBe(
+      'toolu_agent',
+    )
+  })
+
+  it("leaves the main agent's own permissions untagged", async () => {
+    const { runtime, events, sdk } = build()
+    await runtime.start()
+    // An agentID nobody has reported is not a reason to guess.
+    sdk.last.useTool('Bash', { command: 'npm test' }, { agentID: 'unknown-agent' })
+    await vi.waitFor(() => expect(names(events)).toContain('permission_request'))
+    expect(events.find((event) => event.event === 'permission_request')?.subtaskId).toBeUndefined()
+  })
+
+  it('files a question a subagent asks in its session', async () => {
+    const { runtime, events, sdk } = build()
+    await runtime.start()
+    sdk.last.emitAgentStarted(AGENT, 'toolu_agent')
+    await vi.waitFor(() => expect(names(events)).toContain('subtask_update'))
+
+    const { controller } = sdk.last.useTool(
+      'AskUserQuestion',
+      {
+        questions: [
+          { question: 'Which?', header: 'Pick', multiSelect: false, options: [{ label: 'A' }] },
+        ],
+      },
+      { agentID: AGENT },
+    )
+    await vi.waitFor(() => expect(names(events)).toContain('question_request'))
+    expect(events.find((event) => event.event === 'question_request')?.subtaskId).toBe(
+      'toolu_agent',
+    )
+    controller.abort()
+    await vi.waitFor(() => expect(names(events)).toContain('extension_resolved'))
+    expect(events.find((event) => event.event === 'extension_resolved')?.subtaskId).toBe(
+      'toolu_agent',
+    )
+  })
+
+  it('stops one subagent by the agentId its taskId maps to', async () => {
+    const { runtime, events, sdk } = build()
+    await runtime.start()
+    sdk.last.emitAgentStarted(AGENT, 'toolu_agent')
+    await vi.waitFor(() => expect(names(events)).toContain('subtask_update'))
+
+    await runtime.stopSubtask('toolu_agent')
+    expect(sdk.last.stoppedTasks).toEqual([AGENT])
+    // Not one we know: nothing is sent on a guess.
+    await expect(runtime.stopSubtask('toolu_unknown')).rejects.toThrow(/toolu_unknown/)
+    expect(sdk.last.stoppedTasks).toEqual([AGENT])
+  })
+
+  it('gives up on a stop the CLI never answers', async () => {
+    const { runtime, events, sdk } = build({}, { controlRequestMs: 20 })
+    sdk.prepare = (query) => {
+      query.stopTask = () => new Promise<void>(() => undefined)
+    }
+    await runtime.start()
+    sdk.last.emitAgentStarted(AGENT, 'toolu_agent')
+    await vi.waitFor(() => expect(names(events)).toContain('subtask_update'))
+
+    await expect(runtime.stopSubtask('toolu_agent')).rejects.toThrow(/stopTask/)
   })
 })
 

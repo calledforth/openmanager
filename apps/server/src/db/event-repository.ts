@@ -65,6 +65,14 @@ export interface WriteOptions {
    */
   pullRequestSources?: Readonly<Record<string, 'tool' | 'gh_pr_create'>>
   /**
+   * The runtime's own key of each subagent record this write creates, by
+   * subagent id: the session whose runtime reports it and the `taskId` it
+   * reports it under. The `subagent.updated` projection stores it with the
+   * row it inserts, and refuses a new record without one, so a later report
+   * of the same subagent finds it again after a restart.
+   */
+  subagentTasks?: Readonly<Record<string, { ownerSessionId: string; taskId: string }>>
+  /**
    * Host-private rows these events state, written inside the same
    * transaction before the events, so both commit or neither does. The
    * environment's copy of a pull request goes this way with the
@@ -125,6 +133,9 @@ export function createEventRepository(
   const project = createEventProjector(database)
   const closure = createTurnClosure(database)
   const statements = {
+    nativeParentOf: database.prepare(
+      "SELECT parent_session_id FROM sessions WHERE session_id = ? AND subagent_origin = 'native'",
+    ),
     sessionStatus: database.prepare(
       `SELECT session_id, workspace_id, status, updated_at, settled_at, cooking_at, done_at,
               background_tasks_json
@@ -178,6 +189,13 @@ export function createEventRepository(
     announced: StatusState
     lastEventId: string
     lastTimestamp: string
+    /**
+     * Whether the last event that moved it was the session's own. A session
+     * above a native subagent moves with the subagent's requests, under the
+     * subagent's event; its derived record then names it, so two sessions
+     * moved by one event get two ids.
+     */
+    lastOwn: boolean
   }
   /**
    * One transaction's state, passed down its writes rather than kept between
@@ -230,6 +248,28 @@ export function createEventRepository(
     ]
   }
 
+  /**
+   * The sessions an event can change the status of: its own, and for a
+   * request or turn of a native subagent's child, every session above it
+   * (event-projection.ts `refreshParentsOf`). Read before the event is
+   * projected, so their status before it is known.
+   */
+  const statusSessionsOf = (event: DurableProofEvent): string[] => {
+    const own = statusSessionOf(event)
+    if (!own || event.scope.type !== 'thread') return own ? [own] : []
+    const sessions = [own]
+    let child = own
+    for (let depth = 0; depth < 16; depth++) {
+      const parent = (
+        statements.nativeParentOf.get(child) as { parent_session_id: string | null } | undefined
+      )?.parent_session_id
+      if (!parent) break
+      sessions.push(parent)
+      child = parent
+    }
+    return sessions
+  }
+
   const writeScope = (
     scope: SubscriptionScope,
     events: readonly DurableProofEvent[],
@@ -252,9 +292,14 @@ export function createEventRepository(
     const records: DurableEvent[] = []
     const replayStatus = (event: DurableProofEvent) => {
       if (!transaction) return
-      for (const suffix of DERIVED_SUFFIXES) {
-        const derived = statements.selectByEventId.get(`${event.eventId}${suffix}`) as
-          ExistingEventRow | undefined
+      const ids = [
+        ...DERIVED_SUFFIXES.map((suffix) => `${event.eventId}${suffix}`),
+        ...statusSessionsOf(event)
+          .slice(1)
+          .map((sessionId) => parentStatusId(event.eventId, sessionId)),
+      ]
+      for (const id of ids) {
+        const derived = statements.selectByEventId.get(id) as ExistingEventRow | undefined
         if (derived) {
           transaction.retriedStatus.push({
             environmentId: scope.environmentId,
@@ -343,19 +388,24 @@ export function createEventRepository(
         JSON.stringify(record.event),
         Date.parse(event.timestamp),
       )
-      const sessionId = transaction ? statusSessionOf(event) : undefined
-      let entry = sessionId ? transaction!.tracked.get(sessionId) : undefined
-      if (sessionId && !entry) {
-        const before = readStatus(sessionId)
-        if (before) {
+      const statusSessions = transaction ? statusSessionsOf(event) : []
+      const sessionId = statusSessions[0]
+      const entries: Tracked[] = []
+      for (const id of statusSessions) {
+        let entry = transaction!.tracked.get(id)
+        if (!entry) {
+          const before = readStatus(id)
+          if (!before) continue
           entry = {
             environmentId: scope.environmentId,
             announced: before,
             lastEventId: event.eventId,
             lastTimestamp: event.timestamp,
+            lastOwn: id === sessionId,
           }
-          transaction!.tracked.set(sessionId, entry)
+          transaction!.tracked.set(id, entry)
         }
+        entries.push(entry)
       }
       const places: TrackedWorkspace[] = []
       for (const workspaceId of transaction ? recencyWorkspacesOf(event, sessionId) : []) {
@@ -382,11 +432,14 @@ export function createEventRepository(
         }
         if (event.name === 'workspace.removed') place.removed = true
       }
-      if (entry) {
+      entries.forEach((entry, index) => {
         entry.lastEventId = event.eventId
         entry.lastTimestamp = event.timestamp
-        if (event.name === 'session.updated') entry.announced = stated(entry.announced, event)
-      }
+        entry.lastOwn = index === 0
+        if (index === 0 && event.name === 'session.updated') {
+          entry.announced = stated(entry.announced, event)
+        }
+      })
       head = record.cursor.sequence
       records.push(record)
     }
@@ -447,7 +500,9 @@ export function createEventRepository(
         ProofEventSchemas['session.updated'].parse({
           type: 'event',
           name: 'session.updated',
-          eventId: `${entry.lastEventId}:status`,
+          eventId: entry.lastOwn
+            ? `${entry.lastEventId}:status`
+            : parentStatusId(entry.lastEventId, sessionId),
           timestamp: entry.lastTimestamp,
           scope: { type: 'environment', environmentId: entry.environmentId },
           payload: {
@@ -508,6 +563,22 @@ export function createEventRepository(
       for (const event of events) {
         if (!sameScope(scope, event.scope)) {
           throw new ProjectionRefusal('Every appended event must belong to the requested scope')
+        }
+      }
+    }
+    if (writeOptions?.subagentTasks) {
+      const stated = new Set(
+        pending.flatMap(({ events }) =>
+          events.flatMap((event) =>
+            event.name === 'subagent.updated' ? [event.payload.subagent.subagentId] : [],
+          ),
+        ),
+      )
+      for (const subagentId of Object.keys(writeOptions.subagentTasks)) {
+        if (!stated.has(subagentId)) {
+          throw new ProjectionRefusal(
+            `A task was given for subagent ${subagentId}, which this write does not state`,
+          )
         }
       }
     }
@@ -609,9 +680,18 @@ export function isTerminal(event: ProofEvent): event is TerminalEvent {
 /** The ids of a source event's derived records: its session's status, its workspace's recency. */
 const DERIVED_SUFFIXES = [':status', ':recency', ':recency-to'] as const
 
+/**
+ * The id of the derived status record of a session above a native subagent,
+ * moved by the subagent's event: one event can move several sessions.
+ */
+const parentStatusId = (eventId: string, sessionId: string) => `${eventId}:status:${sessionId}`
+
 /** Whether the repository's own pass wrote this record, rather than a producer. */
 export function isDerivedRecord(event: { eventId: string }): boolean {
-  return DERIVED_SUFFIXES.some((suffix) => event.eventId.endsWith(suffix))
+  return (
+    DERIVED_SUFFIXES.some((suffix) => event.eventId.endsWith(suffix)) ||
+    /:status:[^:]+$/.test(event.eventId)
+  )
 }
 
 type SessionStatusRow = {

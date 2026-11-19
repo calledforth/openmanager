@@ -159,9 +159,70 @@ describe('SessionBackgroundTasks', () => {
     })
     expect(client.calls.at(-1)).toEqual({
       command: 'stopBackgroundTasks',
-      input: { sessionId: SESSION.sessionId },
+      input: { sessionId: SESSION.sessionId, taskIds: [BUILD.taskId] },
     })
     expect(host!.textContent).toBe('')
+  })
+
+  const SUBAGENT = {
+    sessionId: 'session-sub',
+    workspaceId: WORKSPACE.workspaceId,
+    title: 'Review the diff',
+    parentSessionId: SESSION.sessionId,
+  }
+
+  it('leaves subagents out, whose cards show them, and never stops one with "Stop"', async () => {
+    const client = createMockEnvironmentClient({
+      seed: {
+        workspaces: [WORKSPACE],
+        sessions: [
+          { session: SESSION, threads: [THREAD] },
+          {
+            session: SUBAGENT,
+            subagent: { subagentId: 'sa-1', origin: 'native', promptable: false },
+            status: 'running',
+            threads: [{ threadId: 'thread-sub', sessionId: SUBAGENT.sessionId }],
+          },
+        ],
+      },
+    })
+    await client.commands.openSession(SESSION.sessionId)
+    mount(
+      <EnvironmentClientProvider client={client}>
+        <SessionBackgroundTasks />
+      </EnvironmentClientProvider>,
+    )
+
+    report(client, [REVIEW])
+    expect(host!.textContent).toBe('')
+
+    report(client, [BUILD, REVIEW])
+    expect(host!.textContent).toContain('pnpm build')
+    expect(host!.textContent).not.toContain('Review the diff')
+    expect(host!.textContent).not.toContain('2 background tasks')
+
+    await click(button('Stop'))
+    await act(async () => {
+      await client.settle()
+    })
+    expect(client.calls.at(-1)).toEqual({
+      command: 'stopBackgroundTasks',
+      input: { sessionId: SESSION.sessionId, taskIds: [BUILD.taskId] },
+    })
+  })
+
+  it('lists an agent task no live subagent accounts for, which has no card to stop it from', async () => {
+    const client = createMockEnvironmentClient({
+      seed: { workspaces: [WORKSPACE], sessions: [{ session: SESSION, threads: [THREAD] }] },
+    })
+    await client.commands.openSession(SESSION.sessionId)
+    mount(
+      <EnvironmentClientProvider client={client}>
+        <SessionBackgroundTasks />
+      </EnvironmentClientProvider>,
+    )
+    report(client, [REVIEW])
+    expect(host!.textContent).toContain('Review the diff')
   })
 
   it('renders nothing on a host with no environment', () => {

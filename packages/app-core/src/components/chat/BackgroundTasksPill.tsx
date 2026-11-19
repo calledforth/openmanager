@@ -1,4 +1,4 @@
-import { useEffect, useState, type ComponentType } from 'react'
+import { useEffect, useMemo, useState, type ComponentType } from 'react'
 import { AnimatePresence, motion, useReducedMotion } from 'motion/react'
 import {
   BinocularsIcon,
@@ -67,7 +67,8 @@ function StopButton({
 
 /**
  * Work the agent left running after its turn ended, shown just above the
- * composer: a backgrounded command, a subagent, a watch loop. Between turns
+ * composer: a backgrounded command, a watch loop, a workflow. Subagents are
+ * left out by the environment's host below: their cards say so. Between turns
  * this is the only sign the session is still busy, and its Stop is the only
  * way to end that work, since the composer's own stop button belongs to a
  * turn.
@@ -225,20 +226,61 @@ export function SessionBackgroundTasks() {
 function EnvironmentBackgroundTasks() {
   const client = useEnvironmentClientOptional()!
   const sessionId = useEnvironmentState((state) => state.activeSessionId)
-  const tasks = useEnvironmentState((state) =>
+  const roster = useEnvironmentState((state) =>
     state.activeSessionId
       ? (state.sessions[state.activeSessionId]?.backgroundTasks ?? NO_TASKS)
       : NO_TASKS,
   )
+  const liveSubagents = useEnvironmentState((state) => {
+    const parent = state.activeSessionId
+    if (!parent) return 0
+    let live = 0
+    for (const session of Object.values(state.sessions)) {
+      if (
+        session.subagent &&
+        session.parentSessionId === parent &&
+        (session.status === 'running' || session.status === 'waiting')
+      ) {
+        live += 1
+      }
+    }
+    return live
+  })
+  // A subagent in the background already has its card in the chat, with its
+  // own Stop; listed here too it would read as two things running.
+  const tasks = useMemo(() => withoutSubagents(roster, liveSubagents), [roster, liveSubagents])
   if (!sessionId || tasks.length === 0 || !client.supports('stopBackgroundTasks')) return null
   return (
     <BackgroundTasksPill
       // Per session: a stop pending in one must not show as pending in the next.
       key={sessionId}
       tasks={tasks}
+      // "Stop all" means all shown, named: never a subagent this pill left
+      // out, nor one that joined the roster after it was drawn.
       onStop={(taskIds) =>
-        client.commands.stopBackgroundTasks({ sessionId, ...(taskIds ? { taskIds } : {}) })
+        client.commands.stopBackgroundTasks({
+          sessionId,
+          taskIds: taskIds ?? tasks.map((task) => task.taskId),
+        })
       }
     />
   )
+}
+
+/**
+ * The background work the pill lists: everything but as many agent tasks as
+ * the session has live subagents, whose cards show them. An agent task past
+ * that has no card to stop it from, so it stays listed.
+ */
+export function withoutSubagents(
+  tasks: readonly BackgroundTask[],
+  liveSubagents: number,
+): readonly BackgroundTask[] {
+  let hide = liveSubagents
+  if (hide === 0 || !tasks.some((task) => task.kind === 'agent')) return tasks
+  return tasks.filter((task) => {
+    if (task.kind !== 'agent' || hide === 0) return true
+    hide -= 1
+    return false
+  })
 }

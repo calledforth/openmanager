@@ -29,6 +29,9 @@ export interface SidebarSession {
   /** Every host names it; the sidebar never guesses a provider (§4.7.2). */
   providerId: ProviderId
   parentExternalId?: string
+  /** How many subagents its agent started, and how many still run or wait. */
+  subagentCount?: number
+  subagentsLive?: number
   /** Its project folder is unreachable, so the row cannot run until it is back. */
   workspaceUnavailable?: boolean
   /** ISO time of the last activity, when the host tracks it. */
@@ -45,6 +48,8 @@ export interface SidebarSession {
   waitingOn?: string
   /** Running only because of its background work: no turn is in flight. */
   inBackground?: boolean
+  /** In the background only for its subagents, which their count shows. */
+  inBackgroundForSubagents?: boolean
   /** How many background tasks run, and their names one per line. */
   backgroundTaskCount?: number
   backgroundTaskNames?: string

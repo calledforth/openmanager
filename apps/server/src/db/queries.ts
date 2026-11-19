@@ -12,6 +12,36 @@ export const PENDING_INTERACTIONS_FOR_SESSION_SQL = `
   JOIN interactions ON interactions.turn_id = turns.turn_id
   WHERE threads.session_id = ? AND turns.state = 'waiting' AND interactions.state = 'pending'`
 
+/**
+ * The requests a session's native subagents wait on, at any depth: their
+ * provider is the session's own, so it is blocked on them too
+ * (docs/decisions/subagents.md, Permissions and questions).
+ */
+export const PENDING_INTERACTIONS_FOR_NATIVE_SUBAGENTS_SQL = `
+  WITH RECURSIVE tree(session_id) AS (
+    SELECT session_id FROM sessions
+    WHERE parent_session_id = ?1 AND subagent_origin = 'native'
+    UNION ALL
+    SELECT sessions.session_id FROM sessions JOIN tree ON sessions.parent_session_id = tree.session_id
+    WHERE sessions.subagent_origin = 'native'
+  )
+  SELECT interactions.kind, interactions.created_at
+  FROM tree
+  -- CROSS JOIN keeps this order: from the few child sessions to their
+  -- requests, never a scan of every request.
+  CROSS JOIN threads ON threads.session_id = tree.session_id
+  CROSS JOIN turns ON turns.thread_id = threads.thread_id
+  CROSS JOIN interactions ON interactions.turn_id = turns.turn_id
+  WHERE turns.state = 'waiting' AND interactions.state = 'pending'`
+
+/** The newest subagents a thread's agent started, newest first; the snapshot reverses them. */
+export const SUBAGENTS_FOR_THREAD_SQL = `
+  SELECT record_json
+  FROM subagents
+  WHERE thread_id = ?
+  ORDER BY created_at DESC, subagent_id DESC
+  LIMIT ?`
+
 /** Whether a session has a turn in flight. */
 export const OPEN_TURN_FOR_SESSION_SQL = `
   SELECT 1
@@ -143,7 +173,8 @@ export const PENDING_INTERACTIONS_FOR_THREAD_SQL = `
 /** Every session, newest first: the environment snapshot's sidebar. */
 export const ALL_SESSIONS_SQL = `
   SELECT session_id, workspace_id, parent_session_id, provider_id, title, title_source, title_generated, status,
-         composer_json, background_tasks_json, settled_at, pinned_at, cooking_at, done_at, created_at, updated_at
+         composer_json, background_tasks_json, settled_at, pinned_at, cooking_at, done_at, created_at, updated_at,
+         subagent_id, subagent_origin, subagent_promptable
   FROM sessions
   ORDER BY updated_at DESC, session_id DESC`
 

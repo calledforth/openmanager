@@ -7,7 +7,6 @@ import { openEnvironmentDatabase } from '../src/db/database.js'
 import { reconcileAfterRestart } from '../src/db/boot-reconcile.js'
 import { createEventRepository } from '../src/db/event-repository.js'
 import {
-  findSessionIdByProviderSession,
   getSessionSummary,
   listAllSessionSummaries,
   readThreadState,
@@ -124,28 +123,6 @@ describe('session summary list', () => {
       parentSessionId: 'session-parent',
     })
     expect(getSessionSummary(database, 'session-parent')).not.toHaveProperty('parentSessionId')
-  })
-})
-
-describe('provider session lookup', () => {
-  it('finds the host session for a provider thread and misses on a different provider', async () => {
-    const database = await createDatabase()
-    seedWorkspace(database)
-    seedSession(database, {
-      sessionId: 'session-1',
-      title: 'Chat',
-      updatedAt: 1_000,
-      providerSessionId: 'provider-abc',
-    })
-    seedSession(database, { sessionId: 'session-unstamped', title: 'New', updatedAt: 2_000 })
-
-    expect(findSessionIdByProviderSession(database, 'opencode', 'provider-abc')).toBe('session-1')
-    // A different provider, an unknown thread, and an unstamped row are all misses.
-    expect(findSessionIdByProviderSession(database, 'claude', 'provider-abc')).toBeUndefined()
-    expect(findSessionIdByProviderSession(database, 'opencode', 'provider-xyz')).toBeUndefined()
-    expect(
-      findSessionIdByProviderSession(database, 'opencode', 'session-unstamped'),
-    ).toBeUndefined()
   })
 })
 

@@ -1,3 +1,4 @@
+import type { ReactNode } from 'react'
 import type { EnvironmentClient } from '@openmanager/environment-client'
 import { ChatWorkspace } from '../components/chat/ChatWorkspace'
 import { SidebarInset, SidebarProvider } from '../components/fluid/ui/sidebar'
@@ -14,9 +15,12 @@ import { ThemeProvider } from '../providers/theme-provider'
 export function MockEnvironmentApp({
   client,
   addWorkspace,
+  header,
 }: {
   client: EnvironmentClient
   addWorkspace?: () => Promise<void>
+  /** Above the chat, as a host's title bar would be; inside the providers. */
+  header?: ReactNode
 }) {
   return (
     <ThemeProvider>
@@ -28,6 +32,7 @@ export function MockEnvironmentApp({
           >
             <WorkspaceSidebar />
             <SidebarInset className="overflow-hidden">
+              {header}
               <ChatWorkspace />
             </SidebarInset>
           </SidebarProvider>

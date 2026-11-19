@@ -1,4 +1,5 @@
 import type { SDKMessage } from '@anthropic-ai/claude-agent-sdk'
+import type { SubtaskUpdate } from '@agentpack/contract'
 import { describe, expect, it, vi } from 'vitest'
 import type { BackendEvent } from '../../backends/Backend.js'
 import { claude } from '../../providers/claude.js'
@@ -522,55 +523,487 @@ describe('ClaudeMessageTranslator usage', () => {
 })
 
 describe('ClaudeMessageTranslator subagents', () => {
-  it('drops subagent traffic and counts the loss', () => {
-    const { events, feed, log } = build()
+  const assistant = (blocks: unknown[], parent: string | null, uuid = 'uuid-a') => ({
+    type: 'assistant',
+    message: { id: `msg-${uuid}`, role: 'assistant', content: blocks },
+    parent_tool_use_id: parent,
+    uuid,
+    session_id: 'session-1',
+  })
+  const toolResult = (
+    toolUseId: string,
+    content: unknown,
+    parent: string | null,
+    extra: { structured?: unknown; isError?: boolean } = {},
+  ) => ({
+    type: 'user',
+    message: {
+      role: 'user',
+      content: [
+        {
+          type: 'tool_result',
+          tool_use_id: toolUseId,
+          content,
+          ...(extra.isError ? { is_error: true } : {}),
+        },
+      ],
+    },
+    parent_tool_use_id: parent,
+    ...(extra.structured !== undefined ? { tool_use_result: extra.structured } : {}),
+    session_id: 'session-1',
+  })
+  const system = (subtype: string, extra: Record<string, unknown>) => ({
+    type: 'system',
+    subtype,
+    uuid: 'uuid-s',
+    session_id: 'session-1',
+    ...extra,
+  })
+  const taskStarted = (agentId: string, toolUseId: string, extra: Record<string, unknown> = {}) =>
+    system('task_started', {
+      task_id: agentId,
+      tool_use_id: toolUseId,
+      description: 'Survey the parser',
+      subagent_type: 'Explore',
+      task_type: 'local_agent',
+      is_backgrounded: false,
+      spawn_depth: 1,
+      prompt: 'Read src/parser.',
+      ...extra,
+    })
+  const result = () => ({
+    type: 'result',
+    subtype: 'success',
+    is_error: false,
+    stop_reason: 'end_turn',
+    session_id: 'session-1',
+    errors: [],
+  })
+  /** The main agent calling `Agent`, streamed as the CLI streams it. */
+  const spawn = (
+    feed: (message: unknown) => unknown,
+    index: number,
+    id: string,
+    input: Record<string, unknown> = {},
+  ) => {
+    feed(toolStart(index, id, 'Agent'))
     feed(
-      stream(
-        { type: 'content_block_delta', index: 0, delta: { type: 'text_delta', text: 'inner' } },
-        'toolu_task',
+      toolInput(
+        index,
+        JSON.stringify({ description: 'Survey the parser', prompt: 'Read src/parser.', ...input }),
       ),
     )
-    feed({
-      type: 'result',
-      subtype: 'success',
-      is_error: false,
-      session_id: 'session-1',
-      errors: [],
-    })
+  }
+  const completed = (agentId: string, text: string) => ({
+    status: 'completed',
+    agentId,
+    content: [{ type: 'text', text }],
+    resolvedModel: 'claude-haiku-5',
+    totalToolUseCount: 2,
+    totalDurationMs: 4_000,
+    totalTokens: 900,
+    usage: {},
+    prompt: 'Read src/parser.',
+  })
+  const subtasks = (events: BackendEvent[]) =>
+    events.filter((event) => event.event === 'subtask_update')
+  const of = (events: BackendEvent[], subtaskId: string) =>
+    events.filter((event) => event.subtaskId === subtaskId)
 
-    // Without the drop, a subagent's prose renders as the main agent's answer.
-    expect(named(events)).not.toContain('agent_message_chunk')
-    expect(
-      log.mock.calls.some(
-        ([entry]) =>
-          String(entry?.message).includes('Dropped subagent messages') &&
-          (entry?.data as { count: number }).count === 1,
+  it("translates a subagent's work like the main agent's, tagged with its call", () => {
+    const { events, feed } = build({ subtasks: true })
+    spawn(feed, 0, 'toolu_A')
+    feed(taskStarted('agent00000000000a', 'toolu_A'))
+    const before = events.length
+    feed(
+      assistant(
+        [
+          { type: 'thinking', thinking: '', signature: 'sig' },
+          { type: 'text', text: 'Looking at the parser.' },
+          { type: 'tool_use', id: 'toolu_read', name: 'Read', input: { file_path: '/p.ts' } },
+        ],
+        'toolu_A',
       ),
-    ).toBe(true)
+    )
+    feed(toolResult('toolu_read', 'export function parse() {}', 'toolu_A'))
+    const inner = events.slice(before)
+
+    expect(named(inner)).toEqual([
+      'agent_thought_chunk',
+      'agent_thought_chunk',
+      'agent_message_chunk',
+      'tool_call',
+      'tool_call_update',
+      'tool_call_update',
+    ])
+    expect(inner.every((event) => event.subtaskId === 'toolu_A')).toBe(true)
+    expect(dataOf<{ phase: string }>(inner, 'agent_thought_chunk').map((c) => c.phase)).toEqual([
+      'start',
+      'stop',
+    ])
+    // Whole blocks: no stream ever arrives for a subagent's text.
+    expect(dataOf(inner, 'agent_message_chunk')[0]).toEqual({
+      messageId: 'uuid-a',
+      content: { type: 'text', text: 'Looking at the parser.' },
+    })
+    expect(dataOf(inner, 'tool_call')[0]).toMatchObject({
+      toolCallId: 'toolu_read',
+      toolName: 'Read',
+      rawInput: { file_path: '/p.ts' },
+    })
+    expect(dataOf<{ status?: string }>(inner, 'tool_call_update').at(-1)?.status).toBe('completed')
+    // The main agent's own frames stay untagged.
+    expect(events.slice(0, before).every((event) => event.subtaskId === undefined)).toBe(true)
   })
 
-  it('keeps the parent Task row alive from the subagent it dropped', () => {
-    const { events, feed } = build()
-    feed({
-      type: 'assistant',
-      message: {
-        role: 'assistant',
-        content: [
-          { type: 'text', text: 'Looking for the config\nsecond line' },
-          { type: 'tool_use', id: 'toolu_inner', name: 'Grep', input: {} },
-        ],
-      },
-      parent_tool_use_id: 'toolu_task',
-      uuid: 'uuid-inner',
-      session_id: 'session-1',
-    })
+  it("keeps a subagent's frames out of the turn's books", () => {
+    const { events, feed } = build({ subtasks: true })
+    feed(stream({ type: 'message_start', message: {} }))
+    feed(stream({ type: 'content_block_start', index: 0, content_block: { type: 'text' } }))
+    feed(
+      stream({
+        type: 'content_block_delta',
+        index: 0,
+        delta: { type: 'text_delta', text: 'Same words' },
+      }),
+    )
+    // A subagent saying the same words must not be taken for the main agent's
+    // snapshot of its streamed block, nor stand in for its usage.
+    feed(assistant([{ type: 'text', text: 'Same words' }], 'toolu_A'))
+    feed(stream({ type: 'message_delta', delta: {}, usage: { output_tokens: 7 } }, 'toolu_A'))
+    feed(assistant([{ type: 'text', text: 'Same words' }], null, 'uuid-top'))
 
-    expect(dataOf<Record<string, unknown>>(events, 'subtask_update')[0]).toEqual({
-      taskId: 'toolu_task',
+    expect(
+      dataOf<{ content: { text: string } }>(events, 'agent_message_chunk').map(
+        (chunk) => chunk.content.text,
+      ),
+    ).toEqual(['Same words', 'Same words'])
+    expect(of(events, 'toolu_A')).toHaveLength(1)
+    expect(feed(result()).completed?.usage).toBeUndefined()
+  })
+
+  it('keeps interleaved parallel subagents apart by the call that started each', () => {
+    const { events, feed } = build({ subtasks: true })
+    spawn(feed, 0, 'toolu_A')
+    spawn(feed, 1, 'toolu_B', { description: 'Survey the lexer' })
+    feed(taskStarted('agent00000000000a', 'toolu_A'))
+    feed(taskStarted('agent00000000000b', 'toolu_B', { description: 'Survey the lexer' }))
+    feed(assistant([{ type: 'tool_use', id: 'toolu_a1', name: 'Grep', input: {} }], 'toolu_A'))
+    feed(assistant([{ type: 'tool_use', id: 'toolu_b1', name: 'Glob', input: {} }], 'toolu_B'))
+    feed(toolResult('toolu_b1', 'lexer.ts', 'toolu_B'))
+    feed(toolResult('toolu_a1', 'parser.ts', 'toolu_A'))
+    feed(assistant([{ type: 'text', text: 'B is done' }], 'toolu_B', 'uuid-b'))
+    feed(assistant([{ type: 'text', text: 'A is done' }], 'toolu_A', 'uuid-a'))
+
+    const ids = (subtaskId: string) =>
+      of(events, subtaskId).map((event) => (event.data as { toolCallId?: string }).toolCallId)
+    expect(ids('toolu_A').filter(Boolean)).toEqual(['toolu_a1', 'toolu_a1', 'toolu_a1'])
+    expect(ids('toolu_B').filter(Boolean)).toEqual(['toolu_b1', 'toolu_b1', 'toolu_b1'])
+    const text = (subtaskId: string) =>
+      dataOf<{ content: { text: string } }>(of(events, subtaskId), 'agent_message_chunk').map(
+        (chunk) => chunk.content.text,
+      )
+    expect(text('toolu_A')).toEqual(['A is done'])
+    expect(text('toolu_B')).toEqual(['B is done'])
+    // Both cards sit in the parent's transcript, at depth 1.
+    const cards = subtasks(events).filter((event) => event.subtaskId === undefined)
+    expect(new Set(cards.map((event) => (event.data as SubtaskUpdate).taskId))).toEqual(
+      new Set(['toolu_A', 'toolu_B']),
+    )
+    expect(cards.every((event) => (event.data as SubtaskUpdate).depth === 1)).toBe(true)
+  })
+
+  it('files a nested subagent under the subagent that started it', () => {
+    const { events, feed } = build({ subtasks: true })
+    spawn(feed, 0, 'toolu_A')
+    feed(taskStarted('agent00000000000a', 'toolu_A'))
+    feed(
+      assistant(
+        [
+          {
+            type: 'tool_use',
+            id: 'toolu_N',
+            name: 'Agent',
+            input: { description: 'Read one file', prompt: 'Read p.ts', subagent_type: 'Explore' },
+          },
+        ],
+        'toolu_A',
+      ),
+    )
+    feed(
+      taskStarted('agent00000000000n', 'toolu_N', {
+        description: 'Read one file',
+        spawn_depth: 2,
+        parent_task_id: 'agent00000000000a',
+      }),
+    )
+    feed(assistant([{ type: 'text', text: 'p.ts exports parse' }], 'toolu_N'))
+    feed(
+      toolResult('toolu_N', 'p.ts exports parse', 'toolu_A', {
+        structured: completed('agent00000000000n', 'p.ts exports parse'),
+      }),
+    )
+
+    const nested = subtasks(events).filter(
+      (event) => (event.data as SubtaskUpdate).taskId === 'toolu_N',
+    )
+    expect(nested.length).toBeGreaterThan(0)
+    // Every update about it lands in A's transcript, where its call is.
+    expect(nested.every((event) => event.subtaskId === 'toolu_A')).toBe(true)
+    expect(nested.every((event) => (event.data as SubtaskUpdate).depth === 2)).toBe(true)
+    expect(nested.every((event) => (event.data as SubtaskUpdate).parentTaskId === 'toolu_A')).toBe(
+      true,
+    )
+    expect(nested.at(-1)?.data).toMatchObject({
+      status: 'completed',
+      resultText: 'p.ts exports parse',
+      providerTaskId: 'agent00000000000n',
+    })
+    // Its own work lands in its own session.
+    expect(named(of(events, 'toolu_N'))).toEqual(['agent_message_chunk'])
+  })
+
+  it("maps task frames onto the subagent's taskId", () => {
+    const { events, feed } = build({ subtasks: true })
+    spawn(feed, 0, 'toolu_A')
+    feed(taskStarted('agent00000000000a', 'toolu_A'))
+    feed(
+      system('task_progress', {
+        task_id: 'agent00000000000a',
+        tool_use_id: 'toolu_A',
+        description: 'Survey the parser',
+        usage: { total_tokens: 1_200, tool_uses: 3, duration_ms: 5_000 },
+        last_tool_name: 'Grep',
+      }),
+    )
+    feed(
+      system('task_progress', {
+        task_id: 'agent00000000000a',
+        description: 'Survey the parser',
+        usage: { total_tokens: 2_400, tool_uses: 5, duration_ms: 31_000 },
+        last_tool_name: 'Read',
+        summary: 'Reading the grammar',
+      }),
+    )
+    feed(system('task_updated', { task_id: 'agent00000000000a', patch: { is_backgrounded: true } }))
+    feed(
+      system('task_notification', {
+        task_id: 'agent00000000000a',
+        status: 'completed',
+        output_file: '/tmp/out',
+        summary: 'The parser has two entry points.',
+        usage: { total_tokens: 3_000, tool_uses: 6, duration_ms: 40_000 },
+      }),
+    )
+
+    const updates = subtasks(events).map((event) => event.data as SubtaskUpdate)
+    expect(updates.every((update) => update.taskId === 'toolu_A')).toBe(true)
+    const started = updates.find((update) => update.providerTaskId === 'agent00000000000a')
+    expect(started).toMatchObject({
+      toolCallId: 'toolu_A',
       status: 'running',
+      depth: 1,
+      background: false,
+      stoppable: true,
+      promptable: false,
+      subagentType: 'Explore',
+      prompt: 'Read src/parser.',
+    })
+    const tail = updates.slice(-4)
+    expect(tail[0]).toEqual({
+      taskId: 'toolu_A',
+      tokens: 1_200,
+      toolCallCount: 3,
+      durationMs: 5_000,
+      currentActivity: 'Grep',
+    })
+    expect(tail[1]?.currentActivity).toBe('Reading the grammar')
+    expect(tail[2]).toEqual({ taskId: 'toolu_A', background: true })
+    expect(tail[3]).toEqual({
+      taskId: 'toolu_A',
+      status: 'completed',
       statusSource: 'task_event',
-      currentActivity: 'Looking for the config',
-      toolCallCount: 1,
+      stoppable: false,
+      resultText: 'The parser has two entry points.',
+      tokens: 3_000,
+      toolCallCount: 6,
+      durationMs: 40_000,
+    })
+  })
+
+  it("ignores task frames for a subagent's own shell commands", () => {
+    const { events, feed } = build({ subtasks: true })
+    spawn(feed, 0, 'toolu_A')
+    feed(taskStarted('agent00000000000a', 'toolu_A'))
+    const before = events.length
+    feed(
+      taskStarted('bash0001', 'toolu_bash', { task_type: 'local_bash', description: 'npm test' }),
+    )
+    feed(
+      system('task_notification', {
+        task_id: 'bash0001',
+        status: 'completed',
+        output_file: '/tmp/out',
+        summary: 'done',
+      }),
+    )
+    expect(events.slice(before)).toEqual([])
+  })
+
+  it('revives a finished subagent under the taskId it already had', () => {
+    const { events, feed, translator } = build({ subtasks: true })
+    spawn(feed, 0, 'toolu_A')
+    feed(taskStarted('agent00000000000a', 'toolu_A'))
+    feed(
+      toolResult('toolu_A', 'first answer', null, {
+        structured: completed('agent00000000000a', 'first answer'),
+      }),
+    )
+    expect(subtasks(events).at(-1)?.data).toMatchObject({ status: 'completed' })
+
+    // `SendMessage({to})` revives it from a new call, but its frames still name
+    // the original `Agent` call.
+    feed(taskStarted('agent00000000000a', 'toolu_send', { prompt: 'Now the lexer too.' }))
+    expect(subtasks(events).at(-1)?.data).toMatchObject({
+      taskId: 'toolu_A',
+      status: 'running',
+      prompt: 'Now the lexer too.',
+      stoppable: true,
+    })
+    feed(assistant([{ type: 'text', text: 'The lexer is small.' }], 'toolu_A', 'uuid-r'))
+    expect(events.at(-1)?.subtaskId).toBe('toolu_A')
+    feed(
+      system('task_notification', {
+        task_id: 'agent00000000000a',
+        status: 'completed',
+        output_file: '/tmp/out',
+        summary: 'The lexer is small.',
+      }),
+    )
+    expect(subtasks(events).at(-1)?.data).toMatchObject({
+      taskId: 'toolu_A',
+      status: 'completed',
+      resultText: 'The lexer is small.',
+    })
+    expect(translator.subtaskIdForAgent('agent00000000000a')).toBe('toolu_A')
+    expect(translator.agentIdForSubtask('toolu_A')).toBe('agent00000000000a')
+  })
+
+  it('keeps a background subagent running past its call, and after the turn', () => {
+    const { events, feed } = build({ subtasks: true })
+    spawn(feed, 0, 'toolu_A', { run_in_background: true })
+    feed(taskStarted('agent00000000000a', 'toolu_A', { is_backgrounded: true }))
+    feed(
+      toolResult('toolu_A', 'Async agent launched successfully.', null, {
+        structured: {
+          status: 'async_launched',
+          agentId: 'agent00000000000a',
+          description: 'Survey the parser',
+          prompt: 'Read src/parser.',
+          outputFile: '/tmp/out',
+        },
+      }),
+    )
+    expect(subtasks(events).at(-1)?.data).toMatchObject({
+      taskId: 'toolu_A',
+      status: 'running',
+      background: true,
+    })
+    expect(feed(result()).completed).toBeDefined()
+
+    // The parent's turn is over; the subagent is not.
+    const before = events.length
+    feed(assistant([{ type: 'tool_use', id: 'toolu_g', name: 'Grep', input: {} }], 'toolu_A'))
+    feed(toolResult('toolu_g', 'hits', 'toolu_A'))
+    feed(assistant([{ type: 'text', text: 'Found it.' }], 'toolu_A', 'uuid-late'))
+    expect(events.slice(before).every((event) => event.subtaskId === 'toolu_A')).toBe(true)
+    feed(
+      system('task_notification', {
+        task_id: 'agent00000000000a',
+        tool_use_id: 'toolu_A',
+        status: 'completed',
+        output_file: '/tmp/out',
+        summary: 'Found it.',
+      }),
+    )
+    expect(subtasks(events).at(-1)?.data).toMatchObject({
+      taskId: 'toolu_A',
+      status: 'completed',
+      resultText: 'Found it.',
+    })
+    // Nothing before the notification said it had finished.
+    const early = subtasks(events.slice(0, before)).map((event) => event.data as SubtaskUpdate)
+    expect(early.some((update) => update.status === 'completed')).toBe(false)
+  })
+
+  it('does not take a moved-to-background call returning for the end of the run', () => {
+    const { events, feed } = build({ subtasks: true })
+    spawn(feed, 0, 'toolu_A')
+    feed(taskStarted('agent00000000000a', 'toolu_A'))
+    feed(system('task_updated', { task_id: 'agent00000000000a', patch: { is_backgrounded: true } }))
+    // What Ctrl+B makes the call return, with no structured output to read.
+    feed(toolResult('toolu_A', 'Async agent launched successfully.', null))
+    expect(subtasks(events).at(-1)?.data).not.toHaveProperty('status')
+  })
+
+  it('keeps a stopped subagent cancelled when its call fails afterwards', () => {
+    const { events, feed } = build({ subtasks: true })
+    spawn(feed, 0, 'toolu_A')
+    feed(taskStarted('agent00000000000a', 'toolu_A'))
+    feed(
+      system('task_notification', {
+        task_id: 'agent00000000000a',
+        status: 'stopped',
+        output_file: '/tmp/out',
+        summary: 'Stopped by the user',
+      }),
+    )
+    expect(subtasks(events).at(-1)?.data).toMatchObject({
+      status: 'cancelled',
+      statusReason: 'Stopped by the user',
+      stoppable: false,
+    })
+    feed(toolResult('toolu_A', 'interrupted', null, { isError: true }))
+    expect(subtasks(events).at(-1)?.data).not.toHaveProperty('status')
+  })
+
+  it('keeps a stopped subagent cancelled when its answer arrives afterwards', () => {
+    const { events, feed } = build({ subtasks: true })
+    spawn(feed, 0, 'toolu_A')
+    feed(taskStarted('agent00000000000a', 'toolu_A'))
+    feed(system('task_notification', { task_id: 'agent00000000000a', status: 'stopped' }))
+    feed(
+      toolResult('toolu_A', 'partial answer', null, {
+        structured: completed('agent00000000000a', 'partial answer'),
+      }),
+    )
+    const last = subtasks(events).at(-1)?.data
+    expect(last).not.toHaveProperty('status')
+    expect(last).toMatchObject({ resultText: 'partial answer', stoppable: false })
+  })
+
+  it("reads a foreground run's end from its call's structured result", () => {
+    const { events, feed } = build({ subtasks: true })
+    spawn(feed, 0, 'toolu_A')
+    feed(
+      toolResult('toolu_A', 'two entry points', null, {
+        structured: completed('agent00000000000a', 'two entry points'),
+      }),
+    )
+    expect(subtasks(events).at(-1)?.data).toEqual({
+      taskId: 'toolu_A',
+      toolCallId: 'toolu_A',
+      status: 'completed',
+      statusSource: 'task_event',
+      depth: 1,
+      promptable: false,
+      stoppable: false,
+      modelId: 'claude-haiku-5',
+      providerTaskId: 'agent00000000000a',
+      resultText: 'two entry points',
+      tokens: 900,
+      toolCallCount: 2,
+      durationMs: 4_000,
     })
   })
 })

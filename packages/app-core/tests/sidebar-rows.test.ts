@@ -1,6 +1,88 @@
 import { describe, expect, it } from 'vitest'
+import type { SessionSummary } from '@openmanager/protocol'
 import { createMockEnvironmentClient, type MockSeed } from '@openmanager/environment-client'
-import { createSidebarRowsReader } from '../src/providers/sidebar-rows'
+import { createSidebarRowsReader, groupSidebarSessions } from '../src/providers/sidebar-rows'
+
+describe('groupSidebarSessions', () => {
+  const summary = (patch: Partial<SessionSummary> & { sessionId: string }): SessionSummary => ({
+    workspaceId: 'C:/repo',
+    title: patch.sessionId,
+    status: 'idle',
+    providerId: 'claude',
+    updatedAt: '2026-11-19T10:00:00.000Z',
+    ...patch,
+  })
+  const rows = (sessions: SessionSummary[]) =>
+    groupSidebarSessions({ sessions, unsent: [], workspaces: [], environmentId: 'env-a' })[
+      'C:/repo'
+    ] ?? []
+  const subagent = (sessionId: string, parentSessionId: string, status = 'idle') =>
+    summary({
+      sessionId,
+      parentSessionId,
+      status: status as SessionSummary['status'],
+      subagent: { subagentId: `sa-${sessionId}`, origin: 'native', promptable: false },
+    })
+
+  it('gives subagents no rows, and counts them on their parent', () => {
+    const shown = rows([
+      summary({ sessionId: 'parent', status: 'running' }),
+      subagent('a', 'parent', 'running'),
+      subagent('b', 'parent', 'waiting'),
+      subagent('c', 'parent'),
+      // A subagent's own subagent is its parent's to count, not the session's.
+      subagent('d', 'a', 'running'),
+      // A child that is not a subagent keeps its row under its parent.
+      summary({ sessionId: 'fork', parentSessionId: 'parent' }),
+    ])
+    expect(shown.map((row) => row.externalId)).toEqual(['parent', 'fork'])
+    expect(shown[0]).toMatchObject({ subagentCount: 3, subagentsLive: 2 })
+    expect(shown[1]).not.toHaveProperty('subagentCount')
+  })
+
+  it('names background work without subagents, and says when they are all of it', () => {
+    const agent = { taskId: 't-agent', kind: 'agent' as const, description: 'Map callers' }
+    const shell = { taskId: 't-shell', kind: 'shell' as const, description: 'pnpm test' }
+    const [onlyAgents] = rows([
+      summary({ sessionId: 'p', status: 'running', inBackground: true, backgroundTasks: [agent] }),
+      subagent('a', 'p', 'running'),
+    ])
+    expect(onlyAgents).toMatchObject({ status: 'running', inBackgroundForSubagents: true })
+    expect(onlyAgents).not.toHaveProperty('backgroundTaskCount')
+
+    const [mixed] = rows([
+      summary({
+        sessionId: 'p',
+        status: 'running',
+        inBackground: true,
+        backgroundTasks: [agent, shell],
+      }),
+      subagent('a', 'p', 'running'),
+    ])
+    expect(mixed).toMatchObject({ backgroundTaskCount: 1, backgroundTaskNames: 'pnpm test' })
+    expect(mixed).not.toHaveProperty('inBackgroundForSubagents')
+
+    // An agent task no live subagent accounts for has no card: it stays named.
+    const [uncounted] = rows([
+      summary({ sessionId: 'p', status: 'running', inBackground: true, backgroundTasks: [agent] }),
+    ])
+    expect(uncounted).toMatchObject({ backgroundTaskCount: 1, backgroundTaskNames: 'Map callers' })
+    expect(uncounted).not.toHaveProperty('inBackgroundForSubagents')
+  })
+
+  it('counts a parent live while a subagent of its subagent works, and names them all', () => {
+    const [parent] = rows([
+      summary({ sessionId: 'parent' }),
+      subagent('a', 'parent'),
+      subagent('d', 'a', 'running'),
+    ])
+    expect(parent).toMatchObject({
+      subagentCount: 1,
+      subagentsLive: 1,
+      subagentSessionIds: 'a\nd',
+    })
+  })
+})
 
 const WORKSPACE = {
   workspaceId: 'C:/repo',

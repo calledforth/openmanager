@@ -201,7 +201,7 @@ const WINDOWS: Window<unknown>[] = [
   }),
   window({
     id: 'W7 (child)',
-    was: 'the runtime stamp: a child row, then its identity in a second write',
+    was: 'a child row and the subagent record it holds, in one write',
     at: { name: 'session.created' },
     prepare: async (rig, a): Promise<Target> => {
       const parent = await createSession(rig, a, { quiet: true })
@@ -218,8 +218,18 @@ const WINDOWS: Window<unknown>[] = [
       }),
     landed: async (rig, result, parent) => {
       const child = sessions(result).find((item) => item.parentSessionId === parent.sessionId)
-      // A child is never durable without the identity it resumes by.
-      if (child) expect(await rig.server.readUnidentified()).not.toContain(child.sessionId)
+      // A child is never durable without the subagent record it holds the
+      // work of: both are one write (docs/decisions/subagents.md). Its
+      // provider identity may follow, once OpenCode names its session.
+      if (child) {
+        const rows = (await rig.server.readSessions()) as Array<{
+          sessionId: string
+          subagent?: { origin: string }
+        }>
+        expect(rows.find((row) => row.sessionId === child.sessionId)?.subagent).toMatchObject({
+          origin: 'native',
+        })
+      }
       return child !== undefined
     },
   }),

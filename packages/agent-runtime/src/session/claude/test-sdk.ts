@@ -260,18 +260,42 @@ export class FakeClaudeQuery implements ClaudeQuerySession {
     })
   }
 
-  /** The synthesized user message the CLI reports a tool's outcome through. */
-  emitToolResult(toolUseId: string, content: unknown, isError = false): void {
+  /** The synthesized user message the CLI reports a tool's outcome through.
+   * `parentToolUseId` makes it a subagent's; `structured` is the tool's own
+   * output object (`tool_use_result`), an `AgentOutput` for an `Agent` call. */
+  emitToolResult(
+    toolUseId: string,
+    content: unknown,
+    isError = false,
+    extra: { parentToolUseId?: string; structured?: unknown } = {},
+  ): void {
     this.emit({
       type: 'user',
       message: {
         role: 'user',
         content: [{ type: 'tool_result', tool_use_id: toolUseId, content, is_error: isError }],
       },
-      parent_tool_use_id: null,
+      parent_tool_use_id: extra.parentToolUseId ?? null,
+      ...(extra.structured !== undefined ? { tool_use_result: extra.structured } : {}),
       uuid: crypto.randomUUID(),
       session_id: this.sessionId,
     } as unknown as SDKMessage)
+  }
+
+  /** `task_started` for a subagent, as the CLI reports one starting or being
+   * revived: `agentId` is its `task_id`, `toolUseId` the call that did it. */
+  emitAgentStarted(agentId: string, toolUseId: string, extra: Record<string, unknown> = {}): void {
+    this.emitSystem('task_started', this.sessionId, {
+      task_id: agentId,
+      tool_use_id: toolUseId,
+      description: 'Review the diff',
+      subagent_type: 'general-purpose',
+      task_type: 'local_agent',
+      is_backgrounded: false,
+      spawn_depth: 1,
+      prompt: 'Review the diff.',
+      ...extra,
+    })
   }
 
   /** A finished assistant message. `parentToolUseId` makes it a subagent's. */

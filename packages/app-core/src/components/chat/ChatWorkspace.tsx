@@ -7,6 +7,13 @@ import { SessionBackgroundTasks } from './BackgroundTasksPill'
 import { SessionQueuedMessages } from './QueuedMessages'
 import { SessionLaunchPill } from './SessionLaunchPill'
 import { SyncingPill } from './SyncingPill'
+import { usePlanStateOptional } from '../../providers/plan-provider'
+import { useQuestionStateOptional } from '../../providers/question-provider'
+import {
+  SubagentReadOnlyFooter,
+  useChildSessionView,
+  type ChildSessionView,
+} from './SubagentSession'
 import { useState, type ReactNode } from 'react'
 import { noticeAnchorRef } from '../../lib/notice-anchors'
 import { cn } from '../../lib/utils'
@@ -177,15 +184,54 @@ export function ChatWorkspace({ connectionProblem = false }: { connectionProblem
 }
 
 function ChatWorkspaceContent({ connectionProblem }: { connectionProblem: boolean }) {
+  const client = useEnvironmentClientOptional()
+  return client ? (
+    <EnvironmentChatWorkspaceContent connectionProblem={connectionProblem} />
+  ) : (
+    <ChatWorkspaceBody connectionProblem={connectionProblem} child={null} />
+  )
+}
+
+function EnvironmentChatWorkspaceContent({ connectionProblem }: { connectionProblem: boolean }) {
+  const child = useChildSessionView()
+  return <ChatWorkspaceBody connectionProblem={connectionProblem} child={child} />
+}
+
+function ChatWorkspaceBody({
+  connectionProblem,
+  child,
+}: {
+  connectionProblem: boolean
+  /** The open session as a subagent's child, from the environment; null otherwise. */
+  child: ChildSessionView | null
+}) {
   const { closeChildSession } = useSessionState()
   const { activeThread } = useActiveThreadState()
-  const parentExternalId = activeThread?.parentExternalId
+  const parentExternalId = child?.parentSessionId ?? activeThread?.parentExternalId
+  const backToParent = parentExternalId ? () => closeChildSession(parentExternalId) : undefined
+  // A child a person can prompt takes the ordinary composer; one only its
+  // parent agent can reach says so where the composer would be. Except while
+  // it asks something: a question or a plan is answered in the composer.
+  const pendingQuestion = useQuestionStateOptional()?.pendingQuestion
+  const pendingPlan = usePlanStateOptional()?.pendingPlan
+  const asking = Boolean(pendingQuestion || pendingPlan)
+  const readOnly = backToParent !== undefined && !child?.promptable && !asking
 
+  // A subagent's page has no header of its own: the host's title bar trail
+  // names its parent, and the footer says what it runs on and how it stands.
   return (
     <>
       <ChatView />
-      {parentExternalId ? (
-        <ChildSessionBanner onBack={() => closeChildSession(parentExternalId)} />
+      {readOnly && child ? (
+        <FloatingChatComposer>
+          <SubagentReadOnlyFooter
+            parentTitle={child.parentTitle}
+            identity={child.identity}
+            onOpenParent={backToParent}
+          />
+        </FloatingChatComposer>
+      ) : readOnly && backToParent ? (
+        <ChildSessionBanner onBack={backToParent} />
       ) : (
         <FloatingChatComposer>
           {/* Registered so a notice (a discarded draft's undo) can sit above it. */}

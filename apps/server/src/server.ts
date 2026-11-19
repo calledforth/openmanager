@@ -26,6 +26,7 @@ import {
   FILESYSTEM_BROWSE_CAPABILITY,
   PROTOCOL_VERSION,
   STEER_SEND_NOW_CAPABILITY,
+  SUBAGENTS_CAPABILITY,
   SEARCH_MESSAGES_CAPABILITY,
   SESSION_CREATE_EXPLICIT_CAPABILITY,
   UPLOAD_TICKET_CAPABILITY,
@@ -113,6 +114,7 @@ import { createToolOutputReader } from './db/tool-output.ts'
 import { createUploadService } from './uploads.ts'
 import { createMoveSessionTool } from './move-session-tool.ts'
 import { createShareFileTool } from './share-file-tool.ts'
+import { createSpawnAgentTools, type SpawnHost } from './subagents/spawn-tools.ts'
 import { attachWebSocket, SOCKET_CAPABILITIES } from './websocket.ts'
 import { insideGitCheckout, openWorkspaceRegistry } from './workspaces.ts'
 
@@ -139,6 +141,8 @@ export const SERVER_CAPABILITIES = [
   'session.cook',
   'session.acknowledge',
   'session.background.stop',
+  'subagent.stop',
+  SUBAGENTS_CAPABILITY,
   'turn.send',
   'turn.interrupt',
   'queue.add',
@@ -401,9 +405,41 @@ export async function startServer(config: ServerConfig) {
     requestMove: (threadId, workspaceId, name) =>
       moveSessionInto.requestMove(threadId, workspaceId, name),
   })
+  // The spawn tools act through the thread service, made below; until then
+  // no session can be running a turn to call them.
+  let spawnInto: SpawnHost | undefined
+  const notYet = () => {
+    throw new Error('The environment is starting.')
+  }
+  const spawnTools = createSpawnAgentTools({
+    callerOf: (threadId) => spawnInto?.callerOf(threadId),
+    providers: () => spawnInto?.providers() ?? [],
+    spawn: (args) => (spawnInto ? spawnInto.spawn(args) : Promise.reject(notYet())),
+    list: (parentSessionId) => spawnInto?.list(parentSessionId) ?? [],
+    get: (parentSessionId, subagentId) => spawnInto?.get(parentSessionId, subagentId),
+    waitSettled: (parentSessionId, subagentId, timeoutMs) =>
+      spawnInto
+        ? spawnInto.waitSettled(parentSessionId, subagentId, timeoutMs)
+        : Promise.reject(notYet()),
+    resultOf: (parentSessionId, subagentId) => spawnInto?.resultOf(parentSessionId, subagentId),
+    markDelivered: (parentSessionId, subagentId) =>
+      spawnInto?.markDelivered(parentSessionId, subagentId),
+    send: (parentSessionId, subagentId, message) =>
+      spawnInto
+        ? spawnInto.send(parentSessionId, subagentId, message)
+        : Promise.reject(notYet()),
+    stop: (parentSessionId, subagentId) =>
+      spawnInto ? spawnInto.stop(parentSessionId, subagentId) : Promise.reject(notYet()),
+  })
   const agentTools = createAgentToolsEndpoint({
     serverName: 'openmanager',
-    tools: [...pullRequests.tools, shareFileTool, moveSessionTool],
+    tools: [
+      ...pullRequests.tools,
+      shareFileTool,
+      moveSessionTool,
+      // On unless the environment turns them off (docs/decisions/subagents.md).
+      ...(process.env.OPENMANAGER_SPAWN_AGENT === '0' ? [] : spawnTools),
+    ],
     port: () => listeningPort(),
     version: serverVersion(),
     log,
@@ -567,6 +603,23 @@ export async function startServer(config: ServerConfig) {
       onQueueProblem: (message, data) => log('warn', message, data),
       onMoveProblem: (message, data) => log('warn', message, data),
       ...(config.movableProviders ? { movableProviders: config.movableProviders } : {}),
+      spawnProviders: () =>
+        providerService.snapshot().map((provider) => {
+          const profile = composerStore.getProfile(provider.id)
+          return {
+            providerId: provider.id,
+            name: provider.displayName,
+            // A provider nothing has probed yet reads `unknown`, and a chat can
+            // still start there; only a known problem rules it out, as it does
+            // for a person starting a chat.
+            available: provider.health.summary !== 'error',
+            models: (profile?.availableModels ?? []).map((model) => ({
+              modelId: model.modelId,
+              name: model.name,
+            })),
+            ...(profile?.defaultModelId ? { defaultModelId: profile.defaultModelId } : {}),
+          }
+        }),
       watchToolInput: (input) => pullRequests.wantsToolInput(input),
       onToolInput: (call) => scratchpad.observeToolInput(call),
       onWatchedToolSettled: ({ sessionId, toolCallId, text, startedAt }) =>
@@ -583,6 +636,7 @@ export async function startServer(config: ServerConfig) {
         }),
     },
   )
+  spawnInto = threadService.spawnHost
   shareFileInto = {
     agentTurnOf: (threadId) => threadService.agentTurnOf(threadId),
     share: (sessionId, workspaceId, path) => artifacts.share(sessionId, workspaceId, path),
@@ -707,6 +761,7 @@ export async function startServer(config: ServerConfig) {
       toolsCancelled: reconciled.toolsCancelled,
       thoughtsClosed: reconciled.thoughtsClosed,
       questionsCancelled: reconciled.questionsCancelled,
+      subagentsInterrupted: reconciled.subagentsInterrupted,
       threadsRepaired: reconciled.threadsRepaired,
       eventsWritten: reconciled.eventsWritten,
       durationMs: reconciled.durationMs,

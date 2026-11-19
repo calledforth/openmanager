@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { createMockEnvironmentClient, createThreadState } from '@openmanager/environment-client'
+import type { Subagent } from '@openmanager/protocol'
 import { contentText, createEnvironmentThreadStores, projectThread } from './environment-thread'
 
 const THREAD = { threadId: 'thread-1', sessionId: 'session-1' }
@@ -756,5 +757,102 @@ describe('artifact references', () => {
         ],
       },
     ])
+  })
+})
+
+describe('projectThread with subagents', () => {
+  const subagent = (patch: Partial<Subagent> & Pick<Subagent, 'subagentId'>): Subagent => ({
+    parentSessionId: THREAD.sessionId,
+    turnId: 't1',
+    depth: 1,
+    origin: 'native',
+    providerId: 'claude',
+    title: 'Map the callers',
+    status: 'running',
+    background: false,
+    promptable: false,
+    stoppable: true,
+    stats: {},
+    startedAt: '2026-11-18T10:00:00.000Z',
+    updatedAt: '2026-11-18T10:00:00.000Z',
+    ...patch,
+  })
+  const prompt = (turnId: string, text: string) => ({
+    messageId: `${turnId}-u`,
+    threadId: THREAD.threadId,
+    turnId,
+    role: 'user' as const,
+    content: [{ type: 'text' as const, text }],
+  })
+
+  it('shows a subagent card in place of the call that started it', () => {
+    const state = thread({
+      turns: [{ turnId: 't1', threadId: THREAD.threadId, state: 'running' }],
+      messages: [prompt('t1', 'audit it')],
+      tools: [
+        { toolCallId: 'read-1', turnId: 't1', toolName: 'Read', status: 'completed' },
+        { toolCallId: 'call-a', turnId: 't1', toolName: 'Agent', status: 'in_progress' },
+        { toolCallId: 'read-2', turnId: 't1', toolName: 'Read', status: 'completed' },
+      ],
+      order: [
+        { kind: 'tool', id: 'read-1', turnId: 't1' },
+        { kind: 'tool', id: 'call-a', turnId: 't1' },
+        { kind: 'tool', id: 'read-2', turnId: 't1' },
+      ],
+      subagents: [
+        subagent({ subagentId: 'a', toolCallId: 'call-a' }),
+        // Its provider named no call: it shows where the turn's work is.
+        subagent({ subagentId: 'b' }),
+        // Another turn's, and not this one's to show.
+        subagent({ subagentId: 'c', turnId: 't0', toolCallId: 'read-2' }),
+      ],
+    })
+    const parts = projectThread(state).byId.get('turn:t1:assistant')?.content.parts ?? []
+    expect(parts.map((part) => [part.type, part.id])).toEqual([
+      ['tool', 'read-1'],
+      ['subagent', 'subagent:a'],
+      ['tool', 'read-2'],
+      ['subagent', 'subagent:b'],
+    ])
+  })
+
+  it('rebuilds a turn when one of its subagents changes, and only that turn', () => {
+    const base = thread({
+      turns: [
+        { turnId: 't0', threadId: THREAD.threadId, state: 'completed' },
+        { turnId: 't1', threadId: THREAD.threadId, state: 'running' },
+      ],
+      messages: [prompt('t0', 'first'), prompt('t1', 'second')],
+      subagents: [subagent({ subagentId: 'a' })],
+    })
+    const first = projectThread(base)
+    const next = projectThread(
+      { ...base, subagents: [subagent({ subagentId: 'a', activity: 'Reading auth.ts' })] },
+      first,
+    )
+    expect(next.turns.get('t0')).toBe(first.turns.get('t0'))
+    expect(next.turns.get('t1')).not.toBe(first.turns.get('t1'))
+    const part = next.byId.get('turn:t1:assistant')?.content.parts?.[0] as
+      { subagent?: Subagent } | undefined
+    expect(part?.subagent?.activity).toBe('Reading auth.ts')
+  })
+
+  it('marks the prompt of a turn nobody typed with where it came from', () => {
+    const state = thread({
+      turns: [
+        { turnId: 't1', threadId: THREAD.threadId, state: 'completed', origin: 'delegated' },
+        { turnId: 't2', threadId: THREAD.threadId, state: 'completed', origin: 'subagents' },
+        { turnId: 't3', threadId: THREAD.threadId, state: 'completed' },
+      ],
+      messages: [
+        prompt('t1', 'Find the callers'),
+        prompt('t2', 'Subagents finished: one'),
+        prompt('t3', 'thanks'),
+      ],
+    })
+    const projection = projectThread(state)
+    expect(projection.byId.get('t1-u')?.content.origin).toBe('delegated')
+    expect(projection.byId.get('t2-u')?.content.origin).toBe('subagents')
+    expect(projection.byId.get('t3-u')?.content.origin).toBeUndefined()
   })
 })

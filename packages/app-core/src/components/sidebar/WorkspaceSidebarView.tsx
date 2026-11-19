@@ -21,6 +21,7 @@ import {
   FolderPlusIcon,
   GitBranchIcon,
   GitForkIcon,
+  RobotIcon,
   NotePencilIcon,
   PencilSimpleLineIcon,
   PushPinIcon,
@@ -1480,6 +1481,28 @@ function UnsentMark() {
   )
 }
 
+/**
+ * The subagents a session's agent started, as a count beside its provider:
+ * their sessions have no rows of their own. Tinted while any still runs.
+ */
+function SubagentCount({ count, live }: { count: number; live: number }) {
+  const label = `${count} ${count === 1 ? 'subagent' : 'subagents'}${live ? `, ${live} running` : ''}`
+  return (
+    <span
+      className={cn(
+        'flex shrink-0 items-center gap-0.5 tabular-nums',
+        live > 0 && 'text-[color:var(--basis-status-working)]',
+      )}
+      title={label}
+      data-subagent-count={count}
+    >
+      <RobotIcon className="h-3 w-3" aria-hidden />
+      <span aria-hidden>{count}</span>
+      <span className="sr-only">{label}</span>
+    </span>
+  )
+}
+
 /** Said for an offline environment's row: what's on it is from the last time it was seen. */
 const offlineExplanation = (name: string) => `${name} is offline. This is what was last seen.`
 
@@ -1630,7 +1653,8 @@ function SessionCardBody({
         )}
       >
         <StatusOrAge
-          tone={tone}
+          // Kept going only by its subagents: their count below says so.
+          tone={tone === 'background' && session.inBackgroundForSubagents ? null : tone}
           iso={session.updatedAt}
           now={now}
           moment={moment}
@@ -1651,6 +1675,9 @@ function SessionCardBody({
         <ProviderIcon providerId={providerId} className="h-3 w-3 opacity-80" />
         <span className="sr-only">{providerName}</span>
       </span>
+      {session.subagentCount ? (
+        <SubagentCount count={session.subagentCount} live={session.subagentsLive ?? 0} />
+      ) : null}
       {unsent ? <UnsentMark /> : null}
       {git ? (
         <span

@@ -32,6 +32,7 @@ import {
 } from './composer.js'
 import { ComposerListingsSnapshotSchema } from './composer-listings.js'
 import { ThreadQueueSchema } from './queue.js'
+import { SubagentListSchema } from './subagents.js'
 import { ProofEventSchema, ProofEventSchemas, type ProofEvent } from './events.js'
 
 export const SequenceSchema = z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER)
@@ -203,6 +204,12 @@ const ThreadSnapshotSchema = z
       listing: ComposerListingSchema,
       /** The messages the chat holds back, as `thread.queue.updated` last stated them. */
       queue: ThreadQueueSchema,
+      /**
+       * Every subagent this thread's agent started, as `subagent.updated`
+       * last stated each. Optional so a snapshot from an older environment
+       * still parses.
+       */
+      subagents: SubagentListSchema.optional(),
     }),
   })
   .superRefine((snapshot, ctx) => {

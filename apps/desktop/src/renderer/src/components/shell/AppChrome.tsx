@@ -16,6 +16,12 @@ import { typographyBody } from '@openmanager/app-core/lib/typography'
 import { Tooltip } from '@openmanager/app-core/components/ui/Tooltip'
 import { ProjectIcon } from '@openmanager/app-core/components/sidebar/ProjectIcon'
 import { useSidebar } from '@openmanager/app-core/components/fluid/ui/sidebar'
+import {
+  SessionTrailParent,
+  SessionTrailTag,
+} from '@openmanager/app-core/components/chat/SessionTrail'
+import { useChildSessionTrail } from '@openmanager/app-core/components/chat/SubagentSession'
+import { useEnvironmentClientOptional } from '@openmanager/app-core/providers/environment-client'
 
 const isMac = window.electronAPI.platform === 'darwin'
 const showWindowControls = !isMac
@@ -47,6 +53,31 @@ function useTitlebarTrail() {
   return { projectName, chatTitle, scratch: project?.scratch === true }
 }
 
+function TitleText({ children }: { children: string }) {
+  return (
+    <span className={cn(typographyBody, 'min-w-0 truncate text-[var(--basis-text-muted)]')}>
+      {children}
+    </span>
+  )
+}
+
+/** The session's title, after its parent's on a subagent's page, with the subagent's kind beside it. */
+function ChildAwareTitle({ chatTitle }: { chatTitle: string }) {
+  const child = useChildSessionTrail()
+  return (
+    <>
+      {child ? (
+        <SessionTrailParent
+          trail={child}
+          className={cn(typographyBody, 'titlebar-no-drag text-[var(--basis-text-muted)]')}
+        />
+      ) : null}
+      <TitleText>{chatTitle}</TitleText>
+      {child?.agentType ? <SessionTrailTag>{child.agentType}</SessionTrailTag> : null}
+    </>
+  )
+}
+
 export function AppChrome() {
   const { open: sidebarOpen, toggleSidebar } = useSidebar()
   const sidebarCollapsed = !sidebarOpen
@@ -54,6 +85,9 @@ export function AppChrome() {
   const { activeWorkspacePath } = useSessionState()
   const { createSession } = useSidebarData()
   const { projectName, chatTitle, scratch } = useTitlebarTrail()
+  // The environment client mounts after the first paint; until then no
+  // session is a subagent's.
+  const hasEnvironment = useEnvironmentClientOptional() !== null
 
   useEffect(() => {
     window.electronAPI
@@ -136,9 +170,11 @@ export function AppChrome() {
             <span className="shrink-0 text-[var(--basis-text-faint)]">/</span>
           </>
         ) : null}
-        <span className={cn(typographyBody, 'min-w-0 truncate text-[var(--basis-text-muted)]')}>
-          {chatTitle}
-        </span>
+        {hasEnvironment ? (
+          <ChildAwareTitle chatTitle={chatTitle} />
+        ) : (
+          <TitleText>{chatTitle}</TitleText>
+        )}
       </div>
 
       <div className="titlebar-no-drag flex shrink-0 items-stretch">

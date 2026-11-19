@@ -60,7 +60,42 @@ export function groupSidebarSessions({
       )
       .map((workspace) => workspace.path),
   )
+  // A subagent's session gets no row of its own: its parent's card counts it,
+  // and the parent chat's subagent cards open it.
+  const isLive = (summary: SessionSummary) =>
+    summary.status === 'running' || summary.status === 'waiting'
+  const childrenOf = new Map<string, SessionSummary[]>()
   for (const summary of sessions) {
+    if (!summary.subagent || !summary.parentSessionId) continue
+    const siblings = childrenOf.get(summary.parentSessionId) ?? []
+    siblings.push(summary)
+    childrenOf.set(summary.parentSessionId, siblings)
+  }
+  /** Every subagent under a session, at any depth. */
+  const descendants = (sessionId: string, seen = new Set<string>()): SessionSummary[] =>
+    (childrenOf.get(sessionId) ?? []).flatMap((child) => {
+      if (seen.has(child.sessionId)) return []
+      seen.add(child.sessionId)
+      return [child, ...descendants(child.sessionId, seen)]
+    })
+  for (const summary of sessions) {
+    if (summary.subagent) continue
+    const direct = childrenOf.get(summary.sessionId) ?? []
+    const nested = direct.length ? descendants(summary.sessionId) : []
+    // One of its subagents is live while it, or a subagent of its own, works.
+    const live = direct.filter(
+      (child) => isLive(child) || descendants(child.sessionId).some(isLive),
+    ).length
+    // A subagent running in the background is shown by its card and counted
+    // here, so only as many agent tasks as there are live subagents are left
+    // out of the background work; any more have no card and stay named.
+    let hide = live
+    const background =
+      summary.backgroundTasks?.filter((task) => {
+        if (task.kind !== 'agent' || hide === 0) return true
+        hide -= 1
+        return false
+      }) ?? []
     const entry: SidebarSessionEntry = {
       externalId: summary.sessionId,
       ...(environmentId ? { environmentId } : {}),
@@ -71,6 +106,13 @@ export function groupSidebarSessions({
       status: summary.status === 'idle' ? (summary.doneAt ? 'done' : 'ready') : summary.status,
       providerId: summary.providerId as ProviderId,
       ...(summary.parentSessionId ? { parentExternalId: summary.parentSessionId } : {}),
+      ...(direct.length ? { subagentCount: direct.length } : {}),
+      ...(live ? { subagentsLive: live } : {}),
+      // Its subagents' pages are where it is on screen, for the card to show
+      // it selected. Joined, so an unchanged set keeps the row as it was.
+      ...(nested.length
+        ? { subagentSessionIds: nested.map((child) => child.sessionId).join('\n') }
+        : {}),
       // ChatView still branches on `isDriven` for the Convex IPC overlay.
       // This path has one protocol-event stream and no `stream_chunks`
       // subscription, so the flag is always true. Desktop must drop the
@@ -84,13 +126,17 @@ export function groupSidebarSessions({
       ...(unsentIds.has(summary.sessionId) ? { hasUnsentDraft: true } : {}),
       ...(summary.waitingOn ? { waitingOn: summary.waitingOn } : {}),
       ...(summary.inBackground ? { inBackground: true } : {}),
+      // Kept going by its subagents alone: the row says so with their count,
+      // not as background work. Its status stays the server's, so it still
+      // reads as live work (no settling, no "finished" notice) until they end.
+      ...(summary.inBackground && summary.backgroundTasks?.length && background.length === 0
+        ? { inBackgroundForSubagents: true }
+        : {}),
       // Primitives, so an unchanged roster keeps the row as it was.
-      ...(summary.backgroundTasks?.length
+      ...(background.length
         ? {
-            backgroundTaskCount: summary.backgroundTasks.length,
-            backgroundTaskNames: summary.backgroundTasks
-              .map((task) => task.description || task.kind)
-              .join('\n'),
+            backgroundTaskCount: background.length,
+            backgroundTaskNames: background.map((task) => task.description || task.kind).join('\n'),
           }
         : {}),
     }

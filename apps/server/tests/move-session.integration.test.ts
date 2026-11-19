@@ -829,12 +829,15 @@ describe('move_session on the rows, its provider driven by hand', () => {
       )
       .get(chat.sessionId) as { session_id: string; thread_id: string }
     expect(child).toBeDefined()
-    // A turn and a message of the child's own, so its keys reach past its thread.
+    // A turn and a message of the child's own, so its keys reach past its
+    // thread. After what the child already holds: a subagent's first turn and
+    // prompt are filed with it.
     chat.database.exec(`
       INSERT INTO turns (turn_id, thread_id, workspace_id, state, started_at, updated_at)
         VALUES ('child-turn', '${child.thread_id}', '/workspace/project', 'completed', 1, 1);
       INSERT INTO messages (message_id, workspace_id, thread_id, turn_id, role, ordinal, created_at, updated_at)
-        VALUES ('child-message', '/workspace/project', '${child.thread_id}', 'child-turn', 'assistant', 0, 1, 1);
+        VALUES ('child-message', '/workspace/project', '${child.thread_id}', 'child-turn', 'assistant',
+          (SELECT COALESCE(MAX(ordinal), -1) + 1 FROM messages WHERE thread_id = '${child.thread_id}'), 1, 1);
     `)
     expect(chat.move()).toMatchObject({ ok: true })
 

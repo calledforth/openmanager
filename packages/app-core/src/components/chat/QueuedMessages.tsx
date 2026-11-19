@@ -1,6 +1,6 @@
 import { useCallback, useMemo, useState } from 'react'
 import { AnimatePresence, motion, useReducedMotion } from 'motion/react'
-import { CircleNotchIcon, ClockIcon, ImageIcon, XIcon } from '@phosphor-icons/react'
+import { CircleNotchIcon, ClockIcon, FlowArrowIcon, ImageIcon, XIcon } from '@phosphor-icons/react'
 import type { SessionConfigOption } from '@agentpack/contract'
 import type {
   EnvironmentState,
@@ -18,6 +18,7 @@ import {
 import { effortConfigOption } from './modelConfig'
 import { modelLabel } from './modelLabel'
 import { QUEUE_PAUSE_REASON, queuedMessagePreview } from './queuedMessage'
+import { subagentsNoticeLine } from './TurnOriginRows'
 
 export { QUEUE_PAUSE_REASON, queuedMessagePreview } from './queuedMessage'
 
@@ -143,6 +144,40 @@ export function QueuedMessagesView({
             <ul className="custom-scrollbar flex max-h-[148px] flex-col overflow-y-auto">
               <AnimatePresence initial={false}>
                 {queue.items.map((item) => {
+                  // Sent by the environment (subagents finished) or by this
+                  // subagent's parent agent: no person queued it, so no person
+                  // edits or takes it back.
+                  if (item.origin) {
+                    return (
+                      <motion.li
+                        key={item.queueItemId}
+                        layout={reduceMotion ? false : 'position'}
+                        initial={reduceMotion ? false : { opacity: 0, height: 0 }}
+                        animate={{ opacity: 1, height: 28 }}
+                        exit={{ opacity: 0, height: 0 }}
+                        transition={transition}
+                        data-queue-origin={item.origin}
+                        className="flex min-w-0 items-center gap-1.5 overflow-hidden pl-2.5 pr-2.5"
+                      >
+                        <FlowArrowIcon
+                          className="h-3 w-3 shrink-0"
+                          style={{ color: 'var(--basis-status-done)' }}
+                          aria-hidden="true"
+                        />
+                        <span
+                          className="min-w-0 flex-1 truncate text-11-regular leading-5 text-[var(--basis-text-muted)]"
+                          title={item.text || undefined}
+                        >
+                          {item.origin === 'subagents'
+                            ? subagentsNoticeLine(item.text).title
+                            : `From the parent agent: ${item.text.trim().split('\n')[0] ?? ''}`}
+                        </span>
+                        <span className="shrink-0 text-11-regular leading-none text-[var(--basis-text-faint)]">
+                          Next
+                        </span>
+                      </motion.li>
+                    )
+                  }
                   const steering = item.delivery === 'steering'
                   const images = item.artifactIds?.length ?? 0
                   const label = settingsLabel(item)
