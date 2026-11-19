@@ -57,6 +57,8 @@ export interface SidebarSessionEntry {
    */
   subagentCount?: number
   subagentsLive?: number
+  /** Its subagents' sessions at any depth, newline-joined: on screen, they show it selected. */
+  subagentSessionIds?: string
   isDriven: boolean
   /**
    * Its project folder is not reachable right now, so the row is

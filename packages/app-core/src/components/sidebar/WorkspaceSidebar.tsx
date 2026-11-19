@@ -106,6 +106,17 @@ function useWorkspaceSidebarModel(closeSheet: MutableRefObject<() => void>) {
     )
   }, [acknowledgeSessionDone, activeSessionId, activeWorkspacePath, sessionsByWorkspace, visible])
 
+  // A subagent's page has no row: its parent's card is where the user is.
+  const selectedSessionId = useMemo(() => {
+    if (!activeSessionId) return activeSessionId
+    for (const rows of Object.values(sessionsByWorkspace)) {
+      for (const row of rows) {
+        if (row.subagentSessionIds?.split('\n').includes(activeSessionId)) return row.externalId
+      }
+    }
+    return activeSessionId
+  }, [activeSessionId, sessionsByWorkspace])
+
   const workspaces = useMemo(
     () => [
       ...catalog.map((workspace) =>
@@ -127,7 +138,7 @@ function useWorkspaceSidebarModel(closeSheet: MutableRefObject<() => void>) {
     workspaces,
     activeEnvironmentId,
     activeWorkspacePath,
-    activeSessionId,
+    activeSessionId: selectedSessionId,
     onCreateSession: away(
       (workspacePath: string, environmentId?: string) =>
         void createSession(workspacePath, environmentId),

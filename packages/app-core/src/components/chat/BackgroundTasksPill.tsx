@@ -231,30 +231,56 @@ function EnvironmentBackgroundTasks() {
       ? (state.sessions[state.activeSessionId]?.backgroundTasks ?? NO_TASKS)
       : NO_TASKS,
   )
+  const liveSubagents = useEnvironmentState((state) => {
+    const parent = state.activeSessionId
+    if (!parent) return 0
+    let live = 0
+    for (const session of Object.values(state.sessions)) {
+      if (
+        session.subagent &&
+        session.parentSessionId === parent &&
+        (session.status === 'running' || session.status === 'waiting')
+      ) {
+        live += 1
+      }
+    }
+    return live
+  })
   // A subagent in the background already has its card in the chat, with its
   // own Stop; listed here too it would read as two things running.
-  const tasks = useMemo(() => withoutSubagents(roster), [roster])
+  const tasks = useMemo(() => withoutSubagents(roster, liveSubagents), [roster, liveSubagents])
   if (!sessionId || tasks.length === 0 || !client.supports('stopBackgroundTasks')) return null
   return (
     <BackgroundTasksPill
       // Per session: a stop pending in one must not show as pending in the next.
       key={sessionId}
       tasks={tasks}
-      onStop={(taskIds) => {
-        // "Stop all" means all shown: never a subagent this pill left out.
-        const named = taskIds ?? (tasks === roster ? undefined : tasks.map((task) => task.taskId))
-        return client.commands.stopBackgroundTasks({
+      // "Stop all" means all shown, named: never a subagent this pill left
+      // out, nor one that joined the roster after it was drawn.
+      onStop={(taskIds) =>
+        client.commands.stopBackgroundTasks({
           sessionId,
-          ...(named ? { taskIds: named } : {}),
+          taskIds: taskIds ?? tasks.map((task) => task.taskId),
         })
-      }}
+      }
     />
   )
 }
 
-/** The background work the pill lists: everything but subagents, which their cards show. */
-function withoutSubagents(tasks: readonly BackgroundTask[]): readonly BackgroundTask[] {
-  return tasks.some((task) => task.kind === 'agent')
-    ? tasks.filter((task) => task.kind !== 'agent')
-    : tasks
+/**
+ * The background work the pill lists: everything but as many agent tasks as
+ * the session has live subagents, whose cards show them. An agent task past
+ * that has no card to stop it from, so it stays listed.
+ */
+export function withoutSubagents(
+  tasks: readonly BackgroundTask[],
+  liveSubagents: number,
+): readonly BackgroundTask[] {
+  let hide = liveSubagents
+  if (hide === 0 || !tasks.some((task) => task.kind === 'agent')) return tasks
+  return tasks.filter((task) => {
+    if (task.kind !== 'agent' || hide === 0) return true
+    hide -= 1
+    return false
+  })
 }

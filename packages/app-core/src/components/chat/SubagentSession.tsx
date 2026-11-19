@@ -159,12 +159,16 @@ export function SubagentReadOnlyFooter({
     >
       <LockSimpleIcon size={13} aria-hidden className="shrink-0 text-[var(--basis-text-faint)]" />
       <span
-        className="min-w-0 flex-1 truncate"
+        className="min-w-[10ch] flex-1 truncate"
         title="Only the parent agent can message this subagent. To follow up, ask it to relay your message."
       >
         Only the parent agent can message this subagent.
+        <span className="sr-only"> To follow up, ask it to relay your message.</span>
       </span>
-      {identity ? <SubagentStatusLine identity={identity} className="shrink-0" /> : null}
+      {/* Gives way first on a narrow page: the sentence says why there is no composer. */}
+      {identity ? (
+        <SubagentStatusLine identity={identity} className="min-w-0 shrink max-sm:hidden" />
+      ) : null}
       {onOpenParent ? (
         <button
           type="button"

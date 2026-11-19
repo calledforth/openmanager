@@ -62,20 +62,40 @@ export function groupSidebarSessions({
   )
   // A subagent's session gets no row of its own: its parent's card counts it,
   // and the parent chat's subagent cards open it.
-  const subagents = new Map<string, { count: number; live: number }>()
+  const isLive = (summary: SessionSummary) =>
+    summary.status === 'running' || summary.status === 'waiting'
+  const childrenOf = new Map<string, SessionSummary[]>()
   for (const summary of sessions) {
     if (!summary.subagent || !summary.parentSessionId) continue
-    const tally = subagents.get(summary.parentSessionId) ?? { count: 0, live: 0 }
-    tally.count += 1
-    if (summary.status === 'running' || summary.status === 'waiting') tally.live += 1
-    subagents.set(summary.parentSessionId, tally)
+    const siblings = childrenOf.get(summary.parentSessionId) ?? []
+    siblings.push(summary)
+    childrenOf.set(summary.parentSessionId, siblings)
   }
+  /** Every subagent under a session, at any depth. */
+  const descendants = (sessionId: string, seen = new Set<string>()): SessionSummary[] =>
+    (childrenOf.get(sessionId) ?? []).flatMap((child) => {
+      if (seen.has(child.sessionId)) return []
+      seen.add(child.sessionId)
+      return [child, ...descendants(child.sessionId, seen)]
+    })
   for (const summary of sessions) {
     if (summary.subagent) continue
-    const tally = subagents.get(summary.sessionId)
+    const direct = childrenOf.get(summary.sessionId) ?? []
+    const nested = direct.length ? descendants(summary.sessionId) : []
+    // One of its subagents is live while it, or a subagent of its own, works.
+    const live = direct.filter(
+      (child) => isLive(child) || descendants(child.sessionId).some(isLive),
+    ).length
     // A subagent running in the background is shown by its card and counted
-    // above; only the rest of the background work is named here.
-    const background = summary.backgroundTasks?.filter((task) => task.kind !== 'agent') ?? []
+    // here, so only as many agent tasks as there are live subagents are left
+    // out of the background work; any more have no card and stay named.
+    let hide = live
+    const background =
+      summary.backgroundTasks?.filter((task) => {
+        if (task.kind !== 'agent' || hide === 0) return true
+        hide -= 1
+        return false
+      }) ?? []
     const entry: SidebarSessionEntry = {
       externalId: summary.sessionId,
       ...(environmentId ? { environmentId } : {}),
@@ -86,8 +106,13 @@ export function groupSidebarSessions({
       status: summary.status === 'idle' ? (summary.doneAt ? 'done' : 'ready') : summary.status,
       providerId: summary.providerId as ProviderId,
       ...(summary.parentSessionId ? { parentExternalId: summary.parentSessionId } : {}),
-      ...(tally ? { subagentCount: tally.count } : {}),
-      ...(tally?.live ? { subagentsLive: tally.live } : {}),
+      ...(direct.length ? { subagentCount: direct.length } : {}),
+      ...(live ? { subagentsLive: live } : {}),
+      // Its subagents' pages are where it is on screen, for the card to show
+      // it selected. Joined, so an unchanged set keeps the row as it was.
+      ...(nested.length
+        ? { subagentSessionIds: nested.map((child) => child.sessionId).join('\n') }
+        : {}),
       // ChatView still branches on `isDriven` for the Convex IPC overlay.
       // This path has one protocol-event stream and no `stream_chunks`
       // subscription, so the flag is always true. Desktop must drop the

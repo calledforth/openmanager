@@ -291,6 +291,28 @@ describe('spawn_agent on the thread service', () => {
     expect(row.title).toBe('Cursor: auth')
   })
 
+  it('names on the card the model a child asked for none of runs on, as its provider reports it', async () => {
+    const t = setup()
+    await t.parentTurn()
+    await t.call('spawn_agent', { provider: 'opencode', prompt: 'Review auth', title: 'Review' })
+    expect(t.latest(t.parent.threadId).modelId).toBeUndefined()
+    const child = t.latest(t.parent.threadId).childSessionId!
+    const childThread = (
+      t.database.prepare('SELECT thread_id FROM threads WHERE session_id = ?').get(child) as {
+        thread_id: string
+      }
+    ).thread_id
+    t.emit(childThread, 'opencode', {
+      category: 'lifecycle',
+      event: 'session_created',
+      data: {
+        sessionId: 'oc-1',
+        models: { currentModelId: 'grok-4.6', availableModels: [] },
+      },
+    })
+    expect(t.latest(t.parent.threadId).modelId).toBe('grok-4.6')
+  })
+
   it('settles with its answer and wakes a parent that did not wait, once its turn ends', async () => {
     const t = setup()
     const parentArgs = await t.parentTurn()

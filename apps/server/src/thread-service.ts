@@ -2926,6 +2926,22 @@ export function createThreadService(
   /** What a child of ours says and does, kept for its card and its answer. */
   const observeSpawnedEvent = (child: ThreadRecord, event: RuntimeEvent) => {
     if (event.subtaskId !== undefined) return
+    // The model it runs on, as its provider says: a child asked for none runs
+    // on whatever a chat there would, and its card names that.
+    const reportedModel =
+      event.event === 'session_created' || event.event === 'session_loaded'
+        ? event.data.models?.currentModelId
+        : event.event === 'current_model_update'
+          ? event.data.currentModelId
+          : undefined
+    if (reportedModel) {
+      const entry = spawnedEntry(child)
+      if (entry && entry.report.modelId !== reportedModel) {
+        entry.report = mergeReport(entry.report, { taskId: entry.taskId, modelId: reportedModel })
+        announceSubagent(entry)
+      }
+      return
+    }
     const run = spawnedRuns.get(child.session.sessionId)
     if (!run || !child.activeTurn || run.turnId !== child.activeTurn.turn.turnId) return
     if (event.event === 'agent_message_chunk') {
@@ -3058,7 +3074,7 @@ export function createThreadService(
       session,
       thread,
       providerId,
-      titleSource: 'provider',
+      titleSource: 'generated',
       cwd: parent.cwd,
       runtimeSession,
       subagent,

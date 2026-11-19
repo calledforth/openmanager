@@ -45,6 +45,7 @@ describe('groupSidebarSessions', () => {
     const shell = { taskId: 't-shell', kind: 'shell' as const, description: 'pnpm test' }
     const [onlyAgents] = rows([
       summary({ sessionId: 'p', status: 'running', inBackground: true, backgroundTasks: [agent] }),
+      subagent('a', 'p', 'running'),
     ])
     expect(onlyAgents).toMatchObject({ status: 'running', inBackgroundForSubagents: true })
     expect(onlyAgents).not.toHaveProperty('backgroundTaskCount')
@@ -56,9 +57,30 @@ describe('groupSidebarSessions', () => {
         inBackground: true,
         backgroundTasks: [agent, shell],
       }),
+      subagent('a', 'p', 'running'),
     ])
     expect(mixed).toMatchObject({ backgroundTaskCount: 1, backgroundTaskNames: 'pnpm test' })
     expect(mixed).not.toHaveProperty('inBackgroundForSubagents')
+
+    // An agent task no live subagent accounts for has no card: it stays named.
+    const [uncounted] = rows([
+      summary({ sessionId: 'p', status: 'running', inBackground: true, backgroundTasks: [agent] }),
+    ])
+    expect(uncounted).toMatchObject({ backgroundTaskCount: 1, backgroundTaskNames: 'Map callers' })
+    expect(uncounted).not.toHaveProperty('inBackgroundForSubagents')
+  })
+
+  it('counts a parent live while a subagent of its subagent works, and names them all', () => {
+    const [parent] = rows([
+      summary({ sessionId: 'parent' }),
+      subagent('a', 'parent'),
+      subagent('d', 'a', 'running'),
+    ])
+    expect(parent).toMatchObject({
+      subagentCount: 1,
+      subagentsLive: 1,
+      subagentSessionIds: 'a\nd',
+    })
   })
 })
 
