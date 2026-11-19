@@ -83,6 +83,8 @@ describe('spawn_agent', () => {
     expect(host.spawn).toHaveBeenCalledWith(
       expect.objectContaining({ providerId: 'opencode', background: true, parent: caller }),
     )
+    // No model asked for: the provider's default, named so the card can show it.
+    expect(host.spawn).toHaveBeenCalledWith(expect.objectContaining({ modelId: 'sonnet' }))
   })
 
   it('refuses an unknown or unavailable provider and lists the real ones', async () => {

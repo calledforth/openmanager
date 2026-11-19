@@ -184,9 +184,12 @@ export function createSpawnAgentTools(host: SpawnHost): readonly AgentTool[] {
           `${provider.name} is not available on this machine right now. Providers:\n${providerList()}`,
         )
       }
-      const modelId = typeof input.model === 'string' ? input.model : undefined
+      const asked = typeof input.model === 'string' ? input.model : undefined
+      // Named on the card and the child either way: the provider's default is
+      // what it would run, and a card reading just "Cursor" says less.
+      const modelId = asked ?? provider.defaultModelId
       if (
-        modelId &&
+        asked &&
         provider.models.length > 0 &&
         !provider.models.some((m) => m.modelId === modelId)
       ) {
