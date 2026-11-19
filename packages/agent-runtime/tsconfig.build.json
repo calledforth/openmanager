@@ -1,6 +1,8 @@
 {
   "extends": "./tsconfig.json",
   "compilerOptions": {
+    "incremental": false,
+    "tsBuildInfoFile": null,
     "noEmit": false,
     "declaration": true,
     "rootDir": "src",

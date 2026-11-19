@@ -4,6 +4,8 @@
   // vitest runs it). server-child.ts runs under plain Node and keeps the
   // explicit .ts extensions the server's own sources use.
   "compilerOptions": {
+    "incremental": true,
+    "tsBuildInfoFile": "../../node_modules/.tmp/convergence.tsbuildinfo",
     "module": "ESNext",
     "moduleResolution": "bundler",
     "target": "ES2022",

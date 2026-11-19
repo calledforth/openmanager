@@ -12,3 +12,11 @@ ask — read the workflow guide before touching code:
 
 Otherwise treat the task as ordinary work and ignore this section; do not go
 looking for a matching Linear issue on your own.
+
+## Checks
+
+Several agents share one laptop. Check only the packages you changed; don't run
+the root `pnpm typecheck` / `pnpm test` / `pnpm ci`. CI runs the full set on the PR.
+
+- Typecheck: `pnpm --filter <package> typecheck`
+- Tests: `pnpm --filter <package> exec vitest related --run <changed files>`
