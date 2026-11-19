@@ -22,6 +22,10 @@ import {
   type ProtocolHost,
 } from './helpers/protocol-client.js'
 import { promptSessionId } from './helpers/proof-slice.js'
+import { runMigrations } from '../src/db/migrate.js'
+import { MIGRATIONS } from '../src/db/migrations.js'
+import { readThreadState } from '../src/db/session-store.js'
+import { createPersistentEventService } from '../src/event-service.js'
 import {
   createThreadService,
   movedPrompt,
@@ -239,24 +243,35 @@ function turnsOf(records: Records) {
 /** Long enough for anything a settled turn would start to have started. */
 const settle = () => new Promise((resolve) => setTimeout(resolve, 300))
 
-/** The workspace every row of the session names, read straight from the database. */
+/**
+ * The workspace every row of the session names: each table a composite key
+ * ties to the session's workspace, attachments by their session or by their
+ * message.
+ */
+function workspacesOf(database: DatabaseSync, sessionId: string) {
+  const threads = 'SELECT thread_id FROM threads WHERE session_id = ?1'
+  const one = (sql: string) =>
+    (database.prepare(sql).all(sessionId) as { workspace_id: string }[]).map(
+      (row) => row.workspace_id,
+    )
+  return new Set([
+    ...one('SELECT workspace_id FROM sessions WHERE session_id = ?1'),
+    ...one('SELECT workspace_id FROM threads WHERE session_id = ?1'),
+    ...['turns', 'messages', 'turn_activity', 'turn_notices'].flatMap((table) =>
+      one(`SELECT workspace_id FROM ${table} WHERE thread_id IN (${threads})`),
+    ),
+    ...one(
+      `SELECT workspace_id FROM attachments WHERE session_id = ?1
+         OR message_id IN (SELECT message_id FROM messages WHERE thread_id IN (${threads}))`,
+    ),
+  ])
+}
+
+/** `workspacesOf`, read straight from the host's database. */
 function rowWorkspaces(host: ProtocolHost, sessionId: string) {
   const database = new DatabaseSync(join(host.dataDir, 'openmanager.sqlite'), { readOnly: true })
   try {
-    const one = (sql: string) =>
-      (database.prepare(sql).all(sessionId) as { workspace_id: string }[]).map(
-        (row) => row.workspace_id,
-      )
-    return new Set([
-      ...one('SELECT workspace_id FROM sessions WHERE session_id = ?'),
-      ...one('SELECT workspace_id FROM threads WHERE session_id = ?'),
-      ...one(
-        'SELECT workspace_id FROM turns WHERE thread_id IN (SELECT thread_id FROM threads WHERE session_id = ?)',
-      ),
-      ...one(
-        'SELECT workspace_id FROM messages WHERE thread_id IN (SELECT thread_id FROM threads WHERE session_id = ?)',
-      ),
-    ])
+    return workspacesOf(database, sessionId)
   } finally {
     database.close()
   }
@@ -491,22 +506,28 @@ describe('move_session', () => {
           record.event.name === 'session.updated' &&
           (record.event.payload as { workspaceId?: string }).workspaceId !== undefined,
       )
-    // The project it joined is announced with its new recency in the same
-    // write, under an id the repository can find again on a retried write.
-    const joinedOf = (seen: Records) => {
+    // Both projects are announced with their new recency in the same write:
+    // the one it left first, under the repository's `:recency` id, and the
+    // one it joined second, under `:recency-to`, so a retried write finds
+    // both again.
+    const recencyOf = (seen: Records, workspaceId: string | undefined) => {
       const moved = moveOf(seen)
-      const workspaceId = (moved?.event.payload as { workspaceId?: string } | undefined)
-        ?.workspaceId
       return seen.find(
         (record) =>
+          moved !== undefined &&
           record.event.name === 'workspace.updated' &&
           (record.event.payload as { workspace: { workspaceId: string } }).workspace.workspaceId ===
             workspaceId &&
-          record.event.eventId.startsWith(`${moved!.event.eventId}:`),
+          record.event.eventId.startsWith(`${moved.event.eventId}:`),
       )
     }
-    const records = await collectThreadRecords(watcher, environmentSubscription, (seen) =>
-      Boolean(joinedOf(seen)),
+    const joinedId = (seen: Records) =>
+      (moveOf(seen)?.event.payload as { workspaceId?: string } | undefined)?.workspaceId
+    const records = await collectThreadRecords(
+      watcher,
+      environmentSubscription,
+      (seen) =>
+        Boolean(recencyOf(seen, host.workspaceId)) && Boolean(recencyOf(seen, joinedId(seen))),
     )
     const moved = moveOf(records)!
     const added = host.server.workspaces
@@ -515,8 +536,12 @@ describe('move_session', () => {
         (workspace) => workspace.workspaceId !== host.workspaceId && workspace.kind !== 'scratch',
       )
     expect(moved.event.payload).toEqual({ sessionId, workspaceId: added!.workspaceId })
-    const joined = joinedOf(records)
-    expect(joined?.event.eventId).toMatch(/:recency(-to)?$/)
+    expect(recencyOf(records, host.workspaceId)?.event.eventId).toBe(
+      `${moved.event.eventId}:recency`,
+    )
+    expect(recencyOf(records, added!.workspaceId)?.event.eventId).toBe(
+      `${moved.event.eventId}:recency-to`,
+    )
   })
 
   it('refuses a folder that does not exist, and moves nothing', async () => {
@@ -585,6 +610,367 @@ describe('move_session', () => {
     expect(answers[0]?.content[0]?.text).toMatch(/already works in/)
     await settle()
     expect(prompts).toHaveLength(1)
+  })
+})
+
+describe('move_session on the rows, its provider driven by hand', () => {
+  type RuntimeEvent = Parameters<ReturnType<typeof createThreadService>['onRuntimeEvent']>[0]
+  type PromptArgs = { cwd: string; prompt: { text: string }; userMessageId: string }
+  const closers: (() => void)[] = []
+  afterEach(() => {
+    for (const close of closers.splice(0)) close()
+  })
+
+  /** A Claude chat in `/workspace/project` on an in-memory database, `/workspace/other` beside it. */
+  async function setup() {
+    const database = new DatabaseSync(':memory:', { enableForeignKeyConstraints: true })
+    runMigrations(database, MIGRATIONS)
+    for (const id of ['/workspace/project', '/workspace/other']) {
+      database
+        .prepare(
+          'INSERT INTO workspaces (workspace_id, name, path, created_at, updated_at) VALUES (?, ?, ?, 1, 1)',
+        )
+        .run(id, id.slice('/workspace/'.length), id)
+    }
+    const published: EventEnvelope[] = []
+    const events = createPersistentEventService(
+      database,
+      (record) => published.push(record.event),
+      {},
+    )
+    closers.push(() => {
+      events.close()
+      database.close()
+    })
+    const problems: string[] = []
+    const persistence: unknown[] = []
+    let seq = 0
+    let threadId = ''
+    const emit = (
+      event: Pick<RuntimeEvent, 'category' | 'event'> & { data: unknown },
+      messageId?: string,
+    ) =>
+      service.onRuntimeEvent({
+        providerId: 'claude',
+        threadId,
+        workspaceId: '/workspace/project',
+        sessionId: 'provider-session',
+        id: `event-${++seq}`,
+        seq,
+        timestamp: new Date(Date.now() + seq).toISOString(),
+        ...(messageId ? { messageId } : {}),
+        ...event,
+      } as RuntimeEvent)
+    // Each prompt settles when the test ends its turn (`completed`).
+    const finish: (() => void)[] = []
+    const runtime = {
+      ensureSession: vi.fn().mockResolvedValue({ sessionId: 'provider-session', state: 'created' }),
+      prompt: vi.fn(
+        (_args: PromptArgs) => new Promise<void>((resolve) => finish.push(() => resolve())),
+      ),
+      cancel: vi.fn().mockResolvedValue(undefined),
+      steer: vi.fn().mockResolvedValue(undefined),
+      withdrawSteer: vi.fn().mockResolvedValue(false),
+      respondPlan: vi.fn((args: { requestId: string; outcome: unknown }) => {
+        emit(
+          {
+            category: 'session',
+            event: 'plan_review_resolved',
+            data: { requestId: args.requestId, outcome: args.outcome },
+          },
+          'assistant-0',
+        )
+        return true
+      }),
+    }
+    const resolver: WorkspaceRuntimeResolver = (workspaceId) =>
+      workspaceId === '/workspace/project' || workspaceId === '/workspace/other'
+        ? { providerId: 'claude', cwd: workspaceId }
+        : undefined
+    const service = createThreadService(
+      runtime as unknown as Pick<AgentRuntime, 'ensureSession' | 'prompt' | 'cancel'>,
+      { rejection: () => undefined },
+      (event) => events.append(event),
+      undefined,
+      resolver,
+      {
+        database,
+        flush: events.flush,
+        appendAtomic: (batch, options) => events.appendAtomic(batch, options),
+        onMoveProblem: (message) => problems.push(message),
+        onPersistenceError: (error) => persistence.push(error),
+      },
+    )
+    service.setEnvironmentId('environment-1')
+    const dispatch = (name: string, payload: CommandEnvelope['payload']) =>
+      service.dispatch({ type: 'command', requestId: `r-${++seq}`, name, payload })
+    const created = ProofResponseSchemas['session.create'].parse(
+      dispatch('session.create', {
+        environmentId: 'environment-1',
+        workspaceId: '/workspace/project',
+        providerId: 'claude',
+      }),
+    ).payload
+    const thread = created.thread
+    threadId = thread.threadId
+    await service.resolveRuntimeSession(created.session.sessionId)
+
+    /** The provider picks up the `n`th prompt the service handed it. */
+    const started = async (n: number) => {
+      await vi.waitFor(() => expect(runtime.prompt.mock.calls.length).toBeGreaterThan(n))
+      const args = runtime.prompt.mock.calls[n]![0]
+      emit(
+        {
+          category: 'lifecycle',
+          event: 'prompt_started',
+          data: { prompt: args.prompt.text, userMessageId: args.userMessageId },
+        },
+        `assistant-${n}`,
+      )
+      return args
+    }
+    /** The provider ends the turn its output goes under `messageId`. */
+    const completed = async (messageId: string) => {
+      emit({ category: 'lifecycle', event: 'prompt_completed', data: {} }, messageId)
+      const n = /^assistant-(\d+)$/.exec(messageId)?.[1]
+      if (n !== undefined) finish[Number(n)]?.()
+      // The move and the queue follow the turn's end a microtask later.
+      for (let i = 0; i < 5; i += 1) await Promise.resolve()
+    }
+    const send = (text: string) =>
+      ProofResponseSchemas['turn.send'].parse(
+        dispatch('turn.send', { ...thread, text, commandId: `send-${++seq}` }),
+      ).payload
+    const steer = (turnId: string, text: string, commandId: string) =>
+      dispatch('turn.steer', { ...thread, turnId, text, commandId })
+    const move = () => service.requestMove(thread.threadId, '/workspace/other', 'other')
+    const workspaces = (sessionId = created.session.sessionId) => {
+      events.flush()
+      return workspacesOf(database, sessionId)
+    }
+    const state = () => {
+      events.flush()
+      return readThreadState(database, thread)!
+    }
+    return {
+      database,
+      events,
+      published,
+      runtime,
+      service,
+      problems,
+      persistence,
+      thread,
+      sessionId: created.session.sessionId,
+      emit,
+      dispatch,
+      started,
+      completed,
+      send,
+      steer,
+      move,
+      workspaces,
+      state,
+    }
+  }
+
+  it('moves an attachment only its message ties to the session', async () => {
+    const chat = await setup()
+    const sent = chat.send('Build it')
+    await chat.started(0)
+    expect(chat.move()).toMatchObject({ ok: true })
+    // What migration 9 leaves when it cannot match an attachment to a
+    // session: its message, and no session.
+    chat.events.flush()
+    chat.database
+      .prepare(
+        `INSERT INTO attachments (attachment_id, workspace_id, message_id, storage_key, name,
+           mime_type, size_bytes, created_at, session_id)
+         VALUES ('legacy', '/workspace/project', ?, 'legacy-key', 'a.png', 'image/png', 1, 1, NULL)`,
+      )
+      .run(sent.userMessage.messageId)
+
+    await chat.completed('assistant-0')
+    expect(chat.persistence).toEqual([])
+    expect(chat.workspaces()).toEqual(new Set(['/workspace/other']))
+    expect(
+      chat.database
+        .prepare("SELECT workspace_id FROM attachments WHERE attachment_id = 'legacy'")
+        .get(),
+    ).toEqual({ workspace_id: '/workspace/other' })
+    expect((await chat.started(1)).cwd).toBe('/workspace/other')
+  })
+
+  it('moves a sub-agent session, and every row under it, with its parent', async () => {
+    const chat = await setup()
+    chat.send('Delegate')
+    await chat.started(0)
+    chat.emit(
+      {
+        category: 'session',
+        event: 'subtask_update',
+        data: { taskId: 'task-1', title: 'Explore', childSessionId: 'provider-child' },
+      },
+      'assistant-0',
+    )
+    chat.events.flush()
+    const child = chat.database
+      .prepare(
+        `SELECT s.session_id, t.thread_id FROM sessions s JOIN threads t USING (session_id)
+         WHERE s.parent_session_id = ?`,
+      )
+      .get(chat.sessionId) as { session_id: string; thread_id: string }
+    expect(child).toBeDefined()
+    // A turn and a message of the child's own, so its keys reach past its thread.
+    chat.database.exec(`
+      INSERT INTO turns (turn_id, thread_id, workspace_id, state, started_at, updated_at)
+        VALUES ('child-turn', '${child.thread_id}', '/workspace/project', 'completed', 1, 1);
+      INSERT INTO messages (message_id, workspace_id, thread_id, turn_id, role, ordinal, created_at, updated_at)
+        VALUES ('child-message', '/workspace/project', '${child.thread_id}', 'child-turn', 'assistant', 0, 1, 1);
+    `)
+    expect(chat.move()).toMatchObject({ ok: true })
+
+    await chat.completed('assistant-0')
+    expect(chat.persistence).toEqual([])
+    expect(chat.workspaces()).toEqual(new Set(['/workspace/other']))
+    expect(chat.workspaces(child.session_id)).toEqual(new Set(['/workspace/other']))
+  })
+
+  it('carries the move to the turn a held steer becomes, and applies it when that turn completes', async () => {
+    const chat = await setup()
+    const sent = chat.send('Build it')
+    await chat.started(0)
+    expect(chat.move()).toMatchObject({ ok: true })
+    expect(chat.steer(sent.turn.turnId, 'Also lint', 's-1')).toMatchObject({
+      payload: { outcome: 'steering' },
+    })
+    await chat.completed('assistant-0')
+    expect(chat.workspaces()).toEqual(new Set(['/workspace/project']))
+
+    chat.emit(
+      { category: 'lifecycle', event: 'steer_turn_started', data: { steerId: 's-1' } },
+      'assistant-late',
+    )
+    // Still where it was while the steer's own turn runs.
+    expect(chat.workspaces()).toEqual(new Set(['/workspace/project']))
+    await chat.completed('assistant-late')
+    expect(chat.workspaces()).toEqual(new Set(['/workspace/other']))
+    const resumed = await chat.started(1)
+    expect(resumed).toMatchObject({
+      cwd: '/workspace/other',
+      prompt: { text: movedPrompt('other', '/workspace/other') },
+    })
+    expect(chat.problems).toEqual([])
+  })
+
+  it('drops the move when the held steer reaches the agent after its turn, never applying it later', async () => {
+    const chat = await setup()
+    const sent = chat.send('Build it')
+    await chat.started(0)
+    expect(chat.move()).toMatchObject({ ok: true })
+    chat.steer(sent.turn.turnId, 'Also lint', 's-1')
+    await chat.completed('assistant-0')
+    // Delivered with no turn left to show it in: it becomes no turn.
+    chat.emit({ category: 'lifecycle', event: 'steer_delivered', data: { steerId: 's-1' } })
+    expect(chat.problems).toEqual([expect.stringMatching(/move was dropped/)])
+
+    // A later, unrelated turn completes: the session stays where it is.
+    chat.send('Something else')
+    expect((await chat.started(1)).cwd).toBe('/workspace/project')
+    await chat.completed('assistant-1')
+    await settle()
+    expect(chat.workspaces()).toEqual(new Set(['/workspace/project']))
+    expect(chat.runtime.prompt).toHaveBeenCalledTimes(2)
+  })
+
+  it('applies the move when the held steer is given back, then runs it in the new folder', async () => {
+    const chat = await setup()
+    const sent = chat.send('Build it')
+    await chat.started(0)
+    expect(chat.move()).toMatchObject({ ok: true })
+    chat.steer(sent.turn.turnId, 'Also lint', 's-1')
+    await chat.completed('assistant-0')
+    expect(chat.runtime.prompt).toHaveBeenCalledTimes(1)
+
+    chat.emit({ category: 'lifecycle', event: 'steer_withdrawn', data: { steerId: 's-1' } })
+    expect(chat.workspaces()).toEqual(new Set(['/workspace/other']))
+    expect(await chat.started(1)).toMatchObject({
+      cwd: '/workspace/other',
+      prompt: { text: movedPrompt('other', '/workspace/other') },
+    })
+    await chat.completed('assistant-1')
+    expect(await chat.started(2)).toMatchObject({
+      cwd: '/workspace/other',
+      prompt: { text: 'Also lint' },
+    })
+    expect(chat.problems).toEqual([])
+  })
+
+  it('runs an approved plan build in the new folder in place of the resume turn, with the marker', async () => {
+    const chat = await setup()
+    chat.send('Plan it')
+    await chat.started(0)
+    expect(chat.move()).toMatchObject({ ok: true })
+    chat.emit(
+      {
+        category: 'session',
+        event: 'plan_review_request',
+        data: {
+          sessionId: 'provider-session',
+          requestId: 'provider-plan',
+          markdown: '# Plan',
+          todos: [],
+          continuation: 'follow_up_turn',
+        },
+      },
+      'assistant-0',
+    )
+    chat.events.flush()
+    const plan = (
+      chat.published.filter((event) => event.name === 'interaction.requested').at(-1)!.payload as {
+        interaction: { interactionId: string }
+      }
+    ).interaction
+    const answered = chat.dispatch('interaction.respond', {
+      ...chat.thread,
+      response: {
+        kind: 'plan',
+        interactionId: plan.interactionId,
+        outcome: { outcome: 'accepted' },
+      } as never,
+      commandId: 'build-1',
+      build: { text: 'Implement the approved plan' },
+    })
+    await chat.completed('assistant-0')
+    expect(await answered).toMatchObject({ type: 'response' })
+
+    // One turn follows, the build, in the new folder: told where it is, and
+    // opening with the move's marker. No resume turn competes with it.
+    const build = await chat.started(1)
+    expect(build).toMatchObject({
+      cwd: '/workspace/other',
+      prompt: {
+        text: `${movedPrompt('other', '/workspace/other').split(' Carry on')[0]}\n\nImplement the approved plan`,
+      },
+    })
+    const state = chat.state()
+    const buildTurn = state.turns.at(-1)!
+    expect(state.turns).toHaveLength(2)
+    // Sent on the user's behalf, not a background turn of the environment's.
+    expect(buildTurn.origin).toBeUndefined()
+    expect(state.notices.filter((notice) => notice.turnId === buildTurn.turnId)).toEqual([
+      expect.objectContaining({
+        move: { workspaceId: '/workspace/other', name: 'other', path: '/workspace/other' },
+      }),
+    ])
+    // The user's message reads as they sent it.
+    expect(state.messages.find((message) => message.turnId === buildTurn.turnId)?.content).toEqual([
+      { type: 'text', text: 'Implement the approved plan' },
+    ])
+    expect(chat.problems).toEqual([])
+    await chat.completed('assistant-1')
+    await settle()
+    expect(chat.runtime.prompt).toHaveBeenCalledTimes(2)
   })
 })
 

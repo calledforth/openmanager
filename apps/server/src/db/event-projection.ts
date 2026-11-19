@@ -106,6 +106,12 @@ export function createEventProjector(
     // tree in one workspace; the rows are rewritten parent first, so the
     // foreign keys are checked at commit (`defer_foreign_keys`), once every
     // row, and every sub-agent session moved in the same write, agrees again.
+    // Every composite key naming a workspace: a child session's parent
+    // (moved by its own event in the same write), threads → sessions,
+    // turns → threads, messages, turn activity and notices → turns, and
+    // attachments → messages. An attachment is found by its session and by
+    // its message: one migration 9 could not match to a session has only the
+    // message, and left behind it would fail the whole move at commit.
     workspaceExists: database.prepare('SELECT 1 FROM workspaces WHERE workspace_id = ?'),
     moveSession: [
       'UPDATE sessions SET workspace_id = ?1 WHERE session_id = ?2',
@@ -115,7 +121,10 @@ export function createEventProjector(
           `UPDATE ${table} SET workspace_id = ?1
             WHERE thread_id IN (SELECT thread_id FROM threads WHERE session_id = ?2)`,
       ),
-      'UPDATE attachments SET workspace_id = ?1 WHERE session_id = ?2',
+      `UPDATE attachments SET workspace_id = ?1
+        WHERE session_id = ?2
+           OR message_id IN (SELECT message_id FROM messages WHERE thread_id IN
+                (SELECT thread_id FROM threads WHERE session_id = ?2))`,
     ].map((sql) => database.prepare(sql)),
     updateSessionStatus: database.prepare(
       'UPDATE sessions SET status = ?, updated_at = ? WHERE session_id = ?',

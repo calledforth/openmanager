@@ -342,6 +342,13 @@ type ThreadRecord = {
    * starting a blank chat under the old id.
    */
   moved?: boolean
+  /**
+   * A move applied whose marker no turn has carried yet: the resume turn
+   * could not open (a plan build held the thread, or it was refused). The
+   * next turn opened on the thread opens with the marker, and its prompt
+   * tells the agent where it is now.
+   */
+  movedTo?: { workspaceId: string; name: string; path: string }
 }
 
 /**
@@ -353,13 +360,22 @@ type PendingMove = {
   workspaceId: string
   /** The project's name when it was asked for, for the marker the move leaves. */
   name?: string
-  /**
-   * The thread whose turn asked, and that turn: only its completion applies
-   * the move. Undefined once a steered message took over from it: the next
-   * turn of the thread to complete applies it.
-   */
+  /** The thread whose turn asked. */
   threadId: string
-  turnId: string | undefined
+  /**
+   * The turn whose completion applies the move: the one that asked, or the
+   * one that took over from it (a steered message's own turn).
+   */
+  turnId?: string
+  /**
+   * Set instead of `turnId` when the asking turn completed while the
+   * provider still held steered messages sent into it: the move waits on
+   * what becomes of them, never on whichever turn completes next
+   * (`steerResolved`).
+   */
+  steerIds?: Set<string>
+  /** One of `steerIds` was given back to the queue rather than run. */
+  givenBack?: boolean
 }
 
 /** What `requestMove` answers the tool: the move it filed, or why it filed none. */
@@ -386,8 +402,12 @@ export const MOVABLE_PROVIDERS: readonly string[] = ['claude']
  * move's marker instead.
  */
 export const movedPrompt = (name: string, path: string) =>
-  `OpenManager moved this session to the project "${name}" at ${path}; that is your working directory now. ` +
+  `${movedNote(name, path)} ` +
   `Carry on with the work there. If nothing is left to do, say in a sentence that the session is now in ${name}.`
+
+/** Where a moved session is now, ahead of a sent prompt that opens in its new folder. */
+const movedNote = (name: string, path: string) =>
+  `OpenManager moved this session to the project "${name}" at ${path}; that is your working directory now.`
 
 /** Why a session the rows hold could not be loaded: the answer an open gives. */
 export type LoadRefusal = { code: ErrorCode; message: string; details?: unknown }
@@ -800,6 +820,10 @@ export function createThreadService(
           settleMove(record, turnId, ended === 'turn.completed')
           settleQueue(record, ended, restarted)
         })
+      } else if (record) {
+        // An end the rows do not hold: the turn is still open there, so the
+        // move it asked for cannot apply. It is dropped, not kept waiting.
+        settleMove(record, event.payload.turnId, false)
       }
       // The requests the turn left open were closed by `interaction.cancelled`
       // events committed with its end (db/turn-closure.ts). Memory follows
@@ -994,6 +1018,8 @@ export function createThreadService(
       seen.add(id)
       sessions.delete(id)
       forgetTitleWork(id)
+      // A move it asked for goes with it: nothing is left to move.
+      pendingMoves.delete(id)
       for (const [threadId, item] of threads) {
         if (item.session.parentSessionId === id) pending.push(item.session.sessionId)
         if (item.session.sessionId !== id) continue
@@ -2268,15 +2294,17 @@ export function createThreadService(
    * Open a turn and hand its prompt to the provider, then end it with the
    * provider's answer. The prompt is a message someone sent (`commandId`,
    * recorded as the turn's user message), or the environment's own on a turn
-   * nobody sent (`notices`): that one is never shown, the turn is a
-   * `background` one and opens with the notices given, written with its
-   * start. Answers the turn as announced, or why it could not start.
+   * nobody sent (`background`): that one is never shown, and the turn is a
+   * `background` one. The first turn opened after a move (`movedTo`) opens
+   * with its marker, written with its start, and a sent prompt reaches the
+   * provider after a line saying where the session is now. Answers the turn
+   * as announced, or why it could not start.
    */
   const openTurn = (
     record: ThreadRecord,
     requestId: string,
     input: { sessionId: string; threadId: string; text: string; artifactIds?: string[] },
-    from: { commandId: string } | { notices: (turnId: string) => DurableTurnNotice[] },
+    from: { commandId: string } | { background: true },
     opts: { modeId?: string; settings?: QueuedMessageSettings; queueAfter?: ThreadQueue } = {},
   ): TurnStarted | ReturnType<typeof errorResult> => {
     const { modeId } = opts
@@ -2340,20 +2368,32 @@ export function createThreadService(
         }),
       )
     }
-    if ('notices' in from) {
-      for (const notice of from.notices(turn.turnId)) {
-        events.push(
-          ProofEventSchemas['turn.notice.recorded'].parse({
-            type: 'event',
-            name: 'turn.notice.recorded',
-            eventId: randomUUID(),
-            timestamp: startedAt,
-            scope: threadScope(record),
-            payload: notice,
-          }),
-        )
+    // Only with the turn's own start, so the marker comes before anything in it.
+    const movedTo = events.length > 0 ? record.movedTo : undefined
+    if (movedTo) {
+      const notice: DurableTurnNotice = {
+        noticeId: randomUUID(),
+        turnId: turn.turnId,
+        kind: 'info',
+        message: `Moved to ${movedTo.name} (${movedTo.path}) and resumed there`,
+        move: movedTo,
       }
+      events.push(
+        ProofEventSchemas['turn.notice.recorded'].parse({
+          type: 'event',
+          name: 'turn.notice.recorded',
+          eventId: randomUUID(),
+          timestamp: startedAt,
+          scope: threadScope(record),
+          payload: notice,
+        }),
+      )
     }
+    // The environment's own prompt already says where the session is.
+    const promptText =
+      movedTo && userMessage
+        ? `${movedNote(movedTo.name, movedTo.path)}\n\n${input.text}`
+        : input.text
     if (opts.queueAfter) events.push(queueEvent(record, opts.queueAfter))
     if (events.length > 0) {
       try {
@@ -2366,6 +2406,7 @@ export function createThreadService(
         return errorResult(requestId, 'unavailable', 'The message could not be saved. Try again.')
       }
       if (opts.queueAfter) record.queue = opts.queueAfter
+      if (movedTo) record.movedTo = undefined
     }
     record.turns.push(turn)
     if (userMessage && commandId) {
@@ -2415,9 +2456,9 @@ export function createThreadService(
           ...route(record, sessionId),
           ...(Object.keys(desiredConfig).length > 0 ? { desiredConfig } : {}),
           prompt: {
-            text: input.text,
+            text: promptText,
             blocks: [
-              ...(input.text ? [{ type: 'text' as const, text: input.text }] : []),
+              ...(promptText ? [{ type: 'text' as const, text: promptText }] : []),
               ...promptImages,
             ],
           },
@@ -2598,26 +2639,82 @@ export function createThreadService(
 
   /**
    * A turn ended: apply the move it asked for once it completed, and resume
-   * the session in its new folder (`resumeMoved`). A turn that failed or was
+   * the session in its new folder (`applyMove`). A turn that failed or was
    * stopped drops it, and nothing resumes; the agent asks again if it still
-   * wants it. A steered message about to run in the same process takes the
-   * move with it, so the session moves once that turn completes instead.
+   * wants it. A turn that already took over (a steered message's own) carries
+   * the move to its own end; steered messages the provider still holds make
+   * the move wait on what becomes of them (`steerResolved`).
    */
   const settleMove = (record: ThreadRecord, turnId: string, completed: boolean) => {
     const sessionId = record.session.sessionId
     const move = pendingMoves.get(sessionId)
     if (!move || move.threadId !== record.thread.threadId) return
-    if (move.turnId !== undefined && move.turnId !== turnId) return
-    // A steered message took over, or is about to: its turn carries the move.
-    if (
-      completed &&
-      (record.activeTurn || record.queue.items.some((item) => item.delivery === 'steering'))
-    ) {
+    // Only what becomes of the steers it waits on decides it, never another turn.
+    if (move.steerIds || move.turnId !== turnId) return
+    if (completed && record.activeTurn) {
+      move.turnId = record.activeTurn.turn.turnId
+      return
+    }
+    const held = record.queue.items.filter((item) => item.delivery === 'steering')
+    if (completed && held.length > 0) {
       move.turnId = undefined
+      move.steerIds = new Set(held.map((item) => item.queueItemId))
       return
     }
     pendingMoves.delete(sessionId)
-    if (!completed || threads.get(record.thread.threadId) !== record) return
+    if (completed) applyMove(record, move)
+  }
+
+  /**
+   * A steered message a waiting move counts on (`steerIds`) is no longer held
+   * by the provider. Run as a turn, or folded into one, it carries the move
+   * to that turn's end. Given back, it runs again from the queue, and the
+   * move applies now, as the asking turn's completion would have, so the
+   * message runs in the new folder after the resume. Shown nowhere (it
+   * reached the agent after its turn ended), it took nothing over: once no
+   * other held steer can, the move is dropped rather than left to apply
+   * whenever a later turn completes.
+   */
+  const steerResolved = (
+    record: ThreadRecord,
+    steerId: string,
+    outcome: { turnId: string } | 'returned' | 'dropped',
+  ) => {
+    const sessionId = record.session.sessionId
+    const move = pendingMoves.get(sessionId)
+    if (move?.threadId !== record.thread.threadId || !move.steerIds?.delete(steerId)) return
+    if (typeof outcome === 'object') {
+      move.steerIds = undefined
+      move.turnId = outcome.turnId
+      return
+    }
+    if (outcome === 'returned') move.givenBack = true
+    if (move.steerIds.size > 0) return
+    move.steerIds = undefined
+    if (move.givenBack && record.activeTurn) {
+      move.turnId = record.activeTurn.turn.turnId
+      return
+    }
+    pendingMoves.delete(sessionId)
+    if (move.givenBack) {
+      applyMove(record, move)
+      return
+    }
+    options.onMoveProblem?.('a move was dropped: the steered message after it never ran', {
+      sessionId,
+      workspaceId: move.workspaceId,
+    })
+  }
+
+  /**
+   * Move the session, and every sub-agent session under it, to the workspace
+   * its agent asked for, then resume it there (`resumeMoved`). A plan build
+   * the user approved meanwhile holds the thread: it runs first, in the new
+   * folder, and carries the move's marker instead (`movedTo`).
+   */
+  const applyMove = (record: ThreadRecord, move: PendingMove) => {
+    const sessionId = record.session.sessionId
+    if (threads.get(record.thread.threadId) !== record) return
     let target: WorkspaceRuntimeRoute | undefined
     try {
       target = resolveWorkspace(move.workspaceId)
@@ -2681,21 +2778,26 @@ export function createThreadService(
     } catch {
       /* bookkeeping only */
     }
-    // Before the queue drains (`settleQueue` follows): a message the user
-    // queued meanwhile runs after the agent has picked up in the new folder.
-    resumeMoved(record, {
+    record.movedTo = {
       workspaceId: move.workspaceId,
       name: move.name ?? (basename(target.cwd) || target.cwd),
       path: target.cwd,
-    })
+    }
+    // The build was approved before the move applied: it is the agent's next
+    // turn either way, and a resume ahead of it would hold the thread when
+    // the build starts. It opens in the new folder with the marker.
+    if (record.pendingBuild) return
+    // Before the queue drains (`settleQueue` follows): a message the user
+    // queued meanwhile runs after the agent has picked up in the new folder.
+    resumeMoved(record, record.movedTo)
   }
 
   /**
    * Start the turn that resumes a moved session in its new folder, the moment
    * the move applies. Nobody sent it: the provider reads a short prompt saying
    * where it is now, and the transcript shows the move's marker in its place,
-   * written with the turn's start. The move stands even when the turn cannot
-   * start; the host hears why.
+   * written with the turn's start (`openTurn`). The move stands even when the
+   * turn cannot start; the host hears why, and the next turn carries the marker.
    */
   const resumeMoved = (
     record: ThreadRecord,
@@ -2709,17 +2811,7 @@ export function createThreadService(
         threadId: record.thread.threadId,
         text: movedPrompt(move.name, move.path),
       },
-      {
-        notices: (turnId) => [
-          {
-            noticeId: randomUUID(),
-            turnId,
-            kind: 'info',
-            message: `Moved to ${move.name} (${move.path}) and resumed there`,
-            move,
-          },
-        ],
-      },
+      { background: true },
     )
     if ('turn' in opened) return
     options.onMoveProblem?.('a moved session could not resume in its new folder', {
@@ -2849,6 +2941,8 @@ export function createThreadService(
     })
     if (!committed) return
     record.givenBackSteers = ahead.add(queueItemId)
+    // A move its turn asked for applies first, so it runs in the new folder.
+    steerResolved(record, queueItemId, 'returned')
     // The turn it was for may have ended while the provider still held it.
     queueMicrotask(() => drain(record))
   }
@@ -2881,6 +2975,7 @@ export function createThreadService(
     const item = record.queue.items.find((entry) => entry.queueItemId === steerId)
     if (!item) return
     const active = record.activeTurn
+    steerResolved(record, steerId, active ? { turnId: active.turn.turnId } : 'dropped')
     const message = active ? messageOf(record, item, active.turn.turnId) : undefined
     if (!active || !message) {
       // The agent has it, but there is no running turn to show it in (the
@@ -2972,6 +3067,8 @@ export function createThreadService(
       pendingInteractions: new Map(),
     }
     touch(record, 'running')
+    // It took over from the turn it was sent into, and with it any move that asked for.
+    steerResolved(record, steerId, { turnId: turn.turnId })
   }
 
   /**
