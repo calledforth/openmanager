@@ -210,63 +210,70 @@ function ProviderStack({ subagents }: { subagents: readonly Subagent[] }) {
  * one row: what they run on, how many, and how they stand. Unfolded, a card
  * each under it.
  */
-export const SubagentGroup = memo(function SubagentGroup({ parts }: { parts: SubagentPart[] }) {
-  const theme = usePhoneTheme()
-  const [open, setOpen] = useState(false)
-  const revealedRef = useRef(false)
-  const subagents = parts.map((part) => part.subagent)
-  const summary = subagentGroupSummary(subagents)
-  const waiting = subagents.find((subagent) => subagent.status === 'waiting')
-  const running = subagents.some((subagent) => subagentTone(subagent.status) === 'running')
-  return (
-    <View style={{ gap: 6 }}>
-      <Press
-        accessibilityRole="button"
-        accessibilityState={{ expanded: open }}
-        accessibilityLabel={`${summary.title}, ${summary.detail}`}
-        accessibilityHint={subagents
-          .map((subagent) => providerName(subagent.providerId))
-          .join(', ')}
-        onPress={() => {
-          revealedRef.current = true
-          setOpen((value) => !value)
-        }}
-        style={({ pressed }) => ({
-          flexDirection: 'row',
-          alignItems: 'center',
-          gap: 8,
-          minHeight: 42,
-          paddingLeft: 8,
-          paddingRight: 12,
-          borderRadius: 12,
-          backgroundColor: pressed ? theme.active : theme.hover,
-        })}
-      >
-        <ProviderStack subagents={subagents} />
-        <AppText variant="text-14-medium" style={{ color: theme.fg }}>
-          {summary.title}
-        </AppText>
-        {waiting ? (
-          <StatusMark mark={waiting.waitingOn === 'question' ? 'question' : 'needs'} size={12} />
-        ) : running ? (
-          <StatusMark mark="working" size={12} />
-        ) : null}
-        <AppText
-          variant="text-12-regular"
-          numberOfLines={1}
-          style={{ color: theme.muted, flex: 1, minWidth: 0 }}
+export const SubagentGroup = memo(
+  function SubagentGroup({ parts }: { parts: SubagentPart[] }) {
+    const theme = usePhoneTheme()
+    const [open, setOpen] = useState(false)
+    const revealedRef = useRef(false)
+    const subagents = parts.map((part) => part.subagent)
+    const summary = subagentGroupSummary(subagents)
+    const waiting = subagents.find((subagent) => subagent.status === 'waiting')
+    const running = subagents.some((subagent) => subagentTone(subagent.status) === 'running')
+    return (
+      <View style={{ gap: 6 }}>
+        <Press
+          accessibilityRole="button"
+          accessibilityState={{ expanded: open }}
+          accessibilityLabel={`${summary.title}, ${summary.detail}`}
+          accessibilityHint={subagents
+            .map((subagent) => providerName(subagent.providerId))
+            .join(', ')}
+          onPress={() => {
+            revealedRef.current = true
+            setOpen((value) => !value)
+          }}
+          style={({ pressed }) => ({
+            flexDirection: 'row',
+            alignItems: 'center',
+            gap: 8,
+            minHeight: 42,
+            paddingLeft: 8,
+            paddingRight: 12,
+            borderRadius: 12,
+            backgroundColor: pressed ? theme.active : theme.hover,
+          })}
         >
-          {summary.detail}
-        </AppText>
-        <DisclosureChevron open={open} color={theme.faint} />
-      </Press>
-      {open ? (
-        <Animated.View entering={revealedRef.current ? revealBody : undefined} style={{ gap: 6 }}>
-          {parts.map((part) => (
-            <SubagentCard key={part.id} part={part} />
-          ))}
-        </Animated.View>
-      ) : null}
-    </View>
-  )
-})
+          <ProviderStack subagents={subagents} />
+          <AppText variant="text-14-medium" style={{ color: theme.fg }}>
+            {summary.title}
+          </AppText>
+          {waiting ? (
+            <StatusMark mark={waiting.waitingOn === 'question' ? 'question' : 'needs'} size={12} />
+          ) : running ? (
+            <StatusMark mark="working" size={12} />
+          ) : null}
+          <AppText
+            variant="text-12-regular"
+            numberOfLines={1}
+            style={{ color: theme.muted, flex: 1, minWidth: 0 }}
+          >
+            {summary.detail}
+          </AppText>
+          <DisclosureChevron open={open} color={theme.faint} />
+        </Press>
+        {open ? (
+          <Animated.View entering={revealedRef.current ? revealBody : undefined} style={{ gap: 6 }}>
+            {parts.map((part) => (
+              <SubagentCard key={part.id} part={part} />
+            ))}
+          </Animated.View>
+        ) : null}
+      </View>
+    )
+  },
+  // The run is gathered anew on every event the turn gets; it is the same run
+  // while it holds the same parts, so a streamed token leaves the header be.
+  (previous, next) =>
+    previous.parts.length === next.parts.length &&
+    previous.parts.every((part, index) => part === next.parts[index]),
+)

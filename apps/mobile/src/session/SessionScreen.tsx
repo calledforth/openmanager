@@ -22,7 +22,7 @@ import type { HomeSession } from '../home/rows'
 import { useHomeSource, usePageSessions } from '../home/source'
 import { EnvironmentPage, useEnvironmentStatus } from '../environment/PhoneEnvironmentProvider'
 import { OpenChildSessionContext } from '../components/parts/SubagentCard'
-import { sessionRowHref } from '../environment/landing-route'
+import { sessionHref, sessionRowHref } from '../environment/landing-route'
 import { childSessionsOf, childSessionsWithoutCards } from './child-sessions'
 import { FixtureThreadStores, useFixtureThread } from './fixture-thread'
 import { SessionThread } from './SessionThread'
@@ -47,19 +47,27 @@ function useChildSessions(
   return useMemo(() => childSessionsWithoutCards(children, subagents), [children, subagents])
 }
 
-/** How a subagent card opens its child: the child's page, in this session's environment. */
-function useOpenChildSession(session: HomeSession | undefined) {
+/**
+ * How a subagent card opens its child: the child's page, in the page's own
+ * environment. The page knows it even when the parent's row is not in the
+ * loaded list (opened from search, say), so the child never goes looking in
+ * another environment.
+ */
+function useOpenChildSession(environmentId: string | undefined) {
   const router = useRouter()
-  const environment = session?.environment
   return useCallback(
     (childSessionId: string) =>
-      router.push(sessionRowHref({ externalId: childSessionId, environment }) as never),
-    [environment, router],
+      router.push(
+        (environmentId
+          ? sessionHref(environmentId, childSessionId)
+          : sessionRowHref({ externalId: childSessionId })) as never,
+      ),
+    [environmentId, router],
   )
 }
 
 /** A session of its page's environment, opened read-only for as long as the page is up. */
-function LiveSession({ sessionId }: { sessionId: string }) {
+function LiveSession({ environmentId, sessionId }: { environmentId: string; sessionId: string }) {
   // The page in front owns the client's active session; one left under
   // another page keeps quiet until it is in front again.
   const focused = useIsFocused()
@@ -79,7 +87,7 @@ function LiveSession({ sessionId }: { sessionId: string }) {
   const status = useStatusLine(session, subscribe, getThread)
   const getSubagents = useCallback(() => getThread()?.subagents ?? NO_SUBAGENTS, [getThread])
   const subagents = useSyncExternalStore(subscribe, getSubagents)
-  const openChild = useOpenChildSession(session)
+  const openChild = useOpenChildSession(environmentId)
   // Work the agent left running: above the status line, with its Stop.
   const tasks = useBackgroundTasks(client, sessionId)
   const stopTasks = useCallback(
@@ -177,7 +185,7 @@ export function FixtureSession({ sessionId, opened }: { sessionId: string; opene
   const getSubagents = useCallback(() => fixture.getThread()?.subagents ?? NO_SUBAGENTS, [fixture])
   const subagents = useSyncExternalStore(fixture.subscribe, getSubagents)
   const childSessions = useChildSessions(sessions, sessionId, subagents)
-  const openChild = useOpenChildSession(session)
+  const openChild = useOpenChildSession(session?.environment?.environmentId)
   const actions = useMemo(
     () => unavailableSessionActions(session, 'A sample session: pair an environment to change it'),
     [session],
@@ -273,7 +281,7 @@ export function SessionScreen({
       environmentId={environmentId}
       fallback={<Unreachable environmentId={environmentId} />}
     >
-      <LiveSession key={sessionId} sessionId={sessionId} />
+      <LiveSession key={sessionId} environmentId={environmentId} sessionId={sessionId} />
     </EnvironmentPage>
   )
 }
