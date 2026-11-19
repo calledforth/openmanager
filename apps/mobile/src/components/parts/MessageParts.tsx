@@ -10,6 +10,7 @@ import type {
   FailurePart,
   MessagePart,
   NoticePart,
+  SubagentPart,
 } from '@openmanager/app-core/logic'
 
 import { countRender } from '../../session/render-probe'
@@ -18,18 +19,20 @@ import { AppText } from '../ui/AppText'
 import { ImageGroup, useTranscriptWidth, type GalleryImage } from './ImageGroup'
 import { TextPart } from './TextPart'
 import { VideoPart, type TranscriptVideo } from './VideoPart'
+import { SubagentCard, SubagentGroup } from './SubagentCard'
 import { ThinkingPart } from './ThinkingPart'
 import { ToolRow, type ToolPartData } from './ToolRow'
 import { TurnFailureRow, TurnNoticeRow } from './TurnNoticeRow'
-import { toolCallCount, workGroupLabel } from './work-groups'
+import { isThoughtStreaming, liveThoughtOf, toolCallCount, workGroupLabel } from './work-groups'
 import { WorkGroup } from './WorkGroup'
 
 // After web's `MessageParts`: parts deduplicated by id, runs of consecutive
 // tool calls folded into one work group with web's own summary wording
-// (`groupActivityParts`), runs of consecutive images drawn as one gallery,
-// and every part memoised by identity. The shared projection hands an
-// unchanged part back as the same object on every event, so a streamed token
-// re-renders the one part it changed.
+// (`groupActivityParts`) with the thoughts between them folded in where they
+// came, runs of consecutive images drawn as one gallery, subagents started
+// back to back as one group of cards, and every part memoised by identity.
+// The shared projection hands an unchanged part back as the same object on
+// every event, so a streamed token re-renders the one part it changed.
 
 type Part = MessagePart
 
@@ -52,30 +55,43 @@ function galleryImage(part: Part): GalleryImage {
 }
 
 type ImagesRun = { kind: 'images'; key: string; images: GalleryImage[] }
-type Node = ActivityNode<Part> | ImagesRun
+type SubagentsRun = { kind: 'subagents'; key: string; parts: SubagentPart[] }
+type Node = ActivityNode<Part> | ImagesRun | SubagentsRun
 
 /**
  * Consecutive images as one gallery rather than a card each, as web draws
  * them: a tool that returns a dozen screenshots does not push the reply
- * apart by a screen per picture.
+ * apart by a screen per picture. Subagents started back to back fold into
+ * one group the same way, a card each when opened; one alone is its card.
  */
-function withImageRuns(nodes: readonly ActivityNode<Part>[]): Node[] {
+function withRuns(nodes: readonly ActivityNode<Part>[]): Node[] {
   const out: Node[] = []
   for (let index = 0; index < nodes.length; index += 1) {
     const node = nodes[index]!
-    if (node.kind !== 'part' || node.part.type !== 'image') {
+    if (node.kind !== 'part' || (node.part.type !== 'image' && node.part.type !== 'subagent')) {
       out.push(node)
       continue
     }
+    const type = node.part.type
     const key = getPartKey(node.part, index)
-    const images = [galleryImage(node.part)]
+    const run = [node.part]
     while (index + 1 < nodes.length) {
       const next = nodes[index + 1]!
-      if (next.kind !== 'part' || next.part.type !== 'image') break
-      images.push(galleryImage(next.part))
+      if (next.kind !== 'part' || next.part.type !== type) break
+      run.push(next.part)
       index += 1
     }
-    out.push({ kind: 'images', key, images })
+    if (type === 'image') {
+      out.push({ kind: 'images', key, images: run.map(galleryImage) })
+    } else if (run.length === 1) {
+      out.push(node)
+    } else {
+      out.push({
+        kind: 'subagents',
+        key: `subagents:${key}`,
+        parts: run as unknown as SubagentPart[],
+      })
+    }
   }
   return out
 }
@@ -90,7 +106,15 @@ function NoteRow({ children }: { children: string }) {
   )
 }
 
-function renderPart(part: Part, isStreaming: boolean | undefined, width: number): ReactNode {
+function renderPart(
+  part: Part,
+  isStreaming: boolean | undefined,
+  width: number,
+  /** A thought the work has moved past, whatever its own timing says. */
+  thoughtSettled?: boolean,
+  /** A thought on a work group's branch: its words show as they stream. */
+  streamed?: boolean,
+): ReactNode {
   switch (part.type) {
     case 'text': {
       if (part.synthetic || part.ignored) return null
@@ -118,7 +142,7 @@ function renderPart(part: Part, isStreaming: boolean | undefined, width: number)
         part.time && typeof part.time === 'object'
           ? (part.time as Record<string, number>)
           : undefined
-      const reasoningStreaming = partTime ? typeof partTime.end !== 'number' : !!isStreaming
+      const reasoningStreaming = !thoughtSettled && isThoughtStreaming(part, isStreaming)
       // Old persisted parts are `{text, time}` and new ones may be
       // `{tokens, time}` with no text at all; both must render forever, so the
       // shape of the part decides what is passed down — never the provider id.
@@ -127,6 +151,7 @@ function renderPart(part: Part, isStreaming: boolean | undefined, width: number)
           text={typeof part.text === 'string' ? part.text : ''}
           tokens={typeof part.tokens === 'number' ? part.tokens : undefined}
           isStreaming={reasoningStreaming}
+          streamed={streamed}
           duration={
             partTime && typeof partTime.end === 'number' && typeof partTime.start === 'number'
               ? partTime.end - partTime.start
@@ -147,6 +172,9 @@ function renderPart(part: Part, isStreaming: boolean | undefined, width: number)
       )
     case 'compaction':
       return <NoteRow>Session compacted</NoteRow>
+    case 'subagent':
+      // Several back to back are gathered into one group before they get here.
+      return <SubagentCard part={part as unknown as SubagentPart} />
     case 'notice': {
       // What the provider said about the turn: kept with it, or live until
       // the environment clears it.
@@ -165,13 +193,17 @@ function renderPart(part: Part, isStreaming: boolean | undefined, width: number)
 const PartNode = memo(function PartNode({
   part,
   isStreaming,
+  thoughtSettled,
+  streamed,
 }: {
   part: Part
   isStreaming?: boolean
+  thoughtSettled?: boolean
+  streamed?: boolean
 }) {
   countRender('PartNode')
   const width = useTranscriptWidth()
-  return renderPart(part, isStreaming, width)
+  return renderPart(part, isStreaming, width, thoughtSettled, streamed)
 })
 
 /** A run of images as one gallery; the run is rebuilt only when the parts change. */
@@ -185,12 +217,19 @@ const SUMMARY_FIELDS = [
   'runningText',
   'isRunning',
   'toolCount',
+  'thoughtCount',
 ] as const satisfies readonly (keyof ActivitySummary)[]
 
 /**
- * A run of tool calls as one work group. Grouping builds the run anew on
- * every render, so it is compared by what it holds: a run whose calls and
- * counts are unchanged is left alone, with its rows.
+ * A run of the agent's work as one work group: its tool calls, and the
+ * thoughts between them in the order they came. Grouping builds the run anew
+ * on every render, so it is compared by what it holds: a run whose members
+ * and counts are unchanged is left alone, with its rows.
+ *
+ * Only the run's last member can be a thought in progress; one the work has
+ * moved past reads as had, whatever its provider has yet to say. That live
+ * thought hangs under the folded header on its own branch. A run of thoughts
+ * alone has no calls to sum up, so each thought is its own row.
  */
 const ActivityGroupNode = memo(
   function ActivityGroupNode({
@@ -202,17 +241,31 @@ const ActivityGroupNode = memo(
     summary: ActivitySummary
     isStreaming?: boolean
   }) {
+    const last = items.length - 1
+    const rows = items.map((item, index) => (
+      <PartNode
+        key={getPartKey(item, index)}
+        part={item}
+        isStreaming={isStreaming}
+        thoughtSettled={item.type === 'reasoning' && index !== last}
+      />
+    ))
+    if (summary.toolCount === 0) return <>{rows}</>
+    const thought = liveThoughtOf(items, summary.toolCount, isStreaming)
+    const live = thought ? (
+      <PartNode part={thought} isStreaming={isStreaming} streamed />
+    ) : undefined
     return (
+      // Folded, live or not, as web's: the label rewrites itself as calls
+      // land, so the run reads as one updating line, and opening it shows
+      // each call and thought in order.
       <WorkGroup
         label={workGroupLabel(summary)}
         meta={toolCallCount(summary.toolCount)}
         running={summary.isRunning}
-        // A live run shows its calls as they land; a settled one stays folded.
-        defaultOpen={!!isStreaming}
+        live={live}
       >
-        {items.map((item, index) => (
-          <PartNode key={getPartKey(item, index)} part={item} isStreaming={isStreaming} />
-        ))}
+        {rows}
       </WorkGroup>
     )
   },
@@ -236,8 +289,9 @@ function dedupe(parts: readonly Part[]): Part[] {
 /**
  * A turn's parts in the order they happened. `flat` lays tool calls out as
  * bare rows (inside a settled turn's own work group, so no fold sits in a
- * fold); otherwise each run of calls is its own work group. Either way a run
- * of images is one gallery.
+ * fold); otherwise each run of calls is its own work group, the thoughts
+ * between them in it. Either way a run of images is one gallery and a run of
+ * subagents one group.
  */
 export const MessageParts = memo(function MessageParts({
   parts,
@@ -252,10 +306,10 @@ export const MessageParts = memo(function MessageParts({
   const deduped = useMemo(() => dedupe(parts), [parts])
   const nodes = useMemo(
     () =>
-      withImageRuns(
+      withRuns(
         flat
           ? deduped.map((part): ActivityNode<Part> => ({ kind: 'part', part }))
-          : groupActivityParts(deduped as Part[]),
+          : groupActivityParts(deduped as Part[], { absorbReasoning: true }),
       ),
     [deduped, flat],
   )
@@ -269,6 +323,8 @@ export const MessageParts = memo(function MessageParts({
           <PartNode key={getPartKey(node.part, index)} part={node.part} isStreaming={isStreaming} />
         ) : node.kind === 'images' ? (
           <ImagesNode key={node.key} images={node.images} />
+        ) : node.kind === 'subagents' ? (
+          <SubagentGroup key={node.key} parts={node.parts} />
         ) : (
           <ActivityGroupNode
             key={node.id}

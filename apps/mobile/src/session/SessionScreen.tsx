@@ -1,7 +1,8 @@
-import { useIsFocused } from 'expo-router'
+import { useIsFocused, useRouter } from 'expo-router'
 import { useCallback, useMemo, useRef, useState, useSyncExternalStore } from 'react'
 import { useWindowDimensions } from 'react-native'
 import { useEnvironmentClient } from '@openmanager/app-core/logic'
+import type { Subagent } from '@openmanager/protocol'
 import { selectActiveThread } from '@openmanager/environment-client'
 
 import { BackgroundTasksRow, useBackgroundTasks } from './BackgroundTasks'
@@ -20,7 +21,9 @@ import { createComposerUi, fixtureComposerUi } from '../composer/ui-state'
 import type { HomeSession } from '../home/rows'
 import { useHomeSource, usePageSessions } from '../home/source'
 import { EnvironmentPage, useEnvironmentStatus } from '../environment/PhoneEnvironmentProvider'
-import { childSessionsOf } from './child-sessions'
+import { OpenChildSessionContext } from '../components/parts/SubagentCard'
+import { sessionRowHref } from '../environment/landing-route'
+import { childSessionsOf, childSessionsWithoutCards } from './child-sessions'
 import { FixtureThreadStores, useFixtureThread } from './fixture-thread'
 import { SessionThread } from './SessionThread'
 import { useReadOnlySession } from './useReadOnlySession'
@@ -29,9 +32,30 @@ import { useStatusLine } from './useStatusLine'
 
 const untitled = (title: string | undefined) => title?.trim() || 'Untitled session'
 
-/** The listed sessions under this one, kept as the same list while they are the same rows. */
-function useChildSessions(sessions: readonly HomeSession[], sessionId: string) {
-  return useMemo(() => childSessionsOf(sessions, sessionId), [sessions, sessionId])
+const NO_SUBAGENTS: readonly Subagent[] = []
+
+/**
+ * The listed sessions under this one that no subagent card in its transcript
+ * opens, kept as the same list while they are the same rows.
+ */
+function useChildSessions(
+  sessions: readonly HomeSession[],
+  sessionId: string,
+  subagents: readonly Subagent[],
+) {
+  const children = useMemo(() => childSessionsOf(sessions, sessionId), [sessions, sessionId])
+  return useMemo(() => childSessionsWithoutCards(children, subagents), [children, subagents])
+}
+
+/** How a subagent card opens its child: the child's page, in this session's environment. */
+function useOpenChildSession(session: HomeSession | undefined) {
+  const router = useRouter()
+  const environment = session?.environment
+  return useCallback(
+    (childSessionId: string) =>
+      router.push(sessionRowHref({ externalId: childSessionId, environment }) as never),
+    [environment, router],
+  )
 }
 
 /** A session of its page's environment, opened read-only for as long as the page is up. */
@@ -53,6 +77,9 @@ function LiveSession({ sessionId }: { sessionId: string }) {
   }, [client, sessionId])
   const subscribe = useCallback((listener: () => void) => client.subscribe(listener), [client])
   const status = useStatusLine(session, subscribe, getThread)
+  const getSubagents = useCallback(() => getThread()?.subagents ?? NO_SUBAGENTS, [getThread])
+  const subagents = useSyncExternalStore(subscribe, getSubagents)
+  const openChild = useOpenChildSession(session)
   // Work the agent left running: above the status line, with its Stop.
   const tasks = useBackgroundTasks(client, sessionId)
   const stopTasks = useCallback(
@@ -92,7 +119,7 @@ function LiveSession({ sessionId }: { sessionId: string }) {
       ) : null,
     [canStop, queues, sessionId, stopTasks, tasks, waiting.queue, waiting.remove, waiting.resume],
   )
-  const childSessions = useChildSessions(sessions, sessionId)
+  const childSessions = useChildSessions(sessions, sessionId, subagents)
   const [ui] = useState(() => createComposerUi())
   const openSettings = useCallback(() => ui.open({ kind: 'settings' }), [ui])
   const actions = useSessionActions(sessionId, session, openSettings)
@@ -100,20 +127,22 @@ function LiveSession({ sessionId }: { sessionId: string }) {
   const composer = useMemo(() => <LiveComposer sessionId={sessionId} ui={ui} />, [sessionId, ui])
   return (
     <SteerNowContext.Provider value={sendSteerNow}>
-      <SessionThread
-        title={untitled(session?.title ?? title)}
-        project={workspace?.name}
-        projectId={workspace?.path ?? null}
-        above={above}
-        status={status}
-        messages={messages}
-        phase={phase}
-        failure={failure}
-        onRetry={retry}
-        childSessions={childSessions}
-        actions={actions}
-        composer={composer}
-      />
+      <OpenChildSessionContext.Provider value={openChild}>
+        <SessionThread
+          title={untitled(session?.title ?? title)}
+          project={workspace?.name}
+          projectId={workspace?.path ?? null}
+          above={above}
+          status={status}
+          messages={messages}
+          phase={phase}
+          failure={failure}
+          onRetry={retry}
+          childSessions={childSessions}
+          actions={actions}
+          composer={composer}
+        />
+      </OpenChildSessionContext.Provider>
     </SteerNowContext.Provider>
   )
 }
@@ -145,7 +174,10 @@ export function FixtureSession({ sessionId, opened }: { sessionId: string; opene
   const session = sessions.find((row) => row.externalId === sessionId)
   const workspace = workspaces.find((entry) => entry.path === session?.workspacePath)
   const status = useStatusLine(session, fixture.subscribe, fixture.getThread)
-  const childSessions = useChildSessions(sessions, sessionId)
+  const getSubagents = useCallback(() => fixture.getThread()?.subagents ?? NO_SUBAGENTS, [fixture])
+  const subagents = useSyncExternalStore(fixture.subscribe, getSubagents)
+  const childSessions = useChildSessions(sessions, sessionId, subagents)
+  const openChild = useOpenChildSession(session)
   const actions = useMemo(
     () => unavailableSessionActions(session, 'A sample session: pair an environment to change it'),
     [session],
@@ -162,18 +194,20 @@ export function FixtureSession({ sessionId, opened }: { sessionId: string; opene
   return (
     <FixtureThreadStores stores={fixture.stores}>
       <SteerNowContext.Provider value={fixture.followUps.sendNow}>
-        <SessionThread
-          title={untitled(session?.title)}
-          project={workspace?.name}
-          projectId={workspace?.path ?? null}
-          above={above}
-          status={status}
-          messages={messages}
-          phase="ready"
-          childSessions={childSessions}
-          actions={actions}
-          composer={composer}
-        />
+        <OpenChildSessionContext.Provider value={openChild}>
+          <SessionThread
+            title={untitled(session?.title)}
+            project={workspace?.name}
+            projectId={workspace?.path ?? null}
+            above={above}
+            status={status}
+            messages={messages}
+            phase="ready"
+            childSessions={childSessions}
+            actions={actions}
+            composer={composer}
+          />
+        </OpenChildSessionContext.Provider>
       </SteerNowContext.Provider>
     </FixtureThreadStores>
   )

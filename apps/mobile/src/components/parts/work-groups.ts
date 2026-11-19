@@ -52,3 +52,28 @@ export function foldSettledTurn(parts: readonly MessagePart[]): SettledTurnFold 
 export function turnLayout(turn: { streaming: boolean; watchedLive: boolean }): 'live' | 'folded' {
   return turn.streaming || turn.watchedLive ? 'live' : 'folded'
 }
+
+/** Whether a thought is still going: its own timing says, else the turn's. */
+export function isThoughtStreaming(
+  part: { type: string; time?: unknown },
+  isStreaming: boolean | undefined,
+): boolean {
+  const time =
+    part.time && typeof part.time === 'object' ? (part.time as Record<string, unknown>) : undefined
+  return time ? typeof time.end !== 'number' : !!isStreaming
+}
+
+/**
+ * The thought a work group hangs on its branch: its last member, while that
+ * is a thought still going. Only the last can be; one the work has moved
+ * past reads as had. A run of thoughts alone is no group, so has none.
+ */
+export function liveThoughtOf<T extends { type: string; time?: unknown }>(
+  items: readonly T[],
+  toolCount: number,
+  isStreaming: boolean | undefined,
+): T | undefined {
+  if (toolCount === 0) return undefined
+  const tail = items[items.length - 1]
+  return tail?.type === 'reasoning' && isThoughtStreaming(tail, isStreaming) ? tail : undefined
+}

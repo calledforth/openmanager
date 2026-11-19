@@ -26,6 +26,22 @@ function tokenLabel(tokens?: number): string {
   return ` · ~${rounded} tokens`
 }
 
+/** How much of a streaming thought its branch shows: its last few lines' worth. */
+const LIVE_TAIL_CHARS = 280
+
+/**
+ * The end of a thought as it streams, cut at a word so it reads from the
+ * start of one: the branch under a work group follows the words as they come
+ * rather than growing with every line the agent thinks.
+ */
+export function liveThoughtTail(text: string, max = LIVE_TAIL_CHARS): string {
+  const trimmed = text.trim()
+  if (trimmed.length <= max) return trimmed
+  const cut = trimmed.slice(trimmed.length - max)
+  const space = cut.search(/\s/)
+  return `…${space >= 0 && space < 40 ? cut.slice(space + 1) : cut}`
+}
+
 /**
  * Reasoning as one collapsed row: "Thinking" shimmering while it streams,
  * "Thought" (with how long, when the environment says) once it is done. It
@@ -33,12 +49,16 @@ function tokenLabel(tokens?: number): string {
  * and the text fades in. A thought with no text yet (or a provider that
  * reports only a token count) keeps the same row, its chevron dimmed, with
  * nothing to open.
+ *
+ * `streamed`: the thought hangs on a work group's branch while it streams,
+ * so its words show under the label as they come, with nothing to tap.
  */
 export const ThinkingPart = memo(function ThinkingPart({
   text,
   duration,
   tokens,
   isStreaming = false,
+  streamed = false,
 }: {
   text?: string
   duration?: number
@@ -46,6 +66,8 @@ export const ThinkingPart = memo(function ThinkingPart({
    * for providers whose thinking blocks carry no text at all. */
   tokens?: number
   isStreaming?: boolean
+  /** Its words show as they stream (a work group's live thought). */
+  streamed?: boolean
 }) {
   const theme = usePhoneTheme()
   const [open, setOpen] = useState(false)
@@ -62,6 +84,20 @@ export const ThinkingPart = memo(function ThinkingPart({
       {label}
     </AppText>
   )
+
+  if (streamed && isStreaming) {
+    const tail = liveThoughtTail(body)
+    return (
+      <View style={{ paddingVertical: 2, gap: 4 }}>
+        {labelView}
+        {tail ? (
+          <AppText variant="text-13-regular" style={{ color: theme.muted, fontStyle: 'italic' }}>
+            {tail}
+          </AppText>
+        ) : null}
+      </View>
+    )
+  }
 
   if (!body) {
     // The same collapsed row as a thought with text, chevron and all, so a
