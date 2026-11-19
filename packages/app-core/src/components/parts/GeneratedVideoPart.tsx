@@ -2,7 +2,12 @@ import { useLayoutEffect, useRef, useState } from 'react'
 import { FilmStripIcon, WarningCircleIcon } from '@phosphor-icons/react'
 import { cn } from '../../lib/utils'
 import { useArtifactPreview } from '../../lib/artifact-preview'
-import { playbackMemory, useArtifactStream } from '../../lib/artifact-stream'
+import {
+  playbackMemory,
+  useArtifactStream,
+  videoFrames,
+  type VideoFrame,
+} from '../../lib/artifact-stream'
 
 export type GeneratedVideo = {
   id: string
@@ -22,6 +27,25 @@ export const WHOLE_VIDEO_MAX_BYTES = 100 * 1024 * 1024
 /** Grants a mounted player renews before it counts the video as broken. */
 const MAX_RETRIES = 3
 
+/** The tallest the player gets; a wide video is as wide as the column allows. */
+const PLAYER_MAX_HEIGHT_PX = 440
+/** The shape assumed for a video no player has read yet: a screen recording's. */
+const DEFAULT_ASPECT = { width: 16, height: 9 }
+
+/**
+ * The player's box for a video of this frame size (or of unknown size): its
+ * own width at most, and no taller than the cap. The column narrows it further
+ * (`max-width`), keeping the shape.
+ */
+function playerBox(frame: VideoFrame | undefined) {
+  const { width, height } = frame ?? DEFAULT_ASPECT
+  const capped = (PLAYER_MAX_HEIGHT_PX * width) / height
+  return {
+    width: `${Math.round(frame ? Math.min(frame.width, capped) : capped)}px`,
+    aspectRatio: `${width} / ${height}`,
+  }
+}
+
 const videoName = (part: GeneratedVideo) => part.name?.trim() || 'Video'
 
 /**
@@ -33,9 +57,7 @@ const videoName = (part: GeneratedVideo) => part.name?.trim() || 'Video'
 function useVideoSource(part: GeneratedVideo) {
   const stream = useArtifactStream(part.artifact)
   const readWhole =
-    stream.unsupported &&
-    part.sizeBytes !== undefined &&
-    part.sizeBytes <= WHOLE_VIDEO_MAX_BYTES
+    stream.unsupported && part.sizeBytes !== undefined && part.sizeBytes <= WHOLE_VIDEO_MAX_BYTES
   const whole = useArtifactPreview(readWhole ? part.artifact : undefined)
   if (!stream.failed) return { url: stream.url, failed: false, retry: stream.retry }
   if (!readWhole) return { url: undefined, failed: true, retry: undefined }
@@ -66,6 +88,13 @@ export function GeneratedVideoPart({ part }: { part: GeneratedVideo }) {
   const artifact = part.artifact
   const sessionId = artifact?.sessionId
   const artifactId = artifact?.artifactId
+  // The player's box is sized from the video's shape before a byte loads, so
+  // a row mounted again as the reader scrolls back to it is already as tall
+  // as it will be. Only the first player to read a video not 16:9 resizes.
+  const [frame, setFrame] = useState(() =>
+    sessionId && artifactId ? videoFrames.get({ sessionId, artifactId }) : undefined,
+  )
+  const box = playerBox(frame)
 
   // A layout cleanup runs before the browser pauses a removed element, so it
   // still reads whether the video was playing.
@@ -91,12 +120,13 @@ export function GeneratedVideoPart({ part }: { part: GeneratedVideo }) {
   }
 
   return (
-    <figure className="my-2 w-fit max-w-full">
+    <figure className="my-2 max-w-full" style={{ width: box.width }}>
       <div
         className={cn(
           'overflow-hidden rounded-xl border border-[var(--basis-border-muted)] bg-black shadow-sm',
-          !url && 'aspect-video w-[min(28rem,100%)] animate-pulse bg-[var(--basis-surface)]',
+          !url && 'animate-pulse bg-[var(--basis-surface)]',
         )}
+        style={{ aspectRatio: box.aspectRatio }}
       >
         {url && (
           <video
@@ -109,8 +139,18 @@ export function GeneratedVideoPart({ part }: { part: GeneratedVideo }) {
             playsInline
             preload="metadata"
             aria-label={name}
-            className="block max-h-[440px] max-w-full"
+            className="block h-full w-full object-contain"
             onLoadedMetadata={(event) => {
+              const { videoWidth: width, videoHeight: height } = event.currentTarget
+              if (width > 0 && height > 0) {
+                if (sessionId && artifactId)
+                  videoFrames.set({ sessionId, artifactId }, { width, height })
+                setFrame((current) =>
+                  current?.width === width && current.height === height
+                    ? current
+                    : { width, height },
+                )
+              }
               const remembered =
                 sessionId && artifactId ? playbackMemory.take({ sessionId, artifactId }) : undefined
               const resume =
