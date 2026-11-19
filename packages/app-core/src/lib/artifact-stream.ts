@@ -44,9 +44,7 @@ function heldGrant(client: EnvironmentClient, key: string): Grant | undefined {
 
 /** Whether asking again could get a different answer. */
 const mayPass = (error: unknown) =>
-  !isEnvironmentClientError(error) ||
-  error.code === 'unavailable' ||
-  error.code === 'internal'
+  !isEnvironmentClientError(error) || error.code === 'unavailable' || error.code === 'internal'
 
 type State = { key?: string; url?: string; failed: boolean; unsupported: boolean }
 const WAITING: State = { failed: false, unsupported: false }
@@ -131,6 +129,31 @@ export function useArtifactStream(artifact: Target | undefined): ArtifactStream 
   )
   // A view reused for another artifact must not play the previous one.
   return state.key === key ? { ...state, retry } : { ...WAITING, retry }
+}
+
+export type VideoFrame = { width: number; height: number }
+
+/**
+ * Each shared video's frame size, by artifact, once a player has read it. The
+ * transcript unmounts rows that scroll out of view and mounts them anew on the
+ * way back; a player that already knows its shape lays out at its final size
+ * at once, rather than as a default box that grows when the video loads (which
+ * moves everything below it under a reader scrolling past).
+ */
+const frames = new Map<string, VideoFrame>()
+const FRAMES_KEPT = 200
+
+export const videoFrames = {
+  get(artifact: Target): VideoFrame | undefined {
+    return frames.get(keyOf(artifact))
+  },
+  set(artifact: Target, frame: VideoFrame) {
+    if (!(frame.width > 0 && frame.height > 0)) return
+    const key = keyOf(artifact)
+    frames.delete(key)
+    frames.set(key, frame)
+    if (frames.size > FRAMES_KEPT) frames.delete(frames.keys().next().value!)
+  },
 }
 
 export type PlaybackPosition = { time: number; playing: boolean }

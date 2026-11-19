@@ -58,7 +58,10 @@ describe('a shared video', () => {
     const client: EnvironmentClient = {
       ...createMockEnvironmentClient(),
       fetchArtifact,
-      artifactStreamUrl: vi.fn(async () => ({ url: 'http://env/media/g1', expiresAt: Date.now() + 3_600_000 })),
+      artifactStreamUrl: vi.fn(async () => ({
+        url: 'http://env/media/g1',
+        expiresAt: Date.now() + 3_600_000,
+      })),
     }
     render(client)
     await settle()
@@ -139,5 +142,51 @@ describe('a shared video', () => {
     await settle()
     expect(fetchArtifact).toHaveBeenCalledTimes(1)
     expect(container.textContent).toContain('is unavailable')
+  })
+
+  it('mounts again at the size it loaded at, so the transcript does not shift', async () => {
+    const client: EnvironmentClient = {
+      ...createMockEnvironmentClient(),
+      artifactStreamUrl: vi.fn(async () => ({
+        url: 'http://env/media/g1',
+        expiresAt: Date.now() + 3_600_000,
+      })),
+    }
+    const box = () => container.querySelector('figure')!
+    render(client)
+    await settle()
+    // Not read yet: a 16:9 box as tall as the cap, before any byte arrives.
+    expect(box().style.width).toBe('782px')
+    expect((box().firstElementChild as HTMLElement).style.aspectRatio).toBe('16 / 9')
+
+    const loaded = video()!
+    Object.defineProperty(loaded, 'videoWidth', { value: 1440 })
+    Object.defineProperty(loaded, 'videoHeight', { value: 900 })
+    act(() => void loaded.dispatchEvent(new Event('loadedmetadata')))
+    expect(box().style.width).toBe('704px')
+    expect((box().firstElementChild as HTMLElement).style.aspectRatio).toBe('1440 / 900')
+
+    // Scrolled out of the virtualized list and back: a new player, its shape known.
+    act(() => root.render(<div />))
+    render(client)
+    expect(box().style.width).toBe('704px')
+    expect((box().firstElementChild as HTMLElement).style.aspectRatio).toBe('1440 / 900')
+  })
+
+  it('does not blow a small video up past its own size', async () => {
+    const client: EnvironmentClient = {
+      ...createMockEnvironmentClient(),
+      artifactStreamUrl: vi.fn(async () => ({
+        url: 'http://env/media/g1',
+        expiresAt: Date.now() + 3_600_000,
+      })),
+    }
+    render(client)
+    await settle()
+    const loaded = video()!
+    Object.defineProperty(loaded, 'videoWidth', { value: 320 })
+    Object.defineProperty(loaded, 'videoHeight', { value: 240 })
+    act(() => void loaded.dispatchEvent(new Event('loadedmetadata')))
+    expect(container.querySelector('figure')!.style.width).toBe('320px')
   })
 })
