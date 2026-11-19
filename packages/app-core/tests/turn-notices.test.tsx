@@ -18,7 +18,10 @@ import {
   describeNotice,
   failurePart,
   formatResetTime,
+  noticeMove,
 } from '../src/lib/turn-notice-parts'
+import { AssistantMessage } from '../src/components/chat/ChatViewPrimitives'
+import { UNPROMPTED_TURN_LABEL } from '../src/components/parts/turn-work-group'
 import { TurnRecoveryContext, type TurnRecoveryValue } from '../src/providers/turn-recovery'
 
 const WORKSPACE = {
@@ -118,6 +121,17 @@ describe('notice and failure wording', () => {
       body: 'Policy text',
       tone: 'muted',
     })
+  })
+
+  it('names the project a session moved to, and its folder', () => {
+    const move = { workspaceId: 'w2', name: 'my-app', path: '/home/me/my-app' }
+    expect(describeNotice(notice({ kind: 'info', move }) as never)).toEqual({
+      label: 'Moved to my-app',
+      detail: '/home/me/my-app',
+      tone: 'muted',
+    })
+    expect(noticeMove(notice({ kind: 'info', move }) as never)).toEqual(move)
+    expect(noticeMove(notice({ kind: 'info' }) as never)).toBeUndefined()
   })
 
   it('formats a reset time today as a time, and later as a day', () => {
@@ -243,6 +257,47 @@ describe('projecting notices and failures', () => {
     expect(failed([])).toMatchObject({ actionable: true, resendable: false })
   })
 
+  it('opens a resumed turn with the move, not as one after background work', () => {
+    const move = { workspaceId: 'w2', name: 'my-app', path: '/home/me/my-app' }
+    const turn = {
+      turnId: 't2',
+      threadId: THREAD.threadId,
+      state: 'completed' as const,
+      origin: 'background' as const,
+      startedAt: '2026-11-19T10:00:00.000Z',
+      finishedAt: '2026-11-19T10:00:30.000Z',
+    }
+    const answer = {
+      messageId: 'a1',
+      threadId: THREAD.threadId,
+      turnId: 't2',
+      role: 'assistant' as const,
+      content: [{ type: 'text' as const, text: 'In my-app now.' }],
+    }
+    const state = {
+      ...base,
+      turns: [turn],
+      messages: [answer],
+      notices: [{ noticeId: 'm1', turnId: 't2', kind: 'info' as const, message: 'Moved', move }],
+      order: [
+        { kind: 'notice' as const, id: 'm1', turnId: 't2' },
+        { kind: 'message' as const, id: 'a1', turnId: 't2' },
+      ],
+    }
+    const rows = projectThread(state).messages
+    // No user row: nobody sent the turn.
+    expect(rows.map((row) => row.role)).toEqual(['assistant'])
+    const row = projectThread(state).byId.get('a1')!
+    expect(row.content.parts?.map((part) => `${part.type}:${part.id}`)).toEqual([
+      'notice:notice:m1',
+      'text:a1',
+    ])
+    expect(row.content.runtime?.unprompted).toBeUndefined()
+    // A background turn without a move still says it resumed after background work.
+    const background = projectThread({ ...state, notices: [], order: [] }).byId.get('a1')!
+    expect(background.content.runtime?.unprompted).toBe(true)
+  })
+
   it('offers a failure its action only on the newest turn', () => {
     const failure = { reason: 'overloaded' as const, message: 'Busy', action: 'retry' as const }
     const state = {
@@ -360,6 +415,47 @@ describe('rendering notices and failures', () => {
     expect(
       markup([failurePart('t1', failure, true)], recovery({ retry: undefined })),
     ).not.toContain('<button')
+  })
+})
+
+describe('the moved marker', () => {
+  const move = { workspaceId: 'w2', name: 'my-app', path: '/home/me/my-app' }
+  const marker = {
+    type: 'notice',
+    id: 'notice:m1',
+    notice: { noticeId: 'm1', turnId: 't1', kind: 'info', message: 'Moved', move },
+  }
+  const read = {
+    type: 'tool',
+    id: 'r1',
+    tool: 'Read File',
+    kind: 'read',
+    callID: 'r1',
+    state: { status: 'completed', input: { path: 'a.ts' }, output: 'a' },
+  }
+  const answer = { type: 'text', id: 'a1', text: 'In my-app now.' }
+
+  it('renders as a divider naming the project and its folder', () => {
+    const html = renderToStaticMarkup(<MessageParts parts={[marker] as never} />)
+    expect(html).toContain('data-notice-kind="moved"')
+    expect(html).toContain('my-app')
+    expect(html).toContain('/home/me/my-app')
+    expect(html).toContain('resumed here')
+  })
+
+  it('heads the settled turn above its folded work and its answer', () => {
+    const html = renderToStaticMarkup(
+      <AssistantMessage
+        content="In my-app now."
+        isFinal
+        parts={[marker, read, answer] as never}
+        runtime={{ startedAt: 0, completedAt: 30_000 }}
+      />,
+    )
+    expect(html.indexOf('data-notice-kind="moved"')).toBeGreaterThan(-1)
+    expect(html.indexOf('data-notice-kind="moved"')).toBeLessThan(html.indexOf('Worked for 30s'))
+    expect(html.indexOf('Worked for 30s')).toBeLessThan(html.indexOf('In my-app now.'))
+    expect(html).not.toContain(UNPROMPTED_TURN_LABEL)
   })
 })
 

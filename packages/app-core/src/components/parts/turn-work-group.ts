@@ -1,4 +1,5 @@
 import type { StreamMessagePart } from '@openmanager/shared/lib/remote-stream-parts'
+import { isMovedPart } from '../../lib/turn-notice-parts'
 
 export interface TurnRuntimeMetadata {
   startedAt?: number
@@ -45,12 +46,12 @@ export function partitionSettledTurnParts(parts: readonly StreamMessagePart[]): 
   // callback before it streams its closing text. Keep the tool trace folded,
   // but never hide the result the user asked for inside "Worked". Notices
   // that change how to read the answer (the conversation before it was
-  // compacted, another model wrote it, the model declined, a limit is close)
-  // stay out with it.
+  // compacted, another model wrote it, the model declined, a limit is close,
+  // the session moved to another project) stay out with it.
   const lifted = beforeAnswer.filter(
     (part) =>
       ((part.type === 'image' || part.type === 'video') && part.generated === true) ||
-      (part.type === 'notice' && LIFTED_NOTICE_KINDS.has(noticeKind(part))),
+      (part.type === 'notice' && (LIFTED_NOTICE_KINDS.has(noticeKind(part)) || isMovedPart(part))),
   )
   return {
     workParts: beforeAnswer.filter((part) => !lifted.includes(part)),

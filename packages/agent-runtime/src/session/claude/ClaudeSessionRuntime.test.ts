@@ -45,6 +45,8 @@ function build(spec: Partial<SessionRuntimeSpec> = {}, timeouts?: Partial<Runtim
     } as BackendEvent),
   )
   const sdk = new FakeClaudeSdk()
+  /** Transcript files by session id, as `findTranscript` finds them on disk. */
+  const transcripts = new Map<string, string>()
   const log = vi.fn()
   const runtime = new ClaudeSessionRuntime(
     { ...SPEC, ...spec },
@@ -58,13 +60,14 @@ function build(spec: Partial<SessionRuntimeSpec> = {}, timeouts?: Partial<Runtim
       // pointing the override at this test's own node binary exercises the
       // real resolution path without requiring Claude Code to be installed.
       env: { CLAUDE_CODE_BIN: process.execPath },
+      findTranscript: async (sessionId) => transcripts.get(sessionId),
       ...(timeouts ? { timeouts } : {}),
     },
   )
   const exits: SessionRuntimeExit[] = []
   runtime.onExit((exit) => exits.push(exit))
   runtime.events((event) => events.push(event))
-  return { runtime, events, sdk, exits, log, permissions, interactions }
+  return { runtime, events, sdk, exits, log, permissions, interactions, transcripts }
 }
 
 const names = (events: BackendEvent[]): string[] => events.map((event) => event.event)
@@ -99,6 +102,44 @@ describe('ClaudeSessionRuntime startup', () => {
     expect(sdk.last.options.resume).toBe('previous-session')
     expect(sdk.last.options.sessionId).toBeUndefined()
     expect(names(events)).toEqual(['process_spawned', 'initialized', 'session_loaded'])
+  })
+
+  it('resumes a transcript filed under the folder the session moved from by its path', async () => {
+    // `move_session` points the session at another folder; the CLI kept the
+    // transcript under the project it started in. Not every CLI finds it by
+    // id from the new folder, but every one resumes from the file's path.
+    const { runtime, events, sdk, transcripts } = build({ sessionId: 'moved-session' })
+    sdk.knows('moved-session', '/somewhere/else')
+    transcripts.set('moved-session', '/home/u/.claude/projects/-somewhere-else/moved-session.jsonl')
+    const result = await runtime.start()
+
+    expect(result).toMatchObject({ sessionId: 'moved-session', state: 'loaded' })
+    expect(sdk.last.options.resume).toBe(
+      '/home/u/.claude/projects/-somewhere-else/moved-session.jsonl',
+    )
+    expect(sdk.last.options.sessionId).toBeUndefined()
+    // Its own folder first, then every project.
+    expect(sdk.sessionInfoDirs).toEqual([sdk.last.options.cwd, undefined])
+    expect(names(events)).toContain('session_loaded')
+  })
+
+  it('resumes a moved session by id when its transcript file cannot be found', async () => {
+    const { runtime, sdk } = build({ sessionId: 'moved-session' })
+    sdk.knows('moved-session', '/somewhere/else')
+    const result = await runtime.start()
+
+    expect(result).toMatchObject({ sessionId: 'moved-session', state: 'loaded' })
+    expect(sdk.last.options.resume).toBe('moved-session')
+  })
+
+  it('resumes a session in its own folder by id', async () => {
+    const { runtime, sdk, transcripts } = build({ sessionId: 'home-session' })
+    sdk.knows('home-session')
+    transcripts.set('home-session', '/home/u/.claude/projects/-x/home-session.jsonl')
+    await runtime.start()
+
+    expect(sdk.last.options.resume).toBe('home-session')
+    expect(sdk.sessionInfoDirs).toEqual([sdk.last.options.cwd])
   })
 
   it('falls back to a fresh session when the transcript is genuinely gone', async () => {

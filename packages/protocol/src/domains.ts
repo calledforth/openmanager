@@ -324,9 +324,12 @@ export const TurnSchema = z.object({
   startedAt: TimestampSchema.optional(),
   finishedAt: TimestampSchema.optional(),
   /**
-   * Who began the turn. `background` is a turn the provider started by itself:
-   * a background task finished and the agent is acting on the result. Absent
-   * on a turn the user sent, and on older environments.
+   * Who began the turn. `background` is a turn nobody sent: the provider
+   * started it by itself after background work finished and the agent is
+   * acting on the result, or the environment started it after it moved the
+   * session to another project (the turn then opens with an `info` notice
+   * carrying `move`). Absent on a turn the user sent, and on older
+   * environments.
    */
   origin: z.enum(['background']).optional(),
   /**
@@ -487,7 +490,8 @@ export const TransientTurnNoticeKindSchema = z.enum(['retrying', 'compacting'])
  * are stored with the turn and come back in its snapshot, in the place they
  * happened: the conversation was compacted, the model was switched after a
  * refusal or declined without one, a usage limit is close, or the provider
- * said something worth keeping (`info`, `warning`).
+ * said something worth keeping (`info`, `warning`). An `info` notice with
+ * `move` marks where the environment moved the session and resumed it.
  */
 export const DurableTurnNoticeKindSchema = z.enum([
   'compacted',
@@ -528,6 +532,21 @@ const turnNotice = <K extends z.ZodType>(kind: K) =>
       .optional(),
     /** `usage_warning`: when the limit it warns about resets. */
     resetsAt: TimestampSchema.optional(),
+    /**
+     * `info`: the environment moved the session to another project and
+     * resumed it there with this turn: the project it went to. Carried on an
+     * `info` notice rather than a kind of its own, so a client that does not
+     * know it still reads the notice's `message`.
+     */
+    move: z
+      .object({
+        workspaceId: EntityIdSchema,
+        /** The project's name, as the user's project list shows it. */
+        name: z.string().min(1),
+        /** The folder the session works in from this turn on. */
+        path: z.string().min(1),
+      })
+      .optional(),
   })
 export const TransientTurnNoticeSchema = turnNotice(TransientTurnNoticeKindSchema)
 export const DurableTurnNoticeSchema = turnNotice(DurableTurnNoticeKindSchema)
@@ -557,7 +576,7 @@ export const TurnStartSchema = z.object({
 /**
  * A turn as the environment announces it. Usually the user's, carrying the
  * message that asked for it. A `background` turn has no `userMessage`: nobody
- * sent one.
+ * sent one (the provider or the environment began it).
  */
 export const TurnStartedSchema = TurnStartSchema.partial({ userMessage: true }).refine(
   (started) => (started.userMessage === undefined) === (started.turn.origin === 'background'),
