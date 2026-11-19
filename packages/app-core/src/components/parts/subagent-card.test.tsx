@@ -186,7 +186,7 @@ describe('subagent cards in a turn', () => {
     expect(html.match(/data-subagent="/g)).toHaveLength(3)
   })
 
-  it('keeps subagents out of a settled turn’s folded work', () => {
+  it('keeps subagents in a settled turn’s work, where they ran, and sums them up above the answer', () => {
     const card = subagentPart(subagent({ status: 'completed' }))
     const parts = [
       { type: 'tool', id: 'read-1', tool: 'Read', state: { status: 'completed' } },
@@ -195,7 +195,19 @@ describe('subagent cards in a turn', () => {
       { type: 'text', id: 'answer', text: 'Done.' },
     ]
     const { workParts, finalParts } = partitionSettledTurnParts(parts)
-    expect(workParts.map((part) => part.id)).toEqual(['read-1', 'read-2'])
+    expect(workParts.map((part) => part.id)).toEqual(['read-1', card.id, 'read-2'])
+    expect(finalParts.map((part) => part.id)).toEqual([card.id, 'answer'])
+  })
+
+  it('finds the answer before a card an older environment could not place', () => {
+    const card = subagentPart(subagent({ status: 'completed' }))
+    const parts = [
+      { type: 'tool', id: 'read-1', tool: 'Read', state: { status: 'completed' } },
+      { type: 'text', id: 'answer', text: 'Done.' },
+      card,
+    ]
+    const { workParts, finalParts } = partitionSettledTurnParts(parts)
+    expect(workParts.map((part) => part.id)).toEqual(['read-1', card.id])
     expect(finalParts.map((part) => part.id)).toEqual([card.id, 'answer'])
   })
 })

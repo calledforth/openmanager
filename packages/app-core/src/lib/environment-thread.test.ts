@@ -816,6 +816,37 @@ describe('projectThread with subagents', () => {
     ])
   })
 
+  it('places a native subagent, whose call has no row, where the order names its call', () => {
+    // The runtime claimed the Agent call, so the order names it but no tool
+    // row exists: the card stands there, before the work and text after it.
+    const state = thread({
+      turns: [{ turnId: 't1', threadId: THREAD.threadId, state: 'running' }],
+      messages: [
+        prompt('t1', 'audit it'),
+        {
+          messageId: 'answer',
+          threadId: THREAD.threadId,
+          turnId: 't1',
+          role: 'assistant' as const,
+          content: [{ type: 'text' as const, text: 'All done.' }],
+        },
+      ],
+      tools: [
+        { toolCallId: 'read-1', turnId: 't1', toolName: 'Read', status: 'completed' },
+        { toolCallId: 'read-2', turnId: 't1', toolName: 'Read', status: 'completed' },
+      ],
+      order: [
+        { kind: 'tool', id: 'read-1', turnId: 't1' },
+        { kind: 'tool', id: 'call-a', turnId: 't1' },
+        { kind: 'tool', id: 'read-2', turnId: 't1' },
+        { kind: 'message', id: 'answer', turnId: 't1' },
+      ],
+      subagents: [subagent({ subagentId: 'a', toolCallId: 'call-a' })],
+    })
+    const parts = projectThread(state).byId.get('answer')?.content.parts ?? []
+    expect(parts.map((part) => part.type)).toEqual(['tool', 'subagent', 'tool', 'text'])
+  })
+
   it('rebuilds a turn when one of its subagents changes, and only that turn', () => {
     const base = thread({
       turns: [

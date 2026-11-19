@@ -51,7 +51,20 @@ function FallbackPart({ part }: { part: Part }) {
   )
 }
 
-function renderPart(part: Part, index: number, isStreaming?: boolean): ReactNode {
+/** Whether a thought is still being had: an open one has no end time. */
+function isThoughtStreaming(part: Part, isStreaming?: boolean): boolean {
+  const partTime =
+    part.time && typeof part.time === 'object' ? (part.time as Record<string, number>) : undefined
+  return partTime ? typeof partTime.end !== 'number' : !!isStreaming
+}
+
+function renderPart(
+  part: Part,
+  index: number,
+  isStreaming?: boolean,
+  /** A thought the work has moved past, whatever its own timing says. */
+  thoughtSettled?: boolean,
+): ReactNode {
   const key = getPartKey(part, index)
 
   switch (part.type) {
@@ -88,7 +101,7 @@ function renderPart(part: Part, index: number, isStreaming?: boolean): ReactNode
         part.time && typeof part.time === 'object'
           ? (part.time as Record<string, number>)
           : undefined
-      const reasoningStreaming = partTime ? typeof partTime.end !== 'number' : !!isStreaming
+      const reasoningStreaming = !thoughtSettled && isThoughtStreaming(part, isStreaming)
       // Old persisted parts are `{text, time}` and new ones may be
       // `{tokens, time}` with no text at all; both must render forever, so the
       // shape of the part decides what is passed down — never the provider id.
@@ -159,12 +172,14 @@ const PartNode = memo(function PartNode({
   part,
   index,
   isStreaming,
+  thoughtSettled,
 }: {
   part: Part
   index: number
   isStreaming?: boolean
+  thoughtSettled?: boolean
 }) {
-  return renderPart(part, index, isStreaming)
+  return renderPart(part, index, isStreaming, thoughtSettled)
 })
 
 const SUMMARY_FIELDS = [
@@ -174,12 +189,20 @@ const SUMMARY_FIELDS = [
   'diffRemoved',
   'isRunning',
   'toolCount',
+  'thoughtCount',
 ] as const satisfies readonly (keyof ActivitySummary)[]
 
 /**
- * A run of tool calls under its summary line. Grouping builds the run and its
- * summary anew on every render, so they are compared by what they hold: a run
- * whose calls and counts are unchanged is left alone, along with its rows.
+ * A run of the agent's work under its summary line: tool calls, and the
+ * thoughts between them in the order they came. Grouping builds the run and
+ * its summary anew on every render, so they are compared by what they hold: a
+ * run whose members and counts are unchanged is left alone, along with its
+ * rows.
+ *
+ * Only the run's last member can be a thought in progress; one the work has
+ * moved past reads as had, whatever its provider has yet to say. A run of
+ * thoughts alone (one that ends in text) has no calls to sum up, so each
+ * thought is its own row.
  */
 const ActivityGroupNode = memo(
   function ActivityGroupNode({
@@ -191,16 +214,25 @@ const ActivityGroupNode = memo(
     summary: ActivitySummary
     isStreaming?: boolean
   }) {
+    const last = items.length - 1
+    const rows = items.map((item, index) => (
+      <PartNode
+        key={getPartKey(item, index)}
+        part={item}
+        index={index}
+        isStreaming={isStreaming}
+        thoughtSettled={item.type === 'reasoning' && index !== last}
+      />
+    ))
+    if (summary.toolCount === 0) return <>{rows}</>
+    const tail = items[last]
+    const live =
+      tail?.type === 'reasoning' && isThoughtStreaming(tail, isStreaming) ? (
+        <PartNode part={tail} index={last} isStreaming={isStreaming} />
+      ) : undefined
     return (
-      <ActivityGroup summary={summary}>
-        {items.map((item, index) => (
-          <PartNode
-            key={getPartKey(item, index)}
-            part={item}
-            index={index}
-            isStreaming={isStreaming}
-          />
-        ))}
+      <ActivityGroup summary={summary} live={live}>
+        {rows}
       </ActivityGroup>
     )
   },
@@ -226,11 +258,12 @@ export function MessageParts({ parts, isStreaming }: { parts: Part[]; isStreamin
     })
   }, [safeParts])
 
-  // Runs of consecutive tool calls collapse into one summary row; thinking,
-  // text, plans, failures and permission prompts break the run. Each group is
-  // its own toggle, so the turn needs no second collapse wrapped around them.
+  // Runs of consecutive tool calls collapse into one summary row, the
+  // thoughts between them folded in where they came; text, plans, failures
+  // and permission prompts break the run. Each group is its own toggle, so
+  // the turn needs no second collapse wrapped around them.
   const activityNodes = useMemo(
-    () => groupActivityParts(deduped, { pendingPermissionCallId }),
+    () => groupActivityParts(deduped, { pendingPermissionCallId, absorbReasoning: true }),
     [deduped, pendingPermissionCallId],
   )
 

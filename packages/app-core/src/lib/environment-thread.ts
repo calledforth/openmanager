@@ -386,16 +386,19 @@ function projectTurn(
   const toolsById = new Map(tools.map((tool) => [tool.toolCallId, tool]))
   const assistantById = new Map(assistantMessages.map((message) => [message.messageId, message]))
   const noticesById = new Map(notices.map((notice) => [notice.noticeId, notice]))
-  // A subagent's card stands where the tool call that started it would.
+  // A subagent's card stands where the call that started it happened: in
+  // place of that call's tool row, or, for a native subagent whose runtime
+  // claimed the call (so no row exists), where the order names the call.
   const subagentsByCall = new Map<string, Subagent>()
   for (const subagent of subagents) {
-    if (subagent.toolCallId && toolsById.has(subagent.toolCallId)) {
-      subagentsByCall.set(subagent.toolCallId, subagent)
-    }
+    if (subagent.toolCallId) subagentsByCall.set(subagent.toolCallId, subagent)
   }
+  const placedSubagents = new Set<string>()
   const toolOrCard = (tool: ToolState): MessagePart => {
     const subagent = subagentsByCall.get(tool.toolCallId)
-    return subagent ? subagentPart(subagent) : toolPart(tool, sessionId)
+    if (!subagent) return toolPart(tool, sessionId)
+    placedSubagents.add(subagent.subagentId)
+    return subagentPart(subagent)
   }
   // The transcript follows the order things happened in: a thought, the tools
   // it led to, the text that followed. Anything the order does not place (a
@@ -423,7 +426,9 @@ function projectTurn(
       placedParts = entry ? [reasoningPart(entry, settled)] : undefined
     } else if (ref.kind === 'tool') {
       const tool = toolsById.get(ref.id)
-      placedParts = tool ? [toolOrCard(tool)] : undefined
+      const subagent = tool ? undefined : subagentsByCall.get(ref.id)
+      if (subagent) placedSubagents.add(subagent.subagentId)
+      placedParts = tool ? [toolOrCard(tool)] : subagent ? [subagentPart(subagent)] : undefined
     } else if (ref.kind === 'notice') {
       const notice = noticesById.get(ref.id)
       placedParts = notice ? [noticePart(notice)] : undefined
@@ -446,10 +451,9 @@ function projectTurn(
       .filter((entry) => !placed.has(`reasoning:${entry.messageId}`))
       .map((entry) => reasoningPart(entry, settled)),
     ...tools.filter((tool) => !placed.has(`tool:${tool.toolCallId}`)).map(toolOrCard),
-    // One whose call the turn does not hold shows where the turn's work is.
-    ...subagents
-      .filter((subagent) => !subagent.toolCallId || !subagentsByCall.has(subagent.toolCallId))
-      .map(subagentPart),
+    // One nothing places (an environment that predates subagent places)
+    // shows where the turn's work is.
+    ...subagents.filter((subagent) => !placedSubagents.has(subagent.subagentId)).map(subagentPart),
     ...unplacedTexts.flatMap((message) => textParts(message, sessionId)),
     ...notices
       .filter((notice) => !placed.has(`notice:${notice.noticeId}`))

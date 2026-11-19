@@ -31,6 +31,8 @@ export function partitionSettledTurnParts(parts: readonly StreamMessagePart[]): 
   // What the turn ended on (its failure, a notice the provider sent after the
   // answer) closes the turn rather than being its work, and must not hide the
   // answer before it by ending the text run.
+  // A subagent card after the answer is one an older environment could not
+  // place; it must not end the text run either.
   let answerEnd = parts.length
   while (answerEnd > 0 && isTrailer(parts[answerEnd - 1])) answerEnd -= 1
   let finalStart = answerEnd
@@ -42,24 +44,33 @@ export function partitionSettledTurnParts(parts: readonly StreamMessagePart[]): 
   }
 
   const beforeAnswer = parts.slice(0, finalStart)
+  const answer = parts.slice(finalStart)
   // Generated artifacts are answer content even though Cursor emits their
   // callback before it streams its closing text. Keep the tool trace folded,
   // but never hide the result the user asked for inside "Worked". Notices
   // that change how to read the answer (the conversation before it was
   // compacted, another model wrote it, the model declined, a limit is close,
-  // the session moved to another project) stay out with it. So do the
-  // subagents it started: each is a chat of its own the reader goes to, and a
-  // background one is still at work.
+  // the session moved to another project) stay out with it.
   const lifted = beforeAnswer.filter(
     (part) =>
-      part.type === 'subagent' ||
       ((part.type === 'image' || part.type === 'video') && part.generated === true) ||
       (part.type === 'notice' && (LIFTED_NOTICE_KINDS.has(noticeKind(part)) || isMovedPart(part))),
   )
+  // The subagents the turn started keep their place in the work, where each
+  // ran, and all of them also head the answer as its summary: each is a chat
+  // of its own the reader goes to, and a background one is still at work.
+  const subagents = parts.filter(isSubagent)
   return {
-    workParts: beforeAnswer.filter((part) => !lifted.includes(part)),
-    finalParts: [...lifted, ...parts.slice(finalStart)],
+    workParts: [
+      ...beforeAnswer.filter((part) => !lifted.includes(part)),
+      ...answer.filter(isSubagent),
+    ],
+    finalParts: [...subagents, ...lifted, ...answer.filter((part) => !isSubagent(part))],
   }
+}
+
+function isSubagent(part: StreamMessagePart): boolean {
+  return part.type === 'subagent'
 }
 
 /**
@@ -90,7 +101,7 @@ function noticeKind(part: StreamMessagePart): string {
 }
 
 function isTrailer(part: StreamMessagePart | undefined): boolean {
-  return part?.type === 'failure' || part?.type === 'notice'
+  return part?.type === 'failure' || part?.type === 'notice' || part?.type === 'subagent'
 }
 
 function formatDuration(durationMs: number): string {

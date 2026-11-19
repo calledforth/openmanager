@@ -1234,9 +1234,9 @@ export const MIGRATIONS: readonly Migration[] = [
           ON subagents(status) WHERE status IN ('pending', 'running', 'waiting');
       `)
       const turnSql = (
-        database.prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'turns'").get() as
-          | { sql: string }
-          | undefined
+        database
+          .prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'turns'")
+          .get() as { sql: string } | undefined
       )?.sql
       if (turnSql && !turnSql.includes("'delegated'")) {
         database.exec(`
@@ -1247,6 +1247,45 @@ export const MIGRATIONS: readonly Migration[] = [
           ALTER TABLE turns RENAME COLUMN origin_v33 TO origin;
         `)
       }
+    },
+  },
+  {
+    version: 34,
+    name: 'subagent_ordinal',
+    up(database) {
+      // A runtime claims the call that starts a native subagent, so no tool
+      // row stands where it happened. `ordinal` gives the subagent that place:
+      // it is drawn from the thread-wide counter messages, turn activity and
+      // notices share, when the record is first filed, and the snapshot's
+      // `order` places the card by it. Null where nothing says.
+      const columns = new Set(
+        (database.prepare('PRAGMA table_info(subagents)').all() as { name: string }[]).map(
+          (column) => column.name,
+        ),
+      )
+      if (columns.has('ordinal')) return
+      database.exec('ALTER TABLE subagents ADD COLUMN ordinal REAL')
+      // Records filed before this: just after the last thing their turn
+      // recorded before the record was, which is where its call happened.
+      database.exec(`
+        UPDATE subagents SET ordinal = (
+          SELECT MAX(placed.ordinal) + 0.5 FROM (
+            SELECT ordinal, created_at FROM messages
+              WHERE thread_id = subagents.thread_id
+                AND turn_id = json_extract(subagents.record_json, '$.turnId')
+            UNION ALL
+            SELECT ordinal, created_at FROM turn_activity
+              WHERE thread_id = subagents.thread_id
+                AND turn_id = json_extract(subagents.record_json, '$.turnId')
+            UNION ALL
+            SELECT ordinal, created_at FROM turn_notices
+              WHERE thread_id = subagents.thread_id
+                AND turn_id = json_extract(subagents.record_json, '$.turnId')
+          ) AS placed
+          WHERE placed.created_at <= subagents.created_at
+        )
+        WHERE json_extract(record_json, '$.toolCallId') IS NOT NULL;
+      `)
     },
   },
 ]

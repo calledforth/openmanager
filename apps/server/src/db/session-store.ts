@@ -364,6 +364,10 @@ export function readThreadState(
       ordinal: row.ordinal,
       ref: { kind: 'notice' as const, id: row.notice_id, turnId: row.turn_id },
     })),
+    // A subagent stands where the call that started it happened. A runtime
+    // claims a native subagent's call, so no tool row holds that place; the
+    // ref names the call, and a client puts the subagent's card there.
+    ...subagentPlaces(database, query.threadId, activityRows),
   ]
     .sort((left, right) => left.ordinal - right.ordinal)
     .map((item) => item.ref)
@@ -404,6 +408,38 @@ export function readThreadSubagents(
     log?.('warn', 'a stored subagent does not read; skipping it', { threadId })
     return []
   })
+}
+
+/**
+ * Where each subagent of a thread was started, as order refs naming the call
+ * that started it: the place a client shows its card. Only the subagents no
+ * tool row already places (a runtime claims a native subagent's call; our own
+ * spawn tool's call keeps its row), and only those with a place.
+ */
+function subagentPlaces(
+  database: DatabaseSync,
+  threadId: string,
+  activityRows: readonly TurnActivityRow[],
+): Array<{ ordinal: number; ref: ActivityRef }> {
+  const tools = new Set(
+    activityRows.filter((row) => row.kind === 'tool').map((row) => row.activity_id),
+  )
+  const rows = database
+    .prepare(
+      `SELECT ordinal,
+         json_extract(record_json, '$.toolCallId') AS tool_call_id,
+         json_extract(record_json, '$.turnId') AS turn_id
+       FROM subagents
+       WHERE thread_id = ? AND ordinal IS NOT NULL
+         AND json_extract(record_json, '$.toolCallId') IS NOT NULL`,
+    )
+    .all(threadId) as { ordinal: number; tool_call_id: string; turn_id: string }[]
+  return rows
+    .filter((row) => !tools.has(row.tool_call_id))
+    .map((row) => ({
+      ordinal: row.ordinal,
+      ref: { kind: 'tool' as const, id: row.tool_call_id, turnId: row.turn_id },
+    }))
 }
 
 /** A subagent as stored, with the thread it is filed on and the runtime's key for it. */
