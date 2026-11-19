@@ -127,7 +127,7 @@ function renderPart(part: Part, index: number, isStreaming?: boolean): ReactNode
     case 'subtask':
       return <SubtaskCard key={key} part={part as Parameters<typeof SubtaskCard>[0]['part']} />
     case 'subagent':
-      return <SubagentCard key={key} part={part as unknown as SubagentPart} />
+      return <SubagentCard key={key} part={part as unknown as SubagentPart} className="my-1.5" />
     case 'compaction':
       return (
         <div key={key} className="py-0.5 text-ui-xs italic text-[var(--basis-text-muted)]">
@@ -255,7 +255,7 @@ export function MessageParts({ parts, isStreaming }: { parts: Part[]; isStreamin
       )
       continue
     }
-    // Subagents started back to back share one surface, a compact row each.
+    // Subagents started back to back fold into one group, a card each when opened.
     if (node.kind === 'part' && node.part.type === 'subagent') {
       const start = idx
       const run: Part[] = [node.part]

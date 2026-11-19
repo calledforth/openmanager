@@ -114,24 +114,10 @@ export function formatElapsed(ms: number): string {
   return seconds > 0 ? `${minutes}m ${seconds}s` : `${minutes}m`
 }
 
-/** "940", "12.4k", "1.2M" tokens. */
-export function formatTokens(tokens: number): string {
-  if (tokens < 1000) return `${tokens}`
-  if (tokens < 1_000_000) {
-    const thousands = tokens / 1000
-    return `${thousands < 100 ? thousands.toFixed(1).replace(/\.0$/, '') : Math.round(thousands)}k`
-  }
-  return `${(tokens / 1_000_000).toFixed(1).replace(/\.0$/, '')}M`
-}
-
-/** The card's quiet numbers: tool calls and tokens, each when known. */
-export function subagentStatsLine(stats: Subagent['stats']): string {
-  const shown: string[] = []
-  if (stats.toolCalls !== undefined) {
-    shown.push(stats.toolCalls === 1 ? '1 tool' : `${stats.toolCalls} tools`)
-  }
-  if (stats.tokens !== undefined) shown.push(`${formatTokens(stats.tokens)} tokens`)
-  return shown.join(' · ')
+/** "1 tool", "14 tools"; empty while nothing says. */
+export function subagentToolCount(stats: Subagent['stats']): string {
+  if (stats.toolCalls === undefined) return ''
+  return stats.toolCalls === 1 ? '1 tool' : `${stats.toolCalls} tools`
 }
 
 const PROVIDER_NAMES: Record<string, string> = {
@@ -193,14 +179,4 @@ export function subagentGroupSummary(subagents: readonly Pick<Subagent, 'status'
     detail,
     running,
   }
-}
-
-/** The result preview as one paragraph: what a collapsed card shows of it. */
-export function resultPreview(result: string): string {
-  return result
-    .replace(/```[\s\S]*?```/g, ' ')
-    .replace(/^\s*(?:#{1,6}|>|[-*+]|\d+\.)\s+/gm, '')
-    .replace(/\*\*|__|[*`]/g, '')
-    .replace(/\s+/g, ' ')
-    .trim()
 }

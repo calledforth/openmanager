@@ -4,18 +4,17 @@ import { renderToStaticMarkup } from 'react-dom/server'
 import type { Subagent } from '@openmanager/protocol'
 import { ThemeProvider } from '../../providers/theme-provider'
 import { MessageParts } from './MessageParts'
+import { SubagentGroup } from './SubagentCard'
 import { partitionSettledTurnParts } from './turn-work-group'
 import {
   formatElapsed,
-  formatTokens,
-  resultPreview,
   subagentElapsedMs,
   subagentGroupSummary,
   subagentModelLabel,
   subagentName,
   subagentPart,
-  subagentStatsLine,
   subagentStatusLabel,
+  subagentToolCount,
 } from './subagent-card'
 
 const subagent = (patch: Partial<Subagent> = {}): Subagent => ({
@@ -52,18 +51,14 @@ describe('subagent card logic', () => {
     expect(subagentElapsedMs({ ...done, finishedAt: undefined }, START)).toBeUndefined()
   })
 
-  it('formats time, tokens and the stats line compactly', () => {
+  it('formats time and the tool count compactly', () => {
     expect(formatElapsed(8_400)).toBe('8s')
     expect(formatElapsed(72_000)).toBe('1m 12s')
     expect(formatElapsed(120_000)).toBe('2m')
     expect(formatElapsed(3_840_000)).toBe('1h 4m')
-    expect(formatTokens(940)).toBe('940')
-    expect(formatTokens(12_000)).toBe('12k')
-    expect(formatTokens(31_420)).toBe('31.4k')
-    expect(formatTokens(188_000)).toBe('188k')
-    expect(formatTokens(1_200_000)).toBe('1.2M')
-    expect(subagentStatsLine({ toolCalls: 1, tokens: 31_420 })).toBe('1 tool · 31.4k tokens')
-    expect(subagentStatsLine({})).toBe('')
+    expect(subagentToolCount({ toolCalls: 1, tokens: 31_420 })).toBe('1 tool')
+    expect(subagentToolCount({ toolCalls: 14 })).toBe('14 tools')
+    expect(subagentToolCount({})).toBe('')
   })
 
   it('names the status, what a waiting one waits on, and the subagent itself', () => {
@@ -96,12 +91,6 @@ describe('subagent card logic', () => {
     )
   })
 
-  it('previews a markdown result as one plain paragraph', () => {
-    expect(resultPreview('Found **7 callers**.\n\n- `auth.ts`\n```ts\ncode\n```\nDone')).toBe(
-      'Found 7 callers. auth.ts Done',
-    )
-  })
-
   it('keeps one part per record, so an unchanged card skips its render', () => {
     const record = subagent()
     expect(subagentPart(record)).toBe(subagentPart(record))
@@ -117,7 +106,7 @@ const render = (parts: Parameters<typeof MessageParts>[0]['parts'], isStreaming 
   )
 
 describe('subagent cards in a turn', () => {
-  it('shows a lone subagent as a card with what it is doing', () => {
+  it('shows a lone subagent as one row: who, what it runs on, how far along', () => {
     const html = render([
       subagentPart(
         subagent({
@@ -131,34 +120,40 @@ describe('subagent cards in a turn', () => {
     ])
     expect(html).toContain('Map the callers')
     expect(html).toContain('Explore')
-    expect(html).toContain('Background')
-    expect(html).toContain('Reading auth.ts')
-    expect(html).toContain('claude-haiku-4-5 · 3 tools · 4.1k tokens')
+    expect(html).toContain('claude-haiku-4-5')
+    expect(html).toContain('3 tools')
+    // No preview line, no Background pill: the child page has the rest.
+    expect(html).not.toContain('Reading auth.ts')
+    expect(html).not.toContain('Background')
+    expect(html).not.toContain('tokens')
     expect(html).not.toContain('role="group"')
     // No environment to ask: no Stop, and no child to open.
     expect(html).not.toContain('Stop')
   })
 
   it('flags a waiting subagent with what it waits on', () => {
-    const html = render([subagentPart(subagent({ status: 'waiting', waitingOn: 'question' }))])
-    expect(html).toContain('Has a question')
-    expect(html).toContain('data-subagent-status="waiting"')
+    const question = render([subagentPart(subagent({ status: 'waiting', waitingOn: 'question' }))])
+    expect(question).toContain('Has a question')
+    expect(question).toContain('data-subagent-status="waiting"')
+    const permission = render([
+      subagentPart(subagent({ status: 'waiting', waitingOn: 'permission' })),
+    ])
+    expect(permission).toContain('Needs permission')
   })
 
-  it('shows a settled one’s result folded, and why a failed one failed', () => {
+  it('says a failed one failed, with why on hover, and leaves a result to its page', () => {
     const done = render([
       subagentPart(subagent({ status: 'completed', result: 'Found **7** callers.' })),
     ])
-    expect(done).toContain('Found 7 callers.')
-    expect(done).toContain('Show result')
+    expect(done).not.toContain('callers.')
     const failed = render([
       subagentPart(subagent({ status: 'failed', statusReason: 'Postgres is down' })),
     ])
-    expect(failed).toContain('Postgres is down')
-    expect(failed).toContain('Failed')
+    expect(failed).toContain('>Failed<')
+    expect(failed).toContain('title="Postgres is down"')
   })
 
-  it('groups subagents started back to back, and only those', () => {
+  it('folds subagents started back to back into one group, and only those', () => {
     const a = subagentPart(subagent({ subagentId: 'a', title: 'First' }))
     const b = subagentPart(subagent({ subagentId: 'b', title: 'Second', status: 'completed' }))
     const c = subagentPart(subagent({ subagentId: 'c', title: 'Third' }))
@@ -166,10 +161,29 @@ describe('subagent cards in a turn', () => {
     expect(grouped.match(/role="group"/g)).toHaveLength(1)
     expect(grouped).toContain('3 subagents')
     expect(grouped).toContain('2 running, 1 done')
+    // Folded: the header and a line of what each runs on, no cards yet.
+    expect(grouped).toContain('data-subagent-group="folded"')
+    expect(grouped).toContain('aria-expanded="false"')
+    expect(grouped).not.toContain('data-subagent="')
+    expect(grouped).toContain('title="Second · Done"')
 
     const split = render([a, { type: 'text', id: 'between', text: 'meanwhile' }, b])
     expect(split).not.toContain('role="group"')
     expect(split.match(/data-subagent="/g)).toHaveLength(2)
+  })
+
+  it('opens a group into a card per subagent', () => {
+    const parts = ['a', 'b', 'c'].map((id) =>
+      subagentPart(subagent({ subagentId: id, title: `Agent ${id}` })),
+    )
+    const html = renderToStaticMarkup(
+      <ThemeProvider>
+        <SubagentGroup parts={parts} defaultOpen />
+      </ThemeProvider>,
+    )
+    expect(html).toContain('data-subagent-group="open"')
+    expect(html).toContain('aria-expanded="true"')
+    expect(html.match(/data-subagent="/g)).toHaveLength(3)
   })
 
   it('keeps subagents out of a settled turn’s folded work', () => {
