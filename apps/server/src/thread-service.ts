@@ -3035,9 +3035,11 @@ export function createThreadService(
       undefined,
     )
     // The row, the card and the key it is found by are one write.
+    // The parent agent named it on purpose, so the child's own provider (Cursor
+    // names sessions from their first prompt) must not rename it.
     persistCreatedThread(session, thread, {
       providerId,
-      titleSource: 'provider',
+      titleSource: 'generated',
       subagent,
       subagentTasks: {
         [subagentId]: { ownerSessionId: parent.session.sessionId, taskId: subagentId },

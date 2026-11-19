@@ -266,6 +266,31 @@ describe('spawn_agent on the thread service', () => {
     expect((started?.payload as { turn: { origin?: string } }).turn.origin).toBe('delegated')
   })
 
+  it('keeps the title the parent agent gave a child when its provider names the session', async () => {
+    const t = setup()
+    await t.parentTurn()
+    await t.call('spawn_agent', { provider: 'opencode', prompt: 'Review auth', title: 'Cursor: auth' })
+    const child = t.latest(t.parent.threadId).childSessionId!
+    const childThread = (
+      t.database.prepare('SELECT thread_id FROM threads WHERE session_id = ?').get(child) as {
+        thread_id: string
+      }
+    ).thread_id
+    const prompt = await t.promptOn(childThread)
+    t.promptStarted(prompt)
+    // Cursor names a session from its first prompt (seen live); any provider may.
+    t.emit(
+      childThread,
+      'opencode',
+      { category: 'lifecycle', event: 'session_info_update', data: { title: 'Session Leak Review' } },
+      `run-${prompt.userMessageId}`,
+    )
+    const row = t.database
+      .prepare('SELECT title FROM sessions WHERE session_id = ?')
+      .get(child) as { title: string }
+    expect(row.title).toBe('Cursor: auth')
+  })
+
   it('settles with its answer and wakes a parent that did not wait, once its turn ends', async () => {
     const t = setup()
     const parentArgs = await t.parentTurn()
