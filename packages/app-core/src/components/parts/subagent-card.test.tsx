@@ -165,7 +165,7 @@ describe('subagent cards in a turn', () => {
     expect(grouped).toContain('data-subagent-group="folded"')
     expect(grouped).toContain('aria-expanded="false"')
     expect(grouped).not.toContain('data-subagent="')
-    expect(grouped).toContain('title="Second · Done"')
+    expect(grouped).toContain('title="Second · Claude · Done"')
 
     const split = render([a, { type: 'text', id: 'between', text: 'meanwhile' }, b])
     expect(split).not.toContain('role="group"')

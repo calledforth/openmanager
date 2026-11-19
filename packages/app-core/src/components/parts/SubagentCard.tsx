@@ -19,7 +19,6 @@ import {
   subagentTone,
   subagentToolCount,
   type SubagentPart,
-  type SubagentTone,
 } from './subagent-card'
 
 /** The current time, ticking each second while `active`: a running card's clock. */
@@ -263,59 +262,74 @@ export function SubagentCard({ part, className }: { part: SubagentPart; classNam
   )
 }
 
-const DOT_COLOR: Record<SubagentTone, string> = {
-  running: 'var(--basis-status-working)',
-  waiting: 'var(--basis-status-needs)',
-  done: 'var(--basis-status-done)',
-  failed: 'var(--basis-status-error)',
-  stopped: 'var(--basis-text-faint)',
-}
+/** How many chips a folded group shows before the rest become "+N". */
+const STACK_MAX = 4
 
-/** One subagent in a folded group's second line: what it runs on, and a dot for how it stands. */
-function SubagentToken({ subagent }: { subagent: Subagent }) {
-  const tone = subagentTone(subagent.status)
-  const color =
-    tone === 'waiting' && subagent.waitingOn === 'question'
-      ? 'var(--basis-status-question)'
-      : DOT_COLOR[tone]
+/**
+ * What a folded group runs on: a chip per subagent, each tucked a little
+ * under the next, the way avatars stack. Hovering one names it.
+ */
+function ProviderStack({ subagents }: { subagents: readonly Subagent[] }) {
+  const shown = subagents.slice(0, STACK_MAX)
+  const rest = subagents.length - shown.length
+  const chip =
+    'relative flex size-[22px] shrink-0 items-center justify-center rounded-full bg-[color-mix(in_srgb,var(--basis-text)_9%,var(--basis-surface))] ring-2 ring-[var(--basis-surface)] transition-[box-shadow] duration-100 group-hover/header:ring-[var(--basis-surface-hover)]'
   return (
-    <span
-      className="flex shrink-0 items-center gap-1"
-      title={`${subagentName(subagent)} · ${subagentStatusLabel(subagent)}`}
-    >
-      <span
-        aria-hidden
-        className={cn(
-          'size-1.5 rounded-full',
-          (tone === 'running' || tone === 'waiting') && 'animate-pulse',
-        )}
-        style={{ background: color }}
-      />
-      <ProviderIcon providerId={subagent.providerId as ProviderIconId} className="size-3" />
+    <span aria-hidden className="flex shrink-0 items-center -space-x-1">
+      {shown.map((subagent) => (
+        <span
+          key={subagent.subagentId}
+          className={chip}
+          title={`${subagentName(subagent)} · ${providerName(subagent.providerId)} · ${subagentStatusLabel(subagent)}`}
+        >
+          <ProviderIcon
+            providerId={subagent.providerId as ProviderIconId}
+            className="size-[11px]"
+          />
+        </span>
+      ))}
+      {rest > 0 ? (
+        <span
+          className={cn(
+            chip,
+            'text-[10px] font-medium tabular-nums text-[var(--basis-text-muted)]',
+          )}
+          title={subagents
+            .slice(STACK_MAX)
+            .map((subagent) => subagentName(subagent))
+            .join(', ')}
+        >
+          +{rest}
+        </span>
+      ) : null}
     </span>
   )
 }
 
-/** A group's glyph: the most pressing of its subagents. */
-function GroupGlyph({ subagents }: { subagents: readonly Subagent[] }) {
+/** A folded group's live mark: working while any runs, the ask while any waits. */
+function GroupActivity({ subagents }: { subagents: readonly Subagent[] }) {
   const waiting = subagents.find((subagent) => subagent.status === 'waiting')
-  if (waiting) return <SubagentStatusGlyph subagent={waiting} />
+  if (waiting) {
+    return (
+      <span className="flex size-3.5 shrink-0 items-center justify-center">
+        <SessionBusyLoader tone={waiting.waitingOn === 'question' ? 'question' : 'needs'} />
+      </span>
+    )
+  }
   if (subagents.some((subagent) => subagentTone(subagent.status) === 'running')) {
-    return <SubagentStatusGlyph subagent={{ status: 'running' }} />
+    return (
+      <span className="flex size-3.5 shrink-0 items-center justify-center">
+        <SessionBusyLoader tone="working" />
+      </span>
+    )
   }
-  if (subagents.some((subagent) => subagent.status === 'failed')) {
-    return <SubagentStatusGlyph subagent={{ status: 'failed' }} />
-  }
-  if (subagents.every((subagent) => subagentTone(subagent.status) === 'stopped')) {
-    return <SubagentStatusGlyph subagent={{ status: 'cancelled' }} />
-  }
-  return <SubagentStatusGlyph subagent={{ status: 'completed' }} />
+  return null
 }
 
 /**
- * Subagents the agent started back to back. Folded, one card: how many and
- * how they stand, over a line of what each runs on. Unfolded, a card each,
- * stacked under that header.
+ * Subagents the agent started back to back. Folded, one row: what they run
+ * on as a stack of provider chips, how many, and how they stand. Unfolded, a
+ * card each, stacked under that header.
  */
 export function SubagentGroup({
   parts,
@@ -339,7 +353,7 @@ export function SubagentGroup({
     >
       <div
         className={cn(
-          'group/header relative flex flex-col transition-colors duration-100 hover:bg-[var(--basis-surface-hover)] has-[button:focus-visible]:bg-[var(--basis-surface-hover)]',
+          'group/header relative flex transition-colors duration-100 hover:bg-[var(--basis-surface-hover)] has-[button:focus-visible]:bg-[var(--basis-surface-hover)]',
           SURFACE,
         )}
       >
@@ -348,15 +362,16 @@ export function SubagentGroup({
           aria-expanded={open}
           aria-controls={listId}
           onClick={toggle}
-          className="flex h-8 w-full min-w-0 cursor-pointer items-center gap-2 pl-2.5 pr-3 text-left outline-none after:absolute after:inset-0 after:rounded-[10px] after:content-['']"
+          className="flex h-9 w-full min-w-0 cursor-pointer items-center gap-2 pl-2 pr-3 text-left outline-none after:absolute after:inset-0 after:rounded-[10px] after:content-['']"
         >
-          <GroupGlyph subagents={subagents} />
-          <span className="shrink-0 text-ui-md leading-5 text-[var(--basis-text)]">
+          <ProviderStack subagents={subagents} />
+          <span className="ml-0.5 shrink-0 text-ui-md leading-5 text-[var(--basis-text)]">
             {summary.title}
           </span>
           <span aria-hidden className="text-ui-sm text-[var(--basis-text-faint)]">
             ·
           </span>
+          <GroupActivity subagents={subagents} />
           <span className="min-w-0 truncate text-ui-sm text-[var(--basis-text-muted)]">
             {summary.detail}
           </span>
@@ -369,16 +384,6 @@ export function SubagentGroup({
             )}
           />
         </button>
-        {open ? null : (
-          <div
-            aria-hidden
-            className="pointer-events-none -mt-1 flex h-6 min-w-0 items-center gap-3 overflow-hidden pb-1 pl-[32px] pr-3"
-          >
-            {subagents.map((subagent) => (
-              <SubagentToken key={subagent.subagentId} subagent={subagent} />
-            ))}
-          </div>
-        )}
       </div>
       {open ? (
         <div id={listId} className="flex flex-col gap-1">
