@@ -74,9 +74,9 @@ describe('schema migrations', () => {
   it('initializes a fresh database to the latest numbered version', async () => {
     const database = openEnvironmentDatabase(await dataDir())
     databases.push(database)
-    expect(readSchemaVersion(database)).toBe(35)
+    expect(readSchemaVersion(database)).toBe(36)
     expect(database.prepare('PRAGMA user_version').get() as { user_version: number }).toEqual({
-      user_version: 35,
+      user_version: 36,
     })
     expect(database.prepare('PRAGMA journal_mode').get() as { journal_mode: string }).toEqual({
       journal_mode: 'wal',
@@ -128,7 +128,7 @@ describe('schema migrations', () => {
       'workspace_composer_preferences',
       'workspaces',
     ])
-    expect(runMigrations(database, MIGRATIONS)).toBe(35)
+    expect(runMigrations(database, MIGRATIONS)).toBe(36)
   })
 
   it('upgrades sequentially across restarts and leaves already-applied versions untouched', async () => {
@@ -215,7 +215,7 @@ describe('schema migrations', () => {
 
     const database = openEnvironmentDatabase(directory)
     databases.push(database)
-    expect(readSchemaVersion(database)).toBe(35)
+    expect(readSchemaVersion(database)).toBe(36)
     expect(database.prepare('SELECT provider_id FROM provider_profiles').all()).toEqual([
       { provider_id: 'cursor' },
     ])
@@ -346,7 +346,7 @@ describe('schema migrations', () => {
 
     const database = openEnvironmentDatabase(directory)
     databases.push(database)
-    expect(readSchemaVersion(database)).toBe(35)
+    expect(readSchemaVersion(database)).toBe(36)
     expect(database.prepare('SELECT * FROM attachments ORDER BY attachment_id').all()).toEqual(
       before,
     )
@@ -385,7 +385,7 @@ describe('schema migrations', () => {
 
     const database = openEnvironmentDatabase(directory)
     databases.push(database)
-    expect(readSchemaVersion(database)).toBe(35)
+    expect(readSchemaVersion(database)).toBe(36)
     expect(
       database
         .prepare('SELECT client_id, kind, expires_at FROM authorized_clients ORDER BY client_id')
@@ -429,7 +429,7 @@ describe('schema migrations', () => {
 
     const database = openEnvironmentDatabase(directory)
     databases.push(database)
-    expect(readSchemaVersion(database)).toBe(35)
+    expect(readSchemaVersion(database)).toBe(36)
     expect(
       database
         .prepare(
@@ -467,7 +467,7 @@ describe('schema migrations', () => {
 
     const database = openEnvironmentDatabase(directory)
     databases.push(database)
-    expect(readSchemaVersion(database)).toBe(35)
+    expect(readSchemaVersion(database)).toBe(36)
     expect(tableNames(database)).toContain('audit_events')
     expect(database.prepare('SELECT client_id FROM authorized_clients').all()).toEqual([
       { client_id: 'client-1' },
@@ -699,7 +699,7 @@ describe('schema migrations', () => {
 
     const database = openEnvironmentDatabase(directory)
     databases.push(database)
-    expect(readSchemaVersion(database)).toBe(35)
+    expect(readSchemaVersion(database)).toBe(36)
     expect(
       database
         .prepare('SELECT title, settled_at, pinned_at, cooking_at, updated_at FROM sessions')
@@ -727,7 +727,7 @@ describe('schema migrations', () => {
 
     const database = openEnvironmentDatabase(directory)
     databases.push(database)
-    expect(readSchemaVersion(database)).toBe(35)
+    expect(readSchemaVersion(database)).toBe(36)
     expect(database.prepare('SELECT message_id, phase FROM messages').all()).toEqual([
       { message_id: 'message-1', phase: null },
     ])
@@ -742,6 +742,54 @@ describe('schema migrations', () => {
     insert('message-3', 2, 'partial_answer')
     insert('message-4', 3, 'final_answer')
     expect(() => insert('message-5', 4, 'summary')).toThrow(/CHECK constraint failed/)
+  })
+
+  it('adds provider turn and item ids, null on old rows, turn ids unique per thread', async () => {
+    const directory = await dataDir()
+    const previous = openEnvironmentDatabase(directory, MIGRATIONS.slice(0, 35))
+    previous.exec(`
+      INSERT INTO workspaces (workspace_id, name, path, created_at, updated_at)
+        VALUES ('workspace-1', 'one', '/one', 1, 1);
+      INSERT INTO sessions (session_id, workspace_id, provider_id, status, created_at, updated_at)
+        VALUES ('session-1', 'workspace-1', 'codex', 'idle', 1, 1),
+               ('session-2', 'workspace-1', 'codex', 'idle', 1, 1);
+      INSERT INTO threads (thread_id, session_id, workspace_id, created_at, updated_at)
+        VALUES ('thread-1', 'session-1', 'workspace-1', 1, 1),
+               ('thread-2', 'session-2', 'workspace-1', 1, 1);
+      INSERT INTO turns (turn_id, thread_id, workspace_id, state, started_at, updated_at)
+        VALUES ('turn-1', 'thread-1', 'workspace-1', 'completed', 1, 1),
+               ('turn-2', 'thread-1', 'workspace-1', 'completed', 1, 1),
+               ('turn-3', 'thread-2', 'workspace-1', 'completed', 1, 1);
+      INSERT INTO turn_activity (activity_id, workspace_id, thread_id, turn_id, kind, ordinal,
+        state_json, created_at, updated_at)
+        VALUES ('tool-1', 'workspace-1', 'thread-1', 'turn-1', 'tool', 0, '{}', 1, 1);
+    `)
+    previous.close()
+
+    const database = openEnvironmentDatabase(directory)
+    databases.push(database)
+    expect(readSchemaVersion(database)).toBe(36)
+    expect(database.prepare('SELECT turn_id, provider_turn_id FROM turns').all()).toEqual([
+      { turn_id: 'turn-1', provider_turn_id: null },
+      { turn_id: 'turn-2', provider_turn_id: null },
+      { turn_id: 'turn-3', provider_turn_id: null },
+    ])
+    expect(database.prepare('SELECT activity_id, external_id FROM turn_activity').all()).toEqual([
+      { activity_id: 'tool-1', external_id: null },
+    ])
+    const stamp = (turn: string, id: string) =>
+      database.prepare('UPDATE turns SET provider_turn_id = ? WHERE turn_id = ?').run(id, turn)
+    // A forked thread reuses its source's turn ids: unique per thread only.
+    stamp('turn-1', 'codex-turn-a')
+    stamp('turn-3', 'codex-turn-a')
+    expect(() => stamp('turn-2', 'codex-turn-a')).toThrow(/UNIQUE constraint failed/)
+    // An item id may repeat across a thread's activity.
+    database.exec(`
+      UPDATE turn_activity SET external_id = 'call_1';
+      INSERT INTO turn_activity (activity_id, workspace_id, thread_id, turn_id, kind, ordinal,
+        state_json, created_at, updated_at, external_id)
+        VALUES ('tool-2', 'workspace-1', 'thread-1', 'turn-2', 'tool', 1, '{}', 1, 1, 'call_1');
+    `)
   })
 
   it('takes a listing’s source from the newest session on each pair, by activity then id', async () => {

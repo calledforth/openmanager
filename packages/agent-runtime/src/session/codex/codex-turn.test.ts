@@ -61,11 +61,11 @@ describe('CodexTurn', () => {
     t.reasoningSummaryDelta({ ...ids, itemId: 'r1', delta: '**Writing tests**', summaryIndex: 1 })
     t.itemCompleted(reasoning('r1', ['**Reading files**', '**Writing tests**']))
     expect(out.map((o) => o.event === 'agent_thought_chunk' && o.data)).toEqual([
-      { phase: 'start' },
-      { phase: 'delta', content: { type: 'text', text: '**Reading files**' } },
-      { phase: 'delta', content: { type: 'text', text: '\n\n' } },
-      { phase: 'delta', content: { type: 'text', text: '**Writing tests**' } },
-      { phase: 'stop' },
+      { messageId: 'r1', phase: 'start' },
+      { messageId: 'r1', phase: 'delta', content: { type: 'text', text: '**Reading files**' } },
+      { messageId: 'r1', phase: 'delta', content: { type: 'text', text: '\n\n' } },
+      { messageId: 'r1', phase: 'delta', content: { type: 'text', text: '**Writing tests**' } },
+      { messageId: 'r1', phase: 'stop' },
     ])
   })
 
@@ -173,9 +173,40 @@ describe('CodexTurn message phases', () => {
     t.itemStarted(message('m3', ''))
     t.agentMessageDelta({ ...ids, itemId: 'm3', delta: 'no phase' })
     expect(out.map((o) => o.data)).toEqual([
-      { content: { type: 'text', text: 'Reading greet.py.' }, phase: 'commentary' },
-      { content: { type: 'text', text: 'It greets.' }, phase: 'final_answer' },
-      { content: { type: 'text', text: 'no phase' } },
+      {
+        messageId: 'm1',
+        content: { type: 'text', text: 'Reading greet.py.' },
+        phase: 'commentary',
+      },
+      { messageId: 'm2', content: { type: 'text', text: 'It greets.' }, phase: 'final_answer' },
+      { messageId: 'm3', content: { type: 'text', text: 'no phase' } },
+    ])
+  })
+})
+
+describe('CodexTurn item ids', () => {
+  // The host keeps Codex's item id beside the message or thought it files a
+  // chunk under: every chunk names its item, streamed, backfilled or framing.
+  it('names the item on every chunk it emits', () => {
+    const { turn: t, out } = turn()
+    t.itemStarted(reasoning('rs_1'))
+    t.reasoningSummaryDelta({ ...ids, itemId: 'rs_1', delta: 'Plan', summaryIndex: 0 })
+    t.itemCompleted(reasoning('rs_1', ['Plan']))
+    t.itemStarted(message('msg_1', '', 'commentary'))
+    t.agentMessageDelta({ ...ids, itemId: 'msg_1', delta: 'Looking.' })
+    t.itemCompleted(message('msg_1', 'Looking.', 'commentary'))
+    t.itemStarted(message('msg_2', '', 'final_answer'))
+    t.itemCompleted(message('msg_2', 'Done.', 'final_answer'))
+    t.itemStarted(reasoning('rs_2'))
+    t.finish()
+    expect(out.map((o) => [o.event, (o.data as { messageId?: string }).messageId])).toEqual([
+      ['agent_thought_chunk', 'rs_1'],
+      ['agent_thought_chunk', 'rs_1'],
+      ['agent_thought_chunk', 'rs_1'],
+      ['agent_message_chunk', 'msg_1'],
+      ['agent_message_chunk', 'msg_2'],
+      ['agent_thought_chunk', 'rs_2'],
+      ['agent_thought_chunk', 'rs_2'],
     ])
   })
 })

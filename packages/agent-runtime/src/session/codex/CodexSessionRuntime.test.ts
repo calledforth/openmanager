@@ -251,6 +251,42 @@ describe('CodexSessionRuntime turns', () => {
     })
   })
 
+  // Revert, fork and reconciliation address Codex's turns and items by its
+  // own ids: the host is told them as soon as they are known.
+  it('reports Codex’s turn id once, early, and each item’s id on its chunks', async () => {
+    let turn: FakeCodexTurn | undefined
+    const { runtime, events } = build({ onTurn: (t) => (turn = t) })
+    await runtime.start()
+    const prompt = runtime.prompt({ prompt: PROMPT, userMessageId: 'msg-1' })
+    await vi.waitFor(() => expect(turn).toBeDefined())
+    // `turn/started` and the `turn/start` response both name it: reported once.
+    turn!.started()
+    await vi.waitFor(() => expect(names(events)).toContain('turn_identified'))
+    const reasoning = turn!.reasoning(['**Planning**'])
+    const commentary = turn!.agentMessage('Looking.', { phase: 'commentary' })
+    const answer = turn!.agentMessage('Done.', { chunks: ['Do', 'ne.'], phase: 'final_answer' })
+    turn!.completed()
+    await prompt
+
+    const identified = events.filter((e) => e.event === 'turn_identified')
+    expect(identified).toEqual([
+      expect.objectContaining({
+        category: 'lifecycle',
+        sessionId: runtime.sessionId,
+        data: { providerTurnId: turn!.id },
+      }),
+    ])
+    const order = names(events)
+    expect(order.indexOf('prompt_started')).toBeLessThan(order.indexOf('turn_identified'))
+    expect(order.indexOf('turn_identified')).toBeLessThan(order.indexOf('agent_message_chunk'))
+    const itemIds = (event: string) =>
+      events
+        .filter((e) => e.event === event)
+        .map((e) => (e.data as { messageId?: string }).messageId)
+    expect(new Set(itemIds('agent_thought_chunk'))).toEqual(new Set([reasoning.id]))
+    expect(itemIds('agent_message_chunk')).toEqual([commentary.id, answer.id, answer.id])
+  })
+
   it('fails a turn Codex reports as failed: one error, no completion, and the prompt rejects', async () => {
     const { runtime, events } = build({ onTurn: (t) => t.failed('The model is overloaded') })
     await runtime.start()

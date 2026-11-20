@@ -352,7 +352,7 @@ export class CodexSessionRuntime implements ManagedSessionRuntime {
         { timeoutMs: this.timeouts.controlRequestMs },
       )
       // `turn/started` may have named it already.
-      active.turn.turnId ??= response.turn.id
+      this.identifyTurn(active, response.turn.id)
       if (active.turn.interruptRequested) void this.sendInterrupt(active)
     } catch (error) {
       this.failTurn(active, error)
@@ -450,15 +450,17 @@ export class CodexSessionRuntime implements ManagedSessionRuntime {
       case 'turn/started': {
         const { turn } = params as v2.TurnStartedNotification
         if (active && !active.turn.turnId) {
-          active.turn.turnId = turn.id
+          this.identifyTurn(active, turn.id)
           if (active.turn.interruptRequested) void this.sendInterrupt(active)
         }
         return
       }
       case 'turn/completed': {
         const { turn } = params as v2.TurnCompletedNotification
-        if (active && (!active.turn.turnId || active.turn.turnId === turn.id))
+        if (active && (!active.turn.turnId || active.turn.turnId === turn.id)) {
+          this.identifyTurn(active, turn.id)
           this.finishTurn(active, turn)
+        }
         return
       }
       case 'error': {
@@ -503,6 +505,20 @@ export class CodexSessionRuntime implements ManagedSessionRuntime {
       default:
         return
     }
+  }
+
+  /** Take Codex's id for the turn, from whichever of `turn/start` and
+   * `turn/started` names it first, and report it once: the host keeps it
+   * beside its own turn (revert and fork address turns by it). */
+  private identifyTurn(active: ActiveTurn, turnId: string): void {
+    if (active.turn.turnId) return
+    active.turn.turnId = turnId
+    if (active.settled) return
+    this.emit(
+      routeEvent(this.route(), this.sessionIdValue, 'lifecycle', 'turn_identified', {
+        providerTurnId: turnId,
+      }),
+    )
   }
 
   private ownsTurn(active: ActiveTurn, turnId: string): boolean {

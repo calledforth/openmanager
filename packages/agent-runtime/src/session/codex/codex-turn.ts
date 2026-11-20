@@ -5,11 +5,15 @@ import type { MessagePhase, v2 } from '@openmanager/codex-app-server-protocol'
 export type CodexTurnOutput =
   | {
       event: 'agent_message_chunk'
-      data: { content: { type: 'text'; text: string }; phase?: ChunkPhase }
+      data: { messageId: string; content: { type: 'text'; text: string }; phase?: ChunkPhase }
     }
   | {
       event: 'agent_thought_chunk'
-      data: { phase: 'start' | 'delta' | 'stop'; content?: { type: 'text'; text: string } }
+      data: {
+        messageId: string
+        phase: 'start' | 'delta' | 'stop'
+        content?: { type: 'text'; text: string }
+      }
     }
 
 type OpenMessage = { phase: MessagePhase | null; streamed: boolean }
@@ -55,20 +59,20 @@ export class CodexTurn {
     const message = this.messages.get(params.itemId)
     if (message) message.streamed = true
     else this.messages.set(params.itemId, { phase: null, streamed: true })
-    this.text(params.delta, message?.phase ?? null)
+    this.text(params.itemId, params.delta, message?.phase ?? null)
   }
 
   reasoningPartAdded(params: v2.ReasoningSummaryPartAddedNotification): void {
     const open = this.openReasoning(params.itemId)
     // Each summary part is its own headline; keep them apart.
-    if (open.parts++ > 0) this.thought('\n\n')
+    if (open.parts++ > 0) this.thought(params.itemId, '\n\n')
   }
 
   reasoningSummaryDelta(params: v2.ReasoningSummaryTextDeltaNotification): void {
     if (!params.delta) return
     const open = this.openReasoning(params.itemId)
     open.streamed = true
-    this.thought(params.delta)
+    this.thought(params.itemId, params.delta)
   }
 
   itemCompleted(item: v2.ThreadItem): void {
@@ -77,13 +81,15 @@ export class CodexTurn {
         const message = this.messages.get(item.id)
         // A message whose deltas never arrived (a short one can come whole)
         // is backfilled from the completed item, so no answer is lost.
-        if (!message?.streamed && item.text) this.text(item.text, item.phase ?? message?.phase ?? null)
+        if (!message?.streamed && item.text)
+          this.text(item.id, item.text, item.phase ?? message?.phase ?? null)
         this.messages.delete(item.id)
         return
       }
       case 'reasoning': {
         const open = this.openReasoning(item.id)
-        if (!open.streamed && item.summary.length > 0) this.thought(item.summary.join('\n\n'))
+        if (!open.streamed && item.summary.length > 0)
+          this.thought(item.id, item.summary.join('\n\n'))
         this.closeReasoning(item.id)
         return
       }
@@ -132,31 +138,34 @@ export class CodexTurn {
     if (!open) {
       open = { started: true, streamed: false, parts: 0 }
       this.reasoning.set(id, open)
-      this.emit({ event: 'agent_thought_chunk', data: { phase: 'start' } })
+      this.emit({ event: 'agent_thought_chunk', data: { messageId: id, phase: 'start' } })
     }
     return open
   }
 
   private closeReasoning(id: string): void {
     if (!this.reasoning.delete(id)) return
-    this.emit({ event: 'agent_thought_chunk', data: { phase: 'stop' } })
+    this.emit({ event: 'agent_thought_chunk', data: { messageId: id, phase: 'stop' } })
   }
 
   /** Codex names each message's phase when it starts (`item/started`):
    * narration while it works (`commentary`) or the answer. Every chunk
    * carries it, so the host keeps the two apart and the timeline folds the
-   * narration into the work instead of running it into the answer. */
-  private text(text: string, phase: MessagePhase | null): void {
+   * narration into the work instead of running it into the answer.
+   *
+   * Every chunk also names its item (`messageId`), so the host can keep
+   * Codex's item id beside the message or thought it files the chunk under. */
+  private text(itemId: string, text: string, phase: MessagePhase | null): void {
     this.emit({
       event: 'agent_message_chunk',
-      data: { content: { type: 'text', text }, ...(phase ? { phase } : {}) },
+      data: { messageId: itemId, content: { type: 'text', text }, ...(phase ? { phase } : {}) },
     })
   }
 
-  private thought(text: string): void {
+  private thought(itemId: string, text: string): void {
     this.emit({
       event: 'agent_thought_chunk',
-      data: { phase: 'delta', content: { type: 'text', text } },
+      data: { messageId: itemId, phase: 'delta', content: { type: 'text', text } },
     })
   }
 }

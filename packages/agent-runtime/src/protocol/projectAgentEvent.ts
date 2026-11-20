@@ -407,6 +407,9 @@ export function projectAgentEvent(
     case 'steer_delivered':
     case 'steer_turn_started':
     case 'steer_withdrawn':
+    // The provider's own turn id: the host stores it beside its turn, and
+    // provider ids never cross the wire.
+    case 'turn_identified':
       return null
   }
 }
