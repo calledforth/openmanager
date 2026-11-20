@@ -17,10 +17,19 @@ export const codex: CodexProviderConfig = {
   displayName: 'Codex',
   binary: { envOverride: 'CODEX_BIN' },
   capabilities: {
-    // --- arrives with turns (CAL-253) -------------------------------------
-    canLoadSession: false,
-    canCancelPrompt: false,
-    canSetModel: false,
+    // --- delivered with turns (CAL-253) -----------------------------------
+    // `thread/resume` by thread id, falling back to a fresh thread only when
+    // Codex says it has none.
+    canLoadSession: true,
+    // `turn/interrupt`, a bounded wait, then the turn is closed regardless.
+    canCancelPrompt: true,
+    // Every `turn/start` names the model, so a change applies next turn.
+    canSetModel: true,
+    // Reasoning summaries, one short headline per part (`summary: "detailed"`).
+    supportsThoughtStreaming: true,
+    // Per-turn token counts and the context window, from
+    // `thread/tokenUsage/updated`.
+    supportsUsage: true,
     // --- arrives with the composer (CAL-260) ------------------------------
     // Access presets are the mode; reasoning effort and speed are options.
     canSetMode: false,
@@ -32,8 +41,6 @@ export const codex: CodexProviderConfig = {
     supportsQuestions: false,
     supportsSubtasks: false,
     supportsPlans: false,
-    supportsThoughtStreaming: false,
-    supportsUsage: false,
     // --- arrives with commands and skills (CAL-269) -----------------------
     supportsAvailableCommands: false,
 

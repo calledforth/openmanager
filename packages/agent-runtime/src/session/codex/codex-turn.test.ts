@@ -1,0 +1,230 @@
+import type { MessagePhase, v2 } from '@openmanager/codex-app-server-protocol'
+import { describe, expect, it } from 'vitest'
+import { CodexRpcError } from './CodexRpcPeer.js'
+import { codexInput, isMissingThread } from './CodexSessionRuntime.js'
+import { CodexTurn, type CodexTurnOutput } from './codex-turn.js'
+
+function turn() {
+  const out: CodexTurnOutput[] = []
+  return { turn: new CodexTurn((o) => out.push(o)), out }
+}
+
+const ids = { threadId: 'th', turnId: 'tu' }
+
+function message(id: string, text: string, phase: MessagePhase | null = null): v2.ThreadItem {
+  return {
+    type: 'agentMessage',
+    id,
+    text,
+    phase,
+    moderation: null,
+    memoryCitation: null,
+    delivery: null,
+    questions: null,
+  } as v2.ThreadItem
+}
+
+function reasoning(id: string, summary: string[] = []): v2.ThreadItem {
+  return { type: 'reasoning', id, summary, content: [] } as v2.ThreadItem
+}
+
+const text = (out: CodexTurnOutput[]) =>
+  out
+    .filter((o) => o.event === 'agent_message_chunk')
+    .map((o) => (o.data as { content: { text: string } }).content.text)
+    .join('')
+
+describe('CodexTurn', () => {
+  it('streams assistant text and does not repeat it on completion', () => {
+    const { turn: t, out } = turn()
+    t.itemStarted(message('m1', ''))
+    t.agentMessageDelta({ ...ids, itemId: 'm1', delta: 'Hel' })
+    t.agentMessageDelta({ ...ids, itemId: 'm1', delta: 'lo' })
+    t.itemCompleted(message('m1', 'Hello'))
+    expect(text(out)).toBe('Hello')
+  })
+
+  // A short message can arrive whole, with no deltas at all.
+  it('backfills a message that never streamed', () => {
+    const { turn: t, out } = turn()
+    t.itemStarted(message('m1', ''))
+    t.itemCompleted(message('m1', 'All at once'))
+    expect(text(out)).toBe('All at once')
+  })
+
+  it('frames reasoning summaries as start, deltas per part, stop', () => {
+    const { turn: t, out } = turn()
+    t.itemStarted(reasoning('r1'))
+    t.reasoningPartAdded({ ...ids, itemId: 'r1', summaryIndex: 0 })
+    t.reasoningSummaryDelta({ ...ids, itemId: 'r1', delta: '**Reading files**', summaryIndex: 0 })
+    t.reasoningPartAdded({ ...ids, itemId: 'r1', summaryIndex: 1 })
+    t.reasoningSummaryDelta({ ...ids, itemId: 'r1', delta: '**Writing tests**', summaryIndex: 1 })
+    t.itemCompleted(reasoning('r1', ['**Reading files**', '**Writing tests**']))
+    expect(out.map((o) => o.event === 'agent_thought_chunk' && o.data)).toEqual([
+      { messageId: 'r1', phase: 'start' },
+      { messageId: 'r1', phase: 'delta', content: { type: 'text', text: '**Reading files**' } },
+      { messageId: 'r1', phase: 'delta', content: { type: 'text', text: '\n\n' } },
+      { messageId: 'r1', phase: 'delta', content: { type: 'text', text: '**Writing tests**' } },
+      { messageId: 'r1', phase: 'stop' },
+    ])
+  })
+
+  // Without `summary: "detailed"`, or on a short item, the summary may only
+  // be on the completed item.
+  it('backfills a reasoning summary that never streamed, and skips an empty one', () => {
+    const { turn: t, out } = turn()
+    t.itemStarted(reasoning('r1'))
+    t.itemCompleted(reasoning('r1', ['**Planning**']))
+    t.itemStarted(reasoning('r2'))
+    t.itemCompleted(reasoning('r2'))
+    expect(out.map((o) => (o.data as { phase?: string }).phase)).toEqual([
+      'start',
+      'delta',
+      'stop',
+      'start',
+      'stop',
+    ])
+  })
+
+  it('closes reasoning still open when the turn ends', () => {
+    const { turn: t, out } = turn()
+    t.itemStarted(reasoning('r1'))
+    t.finish()
+    t.finish()
+    expect(out.map((o) => (o.data as { phase?: string }).phase)).toEqual(['start', 'stop'])
+  })
+
+  it('ignores our own userMessage echo and items it does not translate', () => {
+    const { turn: t, out } = turn()
+    t.itemStarted({ type: 'userMessage', id: 'u', clientId: null, content: [] } as v2.ThreadItem)
+    t.itemStarted({ type: 'webSearch', id: 'w' } as unknown as v2.ThreadItem)
+    expect(out).toEqual([])
+  })
+
+  it('reports this turn’s tokens and the context window', () => {
+    const { turn: t } = turn()
+    expect(t.usage).toBeUndefined()
+    const breakdown = {
+      totalTokens: 120,
+      inputTokens: 100,
+      cachedInputTokens: 40,
+      cacheWriteInputTokens: 0,
+      outputTokens: 20,
+      reasoningOutputTokens: 8,
+    }
+    t.tokenUsageUpdated({ total: breakdown, last: breakdown, modelContextWindow: 400_000 })
+    expect(t.usage).toEqual({
+      totalTokens: 120,
+      inputTokens: 100,
+      outputTokens: 20,
+      thoughtTokens: 8,
+      cachedReadTokens: 40,
+      cachedWriteTokens: 0,
+    })
+    expect(t.contextUsage).toEqual({ used: 120, size: 400_000 })
+    t.tokenUsageUpdated({ total: breakdown, last: breakdown, modelContextWindow: null })
+    expect(t.contextUsage).toBeUndefined()
+  })
+})
+
+describe('codexInput', () => {
+  it('joins text blocks and sends images as data URLs', () => {
+    expect(
+      codexInput({
+        text: 'look',
+        blocks: [
+          { type: 'text', text: 'look' },
+          { type: 'image', mimeType: 'image/png', data: 'AAAA' },
+          { type: 'text', text: 'here' },
+        ],
+      }),
+    ).toEqual([
+      { type: 'text', text: 'look\n\nhere', text_elements: [] },
+      { type: 'image', url: 'data:image/png;base64,AAAA' },
+    ])
+  })
+
+  it('refuses what Codex cannot take, before the turn starts', () => {
+    expect(() =>
+      codexInput({ text: '', blocks: [{ type: 'audio', mimeType: 'audio/wav', data: '' }] }),
+    ).toThrow(/audio/)
+  })
+})
+
+describe('isMissingThread', () => {
+  it('matches the not-found answers Codex gives, and nothing else', () => {
+    expect(isMissingThread(new CodexRpcError(-32600, 'no rollout found for thread id x'))).toBe(true)
+    expect(isMissingThread(new CodexRpcError(-32600, 'invalid session id: bad'))).toBe(true)
+    expect(isMissingThread(new CodexRpcError(-32600, 'model not allowed'))).toBe(false)
+    // Only the not-found answers Codex was probed giving; anything broader
+    // would quietly replace the user's thread.
+    expect(isMissingThread(new CodexRpcError(-32600, 'thread not found'))).toBe(false)
+    expect(isMissingThread(new CodexRpcError(-32603, 'no rollout found for thread id x'))).toBe(false)
+    expect(isMissingThread(new Error('no rollout found'))).toBe(false)
+  })
+})
+
+describe('CodexTurn message phases', () => {
+  // Narration and answer are separate Codex messages; each chunk says which,
+  // so the host can keep them apart.
+  it('stamps every chunk with its message’s phase, streamed or backfilled', () => {
+    const { turn: t, out } = turn()
+    t.itemStarted(message('m1', '', 'commentary'))
+    t.agentMessageDelta({ ...ids, itemId: 'm1', delta: 'Reading greet.py.' })
+    t.itemCompleted(message('m1', 'Reading greet.py.', 'commentary'))
+    t.itemStarted(message('m2', '', 'final_answer'))
+    t.itemCompleted(message('m2', 'It greets.', 'final_answer'))
+    t.itemStarted(message('m3', ''))
+    t.agentMessageDelta({ ...ids, itemId: 'm3', delta: 'no phase' })
+    expect(out.map((o) => o.data)).toEqual([
+      {
+        messageId: 'm1',
+        content: { type: 'text', text: 'Reading greet.py.' },
+        phase: 'commentary',
+      },
+      { messageId: 'm2', content: { type: 'text', text: 'It greets.' }, phase: 'final_answer' },
+      { messageId: 'm3', content: { type: 'text', text: 'no phase' } },
+    ])
+  })
+})
+
+describe('CodexTurn item ids', () => {
+  // The host keeps Codex's item id beside the message or thought it files a
+  // chunk under: every chunk names its item, streamed, backfilled or framing.
+  it('names the item on every chunk it emits', () => {
+    const { turn: t, out } = turn()
+    t.itemStarted(reasoning('rs_1'))
+    t.reasoningSummaryDelta({ ...ids, itemId: 'rs_1', delta: 'Plan', summaryIndex: 0 })
+    t.itemCompleted(reasoning('rs_1', ['Plan']))
+    t.itemStarted(message('msg_1', '', 'commentary'))
+    t.agentMessageDelta({ ...ids, itemId: 'msg_1', delta: 'Looking.' })
+    t.itemCompleted(message('msg_1', 'Looking.', 'commentary'))
+    t.itemStarted(message('msg_2', '', 'final_answer'))
+    t.itemCompleted(message('msg_2', 'Done.', 'final_answer'))
+    t.itemStarted(reasoning('rs_2'))
+    t.finish()
+    expect(out.map((o) => [o.event, (o.data as { messageId?: string }).messageId])).toEqual([
+      ['agent_thought_chunk', 'rs_1'],
+      ['agent_thought_chunk', 'rs_1'],
+      ['agent_thought_chunk', 'rs_1'],
+      ['agent_message_chunk', 'msg_1'],
+      ['agent_message_chunk', 'msg_2'],
+      ['agent_thought_chunk', 'rs_2'],
+      ['agent_thought_chunk', 'rs_2'],
+    ])
+  })
+})
+
+describe('CodexTurn reasoning parts', () => {
+  // Codex may skip `summaryPartAdded`; the part index alone keeps headlines apart.
+  it('separates headlines by part index without summaryPartAdded', () => {
+    const { turn: t, out } = turn()
+    t.itemStarted(reasoning('r1'))
+    t.reasoningSummaryDelta({ ...ids, itemId: 'r1', delta: '**One**', summaryIndex: 0 })
+    t.reasoningSummaryDelta({ ...ids, itemId: 'r1', delta: '**Two**', summaryIndex: 1 })
+    const deltas = out
+      .filter((o) => o.event === 'agent_thought_chunk' && (o.data as { phase: string }).phase === 'delta')
+      .map((o) => (o.data as { content: { text: string } }).content.text)
+    expect(deltas).toEqual(['**One**', '\n\n', '**Two**'])
+  })
+})

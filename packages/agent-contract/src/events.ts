@@ -34,6 +34,11 @@ export type AgentEventName =
   /** The provider gave a steered message back unread: the turn was stopped, or
    * the process went away. It will not run unless it is sent again. */
   | 'steer_withdrawn'
+  /** The provider named its own id for the turn in flight (Codex's turn id),
+   * as soon as it knows it. Optional: a provider without turn ids never sends
+   * it. The host keeps the id beside its own turn, never on the wire, so
+   * revert, fork and reconciliation can find the provider's turn again. */
+  | 'turn_identified'
   | 'prompt_completed'
   | 'user_message_chunk'
   | 'agent_message_chunk'
@@ -169,6 +174,11 @@ export type PromptInput = {
 export type MessagePhase = 'commentary' | 'partial_answer' | 'final_answer'
 
 export type StreamedMessageChunk = {
+  /**
+   * The provider's own id for the message (Codex: the agentMessage item id),
+   * when it has one. Host-side only: the host keeps it beside the message it
+   * files the chunk under, and never puts it on the wire.
+   */
   messageId?: string
   content: ContentBlock
   /**
@@ -201,6 +211,7 @@ export type StreamedMessageChunk = {
  *   `stop` is the only thing that can settle a reasoning part whose text is
  *   empty. Providers that stream text and have no block framing send `delta`. */
 export type ThoughtChunk = {
+  /** The provider's own id for the reasoning block, as on `StreamedMessageChunk`. */
   messageId?: string
   phase: 'start' | 'delta' | 'stop'
   content?: ContentBlock
@@ -617,6 +628,13 @@ export type AgentEvent = AgentEventBase &
         sessionId: string
         /** The id the caller gave the message when it steered it. */
         data: { steerId: string }
+      }
+    | {
+        category: 'lifecycle'
+        event: 'turn_identified'
+        sessionId: string
+        /** The provider's id for the turn, unique within its own thread. */
+        data: { providerTurnId: string }
       }
     | {
         category: 'lifecycle'

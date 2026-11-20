@@ -1,6 +1,6 @@
 import { createHash, randomUUID } from 'node:crypto'
 import { basename } from 'node:path'
-import type { DatabaseSync } from 'node:sqlite'
+import type { DatabaseSync, StatementSync } from 'node:sqlite'
 import {
   ProofCommandSchemas,
   ProofEventSchemas,
@@ -179,7 +179,19 @@ type ActiveTurn = {
    * can send its commentary and its answer back to back.
    */
   textRunPhase?: MessagePhase
+  /**
+   * The provider's id for the item the open text run belongs to, when it
+   * names one. A chunk that names its phase and another item opens a run of
+   * its own, so one host message holds one provider item (Codex can send two
+   * narrations back to back). Chunks that name no phase never split a run.
+   */
+  textRunItemId?: string
   reasoningRunId?: string
+  /**
+   * Host ids (turn, message, activity) whose provider id this turn has
+   * already stamped, or tried to: each is stamped once (`stampProviderId`).
+   */
+  providerIdsStamped?: Set<string>
   /**
    * Thoughts of this turn that no `stop` has closed yet, by host message id.
    * ACP providers never frame their thoughts, so the server closes them when
@@ -234,7 +246,8 @@ const RUN_BREAKING_EVENTS: ReadonlySet<RuntimeEvent['event']> = new Set<RuntimeE
  * The host message id an event of the turn is filed under. Text and thought
  * chunks continue their open run or start a new one; a run-breaking event
  * closes both runs, so the next chunk of either kind starts fresh, and so does
- * a text chunk whose phase differs from its run's. A thought's
+ * a text chunk whose phase, or (with a phase) whose provider item, differs
+ * from its run's. A thought's
  * `stop` closes its own run after it is filed, which keeps providers that frame
  * their blocks (Claude Code) at one id per block.
  */
@@ -246,12 +259,16 @@ function runMessageId(active: ActiveTurn, event: RuntimeEvent): string | undefin
     // provider that marks only some chunks of a message never has it broken
     // in two mid-sentence.
     const phase = event.data.phase ?? undefined
-    if (active.textRunId && phase !== undefined && active.textRunPhase !== phase)
+    const item = event.data.messageId
+    const otherItem =
+      item !== undefined && active.textRunItemId !== undefined && item !== active.textRunItemId
+    if (active.textRunId && phase !== undefined && (active.textRunPhase !== phase || otherItem))
       active.textRunId = undefined
     if (!active.textRunId) {
       active.textRunId = randomUUID()
       active.textRunPhase = phase
-    }
+      active.textRunItemId = item
+    } else active.textRunItemId ??= item
     return active.textRunId
   }
   if (event.event === 'agent_thought_chunk') {
@@ -1433,6 +1450,62 @@ export function createThreadService(
     return hostId
   }
 
+  /**
+   * Where each kind of provider id is kept, by host id and thread. An id the
+   * thread already holds is never written twice: a provider's turn and
+   * message ids are unique per thread, so a provider item split across two
+   * host messages keeps its id on the first.
+   */
+  let providerIdWrites: Record<'turn' | 'message' | 'activity', StatementSync> | undefined
+  const providerIdWritesFor = (database: DatabaseSync) =>
+    (providerIdWrites ??= {
+      turn: database.prepare(
+        `UPDATE turns SET provider_turn_id = ?1
+         WHERE turn_id = ?2 AND thread_id = ?3 AND provider_turn_id IS NULL
+           AND NOT EXISTS (SELECT 1 FROM turns WHERE thread_id = ?3 AND provider_turn_id = ?1)`,
+      ),
+      message: database.prepare(
+        `UPDATE messages SET external_id = ?1
+         WHERE message_id = ?2 AND thread_id = ?3 AND external_id IS NULL
+           AND NOT EXISTS (SELECT 1 FROM messages WHERE thread_id = ?3 AND external_id = ?1)`,
+      ),
+      activity: database.prepare(
+        `UPDATE turn_activity SET external_id = ?1
+         WHERE activity_id = ?2 AND thread_id = ?3 AND external_id IS NULL`,
+      ),
+    })
+
+  /**
+   * Keep a provider's own id beside the host row it names: a turn's
+   * (`turns.provider_turn_id`), an assistant message's (`messages.external_id`),
+   * a reasoning block's or a tool call's (`turn_activity.external_id`).
+   * Host-private and not activity, like a provider session id's stamp: no
+   * event carries it, and no `updated_at` moves. Each row takes the first id
+   * the provider gives it, once. The row may still be in the batcher, so
+   * what is buffered is written first. A stamp that fails leaves NULL, as for
+   * a provider that names nothing, and never costs the turn its events.
+   */
+  const stampProviderId = (
+    record: ThreadRecord,
+    active: ActiveTurn,
+    target: 'turn' | 'message' | 'activity',
+    hostId: string,
+    providerId: string,
+  ) => {
+    const database = options.database
+    if (!database) return
+    const stamped = (active.providerIdsStamped ??= new Set())
+    if (stamped.has(hostId)) return
+    stamped.add(hostId)
+    try {
+      options.flush?.()
+      providerIdWritesFor(database)[target].run(providerId, hostId, record.thread.threadId)
+    } catch (error) {
+      if (!options.onPersistenceError) throw error
+      options.onPersistenceError(error, 'provider id')
+    }
+  }
+
   const projectRuntimeEvent = (
     record: ThreadRecord,
     event: RuntimeEvent,
@@ -1528,6 +1601,32 @@ export function createThreadService(
     }
   }
 
+  /** The provider's item id of what an event was filed as, beside its row. */
+  const stampItemId = (
+    record: ThreadRecord,
+    active: ActiveTurn,
+    event: RuntimeEvent,
+    projected: ProofEvent,
+    providerToolId: string | undefined,
+  ) => {
+    if (
+      projected.name === 'message.delta' &&
+      projected.payload.role === 'assistant' &&
+      event.event === 'agent_message_chunk' &&
+      event.data.messageId
+    ) {
+      stampProviderId(record, active, 'message', projected.payload.messageId, event.data.messageId)
+    } else if (
+      projected.name === 'message.reasoning' &&
+      event.event === 'agent_thought_chunk' &&
+      event.data.messageId
+    ) {
+      stampProviderId(record, active, 'activity', projected.payload.messageId, event.data.messageId)
+    } else if (projected.name === 'tool.updated' && providerToolId) {
+      stampProviderId(record, active, 'activity', projected.payload.toolCallId, providerToolId)
+    }
+  }
+
   const projectOwnEvent = (
     record: ThreadRecord,
     event: RuntimeEvent,
@@ -1537,6 +1636,11 @@ export function createThreadService(
     /** The host id of the tool call a promoted image came from. */
     imageToolCallId?: string,
   ): void => {
+    if (event.event === 'turn_identified') {
+      if (active)
+        stampProviderId(record, active, 'turn', active.turn.turnId, event.data.providerTurnId)
+      return
+    }
     // The durable prompt already names its uploaded images. Provider echoes must
     // neither duplicate them nor relabel them as generated output.
     if (
@@ -1716,6 +1820,7 @@ export function createThreadService(
       liveNotices.add(projected.payload.turnId)
       publishTransient(projected)
     } else appendRuntimeEvent(projected)
+    if (active) stampItemId(record, active, event, projected, providerToolId)
     if (active && projected.name === 'message.reasoning') {
       active.openReasoning ??= new Set()
       if (projected.payload.phase === 'stop')
@@ -5967,6 +6072,7 @@ export function createThreadService(
       }
       const turnScoped =
         event.event === 'prompt_completed' ||
+        event.event === 'turn_identified' ||
         event.category === 'stream' ||
         event.category === 'tool' ||
         event.category === 'permission' ||
@@ -5986,8 +6092,10 @@ export function createThreadService(
         event.event !== 'process_exited'
       if (folded) {
         // That turn's own ending is not this turn's: the prompt is still queued.
+        // Nor is its id.
         const ends =
           event.event === 'prompt_completed' ||
+          event.event === 'turn_identified' ||
           event.event === 'auth_required' ||
           event.event === 'capability_missing' ||
           ((event.event === 'rpc_error' || event.event === 'runtime_error') &&

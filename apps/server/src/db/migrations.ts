@@ -1303,6 +1303,44 @@ export const MIGRATIONS: readonly Migration[] = [
         CHECK (phase IS NULL OR phase IN ('commentary', 'partial_answer', 'final_answer'))`)
     },
   },
+  {
+    version: 36,
+    name: 'provider_turn_and_item_ids',
+    up(database) {
+      // The provider's own ids for a turn and for the items it produced
+      // (Codex: the turn id, and each agent message, reasoning and tool
+      // item id), so revert, fork, dedupe and reconciliation can map the
+      // transcript back to the provider's history. Host-private: stamped
+      // beside the rows (thread-service.ts `stampProviderIds`), never in an
+      // event. Null wherever the provider reported none, and for every row
+      // before this.
+      //
+      // A provider's turn id is only unique within its own thread (Codex's
+      // `thread/fork` reuses the source's turn ids), so it is always read
+      // with the turn's `thread_id`, whose session holds the provider's
+      // thread id (`sessions.provider_session_id`): the index is unique per
+      // thread, not across them. A message keeps its item id in the
+      // `external_id` it always had (unique per thread); a reasoning block
+      // or tool call keeps it in `turn_activity.external_id`, not unique,
+      // since some providers repeat tool call ids across turns.
+      const columns = (table: string) =>
+        new Set(
+          (database.prepare(`PRAGMA table_info(${table})`).all() as { name: string }[]).map(
+            (column) => column.name,
+          ),
+        )
+      if (!columns('turns').has('provider_turn_id'))
+        database.exec('ALTER TABLE turns ADD COLUMN provider_turn_id TEXT')
+      if (!columns('turn_activity').has('external_id'))
+        database.exec('ALTER TABLE turn_activity ADD COLUMN external_id TEXT')
+      database.exec(`
+        CREATE UNIQUE INDEX IF NOT EXISTS turns_provider_turn_id_idx
+          ON turns(thread_id, provider_turn_id) WHERE provider_turn_id IS NOT NULL;
+        CREATE INDEX IF NOT EXISTS turn_activity_external_id_idx
+          ON turn_activity(thread_id, external_id) WHERE external_id IS NOT NULL;
+      `)
+    },
+  },
 ]
 
 type RetainedActivityRow = {

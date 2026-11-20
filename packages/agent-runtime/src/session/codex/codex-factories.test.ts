@@ -6,8 +6,8 @@ import {
   ProviderProbeRuntimeFactory,
   ProviderSessionRuntimeFactory,
 } from '../ProviderRuntimeFactory.js'
-import type { CodexAppServerClient } from './CodexAppServerClient.js'
 import { CodexProbeRuntime } from './CodexProbeRuntime.js'
+import { CodexSessionRuntime } from './CodexSessionRuntime.js'
 
 const unusedTransport = () => {
   throw new Error('a Codex runtime must never build the ACP transport')
@@ -31,8 +31,10 @@ describe('Codex arms of the runtime factories', () => {
     await probe.dispose()
   })
 
-  it('refuses a Codex session plainly until turns exist', () => {
-    const start = vi.fn(async () => ({}) as CodexAppServerClient)
+  it('builds a Codex session runtime that starts through the injected seam', async () => {
+    const start = vi.fn(async () => {
+      throw Object.assign(new Error('not installed'), { code: 'ENOENT' })
+    })
     const factory = new ProviderSessionRuntimeFactory({
       configs: providers,
       host: { log: vi.fn() },
@@ -41,9 +43,10 @@ describe('Codex arms of the runtime factories', () => {
       connections: unusedTransport,
       codexStart: start,
     })
-    expect(() => factory.create({ threadId: 't', providerId: 'codex', cwd: '/work' })).toThrow(
-      /not available in this build yet/,
-    )
-    expect(start).not.toHaveBeenCalled()
+    const runtime = factory.create({ threadId: 't', providerId: 'codex', cwd: '/work' })
+    expect(runtime).toBeInstanceOf(CodexSessionRuntime)
+    await expect(runtime.start()).rejects.toMatchObject({ code: 'ENOENT' })
+    expect(start).toHaveBeenCalledWith(expect.objectContaining({ cwd: '/work' }))
+    expect(runtime.phase).toBe('exited')
   })
 })
