@@ -14,7 +14,7 @@
 // and the decoder is written to tolerate what it does not know, not to chase
 // every release. See docs/decisions/codex-app-server.md.
 import { execFileSync } from 'node:child_process'
-import { mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
@@ -32,6 +32,31 @@ if (!version) throw new Error(`Could not read a version from \`${bin} --version\
 rmSync(out, { recursive: true, force: true })
 mkdirSync(out, { recursive: true })
 run(['app-server', 'generate-ts', '--experimental', '--out', out])
+
+// ts-rs writes extensionless relative imports (`from "./Foo"`, `from "./v2"`).
+// They resolve under `moduleResolution: bundler` but not under `nodenext`,
+// which is how the server typechecks the runtime's emitted declarations. So
+// every relative specifier is made explicit: a file gets `.js`, a directory
+// gets `/index.js`.
+const explicitImports = (dir) => {
+  for (const entry of readdirSync(dir, { withFileTypes: true })) {
+    const path = join(dir, entry.name)
+    if (entry.isDirectory()) {
+      explicitImports(path)
+      continue
+    }
+    if (!entry.name.endsWith('.ts')) continue
+    const source = readFileSync(path, 'utf8')
+    const rewritten = source.replace(/(from\s+")(\.{1,2}\/[^"]+)(")/g, (match, open, specifier, close) => {
+      if (/\.(js|ts)$/.test(specifier)) return match
+      const target = join(dirname(path), specifier)
+      const isDir = existsSync(target) && statSync(target).isDirectory()
+      return `${open}${specifier}${isDir ? '/index.js' : '.js'}${close}`
+    })
+    if (rewritten !== source) writeFileSync(path, rewritten)
+  }
+}
+explicitImports(out)
 
 const methodsOf = (file) => {
   const source = readFileSync(join(out, `${file}.ts`), 'utf8')
