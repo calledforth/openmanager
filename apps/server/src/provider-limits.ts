@@ -21,7 +21,7 @@ import { openEnvironmentDatabase } from './db/database.ts'
 export type UsageLimitsResult =
   | {
       outcome: 'ok'
-      reading: Pick<ProviderLimitsReading, 'windows' | 'extraUsage'>
+      reading: Pick<ProviderLimitsReading, 'windows' | 'extraUsage' | 'plan' | 'credits'>
     }
   | { outcome: 'unavailable' }
   | { outcome: 'unsupported' }
@@ -33,6 +33,7 @@ export type UsageLimitObservation = {
   status?: 'ok' | 'warning' | 'limited'
   resetsAt?: string
   usedPercentAtLeast?: number
+  usedPercent?: number
 }
 
 /** No reading younger than this is read again, whatever a client asks: one
@@ -165,7 +166,13 @@ export function createProviderLimits(deps: ProviderLimitsDeps) {
       }
       const reading =
         result?.outcome === 'ok'
-          ? sanitize({ windows: result.reading.windows, extraUsage: result.reading.extraUsage, at })
+          ? sanitize({
+              windows: result.reading.windows,
+              extraUsage: result.reading.extraUsage,
+              ...(result.reading.plan !== undefined ? { plan: result.reading.plan } : {}),
+              ...(result.reading.credits !== undefined ? { credits: result.reading.credits } : {}),
+              at,
+            })
           : // A failed read keeps the last numbers up, with their age; an account
             // without plan limits has nothing to keep.
             result?.outcome === 'unavailable'
@@ -205,7 +212,9 @@ export function createProviderLimits(deps: ProviderLimitsDeps) {
       } else {
         windows.push(merged)
       }
+      // The plan and credits are a full read's; a window's word keeps them.
       const reading = sanitize({
+        ...current.reading,
         windows,
         extraUsage: current.reading?.extraUsage ?? null,
         at: new Date(clock()).toISOString(),
@@ -270,11 +279,17 @@ function mergeObservation(
   if (observation.usedPercentAtLeast !== undefined) {
     usedPercent = Math.max(usedPercent ?? 0, observation.usedPercentAtLeast)
   }
+  // An exact number (Codex) is the number, whatever was known.
+  if (observation.usedPercent !== undefined) usedPercent = observation.usedPercent
+  // Below 100% with no verdict given, an old refusal no longer holds.
+  const freed = observation.usedPercent !== undefined && observation.usedPercent < 100
   return {
     ...base,
     usedPercent,
     resetsAt,
-    status: observation.status ?? (rolledOver || released ? null : base.status),
+    status:
+      observation.status ??
+      (rolledOver || released || (freed && base.status === 'limited') ? null : base.status),
   }
 }
 

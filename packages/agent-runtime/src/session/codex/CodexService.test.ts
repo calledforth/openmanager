@@ -315,6 +315,20 @@ describe('CodexService provider-level state', () => {
     await service.shutdown()
   })
 
+  // T3 Code: another bucket's update, taken as the main one, overwrote it.
+  it('keeps another bucket out of the main limits, even before any read', async () => {
+    const { service, fakes } = build()
+    await service.readAccount()
+    const updated = nextState(service)
+    fakes.last.notify('account/rateLimits/updated', {
+      rateLimits: buildRateLimits({ limitId: 'codex_other' }),
+    })
+    const state = await updated
+    expect(state.rateLimits).toBeUndefined()
+    expect(state.rateLimitsByLimitId?.codex_other?.primary?.usedPercent).toBe(1)
+    await service.shutdown()
+  })
+
   // Review: health stayed signed out after signing back in.
   it('reads the account again when Codex says the login changed', async () => {
     const { service, fakes } = build()

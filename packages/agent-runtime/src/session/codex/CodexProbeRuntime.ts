@@ -1,4 +1,9 @@
-import type { ModelListing, ProviderId, ProviderSessionInfo } from '@agentpack/contract'
+import type {
+  ModelListing,
+  ProviderId,
+  ProviderSessionInfo,
+  UsageLimitsResult,
+} from '@agentpack/contract'
 import type { BackendEvent, BackendRoute } from '../../backends/Backend.js'
 import { AuthRequiredError, CapabilityMissingError } from '../../core/errors.js'
 import type { HostDeps } from '../../host.js'
@@ -12,6 +17,7 @@ import {
   codexAccountLabel,
 } from './codex-account.js'
 import { codexModelListing, codexPolicy } from './codex-catalog.js'
+import { codexUsageReading } from './codex-usage-limits.js'
 import type { CodexHandshake } from './CodexAppServerClient.js'
 import type { CodexService } from './CodexService.js'
 import { CODEX_MIN_VERSION, CODEX_RECOMMENDED_VERSION } from './version.js'
@@ -159,6 +165,25 @@ export class CodexProbeRuntime implements ProbeRuntime {
     return Promise.reject(
       new CapabilityMissingError(this.providerId, 'canListSessions', 'listing sessions'),
     )
+  }
+
+  /** The plan's limits (CAL-266): the account, then `account/rateLimits/read`,
+   * both on the service process, which idles away afterwards as after any
+   * question. Only a ChatGPT login has plan limits; an API key or a cloud
+   * provider's credentials are `unavailable`, and are not asked (Codex
+   * refuses the read for them). Signed out throws `AuthRequiredError`. */
+  async readUsageLimits(): Promise<UsageLimitsResult> {
+    const signal = this.abort.signal
+    // Read every time, not taken from the state: a login changed while no
+    // process was running to say so would otherwise go unnoticed.
+    const account = await this.deps.service.readAccount({ signal })
+    if (account.state === 'signed_out')
+      throw new AuthRequiredError(this.providerId, CODEX_SIGNED_OUT_MESSAGE, CODEX_LOGIN_HINT)
+    if (account.state === 'not_required' || account.account.type !== 'chatgpt')
+      return { outcome: 'unavailable' }
+    await this.deps.service.readRateLimits({ signal })
+    const reading = codexUsageReading(this.deps.service.state)
+    return reading ? { outcome: 'ok', reading } : { outcome: 'unavailable' }
   }
 
   /** Archive a deleted session's thread on the service process

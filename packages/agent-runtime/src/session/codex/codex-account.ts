@@ -53,8 +53,8 @@ export type CodexProviderState = {
    * `apikey`, …), `null` when it is not. */
   authMode?: v2.AccountUpdatedNotification['authMode']
   planType?: v2.AccountUpdatedNotification['planType']
-  /** The single-bucket view (`account/rateLimits/read`'s `rateLimits`),
-   * with every rolling update merged in. */
+  /** The main bucket (`CODEX_MAIN_LIMIT_ID`), with every rolling update
+   * merged in: the limits openmanager shows. */
   rateLimits?: v2.RateLimitSnapshot
   /** Every bucket by its `limitId`, merged the same way. */
   rateLimitsByLimitId?: Record<string, v2.RateLimitSnapshot>
@@ -108,7 +108,20 @@ export function codexSignInState(state: CodexProviderState): CodexAccountState['
   return state.authMode === null ? 'signed_out' : 'signed_in'
 }
 
-/** A full `account/rateLimits/read` answer, replacing what was known. */
+/** The metered bucket that is Codex's own plan limits. Other buckets (a
+ * model with an allowance of its own) arrive through the same
+ * `account/rateLimits/updated`, and taken as the main one they overwrite it
+ * (T3 Code hit this), so they are kept by id and never shown. */
+export const CODEX_MAIN_LIMIT_ID = 'codex'
+
+/** A bucket with no id is the main one: older CLIs name none. */
+export function isCodexMainBucket(limitId: string | null | undefined): boolean {
+  return limitId === null || limitId === undefined || limitId === CODEX_MAIN_LIMIT_ID
+}
+
+/** A full `account/rateLimits/read` answer, replacing what was known. The
+ * main bucket is the one by its id, else the single-bucket view when that
+ * one is it. */
 export function applyRateLimitsRead(
   state: CodexProviderState,
   read: v2.GetAccountRateLimitsResponse,
@@ -117,32 +130,37 @@ export function applyRateLimitsRead(
   const byId: Record<string, v2.RateLimitSnapshot> = {}
   for (const [id, snapshot] of Object.entries(read.rateLimitsByLimitId ?? {}))
     if (snapshot) byId[id] = snapshot
-  const primaryId = read.rateLimits.limitId
-  if (primaryId && !byId[primaryId]) byId[primaryId] = read.rateLimits
-  return { ...state, rateLimits: read.rateLimits, rateLimitsByLimitId: byId, updatedAt: at }
+  const single = read.rateLimits
+  const singleId = single.limitId ?? CODEX_MAIN_LIMIT_ID
+  if (!byId[singleId]) byId[singleId] = single
+  const main = byId[CODEX_MAIN_LIMIT_ID]
+  const next: CodexProviderState = { ...state, rateLimitsByLimitId: byId, updatedAt: at }
+  if (main) next.rateLimits = main
+  else delete next.rateLimits
+  return next
 }
 
 /** `account/rateLimits/updated` merged into what was known.
  *
  * The update is sparse: per the protocol, a `null` in it means "not in this
  * update", never "cleared", so only the values it does carry replace the old
- * ones. The bucket is the update's `limitId`, else the single-bucket view's. */
+ * ones, inside a window too. It goes to its own bucket; only the main
+ * bucket's is the provider's `rateLimits`. */
 export function applyRateLimitsUpdated(
   state: CodexProviderState,
   update: v2.AccountRateLimitsUpdatedNotification,
   at: string,
 ): CodexProviderState {
   const incoming = update.rateLimits
-  const limitId = incoming.limitId ?? state.rateLimits?.limitId ?? null
+  const main = isCodexMainBucket(incoming.limitId)
+  const limitId = incoming.limitId ?? CODEX_MAIN_LIMIT_ID
   const byId = { ...state.rateLimitsByLimitId }
-  const previous = (limitId ? byId[limitId] : undefined) ?? state.rateLimits
+  const previous = byId[limitId] ?? (main ? state.rateLimits : undefined)
   const merged = mergeSnapshot(previous, incoming, limitId)
-  if (limitId) byId[limitId] = merged
-  const isPrimary =
-    state.rateLimits === undefined || limitId === null || state.rateLimits.limitId === limitId
+  byId[limitId] = merged
   return {
     ...state,
-    ...(isPrimary ? { rateLimits: merged } : {}),
+    ...(main ? { rateLimits: merged } : {}),
     rateLimitsByLimitId: byId,
     updatedAt: at,
   }
@@ -151,11 +169,27 @@ export function applyRateLimitsUpdated(
 function mergeSnapshot(
   previous: v2.RateLimitSnapshot | undefined,
   incoming: v2.RateLimitSnapshot,
-  limitId: string | null,
+  limitId: string,
 ): v2.RateLimitSnapshot {
   if (!previous) return { ...incoming, limitId }
   const merged = { ...previous } as Record<string, unknown>
-  for (const [key, value] of Object.entries(incoming)) if (value !== null) merged[key] = value
+  for (const [key, value] of Object.entries(incoming)) {
+    if (value === null) continue
+    const before = merged[key]
+    // A window, the credits: a field the update left null keeps its value
+    // (a window's length, its reset time).
+    merged[key] = isRecord(value) && isRecord(before) ? overlay(before, value) : value
+  }
   merged.limitId = limitId
   return merged as v2.RateLimitSnapshot
+}
+
+function overlay(before: Record<string, unknown>, after: Record<string, unknown>) {
+  const out = { ...before }
+  for (const [key, value] of Object.entries(after)) if (value !== null) out[key] = value
+  return out
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value)
 }

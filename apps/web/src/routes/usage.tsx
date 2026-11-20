@@ -64,7 +64,7 @@ function ConnectedUsage() {
         ))}
       </div>
       <p className="mt-6 text-[12px] text-faint">
-        Only Claude Code reports usage limits for now. A refresh takes up to a minute.
+        Claude Code and Codex report usage limits. A Claude Code refresh takes up to a minute.
       </p>
     </>
   )

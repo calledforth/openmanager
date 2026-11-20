@@ -481,14 +481,16 @@ export async function startServer(config: ServerConfig) {
   )
   let observeProviderCatalog: (providerId: string, result: RuntimeProviderBootstrap) => void = () =>
     undefined
-  // Usage limits (CAL-242): Claude Code only for now. Read in a throwaway CLI
-  // in the most recent project, or the home directory before there is one.
+  // Usage limits (CAL-242): Claude Code, read in a throwaway CLI in the most
+  // recent project (or the home directory before there is one), and Codex,
+  // read on its service process (CAL-266).
   const providerLimitsStore = openProviderLimitsStore(config.dataDir)
   const providerLimits = createProviderLimits({
     providerIds: Object.keys(providers),
-    supports: (providerId) =>
-      config.probeProviders === true &&
-      providers[providerId as keyof typeof providers]?.kind === 'claude',
+    supports: (providerId) => {
+      const kind = providers[providerId as keyof typeof providers]?.kind
+      return config.probeProviders === true && (kind === 'claude' || kind === 'codex')
+    },
     read: (providerId) =>
       runtime.readUsageLimits({
         providerId: providerId as keyof typeof providers,

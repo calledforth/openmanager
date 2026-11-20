@@ -212,6 +212,40 @@ describe('provider limits', () => {
     ])
   })
 
+  // Codex (CAL-266): a full read names the plan and credits, and a live
+  // update states the exact percent, which replaces the number.
+  it('keeps a reading’s plan and credits, and takes an exact percent as it is', async () => {
+    const codex: UsageLimitsResult = {
+      outcome: 'ok',
+      reading: {
+        windows: [{ ...FIVE_HOUR, usedPercent: 100, status: 'limited' }],
+        extraUsage: null,
+        plan: 'Plus',
+        credits: { hasCredits: true, unlimited: false, balance: '120' },
+      },
+    }
+    const { service } = harness(async () => codex)
+    service.refresh('claude-code', 0)
+    await service.idle()
+    expect(service.get('claude-code').reading).toMatchObject({
+      plan: 'Plus',
+      credits: { hasCredits: true, unlimited: false, balance: '120' },
+    })
+
+    // Lower than before in the same window (a reset credit spent, say): the
+    // number is the number, and the refusal is over.
+    service.observe('claude-code', {
+      windowId: 'five_hour',
+      label: '5-hour',
+      group: 'session',
+      resetsAt: FIVE_HOUR.resetsAt,
+      usedPercent: 12,
+    })
+    const reading = service.get('claude-code').reading
+    expect(reading?.windows[0]).toMatchObject({ usedPercent: 12, status: null })
+    expect(reading).toMatchObject({ plan: 'Plus', credits: { balance: '120' } })
+  })
+
   it('answers the refresh command with the current state and validates it', async () => {
     const { service } = harness(async () => OK)
     const answer = await service.dispatch({
