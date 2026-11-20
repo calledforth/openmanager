@@ -6,7 +6,8 @@ import { PermissionBroker } from '../../core/PermissionBroker.js'
 import { codex } from '../../providers/codex.js'
 import type { SessionRuntimeSpec } from '../SessionRuntime.js'
 import { CodexAppServerClient } from './CodexAppServerClient.js'
-import { CodexSessionRuntime, CodexSteerRefusedError } from './CodexSessionRuntime.js'
+import { CodexRpcError } from './CodexRpcPeer.js'
+import { CodexSessionRuntime, CodexSteerRefusedError, isArchivedThread } from './CodexSessionRuntime.js'
 import type { CodexStarter } from './start.js'
 import { codexBuilders, FakeCodexAppServer, type FakeCodexTurn } from './testing/index.js'
 import { ReplayCodexAppServer } from './testing/ReplayCodexAppServer.js'
@@ -761,6 +762,42 @@ describe('CodexSessionRuntime name and archive', () => {
     expect(request.params.name).toBe('Set while starting')
   })
 
+  it('takes a name Codex changed on the way in, while its set is unanswered, as the echo', async () => {
+    const { server, runtime, events } = build()
+    // Codex answers with the name it stored, not the one it was sent.
+    server.respond('thread/name/set', (params) => {
+      server.notify('thread/name/updated', {
+        threadId: params.threadId,
+        threadName: `${params.name.slice(0, 5)}…`,
+      })
+      return {}
+    })
+    await runtime.start()
+    await runtime.setTitle('A long session title')
+    await settle()
+    expect(titles(events)).toEqual([])
+  })
+
+  it('tries a refused name again after the next turn', async () => {
+    let turn: FakeCodexTurn | undefined
+    const { server, runtime } = build({ onTurn: (t) => (turn = t) })
+    server.respond('thread/name/set', {})
+    server.fail('thread/name/set', -32603, 'database is locked', { times: 1 })
+    const { sessionId } = await runtime.start()
+    await runtime.setTitle('Retried title')
+    expect(server.requests('thread/name/set')).toHaveLength(1)
+
+    const prompt = runtime.prompt({ prompt: PROMPT })
+    await vi.waitFor(() => expect(turn).toBeDefined())
+    turn!.completed()
+    await prompt
+    await vi.waitFor(() => expect(server.requests('thread/name/set')).toHaveLength(2))
+    expect(server.requests('thread/name/set')[1]!.params).toEqual({
+      threadId: sessionId,
+      name: 'Retried title',
+    })
+  })
+
   it('never fails over a name Codex refuses', async () => {
     const { server, runtime, events, log } = build()
     server.fail('thread/name/set', -32600, 'no rollout found for thread id x')
@@ -838,6 +875,12 @@ describe('CodexSessionRuntime name and archive', () => {
     await expect(runtime.archive()).resolves.toBeUndefined()
     server.fail('thread/archive', -32600, `thread ${sessionId} already has an active writer`)
     await expect(runtime.archive()).rejects.toThrow(/active writer/)
+  })
+
+  it('tells an archived thread by its code as well as its message', () => {
+    const message = 'session x is archived. Run `codex unarchive x` to unarchive it first.'
+    expect(isArchivedThread(new CodexRpcError(-32600, message))).toBe(true)
+    expect(isArchivedThread(new CodexRpcError(-32603, message))).toBe(false)
   })
 })
 

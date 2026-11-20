@@ -59,7 +59,7 @@ function serviceOn(
   return { service, dispatch }
 }
 
-async function setup(titles?: TitleGenerator) {
+async function setup(titles?: TitleGenerator, options: { startPending?: boolean } = {}) {
   const database = new DatabaseSync(':memory:', { enableForeignKeyConstraints: true })
   runMigrations(database, MIGRATIONS)
   database.exec(
@@ -71,6 +71,8 @@ async function setup(titles?: TitleGenerator) {
     database.close()
   })
   const runtime = runtimeDouble()
+  // A first start that has not finished: no provider session id yet.
+  if (options.startPending) runtime.ensureSession.mockReturnValue(new Promise(() => undefined))
   const { service, dispatch } = serviceOn(database, events, runtime, titles)
   const created = ProofResponseSchemas['session.create'].parse(
     dispatch('session.create', {
@@ -80,14 +82,14 @@ async function setup(titles?: TitleGenerator) {
     }),
   ).payload
   const { sessionId } = created.session
-  await service.resolveRuntimeSession(sessionId)
+  if (!options.startPending) await service.resolveRuntimeSession(sessionId)
   const send = async (text: string) => {
     runtime.prompt.mockClear()
     dispatch('turn.send', { ...created.thread, text })
     await vi.waitFor(() => expect(runtime.prompt).toHaveBeenCalled())
     return runtime.prompt.mock.calls[0]![0] as { title?: string }
   }
-  return { database, events, runtime, dispatch, created, sessionId, send }
+  return { database, events, runtime, service, dispatch, created, sessionId, send }
 }
 
 describe('provider session titles', () => {
@@ -158,6 +160,33 @@ describe('provider sessions of deleted sessions', () => {
         sessionId: 'codex-thread',
       }),
     )
+  })
+
+  it('retires a session deleted while its first start is still running', async () => {
+    const h = await setup(undefined, { startPending: true })
+    expect(h.dispatch('session.delete', { sessionId: h.sessionId })).toMatchObject({
+      type: 'response',
+    })
+    // No provider session to name: the runtime, once started, archives its own.
+    expect(h.runtime.retireSession).toHaveBeenCalledWith({
+      providerId: 'codex',
+      threadId: h.created.thread.threadId,
+      workspaceId: WORKSPACE,
+      cwd: WORKSPACE,
+    })
+  })
+
+  it('retires the sessions of a workspace that is removed', async () => {
+    const h = await setup()
+    await h.send('fix the reconnect loop')
+    expect(h.service.closeWorkspaceSessions(WORKSPACE)).toBe(1)
+    expect(h.runtime.retireSession).toHaveBeenCalledWith({
+      providerId: 'codex',
+      threadId: h.created.thread.threadId,
+      workspaceId: WORKSPACE,
+      cwd: WORKSPACE,
+      sessionId: 'codex-thread',
+    })
   })
 
   it('leaves a renamed session’s provider session alone', async () => {

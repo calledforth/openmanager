@@ -1424,40 +1424,39 @@ export function createThreadService(
   const sentDrafts = new Map<string, () => void>()
 
   /**
-   * What deleting this session asks of each provider session going with it
-   * (the session and every one under it): retire it, which for Codex
-   * archives the thread and never deletes it (docs/decisions/codex-app-server.md,
-   * "Threads: archive on delete, no import"). A provider's own subagent is its
-   * parent's agent's to keep. Read before the rows are deleted; each resolves
-   * to undefined when the provider never received the session.
+   * What deleting these sessions asks of each provider session going with
+   * them: retire it, which for Codex archives the thread and never deletes
+   * it (docs/decisions/codex-app-server.md, "Threads: archive on delete, no
+   * import"). Read before the rows go. Every thread of a session is retired,
+   * so whichever holds a live runtime archives on it and every runtime is
+   * stopped; only the session's first thread carries the stored provider
+   * session, for archiving when no runtime holds it. One whose provider
+   * session is still being made carries none, and its runtime archives its
+   * own thread once started. A provider's own subagent is its parent's
+   * agent's to keep.
    */
   const retirements = (
-    sessionId: string,
-  ): Array<() => Promise<(RuntimeRoute & { sessionId: string }) | undefined>> => {
+    sessionIds: readonly string[],
+  ): Array<RuntimeRoute & { sessionId?: string }> => {
     const database = options.database
-    return sessionTree(sessionId).flatMap((id) => {
-      const record = sessions.get(id)
-      if (record) {
-        if (loadOnly(record)) return []
-        const target = {
-          providerId: record.providerId,
-          threadId: record.thread.threadId,
-          workspaceId: record.session.workspaceId,
-          cwd: record.cwd,
-        }
-        const stored = database ? getProviderSessionId(database, id) : undefined
-        return [
-          async () => {
-            const providerSessionId = database ? stored : await record.runtimeSession
-            return providerSessionId ? { ...target, sessionId: providerSessionId } : undefined
-          },
-        ]
+    return sessionIds.flatMap((id) => {
+      const stored = database ? getProviderSessionId(database, id) : undefined
+      const records = [...threads.values()].filter((item) => item.session.sessionId === id)
+      if (records.length > 0) {
+        const primary = sessions.get(id) ?? records[0]
+        return records
+          .filter((record) => !loadOnly(record))
+          .map((record) => ({
+            providerId: record.providerId,
+            threadId: record.thread.threadId,
+            workspaceId: record.session.workspaceId,
+            cwd: record.cwd,
+            ...(record === primary && stored ? { sessionId: stored } : {}),
+          }))
       }
       if (!database) return []
       const summary = getSessionSummary(database, id)
-      const providerSessionId = getProviderSessionId(database, id)
-      const threadId = listThreadsForSession(database, id)[0]?.threadId
-      if (!summary || !providerSessionId || !threadId) return []
+      if (!summary) return []
       if (summary.parentSessionId && summary.subagent?.origin !== 'openmanager') return []
       let cwd = homedir()
       try {
@@ -1465,15 +1464,19 @@ export function createThreadService(
       } catch {
         /* the folder is gone; archiving needs none */
       }
-      const target = {
+      return listThreadsForSession(database, id).map((thread, index) => ({
         providerId: summary.providerId as ProviderId,
-        threadId,
+        threadId: thread.threadId,
         workspaceId: summary.workspaceId,
         cwd,
-        sessionId: providerSessionId,
-      }
-      return [async () => target]
+        ...(index === 0 && stored ? { sessionId: stored } : {}),
+      }))
     })
+  }
+
+  /** Retire each one, in the background: a deletion never waits on a provider. */
+  const retire = (targets: ReadonlyArray<RuntimeRoute & { sessionId?: string }>) => {
+    for (const target of targets) void runtime.retireSession?.(target).catch(() => undefined)
   }
 
   /**
@@ -4790,6 +4793,22 @@ export function createThreadService(
      * emits afterwards finds no thread and is dropped. Returns the count.
      */
     closeWorkspaceSessions(workspaceId: string): number {
+      // Its sessions go with it (the rows cascade), so their provider
+      // sessions are retired as a deleted session's are: read first, while
+      // the rows are still there.
+      const ids = new Set(
+        [...sessions.values()]
+          .filter((record) => record.session.workspaceId === workspaceId)
+          .map((record) => record.session.sessionId),
+      )
+      if (options.database) {
+        options.flush?.()
+        const rows = options.database
+          .prepare('SELECT session_id FROM sessions WHERE workspace_id = ?')
+          .all(workspaceId) as { session_id: string }[]
+        for (const row of rows) ids.add(row.session_id)
+      }
+      const retiring = retirements([...ids])
       let closed = 0
       for (const record of [...sessions.values()]) {
         if (record.session.workspaceId !== workspaceId) continue
@@ -4798,6 +4817,7 @@ export function createThreadService(
         for (const item of dropSessionRecords(record.session.sessionId)) abandon(item)
         closed += 1
       }
+      retire(retiring)
       return closed
     },
 
@@ -5225,7 +5245,8 @@ export function createThreadService(
             : undefined
         if (parsed.data.name === 'session.delete' && session.parentSessionId) forgetChild(sessionId)
         // Read before the rows go: what each deleted session's provider holds.
-        const retiring = parsed.data.name === 'session.delete' ? retirements(sessionId) : []
+        const retiring =
+          parsed.data.name === 'session.delete' ? retirements(sessionTree(sessionId)) : []
         // Deleted, or renamed: a title still being written is not wanted.
         if (parsed.data.name === 'session.delete') forgetTitleWork(sessionId)
         else titleWork.get(sessionId)?.controller?.abort()
@@ -5254,11 +5275,7 @@ export function createThreadService(
           })
         }
         for (const item of dropSessionRecords(sessionId)) abandon(item)
-        for (const retire of retiring) {
-          void retire()
-            .then((target) => (target ? runtime.retireSession?.(target) : undefined))
-            .catch(() => undefined)
-        }
+        retire(retiring)
         return ProofResponseSchemas['session.delete'].parse({
           type: 'response',
           requestId: command.requestId,

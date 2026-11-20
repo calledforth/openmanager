@@ -123,6 +123,11 @@ export class ProviderProbeRuntimeFactory implements ProbeRuntimeFactory {
 
   constructor(private readonly deps: ProviderProbeRuntimeFactoryDeps) {}
 
+  /** Codex alone keeps an archive a deleted session's thread goes to. */
+  archives(providerId: ProviderId): boolean {
+    return this.deps.configs[providerId]?.kind === 'codex'
+  }
+
   create(providerId: ProviderId, cwd: string, options?: ProbeRuntimeOptions): ProbeRuntime {
     const config = this.deps.configs[providerId]
     if (!config) throw new Error(`Unknown provider: ${providerId}`)

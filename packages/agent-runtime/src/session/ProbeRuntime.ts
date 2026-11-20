@@ -122,4 +122,7 @@ export type ProbeRuntimeOptions = {
 
 export interface ProbeRuntimeFactory {
   create(providerId: ProviderId, cwd: string, options?: ProbeRuntimeOptions): ProbeRuntime
+  /** Whether this provider's probes answer `archiveSession`, known without
+   * building one. Absent: none do. */
+  archives?(providerId: ProviderId): boolean
 }

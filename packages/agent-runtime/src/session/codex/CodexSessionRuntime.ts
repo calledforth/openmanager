@@ -157,6 +157,10 @@ export class CodexSessionRuntime implements ManagedSessionRuntime {
    * 0.170), and our own title coming back is not the agent naming the
    * session. */
   private readonly nameEchoes = new Map<string, number>()
+  /** `thread/name/set` requests not answered yet. */
+  private nameSetsInFlight = 0
+  /** The last `thread/name/set` failed: tried again after the next turn. */
+  private nameRetry = false
 
   constructor(
     private readonly spec: SessionRuntimeSpec,
@@ -952,6 +956,7 @@ export class CodexSessionRuntime implements ManagedSessionRuntime {
     const context = active.turn.contextUsage
     if (context) this.emit(routeEvent(this.route(), this.sessionIdValue, 'session', 'usage_update', context))
     active.resolve()
+    if (this.nameRetry) void this.giveName()
   }
 
   /** One terminal error, no `prompt_completed` (both end the turn
@@ -1011,7 +1016,9 @@ export class CodexSessionRuntime implements ManagedSessionRuntime {
     const client = this.client
     const threadId = this.sessionIdValue
     if (!name || !client || !threadId || name === this.codexName || this.exitValue) return
+    this.nameRetry = false
     this.nameEchoes.set(name, (this.nameEchoes.get(name) ?? 0) + 1)
+    this.nameSetsInFlight += 1
     try {
       await client.request(
         'thread/name/set',
@@ -1021,12 +1028,17 @@ export class CodexSessionRuntime implements ManagedSessionRuntime {
       this.codexName = name
     } catch (error) {
       this.takeEcho(name)
+      // Not given up on: a thread busy or briefly unwritable now takes it
+      // after its next turn.
+      if (this.title === name) this.nameRetry = true
       this.deps.host.log({
         scope: 'codex',
         level: 'warn',
         message: 'Codex did not take the session title as the thread name',
         data: { threadId, error: errorMessage(error) },
       })
+    } finally {
+      this.nameSetsInFlight -= 1
     }
   }
 
@@ -1038,14 +1050,22 @@ export class CodexSessionRuntime implements ManagedSessionRuntime {
     if (!name) return
     this.codexName = name
     if (this.takeEcho(name)) return
+    // A name Codex changed on the way in (it trims, _probed_; a later version
+    // may do more) still echoes a set that is not answered yet.
+    if (this.nameSetsInFlight > 0) {
+      const oldest = this.nameEchoes.keys().next()
+      if (!oldest.done && this.takeEcho(oldest.value)) return
+    }
     this.reportName(name)
   }
 
+  /** Our names and Codex's are compared as Codex stores them: trimmed. */
   private takeEcho(name: string): boolean {
-    const pending = this.nameEchoes.get(name)
+    const key = name.trim()
+    const pending = this.nameEchoes.get(key)
     if (!pending) return false
-    if (pending > 1) this.nameEchoes.set(name, pending - 1)
-    else this.nameEchoes.delete(name)
+    if (pending > 1) this.nameEchoes.set(key, pending - 1)
+    else this.nameEchoes.delete(key)
     return true
   }
 
@@ -1067,9 +1087,12 @@ export class CodexSessionRuntime implements ManagedSessionRuntime {
    * Codex refuses it to any other process while this one holds the thread
    * ("already has an active writer", _probed_). A thread Codex no longer has
    * is already out of the way. Never a hard delete, so the thread can still
-   * be recovered in Codex. */
+   * be recovered in Codex. A turn still running is interrupted first, within
+   * `cancel`'s bounded grace, so the thread is not archived under it. */
   async archive(): Promise<void> {
     await this.ready()
+    if (this.active) await this.cancel()
+    this.assertUsable()
     const threadId = this.sessionIdValue!
     try {
       await this.client!.request(
@@ -1316,7 +1339,7 @@ export function isMissingThread(error: unknown): boolean {
 /** `thread/resume` for a thread archived outside openmanager: `-32600`
  * with "session … is archived. Run `codex unarchive …`" (_probed_ on 0.170). */
 export function isArchivedThread(error: unknown): boolean {
-  if (!(error instanceof CodexRpcError)) return false
+  if (!(error instanceof CodexRpcError) || error.code !== -32600) return false
   return /is archived/i.test(error.message)
 }
 
