@@ -5,6 +5,7 @@ import type { HostDeps } from '../../host.js'
 import { DEFAULT_RUNTIME_TIMEOUTS, type RuntimeTimeouts } from '../constants.js'
 import type { ProcessExit, SessionRuntimeStopReason } from '../lifecycle.js'
 import {
+  applyAccountRead,
   applyAccountUpdated,
   applyRateLimitsRead,
   applyRateLimitsUpdated,
@@ -264,7 +265,7 @@ export class CodexService {
       options?.signal ? { signal: options.signal } : {},
     )
     const account = codexAccountState(response)
-    this.setState({ ...this.stateValue, account, updatedAt: this.iso() })
+    this.setState(applyAccountRead(this.stateValue, account, this.iso()))
     return account
   }
 

@@ -85,18 +85,50 @@ export function applyAccountUpdated(
   if (update.authMode === null) {
     // Signed out, unless nothing ever needed signing in.
     if (account?.state !== 'not_required') next.account = { state: 'signed_out' }
-    delete next.rateLimits
-    delete next.rateLimitsByLimitId
-    return next
+    return withoutLimits(next)
   }
   if (account?.state === 'signed_in' && account.account.type === 'chatgpt' && update.authMode === 'chatgpt') {
     next.account = {
       state: 'signed_in',
       account: { ...account.account, ...(update.planType ? { planType: update.planType } : {}) },
     }
-    return next
+    // The same login says so on every start; a new plan means new limits.
+    const samePlan = update.planType === null || update.planType === account.account.planType
+    return samePlan ? next : withoutLimits(next)
   }
+  // Another kind of login, or one nothing was known about: whose limits
+  // these were cannot be told.
   delete next.account
+  return withoutLimits(next)
+}
+
+/** A full `account/read` answer. A different account (another kind of
+ * login, another email) takes the limits known so far with it: they were
+ * the previous account's. */
+export function applyAccountRead(
+  state: CodexProviderState,
+  account: CodexAccountState,
+  at: string,
+): CodexProviderState {
+  const next: CodexProviderState = { ...state, account, updatedAt: at }
+  return sameAccount(state.account, account) ? next : withoutLimits(next)
+}
+
+function sameAccount(before: CodexAccountState | undefined, after: CodexAccountState): boolean {
+  // Nothing known yet: limits read before the first account read are this one's.
+  if (!before) return true
+  if (before.state !== after.state) return false
+  if (before.state !== 'signed_in' || after.state !== 'signed_in') return true
+  const a = before.account
+  const b = after.account
+  if (a.type !== b.type) return false
+  return a.type === 'chatgpt' && b.type === 'chatgpt' ? a.email === b.email : true
+}
+
+function withoutLimits(state: CodexProviderState): CodexProviderState {
+  const next = { ...state }
+  delete next.rateLimits
+  delete next.rateLimitsByLimitId
   return next
 }
 

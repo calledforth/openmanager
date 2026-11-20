@@ -500,6 +500,13 @@ export async function startServer(config: ServerConfig) {
     store: providerLimitsStore,
     log,
   })
+  // Limits follow health: no card for a CLI that is not there, and a fresh
+  // read when someone else signs in.
+  for (const providerId of Object.keys(providers) as Array<keyof typeof providers>)
+    providerLimits.observeHealth(providerId, runtime.health.report(providerId).health)
+  const stopLimitsHealth = runtime.health.onChange((providerId, report) =>
+    providerLimits.observeHealth(providerId, report.health),
+  )
   const providerService = createProviderService(
     runtime,
     providers,
@@ -1103,6 +1110,7 @@ export async function startServer(config: ServerConfig) {
     await sockets.close()
     stopHealthEvents()
     stopLimitsEvents()
+    stopLimitsHealth()
     providerLimits.stop()
     providerService.stop()
     composerService.stop()
@@ -1221,6 +1229,7 @@ export async function startServer(config: ServerConfig) {
         })
         stopHealthEvents()
         stopLimitsEvents()
+        stopLimitsHealth()
         providerLimits.stop()
         providerService.stop()
         pullRequests.stop()

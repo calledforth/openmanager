@@ -1,11 +1,13 @@
 import { mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { afterEach, describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { ProviderLimitsReading } from '@openmanager/protocol/node'
 import {
   createProviderLimits,
   openProviderLimitsStore,
+  UNAVAILABLE_REFRESH_MS,
+  type LimitsHealth,
   type ProviderLimitsStore,
   type UsageLimitsResult,
 } from '../src/provider-limits.ts'
@@ -30,6 +32,12 @@ const OK: UsageLimitsResult = {
   outcome: 'ok',
   reading: { windows: [FIVE_HOUR], extraUsage: { enabled: false, usedPercent: null } },
 }
+
+const INSTALLED: LimitsHealth = { install: { state: 'installed' }, auth: { state: 'unknown' } }
+const signedIn = (accountLabel?: string): LimitsHealth => ({
+  install: { state: 'installed' },
+  auth: { state: 'authenticated', ...(accountLabel ? { accountLabel } : {}) },
+})
 
 function memoryStore(): ProviderLimitsStore & { saved: unknown[] } {
   const saved: unknown[] = []
@@ -57,6 +65,7 @@ function harness(
     store,
     clock: () => now,
   })
+  service.observeHealth('claude-code', INSTALLED)
   const events: unknown[] = []
   service.onChanged((event) => events.push(event.payload))
   return { service, reads, events, store, advance: (ms: number) => (now += ms) }
@@ -244,6 +253,125 @@ describe('provider limits', () => {
     const reading = service.get('claude-code').reading
     expect(reading?.windows[0]).toMatchObject({ usedPercent: 12, status: null })
     expect(reading).toMatchObject({ plan: 'Plus', credits: { balance: '120' } })
+  })
+
+  // Review: a missing CLI showed a card that could only fail, retried on every ask.
+  it('shows no limits for a CLI that is not installed, and reads none', async () => {
+    const reads: string[] = []
+    const service = createProviderLimits({
+      providerIds: ['codex'],
+      supports: () => true,
+      read: async (providerId) => {
+        reads.push(providerId)
+        return OK
+      },
+      store: memoryStore(),
+      clock: () => START,
+    })
+    // Never read, and health has not looked yet: nothing to show.
+    expect(service.get('codex').supported).toBe(false)
+    service.observeHealth('codex', { install: { state: 'missing' }, auth: { state: 'unknown' } })
+    service.refresh('codex', 0)
+    expect(service.get('codex').supported).toBe(false)
+    service.observeHealth('codex', { install: { state: 'unusable' }, auth: { state: 'unknown' } })
+    expect(service.get('codex').supported).toBe(false)
+    expect(reads).toEqual([])
+
+    service.observeHealth('codex', INSTALLED)
+    expect(service.get('codex').supported).toBe(true)
+    service.refresh('codex', 0)
+    await service.idle()
+    expect(reads).toEqual(['codex'])
+  })
+
+  it('drops the reading and reads again when the account changes', async () => {
+    let result: UsageLimitsResult = OK
+    const { service, reads, advance } = harness(async () => result)
+    service.refresh('claude-code', 0)
+    await service.idle()
+    // The first word on the account after a start keeps what was read.
+    service.observeHealth('claude-code', signedIn('a@example.com'))
+    // A sign-in announced before it is named is the same account.
+    service.observeHealth('claude-code', signedIn())
+    expect(reads).toHaveLength(1)
+    expect(service.get('claude-code').reading).not.toBeNull()
+
+    // Another account, seconds later: read at once, floor or not.
+    advance(5_000)
+    result = {
+      outcome: 'ok',
+      reading: { ...OK.reading, windows: [{ ...FIVE_HOUR, usedPercent: 3 }] },
+    }
+    service.observeHealth('claude-code', signedIn('b@example.com'))
+    expect(service.get('claude-code')).toMatchObject({ reading: null, refreshing: true })
+    await service.idle()
+    expect(reads).toHaveLength(2)
+    expect(service.get('claude-code').reading?.windows[0]?.usedPercent).toBe(3)
+
+    // Signed out: the old account's numbers go, and the read says why.
+    advance(5_000)
+    result = { outcome: 'unavailable' }
+    service.observeHealth('claude-code', {
+      install: { state: 'installed' },
+      auth: { state: 'unauthenticated' },
+    })
+    await service.idle()
+    expect(reads).toHaveLength(3)
+    expect(service.get('claude-code')).toMatchObject({
+      reading: null,
+      lastRefresh: { outcome: 'unavailable' },
+    })
+  })
+
+  it('throws away a read the account changed under, and reads again', async () => {
+    let release: (value: UsageLimitsResult) => void = () => undefined
+    const { service, reads } = harness(() => {
+      const next = new Promise<UsageLimitsResult>((resolve) => (release = resolve))
+      return next
+    })
+    service.observeHealth('claude-code', signedIn('a@example.com'))
+    service.refresh('claude-code', 0)
+    const first = release
+    service.observeHealth('claude-code', signedIn('b@example.com'))
+    first(OK)
+    await vi.waitFor(() => expect(reads).toHaveLength(2))
+    // Still the old account's read until the new one answers.
+    expect(service.get('claude-code').reading).toBeNull()
+    release({
+      outcome: 'ok',
+      reading: { ...OK.reading, windows: [{ ...FIVE_HOUR, usedPercent: 9 }] },
+    })
+    await service.idle()
+    expect(service.get('claude-code').reading?.windows[0]?.usedPercent).toBe(9)
+  })
+
+  // Review: an API-key account started a CLI on every ask more than a minute apart.
+  it('holds every outcome to the client’s age, and "no limits" for longer', async () => {
+    const { service, reads, advance } = harness(async () => ({ outcome: 'unavailable' }))
+    service.refresh('claude-code', 0)
+    await service.idle()
+    advance(2 * 60_000)
+    service.refresh('claude-code', 0)
+    service.refresh('claude-code', 10 * 60_000)
+    expect(reads).toHaveLength(1)
+    advance(UNAVAILABLE_REFRESH_MS)
+    service.refresh('claude-code', 10 * 60_000)
+    await service.idle()
+    expect(reads).toHaveLength(2)
+
+    const failing = harness(async () => {
+      throw new Error('no answer')
+    })
+    failing.service.refresh('claude-code', 0)
+    await failing.service.idle()
+    failing.advance(2 * 60_000)
+    // The sidebar asks for ten minutes: a failure two minutes old stands.
+    failing.service.refresh('claude-code', 10 * 60_000)
+    expect(failing.reads).toHaveLength(1)
+    // An explicit refresh still tries once the minute is up.
+    failing.service.refresh('claude-code', 0)
+    await failing.service.idle()
+    expect(failing.reads).toHaveLength(2)
   })
 
   it('answers the refresh command with the current state and validates it', async () => {

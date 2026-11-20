@@ -171,15 +171,15 @@ export class CodexProbeRuntime implements ProbeRuntime {
    * both on the service process, which idles away afterwards as after any
    * question. Only a ChatGPT login has plan limits; an API key or a cloud
    * provider's credentials are `unavailable`, and are not asked (Codex
-   * refuses the read for them). Signed out throws `AuthRequiredError`. */
+   * refuses the read for them). So is a signed-out Codex: whatever was
+   * read before was the previous login's, and must not stay up as if
+   * current; provider health says why. */
   async readUsageLimits(): Promise<UsageLimitsResult> {
     const signal = this.abort.signal
     // Read every time, not taken from the state: a login changed while no
     // process was running to say so would otherwise go unnoticed.
     const account = await this.deps.service.readAccount({ signal })
-    if (account.state === 'signed_out')
-      throw new AuthRequiredError(this.providerId, CODEX_SIGNED_OUT_MESSAGE, CODEX_LOGIN_HINT)
-    if (account.state === 'not_required' || account.account.type !== 'chatgpt')
+    if (account.state !== 'signed_in' || account.account.type !== 'chatgpt')
       return { outcome: 'unavailable' }
     await this.deps.service.readRateLimits({ signal })
     const reading = codexUsageReading(this.deps.service.state)

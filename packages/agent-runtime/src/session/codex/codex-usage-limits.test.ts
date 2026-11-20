@@ -1,7 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { v2 } from '@openmanager/codex-app-server-protocol'
 import type { BackendEvent } from '../../backends/Backend.js'
-import { AuthRequiredError } from '../../core/errors.js'
 import { InteractionBroker } from '../../core/InteractionBroker.js'
 import { PermissionBroker } from '../../core/PermissionBroker.js'
 import { codex } from '../../providers/codex.js'
@@ -163,11 +162,55 @@ describe('Codex usage limits: a full read', () => {
     expect(fakes.last.requests('account/rateLimits/read')).toHaveLength(0)
   })
 
-  it('fails as signed out rather than reading as no limits', async () => {
-    const { probe } = onFakes((server) =>
+  // Review: a sign-out read as a failure, which keeps the old account's numbers up.
+  it('has no limits when signed out, so the last login’s are not kept', async () => {
+    const { fakes, probe } = onFakes((server) =>
       server.respond('account/read', buildAccountResponse({ account: null })),
     )
-    await expect(probe.readUsageLimits()).rejects.toBeInstanceOf(AuthRequiredError)
+    expect(await probe.readUsageLimits()).toEqual({ outcome: 'unavailable' })
+    expect(fakes.last.requests('account/rateLimits/read')).toHaveLength(0)
+  })
+
+  // Review: 100% read as "Limit reached" while credits kept turns going.
+  it('is not limited at 100% while credits pay for turns', async () => {
+    const used = { usedPercent: 100, windowDurationMins: 300, resetsAt: null }
+    const read = (credits: v2.CreditsSnapshot | null) =>
+      onFakes((server) =>
+        server.respond(
+          'account/rateLimits/read',
+          rateLimitsRead({ rateLimitsByLimitId: { codex: buildRateLimits({ primary: used, credits }) } }),
+        ),
+      ).probe.readUsageLimits()
+    const status = async (credits: v2.CreditsSnapshot | null) => {
+      const result = await read(credits)
+      return result.outcome === 'ok' ? result.reading.windows[0]?.status : undefined
+    }
+    expect(await status({ hasCredits: true, unlimited: false, balance: '40' })).toBeNull()
+    expect(await status({ hasCredits: false, unlimited: true, balance: null })).toBeNull()
+    expect(await status({ hasCredits: false, unlimited: false, balance: '0' })).toBe('limited')
+    expect(await status(null)).toBe('limited')
+  })
+
+  // Review: two windows of one length shared an id (one React key, one meter updated).
+  it('gives two windows of the same length ids of their own', async () => {
+    const { probe } = onFakes((server) =>
+      server.respond(
+        'account/rateLimits/read',
+        rateLimitsRead({
+          rateLimitsByLimitId: {
+            codex: buildRateLimits({
+              primary: { usedPercent: 10, windowDurationMins: 300, resetsAt: null },
+              secondary: { usedPercent: 20, windowDurationMins: 300, resetsAt: null },
+            }),
+          },
+        }),
+      ),
+    )
+    const result = await probe.readUsageLimits()
+    expect(result.outcome === 'ok' && result.reading.windows.map((w) => [w.id, w.label])).toEqual([
+      ['five_hour', '5-hour'],
+      ['five_hour:secondary', '5-hour · second'],
+    ])
   })
 })
 
@@ -248,6 +291,23 @@ describe('Codex usage limits: a session’s updates', () => {
     expect(limits()[0]).toMatchObject({ windowId: 'seven_day', usedPercent: 34 })
     expect(service.state.rateLimits?.primary?.usedPercent).toBe(1)
     expect(service.state.rateLimitsByLimitId?.codex_other?.primary?.usedPercent).toBe(99)
+    await runtime.stop({ reason: 'disposed' })
+  })
+
+  it('announces two windows of the same length under their own ids', async () => {
+    const { service } = onFakes()
+    const { fakes, runtime, limits } = await session(service)
+    fakes.last.notify('account/rateLimits/updated', {
+      rateLimits: buildRateLimits({
+        primary: { usedPercent: 10, windowDurationMins: 300, resetsAt: null },
+        secondary: { usedPercent: 20, windowDurationMins: 300, resetsAt: null },
+      }),
+    })
+    await vi.waitFor(() => expect(limits()).toHaveLength(2))
+    expect(limits().map((observation) => (observation as { windowId: string }).windowId)).toEqual([
+      'five_hour',
+      'five_hour:secondary',
+    ])
     await runtime.stop({ reason: 'disposed' })
   })
 

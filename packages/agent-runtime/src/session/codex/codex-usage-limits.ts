@@ -32,10 +32,11 @@ const ONE_WEEK = 7 * ONE_DAY
 export function codexUsageReading(state: CodexProviderState): UsageLimitsReading | null {
   const snapshot = state.rateLimits
   if (!snapshot || !isCodexMainBucket(snapshot.limitId)) return null
+  const names = slotNames(snapshot)
   const windows: UsageLimitWindow[] = []
   for (const slot of SLOTS) {
     const window = snapshot[slot]
-    if (window) windows.push(usageWindow(window, slot))
+    if (window) windows.push(usageWindow(window, names[slot], snapshot.credits))
   }
   const credits = snapshot.credits
   if (windows.length === 0 && !credits) return null
@@ -67,11 +68,16 @@ export function codexUsageObservations(
   if (!isCodexMainBucket(update.limitId)) return []
   const merged = state.rateLimits
   if (!merged) return []
+  const names = slotNames(merged)
   const observations: UsageLimitObservation[] = []
   for (const slot of SLOTS) {
     const window = update[slot] ? merged[slot] : null
     if (!window || window.windowDurationMins === null) continue
-    const { id, label, group, usedPercent, resetsAt, status } = usageWindow(window, slot)
+    const { id, label, group, usedPercent, resetsAt, status } = usageWindow(
+      window,
+      names[slot],
+      merged.credits,
+    )
     observations.push({
       windowId: id,
       label,
@@ -84,23 +90,42 @@ export function codexUsageObservations(
   return observations
 }
 
-function usageWindow(window: v2.RateLimitWindow, slot: Slot): UsageLimitWindow {
+type WindowName = Pick<UsageLimitWindow, 'id' | 'label' | 'group'>
+
+function usageWindow(
+  window: v2.RateLimitWindow,
+  name: WindowName,
+  credits: v2.CreditsSnapshot | null,
+): UsageLimitWindow {
   const usedPercent = percent(window.usedPercent)
+  // Codex gives a number, not a verdict. A used-up window refuses turns
+  // unless credits pay for them.
+  const creditsUsable = credits !== null && (credits.unlimited || credits.hasCredits)
   return {
-    ...windowName(window.windowDurationMins, slot),
+    ...name,
     usedPercent,
     resetsAt: isoFromEpochSeconds(window.resetsAt),
-    // Codex gives a number, not a verdict; 100% is refusal by definition.
-    status: usedPercent !== null && usedPercent >= 100 ? 'limited' : null,
+    status: usedPercent !== null && usedPercent >= 100 && !creditsUsable ? 'limited' : null,
   }
+}
+
+/** Both slots' names. Two windows of the same length would share an id
+ * (one meter, one key, an update landing on the wrong one), so the
+ * secondary's then says it is the second. */
+function slotNames(snapshot: v2.RateLimitSnapshot): Record<Slot, WindowName> {
+  const primary = windowName(snapshot.primary?.windowDurationMins ?? null, 'primary')
+  const secondary = windowName(snapshot.secondary?.windowDurationMins ?? null, 'secondary')
+  if (snapshot.primary && snapshot.secondary && primary.id === secondary.id)
+    return {
+      primary,
+      secondary: { ...secondary, id: `${secondary.id}:secondary`, label: `${secondary.label} · second` },
+    }
+  return { primary, secondary }
 }
 
 /** The ids are Claude's for the same lengths, so a window means the same
  * thing whichever provider it is. */
-export function windowName(
-  minutes: number | null,
-  slot: Slot,
-): Pick<UsageLimitWindow, 'id' | 'label' | 'group'> {
+export function windowName(minutes: number | null, slot: Slot): WindowName {
   if (minutes === FIVE_HOURS) return { id: 'five_hour', label: '5-hour', group: 'session' }
   if (minutes === ONE_WEEK) return { id: 'seven_day', label: 'Weekly', group: 'weekly' }
   if (minutes === null || !Number.isFinite(minutes) || minutes <= 0)
