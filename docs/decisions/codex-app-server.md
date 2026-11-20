@@ -200,4 +200,7 @@ A steered message goes out as `turn/steer` with `expectedTurnId` and the message
 
 - **Wrong or ended turn.** `-32600`, `expected active turn id … but found …` or `no active turn to steer` (_probed_). The steer is refused and the message is queued for the next turn.
 - **Turn that cannot be steered** (a review, a compaction): `activeTurnNotSteerable`, refused the same way. Not probed.
-- **No take-back.** Codex has no un-steer, so `withdrawSteer` is always false. A steer Codex accepted but the turn ended without echoing is given back (`steer_withdrawn`) and queued; none has been seen, even with an interrupt sent straight after the steer (_probed_).
+- **No answer** (a timeout, a broken pipe) is not a refusal: Codex may hold the message, so it stays pending rather than being queued to run twice.
+- **No take-back.** Codex has no un-steer. "Send now" only works while the steer waits for Codex to name the turn, before `turn/steer` goes out; after that `withdrawSteer` is false.
+- **Turn ends first.** A steer Codex answered but the turn completed without echoing is given back (`steer_withdrawn`) and queued; none has been seen, even with an interrupt sent straight after the steer (_probed_). One still unanswered when openmanager closes the turn itself (an interrupt past its grace) counts as delivered, the side that never sends twice.
+- **Mid-message.** Codex takes a steer even while the model is writing. Its delivery is held until the message or thought in progress completes, so the message is not split and the steer sits where the model reads it.

@@ -217,6 +217,62 @@ describe('CodexTurn steers', () => {
     expect(out).toEqual([{ event: 'steer_delivered', data: { steerId: 's1' } }])
   })
 
+  // Each echo arrives twice (started, completed). With identical words and no
+  // client ids, the second sighting of the first echo must not claim the
+  // second steer; nor may the prompt's echo, first in the turn, claim one.
+  it('counts each echo once and never takes the prompt’s for a steer', () => {
+    const { turn: t, out } = turn()
+    t.expectSteer('s1', input('same'))
+    t.expectSteer('s2', input('same'))
+    const prompt = { ...userMessage('same'), id: 'prompt' } as v2.ThreadItem
+    t.itemStarted(prompt)
+    t.itemCompleted(prompt)
+    expect(out).toEqual([])
+    const first = { ...userMessage('same'), id: 'echo-1' } as v2.ThreadItem
+    t.itemStarted(first)
+    t.itemCompleted(first)
+    expect(out).toEqual([{ event: 'steer_delivered', data: { steerId: 's1' } }])
+    const second = { ...userMessage('same'), id: 'echo-2' } as v2.ThreadItem
+    t.itemStarted(second)
+    t.itemCompleted(second)
+    expect(out.map((o) => o.data)).toEqual([{ steerId: 's1' }, { steerId: 's2' }])
+  })
+
+  it('holds a delivery while a message or thought streams, and reports it at the end at the latest', () => {
+    const { turn: t, out } = turn()
+    t.expectSteer('s1', input('a'))
+    t.expectSteer('s2', input('b'))
+    t.itemStarted(message('m1', ''))
+    t.agentMessageDelta({ ...ids, itemId: 'm1', delta: 'Hel' })
+    t.itemStarted(userMessage('a', 's1'))
+    t.agentMessageDelta({ ...ids, itemId: 'm1', delta: 'lo' })
+    expect(out.some((o) => o.event === 'steer_delivered')).toBe(false)
+    t.itemCompleted(message('m1', 'Hello'))
+    expect(out.at(-1)).toEqual({ event: 'steer_delivered', data: { steerId: 's1' } })
+    // A thought left open by an interrupted turn: delivered when it ends.
+    t.itemStarted(reasoning('r1'))
+    t.itemStarted(userMessage('b', 's2'))
+    expect(out.filter((o) => o.event === 'steer_delivered')).toHaveLength(1)
+    t.finish()
+    expect(out.filter((o) => o.event.startsWith('steer_'))).toEqual([
+      { event: 'steer_delivered', data: { steerId: 's1' } },
+      { event: 'steer_delivered', data: { steerId: 's2' } },
+    ])
+  })
+
+  it('counts a steer Codex never answered as placed when the turn is closed early', () => {
+    const { turn: t, out } = turn()
+    t.expectSteer('s1', input('one'))
+    t.expectSteer('s2', input('two'))
+    t.steerAnswered('s2')
+    expect(t.placeUnansweredSteers()).toEqual(['s1'])
+    t.finish()
+    expect(out).toEqual([
+      { event: 'steer_delivered', data: { steerId: 's1' } },
+      { event: 'steer_withdrawn', data: { steerId: 's2' } },
+    ])
+  })
+
   it('gives back a steer the turn ended without echoing, and forgets a refused one', () => {
     const { turn: t, out } = turn()
     t.expectSteer('s1', input('one'))

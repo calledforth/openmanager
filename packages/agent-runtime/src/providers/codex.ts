@@ -36,7 +36,8 @@ export const codex: CodexProviderConfig = {
     canSetConfigOption: false,
     // --- delivered with steer (CAL-262) -----------------------------------
     // `turn/steer` into the turn in flight, shown where Codex echoes it. A
-    // refused steer is queued for the next turn; Codex cannot take one back.
+    // refused steer is queued for the next turn; one already sent cannot be
+    // taken back.
     canSteer: true,
     // --- arrives with tool items, approvals and questions -----------------
     supportsPermissionRequests: false,

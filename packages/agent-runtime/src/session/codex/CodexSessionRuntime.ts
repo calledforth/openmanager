@@ -143,6 +143,9 @@ export class CodexSessionRuntime implements ManagedSessionRuntime {
    * a known child, or thread-scoped and naming no thread. Counted, logged
    * once, and never applied to this thread. */
   private dropped = 0
+  /** Steers waiting for Codex to name their turn, not sent yet, by
+   * `steerId`. One taken back meanwhile is marked and never sent. */
+  private readonly preparingSteers = new Map<string, { withdrawn: boolean }>()
 
   constructor(
     private readonly spec: SessionRuntimeSpec,
@@ -503,6 +506,14 @@ export class CodexSessionRuntime implements ManagedSessionRuntime {
         message: 'Codex did not finish an interrupted turn in time; closing it',
         data: { turnId: active.turn.turnId, graceMs: this.timeouts.interruptGraceMs },
       })
+      const placed = active.turn.placeUnansweredSteers()
+      if (placed.length > 0)
+        this.deps.host.log({
+          scope: 'codex',
+          level: 'warn',
+          message: 'Closing a turn with steers Codex has not answered; counting them as delivered',
+          data: { turnId: active.turn.turnId, steerIds: placed },
+        })
       this.completeTurn(active, 'cancelled')
     }
   }
@@ -604,7 +615,12 @@ export class CodexSessionRuntime implements ManagedSessionRuntime {
    * steer (none running, or being stopped), when Codex says the turn has
    * ended or is another one (`-32600`), and when the turn cannot be steered
    * at all (`activeTurnNotSteerable`: a review, a compaction). The caller
-   * then queues the message for the next turn instead. */
+   * then queues the message for the next turn instead.
+   *
+   * A `turn/steer` that gets no answer (a timeout, a broken pipe) is not a
+   * refusal: Codex may hold the message, and refusing would have the host
+   * run it again. It stays pending and resolves like an accepted one; its
+   * echo places it, or the turn's end gives it back. */
   async steer(args: { prompt: PromptInput; steerId: string }): Promise<void> {
     // Never starts a process: a steer is for a turn that is running.
     this.assertUsable()
@@ -618,7 +634,16 @@ export class CodexSessionRuntime implements ManagedSessionRuntime {
     // block refuses the steer instead of leaving it pending.
     const input = codexInput(args.prompt)
     // A steer can arrive between `prompt_started` and Codex naming the turn.
-    await active.identified
+    // Until it goes out it can still be taken back (`withdrawSteer`).
+    const preparing = { withdrawn: false }
+    this.preparingSteers.set(args.steerId, preparing)
+    try {
+      await active.identified
+    } finally {
+      this.preparingSteers.delete(args.steerId)
+    }
+    // Taken back meanwhile: `withdrawSteer` has already said so.
+    if (preparing.withdrawn) return
     const turnId = active.turn.turnId
     if (this.active !== active || active.settled || !turnId || active.turn.interruptRequested)
       throw new CodexSteerRefusedError(
@@ -639,20 +664,37 @@ export class CodexSessionRuntime implements ManagedSessionRuntime {
         },
         { timeoutMs: this.timeouts.controlRequestMs },
       )
+      active.turn.steerAnswered(args.steerId)
     } catch (error) {
+      if (!(error instanceof CodexRpcError)) {
+        this.deps.host.log({
+          scope: 'codex',
+          level: 'warn',
+          message: 'turn/steer got no answer; waiting for its echo or the turn to end',
+          data: { turnId, steerId: args.steerId, error: errorMessage(error) },
+        })
+        return
+      }
       // Already placed or given back (the turn ended while Codex answered):
-      // that event is this steer's one answer, so the failure is not another.
+      // that event is this steer's one answer, so the refusal is not another.
       if (!active.turn.forgetSteer(args.steerId)) return
       throw steerRefusal(error)
     }
   }
 
-  /** Codex has no way to take a steered message back: once `turn/steer` is
-   * sent it is in the turn's input, and Codex echoes it within milliseconds.
-   * Always false, so "send now" leaves the message to arrive where it is
-   * (it already has). */
-  withdrawSteer(_steerId: string): Promise<boolean> {
-    return Promise.resolve(false)
+  /** Take a steered message back, which only works before it is sent: while
+   * the steer waits for Codex to name its turn. Then `steer_withdrawn` is
+   * emitted and true returned, and the host runs it as the next turn ("send
+   * now"). Codex has no un-steer, so once `turn/steer` is out the message is
+   * the turn's (Codex echoes it within milliseconds) and this is false. */
+  withdrawSteer(steerId: string): Promise<boolean> {
+    const preparing = this.preparingSteers.get(steerId)
+    if (!preparing || preparing.withdrawn) return Promise.resolve(false)
+    preparing.withdrawn = true
+    this.emit(
+      routeEvent(this.route(), this.sessionIdValue, 'lifecycle', 'steer_withdrawn', { steerId }),
+    )
+    return Promise.resolve(true)
   }
 
   private async sendInterrupt(active: ActiveTurn): Promise<void> {
@@ -1066,8 +1108,9 @@ export class CodexSteerRefusedError extends Error {
  * "no active turn to steer", probed on 0.170) and for one that cannot be
  * steered, which also names `activeTurnNotSteerable` (`CodexErrorInfo`). That
  * one was not probed (it needs a review or compaction running), so it is
- * recognised by name anywhere in the error. Anything else (a timeout, the
- * process gone) is passed on as it is. */
+ * recognised by name anywhere in the error. Any other error is passed on as
+ * it is. `steer` only calls this for an answer Codex gave (`CodexRpcError`):
+ * a missing answer is no refusal. */
 export function steerRefusal(error: unknown): Error {
   if (error instanceof CodexRpcError) {
     const detail = `${error.message} ${JSON.stringify(error.data ?? null)}`

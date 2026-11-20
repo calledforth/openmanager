@@ -8,7 +8,7 @@ import type { SessionRuntimeSpec } from '../SessionRuntime.js'
 import { CodexAppServerClient } from './CodexAppServerClient.js'
 import { CodexSessionRuntime, CodexSteerRefusedError } from './CodexSessionRuntime.js'
 import type { CodexStarter } from './start.js'
-import { FakeCodexAppServer, type FakeCodexTurn } from './testing/index.js'
+import { codexBuilders, FakeCodexAppServer, type FakeCodexTurn } from './testing/index.js'
 import { ReplayCodexAppServer } from './testing/ReplayCodexAppServer.js'
 
 const MODELS = {
@@ -49,6 +49,7 @@ function build(
     onTurn?: (turn: FakeCodexTurn) => void
     server?: FakeCodexAppServer
     interruptGraceMs?: number
+    controlRequestMs?: number
   } = {},
 ) {
   const server = options.server ?? new FakeCodexAppServer()
@@ -77,7 +78,10 @@ function build(
       interactions: new InteractionBroker(),
       start,
       platform: 'linux',
-      timeouts: { interruptGraceMs: options.interruptGraceMs ?? 200 },
+      timeouts: {
+        interruptGraceMs: options.interruptGraceMs ?? 200,
+        ...(options.controlRequestMs ? { controlRequestMs: options.controlRequestMs } : {}),
+      },
     },
   )
   runtime.events((event) => events.push(event))
@@ -497,6 +501,105 @@ describe('CodexSessionRuntime steer', () => {
     server.crash({ code: 1 })
     await expect(prompt).rejects.toThrow()
     expect(steerEvents(events).map((e) => e.event)).toEqual(['steer_withdrawn'])
+  })
+
+  // A steer with no answer may be with Codex: refusing it would have the
+  // host queue it and run it a second time.
+  it('keeps a steer that got no answer pending, and places it at its echo', async () => {
+    const { server, runtime, events, turn, prompt, log } = await running({ controlRequestMs: 30 })
+    server.respond('turn/steer', () => new Promise<never>(() => undefined))
+    await runtime.steer({ prompt: STEER, steerId: 'steer-1' })
+    expect(log).toHaveBeenCalledWith(
+      expect.objectContaining({ message: expect.stringMatching(/turn\/steer got no answer/) }),
+    )
+    expect(steerEvents(events)).toEqual([])
+    turn.userMessage('also this', { clientId: 'steer-1' })
+    turn.completed()
+    await prompt
+    expect(steerEvents(events).map((e) => e.event)).toEqual(['steer_delivered'])
+  })
+
+  it('gives back a steer that got no answer when the turn ends without its echo', async () => {
+    const { server, runtime, events, turn, prompt } = await running({ controlRequestMs: 30 })
+    server.respond('turn/steer', () => new Promise<never>(() => undefined))
+    await runtime.steer({ prompt: STEER, steerId: 'steer-1' })
+    turn.completed()
+    await prompt
+    expect(steerEvents(events).map((e) => e.event)).toEqual(['steer_withdrawn'])
+  })
+
+  // Closing a turn past the interrupt grace, Codex may still hold a steer it
+  // has not answered: counted as delivered, never sent twice.
+  it('counts a steer still unanswered at a grace close as delivered', async () => {
+    const { server, runtime, events, prompt, log } = await running({ interruptGraceMs: 20 })
+    server.respond('turn/interrupt', {} as never)
+    server.respond('turn/steer', () => new Promise<never>(() => undefined))
+    void runtime.steer({ prompt: STEER, steerId: 'steer-1' })
+    await vi.waitFor(() => expect(server.requests('turn/steer')).toHaveLength(1))
+    await runtime.cancel()
+    await prompt
+    expect(steerEvents(events).map((e) => e.event)).toEqual(['steer_delivered'])
+    const order = names(events)
+    expect(order.indexOf('steer_delivered')).toBeLessThan(order.indexOf('prompt_completed'))
+    expect(log).toHaveBeenCalledWith(
+      expect.objectContaining({ data: expect.objectContaining({ steerIds: ['steer-1'] }) }),
+    )
+    runtime.dispose()
+  })
+
+  // "Send now" before the steer went out: it is taken back, never sent.
+  it('takes back a steer still waiting for Codex to name the turn', async () => {
+    let turn: FakeCodexTurn | undefined
+    const { server, runtime, events } = build({ onTurn: (t) => (turn = t) })
+    await runtime.start()
+    let steered: Promise<void> | undefined
+    let withdrawn: Promise<boolean> | undefined
+    runtime.events((event) => {
+      if (event.event !== 'prompt_started') return
+      queueMicrotask(() => {
+        steered = runtime.steer({ prompt: STEER, steerId: 'steer-1' })
+        withdrawn = runtime.withdrawSteer('steer-1')
+      })
+    })
+    const prompt = runtime.prompt({ prompt: PROMPT })
+    await vi.waitFor(() => expect(withdrawn).toBeDefined())
+    await expect(withdrawn).resolves.toBe(true)
+    await expect(runtime.withdrawSteer('steer-1')).resolves.toBe(false)
+    await steered
+    await vi.waitFor(() => expect(turn).toBeDefined())
+    turn!.completed()
+    await prompt
+    expect(server.requests('turn/steer')).toHaveLength(0)
+    expect(steerEvents(events)).toEqual([
+      expect.objectContaining({ category: 'lifecycle', event: 'steer_withdrawn', data: { steerId: 'steer-1' } }),
+    ])
+  })
+
+  // Codex takes a steer while the model is still writing; the host starts a
+  // new run of text after a delivered steer, so delivery waits for the
+  // message to complete rather than split it.
+  it('places a steer echoed mid-message after that message', async () => {
+    const { server, runtime, events, turn, prompt } = await running()
+    const item = codexBuilders.agentMessageItem('Looking into it.', { phase: 'commentary' })
+    turn.itemStarted({ ...item, text: '' })
+    const delta = (text: string) =>
+      server.notify('item/agentMessage/delta', {
+        threadId: turn.threadId,
+        turnId: turn.id,
+        itemId: item.id,
+        delta: text,
+      })
+    delta('Looking ')
+    await runtime.steer({ prompt: STEER, steerId: 'steer-1' })
+    delta('into it.')
+    await new Promise((resolve) => setTimeout(resolve, 10))
+    expect(steerEvents(events)).toEqual([])
+    turn.itemCompleted(item)
+    turn.completed()
+    await prompt
+    const order = names(events)
+    expect(order.lastIndexOf('agent_message_chunk')).toBeLessThan(order.indexOf('steer_delivered'))
+    expect(texts(events)).toBe('Looking into it.')
   })
 
   // Codex has no un-steer: what was sent stays sent.
