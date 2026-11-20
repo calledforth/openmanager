@@ -1,0 +1,550 @@
+import { PassThrough } from 'node:stream'
+import type { InitializeParams, InitializeResponse, v2 } from '@openmanager/codex-app-server-protocol'
+import type { TerminableChild } from '../../ChildProcessLifecycle.js'
+import type {
+  ClientMethod,
+  ClientParams,
+  ClientResult,
+  CodexSpawnSpec,
+  NotificationMethod,
+  NotificationParams,
+  ServerRequestMethod,
+  ServerRequestParams,
+} from '../CodexAppServerClient.js'
+import { CodexRpcError, RPC_METHOD_NOT_FOUND, type RpcId } from '../CodexRpcPeer.js'
+import { CODEX_RECOMMENDED_VERSION } from '../version.js'
+import { buildThread } from './builders.js'
+import { FakeCodexThread, type FakeCodexTurn } from './FakeCodexThread.js'
+
+/** `codex app-server` in-process, for tests of anything built on
+ * `CodexAppServerClient`.
+ *
+ * It is a `TerminableChild`: the client writes to its stdin and reads its
+ * stdout and stderr exactly as it would a spawned process, and stops it
+ * through the same termination ladder. So a test exercises the real framing,
+ * correlation and exit handling, and fakes only the one thing it cannot have,
+ * a Codex process.
+ *
+ * A test scripts it from the server's side: answers per method, notifications
+ * (directly or through `thread()` and its turns, which emit what Codex 0.170
+ * really emits), server requests whose answers it can await, delays, errors and
+ * crashes. Everything the client sends is kept in `received` for assertions.
+ *
+ * Exit follows a real child's order: `exit` fires first, the pipes close after
+ * (unless `closePipesOnExit` is off, to play the late part of a stream by hand).
+ *
+ * Everything here exists only for tests. */
+
+// ---------------------------------------------------------------------------
+// Wire
+
+export type WireError = { code: number; message: string; data?: unknown }
+
+/** One JSON-RPC message as `codex app-server` frames it: no `jsonrpc` member,
+ * a request has `id` and `method`, a notification only `method`, an answer
+ * only `id` and `result` or `error`. */
+export type WireMessage = {
+  id?: RpcId
+  method?: string
+  params?: unknown
+  result?: unknown
+  error?: WireError
+}
+
+export type WireRequest = { id: RpcId; method: string; params?: unknown }
+
+export const isWireRequest = (m: WireMessage): m is WireRequest =>
+  m.id !== undefined && typeof m.method === 'string'
+export const isWireNotification = (m: WireMessage): m is { method: string; params?: unknown } =>
+  m.id === undefined && typeof m.method === 'string'
+export const isWireResponse = (m: WireMessage): m is { id: RpcId; result?: unknown; error?: WireError } =>
+  m.id !== undefined && m.method === undefined
+
+/** What a client sent for one method, typed by the generated protocol. */
+export type FakeClientRequest<M extends ClientMethod = ClientMethod> = {
+  id: RpcId
+  method: M
+  params: ClientParams<M>
+}
+
+/** Answers for the server requests openmanager answers. Like
+ * `CodexResponses`, a hand-kept table: the generated protocol has a type per
+ * response but nothing linking a method to it. */
+export interface CodexServerRequestResults {
+  'item/commandExecution/requestApproval': v2.CommandExecutionRequestApprovalResponse
+  'item/fileChange/requestApproval': v2.FileChangeRequestApprovalResponse
+  'item/permissions/requestApproval': v2.PermissionsRequestApprovalResponse
+  'item/tool/requestUserInput': v2.ToolRequestUserInputResponse
+  'mcpServer/elicitation/request': v2.McpServerElicitationRequestResponse
+  'currentTime/read': v2.CurrentTimeReadResponse
+}
+export type ServerRequestResult<M extends ServerRequestMethod> = M extends keyof CodexServerRequestResults
+  ? CodexServerRequestResults[M]
+  : unknown
+
+/** The client's answer to a server request. */
+export type FakeServerAnswer<M extends ServerRequestMethod = ServerRequestMethod> = {
+  id: RpcId
+  result?: ServerRequestResult<M>
+  error?: WireError
+}
+
+/** A server request on the wire, waiting for (or holding) the client's answer. */
+export type FakeServerRequest<M extends ServerRequestMethod = ServerRequestMethod> = {
+  id: RpcId
+  method: M
+  params: ServerRequestParams<M>
+  /** Never settles if the client does not answer (or the fake exits first). */
+  answered: Promise<FakeServerAnswer<M>>
+}
+
+// ---------------------------------------------------------------------------
+// Scripting
+
+/** How the fake answers one client method: a fixed result, or a function of
+ * the request. Throw a `CodexRpcError` (or use `fail`) to answer with an
+ * error; return a promise to answer later. */
+export type Responder<M extends ClientMethod> =
+  | ClientResult<M>
+  | ((params: ClientParams<M>, request: FakeClientRequest<M>) => ClientResult<M> | Promise<ClientResult<M>>)
+
+export type RespondOptions<M extends ClientMethod> = {
+  /** Answer this many times, then fall back to what was scripted before (a
+   * persistent responder, or the unscripted default). Default: every time. */
+  times?: number
+  /** Wait this long before answering. Uses `setTimeout`, so fake timers
+   * control it. */
+  delayMs?: number
+  /** Runs right after the answer is written: what Codex sends next (the
+   * `thread/started` that follows a `thread/start` answer, say). */
+  after?: (request: FakeClientRequest<M>, result: ClientResult<M>) => void
+}
+
+type Scripted = {
+  responder: Responder<ClientMethod>
+  remaining: number
+  delayMs: number
+  after: ((request: FakeClientRequest, result: unknown) => void) | undefined
+}
+
+export type FakeCodexAppServerOptions = {
+  pid?: number
+  /** Codex version the handshake reports. Default: the pinned protocol's. */
+  version?: string
+  /** The whole `initialize.userAgent`, overriding `version`. Codex builds it
+   * from the client's name: `<clientInfo.name>/<version> (<os>) …`. */
+  userAgent?: string
+  codexHome?: string
+  platformFamily?: string
+  platformOs?: string
+  /** Answer `initialize` automatically. Off to script the handshake by hand
+   * (`respond('initialize', …)`) or leave it unanswered. Default true. */
+  initialize?: boolean
+  /** Ignore SIGTERM, so the termination ladder has to escalate. */
+  ignoreSigterm?: boolean
+  /** Close stdout and stderr after `exit`, as a real child does. Default true. */
+  closePipesOnExit?: boolean
+  /** First id for server requests. Codex numbers them from 0 in every
+   * process, so two fakes collide on ids just as two real processes do. */
+  firstServerRequestId?: number
+  /** A request nothing is scripted for: answered `-32601` (`error`, the
+   * default, what Codex does for a method it does not know) or never
+   * answered (`ignore`). */
+  unscripted?: 'error' | 'ignore'
+}
+
+export class FakeCodexAppServer implements TerminableChild {
+  readonly pid: number
+  exitCode: number | null = null
+  signalCode: NodeJS.Signals | null = null
+  readonly stdin = new PassThrough()
+  readonly stdout = new PassThrough()
+  readonly stderr = new PassThrough()
+
+  /** Everything the client sent, parsed, in order. */
+  readonly received: WireMessage[] = []
+  /** Everything this fake wrote to stdout, in order. */
+  readonly sent: WireMessage[] = []
+  /** Signals `kill` was called with, in order. */
+  readonly signals: NodeJS.Signals[] = []
+  /** Answers to server requests this fake never sent, or answered twice. */
+  readonly strayAnswers: WireMessage[] = []
+  /** Requests answered `-32601` (or ignored) because nothing was scripted. */
+  readonly unscripted: WireRequest[] = []
+
+  ignoreSigterm: boolean
+  closePipesOnExit: boolean
+
+  private readonly options: FakeCodexAppServerOptions
+  private readonly scripts = new Map<string, Scripted[]>()
+  private readonly exitListeners: Array<(code: number | null, signal: NodeJS.Signals | null) => void> = []
+  private readonly pending = new Map<string, (answer: WireMessage) => void>()
+  private readonly waiters = new Set<(message: WireMessage) => boolean>()
+  private readonly claimed = new Set<WireMessage>()
+  private nextServerRequestId: number
+
+  constructor(options: FakeCodexAppServerOptions = {}) {
+    this.options = options
+    this.pid = options.pid ?? 4242
+    this.ignoreSigterm = options.ignoreSigterm ?? false
+    this.closePipesOnExit = options.closePipesOnExit ?? true
+    this.nextServerRequestId = options.firstServerRequestId ?? 0
+
+    let buffered = ''
+    this.stdin.on('data', (chunk: Buffer) => {
+      buffered += String(chunk)
+      for (let nl = buffered.indexOf('\n'); nl !== -1; nl = buffered.indexOf('\n')) {
+        const line = buffered.slice(0, nl)
+        buffered = buffered.slice(nl + 1)
+        if (line.trim()) this.receiveLine(line)
+      }
+    })
+  }
+
+  get exited(): boolean {
+    return this.exitCode !== null || this.signalCode !== null
+  }
+
+  // ------------------------------------------------------------- scripting
+
+  /** Script the answer to client requests of `method`. A later `respond` for
+   * the same method is used first, so a test can override a default for a
+   * number of calls (`times`) and fall back afterwards. */
+  respond<M extends ClientMethod>(method: M, responder: Responder<M>, options: RespondOptions<M> = {}): this {
+    const list = this.scripts.get(method) ?? []
+    list.unshift({
+      responder: responder as Responder<ClientMethod>,
+      remaining: options.times ?? Number.POSITIVE_INFINITY,
+      delayMs: options.delayMs ?? 0,
+      after: options.after as Scripted['after'],
+    })
+    this.scripts.set(method, list)
+    return this
+  }
+
+  /** Answer `method` with an error. */
+  fail(method: ClientMethod, code: number, message: string, options: { times?: number; data?: unknown } = {}): this {
+    return this.respond(
+      method,
+      () => {
+        throw new CodexRpcError(code, message, options.data)
+      },
+      options.times !== undefined ? { times: options.times } : {},
+    )
+  }
+
+  /** A thread this fake can speak for. Nothing is sent until its methods are
+   * called; `parentThreadId` makes it a subagent's thread. */
+  thread(overrides: Partial<v2.Thread> = {}): FakeCodexThread {
+    return new FakeCodexThread(this, buildThread(overrides))
+  }
+
+  /** Answer every `thread/start` with a new thread and every `turn/start`
+   * with a new turn, announcing each the way Codex does (`thread/started`;
+   * `thread/status/changed` and `turn/started`). What happens in the turn is
+   * the test's to script: `onTurn` gets each one as it starts. Enough for code
+   * that only needs a session to come up. */
+  serveThreads(onTurn?: (turn: FakeCodexTurn) => void): this {
+    const threads = new Map<string, FakeCodexThread>()
+    const turns = new Map<string, FakeCodexTurn>()
+    this.respond(
+      'thread/start',
+      (params) => {
+        const thread = this.thread({
+          ...(params.cwd ? { cwd: params.cwd } : {}),
+          ...(params.model ? { model: params.model } : {}),
+          ephemeral: params.ephemeral ?? false,
+        })
+        threads.set(thread.id, thread)
+        return thread.startResponse(params.approvalPolicy ? { approvalPolicy: params.approvalPolicy } : {})
+      },
+      { after: (_request, result) => threads.get(result.thread.id)?.started() },
+    )
+    this.respond(
+      'turn/start',
+      (params) => {
+        let thread = threads.get(params.threadId)
+        if (!thread) {
+          thread = new FakeCodexThread(this, buildThread({ id: params.threadId }))
+          threads.set(thread.id, thread)
+        }
+        const turn = thread.turn()
+        turns.set(turn.id, turn)
+        return turn.startResponse()
+      },
+      {
+        after: (_request, result) => {
+          const turn = turns.get(result.turn.id)
+          if (!turn) return
+          turn.started()
+          onTurn?.(turn)
+        },
+      },
+    )
+    return this
+  }
+
+  // ------------------------------------------------------------- emitting
+
+  /** Write one message to stdout. Dropped once the pipes are closed. */
+  send(message: WireMessage): void {
+    if (this.stdout.writableEnded) return
+    this.sent.push(message)
+    this.stdout.write(`${JSON.stringify(message)}\n`)
+  }
+
+  /** Write a raw line (malformed JSON, an oversize line, half a message). */
+  writeLine(line: string): void {
+    if (this.stdout.writableEnded) return
+    this.stdout.write(line)
+  }
+
+  notify<M extends NotificationMethod>(method: M, params: NotificationParams<M>): void {
+    this.send({ method, params })
+  }
+
+  /** Send a server request. Ids count up from `firstServerRequestId` unless
+   * one is given. */
+  request<M extends ServerRequestMethod>(
+    method: M,
+    params: ServerRequestParams<M>,
+    options: { id?: RpcId } = {},
+  ): FakeServerRequest<M> {
+    const id = options.id ?? this.nextServerRequestId++
+    const answered = new Promise<FakeServerAnswer<M>>((resolve) => {
+      this.pending.set(String(id), (answer) => resolve(answer as FakeServerAnswer<M>))
+    })
+    this.send({ id, method, params })
+    return { id, method, params, answered }
+  }
+
+  /** `serverRequest/resolved`: Codex no longer wants an answer to `id` (it was
+   * answered, or the turn ended). */
+  resolved(threadId: string, requestId: RpcId): void {
+    this.notify('serverRequest/resolved', { threadId, requestId })
+  }
+
+  writeStderr(text: string): void {
+    if (this.stderr.writableEnded) return
+    this.stderr.write(text)
+  }
+
+  // ------------------------------------------------------------- waiting
+
+  /** Requests the client sent, optionally of one method. */
+  requests<M extends ClientMethod>(method?: M): FakeClientRequest<M>[] {
+    return this.received.filter(
+      (m) => isWireRequest(m) && (method === undefined || m.method === method),
+    ) as FakeClientRequest<M>[]
+  }
+
+  /** Notifications the client sent (`initialized`). */
+  notifications(method?: string): WireMessage[] {
+    return this.received.filter((m) => isWireNotification(m) && (method === undefined || m.method === method))
+  }
+
+  /** The client's answer to server request `id`, if it has answered. */
+  answerTo(id: RpcId): WireMessage | undefined {
+    return this.received.find((m) => isWireResponse(m) && m.id === id)
+  }
+
+  /** The first message from the client, already received or still to come,
+   * that matches. */
+  waitFor(predicate: (message: WireMessage) => boolean): Promise<WireMessage> {
+    const found = this.received.find(predicate)
+    if (found) return Promise.resolve(found)
+    return new Promise((resolve) => {
+      const waiter = (message: WireMessage): boolean => {
+        if (!predicate(message)) return false
+        resolve(message)
+        return true
+      }
+      this.waiters.add(waiter)
+    })
+  }
+
+  /** The next request of `method` that no earlier `nextRequest` returned. */
+  async nextRequest<M extends ClientMethod>(method: M): Promise<FakeClientRequest<M>> {
+    const message = await this.waitFor(
+      (m) => isWireRequest(m) && m.method === method && !this.claimed.has(m),
+    )
+    this.claimed.add(message)
+    return message as FakeClientRequest<M>
+  }
+
+  // ------------------------------------------------------------- process
+
+  kill(signal: NodeJS.Signals = 'SIGTERM'): boolean {
+    this.signals.push(signal)
+    if (signal === 'SIGTERM' && this.ignoreSigterm) return true
+    this.settleExit(signal, null)
+    return true
+  }
+
+  /** Exit cleanly, or with `code`. */
+  exit(code = 0): void {
+    this.settleExit(null, code)
+  }
+
+  /** Die the way a broken Codex does: stderr first (a panic, an error log),
+   * then the exit. Default: exit code 1. */
+  crash(options: { code?: number; signal?: NodeJS.Signals; stderr?: string } = {}): void {
+    if (options.stderr) this.writeStderr(options.stderr.endsWith('\n') ? options.stderr : `${options.stderr}\n`)
+    this.settleExit(options.signal ?? null, options.signal ? null : (options.code ?? 1))
+  }
+
+  /** End stdout and stderr by hand (after `closePipesOnExit = false`). */
+  closePipes(): void {
+    this.stdout.end()
+    this.stderr.end()
+  }
+
+  on(_event: 'exit', listener: (code: number | null, signal: NodeJS.Signals | null) => void): this {
+    this.exitListeners.push(listener)
+    return this
+  }
+
+  private settleExit(signal: NodeJS.Signals | null, code: number | null): void {
+    if (this.exited) return
+    this.signalCode = signal
+    this.exitCode = code
+    for (const listener of this.exitListeners) listener(code, signal)
+    if (this.closePipesOnExit) this.closePipes()
+  }
+
+  // ------------------------------------------------------------- receiving
+
+  private receiveLine(line: string): void {
+    let message: WireMessage
+    try {
+      message = JSON.parse(line) as WireMessage
+    } catch {
+      // The client only ever writes JSON; keep the evidence if it does not.
+      message = { method: '(unparseable)', params: line }
+    }
+    this.received.push(message)
+    for (const waiter of this.waiters) if (waiter(message)) this.waiters.delete(waiter)
+    // A dead process reads nothing more.
+    if (this.exited) return
+    this.onClientMessage(message)
+  }
+
+  /** What the server does with one message from the client. The replay
+   * harness replaces this; the scripted fake dispatches to `respond`. */
+  protected onClientMessage(message: WireMessage): void {
+    if (isWireResponse(message)) {
+      const key = String(message.id)
+      const settle = this.pending.get(key)
+      if (!settle) {
+        this.strayAnswers.push(message)
+        return
+      }
+      this.pending.delete(key)
+      settle(message)
+      return
+    }
+    if (isWireRequest(message)) void this.answer(message)
+  }
+
+  private async answer(request: WireRequest): Promise<void> {
+    const scripted = this.takeScript(request.method)
+    if (!scripted) {
+      if (request.method === 'initialize' && this.options.initialize !== false) {
+        this.send({ id: request.id, result: this.initializeResult(request.params as InitializeParams) })
+        return
+      }
+      this.unscripted.push(request)
+      if (this.options.unscripted === 'ignore') return
+      this.send({
+        id: request.id,
+        error: { code: RPC_METHOD_NOT_FOUND, message: `fake codex app-server: nothing scripted for ${request.method}` },
+      })
+      return
+    }
+    const typed = { ...request, params: request.params } as FakeClientRequest
+    let result: unknown
+    try {
+      if (scripted.delayMs > 0) await new Promise((resolve) => setTimeout(resolve, scripted.delayMs))
+      const { responder } = scripted
+      result =
+        typeof responder === 'function'
+          ? await (responder as (params: unknown, request: FakeClientRequest) => unknown)(typed.params, typed)
+          : responder
+      this.send({ id: request.id, result: result ?? {} })
+    } catch (error) {
+      const rpc = error instanceof CodexRpcError ? error : undefined
+      this.send({
+        id: request.id,
+        error: {
+          code: rpc?.code ?? -32603,
+          message: error instanceof Error ? error.message : String(error),
+          ...(rpc?.data !== undefined ? { data: rpc.data } : {}),
+        },
+      })
+      return
+    }
+    scripted.after?.(typed, result ?? {})
+  }
+
+  private takeScript(method: string): Scripted | undefined {
+    const list = this.scripts.get(method)
+    if (!list) return undefined
+    const index = list.findIndex((entry) => entry.remaining > 0)
+    if (index === -1) return undefined
+    const entry = list[index]!
+    entry.remaining--
+    return entry
+  }
+
+  private initializeResult(params: InitializeParams | undefined): InitializeResponse {
+    const name = params?.clientInfo?.name ?? 'OpenManager'
+    const version = this.options.version ?? CODEX_RECOMMENDED_VERSION
+    return {
+      userAgent:
+        this.options.userAgent ??
+        `${name}/${version} (Fake OS; x86_64) fake (${name}; ${params?.clientInfo?.version ?? '0.0.0'})`,
+      codexHome: this.options.codexHome ?? '/home/user/.codex',
+      platformFamily: this.options.platformFamily ?? 'unix',
+      platformOs: this.options.platformOs ?? 'linux',
+    }
+  }
+}
+
+/** Hands out fake app-servers where production code would spawn one.
+ *
+ * `spawn` has the shape of `spawnCodexAppServer` (a spec in, a running child
+ * out), so a session runtime, the service process or the boot probe that takes
+ * its spawner as a dependency can be given `factory.spawn` and every process
+ * it starts is a fake the test can reach through `servers` / `last`. `setup`
+ * scripts each one before the client sees it. */
+export class FakeCodexAppServerFactory {
+  readonly servers: FakeCodexAppServer[] = []
+  readonly specs: CodexSpawnSpec[] = []
+  /** Set to make the next `spawn` reject: a missing or unstartable binary. */
+  failWith: Error | undefined
+
+  constructor(
+    private readonly setup: (server: FakeCodexAppServer, spec: CodexSpawnSpec | undefined) => FakeCodexAppServer | void = () => undefined,
+    private readonly options: FakeCodexAppServerOptions = {},
+  ) {}
+
+  /** Bound, so it can be passed around on its own. */
+  readonly spawn = async (spec?: CodexSpawnSpec): Promise<FakeCodexAppServer> => {
+    if (this.failWith) {
+      const error = this.failWith
+      this.failWith = undefined
+      throw error
+    }
+    if (spec) this.specs.push(spec)
+    const created = new FakeCodexAppServer({ pid: 4242 + this.servers.length, ...this.options })
+    const server = this.setup(created, spec) ?? created
+    this.servers.push(server)
+    return server
+  }
+
+  get last(): FakeCodexAppServer {
+    const server = this.servers.at(-1)
+    if (!server) throw new Error('no fake codex app-server has been spawned yet')
+    return server
+  }
+}

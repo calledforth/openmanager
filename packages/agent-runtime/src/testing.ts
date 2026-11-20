@@ -2,3 +2,4 @@
 export { FakeAcpConnection, FakeConnectionFactory } from './session/test-connection.js'
 export type { FakeWire } from './session/test-connection.js'
 export { FakeClaudeQuery, FakeClaudeSdk } from './session/claude/test-sdk.js'
+export * from './session/codex/testing/index.js'

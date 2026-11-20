@@ -1,6 +1,4 @@
-import { PassThrough } from 'node:stream'
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import type { TerminableChild } from '../ChildProcessLifecycle.js'
 import {
   CodexAppServerClient,
   CodexProcessExitedError,
@@ -9,81 +7,42 @@ import {
   type CodexAppServerClientOptions,
 } from './CodexAppServerClient.js'
 import { CodexRpcTimeoutError, RPC_METHOD_NOT_FOUND } from './CodexRpcPeer.js'
+import { FakeCodexAppServer } from './testing/FakeCodexAppServer.js'
 import { CODEX_RECOMMENDED_VERSION } from './version.js'
 
 // Messages read back off the fake wire are poked at freely in assertions.
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type Wire = Record<string, any>
 
-/** `codex app-server` in-process: what the client writes to stdin is parsed
- * into `written`, and `reply` frames a line onto stdout. Exit works as in
- * `ChildProcessConnection.test.ts`, including a child that ignores SIGTERM.
- *
- * Like a real child, a dead one closes its pipes — but only after `exit`
- * has fired, which is the order Node gives no guarantee about. Set
- * `closePipesOnExit = false` to hold them open and play the late part of the
- * stream by hand. */
-class FakeChild implements TerminableChild {
-  readonly pid = 4242
-  exitCode: number | null = null
-  signalCode: NodeJS.Signals | null = null
-  readonly stdin = new PassThrough()
-  readonly stdout = new PassThrough()
-  readonly stderr = new PassThrough()
-  readonly signals: NodeJS.Signals[] = []
-  readonly written: Wire[] = []
-  ignoreSigterm = false
-  closePipesOnExit = true
-  private exitListener: ((code: number | null, signal: NodeJS.Signals | null) => void) | undefined
-
+/** The shared fake (`testing/FakeCodexAppServer.ts`) with nothing scripted:
+ * these tests play the server's side line by line. `written` is what the
+ * client sent, `reply` frames messages onto stdout in one chunk, and `die`
+ * ends the process with a code or a signal. Exit works as a real child's,
+ * including a child that ignores SIGTERM and pipes that close only after
+ * `exit` (`closePipesOnExit = false` holds them open to play the late part of
+ * the stream by hand). */
+class FakeChild extends FakeCodexAppServer {
   constructor() {
-    let buffered = ''
-    this.stdin.on('data', (chunk: Buffer) => {
-      buffered += String(chunk)
-      for (let nl = buffered.indexOf('\n'); nl !== -1; nl = buffered.indexOf('\n')) {
-        this.written.push(JSON.parse(buffered.slice(0, nl)) as Wire)
-        buffered = buffered.slice(nl + 1)
-      }
-    })
+    super({ initialize: false, unscripted: 'ignore' })
+  }
+
+  get written(): Wire[] {
+    return this.received as Wire[]
   }
 
   reply(...messages: unknown[]): void {
-    this.stdout.write(messages.map((message) => `${JSON.stringify(message)}\n`).join(''))
+    this.writeLine(messages.map((message) => `${JSON.stringify(message)}\n`).join(''))
   }
 
   /** The requests the client sent, by method. */
-  requests(method: string): Wire[] {
+  sentRequests(method: string): Wire[] {
     return this.written.filter((message) => message.method === method && 'id' in message)
   }
 
-  /** The answer the client wrote for a server request. */
-  answerTo(id: string | number): Wire | undefined {
-    return this.written.find((message) => message.id === id && !('method' in message))
-  }
-
-  kill(signal: NodeJS.Signals = 'SIGTERM'): boolean {
-    this.signals.push(signal)
-    if (signal === 'SIGTERM' && this.ignoreSigterm) return true
-    this.die(signal)
-    return true
-  }
-
   die(signal: NodeJS.Signals | null, code: number | null = null): void {
-    if (this.exitCode !== null || this.signalCode !== null) return
-    this.signalCode = signal
-    this.exitCode = code
-    this.exitListener?.(code, signal)
-    if (this.closePipesOnExit) this.closePipes()
-  }
-
-  closePipes(): void {
-    this.stdout.end()
-    this.stderr.end()
-  }
-
-  on(_event: 'exit', listener: (code: number | null, signal: NodeJS.Signals | null) => void): unknown {
-    this.exitListener = listener
-    return this
+    if (signal) this.crash({ signal })
+    else if (code === 0) this.exit(0)
+    else this.crash({ code: code ?? 1 })
   }
 }
 
@@ -127,7 +86,7 @@ async function handshakeWith(result: unknown, options: Partial<CodexAppServerCli
     (error: unknown) => ({ ok: false as const, error }),
   )
   await flush()
-  const [request] = built.child.requests('initialize')
+  const [request] = built.child.sentRequests('initialize')
   built.child.reply({ id: request!.id, result })
   await flush()
   return { ...built, request: request!, outcome: await outcome }
@@ -468,7 +427,7 @@ describe('CodexAppServerClient process exit', () => {
     const { child, client } = build({ requestTimeoutMs: 5_000 })
     const stalled = track(client.request('model/list', {}))
     await flush()
-    const [request] = child.requests('model/list')
+    const [request] = child.sentRequests('model/list')
 
     await vi.advanceTimersByTimeAsync(4_999)
     expect(stalled.status).toBe('pending')
