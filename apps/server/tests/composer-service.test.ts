@@ -279,7 +279,7 @@ describe('composer service commands', () => {
       expect(store.getProfile('cursor')?.defaultModelId).toBeUndefined()
     })
 
-    it('takes the mode a new session starts in from a probe, until something has said', async () => {
+    it('takes the mode a new session starts in from a probe, over what a session reported', async () => {
       const { service, store } = await harness()
       const availableModes = [
         { id: 'supervised', displayName: 'Supervised' },
@@ -291,8 +291,23 @@ describe('composer service commands', () => {
         availableModes: [{ id: 'supervised' }, { id: 'auto-accept-edits' }],
         defaultModeId: 'auto-accept-edits',
       })
-      service.observeCatalog('cursor', { modes: { availableModes, currentModeId: 'supervised' } })
+      // A session reports its own mode (a draft's Supervised): not the default.
+      service.onRuntimeEvent({
+        id: 'event-1',
+        seq: 1,
+        timestamp: '2026-09-09T00:00:00.000Z',
+        providerId: 'cursor',
+        threadId: 'thread-1',
+        workspaceId: 'workspace-1',
+        sessionId: 'provider-session-1',
+        category: 'lifecycle',
+        event: 'session_created',
+        data: { modes: { availableModes, currentModeId: 'supervised' } },
+      })
       expect(store.getProfile('cursor')?.defaultModeId).toBe('auto-accept-edits')
+      // A probe's newer answer replaces it.
+      service.observeCatalog('cursor', { modes: { availableModes, currentModeId: 'supervised' } })
+      expect(store.getProfile('cursor')?.defaultModeId).toBe('supervised')
     })
 
     it("keeps a provider's policy and each model's upgrade, replacing both with a newer answer", async () => {

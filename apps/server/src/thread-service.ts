@@ -665,7 +665,7 @@ export function createThreadService(
      */
     seedSessionComposer?: (
       sessionId: string,
-      selection: Pick<WorkspaceComposerPreference, 'modelId' | 'configValues'>,
+      selection: Pick<WorkspaceComposerPreference, 'modelId' | 'modeId' | 'configValues'>,
     ) => void
     /**
      * The draft a create sends: its deletion commits with the session, and is
@@ -5064,13 +5064,20 @@ export function createThreadService(
         // Before the provider starts, which is a microtask away: once the
         // session has a selection of its own, a later launch in the workspace
         // can only move the shared preference, not this session.
-        if (launched && (launched.modelId !== undefined || launched.configValues !== undefined)) {
+        // The draft's mode too, so the process starts in it rather than in
+        // the provider's default until the first turn sets it.
+        const launchMode = input.firstMessage !== undefined ? input.modeId : undefined
+        if (
+          (launched && (launched.modelId !== undefined || launched.configValues !== undefined)) ||
+          launchMode !== undefined
+        ) {
           try {
             options.seedSessionComposer?.(session.sessionId, {
-              ...(launched.modelId !== undefined ? { modelId: launched.modelId } : {}),
-              ...(launched.configValues !== undefined
+              ...(launched?.modelId !== undefined ? { modelId: launched.modelId } : {}),
+              ...(launched?.configValues !== undefined
                 ? { configValues: launched.configValues }
                 : {}),
+              ...(launchMode !== undefined ? { modeId: launchMode } : {}),
             })
           } catch (error) {
             // Display and seeding state; the preference still stands in for it.

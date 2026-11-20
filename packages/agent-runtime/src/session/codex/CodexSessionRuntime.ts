@@ -35,6 +35,7 @@ import type {
 import type { SessionRuntimeSpec } from '../SessionRuntime.js'
 import { routeEvent } from '../wire.js'
 import {
+  CODEX_ACCESS_PRESETS,
   codexAccess,
   codexAccessPresetOf,
   codexModeListing,
@@ -55,7 +56,9 @@ import {
   isCodexWebSearchMode,
   readCodexFeatures,
   readCodexModels,
+  readCodexPermissionProfiles,
   type CodexCatalogContext,
+  type CodexRequester,
 } from './codex-catalog.js'
 import {
   codexFreshThreadNotice,
@@ -237,6 +240,24 @@ export class CodexSessionRuntime implements ManagedSessionRuntime {
   private openedWebSearch: WebSearchMode | undefined
   /** What the composer was last told, so a change is reported once. */
   private shown: { model?: string; mode?: string; options?: string } = {}
+  /** `permissionProfile/list` for this directory, when Codex answered: a
+   * profile it disallows rules out the presets that need it. */
+  private permissionProfiles: v2.PermissionProfileSummary[] | undefined
+  /** Composer changes run one at a time, so each waits for its own
+   * read-back and none is undone by another's. */
+  private settingsChain: Promise<unknown> = Promise.resolve()
+  /** Fields a `thread/settings/update` is out for: a read-back meanwhile
+   * (an earlier change's) must not undo them. */
+  private readonly inFlight = new Set<CodexSettingField>()
+  /** Values the user set through the composer that the host's own desired
+   * config may not know yet: a prompt sent meanwhile carries the old ones,
+   * which must not undo the change. Dropped once the host sends the same. */
+  private readonly pinned = new Map<CodexSettingField | 'webSearch', string>()
+  /** The thread being opened again, for whoever must wait for it. */
+  private reopenRun: Promise<void> | undefined
+  /** A turn may have run on the open thread (one ran here, or the thread
+   * was resumed): reopening it fresh must then hand the conversation over. */
+  private threadRanTurn = false
   /** Turns this runtime already finished, including one it closed itself
    * after an interrupt timed out. Anything Codex later says about them (its
    * own late `turn/completed`) must never be taken for the next turn's. */
@@ -449,6 +470,18 @@ export class CodexSessionRuntime implements ManagedSessionRuntime {
     this.catalogContext = await this.readCatalogContext(client)
     if (this.desired.webSearch && !codexWebSearchModes(this.catalogContext).includes(this.desired.webSearch))
       delete this.desired.webSearch
+    // A restored preset the policy has since ruled out would fail every
+    // start: the default, or the first allowed one, stands in.
+    const allowed = this.allowedPreset(this.desired.preset)
+    if (allowed !== this.desired.preset) {
+      this.deps.host.log({
+        scope: 'codex',
+        level: 'warn',
+        message: 'The session’s access preset is no longer allowed; starting in another',
+        data: { preset: this.desired.preset, instead: allowed },
+      })
+      this.desired.preset = allowed
+    }
     const opened = await this.openThread(client)
     // Known as soon as Codex names it, so this thread's own notifications are
     // never mistaken for another's while the catalog is still on its way.
@@ -457,7 +490,7 @@ export class CodexSessionRuntime implements ManagedSessionRuntime {
     this.models = codexModelListing(this.catalog, this.catalogContext)
     this.modelId ??= opened.model
     this.codexName = opened.name
-    this.takeOpened(opened.settings)
+    this.takeOpened(opened)
     if (this.exitValue || this.stopRequest) throw new Error('Codex session runtime stopped while starting')
 
     const info = client.info
@@ -529,6 +562,7 @@ export class CodexSessionRuntime implements ManagedSessionRuntime {
           name: resumed.thread.name?.trim() || undefined,
           state: 'loaded',
           settings: resumed,
+          webSearch: settings.webSearch,
         }
       } catch (error) {
         if (!isMissingThread(error) && !(error instanceof CodexSubagentThreadError)) throw error
@@ -566,6 +600,7 @@ export class CodexSessionRuntime implements ManagedSessionRuntime {
       name: started.thread.name?.trim() || undefined,
       state: 'created',
       settings: started,
+      webSearch: settings.webSearch,
     }
   }
 
@@ -575,12 +610,14 @@ export class CodexSessionRuntime implements ManagedSessionRuntime {
    * speed are checked against the catalog first, so they wait for the first
    * `turn/start`. */
   private threadParams(model: string | undefined) {
+    const webSearch = this.desired.webSearch
     return {
+      webSearch,
       cwd: this.cwd,
       approvalPolicy: this.access.approvalPolicy,
       approvalsReviewer: this.access.approvalsReviewer,
       sandbox: this.access.sandbox,
-      config: threadConfig(this.desired.webSearch),
+      config: threadConfig(webSearch),
       ...(model ? { model } : {}),
     }
   }
@@ -592,11 +629,15 @@ export class CodexSessionRuntime implements ManagedSessionRuntime {
     const optional = <T>(read: Promise<T>): Promise<T | undefined> =>
       read.catch(() => undefined)
     const timeoutMs = this.timeouts.controlRequestMs
-    const [requirements, features, config] = await Promise.all([
+    const request: CodexRequester['request'] = (method, params) =>
+      client.request(method, params, { timeoutMs })
+    const [requirements, features, config, profiles] = await Promise.all([
       optional(client.request('configRequirements/read', undefined, { timeoutMs })),
-      optional(readCodexFeatures({ request: (method, params) => client.request(method, params, { timeoutMs }) })),
+      optional(readCodexFeatures({ request })),
       optional(client.request('config/read', { cwd: this.cwd }, { timeoutMs })),
+      optional(readCodexPermissionProfiles({ request }, this.cwd)),
     ])
+    this.permissionProfiles = profiles
     return {
       ...(requirements ? { requirements: requirements.requirements } : {}),
       ...(features ? { features } : {}),
@@ -695,6 +736,9 @@ export class CodexSessionRuntime implements ManagedSessionRuntime {
     // prompt is stopped with it, and no turn is started behind the host.
     if (generation !== this.stopGeneration) return
     if (this.active) throw new Error('A Codex turn is already running in this session')
+    // A composer change or a reopen still under way finishes first.
+    await this.settled()
+    if (this.active) throw new Error('A Codex turn is already running in this session')
     if (args.desiredConfig) await this.applyDesiredConfig(args.desiredConfig)
     const input = codexInput(args.prompt)
     this.assertReadsImages(args.prompt)
@@ -724,6 +768,7 @@ export class CodexSessionRuntime implements ManagedSessionRuntime {
     this.turnStarting = true
     try {
       await this.handOver(client, threadId, userMessageId)
+      this.threadRanTurn = true
       // Every setting, every turn: overrides are sticky, so one left out is
       // whatever the last turn set, not the default.
       const response = await client.request(
@@ -738,7 +783,7 @@ export class CodexSessionRuntime implements ManagedSessionRuntime {
           summary: 'detailed',
           ...(this.modelId ? { model: this.modelId } : {}),
           ...(this.desired.effort ? { effort: this.desired.effort } : {}),
-          ...(this.desired.serviceTier ? { serviceTier: this.desired.serviceTier } : {}),
+          ...this.turnServiceTier(),
         },
         { timeoutMs: this.timeouts.controlRequestMs },
       )
@@ -806,6 +851,7 @@ export class CodexSessionRuntime implements ManagedSessionRuntime {
    * compaction. It is announced so the host has a turn to file its output
    * under, and it ends like any other, on its `turn/completed`. */
   private openBackgroundTurn(turnId: string): void {
+    this.threadRanTurn = true
     const active = this.openTurn(true)
     this.emit(routeEvent(this.route(), this.sessionIdValue, 'lifecycle', 'background_turn_started', {}))
     this.identifyTurn(active, turnId)
@@ -826,17 +872,27 @@ export class CodexSessionRuntime implements ManagedSessionRuntime {
    * nobody is subscribed to) and resumed with the new one (_probed_ on
    * 0.170). A thread that never ran a turn has nothing on disk to resume and
    * is started again; there is no conversation to hand over. */
-  private async reopenThread(): Promise<void> {
+  private reopenThread(): Promise<void> {
+    this.reopenRun ??= this.runReopen().finally(() => {
+      this.reopenRun = undefined
+    })
+    return this.reopenRun
+  }
+
+  private async runReopen(): Promise<void> {
     const why = this.reopen ?? (this.configChanged() ? 'config' : undefined)
     const client = this.client
     const previous = this.sessionIdValue
     if (!why || !client || !previous) return
     this.reopening = true
     let opened: OpenedThread
+    const ranTurn = this.threadRanTurn
     try {
       if (why === 'config') await this.unsubscribe(client, previous)
       opened = await this.openThread(client, previous)
-      if (why === 'config') this.handover = undefined
+      // A thread no turn ever ran on has nothing on disk to resume, and no
+      // conversation to hand over. One that had turns keeps the handover.
+      if (why === 'config' && !ranTurn) this.handover = undefined
     } catch (error) {
       if (why !== 'systemError') throw error
       this.reopen = undefined
@@ -854,7 +910,7 @@ export class CodexSessionRuntime implements ManagedSessionRuntime {
     this.assertUsable()
     this.sessionIdValue = opened.threadId
     this.codexName = opened.name
-    this.takeOpened(opened.settings)
+    this.takeOpened(opened)
     this.publish()
     this.deps.host.log({
       scope: 'codex',
@@ -1702,6 +1758,8 @@ export class CodexSessionRuntime implements ManagedSessionRuntime {
    * `cancel`'s bounded grace, so the thread is not archived under it. */
   async archive(): Promise<void> {
     await this.ready()
+    // Never under a reopen: it would swap the thread out from under us.
+    await this.reopenRun?.catch(() => undefined)
     if (this.active) await this.cancel()
     this.assertUsable()
     const threadId = this.sessionIdValue!
@@ -1724,29 +1782,43 @@ export class CodexSessionRuntime implements ManagedSessionRuntime {
   /** The model for the next turns. Between turns it goes to Codex at once
    * (`thread/settings/update`) and resolves once Codex reads it back
    * (`thread/settings/updated`); during a turn it waits for the next
-   * `turn/start`, which always names the model. */
+   * `turn/start`, which always names the model. A change that fails leaves
+   * the selection as it was. */
   async setModel(modelId: string): Promise<void> {
     await this.ready()
-    if (!this.offersModel(modelId)) throw new Error(`Codex does not offer the model ${modelId}`)
-    if (modelId === this.modelId && this.appliedAt) return
-    this.modelId = modelId
-    this.appliedAt = new Date().toISOString()
-    this.fitToModel()
-    await this.changeSettings(['model', 'effort', 'serviceTier'])
+    return this.serialized(async () => {
+      if (!this.offersModel(modelId)) throw new Error(`Codex does not offer the model ${modelId}`)
+      if (modelId === this.modelId && this.appliedAt) return
+      await this.change(['model', 'effort', 'serviceTier'], () => {
+        this.modelId = modelId
+        this.appliedAt = new Date().toISOString()
+        this.fitToModel()
+      })
+      this.pinned.set('model', modelId)
+    })
   }
 
   /** An Access preset (docs/decisions/codex-app-server.md, "Access
-   * presets"), sent like the model. A preset the managed policy or the
-   * user's flags rule out is refused with the reason. */
+   * presets"), sent like the model. A preset the managed policy, the
+   * permission profiles or the user's flags rule out is refused with the
+   * reason. */
   async setMode(modeId: string): Promise<void> {
     await this.ready()
-    if (!isCodexAccessPreset(modeId)) throw new Error(`Codex has no access preset ${modeId}`)
-    const blocked = codexPolicy(this.catalogContext).blockedModes?.find((mode) => mode.id === modeId)
-    if (blocked) throw new Error(blocked.reason)
-    if (modeId === this.desired.preset && !this.queued.has('preset') && this.readBack?.preset === modeId)
-      return
-    this.desired.preset = modeId
-    await this.changeSettings(['preset'])
+    return this.serialized(async () => {
+      if (!isCodexAccessPreset(modeId)) throw new Error(`Codex has no access preset ${modeId}`)
+      const blocked = this.presetBlocked(modeId)
+      if (blocked) throw new Error(blocked)
+      if (
+        modeId === this.desired.preset &&
+        !this.queued.has('preset') &&
+        this.readBack?.preset === modeId
+      )
+        return
+      await this.change(['preset'], () => {
+        this.desired.preset = modeId
+      })
+      this.pinned.set('preset', modeId)
+    })
   }
 
   /** Reasoning effort, speed and web search. Effort and speed go like the
@@ -1755,40 +1827,72 @@ export class CodexSessionRuntime implements ManagedSessionRuntime {
    * A value the current model or policy does not offer is refused. */
   async setConfigOption(configId: string, value: string | boolean): Promise<void> {
     await this.ready()
-    const option = this.configOptions().find((candidate) => candidate.id === configId)
-    if (!option || option.type !== 'select')
-      throw new Error(`Codex has no setting ${configId} on this model`)
-    if (typeof value !== 'string' || !option.options.some((entry) => entry.value === value))
-      throw new Error(`Codex does not offer ${String(value)} for ${option.name}`)
-    switch (configId) {
-      case CODEX_CONFIG.effort:
-        this.desired.effort = value
-        await this.changeSettings(['effort'])
-        return
-      case CODEX_CONFIG.serviceTier:
-        this.desired.serviceTier = value
-        await this.changeSettings(['serviceTier'])
-        return
-      case CODEX_CONFIG.webSearch:
-        if (!isCodexWebSearchMode(value)) throw new Error(`Codex has no web search mode ${value}`)
-        this.desired.webSearch = value
-        this.publish()
-        if (value !== this.openedWebSearch && !this.active && !this.subagents.running)
-          await this.reopenThread()
-        return
-    }
+    return this.serialized(async () => {
+      const option = this.configOptions().find((candidate) => candidate.id === configId)
+      if (!option || option.type !== 'select')
+        throw new Error(`Codex has no setting ${configId} on this model`)
+      if (typeof value !== 'string' || !option.options.some((entry) => entry.value === value))
+        throw new Error(`Codex does not offer ${String(value)} for ${option.name}`)
+      switch (configId) {
+        case CODEX_CONFIG.effort:
+          await this.change(['effort'], () => {
+            this.desired.effort = value
+          })
+          this.pinned.set('effort', value)
+          return
+        case CODEX_CONFIG.serviceTier:
+          await this.change(['serviceTier'], () => {
+            this.desired.serviceTier = value
+          })
+          this.pinned.set('serviceTier', value)
+          return
+        case CODEX_CONFIG.webSearch: {
+          if (!isCodexWebSearchMode(value)) throw new Error(`Codex has no web search mode ${value}`)
+          const before = this.desired.webSearch
+          this.desired.webSearch = value
+          this.pinned.set('webSearch', value)
+          this.publish()
+          if (this.configChanged() && !this.active && !this.subagents.running) {
+            try {
+              await this.reopenThread()
+            } catch (error) {
+              // Not taken: the thread keeps the mode it has.
+              if (before === undefined) delete this.desired.webSearch
+              else this.desired.webSearch = before
+              this.pinned.delete('webSearch')
+              this.publish()
+              throw error
+            }
+          }
+          return
+        }
+      }
+    })
   }
 
   /** The session's selection, before a prompt. Nothing is sent here: the
-   * turn about to start sends every setting. A value the catalog no longer
-   * offers is dropped with a log, so a stale pick cannot fail the prompt.
-   * The mode is not re-applied to a live process; it is restored when one
-   * starts. */
+   * turn about to start sends every setting. A value the catalog or the
+   * policy no longer offers is dropped with a log, so a stale pick cannot
+   * fail the prompt, and so is one older than a change made in the composer
+   * since (`pinned`). A mode the caller names (a draft's, at its first turn)
+   * applies: the turn's `turn/start` sends it. */
   async applyDesiredConfig(desired: DesiredSessionConfig): Promise<void> {
-    if (desired.modelId && desired.modelId !== this.modelId) {
+    /** The host's value, unless the composer changed it since. */
+    const fresh = (field: CodexSettingField | 'webSearch', value: string): boolean => {
+      const pinned = this.pinned.get(field)
+      if (pinned === undefined) return true
+      if (pinned === value) {
+        this.pinned.delete(field)
+        return true
+      }
+      return false
+    }
+    const changed = new Set<CodexSettingField>()
+    if (desired.modelId && fresh('model', desired.modelId) && desired.modelId !== this.modelId) {
       if (this.offersModel(desired.modelId)) {
         this.modelId = desired.modelId
         this.appliedAt = new Date().toISOString()
+        changed.add('model')
       } else {
         this.deps.host.log({
           scope: 'codex',
@@ -1798,15 +1902,32 @@ export class CodexSessionRuntime implements ManagedSessionRuntime {
         })
       }
     }
+    if (desired.modeId && fresh('preset', desired.modeId) && desired.modeId !== this.desired.preset) {
+      const blocked = isCodexAccessPreset(desired.modeId)
+        ? this.presetBlocked(desired.modeId)
+        : 'not an access preset'
+      if (blocked || !isCodexAccessPreset(desired.modeId)) {
+        this.deps.host.log({
+          scope: 'codex',
+          level: 'warn',
+          message: 'Codex cannot take the desired access preset; keeping the current one',
+          data: { modeId: desired.modeId, reason: blocked },
+        })
+      } else {
+        this.desired.preset = desired.modeId
+        changed.add('preset')
+      }
+    }
     const values = desired.values ?? {}
     const offered = new Map(
       this.configOptions().flatMap((option) =>
         option.type === 'select' ? [[option.id, option.options.map((entry) => entry.value)] as const] : [],
       ),
     )
-    const pick = (configId: string): string | undefined => {
+    const pick = (configId: string, field: CodexSettingField | 'webSearch'): string | undefined => {
       const value = values[configId]
       if (value === undefined) return undefined
+      if (typeof value === 'string' && !fresh(field, value)) return undefined
       if (typeof value === 'string' && offered.get(configId)?.includes(value)) return value
       this.deps.host.log({
         scope: 'codex',
@@ -1816,40 +1937,111 @@ export class CodexSessionRuntime implements ManagedSessionRuntime {
       })
       return undefined
     }
-    const effort = pick(CODEX_CONFIG.effort)
-    const serviceTier = pick(CODEX_CONFIG.serviceTier)
-    const webSearch = pick(CODEX_CONFIG.webSearch)
-    if (effort) this.desired.effort = effort
-    if (serviceTier) this.desired.serviceTier = serviceTier
+    const effort = pick(CODEX_CONFIG.effort, 'effort')
+    const serviceTier = pick(CODEX_CONFIG.serviceTier, 'serviceTier')
+    const webSearch = pick(CODEX_CONFIG.webSearch, 'webSearch')
+    if (effort && effort !== this.desired.effort) {
+      this.desired.effort = effort
+      changed.add('effort')
+    }
+    if (serviceTier && serviceTier !== this.desired.serviceTier) {
+      this.desired.serviceTier = serviceTier
+      changed.add('serviceTier')
+    }
     if (isCodexWebSearchMode(webSearch)) this.desired.webSearch = webSearch
     this.fitToModel()
+    // Sent by the next `turn/start`; a read-back before then must not undo it.
+    for (const field of changed) this.queued.add(field)
     this.publish()
   }
 
+  /** Composer changes and reopens, one at a time. */
+  private serialized<T>(run: () => Promise<T>): Promise<T> {
+    const next = this.settingsChain.then(async () => {
+      await this.reopenRun?.catch(() => undefined)
+      return run()
+    })
+    this.settingsChain = next.catch(() => undefined)
+    return next
+  }
+
+  /** Until every composer change and reopen under way has finished. */
+  private async settled(): Promise<void> {
+    await this.settingsChain
+    await this.reopenRun?.catch(() => undefined)
+  }
+
+  /** Apply `mutate` and send what it changed. If Codex refuses it, or the
+   * request fails, the selection goes back to what it was: nothing it never
+   * took may reach a later turn. If Codex reads back something else, its
+   * value stands. */
+  private async change(fields: readonly CodexSettingField[], mutate: () => void): Promise<void> {
+    const before = { modelId: this.modelId, appliedAt: this.appliedAt, desired: { ...this.desired } }
+    const queued = new Set(this.queued)
+    mutate()
+    try {
+      await this.changeSettings(fields)
+    } catch (error) {
+      if (!(error instanceof CodexSettingsKeptError)) {
+        this.modelId = before.modelId
+        this.appliedAt = before.appliedAt
+        Object.assign(this.desired, before.desired)
+        for (const key of Object.keys(this.desired) as Array<keyof CodexDesiredSettings>)
+          if (!(key in before.desired)) delete this.desired[key]
+        this.queued.clear()
+        for (const field of queued) this.queued.add(field)
+      }
+      this.publish()
+      throw error
+    }
+  }
+
   /** Send what changed to Codex, between turns, and wait for its read-back.
-   * While a turn runs, the change is queued for the next `turn/start`
-   * instead (docs/decisions/codex-app-server.md, "Settings flow"); the
-   * composer shows it as what the next turn runs with. */
+   * While a turn runs, or while the thread is to be opened again, the change
+   * is queued for the next `turn/start` instead (docs/decisions/codex-app-server.md,
+   * "Settings flow"); the composer shows it as what the next turn runs
+   * with. A Codex without `thread/settings/update` (`-32601`) gets it the
+   * same way. */
   private async changeSettings(fields: readonly CodexSettingField[]): Promise<void> {
     this.assertUsable()
-    if (this.active) {
+    const queue = () => {
       for (const field of fields) this.queued.add(field)
       this.publish()
-      return
     }
+    if (this.active || this.reopen || this.reopenRun) return queue()
     const update = this.settingsUpdate(fields)
     if (!update) {
       this.publish()
       return
     }
-    const since = this.settingsVersion
-    await this.client!.request(
-      'thread/settings/update',
-      { threadId: this.sessionIdValue!, ...update },
-      { timeoutMs: this.timeouts.controlRequestMs },
-    )
-    // Codex answers first and reads the settings back after (_probed_).
-    const read = await this.settingsReadBack(since)
+    for (const field of fields) this.inFlight.add(field)
+    let read: CodexReadBack | undefined
+    try {
+      const since = this.settingsVersion
+      try {
+        await this.client!.request(
+          'thread/settings/update',
+          { threadId: this.sessionIdValue!, ...update },
+          { timeoutMs: this.timeouts.controlRequestMs },
+        )
+      } catch (error) {
+        if (!(error instanceof CodexRpcError) || error.code !== RPC_METHOD_NOT_FOUND) throw error
+        this.deps.host.log({
+          scope: 'codex',
+          level: 'info',
+          message: 'This Codex has no thread/settings/update; the next turn sends the change',
+          data: { fields: Object.keys(update) },
+        })
+        return queue()
+      }
+      // Codex answers first and reads the settings back after (_probed_):
+      // this change's own read-back, not an earlier one's.
+      read = await this.settingsReadBack(since, (candidate) =>
+        Object.keys(update).every((field) => this.readBackMatches(field, update, candidate)),
+      )
+    } finally {
+      for (const field of fields) this.inFlight.delete(field)
+    }
     if (!read) {
       // Not lost: the next `turn/start` sends every setting again.
       this.deps.host.log({
@@ -1858,12 +2050,47 @@ export class CodexSessionRuntime implements ManagedSessionRuntime {
         message: 'Codex did not read back a settings change; the next turn sends it again',
         data: { fields: Object.keys(update) },
       })
+      return queue()
+    }
+    const kept = Object.keys(update).filter((field) => !this.readBackMatches(field, update, read))
+    if (kept.length === 0) {
       this.publish()
       return
     }
-    const kept = Object.keys(update).filter((field) => !this.readBackMatches(field, update, read))
-    if (kept.length > 0)
-      throw new Error(`Codex kept its own ${kept.join(' and ')}: ${kept.map((field) => readBackValue(field, read)).join(', ')}`)
+    this.followReadBack()
+    this.publish()
+    throw new CodexSettingsKeptError(
+      `Codex kept its own ${kept.join(' and ')}: ${kept.map((field) => readBackValue(field, read)).join(', ')}`,
+    )
+  }
+
+  /** What `turn/start` says about speed: a tier other than standard is
+   * named; standard is said (`null`) only when the thread has another tier
+   * to clear, so a turn on standard speed sends nothing, as before. */
+  private turnServiceTier(): { serviceTier?: string | null } {
+    const tier = this.desired.serviceTier
+    if (tier && tier !== CODEX_STANDARD_SERVICE_TIER) return { serviceTier: tier }
+    const current = this.readBack?.serviceTier
+    if (current && current !== CODEX_STANDARD_SERVICE_TIER) return { serviceTier: null }
+    return {}
+  }
+
+  /** Why a preset may not be chosen here (the managed policy, the
+   * permission profiles, the flags), or undefined when it may. */
+  private presetBlocked(preset: CodexAccessPreset): string | undefined {
+    return codexPolicy({
+      ...this.catalogContext,
+      ...(this.permissionProfiles ? { permissionProfiles: this.permissionProfiles } : {}),
+    }).blockedModes?.find((mode) => mode.id === preset)?.reason
+  }
+
+  /** `preset` if it may be chosen, else the default, else the first that
+   * may; with none allowed, `preset` (Codex then says why). */
+  private allowedPreset(preset: CodexAccessPreset): CodexAccessPreset {
+    if (!this.presetBlocked(preset)) return preset
+    const fallback = defaultCodexAccessPreset(this.deps.platform)
+    if (!this.presetBlocked(fallback)) return fallback
+    return CODEX_ACCESS_PRESETS.find((candidate) => !this.presetBlocked(candidate)) ?? preset
   }
 
   /** The `thread/settings/update` fields that differ from what Codex last
@@ -1882,7 +2109,9 @@ export class CodexSessionRuntime implements ManagedSessionRuntime {
           break
         case 'serviceTier':
           if (this.desired.serviceTier && this.desired.serviceTier !== read?.serviceTier)
-            update.serviceTier = this.desired.serviceTier
+            // Standard is no tier (`null` clears it, read back as `default`).
+            update.serviceTier =
+              this.desired.serviceTier === CODEX_STANDARD_SERVICE_TIER ? null : this.desired.serviceTier
           break
         case 'preset':
           if (this.desired.preset !== read?.preset) {
@@ -1907,7 +2136,7 @@ export class CodexSessionRuntime implements ManagedSessionRuntime {
       case 'effort':
         return update.effort === read.effort
       case 'serviceTier':
-        return update.serviceTier === read.serviceTier
+        return (update.serviceTier ?? CODEX_STANDARD_SERVICE_TIER) === read.serviceTier
       case 'approvalPolicy':
       case 'approvalsReviewer':
       case 'sandboxPolicy':
@@ -1917,19 +2146,29 @@ export class CodexSessionRuntime implements ManagedSessionRuntime {
     }
   }
 
-  /** The next read-back after `since`, or undefined if none comes within
-   * the control budget. */
-  private settingsReadBack(since: number): Promise<CodexReadBack | undefined> {
-    if (this.settingsVersion > since) return Promise.resolve(this.readBack)
+  /** The first read-back after `since` that `matches` (the change's own),
+   * else, once the control budget runs out, the last one after `since`, or
+   * undefined when none came. */
+  private settingsReadBack(
+    since: number,
+    matches: (read: CodexReadBack) => boolean,
+  ): Promise<CodexReadBack | undefined> {
+    const answer = () => (this.settingsVersion > since ? this.readBack : undefined)
+    const now = answer()
+    if (now && matches(now)) return Promise.resolve(now)
     return new Promise((resolve) => {
-      const done = () => {
+      const finish = () => {
         clearTimeout(timer)
-        this.settingsWaiters.delete(done)
-        resolve(this.settingsVersion > since ? this.readBack : undefined)
+        this.settingsWaiters.delete(check)
+        resolve(answer())
       }
-      const timer = setTimeout(done, this.timeouts.controlRequestMs)
+      const check = () => {
+        const read = answer()
+        if (read && matches(read)) finish()
+      }
+      const timer = setTimeout(finish, this.timeouts.controlRequestMs)
       timer.unref?.()
-      this.settingsWaiters.add(done)
+      this.settingsWaiters.add(check)
     })
   }
 
@@ -1948,8 +2187,11 @@ export class CodexSessionRuntime implements ManagedSessionRuntime {
   /** A thread just opened (`thread/start` or `thread/resume`): its settings
    * are the first read-back. Values the user picked are kept when the
    * catalog offers them; the next turn sends them. */
-  private takeOpened(opened: OpenedSettings): void {
-    this.openedWebSearch = this.desired.webSearch
+  private takeOpened(thread: OpenedThread): void {
+    const opened = thread.settings
+    this.openedWebSearch = thread.webSearch
+    // Resumed, it may hold turns; started, it holds none yet.
+    this.threadRanTurn = thread.state === 'loaded'
     this.readBack = readBackOf({
       model: opened.model,
       effort: opened.reasoningEffort,
@@ -1968,10 +2210,11 @@ export class CodexSessionRuntime implements ManagedSessionRuntime {
   private followReadBack(): void {
     const read = this.readBack
     if (!read) return
-    if (!this.queued.has('model') && this.offersModel(read.model)) this.modelId = read.model
-    if (!this.queued.has('effort') && read.effort) this.desired.effort = read.effort
-    if (!this.queued.has('serviceTier')) this.desired.serviceTier = read.serviceTier
-    if (!this.queued.has('preset') && read.preset) this.desired.preset = read.preset
+    const held = (field: CodexSettingField) => this.queued.has(field) || this.inFlight.has(field)
+    if (!held('model') && this.offersModel(read.model)) this.modelId = read.model
+    if (!held('effort') && read.effort) this.desired.effort = read.effort
+    if (!held('serviceTier')) this.desired.serviceTier = read.serviceTier
+    if (!held('preset') && read.preset) this.desired.preset = read.preset
   }
 
   /** Effort and speed the selected model does not offer fall back to its
@@ -2222,6 +2465,20 @@ type OpenedThread = {
   name: string | undefined
   state: 'created' | 'loaded'
   settings: OpenedSettings
+  /** The web search mode it was opened with; undefined is the user's config. */
+  webSearch: WebSearchMode | undefined
+}
+
+/** JSON-RPC's "method not found": an older Codex without the method. */
+const RPC_METHOD_NOT_FOUND = -32601
+
+/** Codex took a settings change but read back another value: the value it
+ * kept stands, and the change is refused. */
+class CodexSettingsKeptError extends Error {
+  constructor(message: string) {
+    super(message)
+    this.name = 'CodexSettingsKeptError'
+  }
 }
 
 function readBackOf(settings: {

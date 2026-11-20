@@ -1028,7 +1028,12 @@ describe('explicit session creation', () => {
       create({ ...input, firstMessage: 'Plan it', preference, modeId: 'plan' }),
     ).payload
     expect(launchPreference).toHaveBeenCalledWith(input.workspaceId, 'opencode', preference)
-    expect(seedSessionComposer).toHaveBeenCalledWith(created.session.sessionId, preference)
+    // The draft's mode too: the process starts in it (Codex restores it on
+    // `thread/start`), not in the provider's default until the turn sets it.
+    expect(seedSessionComposer).toHaveBeenCalledWith(created.session.sessionId, {
+      ...preference,
+      modeId: 'plan',
+    })
     await vi.waitFor(() => expect(runtime.prompt).toHaveBeenCalledTimes(1))
     expect(order).toEqual(['filed', 'seeded', 'started'])
     // The same path a plan build takes: the mode is set on the live session

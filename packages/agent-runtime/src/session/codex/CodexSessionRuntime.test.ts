@@ -7,6 +7,7 @@ import { PermissionBroker } from '../../core/PermissionBroker.js'
 import { codex } from '../../providers/codex.js'
 import type { HostDeps } from '../../host.js'
 import type { SessionRuntimeSpec } from '../SessionRuntime.js'
+import type { DesiredSessionConfig } from '../lifecycle.js'
 import { CodexAppServerClient } from './CodexAppServerClient.js'
 import { CodexRpcError } from './CodexRpcPeer.js'
 import { CodexSessionRuntime, CodexSteerRefusedError, isArchivedThread } from './CodexSessionRuntime.js'
@@ -107,6 +108,7 @@ function replay(scenario: ConstructorParameters<typeof ReplayCodexAppServer>[0])
   server.respond('configRequirements/read', { requirements: null } as never)
   server.respond('experimentalFeature/list', { data: [], nextCursor: null } as never)
   server.respond('config/read', { config: {}, origins: {}, layers: null } as never)
+  server.respond('permissionProfile/list', { data: [], nextCursor: null } as never)
   return server
 }
 
@@ -1849,12 +1851,17 @@ describe('CodexSessionRuntime composer settings', () => {
       spec?: Partial<SessionRuntimeSpec>
       onTurn?: (turn: FakeCodexTurn) => void
       setup?: (server: FakeCodexAppServer) => void
+      controlRequestMs?: number
     } = {},
   ) {
     const server = new FakeCodexAppServer()
     server.respond('model/list', CATALOG as never).serveThreads(options.onTurn)
     options.setup?.(server)
-    return build({ server, ...(options.spec ? { spec: options.spec } : {}) })
+    return build({
+      server,
+      ...(options.spec ? { spec: options.spec } : {}),
+      ...(options.controlRequestMs ? { controlRequestMs: options.controlRequestMs } : {}),
+    })
   }
 
   const option = (events: BackendEvent[], id: string) => {
@@ -1940,7 +1947,7 @@ describe('CodexSessionRuntime composer settings', () => {
   })
 
   it('refuses a change Codex reads back otherwise, and shows what it kept', async () => {
-    const { server, runtime, events } = session()
+    const { server, runtime, events } = session({ controlRequestMs: 200 })
     await runtime.start()
     server.respond('thread/settings/update', (params) => {
       setImmediate(() =>
@@ -2097,5 +2104,193 @@ describe('CodexSessionRuntime composer settings', () => {
       }),
     ).rejects.toThrow(/GPT-6-MINI cannot read images/)
     expect(server.requests('turn/start')).toHaveLength(0)
+  })
+
+  /** A session whose thread has run one turn, so Codex has it on disk. */
+  async function prompted(options: Parameters<typeof session>[0] = {}) {
+    const turns: FakeCodexTurn[] = []
+    const built = session({ ...options, onTurn: (t) => turns.push(t) })
+    await built.runtime.start()
+    const first = built.runtime.prompt({ prompt: PROMPT })
+    await vi.waitFor(() => expect(turns).toHaveLength(1))
+    turns[0]!.completed()
+    await first
+    /** Run one more turn, with what the host would pass. */
+    const turn = async (desiredConfig?: DesiredSessionConfig) => {
+      const count = turns.length
+      const next = built.runtime.prompt({ prompt: PROMPT, ...(desiredConfig ? { desiredConfig } : {}) })
+      await vi.waitFor(() => expect(turns).toHaveLength(count + 1))
+      turns[count]!.completed()
+      await next
+      return built.server.requests('turn/start').at(-1)!.params
+    }
+    return { ...built, turns, turn }
+  }
+
+  // Review: a draft's Supervised was shown while turns ran on the default.
+  it('applies the access preset a prompt names, as a draft’s first turn does', async () => {
+    let turn: FakeCodexTurn | undefined
+    const { server, runtime, events } = session({ onTurn: (t) => (turn = t) })
+    await runtime.start()
+    const prompt = runtime.prompt({ prompt: PROMPT, desiredConfig: { modeId: 'supervised' } })
+    await vi.waitFor(() => expect(turn).toBeDefined())
+    expect(server.requests('turn/start')[0]!.params).toMatchObject({
+      approvalPolicy: 'untrusted',
+      sandboxPolicy: { type: 'readOnly' },
+    })
+    expect(events.filter((e) => e.event === 'current_mode_update').at(-1)).toMatchObject({
+      data: { currentModeId: 'supervised' },
+    })
+    turn!.completed()
+    await prompt
+  })
+
+  it('does not take a preset a policy rules out from a prompt', async () => {
+    const { turn } = await prompted({
+      setup: (server) =>
+        server.respond('configRequirements/read', {
+          supportsIndependentSpeedModes: true,
+          requirements: buildRequirements({ allowedSandboxModes: ['read-only', 'workspace-write'] }),
+        } as never),
+    })
+    expect(await turn({ modeId: 'full-access' })).toMatchObject({ approvalPolicy: 'on-request' })
+  })
+
+  // Review: a refused setMode('full-access') still ran the next turn unsandboxed.
+  it('leaves the selection as it was when Codex refuses a change', async () => {
+    const { server, runtime, events, turn } = await prompted()
+    server.fail('thread/settings/update', -32600, 'not now')
+    await expect(runtime.setMode('full-access')).rejects.toThrow(/not now/)
+    await expect(runtime.setConfigOption('effort', 'ultra')).rejects.toThrow(/not now/)
+    // Never shown as taken.
+    expect(
+      events.filter((e) => e.event === 'current_mode_update').map((e) => (e.data as { currentModeId: string }).currentModeId),
+    ).not.toContain('full-access')
+    expect(option(events, 'effort')).toBe('low')
+    expect(await turn()).toMatchObject({
+      approvalPolicy: 'on-request',
+      sandboxPolicy: { type: 'workspaceWrite' },
+      effort: 'low',
+    })
+  })
+
+  it('sends a change at the next turn when this Codex has no thread/settings/update', async () => {
+    const { server, runtime, turn } = await prompted()
+    server.fail('thread/settings/update', -32601, 'unknown method')
+    await runtime.setConfigOption('effort', 'high')
+    await runtime.setMode('supervised')
+    expect(await turn()).toMatchObject({ effort: 'high', approvalPolicy: 'untrusted' })
+  })
+
+  it('queues a change for the next turn while the thread is to be opened again', async () => {
+    const { server, runtime, turn } = await prompted()
+    server.notify('thread/closed', { threadId: runtime.sessionId! })
+    await vi.waitFor(() =>
+      expect((runtime as unknown as { reopen: unknown }).reopen).toBe('closed'),
+    )
+    const updates = server.requests('thread/settings/update').length
+    await runtime.setMode('supervised')
+    expect(server.requests('thread/settings/update')).toHaveLength(updates)
+    expect(await turn()).toMatchObject({ approvalPolicy: 'untrusted', sandboxPolicy: { type: 'readOnly' } })
+    expect(server.requests('thread/resume').at(-1)!.params).toMatchObject({ sandbox: 'read-only' })
+  })
+
+  // Review: High → Low → High lost the last one; each waits for its own read-back.
+  it('runs quick changes one at a time, each on its own read-back', async () => {
+    const { server, runtime, events, turn } = await prompted()
+    await Promise.all([
+      runtime.setConfigOption('effort', 'high'),
+      runtime.setConfigOption('effort', 'low'),
+      runtime.setConfigOption('effort', 'high'),
+      runtime.setConfigOption('effort', 'ultra'),
+    ])
+    expect(server.requests('thread/settings/update').map((r) => r.params.effort)).toEqual([
+      'high',
+      'low',
+      'high',
+      'ultra',
+    ])
+    expect(option(events, 'effort')).toBe('ultra')
+    expect(await turn()).toMatchObject({ effort: 'ultra' })
+  })
+
+  it('waits past an earlier change’s read-back for its own', async () => {
+    const { server, runtime } = await prompted({ controlRequestMs: 500 })
+    // Codex reads back a stale value first, then the change.
+    server.respond('thread/settings/update', (params) => {
+      const settings = (effort: string) =>
+        codexBuilders.buildThreadSettings({ model: 'gpt-6-luna', effort, serviceTier: 'default' })
+      setImmediate(() => {
+        server.notify('thread/settings/updated', { threadId: params.threadId, threadSettings: settings('low') })
+        setImmediate(() =>
+          server.notify('thread/settings/updated', {
+            threadId: params.threadId,
+            threadSettings: settings(params.effort!),
+          }),
+        )
+      })
+      return {}
+    })
+    await expect(runtime.setConfigOption('effort', 'high')).resolves.toBeUndefined()
+  })
+
+  // Review: a reopen raced a prompt, orphaning a thread.
+  it('opens the thread once for a web search change, with a prompt right behind it', async () => {
+    const { server, runtime, turns } = await prompted()
+    const threadId = runtime.sessionId
+    const change = runtime.setConfigOption('web_search', 'live')
+    const next = runtime.prompt({
+      prompt: PROMPT,
+      // What the host knew before the change: it must not undo it.
+      desiredConfig: { values: { web_search: 'cached' } },
+    })
+    await change
+    await vi.waitFor(() => expect(turns).toHaveLength(2))
+    turns[1]!.completed()
+    await next
+    expect(server.requests('thread/unsubscribe')).toHaveLength(1)
+    expect(server.requests('thread/resume')).toHaveLength(1)
+    expect(server.requests('thread/resume')[0]!.params).toMatchObject({
+      config: { web_search: 'live' },
+    })
+    expect(runtime.sessionId).toBe(threadId)
+    expect(server.requests('turn/start').at(-1)!.params.threadId).toBe(threadId)
+  })
+
+  // Review: a config reopen dropped the handover of a thread that had turns.
+  it('keeps the handover when a thread with turns is gone at a web search reopen', async () => {
+    const { server, runtime } = await prompted()
+    server.fail('thread/resume', -32600, 'no rollout found for thread id gone')
+    await runtime.setConfigOption('web_search', 'disabled')
+    expect((runtime as unknown as { handover: unknown }).handover).toMatchObject({ from: expect.any(String) })
+  })
+
+  // Review: standard speed was always named, which older CLIs never saw.
+  it('names a service tier on turn/start only when one other than standard is in play', async () => {
+    const { server, runtime, turn } = await prompted()
+    expect(server.requests('turn/start')[0]!.params).not.toHaveProperty('serviceTier')
+    await runtime.setConfigOption('service_tier', 'priority')
+    expect(await turn()).toMatchObject({ serviceTier: 'priority' })
+    await runtime.setConfigOption('service_tier', 'default')
+    expect(server.requests('thread/settings/update').at(-1)!.params).toMatchObject({ serviceTier: null })
+    expect(await turn()).not.toHaveProperty('serviceTier')
+  })
+
+  it('refuses a preset a permission profile rules out, and starts a blocked restored one in another', async () => {
+    const profiles = (server: FakeCodexAppServer) =>
+      server.respond('permissionProfile/list', {
+        data: codexBuilders.buildPermissionProfiles({ ':danger-full-access': false }),
+        nextCursor: null,
+      } as never)
+    const { runtime } = session({ setup: profiles })
+    await runtime.start()
+    await expect(runtime.setMode('full-access')).rejects.toThrow(/administrator/)
+
+    const restored = session({ setup: profiles, spec: { desiredConfig: { modeId: 'full-access' } } })
+    await restored.runtime.start()
+    expect(restored.server.requests('thread/start')[0]!.params).toMatchObject({
+      sandbox: 'workspace-write',
+      approvalPolicy: 'on-request',
+    })
   })
 })
