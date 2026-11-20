@@ -159,3 +159,23 @@ describe('isMissingThread', () => {
     expect(isMissingThread(new Error('no rollout found'))).toBe(false)
   })
 })
+
+describe('CodexTurn message phases', () => {
+  // Narration and answer are separate Codex messages; each chunk says which,
+  // so the host can keep them apart.
+  it('stamps every chunk with its message’s phase, streamed or backfilled', () => {
+    const { turn: t, out } = turn()
+    t.itemStarted(message('m1', '', 'commentary'))
+    t.agentMessageDelta({ ...ids, itemId: 'm1', delta: 'Reading greet.py.' })
+    t.itemCompleted(message('m1', 'Reading greet.py.', 'commentary'))
+    t.itemStarted(message('m2', '', 'final_answer'))
+    t.itemCompleted(message('m2', 'It greets.', 'final_answer'))
+    t.itemStarted(message('m3', ''))
+    t.agentMessageDelta({ ...ids, itemId: 'm3', delta: 'no phase' })
+    expect(out.map((o) => o.data)).toEqual([
+      { content: { type: 'text', text: 'Reading greet.py.' }, phase: 'commentary' },
+      { content: { type: 'text', text: 'It greets.' }, phase: 'final_answer' },
+      { content: { type: 'text', text: 'no phase' } },
+    ])
+  })
+})

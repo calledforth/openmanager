@@ -1,9 +1,12 @@
-import type { SessionUsage, TokenUsage } from '@agentpack/contract'
+import type { MessagePhase as ChunkPhase, SessionUsage, TokenUsage } from '@agentpack/contract'
 import type { MessagePhase, v2 } from '@openmanager/codex-app-server-protocol'
 
 /** What a turn says, in openmanager's terms. The runtime stamps the route. */
 export type CodexTurnOutput =
-  | { event: 'agent_message_chunk'; data: { content: { type: 'text'; text: string } } }
+  | {
+      event: 'agent_message_chunk'
+      data: { content: { type: 'text'; text: string }; phase?: ChunkPhase }
+    }
   | {
       event: 'agent_thought_chunk'
       data: { phase: 'start' | 'delta' | 'stop'; content?: { type: 'text'; text: string } }
@@ -52,7 +55,7 @@ export class CodexTurn {
     const message = this.messages.get(params.itemId)
     if (message) message.streamed = true
     else this.messages.set(params.itemId, { phase: null, streamed: true })
-    this.text(params.delta)
+    this.text(params.delta, message?.phase ?? null)
   }
 
   reasoningPartAdded(params: v2.ReasoningSummaryPartAddedNotification): void {
@@ -74,7 +77,7 @@ export class CodexTurn {
         const message = this.messages.get(item.id)
         // A message whose deltas never arrived (a short one can come whole)
         // is backfilled from the completed item, so no answer is lost.
-        if (!message?.streamed && item.text) this.text(item.text)
+        if (!message?.streamed && item.text) this.text(item.text, item.phase ?? message?.phase ?? null)
         this.messages.delete(item.id)
         return
       }
@@ -139,8 +142,15 @@ export class CodexTurn {
     this.emit({ event: 'agent_thought_chunk', data: { phase: 'stop' } })
   }
 
-  private text(text: string): void {
-    this.emit({ event: 'agent_message_chunk', data: { content: { type: 'text', text } } })
+  /** Codex names each message's phase when it starts (`item/started`):
+   * narration while it works (`commentary`) or the answer. Every chunk
+   * carries it, so the host keeps the two apart and the timeline folds the
+   * narration into the work instead of running it into the answer. */
+  private text(text: string, phase: MessagePhase | null): void {
+    this.emit({
+      event: 'agent_message_chunk',
+      data: { content: { type: 'text', text }, ...(phase ? { phase } : {}) },
+    })
   }
 
   private thought(text: string): void {
