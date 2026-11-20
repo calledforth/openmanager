@@ -1013,9 +1013,9 @@ describe('CodexSessionRuntime against a recording', () => {
     runtime.dispose()
   })
 
-  // The recording's file was in a throwaway workspace, gone now: the row
-  // says the image could not be shown, and why.
-  it('reports the recorded image view as a read, failed with why when its file is gone', async () => {
+  // The recording's file was in a throwaway workspace, gone now: the read
+  // completes (the model saw it) with a note on why the chat cannot show it.
+  it('reports the recorded image view as a read, with why its file cannot be shown', async () => {
     const server = new ReplayCodexAppServer('image-view')
     server.respond('model/list', MODELS as never)
     const { runtime, events } = build({ server })
@@ -1030,8 +1030,13 @@ describe('CodexSessionRuntime against a recording', () => {
     const settled = events.filter((e) => e.event === 'tool_call_update').map((e) => e.data as ToolCallUpdate)
     expect(settled).toEqual([
       expect.objectContaining({
-        status: 'failed',
-        rawOutput: { error: 'The image could not be shown: There is no file at /workspace/dot.png any more.' },
+        status: 'completed',
+        content: [
+          {
+            type: 'content',
+            content: { type: 'text', text: 'Not shown in the chat: There is no file at /workspace/dot.png any more.' },
+          },
+        ],
       }),
     ])
     runtime.dispose()
@@ -1170,9 +1175,35 @@ describe('CodexSessionRuntime images', () => {
       expect(images(events)).toEqual([
         { toolCallId: viewed!.id, type: 'image', mimeType: 'image/png', data: PNG.toString('base64') },
       ])
+      // Codex completed the turn the moment the item completed; the read is
+      // asynchronous, and the turn ends after the row settles with its image.
+      const order = names(events)
+      expect(order.indexOf('tool_call_update')).toBeGreaterThan(-1)
+      expect(order.indexOf('tool_call_update')).toBeLessThan(order.indexOf('prompt_completed'))
       expect(events.find((e) => e.event === 'tool_call')).toMatchObject({
         data: { toolName: 'imageView', kind: 'read', locations: [{ path }] },
       })
+      runtime.dispose()
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  it('reads a relative path the model looked at from the session’s directory', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'codex-viewed-'))
+    try {
+      writeFileSync(join(dir, 'shot.png'), PNG)
+      const { runtime, events } = build({
+        spec: { cwd: dir },
+        onTurn: (t) => {
+          t.started()
+          t.imageView('shot.png')
+          t.completed()
+        },
+      })
+      await runtime.start()
+      await runtime.prompt({ prompt: PROMPT })
+      expect(images(events)).toHaveLength(1)
       runtime.dispose()
     } finally {
       rmSync(dir, { recursive: true, force: true })

@@ -1,4 +1,5 @@
-import { closeSync, constants, fstatSync, openSync, readSync } from 'node:fs'
+import { constants } from 'node:fs'
+import { open } from 'node:fs/promises'
 import { isAbsolute } from 'node:path'
 import type { ContentBlock } from '@agentpack/contract'
 import type { v2 } from '@openmanager/codex-app-server-protocol'
@@ -14,9 +15,13 @@ import type { v2 } from '@openmanager/codex-app-server-protocol'
  * files it in the reply under the call's id, as it does any tool's image
  * (CAL-199), so the chat keeps it after the file is gone.
  *
+ * Reads are asynchronous: a file on a slow mount (`/mnt/c` under WSL) must
+ * not hold up the environment's other sessions.
+ *
  * What is read, and what is refused (with a reason the row shows):
- * - only an absolute path to a regular file, opened without blocking, so a
- *   path that names a FIFO or a device cannot hang the runtime;
+ * - only an absolute path to a regular file, opened without blocking and
+ *   without becoming a controlling terminal, so a path that names a FIFO or
+ *   a device cannot hang the read;
  * - at most `MAX_CODEX_IMAGE_BYTES`, the most the environment keeps of an
  *   image a tool returns (its `MAX_ATTACHMENT_BYTES`);
  * - only PNG, JPEG or WebP, known by the file's leading bytes, never its
@@ -30,14 +35,21 @@ export const MAX_CODEX_IMAGE_BYTES = 25 * 1024 * 1024
 
 export type ImageRead = { image: ContentBlock & { type: 'image' } } | { error: string }
 
+/** How a file is read for its image: `readImageFile`, or a test's stand-in. */
+export type ImageReader = (path: string) => Promise<ImageRead>
+
+/** O_NONBLOCK: opening a FIFO for reading would otherwise wait for a writer.
+ * O_NOCTTY: a terminal device opened here never becomes ours. Neither exists
+ * on Windows, where Node leaves them undefined. */
+const OPEN_FLAGS = constants.O_RDONLY | (constants.O_NONBLOCK ?? 0) | (constants.O_NOCTTY ?? 0)
+
 /** The image in the file at `path`, or why it cannot be shown. */
-export function readImageFile(path: string, maxBytes = MAX_CODEX_IMAGE_BYTES): ImageRead {
+export async function readImageFile(path: string, maxBytes = MAX_CODEX_IMAGE_BYTES): Promise<ImageRead> {
   if (!path) return { error: 'Codex named no file for the image.' }
   if (!isAbsolute(path)) return { error: `${path} is not an absolute path, so it was not read.` }
-  let fd: number
+  let handle
   try {
-    // O_NONBLOCK: opening a FIFO for reading would otherwise wait for a writer.
-    fd = openSync(path, constants.O_RDONLY | (constants.O_NONBLOCK ?? 0))
+    handle = await open(path, OPEN_FLAGS)
   } catch (error) {
     const code = (error as NodeJS.ErrnoException).code
     if (code === 'ENOENT') return { error: `There is no file at ${path} any more.` }
@@ -47,7 +59,7 @@ export function readImageFile(path: string, maxBytes = MAX_CODEX_IMAGE_BYTES): I
   }
   try {
     // Checked on what was opened, so a file swapped after a look is judged as read.
-    const stat = fstatSync(fd)
+    const stat = await handle.stat()
     if (!stat.isFile()) return { error: `${path} is not a file.` }
     if (stat.size === 0) return { error: `${path} is empty.` }
     if (stat.size > maxBytes) return { error: tooLarge(path, maxBytes) }
@@ -55,9 +67,9 @@ export function readImageFile(path: string, maxBytes = MAX_CODEX_IMAGE_BYTES): I
     const bytes = Buffer.alloc(Math.min(stat.size, maxBytes) + 1)
     let length = 0
     while (length < bytes.length) {
-      const read = readSync(fd, bytes, length, bytes.length - length, length)
-      if (read === 0) break
-      length += read
+      const { bytesRead } = await handle.read(bytes, length, bytes.length - length, length)
+      if (bytesRead === 0) break
+      length += bytesRead
     }
     if (length > maxBytes) return { error: tooLarge(path, maxBytes) }
     return imageOf(bytes.subarray(0, length), path)
@@ -65,7 +77,7 @@ export function readImageFile(path: string, maxBytes = MAX_CODEX_IMAGE_BYTES): I
     const code = (error as NodeJS.ErrnoException).code
     return { error: `${path} could not be read (${code ?? 'unknown error'}).` }
   } finally {
-    closeSync(fd)
+    await handle.close().catch(() => undefined)
   }
 }
 
@@ -86,10 +98,13 @@ export function decodeImage(data: string, what: string, maxBytes = MAX_CODEX_IMA
  * in for it. Only when both fail is the image lost, and the reason is the
  * file's: that is where the image was meant to be.
  */
-export function generatedImage(item: Extract<v2.ThreadItem, { type: 'imageGeneration' }>): ImageRead {
+export async function generatedImage(
+  item: Extract<v2.ThreadItem, { type: 'imageGeneration' }>,
+  read: ImageReader = readImageFile,
+): Promise<ImageRead> {
   const result = 'result' in item && typeof item.result === 'string' ? item.result : ''
   if (item.savedPath) {
-    const saved = readImageFile(item.savedPath)
+    const saved = await read(item.savedPath)
     if ('image' in saved || !result) return saved
     const inline = decodeImage(result, 'The generated image')
     return 'image' in inline ? inline : saved

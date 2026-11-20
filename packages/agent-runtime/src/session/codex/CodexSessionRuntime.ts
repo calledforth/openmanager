@@ -909,7 +909,7 @@ export class CodexSessionRuntime implements ManagedSessionRuntime {
       markIdentified = res
     })
     const active: ActiveTurn = {
-      turn: new CodexTurn((output) => this.emitTurnOutput(output), this.tokenBaseline),
+      turn: new CodexTurn((output) => this.emitTurnOutput(output), this.tokenBaseline, this.cwd),
       background,
       resolve,
       reject,
@@ -1564,7 +1564,10 @@ export class CodexSessionRuntime implements ManagedSessionRuntime {
         const { turn } = params as v2.TurnCompletedNotification
         if (active && (!active.turn.turnId || active.turn.turnId === turn.id)) {
           this.identifyTurn(active, turn.id)
-          this.finishTurn(active, turn)
+          // An image still being read settles its row inside the turn.
+          const reading = active.turn.imagesRead()
+          if (reading) void reading.then(() => this.finishTurn(active, turn))
+          else this.finishTurn(active, turn)
         }
         return
       }

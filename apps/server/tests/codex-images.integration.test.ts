@@ -56,9 +56,9 @@ const PNG = Buffer.from(
   'base64',
 )
 
-async function codexHost(script: (turn: FakeCodexTurn) => void | Promise<void>) {
+async function codexHost(script: (turn: FakeCodexTurn) => void) {
   const codex = fakeCodexStarter((server) => {
-    server.serveThreads((turn) => void script(turn))
+    server.serveThreads(script)
   })
   const host = await startProtocolHost({
     runtimeOptions: {
@@ -121,19 +121,20 @@ async function scratch() {
 }
 
 describe('Codex images', () => {
-  it('copies a generated image into the store before its temporary file goes, with its call', async () => {
+  it('copies a generated image into the store, with its call, so it outlives the temporary file', async () => {
     const dir = await scratch()
     const savedPath = join(dir, 'ig-1.png')
-    const host = await codexHost(async (turn) => {
+    await writeFile(savedPath, PNG)
+    const host = await codexHost((turn) => {
       turn.started()
-      await writeFile(savedPath, PNG)
       turn.imageGeneration({ savedPath })
-      // Codex's temporary file is gone the moment the item has been read.
-      await rm(savedPath)
+      // Codex ends the turn at once; the turn waits for the image's read.
       turn.agentMessage('Here it is.', { phase: 'final_answer' })
       turn.completed()
     })
     const { sessionId, records } = await runTurn(host)
+    // Codex's temporary file goes; the chat's copy stays.
+    await rm(savedPath)
 
     const rows = generatedRows(host.dataDir)
     expect(rows).toHaveLength(1)
@@ -178,7 +179,7 @@ describe('Codex images', () => {
     expect(JSON.stringify(records)).not.toContain(PNG.toString('base64'))
   })
 
-  it('shows the image the model looked at, and stores nothing for one it cannot show', async () => {
+  it('shows the image the model looked at, and notes why for one it cannot show', async () => {
     const dir = await scratch()
     const shot = join(dir, 'shot.png')
     await writeFile(shot, PNG)
@@ -209,8 +210,9 @@ describe('Codex images', () => {
         )
         .at(-1)!.event.payload
     expect(last(ids[0]!)).toMatchObject({ status: 'completed' })
-    // The one it could not show fails with why, which the row opens on.
-    expect(last(ids[1]!)).toMatchObject({ status: 'failed', outputBytes: expect.any(Number) })
+    // The model saw the other one too: its read completes, and opens on why
+    // the chat cannot show it.
+    expect(last(ids[1]!)).toMatchObject({ status: 'completed', outputBytes: expect.any(Number) })
   })
 
   it('stores nothing for a generation Codex could not finish, and the row fails', async () => {
