@@ -128,6 +128,7 @@ export class CodexSessionRuntime implements ManagedSessionRuntime {
    * connection and is kept out of this thread's. */
   private readonly subagents = new CodexSubagents(
     () => this.sessionIdValue,
+    () => this.active !== undefined,
     (output) => this.emitSubagentOutput(output),
   )
   /** Bumped by every prompt and stop, so a stop still sweeping subagents
@@ -327,7 +328,11 @@ export class CodexSessionRuntime implements ManagedSessionRuntime {
         )
         // A subagent's thread is its parent's, never a session of its own:
         // treated as one this session does not have.
-        if (isCodexSubagentThread(resumed.thread)) throw new CodexSubagentThreadError(existing)
+        if (isCodexSubagentThread(resumed.thread)) {
+          // Resuming subscribed this connection to it; let it go again.
+          await this.unsubscribe(client, resumed.thread.id)
+          throw new CodexSubagentThreadError(existing)
+        }
         return { threadId: resumed.thread.id, model: resumed.model, state: 'loaded' }
       } catch (error) {
         if (!isMissingThread(error) && !(error instanceof CodexSubagentThreadError)) throw error
@@ -352,6 +357,19 @@ export class CodexSessionRuntime implements ManagedSessionRuntime {
       { timeoutMs: this.timeouts.newSessionMs },
     )
     return { threadId: started.thread.id, model: started.model, state: 'created' }
+  }
+
+  private async unsubscribe(client: CodexAppServerClient, threadId: string): Promise<void> {
+    try {
+      await client.request('thread/unsubscribe', { threadId }, { timeoutMs: this.timeouts.controlRequestMs })
+    } catch (error) {
+      this.deps.host.log({
+        scope: 'codex',
+        level: 'info',
+        message: 'Codex refused to unsubscribe from a subagent thread',
+        data: { threadId, error: errorMessage(error) },
+      })
+    }
   }
 
   /** Until approvals have a UI (CAL-258), every one is declined: nothing
@@ -440,13 +458,18 @@ export class CodexSessionRuntime implements ManagedSessionRuntime {
 
   /** Stop: the turn in flight and every subagent turn, children included,
    * since interrupting a parent's turn leaves its children running. Never
-   * starts a process to do it: with no live runtime there is nothing to stop. */
+   * starts a process to do it: with no live runtime there is nothing to stop.
+   * Resolves once the parent's turn has ended and every running child has
+   * been sent its interrupt; the host holds the session busy until then, so
+   * the bounded look for late children carries on detached. */
   async cancel(): Promise<void> {
     if (this.exitValue || this.phaseValue !== 'ready') return
     this.deps.permissions.cancelThread(this.providerId, this.threadIdValue)
     this.deps.interactions.cancelThread(this.providerId, this.threadIdValue)
-    const generation = ++this.stopGeneration
-    await Promise.all([this.cancelTurn(), this.stopSubagents(generation)])
+    // The parent's interrupt goes out first, then the children's.
+    const turn = this.cancelTurn()
+    this.sweepSubagents(++this.stopGeneration)
+    await turn
   }
 
   private async cancelTurn(): Promise<void> {
@@ -471,6 +494,18 @@ export class CodexSessionRuntime implements ManagedSessionRuntime {
       })
       this.completeTurn(active, 'cancelled')
     }
+  }
+
+  /** Sends the first round of interrupts now, and looks again detached. */
+  private sweepSubagents(generation: number, under?: string): void {
+    void this.stopSubagents(generation, under).catch((error: unknown) =>
+      this.deps.host.log({
+        scope: 'codex',
+        level: 'warn',
+        message: 'Stopping Codex subagents failed',
+        data: { error: errorMessage(error) },
+      }),
+    )
   }
 
   /** Interrupt every running subagent turn, and keep looking for children
@@ -535,10 +570,11 @@ export class CodexSessionRuntime implements ManagedSessionRuntime {
     }
   }
 
-  /** Stop one subagent from its card, with the subagents it started. */
+  /** Stop one subagent from its card, with the subagents it started.
+   * Resolves once their interrupts are sent, as `cancel` does. */
   async stopSubtask(taskId: string): Promise<void> {
     if (this.exitValue || !this.subagents.has(taskId)) return
-    await this.stopSubagents(this.stopGeneration, taskId)
+    this.sweepSubagents(this.stopGeneration, taskId)
   }
 
   private async sendInterrupt(active: ActiveTurn): Promise<void> {
@@ -742,6 +778,8 @@ export class CodexSessionRuntime implements ManagedSessionRuntime {
     this.rememberFinished(active)
     active.turn.finish()
     if (this.active === active) this.active = undefined
+    // Children run on past a failed turn too; not past the process.
+    if (this.phaseValue !== 'exited') this.subagents.parentTurnEnded()
     const message = errorMessage(error)
     this.emit(
       routeEvent(this.route(), this.sessionIdValue, 'error', 'runtime_error', {

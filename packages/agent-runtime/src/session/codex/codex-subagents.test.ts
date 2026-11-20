@@ -9,7 +9,12 @@ import { codex } from '../../providers/codex.js'
 import type { SessionRuntimeSpec } from '../SessionRuntime.js'
 import { CodexAppServerClient } from './CodexAppServerClient.js'
 import { CodexSessionRuntime } from './CodexSessionRuntime.js'
-import { codexNotificationScope, isCodexSubagentThread } from './codex-subagents.js'
+import {
+  codexNotificationScope,
+  CodexSubagents,
+  isCodexSubagentThread,
+  type CodexSubagentOutput,
+} from './codex-subagents.js'
 import type { CodexStarter } from './start.js'
 import { FakeCodexAppServer, type FakeCodexThread, type FakeCodexTurn } from './testing/index.js'
 import { ReplayCodexAppServer } from './testing/ReplayCodexAppServer.js'
@@ -239,12 +244,12 @@ describe('CodexSessionRuntime subagents', () => {
     interruptible(server, () => [turn, childTurn])
     await runtime.cancel()
     await prompt
+    await vi.waitFor(() => expect(runtime.busy).toBe(false))
     expect(server.requests('turn/interrupt').map((r) => r.params)).toEqual([
       { threadId: turn.threadId, turnId: turn.id },
       { threadId: child.id, turnId: childTurn.id },
     ])
     expect(subtasks(events).at(-1)).toMatchObject({ taskId: child.id, status: 'interrupted' })
-    expect(runtime.busy).toBe(false)
   })
 
   it('stops the parent turn and every child, including one that starts late', async () => {
@@ -277,6 +282,7 @@ describe('CodexSessionRuntime subagents', () => {
     })
     await runtime.cancel()
     await prompt
+    await vi.waitFor(() => expect(runtime.busy).toBe(false))
     const interrupted = server.requests('turn/interrupt').map((r) => r.params.threadId)
     expect(interrupted).toEqual(
       expect.arrayContaining([turn.threadId, first.id, grandchild.id, second.id]),
@@ -296,8 +302,10 @@ describe('CodexSessionRuntime subagents', () => {
     await prompt
     expect(Date.now() - started).toBeLessThan(1_000)
     expect(server.requests('turn/interrupt').map((r) => r.params.threadId)).toContain(child.id)
-    expect(log).toHaveBeenCalledWith(
-      expect.objectContaining({ message: expect.stringMatching(/still running/) }),
+    await vi.waitFor(() =>
+      expect(log).toHaveBeenCalledWith(
+        expect.objectContaining({ message: expect.stringMatching(/still running/) }),
+      ),
     )
     expect(runtime.busy).toBe(true)
     childTurn.interrupted()
@@ -321,8 +329,8 @@ describe('CodexSessionRuntime subagents', () => {
 
     interruptible(server, () => [childTurn])
     await runtime.cancel()
+    await vi.waitFor(() => expect(runtime.busy).toBe(false))
     expect(server.requests('turn/interrupt').map((r) => r.params.threadId)).toEqual([child.id])
-    expect(runtime.busy).toBe(false)
   })
 
   it('stops one child from its card', async () => {
@@ -457,7 +465,8 @@ describe('CodexSessionRuntime subagents', () => {
     expect(texts(events)).toBe('')
     const byChild = (id: string) => subtasks(events).filter((u) => u.taskId === id && u.status)
     expect(byChild(child.id).map((u) => u.status)).toEqual(['running', 'interrupted', 'completed'])
-    expect(byChild(restarted.id).map((u) => u.status)).toEqual(['pending', 'running', 'completed'])
+    // Known but cardless until it runs: Codex had not said it exists.
+    expect(byChild(restarted.id).map((u) => u.status)).toEqual(['running', 'completed'])
     expect(byChild(restarted.id)[0]).toMatchObject({ title: 'old' })
     void server
   })
@@ -478,14 +487,238 @@ describe('CodexSessionRuntime subagents', () => {
     const parent = server.thread({ id: 'parent' })
     const child = parent.child({ id: 'child' })
     server.respond('thread/resume', child.startResponse() as never)
+    server.respond('thread/unsubscribe', { status: 'unsubscribed' } as never)
     const { runtime } = build({ server, spec: { sessionId: 'child' } })
     const result = await runtime.start()
     expect(result.state).toBe('created')
     expect(result.sessionId).not.toBe('child')
+    // Resuming subscribed the connection to the child; it lets go.
+    expect(server.requests('thread/unsubscribe').map((r) => r.params)).toEqual([
+      { threadId: 'child' },
+    ])
 
     const strict = build({ server, spec: { sessionId: 'child', load: 'require' } })
     await expect(strict.runtime.start()).rejects.toBeInstanceOf(SessionUnknownError)
     runtime.dispose()
+  })
+})
+
+describe('CodexSessionRuntime subagents, review regressions', () => {
+  it('cancels the card of a running child that is closed, and forgets it', async () => {
+    const { server, runtime, events, turn, prompt } = await running()
+    const closed = turn.thread.child()
+    const gone = turn.thread.child()
+    const shut = turn.thread.child()
+    const childTurns = [closed, gone, shut].map((child) => {
+      turn.spawnSubagent(child)
+      return child.turn().started()
+    })
+    await vi.waitFor(() => expect(runtime.busy).toBe(true))
+    const close = collabCall('closeAgent', turn.threadId, [closed.id])
+    turn.itemStarted(close)
+    turn.itemCompleted({ ...close, status: 'completed' })
+    server.notify('thread/closed', { threadId: gone.id })
+    const list = collabCall('listAgents', turn.threadId, [])
+    turn.itemStarted(list)
+    // A `shutdown` state for a child running no turn here.
+    childTurns[2]!.completed()
+    await tick()
+    turn.itemCompleted({
+      ...list,
+      status: 'completed',
+      agentsStates: { [shut.id]: { status: 'shutdown', message: null } },
+    })
+    await tick()
+    const last = (id: string) =>
+      subtasks(events)
+        .filter((u) => u.taskId === id && u.status)
+        .at(-1)
+    expect(last(closed.id)).toMatchObject({ status: 'cancelled' })
+    expect(last(gone.id)).toMatchObject({ status: 'cancelled' })
+    expect(last(shut.id)).toMatchObject({ status: 'completed' })
+    expect(runtime.busy).toBe(false)
+    // Forgotten: a stop has nothing of theirs to interrupt.
+    interruptible(server, () => [turn])
+    await runtime.cancel()
+    await prompt
+    expect(server.requests('turn/interrupt').map((r) => r.params.threadId)).toEqual([turn.threadId])
+  })
+
+  it('gives a messaged thread Codex never named no card, and does not count it', async () => {
+    const { runtime, events, turn, prompt } = await running()
+    const phantom = turn.thread.child()
+    const send = collabCall('sendInput', turn.threadId, [phantom.id])
+    turn.itemStarted(send)
+    turn.itemCompleted({
+      ...send,
+      status: 'failed',
+      agentsStates: { [phantom.id]: { status: 'notFound', message: null } },
+    })
+    const quiet = turn.thread.child({ agentNickname: 'quiet' })
+    const reach = collabCall('sendInput', turn.threadId, [quiet.id])
+    turn.itemStarted(reach)
+    turn.itemCompleted({ ...reach, status: 'completed' })
+    await tick()
+    expect(subtasks(events)).toEqual([])
+    expect(runtime.busy).toBe(false)
+    // Once it runs, it is real: a card, counted, and its stream kept apart.
+    const quietTurn = quiet.turn().started()
+    quietTurn.agentMessage('hidden')
+    await vi.waitFor(() => expect(runtime.busy).toBe(true))
+    expect(subtasks(events)).toMatchObject([
+      { taskId: quiet.id, status: 'running', toolCallId: reach.id },
+    ])
+    quietTurn.completed()
+    turn.completed()
+    await prompt
+    expect(texts(events)).toBe('')
+    expect(runtime.busy).toBe(false)
+  })
+
+  it('shows a known child as running when a collab call sees it running', async () => {
+    const { runtime, events, turn } = await running()
+    const child = turn.thread.child()
+    const send = collabCall('followupTask', turn.threadId, [child.id])
+    turn.itemStarted(send)
+    turn.itemCompleted({
+      ...send,
+      status: 'completed',
+      agentsStates: { [child.id]: { status: 'pendingInit', message: null } },
+    })
+    await vi.waitFor(() => expect(runtime.busy).toBe(true))
+    expect(subtasks(events)).toMatchObject([{ taskId: child.id, status: 'pending' }])
+    runtime.dispose()
+  })
+
+  it('resolves a stop without waiting for children that will not stop', async () => {
+    const { server, runtime, turn, prompt } = await running()
+    const stubborn = turn.thread.child()
+    turn.spawnSubagent(stubborn)
+    stubborn.turn().started()
+    interruptible(server, () => [turn])
+    const started = Date.now()
+    await runtime.cancel()
+    await prompt
+    // The default bound is 10 s; the stop resolved long before it.
+    expect(Date.now() - started).toBeLessThan(1_000)
+    expect(server.requests('turn/interrupt').map((r) => r.params.threadId)).toEqual([
+      turn.threadId,
+      stubborn.id,
+    ])
+    expect(runtime.busy).toBe(true)
+
+    // A new prompt ends the look: its own children are left alone.
+    let next: FakeCodexTurn | undefined
+    server.serveThreads((t) => (next = t))
+    const second = runtime.prompt({ prompt: PROMPT })
+    await vi.waitFor(() => expect(next).toBeDefined())
+    const fresh = next!.thread.child()
+    next!.spawnSubagent(fresh)
+    fresh.turn().started()
+    await tick()
+    expect(server.requests('turn/interrupt')).toHaveLength(2)
+    next!.completed()
+    await second
+    runtime.dispose()
+  })
+
+  it('reports children of a failed turn, and late ones, as in the background', async () => {
+    const { events, turn, prompt } = await running()
+    const child = turn.thread.child()
+    turn.spawnSubagent(child)
+    const childTurn = child.turn().started()
+    turn.failed('The model is overloaded')
+    await expect(prompt).rejects.toThrow(/overloaded/)
+    expect(subtasks(events)).toContainEqual({ taskId: child.id, background: true })
+    // Its own child, started once the parent had no turn: background at once.
+    const grandchild = child.child()
+    childTurn.spawnSubagent(grandchild)
+    await tick()
+    expect(subtasks(events).find((u) => u.taskId === grandchild.id)).toMatchObject({
+      status: 'running',
+      depth: 2,
+      parentTaskId: child.id,
+      background: true,
+    })
+  })
+
+  it('settles a child whose whole turn ran before an older spawn call named it', async () => {
+    const { runtime, events, turn, prompt } = await running()
+    const child = turn.thread.child()
+    const spawn = collabCall('spawnAgent', turn.threadId, [], { prompt: 'Be quick' })
+    turn.itemStarted(spawn)
+    const childTurn = child.turn().started()
+    childTurn.agentMessage('done')
+    childTurn.completed()
+    turn.itemCompleted({ ...spawn, status: 'completed', receiverThreadIds: [child.id] })
+    await tick()
+    expect(subtasks(events)).toMatchObject([
+      { taskId: child.id, toolCallId: spawn.id, prompt: 'Be quick', status: 'completed' },
+    ])
+    expect(runtime.busy).toBe(false)
+    turn.completed()
+    await prompt
+  })
+})
+
+describe('CodexSubagents', () => {
+  const tracker = () => {
+    const outputs: CodexSubagentOutput[] = []
+    const subagents = new CodexSubagents(
+      () => 'root',
+      () => true,
+      (output) => outputs.push(output),
+    )
+    const spawn = (threadId: string) =>
+      subagents.item(
+        'root',
+        {
+          type: 'subAgentActivity',
+          id: `call_${threadId}`,
+          kind: 'started',
+          agentThreadId: threadId,
+          agentPath: `/root/${threadId}`,
+          model: null,
+          reasoningEffort: null,
+        },
+        'started',
+        true,
+      )
+    const turnStarted = (threadId: string, turnId: string) =>
+      subagents.notification('turn/started', threadId, { threadId, turn: { id: turnId } })
+    return { subagents, outputs, spawn, turnStarted }
+  }
+
+  it('wakes a stop on registrations and turns, not on deltas', async () => {
+    const { subagents, spawn, turnStarted } = tracker()
+    spawn('c')
+    turnStarted('c', 't')
+    let woke = false
+    void subagents.changed().then(() => (woke = true))
+    subagents.notification('item/agentMessage/delta', 'c', { threadId: 'c', delta: 'x' })
+    subagents.notification('thread/tokenUsage/updated', 'c', {
+      threadId: 'c',
+      tokenUsage: { total: { totalTokens: 1 }, last: { totalTokens: 1 } },
+    })
+    await tick()
+    expect(woke).toBe(false)
+    subagents.notification('turn/completed', 'c', {
+      threadId: 'c',
+      turn: { id: 't', status: 'completed' },
+    })
+    await tick()
+    expect(woke).toBe(true)
+  })
+
+  it('forgets a closed child and never offers its turn to a stop', () => {
+    const { subagents, spawn, turnStarted } = tracker()
+    spawn('c')
+    turnStarted('c', 't')
+    expect(subagents.activeTurns()).toEqual([{ threadId: 'c', turnId: 't' }])
+    subagents.notification('thread/closed', 'c', { threadId: 'c' })
+    expect(subagents.has('c')).toBe(false)
+    expect(subagents.activeTurns()).toEqual([])
+    expect(subagents.running).toBe(false)
   })
 })
 

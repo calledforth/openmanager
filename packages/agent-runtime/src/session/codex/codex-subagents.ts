@@ -99,10 +99,19 @@ type Child = {
   depth: number
   /** The name Codex gave it, when it said: the card's title. */
   name: string | undefined
+  /** The item that started or reached it: the card's anchor. */
+  toolCallId: string | undefined
+  prompt: string | undefined
+  modelId: string | undefined
+  /** Its card is out: Codex said it exists (it was spawned, ran a turn, or a
+   * collab call saw it running). Until then it is only known, so its stream
+   * is kept apart, and it neither shows nor counts as running. */
+  shown: boolean
+  /** Reported as running on after the parent's turn ended. */
+  background: boolean
   status: SubtaskStatus
   /** Its turn in flight, once `turn/started` named it. */
   turnId: string | undefined
-  /** Closed with `closeAgent` or `thread/closed`: it will not run again. */
   closed: boolean
   /** Its last answer, for the card. */
   resultText: string | undefined
@@ -110,9 +119,12 @@ type Child = {
   error: string | undefined
   tokens: number | undefined
   toolCallCount: number
-  prompt: string | undefined
-  modelId: string | undefined
 }
+
+type ChildInfo = Partial<Pick<Child, 'name' | 'toolCallId' | 'prompt' | 'modelId'>>
+
+/** A turn that started and ended on a thread before it was known as a child. */
+type EndedTurn = { status: SubtaskStatus; reason: string | undefined }
 
 /** Items that are a tool call of the child's, for its card's count. */
 const TOOL_ITEMS: ReadonlySet<string> = new Set([
@@ -126,9 +138,12 @@ const TOOL_ITEMS: ReadonlySet<string> = new Set([
   'imageGeneration',
 ])
 
-/** Turns started on threads not (yet) known as children, kept until one is.
- * Codex has been seen to start a child's turn right after the parent's
- * `subAgentActivity` item, and nothing promises the order. */
+/** Turns on threads not (yet) known as children, kept until one is. Codex
+ * has been seen to start a child's turn right after the parent's
+ * `subAgentActivity` item, and with an older Codex's `spawnAgent` a child's
+ * whole turn can run before the call that names it completes: nothing
+ * promises the order. Bounded, oldest out first: a thread that never turns
+ * out to be a child goes. */
 const BUFFERED_TURNS_MAX = 32
 
 const RUNNING: ReadonlySet<SubtaskStatus> = new Set(['pending', 'running'])
@@ -151,14 +166,19 @@ const RUNNING: ReadonlySet<SubtaskStatus> = new Set(['pending', 'running'])
  * send, resume, close, interrupt, list) are tool rows, so its waiting shows. */
 export class CodexSubagents {
   private readonly children = new Map<string, Child>()
-  /** Child thread id → its turn, for a turn that started before its thread
-   * was known as a child. */
+  /** Child thread id → its turn in flight, for a turn that started before
+   * its thread was known as a child. */
   private readonly bufferedTurns = new Map<string, string>()
+  /** Child thread id → how its turn ended, for one that started and ended
+   * before its thread was known as a child. */
+  private readonly endedTurns = new Map<string, EndedTurn>()
   private waiters: (() => void)[] = []
 
   constructor(
     /** The session's own thread, once it has one. */
     private readonly rootThreadId: () => string | undefined,
+    /** Whether the session's own turn is in flight. */
+    private readonly parentTurnActive: () => boolean,
     private readonly emit: (output: CodexSubagentOutput) => void,
   ) {}
 
@@ -178,7 +198,7 @@ export class CodexSubagents {
   activeTurns(under?: string): { threadId: string; turnId: string }[] {
     const turns: { threadId: string; turnId: string }[] = []
     for (const child of this.children.values()) {
-      if (!child.turnId) continue
+      if (!child.turnId || child.closed) continue
       if (under !== undefined && !this.isWithin(child, under)) continue
       turns.push({ threadId: child.threadId, turnId: child.turnId })
     }
@@ -192,8 +212,8 @@ export class CodexSubagents {
     return false
   }
 
-  /** Resolves on the next change to any child: one registered, a turn
-   * started or ended. What a stop waits on to look again. */
+  /** Resolves on the next change a stop cares about: a child registered or
+   * settled, a turn started or ended. Not on deltas. */
   changed(): Promise<void> {
     return new Promise((resolve) => this.waiters.push(resolve))
   }
@@ -201,8 +221,7 @@ export class CodexSubagents {
   /** A collab item on the session's own thread or a child's. `rows` says
    * whether the parent may show it as a tool row: only an item of the
    * parent's own turn in flight may; a child's calls are its own work.
-   * Handles every activity kind and every collab tool; the rest are ignored
-   * the way unknown items are. */
+   * Handles every activity kind and every collab tool. */
   item(
     senderThreadId: string,
     item: CollabItem,
@@ -231,18 +250,20 @@ export class CodexSubagents {
       case 'resumeAgent':
         // Reaching a child this runtime never saw start (one spawned before a
         // restart) makes it known, so its stream is kept out of the parent
-        // too. Its next turn says it runs.
+        // too; but the call may name a thread Codex does not have, so it gets
+        // no card until it runs.
         for (const threadId of receivers) {
-          this.register(threadId, senderThreadId, { toolCallId: item.id, status: 'pending' })
           const child = this.children.get(threadId)
-          if (child && item.tool === 'resumeAgent') child.closed = false
+          if (child) {
+            if (item.tool === 'resumeAgent') child.closed = false
+          } else this.register(threadId, senderThreadId, { toolCallId: item.id }, true)
         }
         break
       case 'closeAgent':
         if (phase === 'completed' && item.status === 'completed')
           for (const threadId of receivers) {
             const child = this.children.get(threadId)
-            if (child) child.closed = true
+            if (child) this.close(child)
           }
         break
       case 'wait':
@@ -252,7 +273,6 @@ export class CodexSubagents {
     }
     if (phase === 'completed') this.applyStates(item.agentsStates)
     if (rows && item.tool !== 'spawnAgent') this.row(item, phase)
-    this.notify()
   }
 
   /** `thread/started` for another thread: Codex 0.170 sends none for a
@@ -260,15 +280,12 @@ export class CodexSubagents {
   threadStarted(thread: v2.Thread): void {
     const parent = thread.parentThreadId
     if (!parent || (parent !== this.rootThreadId() && !this.children.has(parent))) return
-    this.register(thread.id, parent, {
-      ...(thread.agentNickname ? { title: thread.agentNickname } : {}),
-    })
+    this.register(thread.id, parent, thread.agentNickname ? { name: thread.agentNickname } : {})
   }
 
   /** A notification on a thread that is not the session's own. True when it
-   * was a child's (or one buffered for a child to come), which is then
-   * applied to that child's record and nothing else; false when it is
-   * nobody's. */
+   * was a child's (or kept for a child to come), which is then applied to
+   * that child's record and nothing else; false when it is nobody's. */
   notification(method: string, threadId: string, params: unknown): boolean {
     const child = this.children.get(threadId)
     if (!child) return this.beforeRegistration(method, threadId, params)
@@ -278,13 +295,17 @@ export class CodexSubagents {
         child.turnId = turn.id
         child.error = undefined
         this.setStatus(child, 'running')
+        // Interruptible now, whether or not its status moved.
+        this.notify()
         break
       }
       case 'turn/completed': {
         const { turn } = params as v2.TurnCompletedNotification
         if (child.turnId !== undefined && child.turnId !== turn.id) break
         child.turnId = undefined
-        this.settle(child, turn)
+        const ended = endedTurn(turn, child.error)
+        if (ended) this.setStatus(child, ended.status, reasonOf(ended), true)
+        this.notify()
         break
       }
       case 'item/started':
@@ -317,18 +338,13 @@ export class CodexSubagents {
         break
       }
       case 'thread/closed':
-        child.closed = true
-        if (this.isRunning(child)) {
-          child.turnId = undefined
-          this.setStatus(child, 'cancelled')
-        }
+        this.close(child)
         break
       default:
         // Deltas, MCP startup, settings and the rest: the child's own work,
         // for its page once it has one (CAL-279).
         break
     }
-    this.notify()
     return true
   }
 
@@ -336,8 +352,10 @@ export class CodexSubagents {
    * background now, and the host must not end them with the turn. */
   parentTurnEnded(): void {
     for (const child of this.children.values())
-      if (child.depth === 1 && this.isRunning(child))
+      if (this.isRunning(child) && !child.background) {
+        child.background = true
         this.emit({ event: 'subtask_update', data: { taskId: child.threadId, background: true } })
+      }
   }
 
   /** The process is gone, and every child with it. The host ends their cards
@@ -345,6 +363,7 @@ export class CodexSubagents {
   clear(): void {
     this.children.clear()
     this.bufferedTurns.clear()
+    this.endedTurns.clear()
     this.notify()
   }
 
@@ -360,18 +379,14 @@ export class CodexSubagents {
       case 'started':
         this.register(threadId, senderThreadId, {
           toolCallId: item.id,
-          title: titleOf(item.agentPath),
+          name: titleOf(item.agentPath),
           ...(item.model ? { modelId: item.model } : {}),
         })
         break
       case 'interacted':
         // The parent reached it: a revival when it had settled. Its turn says
         // when it runs; until then it is known, so its stream is kept apart.
-        if (!known)
-          this.register(threadId, senderThreadId, {
-            title: titleOf(item.agentPath),
-            status: 'pending',
-          })
+        if (!known) this.register(threadId, senderThreadId, { name: titleOf(item.agentPath) }, true)
         else known.closed = false
         break
       case 'interrupted':
@@ -382,24 +397,25 @@ export class CodexSubagents {
         if (known) this.setStatus(known, item.kind)
         break
     }
-    this.notify()
   }
 
-  private register(
-    threadId: string,
-    parentThreadId: string,
-    report: Omit<SubtaskUpdate, 'taskId'> & { title?: string },
-  ): void {
+  /** Know a child. `quiet` when Codex has not said it exists: it is then
+   * kept apart without a card until it runs. */
+  private register(threadId: string, parentThreadId: string, info: ChildInfo, quiet = false): void {
     if (threadId === this.rootThreadId()) return
     const existing = this.children.get(threadId)
     if (existing) {
       // A second report of the same child (the item's start, then its end;
       // the 0.170 activity and an older spawn call) only adds what was missing.
-      const prompt = report.prompt && !existing.prompt ? report.prompt : undefined
-      const modelId = report.modelId && !existing.modelId ? report.modelId : undefined
+      const prompt = info.prompt && !existing.prompt ? info.prompt : undefined
+      const modelId = info.modelId && !existing.modelId ? info.modelId : undefined
       existing.prompt ??= prompt
       existing.modelId ??= modelId
-      if (prompt || modelId)
+      existing.name ??= info.name
+      existing.toolCallId ??= info.toolCallId
+      if (!existing.shown) {
+        if (!quiet) this.reveal(existing, 'running')
+      } else if (prompt || modelId)
         this.emit({
           event: 'subtask_update',
           data: {
@@ -415,38 +431,72 @@ export class CodexSubagents {
       threadId,
       parentThreadId,
       depth: (parent?.depth ?? 0) + 1,
-      name: report.title,
-      status: report.status ?? 'running',
+      name: info.name,
+      toolCallId: info.toolCallId,
+      prompt: info.prompt,
+      modelId: info.modelId,
+      shown: false,
+      background: false,
+      status: 'pending',
       turnId: undefined,
       closed: false,
       resultText: undefined,
       error: undefined,
       tokens: undefined,
       toolCallCount: 0,
-      prompt: report.prompt,
-      modelId: report.modelId,
     }
     this.children.set(threadId, child)
     const buffered = this.bufferedTurns.get(threadId)
+    const ended = this.endedTurns.get(threadId)
+    this.bufferedTurns.delete(threadId)
+    this.endedTurns.delete(threadId)
     if (buffered) {
-      this.bufferedTurns.delete(threadId)
       child.turnId = buffered
-      child.status = 'running'
-    }
+      this.reveal(child, 'running')
+    } else if (ended) {
+      // It ran, so it shows, and it is already done.
+      this.reveal(child, ended.status, reasonOf(ended))
+    } else if (!quiet) this.reveal(child, 'running')
+    this.notify()
+  }
+
+  /** Put out a child's card, whole. A child that starts running while the
+   * parent has no turn in flight is in the background from the start. */
+  private reveal(child: Child, status: SubtaskStatus, extra: Partial<SubtaskUpdate> = {}): void {
+    child.shown = true
+    child.status = status
+    if (RUNNING.has(status) && !this.parentTurnActive()) child.background = true
+    const parent = this.children.get(child.parentThreadId)
     this.emit({
       event: 'subtask_update',
       data: {
-        ...report,
-        taskId: threadId,
+        taskId: child.threadId,
+        ...(child.toolCallId ? { toolCallId: child.toolCallId } : {}),
         title: child.name ?? 'Subagent',
-        status: child.status,
+        ...(child.prompt ? { prompt: child.prompt } : {}),
+        ...(child.modelId ? { modelId: child.modelId } : {}),
+        status,
         statusSource: 'task_event',
         depth: child.depth,
         ...(parent ? { parentTaskId: parent.threadId } : {}),
+        ...(child.background ? { background: true } : {}),
         stoppable: true,
         promptable: false,
+        ...extra,
       },
     })
+    this.notify()
+  }
+
+  /** Closed with `closeAgent`, `thread/closed` or a `shutdown` state: it will
+   * not run again. A running card is cancelled, and the child is forgotten
+   * (a later `resumeAgent` makes it known again). */
+  private close(child: Child): void {
+    const wasRunning = this.isRunning(child)
+    child.closed = true
+    child.turnId = undefined
+    if (wasRunning) this.setStatus(child, 'cancelled')
+    this.children.delete(child.threadId)
     this.notify()
   }
 
@@ -458,17 +508,18 @@ export class CodexSubagents {
       }
       case 'turn/started': {
         const { turn } = params as v2.TurnStartedNotification
-        this.bufferedTurns.delete(threadId)
-        this.bufferedTurns.set(threadId, turn.id)
-        // Oldest first: a thread that never turned out to be a child goes.
-        if (this.bufferedTurns.size > BUFFERED_TURNS_MAX)
-          this.bufferedTurns.delete(this.bufferedTurns.keys().next().value!)
+        this.endedTurns.delete(threadId)
+        remember(this.bufferedTurns, threadId, turn.id)
         return true
       }
       case 'turn/completed': {
         const { turn } = params as v2.TurnCompletedNotification
-        if (this.bufferedTurns.get(threadId) === turn.id) this.bufferedTurns.delete(threadId)
-        return this.bufferedTurns.has(threadId)
+        const buffered = this.bufferedTurns.get(threadId)
+        if (buffered !== undefined && buffered !== turn.id) return true
+        this.bufferedTurns.delete(threadId)
+        const ended = endedTurn(turn, undefined)
+        if (ended) remember(this.endedTurns, threadId, ended)
+        return true
       }
       default:
         return false
@@ -484,36 +535,21 @@ export class CodexSubagents {
     if (TOOL_ITEMS.has(item.type)) child.toolCallCount++
   }
 
-  private settle(child: Child, turn: v2.Turn): void {
-    switch (turn.status) {
-      case 'completed':
-        this.setStatus(child, 'completed', {}, true)
-        return
-      case 'interrupted':
-        this.setStatus(child, 'interrupted', {}, true)
-        return
-      case 'failed':
-        this.setStatus(
-          child,
-          'failed',
-          { statusReason: turn.error?.message ?? child.error ?? 'Codex turn failed' },
-          true,
-        )
-        return
-      case 'inProgress':
-        return
-    }
-  }
-
   /** Report a status, once per change. A settled report carries what the
    * child produced, and a turn's own end always reports: the parent's
-   * `completed` activity comes before the child's last message is counted. */
+   * `completed` activity comes before the child's last message is counted.
+   * A child without a card gets one when it runs, and none for settling. */
   private setStatus(
     child: Child,
     status: SubtaskStatus,
     extra: Partial<SubtaskUpdate> = {},
     force = false,
   ): void {
+    if (!child.shown) {
+      if (RUNNING.has(status)) this.reveal(child, status, extra)
+      else child.status = status
+      return
+    }
     if (child.status === status && !force) return
     const settled = !RUNNING.has(status)
     child.status = status
@@ -529,21 +565,27 @@ export class CodexSubagents {
         ...extra,
       },
     })
+    this.notify()
   }
 
   /** What `wait`, `list` and the rest last saw of their children. The child's
    * own turn is the better witness, so a child running a turn here keeps its
-   * status; only a quiet child is settled from what the parent was told. */
+   * status. Codex saying a child runs gives a known child its card; saying it
+   * has no such agent forgets a child that never showed. */
   private applyStates(states: { [threadId: string]: v2.CollabAgentState | undefined }): void {
     for (const [threadId, state] of Object.entries(states)) {
       const child = this.children.get(threadId)
       if (!child || !state || child.turnId) continue
+      if (state.status === 'notFound') {
+        if (!child.shown) this.children.delete(threadId)
+        continue
+      }
       if (state.message && state.status === 'completed') child.resultText = state.message
       const status = subtaskStatusOf(state.status)
-      if (status === 'shutdown') {
-        child.closed = true
-        if (this.isRunning(child)) this.setStatus(child, 'cancelled')
-      } else if (status && !RUNNING.has(status)) {
+      if (status === 'shutdown') this.close(child)
+      else if (status && RUNNING.has(status)) {
+        if (!child.shown) this.reveal(child, status)
+      } else if (status) {
         this.setStatus(
           child,
           status,
@@ -587,7 +629,8 @@ export class CodexSubagents {
   }
 
   private isRunning(child: Child): boolean {
-    return !child.closed && (child.turnId !== undefined || RUNNING.has(child.status))
+    if (child.closed) return false
+    return child.turnId !== undefined || (child.shown && RUNNING.has(child.status))
   }
 
   private isWithin(child: Child, ancestor: string): boolean {
@@ -601,6 +644,31 @@ export class CodexSubagents {
     this.waiters = []
     for (const resolve of waiters) resolve()
   }
+}
+
+/** Set `key` last in a bounded map, dropping the oldest past the bound. */
+function remember<V>(map: Map<string, V>, key: string, value: V): void {
+  map.delete(key)
+  map.set(key, value)
+  if (map.size > BUFFERED_TURNS_MAX) map.delete(map.keys().next().value!)
+}
+
+/** How a finished turn ended, in subtask terms; undefined while it runs. */
+function endedTurn(turn: v2.Turn, error: string | undefined): EndedTurn | undefined {
+  switch (turn.status) {
+    case 'completed':
+      return { status: 'completed', reason: undefined }
+    case 'interrupted':
+      return { status: 'interrupted', reason: undefined }
+    case 'failed':
+      return { status: 'failed', reason: turn.error?.message ?? error ?? 'Codex turn failed' }
+    case 'inProgress':
+      return undefined
+  }
+}
+
+function reasonOf(ended: EndedTurn): Partial<SubtaskUpdate> {
+  return ended.reason ? { statusReason: ended.reason } : {}
 }
 
 /** `/root/exact_reply` → `exact_reply`: the name Codex gave the agent. */
@@ -631,7 +699,7 @@ function rowTitle(tool: v2.CollabAgentTool, names: string[]): string {
 }
 
 /** A collab agent state in subtask terms; `shutdown` is kept apart (closed),
- * and `notFound` says nothing. */
+ * and `notFound` (handled before this) says nothing. */
 function subtaskStatusOf(status: v2.CollabAgentStatus): SubtaskStatus | 'shutdown' | undefined {
   switch (status) {
     case 'pendingInit':
