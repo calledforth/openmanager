@@ -133,9 +133,12 @@ describe('CodexProbeRuntime', () => {
     await probe.listModels('/work')
     expect(fakes.last.requests('account/read')).toHaveLength(1)
 
-    await build(service).probe()
+    // Review: a probe that found the process running announced a spawn.
+    const events: BackendEvent[] = []
+    await build(service, events).probe()
     expect(fakes.servers).toHaveLength(1)
     expect(fakes.last.requests('account/read')).toHaveLength(2)
+    expect(events.map((event) => event.event)).toEqual(['initialized'])
   })
 
   it('abandons its questions on dispose and leaves the process to the service', async () => {

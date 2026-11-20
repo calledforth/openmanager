@@ -40,25 +40,29 @@ describe('codexModelListing', () => {
         name: 'Speed',
         category: 'service_tier',
         description: 'Faster service tiers use more of your plan.',
-        currentValue: '',
+        currentValue: 'default',
         options: [
-          { value: '', name: 'Standard' },
+          { value: 'default', name: 'Standard' },
           { value: 'priority', name: 'Fast', description: '2x speed, increased usage' },
         ],
       },
     ])
     // Text-only is a real "no"; no tiers means no speed setting and no Fast.
     expect(luna!.supportsImageInput).toBe(false)
-    expect(luna!.supportsFastMode).toBeUndefined()
+    expect(luna!.supportsFastMode).toBe(false)
     expect(luna!.configOptions?.map((option) => option.id)).toEqual(['effort'])
   })
 
-  it('keeps a tier the catalog defaults to as the value, with no separate Standard', () => {
+  // Review: Standard vanished when the catalog defaulted to another tier.
+  it('keeps Standard pickable when the catalog defaults to another tier', () => {
     const [model] = codexModelListing([
       buildModel('m', { defaultServiceTier: 'priority' }),
     ]).availableModels!
     const speed = model!.configOptions?.find((option) => option.id === 'service_tier')
-    expect(speed).toMatchObject({ currentValue: 'priority', options: [{ value: 'priority' }] })
+    expect(speed).toMatchObject({
+      currentValue: 'priority',
+      options: [{ value: 'default', name: 'Standard' }, { value: 'priority' }],
+    })
   })
 
   it('carries unknown efforts and tiers through as Codex names them', () => {
@@ -70,8 +74,10 @@ describe('codexModelListing', () => {
       }),
     ]).availableModels!
     expect(model!.effortLevels).toEqual(['ultra'])
-    expect(model!.supportsFastMode).toBeUndefined()
-    expect(model!.configOptions?.[1]).toMatchObject({ options: [{ value: '' }, { value: 'flex', name: 'Flex' }] })
+    expect(model!.supportsFastMode).toBe(false)
+    expect(model!.configOptions?.[1]).toMatchObject({
+      options: [{ value: 'default' }, { value: 'flex', name: 'Flex' }],
+    })
   })
 
   it('drops Fast when its feature is off or a policy pins it off', () => {
@@ -80,7 +86,8 @@ describe('codexModelListing', () => {
       { requirements: buildRequirements({ featureRequirements: { fast_mode: false } }) },
     ]) {
       const [model] = codexModelListing([buildModel('m')], context).availableModels!
-      expect(model!.supportsFastMode).toBeUndefined()
+      // Said outright, so it replaces an earlier `true` downstream.
+      expect(model!.supportsFastMode).toBe(false)
       expect(model!.configOptions?.map((option) => option.id)).toEqual(['effort'])
     }
   })
@@ -97,6 +104,15 @@ describe('codexModelListing', () => {
     expect(listing.currentModelId).toBe('b')
     const b = listing.availableModels![1]!
     expect(b.configOptions?.map((option) => option.currentValue)).toEqual(['high', 'priority'])
+  })
+
+  // Review: the managed default names a model by its slug as often as its id.
+  it('finds a managed default model by its slug too', () => {
+    const listing = codexModelListing(
+      [buildModel('a', { isDefault: true }), buildModel('b-preview', { model: 'b' })],
+      { requirements: buildRequirements({ models: { newThread: { model: 'b', modelReasoningEffort: null, serviceTier: null } } }) },
+    )
+    expect(listing.currentModelId).toBe('b-preview')
   })
 
   it('carries upgrade and retirement', () => {
@@ -166,17 +182,30 @@ describe('codexPolicy', () => {
     ])
   })
 
-  it('blocks web search modes and Fast that a policy rules out', () => {
+  it('blocks Fast that a policy rules out, and names no setting no catalog offers', () => {
     const policy = codexPolicy({
       requirements: buildRequirements({
         allowedWebSearchModes: ['disabled', 'cached'],
         featureRequirements: { fast_mode: false },
       }),
     })
-    expect(policy.blockedConfigValues?.map(({ configId, id }) => `${configId}=${id}`)).toEqual([
-      'web_search=indexed',
-      'web_search=live',
-      'service_tier=priority',
+    expect(policy.blockedConfigValues).toEqual([
+      { configId: 'service_tier', id: 'priority', reason: expect.stringMatching(/administrator/) },
     ])
+  })
+
+  // Review: a user's own `fast_mode = false` must be said too, not only dropped.
+  it('blocks Fast that the user turned off in their config, saying where', () => {
+    expect(codexPolicy({ features: { fast_mode: false } }).blockedConfigValues).toEqual([
+      { configId: 'service_tier', id: 'priority', reason: expect.stringMatching(/fast_mode/) },
+    ])
+  })
+
+  // Review: `guardian_subagent` is the older name of `auto_review`.
+  it('lets a policy that allows the older reviewer name keep Auto', () => {
+    const policy = codexPolicy({
+      requirements: buildRequirements({ allowedApprovalsReviewers: ['user', 'guardian_subagent'] }),
+    })
+    expect(policy.blockedModes).toBeUndefined()
   })
 })

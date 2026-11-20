@@ -78,9 +78,10 @@ export type ProviderHealthMonitorDeps = {
   /** Injected in tests to avoid a real interval timer. */
   schedule?: (run: () => void, ms: number) => { cancel: () => void }
   /** Providers whose probe may run beside others instead of waiting for the
-   * one-slot queue. The queue exists so two throwaway CLIs never spawn at
-   * once; a provider whose probe asks a process it keeps anyway (Codex's
-   * service process) costs no such spawn, so it need not wait behind one. */
+   * one-slot queue, asked at the moment of each refresh. The queue exists so
+   * two CLIs never spawn at once; a probe that asks a process already running
+   * (Codex's service process, while it is up) costs no such spawn, so it
+   * need not wait behind one. */
   probeInParallel?: (providerId: ProviderId) => boolean
 }
 
@@ -157,9 +158,9 @@ function emptyRecord(): ProviderRecord {
  * Probes are serialised globally by a one-slot queue: two providers never
  * spawn CLIs at the same time, and a second request for a provider already
  * being probed joins the in-flight probe instead of stacking another. A
- * provider whose probe asks a process it keeps anyway (`probeInParallel`)
- * runs beside the queue, so it neither waits behind a slow CLI nor holds
- * one up. */
+ * provider whose probe asks a process that is already running
+ * (`probeInParallel`) runs beside the queue, so it neither waits behind a
+ * slow CLI nor holds one up. */
 export class ProviderHealthMonitor {
   private readonly records = new Map<ProviderId, ProviderRecord>()
   private readonly inFlight = new Map<ProviderId, Promise<ProviderHealth>>()
@@ -298,10 +299,18 @@ export class ProviderHealthMonitor {
     this.publish(providerId)
   }
 
-  observeAuthenticated(providerId: ProviderId, methodId: string | undefined): void {
+  observeAuthenticated(
+    providerId: ProviderId,
+    methodId: string | undefined,
+    accountLabel?: string,
+  ): void {
     const record = this.records.get(providerId)
     if (!record) return
-    record.auth = { state: 'authenticated', ...(methodId ? { methodId } : {}) }
+    record.auth = {
+      state: 'authenticated',
+      ...(methodId ? { methodId } : {}),
+      ...(accountLabel ? { accountLabel } : {}),
+    }
     this.publish(providerId)
   }
 
@@ -723,6 +732,8 @@ export class ProviderHealthMonitor {
     }
     if (isSpawnFailure(error)) {
       record.install = { state: 'missing', message: message(error) }
+      // Nothing is installed to be current, behind or unsupported.
+      record.update = { state: 'unknown' }
       record.auth = { state: 'unknown' }
       this.settleProbe(record, 'failed', startedAt, message(error))
       return

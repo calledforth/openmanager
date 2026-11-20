@@ -82,13 +82,19 @@ export class CodexProbeRuntime implements ProbeRuntime {
       name: 'Codex',
       ...(handshake?.version.version ? { version: handshake.version.version } : {}),
     }
-    this.emit(
-      routeEvent(this.route(), undefined, 'lifecycle', 'process_spawned', {
-        cwd: this.spec.cwd,
-        command: 'codex',
-        args: ['app-server'],
-      }),
-    )
+    // Only when this probe really started the process: one it found running
+    // was announced by whoever started it.
+    if (discovery.spawned) {
+      const pid = this.deps.service.status.pid
+      this.emit(
+        routeEvent(this.route(), undefined, 'lifecycle', 'process_spawned', {
+          cwd: this.spec.cwd,
+          command: 'codex',
+          args: ['app-server'],
+          ...(pid !== undefined ? { processId: pid } : {}),
+        }),
+      )
+    }
     if (discovery.account.state === 'signed_out')
       throw new AuthRequiredError(this.providerId, CODEX_SIGNED_OUT_MESSAGE, CODEX_LOGIN_HINT)
 

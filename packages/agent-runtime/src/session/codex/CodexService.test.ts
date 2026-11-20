@@ -2,7 +2,8 @@ import { describe, expect, it, vi } from 'vitest'
 import type { CodexProviderState } from './codex-account.js'
 import { CodexProcessExitedError } from './CodexAppServerClient.js'
 import { RPC_METHOD_NOT_FOUND } from './CodexRpcPeer.js'
-import { CodexService, type CodexServiceDeps } from './CodexService.js'
+import { PROVIDER_HEALTH_PROBE_TIMEOUT_MS } from '../../core/ProviderHealthMonitor.js'
+import { CODEX_SERVICE_REQUEST_MS, CodexService, type CodexServiceDeps } from './CodexService.js'
 import { CodexNotInstalledError } from './start.js'
 import { codexBuilders, fakeCodexStarter, type FakeCodexAppServer } from './testing/index.js'
 
@@ -131,6 +132,106 @@ describe('CodexService lifecycle', () => {
     await service.shutdown()
   })
 
+  // Review: the health probe's own timeout aborted the request before the
+  // request's timed out, so a hung process was never replaced.
+  it('replaces a process whose request was abandoned after it had waited too long', async () => {
+    const { service, fakes } = build(
+      (server, index) => {
+        if (index === 0) server.respond('model/list', () => new Promise(() => undefined))
+      },
+      { hungAfterMs: 20, requestTimeoutMs: 60_000 },
+    )
+    const controller = new AbortController()
+    const waiting = service.request('model/list', {}, { signal: controller.signal })
+    await new Promise((resolve) => setTimeout(resolve, 40))
+    controller.abort(new Error('the probe gave up'))
+    await expect(waiting).rejects.toThrow(/gave up/)
+    await vi.waitFor(() =>
+      expect(service.status.lastExit).toMatchObject({ expected: true, reason: 'restart' }),
+    )
+    await service.request('model/list', {})
+    expect(fakes.servers).toHaveLength(2)
+    await service.shutdown()
+  })
+
+  it('keeps a process whose request was abandoned at once', async () => {
+    const { service, fakes } = build(
+      (server) => server.respond('model/list', () => new Promise(() => undefined)),
+      { hungAfterMs: 10_000 },
+    )
+    const controller = new AbortController()
+    const waiting = service.request('model/list', {}, { signal: controller.signal })
+    await vi.waitFor(() => expect(fakes.servers[0]?.requests('model/list')).toHaveLength(1))
+    controller.abort(new Error('not wanted'))
+    await expect(waiting).rejects.toThrow(/not wanted/)
+    expect(service.status.state).toBe('running')
+    expect(fakes.servers[0]!.exited).toBe(false)
+    await service.shutdown()
+  })
+
+  it('gives every request its own budget, below the health probe timeout', async () => {
+    expect(CODEX_SERVICE_REQUEST_MS).toBeLessThan(PROVIDER_HEALTH_PROBE_TIMEOUT_MS)
+    const { service, fakes } = build(
+      (server, index) => {
+        if (index === 0) server.respond('model/list', () => new Promise(() => undefined))
+      },
+      { requestTimeoutMs: 20 },
+    )
+    // No timeout named by the caller: the service's own budget applies.
+    await expect(service.request('model/list', {})).rejects.toThrow(/did not answer/)
+    await vi.waitFor(() => expect(fakes.servers[0]!.exited).toBe(true))
+    await service.shutdown()
+  })
+
+  // Review: a hung optional read replaced the process and failed `model/list`
+  // in the middle of its pages.
+  it('lets an optional read time out early without replacing the process', async () => {
+    const { service, fakes } = build(
+      (server) => {
+        server.respond('experimentalFeature/list', () => new Promise(() => undefined))
+        server.respond(
+          'model/list',
+          (params) =>
+            params.cursor === 'page-2'
+              ? { data: [buildModel('gpt-6-luna')], nextCursor: null }
+              : { data: [buildModel('gpt-6.2-sol')], nextCursor: 'page-2' },
+          { delayMs: 40 },
+        )
+      },
+      { optionalRequestTimeoutMs: 20 },
+    )
+    const discovery = await service.discover()
+    expect(discovery.models.map((model) => model.id)).toEqual(['gpt-6.2-sol', 'gpt-6-luna'])
+    expect(discovery.features).toBeUndefined()
+    expect(fakes.servers).toHaveLength(1)
+    expect(service.status.state).toBe('running')
+    await service.shutdown()
+  })
+
+  // Review: shutdown only waited for the current process, not one being
+  // reaped or replaced, still in its SIGTERM grace.
+  it('waits on shutdown for a process it was already stopping', async () => {
+    const fakes = fakeCodexStarter(undefined, { ignoreSigterm: true })
+    let reap: () => void = () => undefined
+    const service = new CodexService({
+      providerId: 'codex',
+      host: { log: vi.fn() },
+      start: fakes.start,
+      setTimer: (run) => {
+        reap = run
+        return { cancel: () => undefined }
+      },
+    })
+    await service.readAccount()
+    reap()
+    expect(service.status.state).toBe('stopped')
+    expect(fakes.last.exited).toBe(false)
+    await service.shutdown()
+    // SIGTERM was ignored; shutdown returned only once SIGKILL had landed.
+    expect(fakes.last.exited).toBe(true)
+    expect(fakes.last.signals).toEqual(['SIGTERM', 'SIGKILL'])
+  })
+
   it('reports a start that fails, and tries again on the next request', async () => {
     const fakes = fakeCodexStarter()
     let missing = true
@@ -166,11 +267,17 @@ describe('CodexService provider-level state', () => {
     expect(service.state.account).toMatchObject({ state: 'signed_in', account: { planType: 'plus' } })
 
     const upgraded = nextState(service)
+    fakes.last.respond('account/read', buildAccountResponse({
+      account: { type: 'chatgpt', email: 'user@example.com', planType: 'pro', workspaceName: null },
+    }))
     fakes.last.notify('account/updated', { authMode: 'chatgpt', planType: 'pro' })
+    // At once from the update, then confirmed by reading the account again.
     expect((await upgraded).account).toMatchObject({
       state: 'signed_in',
       account: { email: 'user@example.com', planType: 'pro' },
     })
+    await vi.waitFor(() => expect(fakes.last.requests('account/read')).toHaveLength(2))
+    await vi.waitFor(() => expect(service.state.account).toMatchObject({ account: { planType: 'pro' } }))
 
     const signedOut = nextState(service)
     fakes.last.notify('account/updated', { authMode: null, planType: null })
@@ -205,6 +312,51 @@ describe('CodexService provider-level state', () => {
     expect(state.rateLimits?.secondary?.usedPercent).toBe(33)
     expect(state.rateLimits?.planType).toBe('plus')
     expect(state.rateLimitsByLimitId?.codex?.primary?.usedPercent).toBe(40)
+    await service.shutdown()
+  })
+
+  // Review: health stayed signed out after signing back in.
+  it('reads the account again when Codex says the login changed', async () => {
+    const { service, fakes } = build()
+    await service.readAccount()
+    const out = nextState(service)
+    fakes.last.notify('account/updated', { authMode: null, planType: null })
+    expect((await out).account).toEqual({ state: 'signed_out' })
+
+    fakes.last.respond(
+      'account/read',
+      buildAccountResponse({
+        account: { type: 'chatgpt', email: 'other@example.com', planType: 'pro', workspaceName: null },
+      }),
+    )
+    fakes.last.notify('account/updated', { authMode: 'chatgpt', planType: 'pro' })
+    await vi.waitFor(() =>
+      expect(service.state.account).toMatchObject({
+        state: 'signed_in',
+        account: { email: 'other@example.com' },
+      }),
+    )
+    expect(fakes.last.requests('account/read')).toHaveLength(2)
+    await service.shutdown()
+  })
+
+  it('forgets the limits on sign-out', async () => {
+    const { service, fakes } = build((server) =>
+      server.respond('account/rateLimits/read', {
+        ordinaryUsageAllowed: true,
+        rateLimits: buildRateLimits(),
+        rateLimitsByLimitId: null,
+        rateLimitResetCredits: null,
+        accountId: null,
+        rateLimitUpsell: null,
+      }),
+    )
+    await service.readRateLimits()
+    const out = nextState(service)
+    fakes.last.notify('account/updated', { authMode: null, planType: null })
+    const state = await out
+    expect(state.rateLimits).toBeUndefined()
+    expect(state.rateLimitsByLimitId).toBeUndefined()
     await service.shutdown()
   })
 

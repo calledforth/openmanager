@@ -62,10 +62,14 @@ export type CodexProviderState = {
   updatedAt?: string
 }
 
-/** `account/updated` applied to what was known. Signing out is told
- * outright (`authMode: null`); a login or a plan change keeps the account
- * only where the update can say what changed, and otherwise forgets it so
- * the next read describes it. */
+/** `account/updated` applied to what was known.
+ *
+ * Signing out is told outright (`authMode: null`), and takes the account's
+ * limits with it. Otherwise the update says how Codex is signed in but not
+ * as whom: a ChatGPT login that stays a ChatGPT login keeps its details with
+ * the new plan; anything else forgets the account until it is read again
+ * (the service re-reads it on every such update). Either way `authMode`
+ * says a login exists. */
 export function applyAccountUpdated(
   state: CodexProviderState,
   update: v2.AccountUpdatedNotification,
@@ -81,6 +85,8 @@ export function applyAccountUpdated(
   if (update.authMode === null) {
     // Signed out, unless nothing ever needed signing in.
     if (account?.state !== 'not_required') next.account = { state: 'signed_out' }
+    delete next.rateLimits
+    delete next.rateLimitsByLimitId
     return next
   }
   if (account?.state === 'signed_in' && account.account.type === 'chatgpt' && update.authMode === 'chatgpt') {
@@ -90,12 +96,16 @@ export function applyAccountUpdated(
     }
     return next
   }
-  if (account?.state === 'signed_in' && update.authMode !== 'chatgpt' && account.account.type !== 'chatgpt')
-    return next
-  // A login the update cannot describe on its own (signed in from signed
-  // out, or another kind of account): known to exist, details unknown.
   delete next.account
   return next
+}
+
+/** Signed in, signed out or no sign-in needed, as far as anything has said:
+ * the account read, else what the last `account/updated` implied. */
+export function codexSignInState(state: CodexProviderState): CodexAccountState['state'] | undefined {
+  if (state.account) return state.account.state
+  if (state.authMode === undefined) return undefined
+  return state.authMode === null ? 'signed_out' : 'signed_in'
 }
 
 /** A full `account/rateLimits/read` answer, replacing what was known. */

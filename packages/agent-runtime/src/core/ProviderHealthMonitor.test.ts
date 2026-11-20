@@ -268,6 +268,22 @@ describe('ProviderHealthMonitor versions and accounts', () => {
     expect(health.lastProbe?.outcome).toBe('failed')
   })
 
+  // Review: an advisory about a version outlived the binary it described.
+  it('drops the version advisory once the CLI is gone', async () => {
+    const { monitor, probes } = build({ providerIds: ['cursor', 'opencode', 'codex'] })
+    probes.answers.set('codex', async () => {
+      throw new ProviderVersionUnsupportedError('Codex 0.150.0 is too old.', '0.150.0', '0.160.0')
+    })
+    await monitor.refresh('codex', 'user')
+    expect(monitor.health('codex').update.state).toBe('unsupported')
+    probes.answers.set('codex', async () => {
+      throw Object.assign(new Error('codex not found'), { code: 'ENOENT' })
+    })
+    await monitor.refresh('codex', 'user')
+    expect(monitor.health('codex').install.state).toBe('missing')
+    expect(monitor.health('codex').update).toEqual({ state: 'unknown' })
+  })
+
   it('shows a service process beside the sessions, never as one', () => {
     const { monitor, census } = build({ providerIds: ['cursor', 'opencode', 'codex'] })
     census.codex = { liveProcesses: 0, readyProcesses: 0, activeTurns: 0, serviceProcesses: 1 }

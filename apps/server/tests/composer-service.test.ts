@@ -311,6 +311,25 @@ describe('composer service commands', () => {
       expect(store.getProfile('cursor')?.policy).toEqual({})
     })
 
+    // Review: Fast stayed offered after Codex stopped offering it, because the
+    // held row won and the field was only ever sent as `true`.
+    it('takes Fast from the newer catalog, including a "no"', async () => {
+      const { service, store } = await harness()
+      service.observeCatalog('cursor', {
+        models: { availableModels: [{ id: 'm', displayName: 'M', supportsFastMode: true }] },
+      })
+      expect(store.getProfile('cursor')?.availableModels?.[0]?.supportsFastMode).toBe(true)
+      service.observeCatalog('cursor', {
+        models: { availableModels: [{ id: 'm', displayName: 'M', supportsFastMode: false }] },
+      })
+      expect(store.getProfile('cursor')?.availableModels?.[0]?.supportsFastMode).toBe(false)
+      // A catalog that says nothing about Fast leaves the answer it had.
+      service.observeCatalog('cursor', {
+        models: { availableModels: [{ id: 'm', displayName: 'M' }] },
+      })
+      expect(store.getProfile('cursor')?.availableModels?.[0]?.supportsFastMode).toBe(false)
+    })
+
     it('drops a policy or an upgrade the wire cannot state rather than the catalog', async () => {
       const { service, store } = await harness()
       service.observeCatalog('cursor', {

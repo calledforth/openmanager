@@ -9,10 +9,14 @@ import type { AcpConnectionSpec } from '../session/AcpConnection.js'
 import { FakeClaudeSdk } from '../session/claude/test-sdk.js'
 import { CodexAppServerClient } from '../session/codex/CodexAppServerClient.js'
 import type { CodexStarter } from '../session/codex/start.js'
-import { FakeCodexAppServer, type FakeCodexTurn } from '../session/codex/testing/index.js'
-import { fakeCodexStarter } from '../session/codex/testing/index.js'
+import {
+  codexBuilders,
+  FakeCodexAppServer,
+  fakeCodexStarter,
+  type FakeCodexTurn,
+} from '../session/codex/testing/index.js'
 import { FakeConnectionFactory, type FakeWire } from '../session/test-connection.js'
-import { AgentRuntime, type ProviderCatalog } from './AgentRuntime.js'
+import { AgentRuntime, type AgentRuntimeOptions, type ProviderCatalog } from './AgentRuntime.js'
 
 const configs = { cursor, opencode, claude, codex }
 const ROUTE = {
@@ -1636,13 +1640,25 @@ describe('AgentRuntime Codex titles and deletion', () => {
 })
 
 describe('AgentRuntime Codex service process', () => {
-  function buildCodex() {
-    const fakes = fakeCodexStarter()
+  function buildCodex(
+    options: {
+      setup?: Parameters<typeof fakeCodexStarter>[0]
+      health?: AgentRuntimeOptions['health']
+      service?: AgentRuntimeOptions['codexService']
+      connections?: FakeConnectionFactory
+    } = {},
+  ) {
+    const fakes = fakeCodexStarter(options.setup)
     const catalogs: Array<{ providerId: string; catalog: ProviderCatalog }> = []
     const runtime = new AgentRuntime(
       { emitEvent: () => undefined, log: vi.fn() },
       configs,
-      { codexStart: fakes.start, codexService: { setTimer: () => ({ cancel: () => undefined }) } },
+      {
+        codexStart: fakes.start,
+        codexService: { setTimer: () => ({ cancel: () => undefined }), ...options.service },
+        ...(options.health ? { health: options.health } : {}),
+        ...(options.connections ? { connections: options.connections } : {}),
+      },
     )
     runtime.onProviderCatalog((providerId, catalog) => catalogs.push({ providerId, catalog }))
     return { runtime, fakes, catalogs }
@@ -1678,6 +1694,89 @@ describe('AgentRuntime Codex service process', () => {
         loginHint: 'codex login',
       }),
     )
+    await runtime.shutdown()
+  })
+
+  // Review: signing back in left health signed out, because the update that
+  // announced it dropped the account rather than saying it was back.
+  it('tells health at once when Codex says it signed back in, then who', async () => {
+    const { runtime, fakes } = buildCodex()
+    await runtime.probeProvider(CODEX_ROUTE)
+    fakes.last.notify('account/updated', { authMode: null, planType: null })
+    await vi.waitFor(() =>
+      expect(runtime.health.health('codex').auth.state).toBe('unauthenticated'),
+    )
+    fakes.last.respond('account/read', codexBuilders.buildAccountResponse({
+      account: { type: 'chatgpt', email: 'back@example.com', planType: 'plus', workspaceName: null },
+    }))
+    fakes.last.notify('account/updated', { authMode: 'chatgpt', planType: 'plus' })
+    await vi.waitFor(() =>
+      expect(runtime.health.health('codex').auth).toEqual({
+        state: 'authenticated',
+        accountLabel: 'back@example.com',
+      }),
+    )
+    await runtime.shutdown()
+  })
+
+  // Review: the health probe gave up (its abort) before the request timed out,
+  // so every refresh waited out its budget on the same hung process.
+  it('replaces a hung service process when the health probe is the one that gives up', async () => {
+    let listed = 0
+    const { runtime, fakes } = buildCodex({
+      setup: (server, index) => {
+        if (index === 0)
+          server.respond('model/list', () => {
+            listed += 1
+            return listed === 1
+              ? { data: [codexBuilders.buildModel('m', { isDefault: true })], nextCursor: null }
+              : new Promise(() => undefined)
+          })
+      },
+      health: { probeTimeoutMs: 150 },
+      service: { hungAfterMs: 50 },
+    })
+    await runtime.probeProvider(CODEX_ROUTE)
+    await expect(runtime.health.refresh('codex', 'user')).resolves.toMatchObject({
+      lastProbe: { outcome: 'timeout' },
+    })
+    await vi.waitFor(() => expect(fakes.servers[0]!.exited).toBe(true))
+    await expect(runtime.health.refresh('codex', 'user')).resolves.toMatchObject({
+      lastProbe: { outcome: 'ok' },
+    })
+    expect(fakes.servers).toHaveLength(2)
+    await runtime.shutdown()
+  })
+
+  // Review: the Codex probe skipped the one-slot queue even when it was about
+  // to start a process, beside another provider's CLI.
+  it('queues the Codex probe behind other CLIs unless its process is already up', async () => {
+    let releaseCursor: () => void = () => undefined
+    const connections = new FakeConnectionFactory(() => ({
+      initialize: () =>
+        new Promise((resolve) => {
+          releaseCursor = () => resolve({ protocolVersion: 1, authMethods: [] })
+        }),
+    }))
+    const { runtime, fakes } = buildCodex({ connections })
+    runtime.setDefaultProbeCwd('/work')
+    const cursor = runtime.health.refresh('cursor', 'user')
+    const codexProbe = runtime.health.refresh('codex', 'user')
+    await new Promise((resolve) => setTimeout(resolve, 20))
+    // Nothing is running for Codex, so it waits its turn.
+    expect(fakes.servers).toHaveLength(0)
+    releaseCursor()
+    await Promise.all([cursor, codexProbe])
+    expect(fakes.servers).toHaveLength(1)
+
+    // Now its process is up: it answers while Cursor's CLI holds the queue.
+    const cursorAgain = runtime.health.refresh('cursor', 'user')
+    await expect(runtime.health.refresh('codex', 'user')).resolves.toMatchObject({
+      lastProbe: { outcome: 'ok' },
+    })
+    expect(fakes.servers).toHaveLength(1)
+    releaseCursor()
+    await cursorAgain
     await runtime.shutdown()
   })
 })

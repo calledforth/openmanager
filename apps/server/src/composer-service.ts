@@ -915,7 +915,9 @@ function modelPatch(
         ? { contextWindowTokens: model.contextWindowTokens }
         : {}),
       ...(model.effortLevels?.length ? { effortLevels: model.effortLevels } : {}),
-      ...(model.supportsFastMode ? { supportsFastMode: true } : {}),
+      // Tri-state like image input: a catalog that says `false` (Codex with
+      // Fast turned off) must replace an earlier `true`.
+      ...(model.supportsFastMode !== undefined ? { supportsFastMode: model.supportsFastMode } : {}),
       ...(model.supportsAutoMode ? { supportsAutoMode: true } : {}),
       // Tri-state, so `false` survives: it is the answer that blocks an attach.
       ...(model.supportsImageInput !== undefined
@@ -964,9 +966,9 @@ function relistedModels(
   const kept = held.flatMap((model) => {
     const relisted = offered.get(model.modelId)
     if (!relisted) return []
-    // Wording and order stay as held, but the window, the settings and the
-    // upgrade are facts only a catalog reports, so a newer catalog's answer
-    // replaces them; one that names no upgrade has withdrawn it.
+    // Wording and order stay as held, but the window, the settings, Fast and
+    // the upgrade are facts only a catalog reports, so a newer catalog's
+    // answer replaces them; one that names no upgrade has withdrawn it.
     const row: ComposerModelOption = {
       ...relisted,
       ...model,
@@ -977,6 +979,7 @@ function relistedModels(
     }
     if (relisted.upgrade !== undefined) row.upgrade = relisted.upgrade
     else delete row.upgrade
+    if (relisted.supportsFastMode !== undefined) row.supportsFastMode = relisted.supportsFastMode
     return [row]
   })
   const known = new Set(held.map((model) => model.modelId))

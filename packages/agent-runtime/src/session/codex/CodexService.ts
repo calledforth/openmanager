@@ -38,6 +38,23 @@ import { startRealCodex, type CodexStarter } from './start.js'
  * then a catalog read, then limits) is served by one process. */
 export const CODEX_SERVICE_IDLE_MS = 2 * 60 * 1000
 
+/** Budget for one question to the service process. Everything it is asked
+ * answers in well under a second when healthy (`account/rateLimits/read`,
+ * the slowest, ~0.7s _probed_), and the budget must end before the health
+ * probe's own (30s) does: a probe that gives up first aborts the request,
+ * which would hide a hung process behind an abort. */
+export const CODEX_SERVICE_REQUEST_MS = 10_000
+
+/** Budget for a question the answer can do without (the boot probe's
+ * profiles, policy and flags). Shorter, and never a reason to replace the
+ * process: other questions may be mid-answer on it. */
+export const CODEX_SERVICE_OPTIONAL_REQUEST_MS = 5_000
+
+/** A request its caller abandoned after it had been waiting this long was
+ * waiting on a hung process, not a slow one, and the process is replaced
+ * just as for a timeout. */
+export const CODEX_SERVICE_HUNG_AFTER_MS = 5_000
+
 export type CodexServiceDeps = {
   providerId: ProviderId
   host: Pick<HostDeps, 'log'>
@@ -50,6 +67,10 @@ export type CodexServiceDeps = {
    * the user's Codex, and a question about a project names its directory. */
   cwd?: string
   idleMs?: number
+  /** Overrides for the request budgets above, for tests. */
+  requestTimeoutMs?: number
+  optionalRequestTimeoutMs?: number
+  hungAfterMs?: number
   /** Injected in tests: the idle timer. */
   setTimer?: (run: () => void, ms: number) => { cancel: () => void }
   now?: () => number
@@ -74,6 +95,8 @@ export type CodexServiceStatus = {
  * thread, so it costs no tokens and leaves nothing in the user's history. */
 export type CodexDiscovery = {
   handshake: CodexHandshake | undefined
+  /** This discovery had to start the process (none was running). */
+  spawned: boolean
   account: CodexAccountState
   /** `model/list`, every page. Hidden models are not asked for. */
   models: v2.Model[]
@@ -96,8 +119,10 @@ export type CodexDiscovery = {
  * - **Reaped when idle.** `idleMs` after the last request settles, with none
  *   in flight, the process is stopped. The next request starts another.
  * - **Recovers.** A crash fails what was waiting on it and is logged; the
- *   next request starts a fresh process. A request that times out is taken
- *   as a wedged process, which is replaced for the same reason.
+ *   next request starts a fresh process. A request that times out, or that
+ *   its caller abandons after waiting `hungAfterMs`, is taken as a hung
+ *   process, which is replaced for the same reason. Optional reads never
+ *   replace it.
  * - **Never a thread.** It holds no session, so it is not one of the
  *   provider's session runtimes and does not count toward the Codex session
  *   cap. The runtime census reports it separately.
@@ -119,6 +144,13 @@ export class CodexService {
   private readonly statusListeners = new Set<(status: CodexServiceStatus) => void>()
   private readonly timeouts: RuntimeTimeouts
   private readonly idleMs: number
+  private readonly requestMs: number
+  private readonly optionalRequestMs: number
+  private readonly hungAfterMs: number
+  /** Terminations under way, so shutdown can wait for every process. */
+  private readonly exiting = new Set<Promise<unknown>>()
+  /** An account re-read under way after `account/updated`. */
+  private refreshingAccount: Promise<unknown> | undefined
   private readonly setTimer: NonNullable<CodexServiceDeps['setTimer']>
   private readonly now: () => number
 
@@ -126,6 +158,9 @@ export class CodexService {
     this.providerId = deps.providerId
     this.timeouts = { ...DEFAULT_RUNTIME_TIMEOUTS, ...deps.timeouts }
     this.idleMs = deps.idleMs ?? CODEX_SERVICE_IDLE_MS
+    this.requestMs = deps.requestTimeoutMs ?? CODEX_SERVICE_REQUEST_MS
+    this.optionalRequestMs = deps.optionalRequestTimeoutMs ?? CODEX_SERVICE_OPTIONAL_REQUEST_MS
+    this.hungAfterMs = deps.hungAfterMs ?? CODEX_SERVICE_HUNG_AFTER_MS
     this.now = deps.now ?? (() => Date.now())
     this.setTimer =
       deps.setTimer ??
@@ -166,27 +201,45 @@ export class CodexService {
   /** One request on the service process, starting it if none is running.
    * Rejects with the start's own error (`CodexNotInstalledError`,
    * `CodexVersionUnsupportedError`) when it cannot run, and with the exit
-   * when the process dies mid-request. */
+   * when the process dies mid-request.
+   *
+   * A request that times out, or that its caller abandons after it has
+   * waited `hungAfterMs`, was waiting on a hung process: every later
+   * question would wait out the same budget, so the process is replaced.
+   * An `optional` request has a shorter budget and never replaces anything,
+   * since what it asks can be done without and others may be mid-answer. */
   async request<M extends ClientMethod>(
     method: M,
     params: ClientParams<M>,
-    options?: { timeoutMs?: number; signal?: AbortSignal },
+    options: { timeoutMs?: number; signal?: AbortSignal; optional?: boolean } = {},
   ): Promise<ClientResult<M>> {
     if (this.disposed) throw new Error('The Codex service has been stopped')
     this.inFlight += 1
     this.idleTimer?.cancel()
     this.idleTimer = undefined
     try {
-      options?.signal?.throwIfAborted()
+      options.signal?.throwIfAborted()
       const client = await this.ensureClient()
-      options?.signal?.throwIfAborted()
+      options.signal?.throwIfAborted()
+      const sentAt = this.now()
       try {
-        return await client.request(method, params, options)
+        return await client.request(method, params, {
+          timeoutMs: options.timeoutMs ?? (options.optional ? this.optionalRequestMs : this.requestMs),
+          ...(options.signal ? { signal: options.signal } : {}),
+        })
       } catch (error) {
-        // A process that cannot answer within the budget is wedged, and
-        // every later question would wait out the same budget. Replace it.
-        if (error instanceof CodexRpcTimeoutError && this.client === client)
+        const hung =
+          error instanceof CodexRpcTimeoutError ||
+          (options.signal?.aborted === true && this.now() - sentAt >= this.hungAfterMs)
+        if (hung && !options.optional && this.client === client) {
+          this.deps.host.log({
+            scope: 'codex',
+            level: 'warn',
+            message: 'Codex service process stopped answering; replacing it',
+            data: { method, waitedMs: this.now() - sentAt },
+          })
           void this.terminate(client, 'restart')
+        }
         throw error
       }
     } finally {
@@ -200,7 +253,7 @@ export class CodexService {
     const response = await this.request(
       'account/read',
       { refreshToken: false },
-      options?.signal ? { signal: options.signal } : undefined,
+      options?.signal ? { signal: options.signal } : {},
     )
     const account = codexAccountState(response)
     this.setState({ ...this.stateValue, account, updatedAt: this.iso() })
@@ -213,7 +266,7 @@ export class CodexService {
     const response = await this.request(
       'account/rateLimits/read',
       undefined,
-      options?.signal ? { signal: options.signal } : undefined,
+      options?.signal ? { signal: options.signal } : {},
     )
     this.setState(applyRateLimitsRead(this.stateValue, response, this.iso()))
     return response
@@ -244,11 +297,17 @@ export class CodexService {
    * cannot answer the others is still usable, and says nothing about them. */
   async discover(options: { cwd?: string; signal?: AbortSignal } = {}): Promise<CodexDiscovery> {
     const signal = options.signal
+    // Whether this call started the process: two callers racing can both
+    // see a start, which only costs a duplicate `process_spawned` event.
+    const startsBefore = this.statusValue.starts
     const account = await this.readAccount(signal ? { signal } : undefined)
     const handshake = this.handshake
-    if (account.state === 'signed_out') return { handshake, account, models: [] }
+    const spawned = this.statusValue.starts > startsBefore
+    if (account.state === 'signed_out') return { handshake, spawned, account, models: [] }
     const ask = <M extends ClientMethod>(method: M, params: ClientParams<M>) =>
-      this.request(method, params, signal ? { signal } : undefined)
+      this.request(method, params, signal ? { signal } : {})
+    const askOptional = <M extends ClientMethod>(method: M, params: ClientParams<M>) =>
+      this.request(method, params, { optional: true, ...(signal ? { signal } : {}) })
     const optional = <T>(what: string, read: Promise<T>): Promise<T | undefined> =>
       read.catch((error: unknown) => {
         if (signal?.aborted) throw error
@@ -264,13 +323,14 @@ export class CodexService {
       readCodexModels({ request: ask }),
       optional(
         'permissionProfile/list',
-        readCodexPermissionProfiles({ request: ask }, options.cwd),
+        readCodexPermissionProfiles({ request: askOptional }, options.cwd),
       ),
-      optional('configRequirements/read', ask('configRequirements/read', undefined)),
-      optional('experimentalFeature/list', readCodexFeatures({ request: ask })),
+      optional('configRequirements/read', askOptional('configRequirements/read', undefined)),
+      optional('experimentalFeature/list', readCodexFeatures({ request: askOptional })),
     ])
     return {
       handshake: this.handshake ?? handshake,
+      spawned,
       account,
       models,
       ...(permissionProfiles ? { permissionProfiles } : {}),
@@ -296,6 +356,9 @@ export class CodexService {
     this.disposed = true
     this.stateListeners.clear()
     await this.stop('disposed')
+    // A process reaped or replaced moments ago may still be in its
+    // SIGTERM grace; shutdown is not done until it is gone too.
+    await Promise.all([...this.exiting])
     this.statusListeners.clear()
   }
 
@@ -329,9 +392,12 @@ export class CodexService {
       throw error
     }
     this.client = client
-    client.on('account/updated', (update) =>
-      this.setState(applyAccountUpdated(this.stateValue, update, this.iso())),
-    )
+    client.on('account/updated', (update) => {
+      this.setState(applyAccountUpdated(this.stateValue, update, this.iso()))
+      // The update says how Codex is signed in, not as whom: read the account
+      // again so its details (and the label health shows) are current.
+      if (update.authMode !== null) this.refreshAccount()
+    })
     client.on('account/rateLimits/updated', (update) =>
       this.setState(applyRateLimitsUpdated(this.stateValue, update, this.iso())),
     )
@@ -385,7 +451,29 @@ export class CodexService {
       this.client = undefined
       this.setStatus(this.currentStatus())
     }
-    await client.terminate({ reason }).catch(() => undefined)
+    const exiting = client.terminate({ reason }).catch(() => undefined)
+    this.exiting.add(exiting)
+    try {
+      await exiting
+    } finally {
+      this.exiting.delete(exiting)
+    }
+  }
+
+  private refreshAccount(): void {
+    if (this.refreshingAccount || this.disposed) return
+    this.refreshingAccount = this.readAccount()
+      .catch((error: unknown) =>
+        this.deps.host.log({
+          scope: 'codex',
+          level: 'warn',
+          message: 'Could not re-read the Codex account after it changed',
+          data: { error: error instanceof Error ? error.message : String(error) },
+        }),
+      )
+      .finally(() => {
+        this.refreshingAccount = undefined
+      })
   }
 
   /** The status for whatever process is current, keeping the counters. */

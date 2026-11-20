@@ -29,7 +29,13 @@ import {
 import type { ExecFile } from '../providers/opencode-models.js'
 import type { AcpConnectionFactory } from '../session/AcpConnection.js'
 import type { ClaudeSdk } from '../session/claude/sdk.js'
-import { CODEX_LOGIN_HINT, CODEX_SIGNED_OUT_MESSAGE } from '../session/codex/codex-account.js'
+import {
+  CODEX_LOGIN_HINT,
+  CODEX_SIGNED_OUT_MESSAGE,
+  codexAccountLabel,
+  codexSignInState,
+  type CodexProviderState,
+} from '../session/codex/codex-account.js'
 import { CodexService, type CodexServiceDeps } from '../session/codex/CodexService.js'
 import type { CodexStarter } from '../session/codex/start.js'
 import type { ProbeResult, ProbeRuntime, ProbeRuntimeFactory } from '../session/ProbeRuntime.js'
@@ -179,9 +185,18 @@ export type AgentRuntimeOptions = {
   /** The same seam for Codex: how an app-server is started, for sessions and
    * for the service process alike. Tests hand in a starter wired to a fake. */
   codexStart?: CodexStarter
-  /** Overrides for the Codex service process: its idle reap and timer, and
-   * where it runs. */
-  codexService?: Pick<CodexServiceDeps, 'idleMs' | 'setTimer' | 'cwd' | 'env'>
+  /** Overrides for the Codex service process: its idle reap and timer, its
+   * request budgets, and where it runs. */
+  codexService?: Pick<
+    CodexServiceDeps,
+    | 'idleMs'
+    | 'setTimer'
+    | 'cwd'
+    | 'env'
+    | 'requestTimeoutMs'
+    | 'optionalRequestTimeoutMs'
+    | 'hungAfterMs'
+  >
   /** The third seam: how a provider asked through its own CLI, rather than
    * over a connection, is run. Defaults to `node:child_process`. */
   execFile?: ExecFile
@@ -393,8 +408,13 @@ export class AgentRuntime {
       probes: this.probes,
       census: (providerId) => this.census(providerId),
       probeCwd: (providerId) => this.lastCwdByProvider.get(providerId) ?? this.defaultProbeCwd,
-      // Codex's probe asks the service process, which is kept anyway.
-      probeInParallel: (providerId) => this.configs[providerId]?.kind === 'codex',
+      // Codex's probe asks the service process. While that process is up it
+      // costs no spawn, so it need not wait behind another provider's CLI;
+      // when it is not (it is reaped between health ticks) the probe would
+      // start one, so it takes its turn in the queue like any other.
+      probeInParallel: (providerId) =>
+        this.configs[providerId]?.kind === 'codex' &&
+        this.codexServices.get(providerId)?.status.state === 'running',
       host,
       ...(options.health ?? {}),
     })
@@ -497,18 +517,25 @@ export class AgentRuntime {
   }
 
   /** A sign-out or sign-in Codex announces on its own (`account/updated`)
-   * reaches health at once, not at the next probe. Only transitions are
-   * reported: the probe that read the account reports it itself. */
+   * reaches health at once, not at the next probe, and so does a change of
+   * who is signed in. Only changes are reported: the probe that read the
+   * account reports it itself. A sign-in announced before the account is
+   * read again counts as signed in; the re-read then names the account. */
   private watchCodexAccount(service: CodexService): void {
-    let last = service.state.account?.state
+    const reading = (state: CodexProviderState) => {
+      const signIn = codexSignInState(state)
+      const label = state.account ? codexAccountLabel(state.account) : undefined
+      return { signIn, label }
+    }
+    let last = reading(service.state)
     service.onStateChange((state) => {
-      const now = state.account?.state
-      if (now === last) return
+      const now = reading(state)
+      if (now.signIn === last.signIn && (now.label === last.label || now.label === undefined)) return
       last = now
-      if (now === 'signed_out')
+      if (now.signIn === 'signed_out')
         this.health.observeAuthRequired(service.providerId, CODEX_SIGNED_OUT_MESSAGE, CODEX_LOGIN_HINT)
-      else if (now === 'signed_in' || now === 'not_required')
-        this.health.observeAuthenticated(service.providerId, undefined)
+      else if (now.signIn === 'signed_in' || now.signIn === 'not_required')
+        this.health.observeAuthenticated(service.providerId, undefined, now.label)
     })
   }
 

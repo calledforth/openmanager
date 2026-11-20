@@ -6,7 +6,7 @@ import type {
   ProviderPolicyBlock,
   SessionConfigOption,
 } from '@agentpack/contract'
-import type { v2, WebSearchMode } from '@openmanager/codex-app-server-protocol'
+import type { v2 } from '@openmanager/codex-app-server-protocol'
 import { codexAccess, type CodexAccessPreset } from './codex-access.js'
 import type { ClientMethod, ClientParams, ClientResult } from './CodexAppServerClient.js'
 
@@ -89,11 +89,12 @@ export async function readCodexFeatures(client: CodexRequester): Promise<CodexFe
 export const CODEX_CONFIG = {
   effort: 'effort',
   serviceTier: 'service_tier',
-  webSearch: 'web_search',
 } as const
 
 /** The service tier Codex calls Fast. */
 export const CODEX_FAST_SERVICE_TIER = 'priority'
+/** How Codex names standard speed when a tier must be named. */
+export const CODEX_STANDARD_SERVICE_TIER = 'default'
 
 /** What else the catalog is read against: the managed policy and the flags. */
 export type CodexCatalogContext = {
@@ -117,7 +118,10 @@ export function codexModelListing(
   const visible = models.filter((model) => !model.hidden)
   const defaults = context.requirements?.models?.newThread
   const current =
-    visible.find((model) => defaults?.model && model.id === defaults.model) ??
+    // A managed default may name the model by its id or by its slug.
+    visible.find(
+      (model) => !!defaults?.model && (model.id === defaults.model || model.model === defaults.model),
+    ) ??
     visible.find((model) => model.isDefault) ??
     visible[0]
   return {
@@ -138,7 +142,9 @@ export function codexModelOption(model: v2.Model, context: CodexCatalogContext =
     displayName: model.displayName || model.id,
     ...(model.description ? { description: model.description } : {}),
     ...(efforts.length > 0 ? { effortLevels: efforts } : {}),
-    ...(tiers.some((tier) => tier.id === CODEX_FAST_SERVICE_TIER) ? { supportsFastMode: true } : {}),
+    // Always said, `false` included: Fast turned off (the flag, a policy) has
+    // to replace an earlier `true`, not leave it standing.
+    supportsFastMode: tiers.some((tier) => tier.id === CODEX_FAST_SERVICE_TIER),
     // Absent means "could not say" to the composer, which lets an image
     // through; Codex always says, so this is a real answer either way.
     supportsImageInput: (model.inputModalities ?? []).includes('image'),
@@ -190,12 +196,15 @@ function codexModelConfigOptions(
     })
   }
   if (tiers.length > 0) {
-    // No tier asked for is Codex's standard speed, unless the catalog names
-    // a default tier, in which case nothing asked for *is* that tier.
+    // Standard is always a choice, spelled as Codex spells it ("Use
+    // `default` for standard speed"), so it stays pickable even where the
+    // catalog makes another tier the default.
     const catalogDefault = tiers.find((tier) => tier.id === model.defaultServiceTier)
     const values = [
-      ...(catalogDefault ? [] : [{ value: '', name: 'Standard' }]),
-      ...tiers.map((tier) => ({
+      { value: CODEX_STANDARD_SERVICE_TIER, name: 'Standard' },
+      ...tiers
+        .filter((tier) => tier.id !== CODEX_STANDARD_SERVICE_TIER)
+        .map((tier) => ({
         value: tier.id,
         name: tier.name || tier.id,
         ...(tier.description ? { description: tier.description } : {}),
@@ -210,7 +219,7 @@ function codexModelConfigOptions(
       description: 'Faster service tiers use more of your plan.',
       currentValue: values.some((value) => value.value === managed)
         ? (managed as string)
-        : (catalogDefault?.id ?? ''),
+        : (catalogDefault?.id ?? CODEX_STANDARD_SERVICE_TIER),
       options: values,
     })
   }
@@ -241,7 +250,9 @@ const POLICY_REASON = 'Not allowed by a Codex policy your administrator manages.
  * Every preset is checked against the approval policies, reviewers and
  * sandbox modes the policy allows, and against Codex's own built-in
  * permission profiles, which say what the effective requirements allow.
- * Web search modes the policy does not allow are blocked on their setting.
+ * Fast is blocked on the speed setting when a policy pins it off or the
+ * user's config turns it off. Settings no catalog offers yet (web search)
+ * are not named: a block on an option nobody shows would point at nothing.
  * `undefined` requirements mean the CLI could not say; `null` means it said
  * there is no policy. */
 export function codexPolicy(args: {
@@ -259,16 +270,17 @@ export function codexPolicy(args: {
     if (reason) blockedModes.push({ id: preset, reason })
   }
   const blockedConfigValues: NonNullable<ProviderPolicy['blockedConfigValues']> = []
-  const webSearch = requirements?.allowedWebSearchModes
-  if (webSearch)
-    for (const mode of WEB_SEARCH_MODES)
-      if (!webSearch.includes(mode))
-        blockedConfigValues.push({ configId: CODEX_CONFIG.webSearch, id: mode, reason: POLICY_REASON })
   if (requirements?.featureRequirements?.fast_mode === false)
     blockedConfigValues.push({
       configId: CODEX_CONFIG.serviceTier,
       id: CODEX_FAST_SERVICE_TIER,
       reason: POLICY_REASON,
+    })
+  else if (args.features?.fast_mode === false)
+    blockedConfigValues.push({
+      configId: CODEX_CONFIG.serviceTier,
+      id: CODEX_FAST_SERVICE_TIER,
+      reason: 'Fast is turned off in your Codex config (`fast_mode`).',
     })
   return {
     ...(blockedModes.length > 0 ? { blockedModes } : {}),
@@ -283,14 +295,20 @@ const CODEX_PRESETS: readonly CodexAccessPreset[] = [
   'full-access',
 ]
 
-const WEB_SEARCH_MODES: readonly WebSearchMode[] = ['disabled', 'cached', 'indexed', 'live']
-
 /** Codex's built-in permission profile that grants what each sandbox mode
  * does (`permissionProfile/list`, _probed_ on 0.170). */
 const SANDBOX_PROFILE: Record<v2.SandboxMode, string> = {
   'read-only': ':read-only',
   'workspace-write': ':workspace',
   'danger-full-access': ':danger-full-access',
+}
+
+/** `guardian_subagent` is the older name of `auto_review`: a policy that
+ * allows either allows the Auto preset's reviewer. */
+function sameReviewer(a: v2.ApprovalsReviewer, b: v2.ApprovalsReviewer): boolean {
+  const canonical = (reviewer: v2.ApprovalsReviewer) =>
+    reviewer === 'guardian_subagent' ? 'auto_review' : reviewer
+  return canonical(a) === canonical(b)
 }
 
 function presetBlocked(
@@ -303,7 +321,8 @@ function presetBlocked(
   const approvals = requirements?.allowedApprovalPolicies
   if (approvals && !approvals.some((policy) => policy === access.approvalPolicy)) return POLICY_REASON
   const reviewers = requirements?.allowedApprovalsReviewers
-  if (reviewers && !reviewers.includes(access.approvalsReviewer)) return POLICY_REASON
+  if (reviewers && !reviewers.some((reviewer) => sameReviewer(reviewer, access.approvalsReviewer)))
+    return POLICY_REASON
   const sandboxes = requirements?.allowedSandboxModes
   if (sandboxes && !sandboxes.includes(access.sandbox)) return POLICY_REASON
   if (profileAllowed.get(SANDBOX_PROFILE[access.sandbox]) === false) return POLICY_REASON
