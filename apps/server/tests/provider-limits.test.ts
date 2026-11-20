@@ -376,6 +376,35 @@ describe('provider limits', () => {
     })
   })
 
+  // Review: an API key (no email) switching to a subscription was never re-read.
+  it('reads again when an account without plan limits gains a name', async () => {
+    let result: UsageLimitsResult = { outcome: 'unavailable' }
+    const { service, reads, advance } = harness(async () => result)
+    service.refresh('claude-code', 0)
+    await service.idle()
+    // An API key: signed in, no email.
+    service.observeHealth('claude-code', health({ methodId: 'apiKey' }))
+    service.observeHealth('claude-code', health({ methodId: 'apiKey' }))
+    expect(reads).toHaveLength(1)
+
+    advance(5_000)
+    result = OK
+    service.observeHealth('claude-code', health({ accountLabel: 'ada@example.com' }))
+    await service.idle()
+    expect(reads).toHaveLength(2)
+    expect(service.get('claude-code').reading).not.toBeNull()
+  })
+
+  it('does not read again when an account with limits is named late', async () => {
+    const { service, reads } = harness(async () => OK)
+    service.refresh('claude-code', 0)
+    await service.idle()
+    service.observeHealth('claude-code', health({ methodId: 'claude-ai' }))
+    service.observeHealth('claude-code', health({ accountLabel: 'ada@example.com' }))
+    expect(reads).toHaveLength(1)
+    expect(service.get('claude-code').reading).not.toBeNull()
+  })
+
   it('throws away a read the account changed under, and reads again', async () => {
     let release: (value: UsageLimitsResult) => void = () => undefined
     const { service, reads } = harness(

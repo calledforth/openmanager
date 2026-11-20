@@ -59,7 +59,6 @@ import { InteractionBroker, type InteractionSettlement } from './InteractionBrok
 import { PermissionBroker } from './PermissionBroker.js'
 import { CapabilityMissingError } from './errors.js'
 import {
-  isSpawnFailure,
   ProviderHealthMonitor,
   type ProviderHealthMonitorDeps,
   type ProviderRuntimeCensus,
@@ -845,12 +844,6 @@ export class AgentRuntime {
     try {
       if (!probe.readUsageLimits) return { outcome: 'unsupported' }
       return await probe.readUsageLimits()
-    } catch (error) {
-      // A CLI that is not there is health's news too. With no project to
-      // probe in, health never looks, so this read may be the first to find
-      // out, and limits hide the provider's card on it.
-      if (isSpawnFailure(error)) this.health.beginProbe(args.providerId).failed(error)
-      throw error
     } finally {
       await probe.dispose()
     }

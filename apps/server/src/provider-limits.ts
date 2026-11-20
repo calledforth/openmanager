@@ -294,8 +294,16 @@ export function createProviderLimits(deps: ProviderLimitsDeps) {
         : undefined
       accounts.set(providerId, { signedIn, label })
       if (!before) return
+      // An unnamed account gaining a name is news only where the last read
+      // found no plan limits: an API key (no email) becoming a subscription.
+      // Elsewhere it is the same account being named late.
+      const named =
+        before.label === undefined &&
+        label !== undefined &&
+        current.lastRefresh?.outcome === 'unavailable'
       const changed =
         before.signedIn !== signedIn ||
+        named ||
         (before.label !== undefined && label !== undefined && before.label !== label)
       if (changed) accountChanged(providerId)
     },
