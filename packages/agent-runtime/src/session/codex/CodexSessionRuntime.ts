@@ -48,8 +48,9 @@ export const CODEX_PROMPT_CAPABILITIES: PromptCapabilities = { image: true }
 /** Settings every thread gets on top of the user's own `~/.codex`
  * (docs/decisions/codex-app-server.md, "The user's Codex home"): their
  * `notify` program would fire for every turn we run, doubling openmanager's
- * own notifications. */
-const THREAD_CONFIG = { notify: [] as string[] }
+ * own notifications; and the `update_plan` tool, off unless a client turns it
+ * on (probed on 0.170), is what keeps the todo checklist. */
+const THREAD_CONFIG = { notify: [] as string[], 'tools.update_plan.enabled': true }
 
 /** How long a stop keeps interrupting subagents. Interrupting the parent's
  * turn leaves its children running (probed on 0.170), and a child spawned
@@ -961,6 +962,7 @@ export class CodexSessionRuntime implements ManagedSessionRuntime {
         active.turn.tokenUsageUpdated((params as v2.ThreadTokenUsageUpdatedNotification).tokenUsage)
         return
       default:
+        active.turn.toolNotification(method, params)
         return
     }
   }
@@ -1088,7 +1090,13 @@ export class CodexSessionRuntime implements ManagedSessionRuntime {
 
   private emitTurnOutput(output: CodexTurnOutput): void {
     const steer = output.event === 'steer_delivered' || output.event === 'steer_withdrawn'
-    const category = steer ? 'lifecycle' : 'stream'
+    const category = steer
+      ? 'lifecycle'
+      : output.event === 'plan_update'
+        ? 'session'
+        : output.event.startsWith('tool_')
+          ? 'tool'
+          : 'stream'
     this.emit(routeEvent(this.route(), this.sessionIdValue, category, output.event, output.data))
   }
 

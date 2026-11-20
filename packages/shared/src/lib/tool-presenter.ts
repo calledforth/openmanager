@@ -113,6 +113,8 @@ interface ResolvedTool {
   subject?: string
   /** The lines a read covered, as the title gave them. */
   range?: string
+  /** Where a search looked, when the input does not say it where a search's would. */
+  scope?: string
 }
 
 /**
@@ -125,6 +127,8 @@ interface ResolvedTool {
 export function resolveTool(part: ToolPartData): ResolvedTool {
   const named = canonicalizeToolName(part.toolName ?? part.tool ?? '')
   const title = part.title ?? part.tool ?? ''
+  const codex = codexTool(part)
+  if (codex) return codex
   if (KNOWN_TOOLS.has(named)) return { canonical: named }
   const command = /^`([\s\S]+)`$/.exec(title)
   if (command) return { canonical: 'Bash', subject: command[1] }
@@ -173,6 +177,81 @@ export function resolveTool(part: ToolPartData): ResolvedTool {
     default:
       return { canonical: named }
   }
+}
+
+function record(value: unknown): Record<string, unknown> {
+  return value && typeof value === 'object' && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : {}
+}
+
+/**
+ * Codex names its built-in tools by item type and says in the item what each
+ * one did: a shell command's `commandActions` (Codex's reading of it), a
+ * patch's `changes`, a web search's `action`. A command that only reads files
+ * is a read, one search or listing is that, and anything else is a command; a
+ * patch of one added or deleted file is a write or a delete.
+ */
+function codexTool(part: ToolPartData): ResolvedTool | undefined {
+  const input = record(part.state?.input)
+  switch (part.toolName) {
+    case 'commandExecution':
+      return shellStep(input.commandActions)
+    case 'fileChange': {
+      const changes = Array.isArray(input.changes) ? input.changes.map(record) : []
+      if (changes.length !== 1) return undefined
+      if (changes[0]!.kind === 'add') return { canonical: 'Write' }
+      return changes[0]!.kind === 'delete' ? { canonical: 'Delete' } : undefined
+    }
+    case 'webSearch':
+      if (input.action === 'openPage') return { canonical: 'WebFetch' }
+      if (input.action === 'findInPage') {
+        const url = text(input.url)
+        return { canonical: 'Search', ...(url ? { scope: url } : {}) }
+      }
+      return undefined
+    case 'sleep':
+      return { canonical: 'Sleep' }
+    case 'hook':
+      return { canonical: 'Hook' }
+    case 'hookPrompt':
+      return { canonical: 'HookPrompt' }
+    default:
+      return undefined
+  }
+}
+
+/** What a shell command did, from Codex's `commandActions`, when it is one thing. */
+function shellStep(value: unknown): ResolvedTool | undefined {
+  if (!Array.isArray(value) || value.length === 0) return undefined
+  const actions = value.map(record)
+  if (actions.every((action) => action.type === 'read')) {
+    const path = text(actions[0]!.path) || text(actions[0]!.name)
+    return { canonical: 'Read', ...(path ? { subject: path } : {}) }
+  }
+  if (actions.length !== 1) return undefined
+  const action = actions[0]!
+  const path = text(action.path)
+  if (action.type === 'search') {
+    const query = text(action.query)
+    return {
+      canonical: 'Grep',
+      ...(query ? { subject: query } : {}),
+      ...(path && path !== '.' ? { scope: path } : {}),
+    }
+  }
+  if (action.type === 'listFiles') return { canonical: 'List', ...(path ? { subject: path } : {}) }
+  return undefined
+}
+
+/** A wait, in the units it reads best in. */
+function waited(ms: number): string {
+  if (ms < 1000) return `${Math.round(ms)} ms`
+  const seconds = Math.round(ms / 100) / 10
+  if (seconds < 60) return `${seconds}s`
+  const minutes = Math.floor(seconds / 60)
+  const rest = Math.round(seconds - minutes * 60)
+  return rest ? `${minutes}m ${rest}s` : `${minutes}m`
 }
 
 const KNOWN_TOOLS = new Set([
@@ -287,7 +366,7 @@ export function presentToolPart(part: ToolPartData): ToolPresenterModel {
   const isRunning = isToolRunning(stateType)
   const isError = stateType === 'error'
   const outcome = outcomeOf(stateType)
-  const { canonical, subject, range } = resolveTool(part)
+  const { canonical, subject, range, scope } = resolveTool(part)
   const toolName = part.toolName ?? part.tool ?? 'tool'
   const meta = getToolLabels(canonical || toolName)
   const title = state.title ?? part.title ?? meta.getTitle(state.input)
@@ -366,7 +445,10 @@ export function presentToolPart(part: ToolPartData): ToolPresenterModel {
       ...base,
       uiKind: 'search',
       verb: said('Searching for', 'Searched for', 'Search for'),
-      detail: `${quoted(pattern)}${searchScope(state.input)}`.trim() || prose || 'code',
+      detail:
+        `${quoted(pattern)}${scope ? ` in ${scope}` : searchScope(state.input)}`.trim() ||
+        prose ||
+        'code',
       fullDetail: pattern || undefined,
     }
   }
@@ -431,6 +513,29 @@ export function presentToolPart(part: ToolPartData): ToolPresenterModel {
       verb: said('Updating', 'Updated', 'Update'),
       detail: 'tasks',
     }
+  }
+
+  if (canonical === 'Sleep') {
+    const ms = (state.input as { durationMs?: unknown } | undefined)?.durationMs
+    return {
+      ...base,
+      uiKind: 'generic',
+      verb: said('Waiting', 'Waited', 'Wait'),
+      detail: typeof ms === 'number' && Number.isFinite(ms) && ms >= 0 ? waited(ms) : '',
+    }
+  }
+
+  if (canonical === 'Hook') {
+    return {
+      ...base,
+      uiKind: 'generic',
+      verb: said('Running hook', 'Ran hook', 'Run hook'),
+      detail: text((state.input as { eventName?: unknown } | undefined)?.eventName),
+    }
+  }
+
+  if (canonical === 'HookPrompt') {
+    return { ...base, uiKind: 'generic', verb: 'Hook added', detail: 'a prompt' }
   }
 
   const mcp = mcpCall(part)
