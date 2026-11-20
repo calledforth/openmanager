@@ -35,6 +35,7 @@ import { getSessionSummary } from './session-store.ts'
 import { gitJsonOf, readWorkspace } from './workspace-rows.ts'
 import { createToolOutputStore, settledTextOf } from './tool-output.ts'
 import { createTurnClosure, reasoningIsOpen, toolIsOpen } from './turn-closure.ts'
+import { backgroundTasksWakeAgent } from '../background-wake.ts'
 
 type TurnStarted = Extract<ProofEvent, { name: 'turn.started' }>
 type MessageDelta = Extract<ProofEvent, { name: 'message.delta' }>
@@ -167,6 +168,9 @@ export function createEventProjector(
       'SELECT 1 FROM sessions WHERE session_id = ? AND background_tasks_json IS NOT NULL',
     ),
     selectSessionStatus: database.prepare('SELECT status FROM sessions WHERE session_id = ?'),
+    selectSessionProvider: database.prepare(
+      'SELECT provider_id FROM sessions WHERE session_id = ?',
+    ),
     selectThreadQueue: database.prepare('SELECT queue_json FROM threads WHERE thread_id = ?'),
     // A session's pull requests, as the last `session.updated` that named
     // them stated: the whole list each time. `source` is set once, by the
@@ -1154,11 +1158,18 @@ export function createEventProjector(
             `Cannot finalize turn for missing session ${event.scope.sessionId}`,
           )
         }
-        // Only a completed turn is news, and only once nothing is left running:
-        // the turn that reports the background result is the one that is done.
-        // An interrupt was the user's own doing, and a failure shows as the
-        // error status instead.
-        if (event.name === 'turn.completed' && !working) {
+        // Only a completed turn is news, and only once nothing is left running
+        // that will wake the agent: the turn that reports the background
+        // result is the one that is done. Work that just runs on (a dev
+        // server in a Codex terminal) holds nothing back. An interrupt was
+        // the user's own doing, and a failure shows as the error status
+        // instead.
+        const provider = s.selectSessionProvider.get(event.scope.sessionId) as
+          | { provider_id: string }
+          | undefined
+        const awaitingWake =
+          working && (!provider || backgroundTasksWakeAgent(provider.provider_id))
+        if (event.name === 'turn.completed' && !awaitingWake) {
           s.updateSessionDone.run(at, event.scope.sessionId)
         } else s.clearSessionDone.run(event.scope.sessionId)
         // What is news brings a cooking session back: done, or failed. A
@@ -1166,7 +1177,7 @@ export function createEventProjector(
         // done with them: the next one starts as soon as this is written.
         if (
           failedHere ||
-          (event.name === 'turn.completed' && !working && !queueWaiting(event.scope.threadId))
+          (event.name === 'turn.completed' && !awaitingWake && !queueWaiting(event.scope.threadId))
         ) {
           s.uncookSession.run(event.scope.sessionId)
         }

@@ -258,6 +258,38 @@ export class FakeCodexAppServer implements TerminableChild {
     )
   }
 
+  /** Answer `thread/backgroundTerminals/list` and `/terminate` from
+   * `terminals` (by process id), as Codex 0.170 does (probed): the list names
+   * each by `itemId`, `processId` and the command without its shell wrapper;
+   * `terminate` drops one and answers `terminated: true`, or `false` for a
+   * process it does not hold. A test adds and removes terminals to say what
+   * is running. */
+  serveBackgroundTerminals(
+    terminals: Map<string, { threadId: string; itemId: string; command: string }>,
+  ): this {
+    this.respond('thread/backgroundTerminals/list', (params) => ({
+      data: [...terminals.entries()]
+        .filter(([, terminal]) => terminal.threadId === params.threadId)
+        .map(([processId, terminal]) => ({
+          itemId: terminal.itemId,
+          processId,
+          command: terminal.command,
+          cwd: '/work',
+          osPid: null,
+          cpuPercent: null,
+          rssKb: null,
+        })),
+      nextCursor: null,
+    }))
+    this.respond('thread/backgroundTerminals/terminate', (params) => {
+      const terminal = terminals.get(params.processId)
+      if (!terminal || terminal.threadId !== params.threadId) return { terminated: false }
+      terminals.delete(params.processId)
+      return { terminated: true }
+    })
+    return this
+  }
+
   /** A thread this fake can speak for. Nothing is sent until its methods are
    * called; `parentThreadId` makes it a subagent's thread. */
   thread(overrides: Partial<v2.Thread> = {}): FakeCodexThread {

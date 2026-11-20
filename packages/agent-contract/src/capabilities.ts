@@ -18,6 +18,21 @@ export type ProviderCapabilities = {
   supportsSubtasks: boolean
   supportsExtensions: boolean
   supportsQuestions: boolean
+  /** Work outlives the turn that started it and is reported as background
+   * tasks (`background_tasks_update`), each of which can be stopped
+   * (`SessionRuntime.stopBackgroundTasks`): Claude Code's backgrounded tools,
+   * Codex's background terminals. Host-side only: not sent to clients, which
+   * show the tasks a session reports and gate Stop on the protocol's
+   * `session.background.stop`, so capabilities read off the wire leave it
+   * out. Absent means false. */
+  supportsBackgroundTasks?: boolean
+  /** A background task that ends wakes the agent, which runs a turn on its
+   * result by itself (Claude Code). A turn that ends while such tasks run is
+   * then not done yet: the turn that reports the result is. False where the
+   * work just runs on (Codex's background terminals: a dev server), so a
+   * turn that completes beside it is done. Host-side only, like
+   * `supportsBackgroundTasks`. Absent means false. */
+  backgroundTasksWakeAgent?: boolean
 }
 
 /** A capability name usable in typed `capability_missing` events. */
@@ -39,3 +54,5 @@ export type CapabilityKey =
   | 'supportsSubtasks'
   | 'supportsExtensions'
   | 'supportsQuestions'
+  | 'supportsBackgroundTasks'
+  | 'backgroundTasksWakeAgent'

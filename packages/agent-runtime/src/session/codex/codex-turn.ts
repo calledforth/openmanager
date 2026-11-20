@@ -243,6 +243,12 @@ export class CodexTurn {
     return this.tokenUsage?.total
   }
 
+  /** The processes of this turn's commands still running (unified exec).
+   * Read before `finish`. */
+  runningProcesses(): string[] {
+    return this.tools.runningProcesses()
+  }
+
   /** Close whatever is still open: a turn can end (interrupted, failed) with
    * a reasoning item that never completed, and an open thought would leave
    * the timeline showing "thinking" forever.
@@ -256,12 +262,13 @@ export class CodexTurn {
    * without `turn/completed` settles its unanswered steers first:
    * `placeUnansweredSteers`.)
    *
-   * `endedNormally`: Codex completed the turn and nothing stopped it, so a
-   * command left running with a process of its own runs on in the
-   * background, and settles as such (`CodexTools.finish`). Otherwise the
-   * server closes what is still open. */
-  finish(endedNormally = false): void {
-    this.tools.finish(!endedNormally || this.interruptRequested)
+   * `runsOn`: the turn ended without being stopped (Codex completed it, or
+   * it failed), so a command left running with a process of its own runs on
+   * in the background, and settles as such (`CodexTools.finish`), as the
+   * background tasks list it. Otherwise the server closes what is still
+   * open. */
+  finish(runsOn = false): void {
+    this.tools.finish(!runsOn || this.interruptRequested)
     for (const id of [...this.reasoning.keys()]) this.closeReasoning(id)
     this.messages.clear()
     this.deliverPlaced(true)

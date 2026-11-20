@@ -50,6 +50,8 @@ export interface CodexResponses {
   'turn/start': v2.TurnStartResponse
   'turn/steer': v2.TurnSteerResponse
   'turn/interrupt': v2.TurnInterruptResponse
+  'thread/backgroundTerminals/list': v2.ThreadBackgroundTerminalsListResponse
+  'thread/backgroundTerminals/terminate': v2.ThreadBackgroundTerminalsTerminateResponse
   'account/read': v2.GetAccountResponse
   'account/rateLimits/read': v2.GetAccountRateLimitsResponse
   'model/list': v2.ModelListResponse

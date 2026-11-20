@@ -766,6 +766,12 @@ describe('session menu', () => {
     expect(byId(sessionMenuItems(input({ mark: 'working' }))).settle).toBe(
       'Live work cannot be settled',
     )
+    // Done beside background work that runs on is still live work.
+    expect(
+      byId(sessionMenuItems(input({ mark: 'done', inBackground: true, backgroundTaskCount: 1 })))
+        .settle,
+    ).toBe('Live work cannot be settled')
+    expect(byId(sessionMenuItems(input({ mark: 'done' }))).settle).toBeNull()
     const background = sessionMenuItems(input({ mark: 'background', backgroundTaskCount: 2 }))
     const stop = background.find((item) => item.id === 'stop-background')
     expect(stop).toMatchObject({ disabledReason: null, destructive: true })

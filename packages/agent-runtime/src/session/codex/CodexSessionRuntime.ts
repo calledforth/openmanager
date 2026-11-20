@@ -77,6 +77,7 @@ import {
   type CodexSubagentOutput,
 } from './codex-subagents.js'
 import { CodexTurn, type CodexTurnOutput } from './codex-turn.js'
+import { CodexBackgroundTerminals } from './codex-background.js'
 import type { CodexAppServerClient } from './CodexAppServerClient.js'
 import { CodexConnectionClosedError, CodexRpcError } from './CodexRpcPeer.js'
 import { startRealCodex, type CodexStarter } from './start.js'
@@ -172,6 +173,10 @@ const PENDING_NOTICES_MAX = 16
 /** How long a stop lets a running turn end on its own interrupt before the
  * process goes, so Codex records the turn as interrupted. */
 const STOP_INTERRUPT_MAX_MS = 2_000
+
+/** How long a stop waits for Codex to end the background terminals the
+ * thread retains before the process goes. */
+const STOP_TERMINALS_MAX_MS = 2_000
 
 /** What a fresh thread is handed of the conversation a lost one held. */
 const HANDOVER_MESSAGE_MAX_CHARS = 8_000
@@ -276,6 +281,8 @@ export class CodexSessionRuntime implements ManagedSessionRuntime {
     () => this.active !== undefined,
     (output) => this.emitSubagentOutput(output),
   )
+  /** Commands turns left running: the session's background tasks. */
+  private readonly terminals: CodexBackgroundTerminals
   /** Bumped by every prompt and stop, so a stop still sweeping subagents
    * leaves alone the children of a turn that started after it. */
   private stopGeneration = 0
@@ -351,6 +358,15 @@ export class CodexSessionRuntime implements ManagedSessionRuntime {
       ...(serviceTier ? { serviceTier } : {}),
       ...(isCodexWebSearchMode(webSearch) ? { webSearch } : {}),
     }
+    this.terminals = new CodexBackgroundTerminals({
+      enabled: deps.config.capabilities.supportsBackgroundTasks === true,
+      client: () => (this.exitValue ? undefined : this.client),
+      threadId: () => this.sessionIdValue,
+      timeoutMs: this.timeouts.controlRequestMs,
+      announce: (tasks) =>
+        this.emit(routeEvent(this.route(), this.sessionIdValue, 'session', 'background_tasks_update', { tasks })),
+      log: (entry) => this.deps.host.log(entry),
+    })
     this.exited = new Promise((resolve) => {
       this.resolveExited = resolve
     })
@@ -381,9 +397,10 @@ export class CodexSessionRuntime implements ManagedSessionRuntime {
   }
   /** Running subagents live in this process: reaping or evicting it would
    * kill them (docs/decisions/codex-app-server.md, "Children count"). So does
-   * a turn Codex began by itself, which no prompt holds the session open for. */
+   * a turn Codex began by itself, which no prompt holds the session open for,
+   * and commands running in the background. */
   get busy(): boolean {
-    return this.subagents.running || this.active?.background === true
+    return this.subagents.running || this.active?.background === true || this.terminals.busy
   }
 
   /** What was last written, never a guess: undefined until a model has been
@@ -978,6 +995,7 @@ export class CodexSessionRuntime implements ManagedSessionRuntime {
     this.codexName = opened.name
     this.takeOpened(opened)
     this.publish()
+    this.terminals.threadChanged()
     this.deps.host.log({
       scope: 'codex',
       level: 'info',
@@ -1082,6 +1100,7 @@ export class CodexSessionRuntime implements ManagedSessionRuntime {
     this.notice(codexThreadChangeNotice(change))
     const active = this.active
     if (active) this.failTurn(active, new CodexThreadGoneError(change))
+    this.terminals.threadChanged()
   }
 
   /** `thread/status/changed`: Codex's own word on the thread. A system error
@@ -1105,6 +1124,7 @@ export class CodexSessionRuntime implements ManagedSessionRuntime {
       case 'notLoaded':
         if (this.ownArchive || this.reopening) return
         if (this.reopen === undefined || this.reopen === 'systemError') this.reopen = 'closed'
+        this.terminals.threadChanged()
         return
       case 'idle':
       case 'active':
@@ -1433,6 +1453,8 @@ export class CodexSessionRuntime implements ManagedSessionRuntime {
     // stopped. Only the turn in flight's own may show as tool rows.
     if (method === 'item/started' || method === 'item/completed') {
       const { item } = params as v2.ItemStartedNotification
+      // A background command ends in a turn long finished, or in a later one.
+      if (method === 'item/completed') this.terminals.itemCompleted(item)
       if (isCodexCollabItem(item)) {
         const turnId = (params as { turnId?: unknown }).turnId
         const owned =
@@ -1629,7 +1651,11 @@ export class CodexSessionRuntime implements ManagedSessionRuntime {
     active.settled = true
     this.rememberFinished(active)
     active.markIdentified()
+    const running = active.turn.runningProcesses()
     active.turn.finish(stopReason === 'end_turn')
+    // A stop under way ends every terminal itself (`stopTerminals`).
+    if (this.phaseValue === 'ready')
+      this.terminals.turnEnded(running, stopReason !== 'end_turn' || active.turn.interruptRequested)
     if (this.active === active) this.active = undefined
     // Children that run on past a turn that ended normally are in the
     // background; a stopped turn's are being interrupted.
@@ -1654,7 +1680,13 @@ export class CodexSessionRuntime implements ManagedSessionRuntime {
     active.settled = true
     this.rememberFinished(active)
     active.markIdentified()
-    active.turn.finish()
+    const running = active.turn.runningProcesses()
+    // A failed turn's commands run on, and say so, as the background tasks
+    // list them. Not when the thread is gone (it holds no terminals any
+    // more), nor when a stop is under way: that ends them itself.
+    const ready = this.phaseValue === 'ready'
+    active.turn.finish(ready && !(error instanceof CodexThreadGoneError))
+    if (ready) this.terminals.turnEnded(running, active.turn.interruptRequested)
     if (this.active === active) this.active = undefined
     // Children run on past a failed turn too; not past the process.
     if (this.phaseValue !== 'exited') this.subagents.parentTurnEnded()
@@ -2458,7 +2490,11 @@ export class CodexSessionRuntime implements ManagedSessionRuntime {
     const first = this.stopRequest === undefined
     this.stopRequest ??= request
     if (this.phaseValue !== 'exited') this.phaseValue = 'stopping'
-    if (first) await this.interruptForStop(request.reason)
+    if (first) {
+      const running = this.active?.turn.runningProcesses() ?? []
+      await this.interruptForStop(request.reason)
+      await this.stopTerminals(running)
+    }
     const client = this.client
     if (client) await client.terminate(request).catch(() => undefined)
     else this.settleExit({ exitCode: null, signal: null, forced: false, at: new Date().toISOString() })
@@ -2467,6 +2503,28 @@ export class CodexSessionRuntime implements ManagedSessionRuntime {
 
   dispose(): void {
     void this.stop({ reason: 'disposed' })
+  }
+
+  /** Stop the named background terminals (Codex process ids), or every one
+   * listed. Never starts a process: terminals live in this one. */
+  async stopBackgroundTasks(taskIds?: readonly string[]): Promise<void> {
+    if (this.exitValue || this.phaseValue !== 'ready') return
+    await this.terminals.stop(taskIds)
+  }
+
+  /** Bounded, like the interrupt before it: processes the thread retains
+   * are ended before the app-server is, rather than left to outlive it. */
+  private async stopTerminals(running: readonly string[]): Promise<void> {
+    if (!this.client || this.exitValue) return
+    let timer: NodeJS.Timeout | undefined
+    await Promise.race([
+      this.terminals.stopAll(running),
+      new Promise<void>((resolve) => {
+        timer = setTimeout(resolve, STOP_TERMINALS_MAX_MS)
+        timer.unref?.()
+      }),
+    ])
+    clearTimeout(timer)
   }
 
   /** Bounded: a stop never waits long on a process it is about to end. One
@@ -2494,6 +2552,8 @@ export class CodexSessionRuntime implements ManagedSessionRuntime {
   private settleExit(processExit: ProcessExit): void {
     if (this.exitValue) return
     this.phaseValue = 'exited'
+    // Background terminals are children of this process and went with it.
+    this.terminals.close()
     const active = this.active
     if (active)
       this.failTurn(
