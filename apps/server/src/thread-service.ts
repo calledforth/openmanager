@@ -24,6 +24,7 @@ import {
   type InteractionKind,
   type InteractionResponse,
   type Message,
+  type MessagePhase,
   type ProofEvent,
   type ProofResponse,
   type Session,
@@ -172,6 +173,12 @@ type ActiveTurn = {
    * lets every client keep thoughts, text and tools in the order they happened.
    */
   textRunId?: string
+  /**
+   * The phase of the open text run, as its provider marked it. One message
+   * has one phase, so a chunk of another phase opens a run of its own: Codex
+   * can send its commentary and its answer back to back.
+   */
+  textRunPhase?: MessagePhase
   reasoningRunId?: string
   /**
    * Thoughts of this turn that no `stop` has closed yet, by host message id.
@@ -226,14 +233,20 @@ const RUN_BREAKING_EVENTS: ReadonlySet<RuntimeEvent['event']> = new Set<RuntimeE
 /**
  * The host message id an event of the turn is filed under. Text and thought
  * chunks continue their open run or start a new one; a run-breaking event
- * closes both runs, so the next chunk of either kind starts fresh. A thought's
+ * closes both runs, so the next chunk of either kind starts fresh, and so does
+ * a text chunk whose phase differs from its run's. A thought's
  * `stop` closes its own run after it is filed, which keeps providers that frame
  * their blocks (Claude Code) at one id per block.
  */
 function runMessageId(active: ActiveTurn, event: RuntimeEvent): string | undefined {
   if (event.event === 'agent_message_chunk') {
     active.reasoningRunId = undefined
-    return (active.textRunId ??= randomUUID())
+    if (active.textRunId && active.textRunPhase !== event.data.phase) active.textRunId = undefined
+    if (!active.textRunId) {
+      active.textRunId = randomUUID()
+      active.textRunPhase = event.data.phase
+    }
+    return active.textRunId
   }
   if (event.event === 'agent_thought_chunk') {
     active.textRunId = undefined

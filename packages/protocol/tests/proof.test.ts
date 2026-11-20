@@ -8,6 +8,7 @@ import {
   ServerMessageSchema,
   SubscriptionScopeSchema,
   InteractionResponseSchema,
+  MessageSchema,
   WorkspaceSchema,
   parseProofResult,
   type ProofResponse,
@@ -297,5 +298,39 @@ describe('turn.send command ids', () => {
         payload: started.payload,
       }).success,
     ).toBe(true)
+  })
+})
+
+describe('assistant message phases', () => {
+  const delta = proofEvents.find((event) => event.name === 'message.delta')!
+
+  it.each(['commentary', 'partial_answer', 'final_answer'] as const)(
+    'carries %s on a delta and on the message',
+    (phase) => {
+      const payload = { ...delta.payload, role: 'assistant', phase }
+      expect(ProofEventSchemas['message.delta'].parse({ ...delta, payload }).payload.phase).toBe(
+        phase,
+      )
+      expect(
+        MessageSchema.parse({
+          messageId: 'message-1',
+          threadId: 'thread-1',
+          turnId: 'turn-1',
+          role: 'assistant',
+          content: [{ type: 'text', text: 'Done.' }],
+          phase,
+        }).phase,
+      ).toBe(phase)
+    },
+  )
+
+  it('leaves the phase out where the provider says none, and refuses one it does not know', () => {
+    expect(ProofEventSchemas['message.delta'].parse(delta).payload).not.toHaveProperty('phase')
+    expect(
+      ProofEventSchemas['message.delta'].safeParse({
+        ...delta,
+        payload: { ...delta.payload, phase: 'summary' },
+      }).success,
+    ).toBe(false)
   })
 })

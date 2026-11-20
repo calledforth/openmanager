@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
-import { partitionSettledTurnParts, settledTurnLabel } from './turn-work-group'
+import type { StreamMessagePart } from '@openmanager/shared/lib/remote-stream-parts'
+import { assistantCopyText, partitionSettledTurnParts, settledTurnLabel } from './turn-work-group'
 
 describe('settled turn work grouping', () => {
   it('keeps only the trailing assistant text outside the work group', () => {
@@ -79,5 +80,83 @@ describe('settled turn work grouping', () => {
       'Resumed after background work · 2s',
     )
     expect(settledTurnLabel({ finishReason: 'cancelled', unprompted: true })).toBe('Stopped')
+  })
+})
+
+describe('settled turn grouping by message phase', () => {
+  const text = (id: string, phase?: string) => ({
+    type: 'text',
+    id,
+    text: `${id}.`,
+    ...(phase ? { phase } : {}),
+  })
+  const tool = (id: string) => ({ type: 'tool', id, tool: 'Read', state: { status: 'completed' } })
+  const split = (parts: StreamMessagePart[]) => {
+    const partition = partitionSettledTurnParts(parts)
+    return {
+      work: partition.workParts.map((part) => part.id),
+      answer: partition.finalParts.map((part) => part.id),
+    }
+  }
+
+  it('folds commentary into the work and shows the final answer', () => {
+    expect(
+      split([text('looking', 'commentary'), tool('read'), text('answer', 'final_answer')]),
+    ).toEqual({ work: ['looking', 'read'], answer: ['answer'] })
+  })
+
+  it('keeps commentary that runs straight into the answer out of it', () => {
+    // Without phases the two would read as one run, and both as the answer.
+    expect(split([tool('read'), text('looking'), text('answer')])).toEqual({
+      work: ['read'],
+      answer: ['looking', 'answer'],
+    })
+    expect(
+      split([tool('read'), text('looking', 'commentary'), text('answer', 'final_answer')]),
+    ).toEqual({ work: ['read', 'looking'], answer: ['answer'] })
+  })
+
+  it('shows a turn that ended on commentary as work, with no answer', () => {
+    expect(split([tool('read'), text('still looking', 'commentary')])).toEqual({
+      work: ['read', 'still looking'],
+      answer: [],
+    })
+  })
+
+  it('takes partial answers as answer text, wherever they stand', () => {
+    expect(
+      split([
+        text('first part', 'partial_answer'),
+        tool('read'),
+        text('checking', 'commentary'),
+        text('second part', 'partial_answer'),
+        text('rest', 'final_answer'),
+      ]),
+    ).toEqual({ work: ['read', 'checking'], answer: ['first part', 'second part', 'rest'] })
+  })
+
+  it('takes a final answer the provider marked, even with commentary after it', () => {
+    expect(
+      split([tool('read'), text('answer', 'final_answer'), text('aside', 'commentary')]),
+    ).toEqual({ work: ['read', 'aside'], answer: ['answer'] })
+  })
+
+  it('keeps the last run of unmarked text as the answer beside marked commentary', () => {
+    // A review's output carries no phase, inside a turn whose narration does.
+    expect(split([text('reviewing', 'commentary'), tool('read'), text('review')])).toEqual({
+      work: ['reviewing', 'read'],
+      answer: ['review'],
+    })
+  })
+
+  it('copies only the answer of a phased turn', () => {
+    expect(
+      assistantCopyText('', true, [
+        text('looking', 'commentary'),
+        tool('read'),
+        text('noted', 'commentary'),
+        text('answer', 'final_answer'),
+      ]),
+    ).toBe('answer.')
   })
 })

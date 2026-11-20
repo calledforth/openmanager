@@ -270,6 +270,10 @@ export function projectAgentEvent(
         turnId: required('turnId'),
         role: source.event === 'user_message_chunk' ? 'user' : 'assistant',
         content: source.data.content,
+        // Only an assistant message has a phase, and only when its provider marks it.
+        ...(source.event === 'agent_message_chunk' && source.data.phase
+          ? { phase: source.data.phase }
+          : {}),
       })
     case 'agent_thought_chunk':
       return emit('message.reasoning', threadScope, {

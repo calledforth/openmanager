@@ -207,6 +207,42 @@ describe('agent to environment protocol projection', () => {
     )
     expect(() => projectAgentEvent(source, { ...context, turnId: undefined })).toThrow('turnId')
   })
+  it.each(['commentary', 'partial_answer', 'final_answer'] as const)(
+    "carries an assistant message's %s phase onto its delta",
+    (phase) => {
+      const projected = projectAgentEvent(
+        {
+          ...base,
+          category: 'stream',
+          event: 'agent_message_chunk',
+          data: { messageId: 'provider-item', content: { type: 'text', text: 'Done.' }, phase },
+        },
+        context,
+      )
+      expect(projected).toMatchObject({
+        name: 'message.delta',
+        payload: {
+          messageId: 'host-message',
+          turnId: 'host-turn',
+          role: 'assistant',
+          content: { type: 'text', text: 'Done.' },
+          phase,
+        },
+      })
+      expect(ProofEventSchema.safeParse(projected).success).toBe(true)
+    },
+  )
+  it('leaves the phase off a delta whose provider marks none, and off a user message', () => {
+    const reply = fixtures.find((f) => f.event === 'agent_message_chunk')!
+    expect(projectAgentEvent(reply, context)?.payload).not.toHaveProperty('phase')
+    const echo: AgentEvent = {
+      ...base,
+      category: 'stream',
+      event: 'user_message_chunk',
+      data: { content: { type: 'text', text: 'Hello' }, phase: 'final_answer' },
+    }
+    expect(projectAgentEvent(echo, context)?.payload).not.toHaveProperty('phase')
+  })
   it('keeps opaque extension requests and idle process details host-side', () => {
     const extension: AgentEvent = {
       ...base,

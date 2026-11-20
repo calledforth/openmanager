@@ -172,14 +172,22 @@ export function foldProtocolEvent<T extends ProtocolThreadView>(current: T, even
       const existing = current.messages.find(
         (message) => message.messageId === event.payload.messageId,
       )
+      // A message's phase is set by the delta that opens it; the server
+      // starts a new message where the phase changes.
+      const phase = existing ? (existing.phase ?? event.payload.phase) : event.payload.phase
       const message: Message = existing
-        ? { ...existing, content: mergeContent(existing.content, event.payload.content) }
+        ? {
+            ...existing,
+            content: mergeContent(existing.content, event.payload.content),
+            ...(phase ? { phase } : {}),
+          }
         : {
             messageId: event.payload.messageId,
             threadId: current.thread.threadId,
             turnId,
             role: event.payload.role,
             content: [event.payload.content],
+            ...(phase ? { phase } : {}),
           }
       return {
         ...current,

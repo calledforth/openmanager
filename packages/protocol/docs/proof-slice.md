@@ -182,7 +182,7 @@ provider value. Every non-null result is validated by `ProofEventSchema`.
 | `prompt_started`            | `turn.started`                                        | Host turn and user-message IDs                                                                               |
 | `prompt_completed`          | `turn.completed` / `turn.interrupted` / `turn.failed` | Host completion classification                                                                               |
 | `user_message_chunk`        | `message.delta`                                       | Host user-message ID                                                                                         |
-| `agent_message_chunk`       | `message.delta`                                       | Host assistant-message ID                                                                                    |
+| `agent_message_chunk`       | `message.delta`                                       | Host assistant-message ID; the provider's `phase`, which opens a new message where it changes                |
 | `agent_thought_chunk`       | `message.reasoning`                                   | Host assistant-message ID                                                                                    |
 | `tool_call`                 | `tool.updated`                                        | Host tool-call ID; provider name, input without bodies, paths, times                                         |
 | `tool_call_update`          | `tool.updated`                                        | As above; text only while the call runs. Settling states `outputBytes`; the text is read at `toolOutputPath` |
