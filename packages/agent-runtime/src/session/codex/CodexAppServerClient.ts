@@ -60,6 +60,8 @@ export interface CodexResponses {
   'experimentalFeature/list': v2.ExperimentalFeatureListResponse
   'config/read': v2.ConfigReadResponse
   'thread/unsubscribe': v2.ThreadUnsubscribeResponse
+  'review/start': v2.ReviewStartResponse
+  'thread/compact/start': v2.ThreadCompactStartResponse
 }
 export type ClientResult<M extends ClientMethod> = M extends keyof CodexResponses
   ? CodexResponses[M]

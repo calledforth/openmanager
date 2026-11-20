@@ -30,10 +30,10 @@ const NO_LIMITS: ProviderLimits = Object.freeze({
 function publicCapabilities(
   capabilities: ProviderConfig['capabilities'],
 ): ProviderBootstrap['capabilities'] {
-  const shown = { ...capabilities }
+  const { operations, ...shown } = capabilities
   delete shown.supportsBackgroundTasks
   delete shown.backgroundTasksWakeAgent
-  return shown
+  return { ...shown, ...(operations?.length ? { operations: [...operations] } : {}) }
 }
 
 const errorResult = (requestId: string, code: ErrorCode, message: string) => ({

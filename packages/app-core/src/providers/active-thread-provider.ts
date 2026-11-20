@@ -93,8 +93,11 @@ export interface MessageContentSnapshot {
    * A user row nobody typed: `delegated` is the prompt a parent agent gave its
    * subagent, `subagents` the environment telling the agent its subagents
    * finished. Absent on what a person sent.
+   *
+   * `review` and `compact`: a person sent it, as a command the provider ran
+   * as an operation (`/review`, `/compact`), not words for the agent.
    */
-  origin?: 'delegated' | 'subagents'
+  origin?: 'delegated' | 'subagents' | 'review' | 'compact'
 }
 
 /** External store of persisted message bodies, keyed by message ID.

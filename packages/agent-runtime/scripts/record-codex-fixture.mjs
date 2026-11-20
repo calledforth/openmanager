@@ -36,7 +36,7 @@
 //
 // No dependencies, so it runs with plain `node` and needs no build.
 
-import { spawn } from 'node:child_process'
+import { execFileSync, spawn } from 'node:child_process'
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { homedir, hostname, tmpdir, userInfo } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
@@ -214,6 +214,91 @@ const SCENARIOS = {
         ].join('\n'),
         { approvalPolicy: 'never' },
       )
+    },
+  },
+
+  compact: {
+    description:
+      'One short turn, then thread/compact/start: the compaction runs as a turn of its own (turn/started, a contextCompaction item, turn/completed); a turn/steer during it is refused.',
+    async run(s) {
+      const thread = await s.startThread()
+      await s.runTurn(thread, 'Reply with exactly the word: pong')
+      const started = s.waitFor((m) => m.method === 'turn/started' && m.params.threadId === thread, 60_000)
+      await s.request('thread/compact/start', { threadId: thread })
+      const turn = (await started).params.turn.id
+      await s
+        .request('turn/steer', {
+          threadId: thread,
+          expectedTurnId: turn,
+          input: [{ type: 'text', text: 'Also say hi.', text_elements: [] }],
+        })
+        .catch(() => undefined)
+      await s.turnCompleted(thread, turn)
+    },
+  },
+
+  'auto-compact': {
+    description:
+      'model_auto_compact_token_limit set very low: Codex compacts the thread by itself around a short turn.',
+    config: ['model_auto_compact_token_limit=2000'],
+    async run(s) {
+      const thread = await s.startThread()
+      await s.runTurn(thread, 'Reply with exactly the word: pong')
+      await s.runTurn(thread, 'Reply with exactly the word: ping')
+    },
+  },
+
+  review: {
+    description:
+      'review/start on uncommitted changes, delivered inline: the review runs as a turn with enteredReviewMode and exitedReviewMode items; a turn/steer during it is refused.',
+    setup(workspace) {
+      const git = (...args) => execFileSync('git', args, { cwd: workspace, stdio: 'ignore' })
+      git('init', '-q')
+      git('-c', 'user.email=a@b.c', '-c', 'user.name=fixture', 'commit', '-q', '--allow-empty', '-m', 'init')
+      writeFileSync(join(workspace, 'add.js'), 'export function add(a, b) {\n  return a - b\n}\n')
+    },
+    async run(s) {
+      const thread = await s.startThread()
+      const result = await s.request('review/start', {
+        threadId: thread,
+        target: { type: 'uncommittedChanges' },
+        delivery: 'inline',
+      })
+      const turn = result.turn.id
+      await s
+        .request('turn/steer', {
+          threadId: thread,
+          expectedTurnId: turn,
+          input: [{ type: 'text', text: 'Also say hi.', text_elements: [] }],
+        })
+        .catch(() => undefined)
+      await s.turnCompleted(thread, turn, 300_000)
+    },
+  },
+
+  'review-interrupt': {
+    description:
+      'review/start, then turn/interrupt once the review is working: the turn to interrupt is the one the extra turn/started names (its rootTurnId is the review turn), and the review turn completes interrupted.',
+    setup(workspace) {
+      SCENARIOS.review.setup(workspace)
+    },
+    async run(s) {
+      const thread = await s.startThread()
+      const working = s.waitFor((m) => m.method === 'turn/started' && m.params.threadId === thread, 60_000)
+      const result = await s.request('review/start', {
+        threadId: thread,
+        target: { type: 'uncommittedChanges' },
+        delivery: 'inline',
+      })
+      const turn = result.turn.id
+      const workingTurn = (await working).params.turn.id
+      await s.waitFor(
+        (m) => m.method === 'item/started' && m.params.threadId === thread && m.params.item?.type === 'commandExecution',
+        60_000,
+      )
+      const done = s.turnCompleted(thread, turn)
+      await s.request('turn/interrupt', { threadId: thread, turnId: workingTurn })
+      await done
     },
   },
 

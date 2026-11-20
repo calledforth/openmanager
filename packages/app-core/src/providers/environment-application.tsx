@@ -22,7 +22,11 @@ import {
   deriveProviderUiStatus,
   type ProviderHealthReport,
 } from '@openmanager/shared/contracts/provider-health'
-import { type InteractionResponse, type Workspace } from '@openmanager/protocol'
+import {
+  isOperationTurnOrigin,
+  type InteractionResponse,
+  type Workspace,
+} from '@openmanager/protocol'
 import {
   UPLOAD_TICKET_COMMAND,
   hasDraftContent,
@@ -1853,7 +1857,8 @@ function EnvironmentActiveThreadProvider({ children }: { children: ReactNode }) 
     [client, commands],
   )
   const busy = !!activeTurn || queueDraining
-  const canSteer = providerSteers && !!activeTurn
+  // A review or compaction takes no input: Enter queues for after it.
+  const canSteer = providerSteers && !!activeTurn && !isOperationTurnOrigin(activeTurn.origin)
   const followUps = useMemo<ThreadFollowUps | undefined>(
     () =>
       queues

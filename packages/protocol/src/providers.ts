@@ -28,6 +28,12 @@ export const ProviderCapabilitiesSchema = z.strictObject({
   supportsSubtasks: z.boolean(),
   supportsExtensions: z.boolean(),
   supportsQuestions: z.boolean(),
+  /**
+   * The provider's own operations a message can run as a turn instead of a
+   * prompt: `/review` and `/compact` typed in the composer. Absent means none,
+   * and such text goes to the agent as a prompt.
+   */
+  operations: z.array(z.enum(['review', 'compact'])).max(8).optional(),
 })
 
 export const ProviderHealthSchema = z.strictObject({

@@ -53,6 +53,11 @@ export const codex: CodexProviderConfig = {
     // A terminal that ends starts no turn: a turn completing beside a dev
     // server is done.
     backgroundTasksWakeAgent: false,
+    // --- delivered with operation turns (CAL-268) --------------------------
+    // `/review` runs `review/start` (inline, on the session's thread) and
+    // `/compact` runs `thread/compact/start`, each as a turn of its own that
+    // cannot be steered.
+    operations: ['review', 'compact'],
     // --- arrives with tool items, approvals and questions -----------------
     supportsPermissionRequests: false,
     supportsQuestions: false,

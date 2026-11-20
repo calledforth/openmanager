@@ -9,13 +9,13 @@ import {
 import { reconcileAfterRestart } from '../src/db/boot-reconcile.js'
 import { runMigrations } from '../src/db/migrate.js'
 import { MIGRATIONS } from '../src/db/migrations.js'
-import { readThreadState } from '../src/db/session-store.js'
+import { getSessionSummary, readThreadState } from '../src/db/session-store.js'
 import { createPersistentEventService } from '../src/event-service.js'
 import { createThreadService, type WorkspaceRuntimeResolver } from '../src/thread-service.js'
 
 const registered: WorkspaceRuntimeResolver = (workspaceId) =>
   workspaceId === '/workspace/project'
-    ? { providerId: 'claude', cwd: '/workspace/project' }
+    ? { providerId: 'claude', providers: ['claude', 'codex'], cwd: '/workspace/project' }
     : undefined
 
 const closers: (() => void)[] = []
@@ -24,7 +24,12 @@ afterEach(() => {
 })
 
 type RuntimeEvent = Parameters<ReturnType<typeof createThreadService>['onRuntimeEvent']>[0]
-type PromptArgs = { prompt: { text: string }; userMessageId: string; desiredConfig?: unknown }
+type PromptArgs = {
+  prompt: { text: string }
+  userMessageId: string
+  desiredConfig?: unknown
+  operation?: unknown
+}
 
 /** A Claude chat on a real (in-memory) database, its provider driven by hand. */
 function boot(database: DatabaseSync, published: EventEnvelope[]) {
@@ -63,7 +68,7 @@ function boot(database: DatabaseSync, published: EventEnvelope[]) {
   return { events, runtime, service, settings }
 }
 
-async function setup() {
+async function setup(providerId: 'claude' | 'codex' = 'claude') {
   const database = new DatabaseSync(':memory:', { enableForeignKeyConstraints: true })
   runMigrations(database, MIGRATIONS)
   database.exec(
@@ -91,7 +96,7 @@ async function setup() {
     dispatch('session.create', {
       environmentId: 'environment-1',
       workspaceId: '/workspace/project',
-      providerId: 'claude',
+      providerId,
     }),
   ).payload
   const thread = created.thread
@@ -106,7 +111,7 @@ async function setup() {
     messageId?: string,
   ) =>
     service.onRuntimeEvent({
-      providerId: 'claude',
+      providerId,
       threadId: thread.threadId,
       workspaceId: '/workspace/project',
       sessionId: 'provider-session',
@@ -650,5 +655,80 @@ describe('steering', () => {
     await vi.waitFor(() => expect(chat.queue().items).toMatchObject([{ delivery: 'queued' }]))
     await chat.completed('assistant-0')
     expect((await chat.started(1)).prompt.text).toBe('Also lint')
+  })
+})
+
+describe('operation turns (CAL-268)', () => {
+  it('runs /review on Codex as an operation turn: the command is the user message, no prompt, no title', async () => {
+    const chat = await setup('codex')
+    const sent = chat.send('/review base main', 'review-1')
+    expect(sent.turn.origin).toBe('review')
+    expect(sent.userMessage.content).toEqual([{ type: 'text', text: '/review base main' }])
+    const args = await chat.started(0)
+    expect(args.operation).toEqual({ kind: 'review', target: { type: 'base_branch', branch: 'main' } })
+    await chat.completed('assistant-0')
+    const state = chat.state()
+    expect(state.turns.map((turn) => [turn.origin, turn.state])).toEqual([['review', 'completed']])
+    // A command says nothing about what the chat is about.
+    expect(getSessionSummary(chat.database, chat.thread.sessionId)?.title ?? null).toBeNull()
+    const announced = chat.published.find((event) => event.name === 'turn.started')
+    expect(announced?.payload).toMatchObject({ turn: { origin: 'review' } })
+  })
+
+  it('runs /compact on Codex as an operation, and leaves it prompt text on Claude', async () => {
+    const codex = await setup('codex')
+    expect(codex.send('/compact').turn.origin).toBe('compact')
+    expect((await codex.started(0)).operation).toEqual({ kind: 'compact' })
+
+    const claude = await setup('claude')
+    // Claude Code takes its own slash commands as prompt text.
+    expect(claude.send('/compact').turn.origin).toBeUndefined()
+    const args = await claude.started(0)
+    expect(args.operation).toBeUndefined()
+    expect(args.prompt.text).toBe('/compact')
+  })
+
+  it('is not one when the text only mentions a command', async () => {
+    const chat = await setup('codex')
+    expect(chat.send('please /review this').turn.origin).toBeUndefined()
+    expect((await chat.started(0)).operation).toBeUndefined()
+    chat.state()
+    // A prompt titles the chat, as a command does not.
+    expect(getSessionSummary(chat.database, chat.thread.sessionId)?.title).toBeTruthy()
+  })
+
+  it('queues a message sent to steer an operation turn, and runs it after', async () => {
+    const chat = await setup('codex')
+    const sent = chat.send('/compact')
+    await chat.started(0)
+    const answer = chat.dispatch('turn.steer', {
+      ...chat.thread,
+      turnId: sent.turn.turnId,
+      text: 'Now fix the tests',
+      commandId: 's-1',
+    })
+    expect(answer).toMatchObject({ payload: { outcome: 'queued' } })
+    expect(chat.runtime.steer).not.toHaveBeenCalled()
+    await chat.completed('assistant-0')
+    const next = await chat.started(1)
+    expect(next.prompt.text).toBe('Now fix the tests')
+    expect(next.operation).toBeUndefined()
+  })
+
+  it('queues /compact sent to steer a running turn, and runs it as its own operation turn', async () => {
+    const chat = await setup('codex')
+    const sent = chat.send('Build it')
+    await chat.started(0)
+    const answer = chat.dispatch('turn.steer', {
+      ...chat.thread,
+      turnId: sent.turn.turnId,
+      text: '/compact',
+      commandId: 's-1',
+    })
+    expect(answer).toMatchObject({ payload: { outcome: 'queued' } })
+    expect(chat.runtime.steer).not.toHaveBeenCalled()
+    await chat.completed('assistant-0')
+    expect((await chat.started(1)).operation).toEqual({ kind: 'compact' })
+    expect(chat.state().turns.map((turn) => turn.origin)).toEqual([undefined, 'compact'])
   })
 })

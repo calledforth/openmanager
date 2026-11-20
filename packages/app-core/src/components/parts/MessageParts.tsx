@@ -1,6 +1,7 @@
 import { Fragment, memo, useMemo, type ReactNode } from 'react'
 import { groupActivityParts, type ActivitySummary } from '@openmanager/shared/lib/activity-groups'
 import { TextPart } from './TextPart'
+import { FindingsCard } from './FindingsCard'
 import { ToolCallPermission } from '../permissions/InlinePermissionPrompt'
 import { usePermissionStateOptional } from '../../providers/permission-provider'
 import { ToolRow, type ToolRowPart } from './ToolRow'
@@ -71,6 +72,7 @@ function renderPart(
     case 'text': {
       const text = (part.text as string) ?? ''
       if (part.synthetic || part.ignored) return null
+      if (part.findings === true) return <FindingsCard key={key} text={text} />
       return <TextPart key={key} text={text} />
     }
     case 'tool': {

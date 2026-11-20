@@ -62,11 +62,15 @@ export function partitionSettledTurnParts(parts: readonly StreamMessagePart[]): 
   // but never hide the result the user asked for inside "Worked". Notices
   // that change how to read the answer (the conversation before it was
   // compacted, another model wrote it, the model declined, a limit is close,
-  // the session moved to another project) stay out with it.
+  // the session moved to another project, a review finished and this is what
+  // it found) stay out with it.
   const lifted = beforeAnswer.filter(
     (part) =>
       ((part.type === 'image' || part.type === 'video') && part.generated === true) ||
-      (part.type === 'notice' && (LIFTED_NOTICE_KINDS.has(noticeKind(part)) || isMovedPart(part))),
+      (part.type === 'notice' &&
+        (LIFTED_NOTICE_KINDS.has(noticeKind(part)) ||
+          isMovedPart(part) ||
+          isReviewFinishedPart(part))),
   )
   // The subagents the turn started keep their place in the work, where each
   // ran, and all of them also head the answer as its summary: each is a chat
@@ -136,6 +140,12 @@ export function assistantCopyText(
 }
 
 const LIFTED_NOTICE_KINDS = new Set(['compacted', 'model_fallback', 'refusal', 'usage_warning'])
+
+/** A review's `finished` marker, which heads its findings. */
+function isReviewFinishedPart(part: StreamMessagePart): boolean {
+  const notice = part.notice as { kind?: unknown; review?: { phase?: unknown } } | undefined
+  return notice?.kind === 'info' && notice.review?.phase === 'finished'
+}
 
 function noticeKind(part: StreamMessagePart): string {
   const notice = part.notice as { kind?: unknown } | undefined

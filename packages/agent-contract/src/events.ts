@@ -473,6 +473,10 @@ export type ProviderNotice = {
   detail?: string
   model?: { from?: string; to: string }
   compaction?: { trigger: 'manual' | 'auto'; tokensBefore?: number; tokensAfter?: number }
+  /** On an `info` notice: the marker of a review turn (`TurnOperation`)
+   * entering review mode, with what it reviews as the provider put it, or
+   * leaving it, after which the turn's answer is the review's findings. */
+  review?: { phase: 'started' | 'finished'; target?: string }
   /** When the limit a `usage_warning` is about resets (ISO 8601). */
   resetsAt?: string
 }

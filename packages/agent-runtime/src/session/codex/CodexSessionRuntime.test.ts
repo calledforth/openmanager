@@ -2416,3 +2416,275 @@ describe('CodexSessionRuntime composer settings', () => {
     await third
   })
 })
+
+describe('CodexSessionRuntime operation turns (CAL-268)', () => {
+  const COMPACT = { text: '/compact', blocks: [{ type: 'text' as const, text: '/compact' }] }
+  const REVIEW = { text: '/review', blocks: [{ type: 'text' as const, text: '/review' }] }
+  const STEER = { text: 'also this', blocks: [{ type: 'text' as const, text: 'also this' }] }
+  const notices = (events: BackendEvent[]) =>
+    events.filter((e) => e.event === 'provider_notice').map((e) => e.data)
+  const FINDINGS = '- [P1] Return the sum instead of the difference — add.js:2'
+
+  it('runs /compact as thread/compact/start: the compaction part, then the meter from the emptied window', async () => {
+    let turn: FakeCodexTurn | undefined
+    const { server, runtime, events } = build({ onTurn: (t) => (turn = t) })
+    const { sessionId } = await runtime.start()
+    const prompt = runtime.prompt({ prompt: COMPACT, operation: { kind: 'compact' } })
+    await vi.waitFor(() => expect(turn).toBeDefined())
+    expect(server.requests('thread/compact/start')[0]!.params).toEqual({ threadId: sessionId })
+    expect(server.requests('turn/start')).toHaveLength(0)
+    // Named by `turn/started`: Codex's answer carries no turn.
+    await vi.waitFor(() =>
+      expect(events.find((e) => e.event === 'turn_identified')).toMatchObject({
+        data: { providerTurnId: turn!.id },
+      }),
+    )
+    turn!.compaction(() => turn!.tokenUsage({ totalTokens: 9_000 }, { totalTokens: 150_000 }))
+    turn!.completed()
+    await prompt
+
+    expect(notices(events)).toEqual([
+      { kind: 'compacting', message: 'Compacting the conversation' },
+      { kind: 'compacted', message: 'Conversation compacted', compaction: { trigger: 'manual' } },
+    ])
+    const order = names(events)
+    // The meter resets as soon as the compaction is done, not only at the turn's end.
+    const meter = events.findIndex((e) => e.event === 'usage_update')
+    expect(events[meter]).toMatchObject({ data: { used: 9_000, size: 258_400 } })
+    expect(meter).toBeLessThan(order.indexOf('prompt_completed'))
+    expect(order).not.toContain('background_turn_started')
+    expect(events.find((e) => e.event === 'prompt_completed')).toMatchObject({ data: { stopReason: 'end_turn' } })
+  })
+
+  it('refuses a steer into an operation turn without asking Codex, so the message is queued', async () => {
+    let turn: FakeCodexTurn | undefined
+    const { server, runtime, events } = build({ onTurn: (t) => (turn = t) })
+    await runtime.start()
+    const prompt = runtime.prompt({ prompt: COMPACT, operation: { kind: 'compact' } })
+    await vi.waitFor(() => expect(names(events)).toContain('turn_identified'))
+    await expect(runtime.steer({ prompt: STEER, steerId: 'steer-1' })).rejects.toMatchObject({
+      reason: 'not_steerable',
+    })
+    expect(server.requests('turn/steer')).toHaveLength(0)
+    expect(events.filter((e) => e.event.startsWith('steer_'))).toEqual([])
+    turn!.compaction()
+    turn!.completed()
+    await prompt
+  })
+
+  it('stops a compaction with turn/interrupt for its turn', async () => {
+    let turn: FakeCodexTurn | undefined
+    const { server, runtime, events } = build({ onTurn: (t) => (turn = t) })
+    server.respond('turn/interrupt', {} as never, { after: () => turn!.interrupted() })
+    await runtime.start()
+    const prompt = runtime.prompt({ prompt: COMPACT, operation: { kind: 'compact' } })
+    await vi.waitFor(() => expect(names(events)).toContain('turn_identified'))
+    await runtime.cancel()
+    await prompt
+    expect(server.requests('turn/interrupt')[0]!.params).toMatchObject({ turnId: turn!.id })
+    expect(events.find((e) => e.event === 'prompt_completed')).toMatchObject({ data: { stopReason: 'cancelled' } })
+  })
+
+  it('closes a compaction Codex accepted but never started, so the session never waits on it', async () => {
+    const server = new FakeCodexAppServer()
+    server.respond('model/list', MODELS as never).serveThreads()
+    server.respond('thread/compact/start', {} as never)
+    const { runtime, events, log } = build({ server, controlRequestMs: 50 })
+    await runtime.start()
+    await runtime.prompt({ prompt: COMPACT, operation: { kind: 'compact' } })
+    expect(events.find((e) => e.event === 'prompt_completed')).toMatchObject({ data: { stopReason: 'end_turn' } })
+    expect(log).toHaveBeenCalledWith(
+      expect.objectContaining({ message: 'Codex accepted thread/compact/start but started no turn; closing it' }),
+    )
+  })
+
+  it('shows an automatic compaction inside a prompted turn, and thread/compacted from an older Codex', async () => {
+    let turn: FakeCodexTurn | undefined
+    const { server, runtime, events } = build({ onTurn: (t) => (turn = t) })
+    const { sessionId } = await runtime.start()
+    const prompt = runtime.prompt({ prompt: PROMPT })
+    await vi.waitFor(() => expect(turn).toBeDefined())
+    turn!.compaction(() => turn!.tokenUsage({ totalTokens: 12_000 }, { totalTokens: 80_000 }))
+    turn!.agentMessage('done')
+    turn!.completed()
+    await prompt
+    expect(notices(events)).toEqual([
+      { kind: 'compacting', message: 'Compacting the conversation' },
+      { kind: 'compacted', message: 'Conversation compacted automatically', compaction: { trigger: 'auto' } },
+    ])
+    expect(events.filter((e) => e.event === 'usage_update')[0]).toMatchObject({ data: { used: 12_000 } })
+
+    // A Codex that says it only with the deprecated notification.
+    const before = notices(events).length
+    const second = runtime.prompt({ prompt: PROMPT })
+    await vi.waitFor(() => expect(turn!.turn.status).toBe('inProgress'))
+    server.notify('thread/compacted', { threadId: sessionId, turnId: turn!.id })
+    turn!.completed()
+    await second
+    expect(notices(events).slice(before)).toEqual([
+      { kind: 'compacted', message: 'Conversation compacted automatically', compaction: { trigger: 'auto' } },
+    ])
+  })
+
+  it('runs /review as review/start inline: its markers, its work, its findings once, and no background turn for the extra turn/started', async () => {
+    let turn: FakeCodexTurn | undefined
+    const { server, runtime, events } = build({ onTurn: (t) => (turn = t) })
+    const { sessionId } = await runtime.start()
+    const prompt = runtime.prompt({
+      prompt: REVIEW,
+      operation: { kind: 'review', target: { type: 'base_branch', branch: 'main' } },
+    })
+    await vi.waitFor(() => expect(turn).toBeDefined())
+    expect(server.requests('review/start')[0]!.params).toEqual({
+      threadId: sessionId,
+      target: { type: 'baseBranch', branch: 'main' },
+      delivery: 'inline',
+    })
+    turn!.userMessage('Review the code changes against the base branch')
+    turn!.command('git diff main', { output: 'diff\n' })
+    turn!.reviewFinished(FINDINGS)
+    turn!.completed()
+    await prompt
+
+    const order = names(events)
+    expect(order).not.toContain('background_turn_started')
+    expect(events.filter((e) => e.event === 'turn_identified').map((e) => e.data)).toEqual([
+      { providerTurnId: turn!.id },
+    ])
+    expect(notices(events)).toEqual([
+      {
+        kind: 'info',
+        message: 'Reviewing current changes',
+        review: { phase: 'started', target: 'current changes' },
+      },
+      { kind: 'info', message: 'Review finished', review: { phase: 'finished' } },
+    ])
+    // Markers around the work, the findings after the second one, once.
+    expect(order.indexOf('provider_notice')).toBeLessThan(order.indexOf('tool_call'))
+    expect(order.lastIndexOf('provider_notice')).toBeLessThan(order.indexOf('agent_message_chunk'))
+    expect(texts(events)).toBe(FINDINGS)
+    expect(events.find((e) => e.event === 'agent_message_chunk')).toMatchObject({ data: { phase: 'final_answer' } })
+    expect(events.find((e) => e.event === 'prompt_completed')).toMatchObject({ data: { stopReason: 'end_turn' } })
+  })
+
+  it('refuses a steer into a review, and stops a review through its working turn', async () => {
+    let turn: FakeCodexTurn | undefined
+    const { server, runtime, events } = build({ onTurn: (t) => (turn = t) })
+    server.respond('turn/interrupt', (params) => {
+      // What Codex says to the review's own turn (_probed_).
+      if (params.turnId !== turn!.workingTurnId)
+        throw new CodexRpcError(-32600, `expected active turn id ${params.turnId} but found ${turn!.workingTurnId}`)
+      setImmediate(() => {
+        turn!.reviewFinished('Reviewer failed to output a response.', 'Review was interrupted. Please re-run /review.')
+        turn!.interrupted()
+      })
+      return {} as never
+    })
+    await runtime.start()
+    const prompt = runtime.prompt({
+      prompt: REVIEW,
+      operation: { kind: 'review', target: { type: 'uncommitted_changes' } },
+    })
+    await vi.waitFor(() => expect(turn).toBeDefined())
+    await expect(runtime.steer({ prompt: STEER, steerId: 'steer-1' })).rejects.toMatchObject({
+      reason: 'not_steerable',
+    })
+    turn!.commandStarted('git status')
+    await runtime.cancel()
+    await prompt
+    expect(server.requests('turn/interrupt').map((r) => r.params)).toEqual([
+      expect.objectContaining({ turnId: turn!.workingTurnId }),
+    ])
+    // Stopped: Codex's own word on why, not a findings answer.
+    expect(texts(events)).toBe('Review was interrupted. Please re-run /review.')
+    expect(events.find((e) => e.event === 'prompt_completed')).toMatchObject({ data: { stopReason: 'cancelled' } })
+  })
+
+  it('fails a review Codex could not start, which never completes its turn', async () => {
+    const server = new FakeCodexAppServer()
+    server.respond('model/list', MODELS as never).serveThreads()
+    server.respond(
+      'review/start',
+      (params) => ({ turn: codexBuilders.buildTurn({ rootTurnId: null }), reviewThreadId: params.threadId }),
+      {
+        after: (request, result) => {
+          server.notify('thread/status/changed', { threadId: request.params.threadId, status: { type: 'systemError' } })
+          server.notify('error', {
+            error: {
+              message: '"/work" is not a git repository',
+              codexErrorInfo: 'other',
+              additionalDetails: null,
+              misalignment: null,
+            },
+            willRetry: false,
+            threadId: request.params.threadId,
+            turnId: result.turn.id,
+          })
+        },
+      },
+    )
+    const { runtime, events } = build({ server })
+    await runtime.start()
+    await expect(
+      runtime.prompt({ prompt: REVIEW, operation: { kind: 'review', target: { type: 'uncommitted_changes' } } }),
+    ).rejects.toThrow('not a git repository')
+    expect(events.find((e) => e.event === 'runtime_error')).toMatchObject({
+      data: { kind: 'provider', message: '"/work" is not a git repository' },
+    })
+  })
+
+  it('offers /compact when the context window is full', async () => {
+    let turn: FakeCodexTurn | undefined
+    const { runtime, events } = build({ onTurn: (t) => (turn = t) })
+    await runtime.start()
+    const prompt = runtime.prompt({ prompt: PROMPT }).catch(() => undefined)
+    await vi.waitFor(() => expect(turn).toBeDefined())
+    turn!.failed('Your input exceeds the context window', 'contextWindowExceeded')
+    await prompt
+    expect(events.find((e) => e.event === 'runtime_error')).toMatchObject({
+      data: { problem: { code: 'context_window_exceeded', action: 'compact' } },
+    })
+  })
+})
+
+describe('CodexSessionRuntime operation turns against a recording (CAL-268)', () => {
+  it('stops the recorded review through the turn the extra turn/started named', async () => {
+    const server = replay('review-interrupt')
+    // The stopped review's command ran with a process of its own, which the
+    // runtime ends; the recorder never asked.
+    server.respond('thread/backgroundTerminals/terminate', { terminated: true } as never)
+    server.respond('thread/backgroundTerminals/list', { data: [], nextCursor: null } as never)
+    const { runtime, events } = build({ server })
+    await runtime.start()
+    const prompt = runtime.prompt({
+      prompt: { text: '/review', blocks: [{ type: 'text', text: '/review' }] },
+      operation: { kind: 'review', target: { type: 'uncommitted_changes' } },
+    })
+    await vi.waitFor(() => expect(names(events)).toContain('tool_call'))
+    await runtime.cancel()
+    await prompt
+    await server.done
+    expect(server.unmatched).toEqual([])
+    expect(names(events)).not.toContain('background_turn_started')
+    expect(texts(events)).toBe('Review was interrupted. Please re-run /review and wait for it to complete.')
+    expect(events.find((e) => e.event === 'prompt_completed')).toMatchObject({ data: { stopReason: 'cancelled' } })
+    runtime.dispose()
+  })
+
+  it('shows the recorded automatic compaction inside the turn it ran in', async () => {
+    const server = replay('auto-compact')
+    const { runtime, events } = build({ server })
+    await runtime.start()
+    await runtime.prompt({ prompt: PROMPT })
+    await runtime.prompt({ prompt: PROMPT })
+    await server.done
+    expect(server.unmatched).toEqual([])
+    const kinds = events.filter((e) => e.event === 'provider_notice').map((e) => (e.data as { kind: string }).kind)
+    // The recording machine had no bubblewrap: a `configWarning` first.
+    expect(kinds.filter((kind) => kind !== 'warning')).toEqual(['compacting', 'compacted'])
+    // Codex read the emptied window during the compaction: the meter follows at once.
+    const meters = events.filter((e) => e.event === 'usage_update').map((e) => (e.data as { used: number }).used)
+    expect(meters).toEqual([13_908, 19_347, 16_368])
+    runtime.dispose()
+  })
+})

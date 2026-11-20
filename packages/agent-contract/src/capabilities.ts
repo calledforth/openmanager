@@ -1,3 +1,5 @@
+import type { TurnOperationKind } from './operations.js'
+
 /** Stable names for provider features on which applications may gate UI. */
 export type ProviderCapabilities = {
   canSetModel: boolean
@@ -33,6 +35,11 @@ export type ProviderCapabilities = {
    * turn that completes beside it is done. Host-side only, like
    * `supportsBackgroundTasks`. Absent means false. */
   backgroundTasksWakeAgent?: boolean
+  /** The provider's own operations a turn can run instead of a prompt
+   * (`TurnOperation`): `/review` and `/compact` typed in the composer run
+   * them. Absent means none: the text goes to the agent as a prompt, which
+   * is how Claude Code takes its own slash commands. */
+  operations?: readonly TurnOperationKind[]
 }
 
 /** A capability name usable in typed `capability_missing` events. */
@@ -56,3 +63,4 @@ export type CapabilityKey =
   | 'supportsQuestions'
   | 'supportsBackgroundTasks'
   | 'backgroundTasksWakeAgent'
+  | 'operations'

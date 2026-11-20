@@ -7,7 +7,9 @@ import {
   FolderSimpleIcon,
   GaugeIcon,
   InfoIcon,
+  MagnifyingGlassIcon,
   ProhibitIcon,
+  SealCheckIcon,
   WarningCircleIcon,
   WarningIcon,
 } from '@phosphor-icons/react'
@@ -56,7 +58,13 @@ function NoticeLine({
   live: boolean
   open?: boolean
 }) {
-  const Glyph = NOTICE_ICONS[notice.kind]
+  // A review's markers: it began looking, and it has finished.
+  const Glyph =
+    notice.kind === 'info' && notice.review
+      ? notice.review.phase === 'started'
+        ? MagnifyingGlassIcon
+        : SealCheckIcon
+      : NOTICE_ICONS[notice.kind]
   return (
     <span className="flex min-w-0 flex-1 items-baseline gap-1.5">
       <Glyph
@@ -112,6 +120,7 @@ export function TurnNoticePart({ notice, live = false }: { notice: Notice; live?
         className={cn(activityRow, 'flex min-w-0')}
         {...(live ? { role: 'status' } : {})}
         data-notice-kind={notice.kind}
+        {...(notice.kind === 'info' && notice.review ? { 'data-review': notice.review.phase } : {})}
       >
         <NoticeLine notice={notice} copy={copy} live={live} />
       </div>

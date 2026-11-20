@@ -482,6 +482,22 @@ describe('typed problems and notices', () => {
     ).toBeNull()
   })
 
+  it("records a review's markers with what they mark (CAL-268)", () => {
+    expect(
+      projectAgentEvent(
+        notice({
+          kind: 'info',
+          message: 'Reviewing current changes',
+          review: { phase: 'started', target: 'current changes' },
+        }),
+        context,
+      ),
+    ).toMatchObject({
+      name: 'turn.notice.recorded',
+      payload: { kind: 'info', review: { phase: 'started', target: 'current changes' } },
+    })
+  })
+
   it('carries provider prose whole', () => {
     const result = projectAgentEvent(
       notice({ kind: 'warning', message: 'x'.repeat(5000), detail: 'y'.repeat(5000) }),

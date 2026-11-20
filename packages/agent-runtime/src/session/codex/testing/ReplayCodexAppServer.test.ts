@@ -361,6 +361,123 @@ describe('ReplayCodexAppServer with the real client', () => {
   })
 })
 
+describe('ReplayCodexAppServer with the real client: operation turns', () => {
+  const startThread = (client: CodexAppServerClient) =>
+    client.request('thread/start', {
+      cwd: WORKSPACE,
+      ephemeral: true,
+      approvalPolicy: 'never',
+      sandbox: 'read-only',
+      config: { notify: [] },
+      model: 'gpt-6-luna',
+    })
+  const itemTypes = (seen: Seen, turnId: string) =>
+    seen
+      .filter((m) => m.method === 'item/completed' && m.params.turnId === turnId)
+      .map((m) => m.params.item.type as string)
+
+  it('compact: thread/compact/start runs a turn of its own with a contextCompaction item, and refuses a steer', async () => {
+    const { server, client, seen } = await replay('compact')
+    const { thread } = await startThread(client)
+    const first = next(client, 'turn/completed', (p) => p.threadId === thread.id)
+    await client.request('turn/start', {
+      threadId: thread.id,
+      input: text('Reply with exactly the word: pong'),
+      ...lowCost,
+    })
+    await first
+    const started = next(client, 'turn/started', (p) => p.threadId === thread.id)
+    // No turn in the answer: the turn is named by `turn/started`.
+    await expect(client.request('thread/compact/start', { threadId: thread.id })).resolves.toEqual({})
+    const { turn } = await started
+    expect(turn.rootTurnId).toBe(turn.id)
+    const completed = next(client, 'turn/completed', (p) => p.turn.id === turn.id)
+    const steer = await client
+      .request('turn/steer', { threadId: thread.id, expectedTurnId: turn.id, input: text('Also say hi.') })
+      .then(
+        () => undefined,
+        (error: unknown) => error,
+      )
+    expect(steer).toMatchObject({
+      code: -32600,
+      data: { codexErrorInfo: { activeTurnNotSteerable: { turnKind: 'compact' } } },
+    })
+    expect((await completed).turn.status).toBe('completed')
+    expect(itemTypes(seen, turn.id)).toEqual(['contextCompaction'])
+    // Codex 0.170 says it with the item only; the deprecated notification is gone.
+    expect(seen.some((m) => m.method === 'thread/compacted')).toBe(false)
+    await expectPlayedAsRecorded(server)
+  })
+
+  it('auto-compact: Codex compacts by itself inside the next turn, before its prompt', async () => {
+    const { server, client, seen } = await replay('auto-compact')
+    const { thread } = await startThread(client)
+    for (const word of ['pong', 'ping']) {
+      const completed = next(client, 'turn/completed', (p) => p.threadId === thread.id)
+      await client.request('turn/start', {
+        threadId: thread.id,
+        input: text(`Reply with exactly the word: ${word}`),
+        ...lowCost,
+      })
+      await completed
+    }
+    const turns = seen.filter((m) => m.method === 'turn/started').map((m) => m.params.turn.id as string)
+    expect(turns).toHaveLength(2)
+    expect(itemTypes(seen, turns[1]!)).toEqual(['contextCompaction', 'userMessage', 'agentMessage'])
+    await expectPlayedAsRecorded(server)
+  })
+
+  it('review: review/start runs inline with review-mode markers, an extra turn/started, and refuses a steer', async () => {
+    const { server, client, seen } = await replay('review')
+    const { thread } = await startThread(client)
+    const working = next(client, 'turn/started', (p) => p.threadId === thread.id)
+    const { turn, reviewThreadId } = await client.request('review/start', {
+      threadId: thread.id,
+      target: { type: 'uncommittedChanges' },
+      delivery: 'inline',
+    })
+    expect(reviewThreadId).toBe(thread.id)
+    const completed = next(client, 'turn/completed', (p) => p.turn.id === turn.id)
+    const steer = await client
+      .request('turn/steer', { threadId: thread.id, expectedTurnId: turn.id, input: text('Also say hi.') })
+      .then(
+        () => undefined,
+        (error: unknown) => error,
+      )
+    expect(steer).toMatchObject({ data: { codexErrorInfo: { activeTurnNotSteerable: { turnKind: 'review' } } } })
+    // The extra turn/started names another turn, rooted at the review's.
+    const extra = (await working).turn
+    expect(extra.id).not.toBe(turn.id)
+    expect(extra.rootTurnId).toBe(turn.id)
+    expect((await completed).turn.status).toBe('completed')
+    const types = itemTypes(seen, turn.id)
+    expect(types[0]).toBe('enteredReviewMode')
+    expect(types.slice(-2)).toEqual(['exitedReviewMode', 'agentMessage'])
+    // Every item is filed under the review's turn, none under the extra one.
+    expect(seen.some((m) => m.params?.turnId === extra.id)).toBe(false)
+    await expectPlayedAsRecorded(server)
+  })
+
+  it('review-interrupt: the extra turn/started names the turn to interrupt', async () => {
+    const { server, client, seen } = await replay('review-interrupt')
+    const { thread } = await startThread(client)
+    const working = next(client, 'turn/started', (p) => p.threadId === thread.id)
+    const command = next(client, 'item/started', (p) => p.item.type === 'commandExecution')
+    const { turn } = await client.request('review/start', {
+      threadId: thread.id,
+      target: { type: 'uncommittedChanges' },
+      delivery: 'inline',
+    })
+    const extra = (await working).turn
+    await command
+    const completed = next(client, 'turn/completed', (p) => p.turn.id === turn.id)
+    await client.request('turn/interrupt', { threadId: thread.id, turnId: extra.id })
+    expect((await completed).turn.status).toBe('interrupted')
+    expect(itemTypes(seen, turn.id).slice(-2)).toEqual(['exitedReviewMode', 'agentMessage'])
+    await expectPlayedAsRecorded(server)
+  })
+})
+
 describe('ReplayCodexAppServer', () => {
   /** A recording cut down to the handshake and one request. */
   function small(extra: CodexFixture['entries'] = []): CodexFixture {
