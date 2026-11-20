@@ -1,6 +1,6 @@
 # Codex through `codex app-server`
 
-Status: Accepted, 2026-11-20. Recorded from [CAL-244](https://linear.app/calledforth/issue/CAL-244/decide-how-openmanager-runs-codex). The product half ([CAL-245](https://linear.app/calledforth/issue/CAL-245/decide-how-codexs-controls-and-features-appear-in-openmanager)) is a section of its own at the end, still open.
+Status: Accepted, 2026-11-20. Runtime recorded from [CAL-244](https://linear.app/calledforth/issue/CAL-244/decide-how-openmanager-runs-codex); product, in its own section at the end, from [CAL-245](https://linear.app/calledforth/issue/CAL-245/decide-how-codexs-controls-and-features-appear-in-openmanager).
 
 Openmanager runs Codex through `codex app-server`, the protocol Codex's IDE extension and T3 Code use: JSON-RPC as newline-delimited JSON over stdio, with no `jsonrpc` member. This page records how. Every claim marked _probed_ was checked live against codex-cli 0.170.0 on Linux (WSL2) on 2026-11-20; the earlier research covered 0.158 and 0.160.
 
@@ -68,7 +68,7 @@ Decoding is tolerant, because the surface moves weekly (four types changed betwe
 
 ### Experimental API
 
-Opted in: `initialize` sends `experimentalApi: true`. Plan mode (`collaborationMode`), ordered approval choices (`availableDecisions`) and `turn/settings/update` exist only there. Every experimental use has a fallback that keeps the session working when the field is missing or rejected: no plan mode toggle, approval choices from the stable decision set, settings applied on the next turn.
+Opted in: `initialize` sends `experimentalApi: true`. Ordered approval choices (`availableDecisions`) and the `auto_review` reviewer depend on it, and so would plan mode (`collaborationMode`) and `turn/settings/update`, which are not used. Every experimental use has a fallback that keeps the session working when the field is missing or rejected: approval choices then come from the stable decision set.
 
 ### MCP extensions
 
@@ -134,10 +134,51 @@ Everything else is received. Notifications we do not act on are dropped at decod
 ### Platform notes
 
 - **Linux.** Without `bubblewrap` on `PATH`, `app-server` logs an error and sends a `configWarning` at startup, then falls back to a bundled copy (_probed_). The warning is surfaced in provider health as advice, not a failure.
-- **Windows.** The sandbox runs commands as a separate Windows user, which breaks Git ("dubious ownership") and `%TEMP%` folders. Until [CAL-273](https://linear.app/calledforth/issue/CAL-273/make-the-codex-sandbox-work-on-windows) solves it, the Windows default preset is chosen in the product section.
+- **Windows.** The sandbox runs commands as a separate Windows user, which breaks Git ("dubious ownership") and `%TEMP%` folders. Until [CAL-273](https://linear.app/calledforth/issue/CAL-273/make-the-codex-sandbox-work-on-windows) solves it, native Windows defaults to Full access (see Access presets).
 
 ## Product
 
-Open, to be recorded from [CAL-245](https://linear.app/calledforth/issue/CAL-245/decide-how-codexs-controls-and-features-appear-in-openmanager): default access preset (and the native-Windows default), the plan-mode implement prompt, importing existing Codex threads, titles/archive/delete, sign-in, persistent approvals, and rewind.
+Recorded from [CAL-245](https://linear.app/calledforth/issue/CAL-245/decide-how-codexs-controls-and-features-appear-in-openmanager), 2026-11-20.
 
-Already agreed there (2026-10-06): a Build/Plan mode toggle plus an **Access** option with four presets (Supervised, Auto-accept edits, Auto, Full access), and openmanager owns the queue. Codex's native `thread/queue/*` is never used.
+### Access presets
+
+The composer's mode control for Codex is **Access**, with four presets. Each maps to the spellings above:
+
+| Preset | `approvalPolicy` | `approvalsReviewer` | `sandbox` (thread) | `sandboxPolicy` (turn) |
+| -- | -- | -- | -- | -- |
+| Supervised | `untrusted` | `user` | `read-only` | `readOnly` |
+| **Auto-accept edits** (default) | `on-request` | `user` | `workspace-write` | `workspaceWrite` |
+| Auto | `on-request` | `auto_review` | `workspace-write` | `workspaceWrite` |
+| Full access | `never` | `user` | `danger-full-access` | `dangerFullAccess` |
+
+- **Default: Auto-accept edits.** Edits inside the workspace go through, and anything that leaves the sandbox asks. It is the closest match to Claude Code's `acceptEdits`, and it keeps the sandbox on.
+- **On native Windows the default is Full access**, with a notice in the composer saying why, until [CAL-273](https://linear.app/calledforth/issue/CAL-273/make-the-codex-sandbox-work-on-windows) makes the sandbox usable. The Windows sandbox runs commands as a separate user, which breaks Git and `%TEMP%`, so a sandboxed default would fail in ways that look like Codex bugs. WSL and Linux keep the sandboxed default.
+
+### No plan mode
+
+Codex's plan mode (the experimental `collaborationMode`) is **not ported**. There is no Build/Plan toggle for Codex, and Access is its only mode control. This replaces the Build/Plan toggle agreed on 2026-10-06. A plan Codex writes on its own (`turn/plan/updated`) still renders as the ordinary plan checklist. [CAL-261](https://linear.app/calledforth/issue/CAL-261/plan-mode-for-codex-a-plan-card-you-can-implement-or-refine) is out of scope.
+
+### Sign-in from the CLI only
+
+Codex is signed in the way Cursor and OpenCode are: on the machine, with `codex login`. Openmanager has no Codex sign-in of its own. When `account/read` reports no account, provider health says "Run `codex login` on this machine" and no session starts. `account/login/*` is unused. [CAL-270](https://linear.app/calledforth/issue/CAL-270/sign-in-to-codex-from-openmanager) is out of scope.
+
+### Threads: archive on delete, no import
+
+- **Titles** go from openmanager to Codex (`thread/name/set`), so a thread is recognisable in the user's Codex history.
+- **Deleting a session archives its Codex thread** (`thread/archive`). It never hard-deletes, so the thread can still be recovered in Codex.
+- **An archive or delete made outside openmanager** does not delete the session. The next resume follows the resume fallback: it unarchives an archived thread, and starts fresh with a note when the thread is missing.
+- **Existing Codex threads are not imported.** [CAL-276](https://linear.app/calledforth/issue/CAL-276/import-existing-codex-threads) stays parked.
+
+Built in [CAL-271](https://linear.app/calledforth/issue/CAL-271/sync-titles-archive-and-delete-with-codex).
+
+### Persistent approvals
+
+"Always allow `<prefix>`" and network host rules write the user's Codex rules (`acceptWithExecpolicyAmendment` and similar). They need only the **`agent`** grant, the same as Claude Code's "Always allow", which also persists to the user's own settings. Openmanager does not add a stricter rule for one provider.
+
+### Rewind
+
+History only (`thread/revert`, which rewrites history and never files; `thread/rollback` no longer exists in 0.170), with a clear "files are not restored" warning, until the Wave 6 checkpoints exist ([CAL-264](https://linear.app/calledforth/issue/CAL-264/rewind-codex-sessions-history-only)).
+
+### Queue
+
+Openmanager owns the queue, and a setting chooses what Enter does while a turn runs (agreed 2026-10-06). Codex's native `thread/queue/*` is never used.
