@@ -9,6 +9,14 @@ export type HostLogEntry = {
   data?: unknown
 }
 
+/** One message of a thread's conversation as the host stored it. */
+export type SessionHistoryMessage = {
+  /** The host's id for the message: the `userMessageId` a prompt was sent with. */
+  messageId: string
+  role: 'user' | 'assistant'
+  text: string
+}
+
 export type HostDeps = {
   emitEvent: (event: AgentEvent) => void
   log: (entry: HostLogEntry) => void
@@ -51,6 +59,15 @@ export type HostDeps = {
     workspacePath: string
     threadId: string
   }) => string | undefined
+  /** The conversation the host holds for a thread, oldest first: what a
+   * provider that lost its own copy (a Codex thread deleted outside
+   * openmanager) is handed so the session keeps its context. A pull, read
+   * only when that happens; it may be bounded to the newest messages. Absent,
+   * or answering undefined, nothing is handed over. */
+  sessionHistory?: (args: {
+    providerId: ProviderId
+    threadId: string
+  }) => readonly SessionHistoryMessage[] | undefined
   /** Tools the host serves to every session as one MCP server (its own
    * actions, such as linking a pull request to the session). Absent, agents
    * get none. The probe runtimes never get them: a probe is no session. */

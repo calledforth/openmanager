@@ -256,10 +256,12 @@ export class CodexTurn {
    * without `turn/completed` settles its unanswered steers first:
    * `placeUnansweredSteers`.)
    *
-   * A command left running in the background settles (`CodexTools.finish`),
-   * unless the turn was being stopped. */
-  finish(): void {
-    this.tools.finish(this.interruptRequested)
+   * `endedNormally`: Codex completed the turn and nothing stopped it, so a
+   * command left running with a process of its own runs on in the
+   * background, and settles as such (`CodexTools.finish`). Otherwise the
+   * server closes what is still open. */
+  finish(endedNormally = false): void {
+    this.tools.finish(!endedNormally || this.interruptRequested)
     for (const id of [...this.reasoning.keys()]) this.closeReasoning(id)
     this.messages.clear()
     this.deliverPlaced(true)

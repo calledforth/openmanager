@@ -24,6 +24,7 @@ export function mountAgentRuntime(
   runtimeOptions?: AgentRuntimeOptions,
   agentTools?: HostDeps['agentTools'],
   sessionInstructions?: HostDeps['sessionInstructions'],
+  sessionHistory?: HostDeps['sessionHistory'],
 ): AgentRuntime {
   const runtime = new AgentRuntime(
     {
@@ -35,6 +36,7 @@ export function mountAgentRuntime(
       ...(desiredSessionConfig ? { desiredSessionConfig } : {}),
       ...(agentTools ? { agentTools } : {}),
       ...(sessionInstructions ? { sessionInstructions } : {}),
+      ...(sessionHistory ? { sessionHistory } : {}),
     },
     providers,
     runtimeOptions,
