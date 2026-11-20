@@ -65,6 +65,8 @@ const event = <N extends string, S extends z.ZodType, P extends z.ZodType>(
  * 10: `subagent.updated`; a `session.created` summary can carry `subagent`; a turn's
  *     `origin` can be `delegated` or `subagents`; a queued message can carry `origin`.
  * 11: an assistant `message.delta` can carry its message's `phase`.
+ *     Same release: `provider.catalog.updated`'s profile can carry `policy`, and its
+ *     model rows `upgrade`.
  */
 export const EVENT_FORMAT_VERSION = 11 as const
 

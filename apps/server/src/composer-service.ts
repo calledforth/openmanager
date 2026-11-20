@@ -9,8 +9,10 @@ import {
   ComposerConfigOptionSchema,
   ComposerListingSchema,
   ComposerResponseSchemas,
+  ComposerModelOptionSchema,
   ComposerUsageSchema,
   PROVIDER_CATALOG_CAPABILITY,
+  ProviderPolicySchema,
   SessionComposerStateSchema,
   type CommandEnvelope,
   type ComposerCommandOption,
@@ -22,6 +24,7 @@ import {
   type PromptCapabilities,
   type ProofEvent,
   type ProviderBootstrap,
+  type ProviderPolicy,
   type SessionComposerState,
   type WorkspaceComposerPreference,
 } from '@openmanager/protocol/node'
@@ -379,6 +382,7 @@ export function createComposerService(
       promptCapabilities?: Parameters<ComposerStore['upsertProfile']>[1]['promptCapabilities']
       models?: Parameters<typeof modelPatch>[0]
       modes?: Parameters<typeof modePatch>[0]
+      policy?: unknown
     },
   ) => {
     const current = store.getProfile(providerId)
@@ -396,6 +400,9 @@ export function createComposerService(
       // No probe can ask an ACP agent for its modes, so a probe's answer only
       // ever fills a gap here.
       ...(current?.availableModes === undefined ? modePatch(catalog.modes) : {}),
+      // Only a probe reads it, and a probe that could not say leaves it out,
+      // so whatever arrives is the provider's current answer.
+      ...policyPatch(catalog.policy),
     })
   }
 
@@ -446,6 +453,7 @@ export function createComposerService(
           promptCapabilities: promptCapabilitiesPatch(probe.result.promptCapabilities),
           models: probe.models,
           modes: probe.modes,
+          policy: probe.result.policy,
         })
       } catch {
         // A successful provider probe remains successful if its optional
@@ -466,6 +474,7 @@ export function createComposerService(
           promptCapabilities: promptCapabilitiesPatch(catalog.promptCapabilities),
           models: catalog.models,
           modes: catalog.modes,
+          policy: catalog.policy,
         })
       } catch {
         // Advisory, as above: the probe that learned this still succeeded.
@@ -890,6 +899,7 @@ function modelPatch(
           supportsAutoMode?: boolean
           supportsImageInput?: boolean
           configOptions?: readonly unknown[]
+          upgrade?: unknown
         }>
       }
     | undefined,
@@ -915,8 +925,25 @@ function modelPatch(
       ...(model.configOptions !== undefined
         ? { configOptions: configOptionsPatch(model.configOptions)!.slice(0, 64) }
         : {}),
+      ...upgradePatch(model.upgrade),
     })),
   }
+}
+
+/** A model's upgrade, if the wire can state it. One it cannot (an oversized
+ * message) is dropped rather than failing the whole catalog. */
+function upgradePatch(upgrade: unknown): Pick<ComposerModelOption, 'upgrade'> {
+  if (upgrade === undefined) return {}
+  const parsed = ComposerModelOptionSchema.shape.upgrade.safeParse(upgrade)
+  return parsed.success && parsed.data ? { upgrade: parsed.data } : {}
+}
+
+/** The provider's policy, if the wire can state it; nothing (keep what was
+ * known) when the probe could not say or said something malformed. */
+function policyPatch(policy: unknown): { policy?: ProviderPolicy } {
+  if (policy === undefined) return {}
+  const parsed = ProviderPolicySchema.safeParse(policy)
+  return parsed.success ? { policy: parsed.data } : {}
 }
 
 /**
@@ -937,18 +964,20 @@ function relistedModels(
   const kept = held.flatMap((model) => {
     const relisted = offered.get(model.modelId)
     if (!relisted) return []
-    // Wording and order stay as held, but the window and the settings are
-    // facts only a catalog reports, so a newer catalog's answer replaces them.
-    return [
-      {
-        ...relisted,
-        ...model,
-        ...(relisted.contextWindowTokens !== undefined
-          ? { contextWindowTokens: relisted.contextWindowTokens }
-          : {}),
-        ...(relisted.configOptions !== undefined ? { configOptions: relisted.configOptions } : {}),
-      },
-    ]
+    // Wording and order stay as held, but the window, the settings and the
+    // upgrade are facts only a catalog reports, so a newer catalog's answer
+    // replaces them; one that names no upgrade has withdrawn it.
+    const row: ComposerModelOption = {
+      ...relisted,
+      ...model,
+      ...(relisted.contextWindowTokens !== undefined
+        ? { contextWindowTokens: relisted.contextWindowTokens }
+        : {}),
+      ...(relisted.configOptions !== undefined ? { configOptions: relisted.configOptions } : {}),
+    }
+    if (relisted.upgrade !== undefined) row.upgrade = relisted.upgrade
+    else delete row.upgrade
+    return [row]
   })
   const known = new Set(held.map((model) => model.modelId))
   return [...kept, ...listed.filter((model) => !known.has(model.modelId))]

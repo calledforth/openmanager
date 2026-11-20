@@ -1,6 +1,6 @@
 import { z } from 'zod'
 import { CommandEnvelopeSchema, ResponseEnvelopeSchema } from './envelopes.js'
-import { EntityIdSchema } from './domains.js'
+import { EntityIdSchema, TimestampSchema } from './domains.js'
 import { ProviderBootstrapSchema } from './providers.js'
 import { ComposerConfigOptionSchema, ComposerConfigValuesSchema } from './session-composer.js'
 
@@ -43,6 +43,40 @@ export const ComposerModelOptionSchema = z.strictObject({
    * exists. A live session's `configOptions` replace them once it reports.
    */
   configOptions: z.array(ComposerConfigOptionSchema).max(64).optional(),
+  /**
+   * The provider recommends moving off this model: to `modelId`, in its own
+   * words, and until `retiresAt` when it names a retirement.
+   */
+  upgrade: z
+    .strictObject({
+      modelId: z.string().min(1).max(1_024),
+      message: z.string().max(8_192).optional(),
+      link: z.string().max(2_048).optional(),
+      retiresAt: TimestampSchema.optional(),
+    })
+    .optional(),
+})
+
+/** One choice a provider's own configuration rules out, and why. */
+export const ProviderPolicyBlockSchema = z.strictObject({
+  id: z.string().max(1_024),
+  reason: z.string().min(1).max(1_024),
+})
+
+/**
+ * What the provider's own configuration rules out before any session exists:
+ * a policy an administrator manages, or a feature switched off. A composer
+ * disables (with the reason) or hides each blocked choice. Empty is "nothing
+ * is ruled out"; absent is "the environment could not say".
+ */
+export const ProviderPolicySchema = z.strictObject({
+  /** Mode ids that may not be chosen. */
+  blockedModes: z.array(ProviderPolicyBlockSchema).max(256).optional(),
+  /** Values of a config option (by its id) that may not be chosen. */
+  blockedConfigValues: z
+    .array(ProviderPolicyBlockSchema.extend({ configId: z.string().min(1).max(1_024) }))
+    .max(1_024)
+    .optional(),
 })
 
 export const ComposerModeOptionSchema = z.strictObject({
@@ -77,6 +111,8 @@ export const ProviderComposerProfileSchema = z.strictObject({
   availableModes: z.array(ComposerModeOptionSchema).max(256).optional(),
   defaultModelId: z.string().min(1).max(1_024).optional(),
   defaultModeId: z.string().min(1).max(1_024).optional(),
+  /** Absent until a probe that can read it has (Codex's managed policy). */
+  policy: ProviderPolicySchema.optional(),
   updatedAt: z.number().int().nonnegative(),
 })
 
@@ -163,6 +199,7 @@ export const ComposerResponseSchemas = {
 export type ComposerModelOption = z.infer<typeof ComposerModelOptionSchema>
 export type ComposerModeOption = z.infer<typeof ComposerModeOptionSchema>
 export type PromptCapabilities = z.infer<typeof PromptCapabilitiesSchema>
+export type ProviderPolicy = z.infer<typeof ProviderPolicySchema>
 export type ProviderComposerProfile = z.infer<typeof ProviderComposerProfileSchema>
 export type WorkspaceComposerPreference = z.infer<typeof WorkspaceComposerPreferenceSchema>
 export type ProviderCatalogEntry = z.infer<typeof ProviderCatalogEntrySchema>

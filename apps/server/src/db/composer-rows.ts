@@ -26,6 +26,7 @@ export type ProfileRow = {
   available_modes_json: string | null
   default_model_id: string | null
   default_mode_id: string | null
+  policy_json: string | null
   updated_at: number
 }
 
@@ -37,7 +38,8 @@ export type PreferenceRow = {
 }
 
 const PROFILE_COLUMNS = `provider_id, agent_info_json, prompt_capabilities_json,
-  available_models_json, available_modes_json, default_model_id, default_mode_id, updated_at`
+  available_models_json, available_modes_json, default_model_id, default_mode_id, policy_json,
+  updated_at`
 
 export function readProfileRow(database: DatabaseSync, providerId: string): ProfileRow | undefined {
   return database
@@ -166,6 +168,7 @@ export function profileFromRow(row: ProfileRow): ProviderComposerProfile {
     ...(row.available_modes_json ? { availableModes: JSON.parse(row.available_modes_json) } : {}),
     ...(row.default_model_id ? { defaultModelId: row.default_model_id } : {}),
     ...(row.default_mode_id ? { defaultModeId: row.default_mode_id } : {}),
+    ...(row.policy_json ? { policy: JSON.parse(row.policy_json) } : {}),
     updatedAt: row.updated_at,
   })
 }
@@ -185,8 +188,8 @@ export function prepareComposerProjection(database: DatabaseSync) {
   const writeProfile = database.prepare(`
     INSERT INTO provider_profiles (
       provider_id, agent_info_json, prompt_capabilities_json, available_models_json,
-      available_modes_json, default_model_id, default_mode_id, updated_at
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+      available_modes_json, default_model_id, default_mode_id, policy_json, updated_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
     ON CONFLICT(provider_id) DO UPDATE SET
       agent_info_json = excluded.agent_info_json,
       prompt_capabilities_json = excluded.prompt_capabilities_json,
@@ -194,6 +197,7 @@ export function prepareComposerProjection(database: DatabaseSync) {
       available_modes_json = excluded.available_modes_json,
       default_model_id = excluded.default_model_id,
       default_mode_id = excluded.default_mode_id,
+      policy_json = excluded.policy_json,
       updated_at = excluded.updated_at
   `)
   const writeListing = database.prepare(`
@@ -228,6 +232,7 @@ export function prepareComposerProjection(database: DatabaseSync) {
         json(profile.availableModes),
         profile.defaultModelId ?? null,
         profile.defaultModeId ?? null,
+        json(profile.policy),
         profile.updatedAt,
       )
     },

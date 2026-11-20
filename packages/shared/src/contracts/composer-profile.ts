@@ -2,7 +2,9 @@ import {
   isProviderId,
   type ModeListing,
   type ModelListing,
+  type ModelUpgrade,
   type ProviderId,
+  type ProviderPolicy,
   type SessionConfigOption,
 } from '@agentpack/contract'
 
@@ -25,6 +27,9 @@ export interface ComposerModelOption {
   /** The model's settings as a session on it would list them. What a draft
    * shows before any session exists; a live session's own list wins. */
   configOptions?: SessionConfigOption[]
+  /** The provider recommends moving off this model, and may say when it
+   * retires. */
+  upgrade?: ModelUpgrade
 }
 
 export interface ComposerModeOption {
@@ -51,6 +56,9 @@ export interface ProviderComposerProfile {
   availableModes?: ComposerModeOption[]
   defaultModelId?: string
   defaultModeId?: string
+  /** What the provider's own configuration rules out (a managed policy).
+   * Absent until a probe that can read it has. */
+  policy?: ProviderPolicy
   updatedAt: number
 }
 

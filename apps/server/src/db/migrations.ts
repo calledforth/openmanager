@@ -1341,6 +1341,22 @@ export const MIGRATIONS: readonly Migration[] = [
       `)
     },
   },
+  {
+    version: 37,
+    name: 'provider_policy',
+    up(database) {
+      // What a provider's own configuration rules out before any session
+      // exists (CAL-250: Codex's managed policy, as blocked access presets
+      // and setting values). Null until a probe that can read it has.
+      const columns = database.prepare('PRAGMA table_info(provider_profiles)').all() as {
+        name: string
+      }[]
+      if (columns.some((column) => column.name === 'policy_json')) return
+      database.exec(
+        'ALTER TABLE provider_profiles ADD COLUMN policy_json TEXT CHECK (policy_json IS NULL OR json_valid(policy_json))',
+      )
+    },
+  },
 ]
 
 type RetainedActivityRow = {

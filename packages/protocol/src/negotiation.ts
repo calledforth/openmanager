@@ -105,7 +105,12 @@ import {
 // `thread.queue.updated` and in the thread snapshot's `queue`, which a v22
 // client's snapshot drops; a v22 client's strict capabilities refuse
 // `canSteer`. A steered message is a user `message.delta` inside the turn.
-export const PROTOCOL_VERSION = 23 as const
+// v24: a model row in the provider composer profile can carry `upgrade` (what
+// to move to, and when the model retires), and the profile carries `policy`
+// (the modes and config values the provider's own configuration rules out,
+// Codex's managed policy). Both objects are strict, so a v23 client would
+// reject every catalog and `provider.catalog.updated` event carrying them.
+export const PROTOCOL_VERSION = 24 as const
 
 export const ProtocolVersionSchema = z.number().int().positive().max(Number.MAX_SAFE_INTEGER)
 export const CapabilitySchema = MessageNameSchema
