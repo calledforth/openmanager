@@ -23,6 +23,19 @@ const NO_LIMITS: ProviderLimits = Object.freeze({
   lastRefresh: null,
 })
 
+/** The capabilities clients are told about. `supportsBackgroundTasks` and
+ * `backgroundTasksWakeAgent` are the host's only: clients show whatever
+ * background tasks a session reports, and the protocol's capability schema
+ * is strict, so a key it does not name would break every client. */
+function publicCapabilities(
+  capabilities: ProviderConfig['capabilities'],
+): ProviderBootstrap['capabilities'] {
+  const shown = { ...capabilities }
+  delete shown.supportsBackgroundTasks
+  delete shown.backgroundTasksWakeAgent
+  return shown
+}
+
 const errorResult = (requestId: string, code: ErrorCode, message: string) => ({
   type: 'error' as const,
   requestId,
@@ -64,7 +77,7 @@ export function createProviderService(
     return {
       id: config.id,
       displayName: config.displayName,
-      capabilities: config.capabilities,
+      capabilities: publicCapabilities(config.capabilities),
       health: publicHealth(runtime.health.report(providerId)),
       limits: limitsOf(providerId),
     }

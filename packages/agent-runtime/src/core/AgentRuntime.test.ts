@@ -1818,3 +1818,68 @@ describe('AgentRuntime Codex service process', () => {
     await runtime.shutdown()
   })
 })
+
+describe('AgentRuntime background tasks (CAL-272)', () => {
+  /** A Codex session whose first turn leaves `sleep 300` (process 77)
+   * running, on a Codex config that has or lacks `supportsBackgroundTasks`. */
+  async function leftRunning(supportsBackgroundTasks: boolean) {
+    const servers: FakeCodexAppServer[] = []
+    const terminals = new Map<string, { threadId: string; itemId: string; command: string }>()
+    const events: AgentEvent[] = []
+    const codexStart: CodexStarter = async () => {
+      const server = new FakeCodexAppServer()
+      server
+        .respond('model/list', { data: [], nextCursor: null })
+        .serveThreads((turn) => {
+          turn.itemStarted(
+            codexBuilders.commandExecutionItem('sleep 300', { id: 'exec-sleep', processId: '77' }),
+          )
+          terminals.set('77', { threadId: turn.threadId, itemId: 'exec-sleep', command: 'sleep 300' })
+          turn.completed()
+        })
+        .serveBackgroundTerminals(terminals)
+      server.respond('thread/name/set', {})
+      servers.push(server)
+      const client = new CodexAppServerClient(server, {
+        log: vi.fn(),
+        terminateGraceMs: 50,
+        requestTimeoutMs: 2_000,
+        exitDrainMs: 10,
+      })
+      await client.initialize({ clientVersion: 'test' })
+      return client
+    }
+    const runtime = new AgentRuntime(
+      { emitEvent: (event) => events.push(event), log: vi.fn() },
+      { ...configs, codex: { ...codex, capabilities: { ...codex.capabilities, supportsBackgroundTasks } } },
+      { codexStart, timeouts: { interruptGraceMs: 200 } },
+    )
+    await runtime.prompt({ ...CODEX, threadId: 't1', prompt: PROMPT })
+    return { runtime, servers, terminals, events }
+  }
+
+  it('reports a Codex background terminal and routes its stop to terminate', async () => {
+    const { runtime, servers, terminals, events } = await leftRunning(true)
+    await vi.waitFor(() =>
+      expect(events).toContainEqual(
+        expect.objectContaining({
+          event: 'background_tasks_update',
+          data: { tasks: [{ taskId: '77', kind: 'shell', description: 'sleep 300' }] },
+        }),
+      ),
+    )
+    await runtime.stopBackgroundTasks({ ...CODEX, threadId: 't1', taskIds: ['77'] })
+    expect(servers[0]!.requests('thread/backgroundTerminals/terminate')).toHaveLength(1)
+    expect(terminals.size).toBe(0)
+    await runtime.shutdown()
+  })
+
+  it('routes no stop to a provider without supportsBackgroundTasks', async () => {
+    const { runtime, servers, terminals } = await leftRunning(false)
+    await runtime.stopBackgroundTasks({ ...CODEX, threadId: 't1' })
+    expect(servers[0]!.requests('thread/backgroundTerminals/list')).toEqual([])
+    expect(servers[0]!.requests('thread/backgroundTerminals/terminate')).toEqual([])
+    expect(terminals.size).toBe(1)
+    await runtime.shutdown()
+  })
+})

@@ -29,6 +29,7 @@ export function unavailableSessionActions(
       settled: !!session?.settledAt,
       pinned: !!session?.pinnedAt,
       backgroundTaskCount: session?.backgroundTaskCount ?? 0,
+      inBackground: !!session?.inBackground,
       unavailable: reason,
       supports: () => false,
     }),
@@ -54,6 +55,7 @@ export function useSessionActions(
   const settled = !!session?.settledAt
   const pinned = !!session?.pinnedAt
   const backgroundTaskCount = session?.backgroundTaskCount ?? 0
+  const inBackground = !!session?.inBackground
   const listed = !!session
   const unavailable =
     status !== 'connected'
@@ -68,12 +70,13 @@ export function useSessionActions(
         settled,
         pinned,
         backgroundTaskCount,
+        inBackground,
         unavailable,
         supports: (command) => client.supports(command),
         settings: openSettings ? null : undefined,
       }),
     // `unavailable` follows the connection: what the client supports is known once it connects.
-    [backgroundTaskCount, client, mark, openSettings, pinned, settled, unavailable],
+    [backgroundTaskCount, client, inBackground, mark, openSettings, pinned, settled, unavailable],
   )
   const run = useCallback(
     async (id: SessionMenuItemId) => {

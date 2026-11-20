@@ -16,10 +16,10 @@ import { getSessionSummary, readThreadState } from '../src/db/session-store.js'
 import { createPersistentEventService } from '../src/event-service.js'
 import { createThreadService, type WorkspaceRuntimeResolver } from '../src/thread-service.js'
 
-const registered: WorkspaceRuntimeResolver = (workspaceId) =>
-  workspaceId === '/workspace/project'
-    ? { providerId: 'claude', cwd: '/workspace/project' }
-    : undefined
+const registeredFor =
+  (providerId: 'claude' | 'codex'): WorkspaceRuntimeResolver =>
+  (workspaceId) =>
+    workspaceId === '/workspace/project' ? { providerId, cwd: '/workspace/project' } : undefined
 
 const closers: (() => void)[] = []
 const directories: string[] = []
@@ -35,7 +35,11 @@ type RuntimeEvent = Parameters<ReturnType<typeof createThreadService>['onRuntime
  * user sent already open. The provider is driven by hand, in the order Claude
  * Code emits (live-verified on 2.1.285).
  */
-async function setup(durable = true, onPersistenceError?: (error: unknown) => void) {
+async function setup(
+  durable = true,
+  onPersistenceError?: (error: unknown) => void,
+  providerId: 'claude' | 'codex' = 'claude',
+) {
   const database = durable
     ? new DatabaseSync(':memory:', { enableForeignKeyConstraints: true })
     : undefined
@@ -79,7 +83,7 @@ async function setup(durable = true, onPersistenceError?: (error: unknown) => vo
         }
       : (event) => published.push(event),
     undefined,
-    registered,
+    registeredFor(providerId),
     database
       ? {
           database,
@@ -102,7 +106,7 @@ async function setup(durable = true, onPersistenceError?: (error: unknown) => vo
     dispatch('session.create', {
       environmentId: 'environment-1',
       workspaceId: '/workspace/project',
-      providerId: 'claude',
+      providerId,
     }),
   ).payload
   const { sessionId } = created.session
@@ -114,7 +118,7 @@ async function setup(durable = true, onPersistenceError?: (error: unknown) => vo
     messageId?: string,
   ) =>
     service.onRuntimeEvent({
-      providerId: 'claude',
+      providerId,
       threadId: created.thread.threadId,
       workspaceId: '/workspace/project',
       sessionId: 'provider-session',
@@ -520,6 +524,70 @@ describe('background work', () => {
     expect(h.summary().backgroundTasks).toBeUndefined()
     expect(h.statuses()).toEqual(['running', 'running:background', 'running', 'idle'])
   })
+
+  // Codex's background terminals end without waking the agent: a turn that
+  // completes beside a dev server is done (backgroundTasksWakeAgent: false).
+  for (const durable of [true, false]) {
+    it(`shows a Codex turn as done beside a terminal that runs on${durable ? '' : ', without a database'}`, async () => {
+      const h = await setup(durable, undefined, 'codex')
+      await h.userTurn('dev-server')
+      expect(h.summary()).toMatchObject({ status: 'running', inBackground: true })
+      expect(h.summary().doneAt).toEqual(expect.any(String))
+
+      // The next turn completes while the dev server still runs: done.
+      const sent = ProofResponseSchemas['turn.send'].parse(
+        h.dispatch('turn.send', { ...h.created.thread, text: 'Check it' }),
+      ).payload
+      await vi.waitFor(() => expect(h.runtime.prompt).toHaveBeenCalledTimes(2))
+      h.emit(
+        {
+          category: 'lifecycle',
+          event: 'prompt_started',
+          data: { prompt: 'Check it', userMessageId: sent.userMessage.messageId },
+        },
+        'assistant-2',
+      )
+      // Sent cooking while the turn runs: finishing beside the terminal is
+      // news, so it comes back, as the sidebar shows it done.
+      expect(h.dispatch('session.cook', { sessionId: h.sessionId, cooking: true })).toMatchObject({
+        type: 'response',
+      })
+      expect(h.summary().cookingAt).toEqual(expect.any(String))
+      h.text('assistant-2', 'It is up.')
+      h.completed('assistant-2')
+
+      const session = h.summary()
+      expect(session.doneAt).toEqual(expect.any(String))
+      expect(session.cookingAt ?? null).toBeNull()
+      // Done, so it cannot be sent cooking again until it is seen.
+      expect(h.dispatch('session.cook', { sessionId: h.sessionId, cooking: true })).toMatchObject({
+        type: 'error',
+        error: { code: 'conflict' },
+      })
+      // Still working in the background, for the reaper and the sidebar.
+      expect(session).toMatchObject({ status: 'running', inBackground: true })
+      expect(session.backgroundTasks).toHaveLength(1)
+    })
+  }
+
+  it('holds a Claude turn back from done while its task will wake the agent', async () => {
+    const h = await setup()
+    await h.userTurn('provider-task')
+    const sent = ProofResponseSchemas['turn.send'].parse(
+      h.dispatch('turn.send', { ...h.created.thread, text: 'And?' }),
+    ).payload
+    await vi.waitFor(() => expect(h.runtime.prompt).toHaveBeenCalledTimes(2))
+    h.emit(
+      {
+        category: 'lifecycle',
+        event: 'prompt_started',
+        data: { prompt: 'And?', userMessageId: sent.userMessage.messageId },
+      },
+      'assistant-2',
+    )
+    h.completed('assistant-2')
+    expect(h.summary().doneAt).toBeNull()
+  })
 })
 
 describe('background work across a restart', () => {
@@ -560,7 +628,7 @@ describe('background work across a restart', () => {
       { rejection: () => undefined },
       events.append,
       undefined,
-      registered,
+      registeredFor('claude'),
       { database, flush: events.flush, appendAtomic: events.appendAtomic },
     )
     service.setEnvironmentId('environment-1')

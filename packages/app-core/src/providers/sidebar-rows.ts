@@ -103,7 +103,18 @@ export function groupSidebarSessions({
       // Idle with an unseen completion is done until someone opens it. Plain
       // server idle means ready; legacy desktop idle clears an unread
       // completion marker, so keep the presentation alias at this boundary.
-      status: summary.status === 'idle' ? (summary.doneAt ? 'done' : 'ready') : summary.status,
+      // A turn that completed beside background work that just runs on (a
+      // dev server in a Codex terminal) is done too: the server sets
+      // `doneAt` only when that work will not wake the agent. The row keeps
+      // `inBackground`, so it still counts as live work (no settling).
+      status:
+        summary.status === 'idle'
+          ? summary.doneAt
+            ? 'done'
+            : 'ready'
+          : summary.status === 'running' && summary.inBackground && summary.doneAt
+            ? 'done'
+            : summary.status,
       providerId: summary.providerId as ProviderId,
       ...(summary.parentSessionId ? { parentExternalId: summary.parentSessionId } : {}),
       ...(direct.length ? { subagentCount: direct.length } : {}),

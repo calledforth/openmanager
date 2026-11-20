@@ -39,6 +39,15 @@ export const codex: CodexProviderConfig = {
     // refused steer is queued for the next turn; one already sent cannot be
     // taken back.
     canSteer: true,
+    // --- delivered with background terminals (CAL-272) --------------------
+    // A command left running when its turn ends is listed by the
+    // experimental `thread/backgroundTerminals/list` and stopped by
+    // `thread/backgroundTerminals/terminate`. A Codex that refuses the list
+    // reports no background tasks.
+    supportsBackgroundTasks: true,
+    // A terminal that ends starts no turn: a turn completing beside a dev
+    // server is done.
+    backgroundTasksWakeAgent: false,
     // --- arrives with tool items, approvals and questions -----------------
     supportsPermissionRequests: false,
     supportsQuestions: false,
