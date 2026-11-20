@@ -483,6 +483,11 @@ export class FakeCodexAppServer implements TerminableChild {
 
   /** What the server does with one message from the client. The replay
    * harness replaces this; the scripted fake dispatches to `respond`. */
+  /** Whether a test scripted an answer for `method` that is still live. */
+  protected hasScript(method: string): boolean {
+    return (this.scripts.get(method) ?? []).some((script) => script.remaining > 0)
+  }
+
   protected onClientMessage(message: WireMessage): void {
     if (isWireResponse(message)) {
       const key = String(message.id)
