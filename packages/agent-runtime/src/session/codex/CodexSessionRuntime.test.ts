@@ -2667,17 +2667,130 @@ describe('CodexSessionRuntime operation turns (CAL-268)', () => {
     expect(events.find((e) => e.event === 'prompt_completed')).toMatchObject({ data: { stopReason: 'cancelled' } })
   })
 
-  it('closes a compaction Codex accepted but never started, so the session never waits on it', async () => {
+  it('fails a compaction Codex accepted but never started, and knows it if it starts after all', async () => {
     const server = new FakeCodexAppServer()
     server.respond('model/list', MODELS as never).serveThreads()
     server.respond('thread/compact/start', {} as never)
     const { runtime, events, log } = build({ server, controlRequestMs: 50 })
-    await runtime.start()
-    await runtime.prompt({ prompt: COMPACT, operation: { kind: 'compact' } })
-    expect(events.find((e) => e.event === 'prompt_completed')).toMatchObject({ data: { stopReason: 'end_turn' } })
+    const { sessionId } = await runtime.start()
+    await expect(runtime.prompt({ prompt: COMPACT, operation: { kind: 'compact' } })).rejects.toThrow(
+      'did not start',
+    )
+    expect(names(events)).not.toContain('prompt_completed')
+    expect(events.find((e) => e.event === 'runtime_error')).toMatchObject({
+      data: { kind: 'provider', message: 'Codex accepted the compaction but did not start it' },
+    })
     expect(log).toHaveBeenCalledWith(
       expect.objectContaining({ message: 'Codex accepted thread/compact/start but started no turn; closing it' }),
     )
+    // Late: still the user's compaction, not one Codex began by itself.
+    const late = server.thread({ id: sessionId }).turn()
+    late.started()
+    await vi.waitFor(() => expect(names(events)).toContain('background_turn_started'))
+    late.compaction()
+    late.completed()
+    await vi.waitFor(() =>
+      expect(notices(events).at(-1)).toEqual({
+        kind: 'compacted',
+        message: 'Conversation compacted',
+        compaction: { trigger: 'manual' },
+      }),
+    )
+  })
+
+  it('sends a setting changed during the last turn before a review, and waits for Codex to read it back', async () => {
+    let turn: FakeCodexTurn | undefined
+    const { server, runtime } = build({ onTurn: (t) => (turn = t) })
+    await runtime.start()
+    const first = runtime.prompt({ prompt: PROMPT })
+    await vi.waitFor(() => expect(turn).toBeDefined())
+    // Changed mid-turn: queued for the next turn, which is the review.
+    await runtime.setMode('supervised')
+    expect(server.requests('thread/settings/update')).toHaveLength(0)
+    turn!.completed()
+    await first
+    turn = undefined
+    const review = runtime.prompt({
+      prompt: REVIEW,
+      operation: { kind: 'review', target: { type: 'uncommitted_changes' } },
+    })
+    await vi.waitFor(() => expect(turn).toBeDefined())
+    const order = server.received.filter((m) => 'method' in m && m.method).map((m) => m.method)
+    expect(order.indexOf('thread/settings/update')).toBeGreaterThan(-1)
+    expect(order.indexOf('thread/settings/update')).toBeLessThan(order.indexOf('review/start'))
+    expect(server.requests('thread/settings/update')[0]!.params).toMatchObject({
+      approvalPolicy: 'untrusted',
+      sandboxPolicy: { type: 'readOnly' },
+    })
+    turn!.reviewFinished('No findings.')
+    turn!.completed()
+    await review
+  })
+
+  it('says the words after /compact were not used, and offers no Compact on a compaction that fails', async () => {
+    let turn: FakeCodexTurn | undefined
+    const { runtime, events } = build({ onTurn: (t) => (turn = t) })
+    await runtime.start()
+    const prompt = runtime
+      .prompt({ prompt: COMPACT, operation: { kind: 'compact', instructions: 'keep the API notes' } })
+      .catch(() => undefined)
+    await vi.waitFor(() => expect(turn).toBeDefined())
+    turn!.failed('Your input exceeds the context window', 'contextWindowExceeded')
+    await prompt
+    expect(notices(events)[0]).toMatchObject({ kind: 'info', detail: 'keep the API notes' })
+    const failure = events.find((e) => e.event === 'runtime_error')!.data as { problem: Record<string, unknown> }
+    expect(failure.problem).toMatchObject({ code: 'context_window_exceeded' })
+    expect(failure.problem).not.toHaveProperty('action')
+  })
+
+  it("counts a process's first /compact as spending nothing, not the thread's history", async () => {
+    let turn: FakeCodexTurn | undefined
+    const { runtime, events } = build({ onTurn: (t) => (turn = t) })
+    await runtime.start()
+    const prompt = runtime.prompt({ prompt: COMPACT, operation: { kind: 'compact' } })
+    await vi.waitFor(() => expect(turn).toBeDefined())
+    turn!.compaction(() => turn!.tokenUsage({ totalTokens: 19_000 }, { totalTokens: 140_000 }))
+    turn!.completed()
+    await prompt
+    expect(events.find((e) => e.event === 'prompt_completed')).toMatchObject({
+      data: { usage: { totalTokens: 0 } },
+    })
+  })
+
+  it('stops a review Codex names only after it was closed, through its working turn', async () => {
+    const server = new FakeCodexAppServer()
+    server.respond('model/list', MODELS as never).serveThreads()
+    // Codex answers review/start only after the turn was closed under it.
+    server.respond(
+      'review/start',
+      (params) => ({
+        turn: codexBuilders.buildTurn({ rootTurnId: null, id: 'review-1' }),
+        reviewThreadId: params.threadId,
+      }),
+      { delayMs: 50 },
+    )
+    server.respond('turn/interrupt', (params) => {
+      if (params.turnId === 'review-1') throw new CodexRpcError(-32600, 'expected active turn id')
+      return {} as never
+    })
+    const { runtime, events } = build({ server })
+    const { sessionId } = await runtime.start()
+    const prompt = runtime
+      .prompt({ prompt: REVIEW, operation: { kind: 'review', target: { type: 'uncommitted_changes' } } })
+      .catch((error: unknown) => error)
+    await vi.waitFor(() => expect(server.requests('review/start')).toHaveLength(1))
+    // Closed elsewhere while review/start is out: the turn fails at once.
+    server.notify('thread/closed', { threadId: sessionId })
+    await expect(prompt).resolves.toBeInstanceOf(Error)
+    await settle()
+    await settle()
+    // Codex names the review after all; only its working turn can be stopped.
+    const extra = codexBuilders.buildTurn({ rootTurnId: 'review-1' })
+    server.notify('turn/started', { threadId: sessionId, turn: extra })
+    await vi.waitFor(() =>
+      expect(server.requests('turn/interrupt').map((r) => r.params.turnId)).toEqual([extra.id]),
+    )
+    expect(names(events)).not.toContain('background_turn_started')
   })
 
   it('shows an automatic compaction inside a prompted turn, and thread/compacted from an older Codex', async () => {
@@ -2836,7 +2949,10 @@ describe('CodexSessionRuntime operation turns against a recording (CAL-268)', ()
     // runtime ends; the recorder never asked.
     server.respond('thread/backgroundTerminals/terminate', { terminated: true } as never)
     server.respond('thread/backgroundTerminals/list', { data: [], nextCursor: null } as never)
-    const { runtime, events } = build({ server })
+    // The recorder's thread ran in other settings than the session's: they go
+    // before the review, which the recorder never sent.
+    server.respond('thread/settings/update', {} as never)
+    const { runtime, events } = build({ server, controlRequestMs: 300 })
     await runtime.start()
     const prompt = runtime.prompt({
       prompt: { text: '/review', blocks: [{ type: 'text', text: '/review' }] },

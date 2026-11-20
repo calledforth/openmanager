@@ -2271,15 +2271,24 @@ export function createThreadService(
       return readTitleTranscript(options.database, threadId)
     }
     // The in-memory seam keeps only prompts; SQLite has the whole conversation.
-    return (record?.messages ?? []).map((message) => titleMessage(message.role, message.content))
+    return (record?.messages ?? [])
+      .filter((message) => !record || isPrompt(record, message))
+      .map((message) => titleMessage(message.role, message.content))
   }
+
+  /** A user message that is a prompt, not a command that ran an operation
+   * (`/review`, `/compact`), which says nothing about what the chat is about. */
+  const isPrompt = (record: ThreadRecord, message: Message): boolean =>
+    message.role !== 'user' ||
+    !isOperationTurnOrigin(record.turns.find((turn) => turn.turnId === message.turnId)?.origin)
 
   const userPromptCount = (record: ThreadRecord): number => {
     if (options.database) {
       options.flush?.()
       return countUserMessages(options.database, record.thread.threadId)
     }
-    return record.messages.filter((message) => message.role === 'user').length
+    return record.messages.filter((message) => message.role === 'user' && isPrompt(record, message))
+      .length
   }
 
   const reportTitleFailure = (sessionId: string) => (error: unknown) => {
@@ -3809,7 +3818,9 @@ export function createThreadService(
       )
     }
     // Only with the turn's own start, so the marker comes before anything in it.
-    const movedTo = events.length > 0 ? record.movedTo : undefined
+    // Not on an operation turn, which sends the agent no prompt to say it in:
+    // the move stays owed to the next prompted turn, marker and note both.
+    const movedTo = events.length > 0 && !operation ? record.movedTo : undefined
     if (movedTo) {
       const notice: DurableTurnNotice = {
         noticeId: randomUUID(),
@@ -3832,7 +3843,7 @@ export function createThreadService(
     // The environment's own prompt already says where the session is. An
     // operation sends the agent no prompt to say it in.
     const promptText =
-      movedTo && userMessage && !operation
+      movedTo && userMessage
         ? `${movedNote(movedTo.name, movedTo.path)}\n\n${input.text}`
         : input.text
     if (opts.queueAfter) events.push(queueEvent(record, opts.queueAfter))

@@ -6,8 +6,13 @@ describe('parseTurnOperation', () => {
   it.each([
     ['/compact', { kind: 'compact' }],
     ['  /compact  ', { kind: 'compact' }],
-    // Codex's compaction takes no instructions: they are dropped.
-    ['/compact keep the API notes', { kind: 'compact' }],
+    // Kept, so a provider whose compaction takes none can say it did not use them.
+    ['/compact keep the API notes', { kind: 'compact', instructions: 'keep the API notes' }],
+    ['/Compact', { kind: 'compact' }],
+    ['/REVIEW Base main', { kind: 'review', target: { type: 'base_branch', branch: 'main' } }],
+    // Not a sha: the whole is instructions.
+    ['/review commit the login fix', { kind: 'review', target: { type: 'custom', instructions: 'commit the login fix' } }],
+    ['/review commit abc12', { kind: 'review', target: { type: 'custom', instructions: 'commit abc12' } }],
     ['/review', { kind: 'review', target: { type: 'uncommitted_changes' } }],
     ['/review uncommitted', { kind: 'review', target: { type: 'uncommitted_changes' } }],
     ['/review base main', { kind: 'review', target: { type: 'base_branch', branch: 'main' } }],
@@ -24,7 +29,7 @@ describe('parseTurnOperation', () => {
     expect(parseTurnOperation(text)).toEqual(operation)
   })
 
-  it.each(['/reviews', '/compactly', 'please /review', 'review', '/help', '', '/Review'])(
+  it.each(['/reviews', '/compactly', 'please /review', 'review', '/help', ''])(
     'leaves %j a prompt',
     (text) => {
       expect(parseTurnOperation(text)).toBeUndefined()

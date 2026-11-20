@@ -13,7 +13,11 @@ export type ReviewTarget =
  * session's thread with no prompt of ours, and it cannot be steered. Offered
  * by a provider through `ProviderCapabilities.operations`.
  */
-export type TurnOperation = { kind: 'review'; target: ReviewTarget } | { kind: 'compact' }
+export type TurnOperation =
+  | { kind: 'review'; target: ReviewTarget }
+  /** `instructions`: what was typed after `/compact`. A provider whose
+   * compaction takes none (Codex) says it did not use them. */
+  | { kind: 'compact'; instructions?: string }
 
 export type TurnOperationKind = TurnOperation['kind']
 
@@ -23,30 +27,35 @@ export const TURN_OPERATION_KINDS: readonly TurnOperationKind[] = ['review', 'co
  * The operation a message typed in the composer asks for, when the provider
  * offers it (`offered`); undefined for any other message, which is a prompt.
  *
- * - `/compact` compacts the conversation. Anything after it is ignored: the
- *   provider's compaction takes no instructions.
+ * - `/compact` compacts the conversation, with whatever follows it as
+ *   `instructions`.
  * - `/review` reviews the uncommitted changes (also `/review uncommitted`).
  * - `/review base <branch>` reviews the changes against a base branch.
- * - `/review commit <sha> [title]` reviews one commit.
+ * - `/review commit <sha> [title]` reviews one commit; `<sha>` is 7 to 40
+ *   hex digits, or the whole is instructions.
  * - `/review <anything else>` reviews with those instructions.
+ *
+ * Command words (`review`, `compact`, `base`, `commit`, `uncommitted`) match
+ * in any case.
  */
 export function parseTurnOperation(
   text: string,
   offered: readonly TurnOperationKind[] = TURN_OPERATION_KINDS,
 ): TurnOperation | undefined {
-  const match = /^\/(review|compact)(?:\s+([\s\S]*))?$/.exec(text.trim())
+  const match = /^\/(review|compact)(?:\s+([\s\S]*))?$/i.exec(text.trim())
   if (!match) return undefined
-  const kind = match[1] as TurnOperationKind
+  const kind = match[1]!.toLowerCase() as TurnOperationKind
   if (!offered.includes(kind)) return undefined
-  if (kind === 'compact') return { kind }
-  return { kind, target: reviewTarget(match[2]?.trim() ?? '') }
+  const rest = match[2]?.trim() ?? ''
+  if (kind === 'compact') return rest ? { kind, instructions: rest } : { kind }
+  return { kind, target: reviewTarget(rest) }
 }
 
 function reviewTarget(rest: string): ReviewTarget {
   if (!rest || /^uncommitted$/i.test(rest)) return { type: 'uncommitted_changes' }
   const base = /^base\s+(\S+)$/i.exec(rest)
   if (base) return { type: 'base_branch', branch: base[1]! }
-  const commit = /^commit\s+([0-9a-f]{4,64})(?:\s+([\s\S]+))?$/i.exec(rest)
+  const commit = /^commit\s+([0-9a-f]{7,40})(?:\s+([\s\S]+))?$/i.exec(rest)
   if (commit) {
     const title = commit[2]?.trim()
     return { type: 'commit', sha: commit[1]!, ...(title ? { title } : {}) }

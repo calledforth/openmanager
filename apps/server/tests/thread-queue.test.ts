@@ -11,6 +11,7 @@ import { runMigrations } from '../src/db/migrate.js'
 import { MIGRATIONS } from '../src/db/migrations.js'
 import { getSessionSummary, readThreadState } from '../src/db/session-store.js'
 import { createPersistentEventService } from '../src/event-service.js'
+import type { TitleGenerator } from '../src/session-titles/generator.js'
 import { createThreadService, type WorkspaceRuntimeResolver } from '../src/thread-service.js'
 
 const registered: WorkspaceRuntimeResolver = (workspaceId) =>
@@ -32,7 +33,7 @@ type PromptArgs = {
 }
 
 /** A Claude chat on a real (in-memory) database, its provider driven by hand. */
-function boot(database: DatabaseSync, published: EventEnvelope[]) {
+function boot(database: DatabaseSync, published: EventEnvelope[], titles?: TitleGenerator) {
   const events = createPersistentEventService(
     database,
     (record) => published.push(record.event),
@@ -62,20 +63,21 @@ function boot(database: DatabaseSync, published: EventEnvelope[]) {
       flush: events.flush,
       appendAtomic: (batch, options) => events.appendAtomic(batch, options),
       queuedSettings: () => settings.current,
+      ...(titles ? { titles } : {}),
     },
   )
   service.setEnvironmentId('environment-1')
   return { events, runtime, service, settings }
 }
 
-async function setup(providerId: 'claude' | 'codex' = 'claude') {
+async function setup(providerId: 'claude' | 'codex' = 'claude', titles?: TitleGenerator) {
   const database = new DatabaseSync(':memory:', { enableForeignKeyConstraints: true })
   runMigrations(database, MIGRATIONS)
   database.exec(
     "INSERT INTO workspaces (workspace_id, name, path, created_at, updated_at) VALUES ('/workspace/project', 'Project', '/workspace/project', 1, 1)",
   )
   const published: EventEnvelope[] = []
-  const booted = boot(database, published)
+  const booted = boot(database, published, titles)
   closers.push(() => {
     booted.events.close()
     database.close()
@@ -673,6 +675,24 @@ describe('operation turns (CAL-268)', () => {
     expect(getSessionSummary(chat.database, chat.thread.sessionId)?.title ?? null).toBeNull()
     const announced = chat.published.find((event) => event.name === 'turn.started')
     expect(announced?.payload).toMatchObject({ turn: { origin: 'review' } })
+  })
+
+  it('titles a session from its first prompt when it opened with a command', async () => {
+    const asked: string[] = []
+    const titles: TitleGenerator = {
+      generate: async (input) => {
+        asked.push(input.message)
+        return { title: 'Fix the login bug', needsRefinement: false }
+      },
+    }
+    const chat = await setup('codex', titles)
+    chat.send('/review')
+    await chat.started(0)
+    await chat.completed('assistant-0')
+    expect(asked).toEqual([])
+    chat.send('Fix the login bug')
+    await chat.started(1)
+    await vi.waitFor(() => expect(asked).toEqual(['Fix the login bug']))
   })
 
   it('runs /compact on Codex as an operation, and leaves it prompt text on Claude', async () => {

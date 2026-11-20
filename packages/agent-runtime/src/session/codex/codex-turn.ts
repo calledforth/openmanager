@@ -361,7 +361,10 @@ export class CodexTurn {
   tokenUsageUpdated(usage: v2.ThreadTokenUsage): void {
     // With no baseline yet, the thread's total before this reading's own
     // request is where the turn began.
-    this.baseline ??= subtract(usage.total, usage.last)
+    // A compaction's reading is an estimate of the emptied window (`last`),
+    // not a request it spent (`total` does not move, _probed_): it began at
+    // `total`.
+    this.baseline ??= this.operation === 'compact' ? usage.total : subtract(usage.total, usage.last)
     this.tokenUsage = usage
     if (this.compaction) this.compaction.read = true
   }
