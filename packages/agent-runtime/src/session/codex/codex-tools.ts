@@ -9,7 +9,15 @@ import type {
   ToolKind,
   ToolLineChanges,
 } from '@agentpack/contract'
+import { isAbsolute, resolve } from 'node:path'
 import type { v2 } from '@openmanager/codex-app-server-protocol'
+import {
+  generatedImage,
+  generationFailure,
+  readImageFile,
+  type ImageRead,
+  type ImageReader,
+} from './codex-images.js'
 
 /** What Codex's tool work says, in openmanager's terms. The runtime stamps the
  * route. */
@@ -32,6 +40,7 @@ export const CODEX_TOOL_NAMES = {
   fileChange: 'fileChange',
   webSearch: 'webSearch',
   imageView: 'imageView',
+  imageGeneration: 'imageGeneration',
   sleep: 'sleep',
   hook: 'hook',
   hookPrompt: 'hookPrompt',
@@ -56,7 +65,15 @@ export const CODEX_TOOL_NAMES = {
  *   each file change's paths and line counts come with its own item.
  * - `item/fileChange/outputDelta`: deprecated; Codex no longer sends it.
  * - `plan` items and `item/plan/delta`: plan mode, which is not ported.
- * - `imageGeneration`, review mode and compaction: not tool calls.
+ * - Review mode and compaction: not tool calls.
+ *
+ * Images: an `imageGeneration` is a row whose result is the image Codex
+ * saved, and an `imageView` a read whose result is the image the model
+ * looked at. Each file is read as soon as the item names it (`codex-images.ts`),
+ * since a generated image's file does not last, and goes out as the call's
+ * image content, which the environment stores and files in the reply. The
+ * read is asynchronous, so the row settles, with its image, once the read is
+ * done; the turn's end waits for it (`imagesRead`), within a budget.
  *
  * Subagent items are `CodexSubagents`'s, and never reach this.
  */
@@ -78,8 +95,25 @@ export class CodexTools {
   private readonly hookRows = new Map<string, string>()
   private hooks = 0
   private plans = 0
+  /** A generated image's read, started when its item first named the saved
+   * file (before the item completed), by tool call id. */
+  private readonly early = new Map<string, Promise<ImageRead>>()
+  /** Rows waiting on their image's read, by tool call id. `abandon` settles
+   * one without its image. */
+  private readonly reading = new Map<string, { done: Promise<void>; abandon: () => void }>()
+  /** The turn is over: a read that ends now settles nothing. */
+  private closed = false
 
-  constructor(private readonly emit: (output: CodexToolOutput) => void) {}
+  constructor(
+    private readonly emit: (output: CodexToolOutput) => void,
+    private readonly options: {
+      /** The session's working directory: a relative path an `imageView`
+       * names is read from there. */
+      cwd?: string
+      /** How an image file is read (tests stand in for the disk). */
+      readImage?: ImageReader
+    } = {},
+  ) {}
 
   /** `item/started`. False for an item that is not a tool. */
   itemStarted(item: Item): boolean {
@@ -90,6 +124,7 @@ export class CodexTools {
     }
     const call = this.callOf(item)
     if (!call) return false
+    this.readEarly(item)
     if (this.open.has(call.toolCallId) || this.settled.has(call.toolCallId)) return true
     this.open.add(call.toolCallId)
     if (item.type === 'commandExecution')
@@ -113,8 +148,13 @@ export class CodexTools {
     if (!call) return false
     const id = call.toolCallId
     if (this.settled.has(id)) return true
+    this.readEarly(item)
     const opened = this.open.delete(id)
     this.settled.add(id)
+    if (item.type === 'imageView' || (item.type === 'imageGeneration' && generated(item))) {
+      this.settleWithImage(item, call, opened)
+      return true
+    }
     const result = this.resultOf(item)
     const stdin = this.commands.get(id)?.stdin ?? []
     this.commands.delete(id)
@@ -179,6 +219,78 @@ export class CodexTools {
     }
   }
 
+  /** Start reading a generated image the moment an item names the saved
+   * file, before it completes (0.170 names it only on completion): the file
+   * is temporary. Once, on the first sight that names it. */
+  private readEarly(item: Item): void {
+    if (item.type !== 'imageGeneration' || !item.savedPath || item.failure) return
+    if (this.early.has(item.id) || this.settled.has(item.id)) return
+    const read = generatedImage(item, this.read)
+    read.catch(() => undefined)
+    this.early.set(item.id, read)
+  }
+
+  private get read(): ImageReader {
+    return this.options.readImage ?? readImageFile
+  }
+
+  /** Settle an image's row once its image is read: the update that settles
+   * it carries the image, so the row never reads as done without it. */
+  private settleWithImage(
+    item: ItemOf<'imageView'> | ItemOf<'imageGeneration'>,
+    call: ToolCall,
+    opened: boolean,
+  ): void {
+    const id = call.toolCallId
+    const settle = (read: ImageRead) => {
+      if (!this.reading.delete(id) || this.closed) return
+      const update: ToolCall = {
+        ...call,
+        ...(item.type === 'imageView' ? viewResult(read) : generationResult(read)),
+      }
+      this.emit(opened ? { event: 'tool_call_update', data: update } : { event: 'tool_call', data: update })
+    }
+    const read = item.type === 'imageView' ? this.viewRead(item.path) : this.generationRead(item)
+    const done = read.then(settle, (error: unknown) =>
+      settle({ error: `It could not be read (${error instanceof Error ? error.message : String(error)}).` }),
+    )
+    this.reading.set(id, { done, abandon: () => settle({ error: 'Reading it took too long.' }) })
+  }
+
+  /** The file an `imageView` names: a relative path is the session's. */
+  private viewRead(path: string): Promise<ImageRead> {
+    const cwd = this.options.cwd
+    return this.read(path && !isAbsolute(path) && cwd ? resolve(cwd, path) : path)
+  }
+
+  /** A completed generation's image: what an early read found, or, when it
+   * found nothing, the completed item read again (its file, else its own
+   * `result`). */
+  private async generationRead(item: ItemOf<'imageGeneration'>): Promise<ImageRead> {
+    const early = this.early.get(item.id)
+    this.early.delete(item.id)
+    const first = early ? await early : undefined
+    return first && 'image' in first ? first : generatedImage(item, this.read)
+  }
+
+  /**
+   * Wait for the rows still reading their image, at the turn's end, so each
+   * settles inside its turn. Within `budgetMs`: past it, those still reading
+   * settle without their image. Undefined when nothing is being read.
+   */
+  imagesRead(budgetMs = IMAGE_READ_BUDGET_MS): Promise<void> | undefined {
+    if (this.reading.size === 0) return undefined
+    let timer: ReturnType<typeof setTimeout> | undefined
+    const timeout = new Promise<void>((done) => {
+      timer = setTimeout(done, budgetMs)
+    })
+    const all = Promise.all([...this.reading.values()].map((pending) => pending.done))
+    return Promise.race([all, timeout]).then(() => {
+      clearTimeout(timer)
+      for (const pending of [...this.reading.values()]) pending.abandon()
+    })
+  }
+
   /** The processes of commands still open: unified-exec commands Codex has
    * not reported ending. Read before `finish`, which forgets them. */
   runningProcesses(): string[] {
@@ -197,6 +309,10 @@ export class CodexTools {
    * Anything else still open is the server's to close.
    */
   finish(stopped: boolean): void {
+    // An image still being read when its turn ends without waiting (a
+    // failure, a stop) settles nothing: the server closes its row.
+    this.closed = true
+    this.early.clear()
     if (stopped) return
     for (const [id, command] of this.commands) {
       if (!command.processId || !this.open.has(id)) continue
@@ -346,6 +462,14 @@ export class CodexTools {
           rawInput: { path: item.path },
           locations: [{ path: item.path }],
         }
+      case 'imageGeneration':
+        return {
+          toolCallId: item.id,
+          title: CODEX_TOOL_NAMES.imageGeneration,
+          toolName: CODEX_TOOL_NAMES.imageGeneration,
+          kind: 'other',
+          rawInput: generationInput(item),
+        }
       case 'sleep':
         return {
           toolCallId: item.id,
@@ -382,6 +506,9 @@ export class CodexTools {
         const failed = item.status === 'failed' || item.success === false
         return { status: failed ? 'failed' : 'completed', ...(content.length > 0 ? { content } : {}) }
       }
+      case 'imageGeneration':
+        // One that made an image settles with it (`settleWithImage`).
+        return { status: 'failed', content: [textContent(generationFailure(item))] }
       case 'webSearch':
         return {
           status: 'completed',
@@ -606,6 +733,50 @@ function dynamicContent(items: readonly v2.DynamicToolCallOutputContentItem[] | 
     }
     return []
   })
+}
+
+// ---------------------------------------------------------------------------
+// Images
+
+/** How long a turn's end waits for its images to be read. A read on a slow
+ * mount takes seconds; one on a hung mount would never end. */
+export const IMAGE_READ_BUDGET_MS = 10_000
+
+/** Whether a generation made an image. Codex's statuses are the Responses
+ * API's (`in_progress`, `completed`, ..., _probed_): only `completed` did. */
+function generated(item: ItemOf<'imageGeneration'>): boolean {
+  return !item.failure && item.status === 'completed'
+}
+
+/** An `imageView` the model saw. Its image, or a note saying why the chat
+ * cannot show it: the view itself succeeded, so the row completes. */
+function viewResult(read: ImageRead): Pick<ToolCall, 'status' | 'content'> {
+  return {
+    status: 'completed',
+    content: [
+      'image' in read
+        ? { type: 'content', content: read.image }
+        : textContent(`Not shown in the chat: ${read.error}`),
+    ],
+  }
+}
+
+/** A generation's image, kept, or why it was lost. */
+function generationResult(read: ImageRead): Pick<ToolCall, 'status' | 'content'> {
+  if ('error' in read)
+    return { status: 'failed', content: [textContent(`The generated image could not be kept: ${read.error}`)] }
+  return { status: 'completed', content: [{ type: 'content', content: read.image }] }
+}
+
+/** What a generation was asked, as Codex rewrote the prompt, and where the
+ * image came from: the file Codex saved and its generation id. The file is
+ * temporary; the chat keeps its own copy. */
+function generationInput(item: ItemOf<'imageGeneration'>): Record<string, unknown> {
+  return {
+    ...(item.revisedPrompt ? { revisedPrompt: item.revisedPrompt } : {}),
+    ...(item.savedPath ? { savedPath: item.savedPath } : {}),
+    ...(item.generationId ? { generationId: item.generationId } : {}),
+  }
 }
 
 // ---------------------------------------------------------------------------

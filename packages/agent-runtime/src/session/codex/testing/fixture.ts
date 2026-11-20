@@ -77,6 +77,8 @@ export const CODEX_FIXTURES = [
   'steer',
   'tool-items',
   'terminal-interaction',
+  'image-view',
+  'image-generation',
 ] as const
 export type CodexFixtureName = (typeof CODEX_FIXTURES)[number]
 

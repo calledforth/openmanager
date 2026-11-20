@@ -47,6 +47,7 @@ const TOOL_NAME_ALIASES: Record<string, string> = {
   commandexecution: 'Bash',
   filechange: 'Edit',
   imageview: 'Read',
+  imagegeneration: 'GenerateImage',
   update_plan: 'TodoWrite',
 }
 

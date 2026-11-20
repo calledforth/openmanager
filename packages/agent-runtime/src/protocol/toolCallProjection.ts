@@ -76,7 +76,7 @@ export const isEdit = (kind: ToolKind | undefined, toolName: string | undefined)
 /**
  * A tool that shows paths, never the file: reads and edits. A listing reports
  * as a read on OpenCode, and names files rather than holding one, so its
- * output stays.
+ * output stays, as does Codex's `imageView`, whose file is an image.
  */
 export function isPathOnly(
   kind: ToolKind | undefined,
@@ -84,6 +84,9 @@ export function isPathOnly(
   title: string | undefined,
 ): boolean {
   if (isEdit(kind, toolName) || toolName === 'Read') return true
+  // Codex's image view: its image goes to the reply, and its only text is a
+  // note on why the chat could not show it.
+  if (toolName === 'imageView') return false
   return kind === 'read' && !/^(list|ls)\b/i.test(toolName ?? title ?? '')
 }
 
