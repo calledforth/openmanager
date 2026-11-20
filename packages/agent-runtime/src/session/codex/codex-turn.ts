@@ -15,11 +15,16 @@ export type CodexTurnOutput =
         content?: { type: 'text'; text: string }
       }
     }
+  | { event: 'steer_delivered' | 'steer_withdrawn'; data: { steerId: string } }
 
 type OpenMessage = { phase: MessagePhase | null; streamed: boolean }
 type OpenReasoning = { started: boolean; streamed: boolean; lastPart: number }
+/** A steer sent into this turn whose `userMessage` Codex has not echoed yet:
+ * its words, to know the echo by when it carries no client id. */
+type PendingSteer = { steerId: string; text: string }
 
-/** One Codex turn, translated: assistant text and reasoning summaries.
+/** One Codex turn, translated: assistant text, reasoning summaries, and where
+ * the messages steered into it landed.
  *
  * Tool items (commands, file changes, MCP calls, …) are CAL-255's and are not
  * translated here; this only notes that they happened. Reasoning arrives as
@@ -39,6 +44,8 @@ export class CodexTurn {
   private tokenUsage: v2.ThreadTokenUsage | undefined
   /** The last non-retrying error Codex reported for this turn. */
   error: v2.TurnError | undefined
+  /** Steers sent (`turn/steer`) and not yet placed, in the order sent. */
+  private readonly steers: PendingSteer[] = []
 
   constructor(
     private readonly emit: (output: CodexTurnOutput) => void,
@@ -56,10 +63,55 @@ export class CodexTurn {
       case 'reasoning':
         this.openReasoning(item.id)
         return
+      case 'userMessage':
+        this.userMessage(item)
+        return
       default:
-        // Our own `userMessage` echo, and everything CAL-255 will translate.
+        // Everything CAL-255 will translate.
         return
     }
+  }
+
+  /** A message is being steered into this turn: watch for Codex placing it.
+   * Recorded before `turn/steer` goes out, because the echo can beat the
+   * answer. */
+  expectSteer(steerId: string, input: readonly v2.UserInput[]): void {
+    this.steers.push({ steerId, text: inputText(input) })
+  }
+
+  /** `turn/steer` failed: Codex never took the message, so it will never be
+   * placed. False when it was already placed or given back, which is the one
+   * event that steer gets, so the caller must not report the failure too. */
+  forgetSteer(steerId: string): boolean {
+    const index = this.steers.findIndex((steer) => steer.steerId === steerId)
+    if (index === -1) return false
+    this.steers.splice(index, 1)
+    return true
+  }
+
+  /** Codex echoes every message of a turn as a `userMessage` item, at the
+   * point of the turn where it put it. The prompt's echo is the turn's own
+   * start and is not shown again (the host already holds the prompt). A
+   * steer's echo is where the steered message sits in the turn: right after
+   * Codex took it, while a tool may still be running; the model reads it at
+   * its next step. The host shows the message there on `steer_delivered`,
+   * from its own copy, so the echo's content is never sent on (that would
+   * show it twice).
+   *
+   * The echo is known by `clientId`, the `clientUserMessageId` the steer was
+   * sent with (Codex 0.170 echoes it, probed). One with no client id (a
+   * recording made without them) is matched by its words to the oldest steer
+   * still waiting; an echo matching no steer is our prompt's, or input this
+   * runtime did not send, and is left alone. */
+  private userMessage(item: Extract<v2.ThreadItem, { type: 'userMessage' }>): void {
+    if (this.steers.length === 0) return
+    const index =
+      item.clientId !== null
+        ? this.steers.findIndex((steer) => steer.steerId === item.clientId)
+        : this.steers.findIndex((steer) => steer.text === inputText(item.content))
+    if (index === -1) return
+    const [steer] = this.steers.splice(index, 1)
+    this.emit({ event: 'steer_delivered', data: { steerId: steer!.steerId } })
   }
 
   agentMessageDelta(params: v2.AgentMessageDeltaNotification): void {
@@ -108,6 +160,11 @@ export class CodexTurn {
         this.closeReasoning(item.id)
         return
       }
+      case 'userMessage':
+        // Its `item/started` placed it already; this only catches an echo
+        // whose start was never seen.
+        this.userMessage(item)
+        return
       default:
         return
     }
@@ -128,10 +185,19 @@ export class CodexTurn {
 
   /** Close whatever is still open: a turn can end (interrupted, failed) with
    * a reasoning item that never completed, and an open thought would leave
-   * the timeline showing "thinking" forever. */
+   * the timeline showing "thinking" forever.
+   *
+   * A steer Codex accepted but never echoed is given back
+   * (`steer_withdrawn`), so the host queues it for the next turn. Codex
+   * echoes a steer within milliseconds of taking it, even when the turn is
+   * interrupted straight after (probed on 0.170), so no echo means it never
+   * reached the conversation; running it again is the safe side, losing it
+   * is not. */
   finish(): void {
     for (const id of [...this.reasoning.keys()]) this.closeReasoning(id)
     this.messages.clear()
+    for (const steer of this.steers.splice(0))
+      this.emit({ event: 'steer_withdrawn', data: { steerId: steer.steerId } })
   }
 
   /** This turn's token counts, for `prompt_completed`. */
@@ -208,4 +274,9 @@ function subtract(a: v2.TokenUsageBreakdown, b: v2.TokenUsageBreakdown): v2.Toke
     outputTokens: minus(a.outputTokens, b.outputTokens),
     reasoningOutputTokens: minus(a.reasoningOutputTokens, b.reasoningOutputTokens),
   }
+}
+
+/** The words of a message, for matching a steer to its echo. */
+function inputText(input: readonly v2.UserInput[]): string {
+  return input.flatMap((part) => (part.type === 'text' ? [part.text] : [])).join('\n\n')
 }

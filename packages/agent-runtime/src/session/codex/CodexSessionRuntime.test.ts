@@ -6,7 +6,7 @@ import { PermissionBroker } from '../../core/PermissionBroker.js'
 import { codex } from '../../providers/codex.js'
 import type { SessionRuntimeSpec } from '../SessionRuntime.js'
 import { CodexAppServerClient } from './CodexAppServerClient.js'
-import { CodexSessionRuntime } from './CodexSessionRuntime.js'
+import { CodexSessionRuntime, CodexSteerRefusedError } from './CodexSessionRuntime.js'
 import type { CodexStarter } from './start.js'
 import { FakeCodexAppServer, type FakeCodexTurn } from './testing/index.js'
 import { ReplayCodexAppServer } from './testing/ReplayCodexAppServer.js'
@@ -346,6 +346,170 @@ describe('CodexSessionRuntime turns', () => {
   })
 })
 
+describe('CodexSessionRuntime steer', () => {
+  const STEER = { text: 'also this', blocks: [{ type: 'text' as const, text: 'also this' }] }
+  const steerEvents = (events: BackendEvent[]) => events.filter((e) => e.event.startsWith('steer_'))
+
+  /** A runtime with a turn running and Codex's id for it known. */
+  async function running(options: Parameters<typeof build>[0] = {}) {
+    let turn: FakeCodexTurn | undefined
+    const built = build({ ...options, onTurn: (t) => (turn = t) })
+    await built.runtime.start()
+    const prompt = built.runtime.prompt({ prompt: PROMPT, userMessageId: 'msg-1' })
+    await vi.waitFor(() => expect(names(built.events)).toContain('turn_identified'))
+    turn!.userMessage('hi', { clientId: 'msg-1' })
+    return { ...built, turn: turn!, prompt }
+  }
+
+  it('sends turn/steer for the running turn and places the message where Codex echoes it', async () => {
+    const { server, runtime, events, turn, prompt } = await running()
+    const command = turn.commandStarted('sleep 4')
+
+    await runtime.steer({ prompt: STEER, steerId: 'steer-1' })
+    const [request] = server.requests('turn/steer')
+    expect(request!.params).toEqual({
+      threadId: runtime.sessionId,
+      expectedTurnId: turn.id,
+      clientUserMessageId: 'steer-1',
+      input: [{ type: 'text', text: 'also this', text_elements: [] }],
+    })
+    // No settings ride on a steer: it runs on the turn's own.
+    expect(request!.params).not.toHaveProperty('model')
+    await vi.waitFor(() => expect(steerEvents(events)).toHaveLength(1))
+
+    turn.commandCompleted(command)
+    turn.agentMessage('first second')
+    turn.completed()
+    await prompt
+    expect(steerEvents(events)).toEqual([
+      expect.objectContaining({
+        category: 'lifecycle',
+        event: 'steer_delivered',
+        sessionId: runtime.sessionId,
+        data: { steerId: 'steer-1' },
+      }),
+    ])
+    // Placed before what the agent said after reading it, inside the turn,
+    // and never as a user message of its own (the host shows its copy).
+    const order = names(events)
+    expect(order.indexOf('steer_delivered')).toBeLessThan(order.indexOf('agent_message_chunk'))
+    expect(order.indexOf('steer_delivered')).toBeLessThan(order.indexOf('prompt_completed'))
+    expect(order).not.toContain('user_message_chunk')
+    expect(order.filter((name) => name === 'prompt_completed')).toHaveLength(1)
+  })
+
+  it('places a steer whose echo arrives before Codex answers the request', async () => {
+    const { server, runtime, events, turn, prompt } = await running()
+    server.respond('turn/steer', (params) => {
+      turn.userMessage(params.input, { clientId: params.clientUserMessageId ?? null })
+      return { turnId: turn.id }
+    })
+    await runtime.steer({ prompt: STEER, steerId: 'steer-1' })
+    expect(steerEvents(events).map((e) => e.event)).toEqual(['steer_delivered'])
+    turn.completed()
+    await prompt
+  })
+
+  it('waits for Codex to name the turn before steering it', async () => {
+    let turn: FakeCodexTurn | undefined
+    const { server, runtime, events } = build({ onTurn: (t) => (turn = t) })
+    await runtime.start()
+    // Steered as soon as the prompt has started, as the host does (a turn of
+    // its own is open by then), before `turn/start` has answered.
+    let steered: Promise<void> | undefined
+    let identifiedFirst: boolean | undefined
+    runtime.events((event) => {
+      if (event.event !== 'prompt_started') return
+      queueMicrotask(() => {
+        identifiedFirst = names(events).includes('turn_identified')
+        steered = runtime.steer({ prompt: STEER, steerId: 'steer-1' })
+      })
+    })
+    const prompt = runtime.prompt({ prompt: PROMPT })
+    await vi.waitFor(() => expect(steered).toBeDefined())
+    expect(identifiedFirst).toBe(false)
+    await steered
+    expect(server.requests('turn/steer')[0]!.params).toMatchObject({ expectedTurnId: turn!.id })
+    turn!.completed()
+    await prompt
+    expect(steerEvents(events).map((e) => e.event)).toEqual(['steer_delivered'])
+  })
+
+  // CAL-236's fallback: a refused steer rejects with nothing pending, and the
+  // host queues the message for the next turn.
+  it('refuses a steer Codex says is for a turn that ended or is another one', async () => {
+    const { server, runtime, events, turn, prompt } = await running()
+    server.fail('turn/steer', -32600, 'no active turn to steer')
+    const refused = runtime.steer({ prompt: STEER, steerId: 'steer-1' })
+    await expect(refused).rejects.toBeInstanceOf(CodexSteerRefusedError)
+    await expect(refused).rejects.toMatchObject({ reason: 'turn_ended' })
+    turn.completed()
+    await prompt
+    // Its one answer is the rejection: no event, not even at the turn's end.
+    expect(steerEvents(events)).toEqual([])
+  })
+
+  it('refuses a steer into a turn that cannot be steered (review, compaction)', async () => {
+    const { server, runtime, events, turn, prompt } = await running()
+    server.fail('turn/steer', -32600, 'cannot steer a review turn', {
+      data: { codexErrorInfo: { activeTurnNotSteerable: { turnKind: 'review' } } },
+    })
+    await expect(runtime.steer({ prompt: STEER, steerId: 'steer-1' })).rejects.toMatchObject({
+      reason: 'not_steerable',
+    })
+    turn.completed()
+    await prompt
+    expect(steerEvents(events)).toEqual([])
+  })
+
+  it('refuses, sending nothing, when no turn runs or the turn is being stopped', async () => {
+    const { server, runtime, turn, prompt } = await running()
+    server.respond('turn/interrupt', {} as never)
+    await runtime.cancel()
+    await expect(runtime.steer({ prompt: STEER, steerId: 'steer-1' })).rejects.toMatchObject({
+      reason: 'no_turn',
+    })
+    turn.interrupted()
+    await prompt
+    await expect(runtime.steer({ prompt: STEER, steerId: 'steer-2' })).rejects.toMatchObject({
+      reason: 'no_turn',
+    })
+    expect(server.requests('turn/steer')).toHaveLength(0)
+  })
+
+  it('gives back a steer Codex took but the turn ended without placing', async () => {
+    const { server, runtime, events, turn, prompt } = await running()
+    server.respond('turn/steer', { turnId: turn.id } as never)
+    await runtime.steer({ prompt: STEER, steerId: 'steer-1' })
+    turn.interrupted()
+    await prompt
+    expect(steerEvents(events)).toEqual([
+      expect.objectContaining({ event: 'steer_withdrawn', data: { steerId: 'steer-1' } }),
+    ])
+    const order = names(events)
+    expect(order.indexOf('steer_withdrawn')).toBeLessThan(order.indexOf('prompt_completed'))
+  })
+
+  it('gives back a steer still unplaced when the process dies', async () => {
+    const { server, runtime, events, turn, prompt } = await running()
+    server.respond('turn/steer', { turnId: turn.id } as never)
+    await runtime.steer({ prompt: STEER, steerId: 'steer-1' })
+    server.crash({ code: 1 })
+    await expect(prompt).rejects.toThrow()
+    expect(steerEvents(events).map((e) => e.event)).toEqual(['steer_withdrawn'])
+  })
+
+  // Codex has no un-steer: what was sent stays sent.
+  it('never takes a steer back', async () => {
+    const { runtime, turn, prompt } = await running()
+    await runtime.steer({ prompt: STEER, steerId: 'steer-1' })
+    await expect(runtime.withdrawSteer('steer-1')).resolves.toBe(false)
+    await expect(runtime.withdrawSteer('unknown')).resolves.toBe(false)
+    turn.completed()
+    await prompt
+  })
+})
+
 describe('CodexSessionRuntime interrupt and exit', () => {
   it('interrupts the running turn and resolves with a cancelled stop reason', async () => {
     let turn: FakeCodexTurn | undefined
@@ -439,6 +603,35 @@ describe('CodexSessionRuntime against a recording', () => {
     expect(events.find((e) => e.event === 'prompt_completed')).toMatchObject({
       data: { stopReason: 'end_turn' },
     })
+    runtime.dispose()
+  })
+
+  it('steers the recorded turn and places the message where Codex echoed it', async () => {
+    const server = new ReplayCodexAppServer('steer')
+    server.respond('model/list', MODELS as never)
+    const { runtime, events } = build({ server })
+    await runtime.start()
+    const prompt = runtime.prompt({ prompt: PROMPT })
+    // The recording steered while its `sleep 4` ran.
+    await vi.waitFor(() => expect(server.waitingFor).toMatchObject({ method: 'turn/steer' }))
+    await runtime.steer({
+      prompt: { text: 'Also add the word "second" to your reply.', blocks: [] },
+      steerId: 'steer-1',
+    })
+    await prompt
+    await server.done
+    server.assertPlayedAsRecorded()
+    const turnId = (events.find((e) => e.event === 'turn_identified')!.data as { providerTurnId: string })
+      .providerTurnId
+    const steer = server.matched.find((m) => 'method' in m.actual && m.actual.method === 'turn/steer')
+    expect(steer!.actual).toMatchObject({ params: { expectedTurnId: turnId, clientUserMessageId: 'steer-1' } })
+    // Recorded without client ids: the echo is known by its words, and the
+    // prompt's echo is not taken for it.
+    expect(events.filter((e) => e.event.startsWith('steer_'))).toEqual([
+      expect.objectContaining({ event: 'steer_delivered', data: { steerId: 'steer-1' } }),
+    ])
+    expect(texts(events)).toBe('first second')
+    expect(events.filter((e) => e.event === 'prompt_completed')).toHaveLength(1)
     runtime.dispose()
   })
 })
