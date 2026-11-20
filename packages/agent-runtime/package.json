@@ -22,7 +22,7 @@
     }
   },
   "scripts": {
-    "build": "tsc -p tsconfig.build.json && esbuild src/index.ts --bundle --platform=node --format=esm --packages=external --alias:@agentpack/contract=../agent-contract/src/index.ts --alias:@openmanager/protocol=../protocol/src/index.ts --alias:@openmanager/shared/contracts/provider-health=../shared/src/contracts/provider-health.ts --outfile=dist/index.js",
+    "build": "tsc -p tsconfig.build.json && esbuild src/index.ts --bundle --platform=node --format=esm --packages=external --alias:@agentpack/contract=../agent-contract/src/index.ts --alias:@openmanager/codex-app-server-protocol=../codex-app-server-protocol/src/index.ts --alias:@openmanager/protocol=../protocol/src/index.ts --alias:@openmanager/shared/contracts/provider-health=../shared/src/contracts/provider-health.ts --outfile=dist/index.js",
     "typecheck": "tsc --noEmit -p tsconfig.json"
   },
   "dependencies": {
@@ -32,6 +32,7 @@
     "@anthropic-ai/sdk": "0.115.0",
     "@modelcontextprotocol/sdk": "1.30.0",
     "@opencode-ai/sdk": "1.18.3",
+    "@openmanager/codex-app-server-protocol": "workspace:*",
     "@openmanager/protocol": "workspace:*",
     "@openmanager/shared": "workspace:*",
     "zod": "4.4.3"
