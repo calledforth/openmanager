@@ -97,7 +97,13 @@ function detailOf(error: v2.TurnError): string | undefined {
 /** Why a Codex turn failed, typed, with Codex's explanation as the detail. */
 export function codexProblem(error: v2.TurnError): ProviderProblem {
   const name = codexErrorName(error.codexErrorInfo)
-  const code = codeOfStatus(httpStatusOf(error.codexErrorInfo)) ?? codeOfName(name)
+  const status = httpStatusOf(error.codexErrorInfo)
+  // A status the request was answered with is not a connection that failed:
+  // an unmapped 4xx (400, 404, 422, …) is the request's own fault, and
+  // retrying it as a network error would only fail again.
+  const code =
+    codeOfStatus(status) ??
+    (status !== undefined && status >= 400 && status < 500 ? 'unknown' : codeOfName(name))
   const detail = detailOf(error)
   // No `action`: the host's default for the code is right (try again, sign
   // in), and openmanager cannot compact a Codex thread yet, so a full context

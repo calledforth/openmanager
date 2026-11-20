@@ -26,6 +26,7 @@ import type {
   ProcessExit,
   SessionRuntimeExit,
   SessionRuntimePhase,
+  SessionRuntimeStopReason,
   TerminationRequest,
   ThreadId,
 } from '../lifecycle.js'
@@ -87,6 +88,10 @@ type ActiveTurn = {
   /** A turn Codex began by itself (goal continuation, automatic
    * compaction): nobody's prompt waits on it. */
   background: boolean
+  /** The host stopped the process under this turn (shutdown, an update, a
+   * move, an eviction), not the user: the turn fails and can be sent again,
+   * rather than reading as the user's own Stop. */
+  stoppedBy?: SessionRuntimeStopReason
   resolve: () => void
   reject: (error: unknown) => void
   done: Promise<void>
@@ -250,9 +255,10 @@ export class CodexSessionRuntime implements ManagedSessionRuntime {
     return undefined
   }
   /** Running subagents live in this process: reaping or evicting it would
-   * kill them (docs/decisions/codex-app-server.md, "Children count"). */
+   * kill them (docs/decisions/codex-app-server.md, "Children count"). So does
+   * a turn Codex began by itself, which no prompt holds the session open for. */
   get busy(): boolean {
-    return this.subagents.running
+    return this.subagents.running || this.active?.background === true
   }
 
   /** What was last written, never a guess: undefined until a model has been
@@ -540,7 +546,11 @@ export class CodexSessionRuntime implements ManagedSessionRuntime {
     await this.ready()
     // A turn Codex began by itself owns the thread until it ends; the host
     // files what it says under this prompt's turn meanwhile.
+    const generation = this.stopGeneration
     while (this.active?.background) await this.active.done.catch(() => undefined)
+    // Stopped while it waited (the stop ended the background turn): this
+    // prompt is stopped with it, and no turn is started behind the host.
+    if (generation !== this.stopGeneration) return
     if (this.active) throw new Error('A Codex turn is already running in this session')
     if (args.desiredConfig) await this.applyDesiredConfig(args.desiredConfig)
     const input = codexInput(args.prompt)
@@ -692,6 +702,8 @@ export class CodexSessionRuntime implements ManagedSessionRuntime {
       data: { why, from: previous, threadId: opened.threadId, state: opened.state },
     })
     if (opened.threadId === previous) return
+    // A fresh thread counts its tokens from zero.
+    this.tokenBaseline = undefined
     // A new identity: the host stamps it before this turn is sent.
     this.emit(
       routeEvent(this.route(), opened.threadId, 'lifecycle', 'session_created', {
@@ -715,11 +727,19 @@ export class CodexSessionRuntime implements ManagedSessionRuntime {
     if (!handover) return
     this.handover = undefined
     let handedOver = false
+    // Unknown (a host that keeps no history) says the context may be lost;
+    // known to be empty, there was nothing to lose and nothing is said.
+    let earlier = true
     try {
-      const history = (
-        this.deps.host.sessionHistory?.({ providerId: this.providerId, threadId: this.threadIdValue }) ?? []
-      ).filter((message) => message.messageId !== userMessageId && message.text.trim())
-      const items = handoverItems(history)
+      const stored = this.deps.host.sessionHistory?.({
+        providerId: this.providerId,
+        threadId: this.threadIdValue,
+      })
+      const history = stored?.filter(
+        (message) => message.messageId !== userMessageId && message.text.trim(),
+      )
+      if (history && history.length === 0) earlier = false
+      const items = handoverItems(history ?? [])
       if (items.length > 0) {
         await client.request(
           'thread/inject_items',
@@ -736,7 +756,7 @@ export class CodexSessionRuntime implements ManagedSessionRuntime {
         data: { from: handover.from, threadId, error: errorMessage(error) },
       })
     }
-    this.notice(codexFreshThreadNotice(handedOver))
+    if (earlier) this.notice(codexFreshThreadNotice(handedOver))
   }
 
   /** Show a notice: now, inside the turn in flight, or at the next turn's
@@ -1299,7 +1319,8 @@ export class CodexSessionRuntime implements ManagedSessionRuntime {
         this.completeTurn(active, 'end_turn')
         return
       case 'interrupted':
-        this.completeTurn(active, 'cancelled')
+        if (active.stoppedBy) this.failTurn(active, new CodexStoppedError(active.stoppedBy))
+        else this.completeTurn(active, 'cancelled')
         return
       case 'failed': {
         const error = turn.error ?? active.turn.error
@@ -1352,7 +1373,9 @@ export class CodexSessionRuntime implements ManagedSessionRuntime {
         kind:
           error instanceof CodexTurnFailedError || error instanceof CodexThreadGoneError
             ? 'provider'
-            : 'transport',
+            : error instanceof CodexStoppedError
+              ? 'process'
+              : 'transport',
         message,
         ...(problem ? { problem } : {}),
       }),
@@ -1610,7 +1633,7 @@ export class CodexSessionRuntime implements ManagedSessionRuntime {
     const first = this.stopRequest === undefined
     this.stopRequest ??= request
     if (this.phaseValue !== 'exited') this.phaseValue = 'stopping'
-    if (first) await this.interruptForStop()
+    if (first) await this.interruptForStop(request.reason)
     const client = this.client
     if (client) await client.terminate(request).catch(() => undefined)
     else this.settleExit({ exitCode: null, signal: null, forced: false, at: new Date().toISOString() })
@@ -1624,10 +1647,12 @@ export class CodexSessionRuntime implements ManagedSessionRuntime {
   /** Bounded: a stop never waits long on a process it is about to end. One
    * already being interrupted (a stop after the interrupt grace ran out) is
    * not waited on again. */
-  private async interruptForStop(): Promise<void> {
+  private async interruptForStop(reason: SessionRuntimeStopReason): Promise<void> {
     const active = this.active
-    if (!active || active.settled || !active.turn.turnId || active.turn.interruptRequested) return
-    if (!this.client || this.exitValue) return
+    if (!active || active.settled || active.turn.interruptRequested) return
+    // Whether or not it can be interrupted, the turn is the host's to end.
+    active.stoppedBy = reason
+    if (!active.turn.turnId || !this.client || this.exitValue) return
     active.turn.interruptRequested = true
     void this.sendInterrupt(active)
     let timer: NodeJS.Timeout | undefined
@@ -1645,7 +1670,13 @@ export class CodexSessionRuntime implements ManagedSessionRuntime {
     if (this.exitValue) return
     this.phaseValue = 'exited'
     const active = this.active
-    if (active) this.failTurn(active, new Error('codex app-server exited during the turn'))
+    if (active)
+      this.failTurn(
+        active,
+        active.stoppedBy
+          ? new CodexStoppedError(active.stoppedBy)
+          : new Error('codex app-server exited during the turn'),
+      )
     this.subagents.clear()
     this.deps.permissions.settleThread(this.providerId, this.threadIdValue)
     this.deps.interactions.settleThread(this.providerId, this.threadIdValue)
@@ -1719,12 +1750,35 @@ export class CodexThreadGoneError extends Error {
   }
 }
 
+/** The host stopped the process under a running turn. */
+export class CodexStoppedError extends Error {
+  constructor(readonly reason: SessionRuntimeStopReason) {
+    super(`OpenManager stopped Codex (${reason}) before the turn finished`)
+    this.name = 'CodexStoppedError'
+  }
+}
+
+/** Why the host stopped a process under a turn, in the user's words. */
+const STOP_DETAIL: Partial<Record<SessionRuntimeStopReason, string>> = {
+  disposed: 'OpenManager restarted or updated before the turn finished.',
+  cwd_changed: 'The session moved to another folder before the turn finished.',
+  superseded: 'The session moved before the turn finished.',
+  evicted: 'Codex was stopped to make room for other sessions before the turn finished.',
+}
+
 /** What went wrong, typed, for the turn's terminal error. */
 function problemOf(error: unknown): ProviderProblem | undefined {
   if (error instanceof CodexTurnFailedError)
     return error.turnError ? codexProblem(error.turnError) : undefined
   // Reopened with the next message, so sending it again is what helps.
   if (error instanceof CodexThreadGoneError) return { code: 'unknown', action: 'retry', detail: error.message }
+  // Not the user's Stop: the turn can be sent again.
+  if (error instanceof CodexStoppedError)
+    return {
+      code: 'unknown',
+      action: 'retry',
+      detail: STOP_DETAIL[error.reason] ?? 'Codex was stopped before the turn finished.',
+    }
   if (error instanceof CodexRpcError) return codexRpcProblem(error.data, error.message)
   return undefined
 }

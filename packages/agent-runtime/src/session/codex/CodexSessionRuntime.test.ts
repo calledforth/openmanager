@@ -1230,7 +1230,7 @@ describe('CodexSessionRuntime consistency (CAL-254)', () => {
     expect(notices(events)).toHaveLength(1)
   })
 
-  it('says the context was lost when there is nothing to hand over, or Codex refuses it', async () => {
+  it('says the context was lost when Codex refuses the earlier messages', async () => {
     const server = new FakeCodexAppServer()
     server.respond('model/list', MODELS as never).serveThreads((t) => t.completed())
     server.fail('thread/resume', -32600, 'no rollout found for thread id gone')
@@ -1245,6 +1245,45 @@ describe('CodexSessionRuntime consistency (CAL-254)', () => {
     expect(notices(events)).toEqual([
       expect.objectContaining({ message: expect.stringMatching(/without the earlier context/) }),
     ])
+  })
+
+  it('says nothing about lost context when there was none', async () => {
+    const server = new FakeCodexAppServer()
+    server.respond('model/list', MODELS as never).serveThreads((t) => t.completed())
+    server.fail('thread/resume', -32600, 'no rollout found for thread id gone')
+    const { runtime, events } = build({
+      server,
+      spec: { sessionId: 'gone' },
+      // Only the prompt about to run.
+      sessionHistory: () => [{ messageId: 'msg-now', role: 'user', text: 'First words' }],
+    })
+    await runtime.start()
+    await runtime.prompt({ prompt: PROMPT, userMessageId: 'msg-now' })
+    expect(server.requests('thread/inject_items')).toHaveLength(0)
+    expect(notices(events)).toEqual([])
+  })
+
+  it('counts a fresh thread’s tokens from zero after replacing a deleted one', async () => {
+    let turn: FakeCodexTurn | undefined
+    const { server, runtime, events } = build({ onTurn: (t) => (turn = t) })
+    const { sessionId } = await runtime.start()
+    let prompt = runtime.prompt({ prompt: PROMPT })
+    await vi.waitFor(() => expect(turn).toBeDefined())
+    turn!.tokenUsage({ totalTokens: 500 }, { totalTokens: 5_000 })
+    turn!.completed()
+    await prompt
+    server.fail('thread/resume', -32600, `no rollout found for thread id ${sessionId}`)
+    server.notify('thread/deleted', { threadId: sessionId })
+    await settle()
+    turn = undefined
+    prompt = runtime.prompt({ prompt: PROMPT })
+    await vi.waitFor(() => expect(turn).toBeDefined())
+    turn!.tokenUsage({ totalTokens: 120 }, { totalTokens: 120 })
+    turn!.completed()
+    await prompt
+    expect(events.filter((e) => e.event === 'prompt_completed').at(-1)).toMatchObject({
+      data: { usage: { totalTokens: 120 } },
+    })
   })
 
   it('shows an outside archive, and unarchives and resumes the thread before the next turn', async () => {
@@ -1500,6 +1539,37 @@ describe('CodexSessionRuntime consistency (CAL-254)', () => {
     expect(texts(events)).toBe('Continuing the goal.')
   })
 
+  it('counts a background turn as busy, so it is not reaped or evicted under it', async () => {
+    const { server, runtime, events } = build()
+    const { sessionId } = await runtime.start()
+    expect(runtime.busy).toBe(false)
+    const own = server.thread({ id: sessionId }).turn()
+    own.started()
+    await vi.waitFor(() => expect(names(events)).toContain('background_turn_started'))
+    expect(runtime.busy).toBe(true)
+    own.completed()
+    await vi.waitFor(() => expect(names(events)).toContain('prompt_completed'))
+    expect(runtime.busy).toBe(false)
+  })
+
+  it('starts no turn for a prompt stopped while it waited on a background turn', async () => {
+    const { server, runtime, events } = build({ onTurn: (t) => t.completed() })
+    server.respond('turn/interrupt', {}, { after: () => own.interrupted() })
+    const { sessionId } = await runtime.start()
+    const own = server.thread({ id: sessionId }).turn()
+    own.started()
+    await vi.waitFor(() => expect(names(events)).toContain('background_turn_started'))
+    const prompt = runtime.prompt({ prompt: PROMPT })
+    await settle()
+    await runtime.cancel()
+    await expect(prompt).resolves.toBeUndefined()
+    expect(server.requests('turn/start')).toHaveLength(0)
+    expect(names(events)).not.toContain('prompt_started')
+    // And the next prompt runs.
+    await runtime.prompt({ prompt: PROMPT })
+    expect(server.requests('turn/start')).toHaveLength(1)
+  })
+
   it('stops a background turn on cancel', async () => {
     const { server, runtime, events } = build()
     server.respond('turn/interrupt', {}, { after: () => own.interrupted() })
@@ -1533,7 +1603,7 @@ describe('CodexSessionRuntime consistency (CAL-254)', () => {
 })
 
 describe('CodexSessionRuntime restarts (CAL-254)', () => {
-  it('ends a running turn on its interrupt before the process goes, and settles what waits', async () => {
+  it('interrupts a running turn before the process goes, fails it for a retry, and settles what waits', async () => {
     let turn: FakeCodexTurn | undefined
     const { server, runtime, events, exits } = build({ onTurn: (t) => (turn = t) })
     server.respond('turn/interrupt', {}, { after: () => setTimeout(() => turn!.interrupted(), 5) })
@@ -1544,11 +1614,18 @@ describe('CodexSessionRuntime restarts (CAL-254)', () => {
       await vi.waitFor(() => expect(turn).toBeDefined())
       await vi.waitFor(() => expect(names(events)).toContain('turn_identified'))
       await runtime.stop({ reason: 'disposed' })
-      await expect(prompt).resolves.toBeUndefined()
+      await expect(prompt).rejects.toThrow(/stopped Codex/)
       expect(server.requests('turn/interrupt')[0]!.params).toMatchObject({ turnId: turn!.id })
-      expect(events.find((e) => e.event === 'prompt_completed')).toMatchObject({
-        data: { stopReason: 'cancelled' },
-      })
+      // Not the user's Stop: it fails, and can be sent again.
+      expect(names(events)).not.toContain('prompt_completed')
+      expect(events.filter((e) => e.event === 'runtime_error')).toEqual([
+        expect.objectContaining({
+          data: expect.objectContaining({
+            kind: 'process',
+            problem: { code: 'unknown', action: 'retry', detail: expect.stringMatching(/restarted or updated/) },
+          }),
+        }),
+      ])
       expect(events.find((e) => e.event === 'process_exited')).toMatchObject({ data: { expected: true } })
       expect(exits).toMatchObject([{ expected: true, reason: 'disposed' }])
       expect(settleThread).toHaveBeenCalledWith('codex', 'thread-1')
@@ -1559,14 +1636,17 @@ describe('CodexSessionRuntime restarts (CAL-254)', () => {
 
   it('does not wait long on a turn that ignores the interrupt at shutdown', async () => {
     let turn: FakeCodexTurn | undefined
-    const { server, runtime, exits } = build({ onTurn: (t) => (turn = t), interruptGraceMs: 30 })
+    const { server, runtime, exits, events } = build({ onTurn: (t) => (turn = t), interruptGraceMs: 30 })
     server.respond('turn/interrupt', {})
     await runtime.start()
     const prompt = runtime.prompt({ prompt: PROMPT })
     await vi.waitFor(() => expect(turn).toBeDefined())
-    await runtime.stop({ reason: 'disposed' })
-    await expect(prompt).rejects.toThrow(/exited/)
+    await runtime.stop({ reason: 'evicted' })
+    await expect(prompt).rejects.toThrow(/stopped Codex/)
     expect(exits).toMatchObject([{ expected: true }])
+    expect(events.find((e) => e.event === 'runtime_error')).toMatchObject({
+      data: { problem: { action: 'retry' } },
+    })
   })
 
   it('resumes the session on the next prompt after the process went away', async () => {

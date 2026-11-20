@@ -56,8 +56,9 @@ describe('codexProblem', () => {
     expect(codexProblem(error(http(variant, 401))).code).toBe('unauthorized')
     expect(codexProblem(error(http(variant, 503))).code).toBe('overloaded')
     expect(codexProblem(error(http(variant, 500))).code).toBe('server_error')
-    // A status that says nothing more keeps the variant's own kind.
-    expect(codexProblem(error(http(variant, 400))).code).toBe('network')
+    // An answered request that was refused is no connection problem: no retry.
+    for (const status of [400, 404, 422])
+      expect(codexProblem(error(http(variant, status))).code).toBe('unknown')
   })
 
   it('maps activeTurnNotSteerable, and a variant newer than these types, to unknown', () => {
