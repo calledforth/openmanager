@@ -243,6 +243,19 @@ describe('agent to environment protocol projection', () => {
     }
     expect(projectAgentEvent(echo, context)?.payload).not.toHaveProperty('phase')
   })
+  // A provider that grows a new phase must not lose the chunk's text to a
+  // schema failure; the phase is dropped and the text goes through.
+  it('drops a phase it does not know and keeps the text', () => {
+    const chunk = {
+      ...base,
+      category: 'stream',
+      event: 'agent_message_chunk',
+      data: { content: { type: 'text', text: 'Still here.' }, phase: 'brand_new' },
+    } as unknown as AgentEvent
+    const payload = projectAgentEvent(chunk, context)?.payload
+    expect(payload).toMatchObject({ content: { type: 'text', text: 'Still here.' } })
+    expect(payload).not.toHaveProperty('phase')
+  })
   it('keeps opaque extension requests and idle process details host-side', () => {
     const extension: AgentEvent = {
       ...base,

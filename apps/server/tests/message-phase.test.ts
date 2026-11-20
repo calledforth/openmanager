@@ -144,6 +144,21 @@ const assistant = (messages: readonly Message[]) =>
     }))
 
 describe('assistant message phases', () => {
+  // A provider that marks only the first chunk of a message must not have it
+  // broken in two mid-word, and the unmarked chunk is stored with its message.
+  it('keeps an unmarked chunk in the message it continues', async () => {
+    const h = await setup()
+    h.text('The ans', 'final_answer')
+    h.text('wer.')
+    h.text('Checking.', 'commentary')
+    h.text(' Still.')
+    h.complete()
+    expect(assistant(h.state().messages)).toEqual([
+      { text: 'The answer.', phase: 'final_answer' },
+      { text: 'Checking. Still.', phase: 'commentary' },
+    ])
+  })
+
   it('opens a new message where the phase changes and stores each one with its phase', async () => {
     const h = await setup()
     h.text('Looking ', 'commentary')

@@ -116,11 +116,18 @@ describe('settled turn grouping by message phase', () => {
     ).toEqual({ work: ['read', 'looking'], answer: ['answer'] })
   })
 
-  it('shows a turn that ended on commentary as work, with no answer', () => {
+  // A turn stopped or failed while it narrated marks nothing as its answer.
+  // Folding all of it away would leave the reader nothing but "Worked".
+  it('shows the last text of a turn that ended on commentary, as before phases', () => {
     expect(split([tool('read'), text('still looking', 'commentary')])).toEqual({
-      work: ['read', 'still looking'],
-      answer: [],
+      work: ['read'],
+      answer: ['still looking'],
     })
+    expect(split([tool('read'), text('review'), text('aside', 'commentary')])).toEqual({
+      work: ['read'],
+      answer: ['review', 'aside'],
+    })
+    expect(assistantCopyText('', true, [text('only', 'commentary')])).toBe('only.')
   })
 
   it('takes partial answers as answer text, wherever they stand', () => {

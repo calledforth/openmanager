@@ -6,6 +6,7 @@ import type {
 } from '@agentpack/contract'
 import {
   TURN_FAILURE_MESSAGES,
+  MessagePhaseSchema,
   ProofEventSchema,
   TimestampSchema,
   isSettledToolStatus,
@@ -270,8 +271,10 @@ export function projectAgentEvent(
         turnId: required('turnId'),
         role: source.event === 'user_message_chunk' ? 'user' : 'assistant',
         content: source.data.content,
-        // Only an assistant message has a phase, and only when its provider marks it.
-        ...(source.event === 'agent_message_chunk' && source.data.phase
+        // Only an assistant message has a phase, and only when its provider
+        // marks it with one we know: an unknown value is dropped here rather
+        // than failing the schema and losing the chunk's text with it.
+        ...(source.event === 'agent_message_chunk' && MessagePhaseSchema.safeParse(source.data.phase).success
           ? { phase: source.data.phase }
           : {}),
       })

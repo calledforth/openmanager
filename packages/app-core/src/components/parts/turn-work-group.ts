@@ -41,19 +41,21 @@ export function partitionSettledTurnParts(parts: readonly StreamMessagePart[]): 
   // place; it must not end the text run either.
   let answerEnd = parts.length
   while (answerEnd > 0 && isTrailer(parts[answerEnd - 1])) answerEnd -= 1
-  let finalStart = answerEnd
-
-  while (finalStart > 0) {
-    const part = parts[finalStart - 1]
-    if (!isVisibleText(part) || textPhase(part) === 'commentary') break
-    finalStart -= 1
+  let finalStart = lastTextRunStart(parts, answerEnd, true)
+  // Answer text the provider marked before the last run (a partial answer a
+  // tool call followed) is answer all the same.
+  let marked = new Set(parts.slice(0, finalStart).filter(isMarkedAnswer))
+  // A turn that marks nothing as its answer and ends on commentary (stopped,
+  // or failed, while it narrated) would otherwise show no text at all below
+  // the fold. It falls back to the rule from before phases: its last run of
+  // text is what the reader sees.
+  if (marked.size === 0 && !parts.slice(finalStart, answerEnd).some(isVisibleText)) {
+    finalStart = lastTextRunStart(parts, answerEnd, false)
+    marked = new Set()
   }
 
   const earlier = parts.slice(0, finalStart)
-  // Answer text the provider marked before the last run (a partial answer a
-  // tool call followed) is answer all the same.
-  const marked = earlier.filter(isMarkedAnswer)
-  const beforeAnswer = marked.length ? earlier.filter((part) => !marked.includes(part)) : earlier
+  const beforeAnswer = marked.size ? earlier.filter((part) => !marked.has(part)) : earlier
   const answer = [...marked, ...parts.slice(finalStart)]
   // Generated artifacts are answer content even though Cursor emits their
   // callback before it streams its closing text. Keep the tool trace folded,
@@ -77,6 +79,22 @@ export function partitionSettledTurnParts(parts: readonly StreamMessagePart[]): 
     ],
     finalParts: [...subagents, ...lifted, ...answer.filter((part) => !isSubagent(part))],
   }
+}
+
+/** Where the run of visible text that ends at `end` starts. Commentary ends
+ * the run, as a tool would, unless `throughCommentary`. */
+function lastTextRunStart(
+  parts: readonly StreamMessagePart[],
+  end: number,
+  stopAtCommentary: boolean,
+): number {
+  let start = end
+  while (start > 0) {
+    const part = parts[start - 1]
+    if (!isVisibleText(part) || (stopAtCommentary && textPhase(part) === 'commentary')) break
+    start -= 1
+  }
+  return start
 }
 
 function isSubagent(part: StreamMessagePart): boolean {

@@ -241,10 +241,16 @@ const RUN_BREAKING_EVENTS: ReadonlySet<RuntimeEvent['event']> = new Set<RuntimeE
 function runMessageId(active: ActiveTurn, event: RuntimeEvent): string | undefined {
   if (event.event === 'agent_message_chunk') {
     active.reasoningRunId = undefined
-    if (active.textRunId && active.textRunPhase !== event.data.phase) active.textRunId = undefined
+    // Only a chunk that names a phase can start a new message. One that names
+    // none (null counts as none) belongs to the run it arrives in, so a
+    // provider that marks only some chunks of a message never has it broken
+    // in two mid-sentence.
+    const phase = event.data.phase ?? undefined
+    if (active.textRunId && phase !== undefined && active.textRunPhase !== phase)
+      active.textRunId = undefined
     if (!active.textRunId) {
       active.textRunId = randomUUID()
-      active.textRunPhase = event.data.phase
+      active.textRunPhase = phase
     }
     return active.textRunId
   }
@@ -1567,7 +1573,15 @@ export function createThreadService(
         ? toolCallsFor(active)
         : active.toolCalls
       : undefined
-    const projected = projectAgentEvent(event, {
+    // A text chunk that names no phase takes its run's, so it is stored with
+    // the message it joins rather than refused as a mismatch.
+    const source =
+      event.event === 'agent_message_chunk' &&
+      (event.data.phase ?? undefined) === undefined &&
+      active?.textRunPhase !== undefined
+        ? { ...event, data: { ...event.data, phase: active.textRunPhase } }
+        : event
+    const projected = projectAgentEvent(source, {
       eventId: randomUUID(),
       environmentId,
       workspaceId: record.session.workspaceId,
