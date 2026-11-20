@@ -65,8 +65,18 @@ export class CodexTools {
   private readonly open = new Set<string>()
   /** Rows settled, by tool call id: a late repeat of an item is dropped. */
   private readonly settled = new Set<string>()
-  /** What a command was given, kept to add what it was later written. */
-  private readonly commands = new Map<string, { input: Record<string, unknown>; stdin: string[] }>()
+  /** What a command was given, kept to add what it was later written, and
+   * its process once it has one (a command still running when the turn ends
+   * runs on in the background). */
+  private readonly commands = new Map<
+    string,
+    { input: Record<string, unknown>; stdin: string[]; processId: string | null }
+  >()
+  /** The open row of each hook run, by Codex's run id. The run id may name
+   * the handler rather than one firing of it, so each firing gets a row of
+   * its own and its completion settles the one it opened. */
+  private readonly hookRows = new Map<string, string>()
+  private hooks = 0
   private plans = 0
 
   constructor(private readonly emit: (output: CodexToolOutput) => void) {}
@@ -83,7 +93,11 @@ export class CodexTools {
     if (this.open.has(call.toolCallId) || this.settled.has(call.toolCallId)) return true
     this.open.add(call.toolCallId)
     if (item.type === 'commandExecution')
-      this.commands.set(item.id, { input: call.rawInput as Record<string, unknown>, stdin: [] })
+      this.commands.set(item.id, {
+        input: call.rawInput as Record<string, unknown>,
+        stdin: [],
+        processId: item.processId,
+      })
     this.emit({ event: 'tool_call', data: { ...call, status: 'in_progress' } })
     return true
   }
@@ -142,8 +156,13 @@ export class CodexTools {
         return true
       case 'item/fileChange/patchUpdated': {
         const { itemId, changes } = params as v2.FileChangePatchUpdatedNotification
+        if (this.settled.has(itemId)) return true
         if (this.open.has(itemId))
           this.emit({ event: 'tool_call_update', data: { toolCallId: itemId, ...fileChangeFields(changes) } })
+        // A patch that streams can say what it changes before its
+        // `item/started`: the row opens on its first word.
+        else
+          this.itemStarted({ type: 'fileChange', id: itemId, changes, status: 'inProgress' })
         return true
       }
       case 'turn/plan/updated':
@@ -160,13 +179,39 @@ export class CodexTools {
     }
   }
 
+  /**
+   * The turn ended. A command with a process of its own (unified exec) that
+   * is still open runs on in the background: Codex reports no end for it in
+   * this turn, and the server would close its row as cancelled, which it was
+   * not. So it settles as completed, its output saying it is still running.
+   * Not when the turn was stopped: then it reads as the server closes it.
+   * Anything else still open is the server's to close.
+   */
+  finish(stopped: boolean): void {
+    if (stopped) return
+    for (const [id, command] of this.commands) {
+      if (!command.processId || !this.open.has(id)) continue
+      this.emit({
+        event: 'tool_call_content',
+        data: { toolCallId: id, item: textContent(BACKGROUND_NOTE) },
+      })
+      this.open.delete(id)
+      this.settled.add(id)
+      const rawInput = command.stdin.length > 0 ? { ...command.input, stdin: command.stdin } : command.input
+      this.emit({ event: 'tool_call_update', data: { toolCallId: id, status: 'completed', rawInput } })
+    }
+    this.commands.clear()
+  }
+
   /** What was written to a running command's terminal (`write_stdin`). Codex
    * names the command it went to, so it is shown there: with the command's
    * input, where it stays once the command ends. A terminal with a tty echoes
    * it into the output as well (probed on 0.170). */
   private terminalInteraction(params: v2.TerminalInteractionNotification): void {
     const command = this.commands.get(params.itemId)
-    if (!command || !params.stdin || !this.open.has(params.itemId)) return
+    if (!command || !this.open.has(params.itemId)) return
+    command.processId ??= params.processId || null
+    if (!params.stdin) return
     command.stdin.push(params.stdin)
     this.emit({
       event: 'tool_call_update',
@@ -207,20 +252,22 @@ export class CodexTools {
   }
 
   private hookStarted(run: v2.HookRunSummary): void {
-    const toolCallId = hookCallId(run)
-    if (this.open.has(toolCallId) || this.settled.has(toolCallId)) return
+    // A repeat of a start whose run is still open is the same firing.
+    if (this.hookRows.has(run.id)) return
+    const toolCallId = `hook-${run.id}-${++this.hooks}`
+    this.hookRows.set(run.id, toolCallId)
     this.open.add(toolCallId)
-    this.emit({ event: 'tool_call', data: { ...hookCall(run), status: 'in_progress' } })
+    this.emit({ event: 'tool_call', data: { ...hookCall(run, toolCallId), status: 'in_progress' } })
   }
 
   private hookCompleted(run: v2.HookRunSummary): void {
-    const toolCallId = hookCallId(run)
-    if (this.settled.has(toolCallId)) return
+    const toolCallId = this.hookRows.get(run.id) ?? `hook-${run.id}-${++this.hooks}`
+    this.hookRows.delete(run.id)
     const opened = this.open.delete(toolCallId)
     this.settled.add(toolCallId)
     const text = hookText(run)
     const data: ToolCall = {
-      ...hookCall(run),
+      ...hookCall(run, toolCallId),
       ...(run.status === 'failed' ? { status: 'failed' as const } : { status: 'completed' as const }),
       ...(text ? { content: [textContent(text)] } : {}),
     }
@@ -309,7 +356,7 @@ export class CodexTools {
       case 'commandExecution': {
         const output = item.aggregatedOutput
         return {
-          ...ended(item.status),
+          ...(noMatches(item) ? { status: 'completed' as const } : ended(item.status)),
           // Running text already streamed; the whole output replaces it.
           ...(output ? { content: [textContent(output)] } : {}),
         }
@@ -355,6 +402,9 @@ function ended(status: string): Pick<ToolCall, 'status' | 'outcome'> {
   }
 }
 
+/** The last line of a command left running when its turn ended. */
+export const BACKGROUND_NOTE = '\n[Still running in the background]\n'
+
 function textContent(text: string): ToolCallContent {
   return { type: 'content', content: { type: 'text', text } }
 }
@@ -395,6 +445,19 @@ function commandCall(item: ItemOf<'commandExecution'>): ToolCall {
     },
     ...(locations.length > 0 ? { locations } : {}),
   }
+}
+
+/** A search that found nothing: `rg` and `grep` exit 1 and print nothing.
+ * It did what it was asked, like any search with no hits. */
+function noMatches(item: ItemOf<'commandExecution'>): boolean {
+  const actions = item.commandActions ?? []
+  return (
+    item.status === 'failed' &&
+    item.exitCode === 1 &&
+    !item.aggregatedOutput?.trim() &&
+    actions.length > 0 &&
+    actions.every((action) => action.type === 'search')
+  )
 }
 
 const SHELL_WRAPPER = /^(?:\S*\/)?(?:bash|zsh|sh)\s+-l?c\s+([\s\S]+)$/
@@ -565,11 +628,9 @@ function webSearchInput(item: ItemOf<'webSearch'>): Record<string, unknown> {
 // ---------------------------------------------------------------------------
 // Hooks
 
-const hookCallId = (run: v2.HookRunSummary) => `hook-${run.id}`
-
-function hookCall(run: v2.HookRunSummary): ToolCall {
+function hookCall(run: v2.HookRunSummary, toolCallId: string): ToolCall {
   return {
-    toolCallId: hookCallId(run),
+    toolCallId,
     title: CODEX_TOOL_NAMES.hook,
     toolName: CODEX_TOOL_NAMES.hook,
     kind: 'other',

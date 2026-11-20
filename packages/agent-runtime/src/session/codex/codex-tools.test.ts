@@ -4,7 +4,7 @@ import type { v2 } from '@openmanager/codex-app-server-protocol'
 import { applyToolUpdate, type ToolCallState, type ToolCallUpdate } from '@openmanager/protocol'
 import { presentToolPart, type ToolPartData } from '@openmanager/shared/lib/tool-presenter'
 import { projectAgentEvent, ToolCallTracker } from '../../protocol/projectAgentEvent.js'
-import { CodexTools, diffLines, unwrapShell, type CodexToolOutput } from './codex-tools.js'
+import { BACKGROUND_NOTE, CodexTools, diffLines, unwrapShell, type CodexToolOutput } from './codex-tools.js'
 import { commandExecutionItem, fileChangeItem } from './testing/builders.js'
 
 type Item = v2.ThreadItem
@@ -214,6 +214,41 @@ describe('commandExecution', () => {
     expect(row('exec-3')).toBe('List nope')
   })
 
+  it('a search that found nothing completed', () => {
+    const { tools, state } = harness()
+    const search = (id: string) =>
+      command("/bin/bash -lc 'rg nope'", [{ type: 'search', command: 'rg nope', query: 'nope', path: null }], id)
+    runCommand(tools, search('exec-1'), { status: 'failed', exitCode: 1 })
+    expect(state('exec-1')).toMatchObject({ status: 'completed', input: { exitCode: 1 } })
+    // An error is still one: it says why.
+    runCommand(tools, search('exec-2'), { status: 'failed', exitCode: 2, output: 'rg: bad regex\n' })
+    expect(state('exec-2').status).toBe('failed')
+  })
+
+  it('a command still running in the background when the turn ends settles as completed', () => {
+    const { tools, state, tracker } = harness()
+    const item = { ...command("/bin/bash -lc 'npm run dev'", [{ type: 'unknown', command: 'npm run dev' }]), processId: '42' }
+    tools.itemStarted(item)
+    notify(tools, 'item/commandExecution/outputDelta', { itemId: item.id, delta: 'listening\n' })
+    // Another, with no process of its own, is the server's to close.
+    tools.itemStarted(command('/bin/bash -lc x', [{ type: 'unknown', command: 'x' }], 'exec-2'))
+    tools.finish(false)
+    expect(state('exec-1')).toMatchObject({ status: 'completed', outputBytes: 'listening\n'.length + BACKGROUND_NOTE.length })
+    expect(state('exec-1').input).not.toHaveProperty('exitCode')
+    expect(tracker.takeBody('exec-1')).toBeUndefined()
+    expect(state('exec-2').status).toBe('in_progress')
+    // Its late completion changes nothing.
+    tools.itemCompleted({ ...item, status: 'completed', aggregatedOutput: 'x', exitCode: 0, durationMs: 1 })
+    expect(state('exec-1').input).not.toHaveProperty('exitCode')
+  })
+
+  it('leaves a running command open when the turn was stopped', () => {
+    const { tools, state } = harness()
+    tools.itemStarted({ ...command('/bin/bash -lc x', [{ type: 'unknown', command: 'x' }]), processId: '42' })
+    tools.finish(true)
+    expect(state('exec-1').status).toBe('in_progress')
+  })
+
   it('a command doing more than one thing stays a command', () => {
     const { tools, state, row } = harness()
     runCommand(
@@ -336,6 +371,16 @@ describe('fileChange', () => {
       lineChanges: { added: 4, removed: 2 },
       locations: [{ path: '/work/new.ts' }, { path: '/work/a.ts' }],
     })
+  })
+
+  it('opens on a patchUpdated that comes before its item/started', () => {
+    const { tools, state, outputs } = harness()
+    notify(tools, 'item/fileChange/patchUpdated', { itemId: 'patch-1', changes: [add] })
+    expect(state('patch-1')).toMatchObject({ status: 'in_progress', toolName: 'fileChange', lineChanges: { added: 2, removed: 0 } })
+    tools.itemStarted(fileChangeItem([add], { id: 'patch-1' }))
+    tools.itemCompleted({ ...fileChangeItem([add, update], { id: 'patch-1' }), status: 'completed' })
+    expect(outputs.map((output) => output.event)).toEqual(['tool_call', 'tool_call_update'])
+    expect(state('patch-1')).toMatchObject({ status: 'completed', lineChanges: { added: 4, removed: 2 } })
   })
 
   it('reads as declined when the user refused it', () => {
@@ -536,12 +581,12 @@ describe('hooks', () => {
   it('a hook run is a row, from hook/started to hook/completed', () => {
     const { tools, state, tracker, row } = harness()
     expect(notify(tools, 'hook/started', { run: hookRun() })).toBe(true)
-    expect(state('hook-run-1')).toMatchObject({
+    expect(state('hook-run-1-1')).toMatchObject({
       toolName: 'hook',
       status: 'in_progress',
       input: { eventName: 'preToolUse', handlerType: 'command', source: 'project' },
     })
-    expect(row('hook-run-1')).toBe('Running hook preToolUse')
+    expect(row('hook-run-1-1')).toBe('Running hook preToolUse')
     notify(tools, 'hook/completed', {
       run: hookRun({
         status: 'blocked',
@@ -549,15 +594,27 @@ describe('hooks', () => {
         entries: [{ kind: 'feedback', text: 'use trash instead' }],
       }),
     })
-    expect(state('hook-run-1').status).toBe('completed')
-    expect(tracker.takeBody('hook-run-1')).toBe('Blocked\nrm is not allowed\nfeedback: use trash instead')
-    expect(row('hook-run-1')).toBe('Ran hook preToolUse')
+    expect(state('hook-run-1-1').status).toBe('completed')
+    expect(tracker.takeBody('hook-run-1-1')).toBe('Blocked\nrm is not allowed\nfeedback: use trash instead')
+    expect(row('hook-run-1-1')).toBe('Ran hook preToolUse')
+  })
+
+  it('each firing of a hook is its own row, settled by its own completion', () => {
+    const { tools, state, tracker } = harness()
+    notify(tools, 'hook/started', { run: hookRun() })
+    notify(tools, 'hook/completed', { run: hookRun({ status: 'completed' }) })
+    notify(tools, 'hook/started', { run: hookRun() })
+    notify(tools, 'hook/completed', { run: hookRun({ status: 'blocked', statusMessage: 'no' }) })
+    expect(state('hook-run-1-1').status).toBe('completed')
+    expect(tracker.takeBody('hook-run-1-1')).toBeUndefined()
+    expect(state('hook-run-1-2').status).toBe('completed')
+    expect(tracker.takeBody('hook-run-1-2')).toBe('Blocked\nno')
   })
 
   it('a failed hook fails, and one seen only completed opens and settles', () => {
     const { tools, state } = harness()
     notify(tools, 'hook/completed', { turnId: null, run: hookRun({ id: 'run-2', status: 'failed' }) })
-    expect(state('hook-run-2')).toMatchObject({ status: 'failed', startedAt: expect.any(String) })
+    expect(state('hook-run-2-1')).toMatchObject({ status: 'failed', startedAt: expect.any(String) })
   })
 
   it('the hookPrompt item is the text a hook added, once', () => {

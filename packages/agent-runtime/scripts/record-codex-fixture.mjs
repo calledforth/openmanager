@@ -200,7 +200,11 @@ const SCENARIOS = {
     description:
       'A command that waits on stdin, answered with write_stdin: item/commandExecution/terminalInteraction names the command it wrote to.',
     async run(s) {
-      const thread = await s.startThread({ approvalPolicy: 'never', sandbox: 'workspace-write' })
+      const thread = await s.startThread({
+        approvalPolicy: 'never',
+        sandbox: 'workspace-write',
+        config: { notify: [], 'tools.update_plan.enabled': true },
+      })
       await s.runTurn(
         thread,
         [

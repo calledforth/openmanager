@@ -98,9 +98,9 @@ What applies to our threads, by default:
 | Memories | Inherited | Same |
 | Apps connector (`codex_apps`) | Inherited | Same. Costs ~20 MB per thread (_probed_) |
 | `notify` program | **Off** | Openmanager sends its own notifications. The user's program would fire for every turn we run, doubling them |
-| `update_plan` tool | **On** | Off unless a client turns it on (_probed_: with the default config the model has no `update_plan` and no `turn/plan/updated` arrives). It is what keeps the todo checklist |
+| `update_plan` tool | **Forced on** | Off unless a client turns it on (_probed_: with the default config the model has no `update_plan` and no `turn/plan/updated` arrives). It is what keeps the todo checklist. The per-thread value overrides the user's own `tools.update_plan.enabled`, so a user who turned it off gets it back in openmanager's threads |
 
-Both are set per thread, by `config: { notify: [], "tools.update_plan.enabled": true }` on `thread/start` and `thread/resume`, never by editing the user's `config.toml`. _Probed_: with `notify` set globally, a thread without the override ran its program once per turn, and a thread with `notify: []` ran it zero times. Per-thread `config` also starts extra MCP servers (_probed_), so the mechanism is sound for any later default.
+Both are set per thread, by `config: { notify: [], "tools.update_plan.enabled": true }` on `thread/start` and `thread/resume`, never by editing the user's `config.toml`. `tools.update_plan.enabled` is not in the generated types (`config` is an untyped map). _Probed_: 0.160 and 0.170 both know the key, and both start the thread with a key they do not know, so an older or newer CLI that dropped it would lose the checklist, not the thread. _Probed_: with `notify` set globally, a thread without the override ran its program once per turn, and a thread with `notify: []` ran it zero times. Per-thread `config` also starts extra MCP servers (_probed_), so the mechanism is sound for any later default.
 
 ### Spellings
 
@@ -154,6 +154,10 @@ Each tool item of the session's own turn is a tool call (`CodexTools`, `session/
 - **`mcpToolCall`.** Arguments as input; `structuredContent` as the result when there is one, else the text content; images move into the reply under the call's id, like any tool's; an error fails it; `item/mcpToolCall/progress` streams as lines of output.
 - **Others.** `dynamicToolCall`, `webSearch` (search, open page, find in page, from its `action`), `sleep`, `imageView`. Hook runs (`hook/started`, `hook/completed`) are rows of their own, and a `hookPrompt` item is a row holding the text the hook added.
 - **Declined and cancelled.** Codex's `declined` status is the declined outcome. Codex has no status for an interrupted call: a call that fails while the turn is being stopped reads as cancelled, and one still open when the turn ends is closed as cancelled by the server.
+- **No matches.** A search command (`commandActions` all `search`) that exits 1 with no output found nothing, and completes, like any search with no hits.
+- **Background commands.** A unified-exec command (one with a `processId`) still open when its turn ends runs on in the background. It settles as completed, with `[Still running in the background]` as the last line of its output, rather than being closed as cancelled. Not when the turn was stopped.
+- **Hook rows.** Each `hook/started` opens a row of its own, and `hook/completed` settles the one its run opened: `HookRunSummary.id` may name the handler rather than one firing (not probed), and a row per handler would hide every firing after the first.
+- **Patch order.** A `patchUpdated` that arrives before its item's `item/started` opens the row.
 - **Plan.** `turn/plan/updated` is the todo checklist (`plan_update`), and a row (`update_plan`) where the model updated it, since Codex has no item for that call.
 - **Skipped on purpose.** `functionCallOutput` is the echo of a `toolOutput` a client hands Codex with `turn/start`; openmanager sends none. `item/fileChange/outputDelta` is deprecated and no longer sent. `plan` items and `item/plan/delta` belong to plan mode, which is not ported. `imageGeneration` is not translated yet.
 - A subagent's own items stay out of the parent's turn (see Subagents).

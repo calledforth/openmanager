@@ -254,8 +254,12 @@ export class CodexTurn {
    * so no echo by `turn/completed` means it never reached the conversation;
    * running it again is the safe side, losing it is not. (A turn closed
    * without `turn/completed` settles its unanswered steers first:
-   * `placeUnansweredSteers`.) */
+   * `placeUnansweredSteers`.)
+   *
+   * A command left running in the background settles (`CodexTools.finish`),
+   * unless the turn was being stopped. */
   finish(): void {
+    this.tools.finish(this.interruptRequested)
     for (const id of [...this.reasoning.keys()]) this.closeReasoning(id)
     this.messages.clear()
     this.deliverPlaced(true)
