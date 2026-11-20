@@ -17,7 +17,7 @@ export type CodexTurnOutput =
     }
 
 type OpenMessage = { phase: MessagePhase | null; streamed: boolean }
-type OpenReasoning = { started: boolean; streamed: boolean; parts: number }
+type OpenReasoning = { started: boolean; streamed: boolean; lastPart: number }
 
 /** One Codex turn, translated: assistant text and reasoning summaries.
  *
@@ -32,13 +32,21 @@ export class CodexTurn {
   turnId: string | undefined
   /** Set when an interrupt was asked for before the turn id was known. */
   interruptRequested = false
+  /** Set once `turn/interrupt` has been sent for this turn. */
+  interruptSent = false
   private readonly messages = new Map<string, OpenMessage>()
   private readonly reasoning = new Map<string, OpenReasoning>()
   private tokenUsage: v2.ThreadTokenUsage | undefined
   /** The last non-retrying error Codex reported for this turn. */
   error: v2.TurnError | undefined
 
-  constructor(private readonly emit: (output: CodexTurnOutput) => void) {}
+  constructor(
+    private readonly emit: (output: CodexTurnOutput) => void,
+    /** The thread's cumulative token counts before this turn, when known.
+     * Unknown for the first turn a process sees (a resumed thread's history
+     * counts too); the turn's first reading supplies it then. */
+    private baseline?: v2.TokenUsageBreakdown,
+  ) {}
 
   itemStarted(item: v2.ThreadItem): void {
     switch (item.type) {
@@ -63,14 +71,21 @@ export class CodexTurn {
   }
 
   reasoningPartAdded(params: v2.ReasoningSummaryPartAddedNotification): void {
-    const open = this.openReasoning(params.itemId)
-    // Each summary part is its own headline; keep them apart.
-    if (open.parts++ > 0) this.thought(params.itemId, '\n\n')
+    this.enterPart(params.itemId, this.openReasoning(params.itemId), params.summaryIndex)
+  }
+
+  /** Each summary part is its own headline; keep them apart. Keyed on the
+   * part's index, so a missing `summaryPartAdded` cannot run two together. */
+  private enterPart(itemId: string, open: OpenReasoning, index: number): void {
+    if (index <= open.lastPart) return
+    if (open.lastPart >= 0) this.thought(itemId, '\n\n')
+    open.lastPart = index
   }
 
   reasoningSummaryDelta(params: v2.ReasoningSummaryTextDeltaNotification): void {
     if (!params.delta) return
     const open = this.openReasoning(params.itemId)
+    this.enterPart(params.itemId, open, params.summaryIndex)
     open.streamed = true
     this.thought(params.itemId, params.delta)
   }
@@ -99,7 +114,16 @@ export class CodexTurn {
   }
 
   tokenUsageUpdated(usage: v2.ThreadTokenUsage): void {
+    // With no baseline yet, the thread's total before this reading's own
+    // request is where the turn began.
+    this.baseline ??= subtract(usage.total, usage.last)
     this.tokenUsage = usage
+  }
+
+  /** The thread's cumulative counts as of the last reading: the next turn's
+   * baseline. */
+  get threadTotals(): v2.TokenUsageBreakdown | undefined {
+    return this.tokenUsage?.total
   }
 
   /** Close whatever is still open: a turn can end (interrupted, failed) with
@@ -112,17 +136,21 @@ export class CodexTurn {
 
   /** This turn's token counts, for `prompt_completed`. */
   get usage(): TokenUsage | undefined {
-    const last = this.tokenUsage?.last
-    if (!last) return undefined
+    const usage = this.tokenUsage
+    if (!usage) return undefined
+    // Every model request the turn made (a tool loop makes several), not
+    // just the last: the thread's totals now, less where the turn began.
+    const turn = this.baseline ? subtract(usage.total, this.baseline) : usage.last
     return {
-      totalTokens: last.totalTokens,
-      inputTokens: last.inputTokens,
-      outputTokens: last.outputTokens,
-      thoughtTokens: last.reasoningOutputTokens,
-      cachedReadTokens: last.cachedInputTokens,
-      cachedWriteTokens: last.cacheWriteInputTokens,
+      totalTokens: turn.totalTokens,
+      inputTokens: turn.inputTokens,
+      outputTokens: turn.outputTokens,
+      thoughtTokens: turn.reasoningOutputTokens,
+      cachedReadTokens: turn.cachedInputTokens,
+      cachedWriteTokens: turn.cacheWriteInputTokens,
     }
   }
+
 
   /** How full the context window is, for the composer's meter. Absent when
    * Codex did not say how big the window is: a reading without a size is
@@ -136,7 +164,7 @@ export class CodexTurn {
   private openReasoning(id: string): OpenReasoning {
     let open = this.reasoning.get(id)
     if (!open) {
-      open = { started: true, streamed: false, parts: 0 }
+      open = { started: true, streamed: false, lastPart: -1 }
       this.reasoning.set(id, open)
       this.emit({ event: 'agent_thought_chunk', data: { messageId: id, phase: 'start' } })
     }
@@ -167,5 +195,17 @@ export class CodexTurn {
       event: 'agent_thought_chunk',
       data: { messageId: itemId, phase: 'delta', content: { type: 'text', text } },
     })
+  }
+}
+
+function subtract(a: v2.TokenUsageBreakdown, b: v2.TokenUsageBreakdown): v2.TokenUsageBreakdown {
+  const minus = (x: number, y: number) => Math.max(0, x - y)
+  return {
+    totalTokens: minus(a.totalTokens, b.totalTokens),
+    inputTokens: minus(a.inputTokens, b.inputTokens),
+    cachedInputTokens: minus(a.cachedInputTokens, b.cachedInputTokens),
+    cacheWriteInputTokens: minus(a.cacheWriteInputTokens, b.cacheWriteInputTokens),
+    outputTokens: minus(a.outputTokens, b.outputTokens),
+    reasoningOutputTokens: minus(a.reasoningOutputTokens, b.reasoningOutputTokens),
   }
 }

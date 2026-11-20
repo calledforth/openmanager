@@ -156,6 +156,10 @@ describe('isMissingThread', () => {
     expect(isMissingThread(new CodexRpcError(-32600, 'no rollout found for thread id x'))).toBe(true)
     expect(isMissingThread(new CodexRpcError(-32600, 'invalid session id: bad'))).toBe(true)
     expect(isMissingThread(new CodexRpcError(-32600, 'model not allowed'))).toBe(false)
+    // Only the not-found answers Codex was probed giving; anything broader
+    // would quietly replace the user's thread.
+    expect(isMissingThread(new CodexRpcError(-32600, 'thread not found'))).toBe(false)
+    expect(isMissingThread(new CodexRpcError(-32603, 'no rollout found for thread id x'))).toBe(false)
     expect(isMissingThread(new Error('no rollout found'))).toBe(false)
   })
 })
@@ -208,5 +212,19 @@ describe('CodexTurn item ids', () => {
       ['agent_thought_chunk', 'rs_2'],
       ['agent_thought_chunk', 'rs_2'],
     ])
+  })
+})
+
+describe('CodexTurn reasoning parts', () => {
+  // Codex may skip `summaryPartAdded`; the part index alone keeps headlines apart.
+  it('separates headlines by part index without summaryPartAdded', () => {
+    const { turn: t, out } = turn()
+    t.itemStarted(reasoning('r1'))
+    t.reasoningSummaryDelta({ ...ids, itemId: 'r1', delta: '**One**', summaryIndex: 0 })
+    t.reasoningSummaryDelta({ ...ids, itemId: 'r1', delta: '**Two**', summaryIndex: 1 })
+    const deltas = out
+      .filter((o) => o.event === 'agent_thought_chunk' && (o.data as { phase: string }).phase === 'delta')
+      .map((o) => (o.data as { content: { text: string } }).content.text)
+    expect(deltas).toEqual(['**One**', '\n\n', '**Two**'])
   })
 })

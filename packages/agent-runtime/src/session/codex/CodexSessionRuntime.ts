@@ -33,7 +33,7 @@ import { codexAccess, defaultCodexAccessPreset, type CodexAccess } from './codex
 import { codexModelListing, readCodexModels } from './codex-catalog.js'
 import { CodexTurn, type CodexTurnOutput } from './codex-turn.js'
 import type { CodexAppServerClient } from './CodexAppServerClient.js'
-import { CodexRpcError } from './CodexRpcPeer.js'
+import { CodexConnectionClosedError, CodexRpcError } from './CodexRpcPeer.js'
 import { startRealCodex, type CodexStarter } from './start.js'
 
 export const CODEX_PROMPT_CAPABILITIES: PromptCapabilities = { image: true }
@@ -104,6 +104,13 @@ export class CodexSessionRuntime implements ManagedSessionRuntime {
   /** Notifications for threads that are not ours (a subagent's), counted and
    * never applied to this one. Full handling is CAL-257. */
   private quarantined = 0
+  /** Turns this runtime already finished, including one it closed itself
+   * after an interrupt timed out. Anything Codex later says about them (its
+   * own late `turn/completed`) must never be taken for the next turn's. */
+  private readonly finishedTurnIds = new Set<string>()
+  /** The thread's cumulative token counts before the turn in flight, so a
+   * turn reports its own usage rather than the last model request's. */
+  private tokenBaseline: v2.TokenUsageBreakdown | undefined
 
   constructor(
     private readonly spec: SessionRuntimeSpec,
@@ -186,12 +193,18 @@ export class CodexSessionRuntime implements ManagedSessionRuntime {
     this.startPromise ??= this.bootstrap().then(
       (result) => {
         this.startResult = result
-        if (this.exitValue) throw new Error('codex app-server exited during startup')
+        // A stop that landed while the start was finishing wins: the phase
+        // must not go back from `stopping` to `ready`.
+        if (this.exitValue || this.stopRequest)
+          throw new Error('codex app-server exited during startup')
         this.phaseValue = 'ready'
         return result
       },
       async (error: unknown) => {
-        await this.stop({ reason: 'start_failed' })
+        // The process died on its own: that is a crash, and its exit says so.
+        // Calling `stop` here would relabel it as an expected shutdown.
+        if (error instanceof CodexConnectionClosedError && this.client) await this.exited
+        else await this.stop({ reason: 'start_failed' })
         throw error
       },
     )
@@ -206,16 +219,28 @@ export class CodexSessionRuntime implements ManagedSessionRuntime {
       timeouts: this.timeouts,
       log: this.deps.host.log,
     })
+    if (this.stopRequest || this.exitValue) {
+      // Stopped while the process was still starting (a session deleted or
+      // moved mid-start, app shutdown): nobody will ever stop this one if we
+      // don't, so it goes now.
+      await client.terminate(this.stopRequest ?? { reason: 'disposed' }).catch(() => undefined)
+      throw new Error('Codex session runtime was stopped while starting')
+    }
     this.client = client
     this.spawned = true
     void client.exited.then((exit) => this.settleExit(exit))
     client.onAny((message) => this.onNotification(message.method, message.params))
     this.installServerRequestHandlers(client)
 
-    const [opened, models] = await Promise.all([this.openThread(client), readCodexModels(client)])
-    this.models = codexModelListing(models)
+    const catalog = readCodexModels(client)
+    catalog.catch(() => undefined)
+    const opened = await this.openThread(client)
+    // Known as soon as Codex names it, so this thread's own notifications are
+    // never mistaken for another's while the catalog is still on its way.
     this.sessionIdValue = opened.threadId
+    this.models = codexModelListing(await catalog)
     this.modelId ??= opened.model
+    if (this.exitValue || this.stopRequest) throw new Error('Codex session runtime stopped while starting')
 
     const info = client.info
     const agentInfo = {
@@ -369,7 +394,7 @@ export class CodexSessionRuntime implements ManagedSessionRuntime {
       reject = rej
     })
     const active: ActiveTurn = {
-      turn: new CodexTurn((output) => this.emitTurnOutput(output)),
+      turn: new CodexTurn((output) => this.emitTurnOutput(output), this.tokenBaseline),
       resolve,
       reject,
       done,
@@ -381,22 +406,23 @@ export class CodexSessionRuntime implements ManagedSessionRuntime {
     return active
   }
 
+  /** Interrupt the turn in flight. Never starts a process to do it: with no
+   * live runtime or no turn there is nothing to stop. */
   async cancel(): Promise<void> {
-    if (this.exitValue) return
-    await this.ready()
+    if (this.exitValue || this.phaseValue !== 'ready') return
     this.deps.permissions.cancelThread(this.providerId, this.threadIdValue)
     this.deps.interactions.cancelThread(this.providerId, this.threadIdValue)
     const active = this.active
     if (!active) return
     active.turn.interruptRequested = true
-    if (active.turn.turnId) await this.sendInterrupt(active)
-    // A bounded wait for Codex's own `turn/completed`; an interrupted
-    // command's completion has been seen 17 s late, so the turn is closed
-    // here rather than held open for it.
+    // The grace starts now, not after `turn/interrupt` answers: Codex answers
+    // it only once the turn has actually stopped, so waiting for the answer
+    // first would add a whole control timeout on top of the grace.
     const grace = new Promise<'timeout'>((resolve) => {
       const timer = setTimeout(() => resolve('timeout'), this.timeouts.interruptGraceMs)
       timer.unref?.()
     })
+    if (active.turn.turnId) void this.sendInterrupt(active)
     const outcome = await Promise.race([active.done.then(() => 'done' as const, () => 'done' as const), grace])
     if (outcome === 'timeout' && !active.settled) {
       this.deps.host.log({
@@ -411,7 +437,10 @@ export class CodexSessionRuntime implements ManagedSessionRuntime {
 
   private async sendInterrupt(active: ActiveTurn): Promise<void> {
     const turnId = active.turn.turnId
-    if (!turnId || active.settled || !this.client) return
+    if (!turnId || active.settled || !this.client || active.turn.interruptSent) return
+    // Once per turn: a second cancel, or `turn/started` racing the
+    // `turn/start` answer, must not send it again.
+    active.turn.interruptSent = true
     try {
       await this.client.request(
         'turn/interrupt',
@@ -433,7 +462,10 @@ export class CodexSessionRuntime implements ManagedSessionRuntime {
   // Notifications
 
   private onNotification(method: string, params: unknown): void {
-    const record = (params ?? {}) as { threadId?: unknown }
+    const record = (params ?? {}) as { threadId?: unknown; turnId?: unknown; turn?: { id?: unknown } }
+    // Before Codex has named this session's thread there is nothing to apply
+    // a thread-scoped notification to, ours or not.
+    if (typeof record.threadId === 'string' && this.sessionIdValue === undefined) return
     if (typeof record.threadId === 'string' && record.threadId !== this.sessionIdValue) {
       // Another thread on this connection (a subagent). Never applied here.
       if (++this.quarantined === 1)
@@ -445,6 +477,13 @@ export class CodexSessionRuntime implements ManagedSessionRuntime {
         })
       return
     }
+    const namedTurn =
+      typeof record.turnId === 'string'
+        ? record.turnId
+        : typeof record.turn?.id === 'string'
+          ? record.turn.id
+          : undefined
+    if (namedTurn !== undefined && this.finishedTurnIds.has(namedTurn)) return
     const active = this.active
     switch (method) {
       case 'turn/started': {
@@ -547,6 +586,7 @@ export class CodexSessionRuntime implements ManagedSessionRuntime {
   private completeTurn(active: ActiveTurn, stopReason: string): void {
     if (active.settled) return
     active.settled = true
+    this.rememberFinished(active)
     active.turn.finish()
     if (this.active === active) this.active = undefined
     const usage = active.turn.usage
@@ -566,6 +606,7 @@ export class CodexSessionRuntime implements ManagedSessionRuntime {
   private failTurn(active: ActiveTurn, error: unknown): void {
     if (active.settled) return
     active.settled = true
+    this.rememberFinished(active)
     active.turn.finish()
     if (this.active === active) this.active = undefined
     const message = errorMessage(error)
@@ -576,6 +617,12 @@ export class CodexSessionRuntime implements ManagedSessionRuntime {
       }),
     )
     active.reject(error)
+  }
+
+  private rememberFinished(active: ActiveTurn): void {
+    if (active.turn.turnId) this.finishedTurnIds.add(active.turn.turnId)
+    const totals = active.turn.threadTotals
+    if (totals) this.tokenBaseline = totals
   }
 
   private emitTurnOutput(output: CodexTurnOutput): void {
@@ -758,10 +805,12 @@ export function codexInput(prompt: PromptInput): v2.UserInput[] {
 }
 
 /** `thread/resume` for a thread Codex does not have: `-32600` with "no
- * rollout found" (probed on 0.170), or an id it cannot parse. */
+ * rollout found" (probed on 0.170), or an id it cannot parse. Nothing
+ * broader: any other resume failure (a model, cwd or config problem) must
+ * fail the start rather than quietly replace the user's thread. */
 export function isMissingThread(error: unknown): boolean {
-  if (!(error instanceof CodexRpcError)) return false
-  return /no rollout found|invalid session id|thread not found|does not exist/i.test(error.message)
+  if (!(error instanceof CodexRpcError) || error.code !== -32600) return false
+  return /no rollout found|invalid session id/i.test(error.message)
 }
 
 function errorMessage(error: unknown): string {

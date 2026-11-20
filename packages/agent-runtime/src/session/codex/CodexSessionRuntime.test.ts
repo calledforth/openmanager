@@ -442,3 +442,133 @@ describe('CodexSessionRuntime against a recording', () => {
     runtime.dispose()
   })
 })
+
+describe('CodexSessionRuntime review regressions', () => {
+  // A session deleted or moved while its process starts must not leave a
+  // `codex app-server` running with nobody to stop it.
+  it('stops a process that finishes starting after the runtime was stopped', async () => {
+    const server = new FakeCodexAppServer()
+    server.respond('model/list', MODELS as never).serveThreads()
+    let release: () => void = () => undefined
+    const gate = new Promise<void>((resolve) => (release = resolve))
+    const events: BackendEvent[] = []
+    const runtime = new CodexSessionRuntime(
+      { threadId: 't', providerId: 'codex', cwd: '/work' },
+      {
+        config: codex,
+        host: { log: vi.fn() },
+        permissions: new PermissionBroker(),
+        interactions: new InteractionBroker(),
+        platform: 'linux',
+        start: async () => {
+          await gate
+          const client = new CodexAppServerClient(server, {
+            log: vi.fn(),
+            terminateGraceMs: 50,
+            requestTimeoutMs: 2_000,
+            exitDrainMs: 10,
+          })
+          await client.initialize({ clientVersion: 't' })
+          return client
+        },
+      },
+    )
+    runtime.events((event) => events.push(event))
+    const starting = runtime.start()
+    await runtime.stop({ reason: 'disposed' })
+    release()
+    await expect(starting).rejects.toThrow()
+    await vi.waitFor(() => expect(server.exited).toBe(true))
+    expect(names(events)).not.toContain('session_created')
+  })
+
+  // After a cancel closed a turn itself, that turn's late completion must not
+  // be taken for the next prompt's turn.
+  it('ignores a late completion of a turn it already closed', async () => {
+    const turns: FakeCodexTurn[] = []
+    const { server, runtime, events } = build({ onTurn: (t) => turns.push(t), interruptGraceMs: 10 })
+    server.respond('turn/interrupt', {} as never)
+    await runtime.start()
+    const first = runtime.prompt({ prompt: PROMPT })
+    await vi.waitFor(() => expect(turns).toHaveLength(1))
+    await runtime.cancel()
+    await first
+    let secondDone = false
+    const second = runtime.prompt({ prompt: PROMPT }).then(() => (secondDone = true))
+    await vi.waitFor(() => expect(turns).toHaveLength(2))
+    turns[0]!.interrupted() // the old turn's real completion, late
+    await new Promise((resolve) => setTimeout(resolve, 10))
+    expect(secondDone).toBe(false)
+    turns[1]!.agentMessage('second answer')
+    turns[1]!.completed()
+    await second
+    expect(texts(events)).toContain('second answer')
+    const identified = events.filter((e) => e.event === 'turn_identified')
+    expect(identified.map((e) => (e.data as { providerTurnId: string }).providerTurnId)).toEqual([
+      turns[0]!.id,
+      turns[1]!.id,
+    ])
+  })
+
+  // Codex answers `turn/interrupt` only once the turn has stopped; cancel
+  // must not wait on that answer before its own grace.
+  it('closes the turn after the grace even when the interrupt never answers', async () => {
+    let turn: FakeCodexTurn | undefined
+    const { server, runtime, events } = build({ onTurn: (t) => (turn = t), interruptGraceMs: 20 })
+    server.respond('turn/interrupt', () => new Promise(() => undefined) as never)
+    await runtime.start()
+    const prompt = runtime.prompt({ prompt: PROMPT })
+    await vi.waitFor(() => expect(turn).toBeDefined())
+    const started = Date.now()
+    await runtime.cancel()
+    await prompt
+    expect(Date.now() - started).toBeLessThan(1_000)
+    expect(events.find((e) => e.event === 'prompt_completed')).toMatchObject({
+      data: { stopReason: 'cancelled' },
+    })
+  })
+
+  it('sends turn/interrupt once however many times it is cancelled', async () => {
+    let turn: FakeCodexTurn | undefined
+    const { server, runtime } = build({ onTurn: (t) => (turn = t), interruptGraceMs: 20 })
+    server.respond('turn/interrupt', {} as never)
+    await runtime.start()
+    const prompt = runtime.prompt({ prompt: PROMPT })
+    await vi.waitFor(() => expect(turn).toBeDefined())
+    await Promise.all([runtime.cancel(), runtime.cancel()])
+    await prompt
+    expect(server.requests('turn/interrupt')).toHaveLength(1)
+  })
+
+  it('does not start a process just to cancel nothing', async () => {
+    const { server, runtime } = build()
+    await runtime.cancel()
+    expect(server.requests('thread/start')).toHaveLength(0)
+    expect(runtime.phase).toBe('created')
+  })
+
+  // Usage is the turn's, across every request a tool loop makes.
+  it('reports the whole turn’s tokens, not just the last request’s', async () => {
+    let turn: FakeCodexTurn | undefined
+    const { runtime, events } = build({ onTurn: (t) => (turn = t) })
+    await runtime.start()
+    const prompt = runtime.prompt({ prompt: PROMPT })
+    await vi.waitFor(() => expect(turn).toBeDefined())
+    // History before this process: 1000 tokens. Two requests this turn.
+    turn!.tokenUsage({ totalTokens: 100, inputTokens: 90, outputTokens: 10 }, {
+      totalTokens: 1100,
+      inputTokens: 1000,
+      outputTokens: 100,
+    })
+    turn!.tokenUsage({ totalTokens: 60, inputTokens: 50, outputTokens: 10 }, {
+      totalTokens: 1160,
+      inputTokens: 1050,
+      outputTokens: 110,
+    })
+    turn!.completed()
+    await prompt
+    expect(events.find((e) => e.event === 'prompt_completed')).toMatchObject({
+      data: { usage: { totalTokens: 160, inputTokens: 140, outputTokens: 20 } },
+    })
+  })
+})
