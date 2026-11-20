@@ -13,6 +13,7 @@ import {
 } from './AcpSessionRuntimeImpl.js'
 import { ClaudeProbeRuntime } from './claude/ClaudeProbeRuntime.js'
 import { CodexProbeRuntime } from './codex/CodexProbeRuntime.js'
+import { CodexSessionRuntime } from './codex/CodexSessionRuntime.js'
 import type { CodexStarter } from './codex/start.js'
 import { ClaudeSessionRuntime } from './claude/ClaudeSessionRuntime.js'
 import type { ClaudeSdk } from './claude/sdk.js'
@@ -91,10 +92,16 @@ export class ProviderSessionRuntimeFactory implements ManagedSessionRuntimeFacto
           ...(this.deps.timeouts ? { timeouts: this.deps.timeouts } : {}),
         })
       case 'codex':
-        // Turns arrive with CAL-253. Until then Codex is listed (its catalog
-        // and health come from the probe) but a session cannot start, and
-        // says so plainly rather than failing somewhere deeper.
-        throw new Error('Codex sessions are not available in this build yet.')
+        // One app-server per session, like Claude's one query per session:
+        // nothing shared to build or memoise.
+        return new CodexSessionRuntime(spec, {
+          config,
+          host: this.deps.host,
+          permissions: this.deps.permissions,
+          interactions: this.deps.interactions,
+          ...(this.deps.codexStart ? { start: this.deps.codexStart } : {}),
+          ...(this.deps.timeouts ? { timeouts: this.deps.timeouts } : {}),
+        })
     }
   }
 
