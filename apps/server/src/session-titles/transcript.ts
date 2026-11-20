@@ -1,5 +1,6 @@
 import type { DatabaseSync } from 'node:sqlite'
 import { ContentBlockSchema, type ContentBlock } from '@openmanager/protocol/node'
+import type { SessionHistoryMessage } from '@agentpack/runtime/node'
 import type { TitleContextMessage } from './context.ts'
 
 /**
@@ -76,4 +77,37 @@ export function titleMessage(
     text: text.join('\n'),
     ...(attachments.length > 0 ? { attachments } : {}),
   }
+}
+
+/** How many of a thread's newest messages a fresh provider session is handed
+ * when the provider lost its own copy (`HostDeps.sessionHistory`). The runtime
+ * bounds the text again; this bounds the read. */
+export const HANDOVER_RECENT_MESSAGES = 200
+
+/** A thread's newest messages, oldest first, with their ids and text: what a
+ * provider that lost the conversation is handed. Attachments are named, as
+ * the title model reads them. */
+export function readSessionHistory(
+  database: DatabaseSync,
+  threadId: string,
+): SessionHistoryMessage[] {
+  const recent = database
+    .prepare(RECENT_MESSAGES_SQL)
+    .all(threadId, HANDOVER_RECENT_MESSAGES) as Row[]
+  const parts = database.prepare(PARTS_SQL)
+  return recent
+    .sort((left, right) => left.ordinal - right.ordinal)
+    .map((row) => {
+      const message = titleMessage(
+        row.role,
+        (parts.all(row.message_id) as PartRow[]).flatMap((part) => {
+          const block = ContentBlockSchema.safeParse(JSON.parse(part.content_json))
+          return block.success ? [block.data] : []
+        }),
+      )
+      const attached = message.attachments?.length
+        ? `\n\n(Attached: ${message.attachments.join(', ')})`
+        : ''
+      return { messageId: row.message_id, role: row.role, text: `${message.text}${attached}` }
+    })
 }

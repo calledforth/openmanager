@@ -149,7 +149,7 @@ export type {
   OpencodeCatalogOptions,
   OpencodeModelLookupOptions,
 } from './providers/opencode-models.js'
-export type { HostDeps, HostLogEntry } from './host.js'
+export type { HostDeps, HostLogEntry, SessionHistoryMessage } from './host.js'
 export { projectAgentEvent, ToolCallTracker } from './protocol/projectAgentEvent.js'
 export type { ProtocolEventContext } from './protocol/projectAgentEvent.js'
 export { callAgentTool, claudeToolName, serveAgentToolsHttp } from './tools/agent-tools.js'

@@ -59,6 +59,7 @@ import { createDraftService } from './draft-service.ts'
 import { openComposerStore } from './composer-store.ts'
 import { openEnvironmentSettings } from './environment-settings.ts'
 import { createTitleGenerator } from './session-titles/generator.ts'
+import { readSessionHistory } from './session-titles/transcript.ts'
 import { createFilesystemService } from './filesystem.ts'
 import { createMessageSearch } from './message-search.ts'
 import { createGitHubReader, createGitHubToken } from './pull-requests/github.ts'
@@ -474,6 +475,9 @@ export async function startServer(config: ServerConfig) {
     // Read as each agent process starts: a project that turns sharing off,
     // or empties its scratchpad, stops being pointed out from the next one.
     ({ workspacePath }) => scratchpad.agentNote(workspacePath),
+    // Read only when a provider lost its own copy of a conversation (a Codex
+    // thread deleted outside openmanager), to hand it over.
+    ({ threadId }) => readSessionHistory(eventDatabase, threadId),
   )
   let observeProviderCatalog: (providerId: string, result: RuntimeProviderBootstrap) => void = () =>
     undefined
