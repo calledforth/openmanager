@@ -42,6 +42,11 @@ export interface ProbeRuntime {
   /** The account's plan limits, read in this throwaway process. Absent for a
    * provider with no way to report them. */
   readUsageLimits?(): Promise<UsageLimitsResult>
+  /** Put away a provider session the user deleted in openmanager, where the
+   * provider keeps the ones nobody uses any more (Codex: `thread/archive`),
+   * never a hard delete. Resolves when it is put away or was already gone.
+   * Absent for a provider that keeps no such place. */
+  archiveSession?(sessionId: string): Promise<void>
   /** Always call; the process leaks otherwise. */
   dispose(): Promise<void>
 }

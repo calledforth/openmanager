@@ -58,6 +58,7 @@ function build(
     server.serveThreads(options.onTurn)
   }
   const log = vi.fn()
+  const onSessionTitle = vi.fn()
   const start: CodexStarter = async () => {
     const client = new CodexAppServerClient(server, {
       log,
@@ -73,7 +74,7 @@ function build(
     { threadId: 'thread-1', providerId: 'codex', cwd: '/work', ...options.spec },
     {
       config: codex,
-      host: { log },
+      host: { log, onSessionTitle },
       permissions: new PermissionBroker(),
       interactions: new InteractionBroker(),
       start,
@@ -87,7 +88,7 @@ function build(
   runtime.events((event) => events.push(event))
   const exits: unknown[] = []
   runtime.onExit((exit) => exits.push(exit))
-  return { server, runtime, events, exits, log }
+  return { server, runtime, events, exits, log, onSessionTitle }
 }
 
 const names = (events: BackendEvent[]) => events.map((event) => event.event)
@@ -687,6 +688,156 @@ describe('CodexSessionRuntime interrupt and exit', () => {
     runtime.rebindThread('thread-2', 'ws')
     await runtime.start()
     expect(events.every((e) => e.threadId === 'thread-2' && e.workspaceId === 'ws')).toBe(true)
+  })
+})
+
+/** Answer `thread/name/set` the way Codex 0.170 does: `{}`, and the new name
+ * echoed back as `thread/name/updated` on the same connection, here before
+ * the answer or after it. */
+function echoNames(server: FakeCodexAppServer, order: 'before' | 'after' = 'after') {
+  const echo = (params: { threadId: string; name: string }) =>
+    server.notify('thread/name/updated', { threadId: params.threadId, threadName: params.name })
+  if (order === 'before')
+    server.respond('thread/name/set', (params) => {
+      echo(params)
+      return {}
+    })
+  else server.respond('thread/name/set', {}, { after: (request) => echo(request.params) })
+}
+
+const titles = (events: BackendEvent[]) =>
+  events
+    .filter((e) => e.event === 'session_info_update')
+    .map((e) => (e.data as { title: string }).title)
+
+const settle = () => new Promise((resolve) => setTimeout(resolve, 20))
+
+describe('CodexSessionRuntime name and archive', () => {
+  it('names a new thread with the session title once it is open, and drops the echo', async () => {
+    const { server, runtime, events, onSessionTitle } = build({
+      spec: { title: 'Fix the login bug' },
+    })
+    echoNames(server)
+    const { sessionId } = await runtime.start()
+
+    const request = await server.nextRequest('thread/name/set')
+    expect(request.params).toEqual({ threadId: sessionId, name: 'Fix the login bug' })
+    await settle()
+    expect(titles(events)).toEqual([])
+    expect(onSessionTitle).not.toHaveBeenCalled()
+  })
+
+  it('renames a live thread, and takes a name Codex gives it as the agent’s title', async () => {
+    const { server, runtime, events, onSessionTitle } = build()
+    echoNames(server, 'before')
+    const { sessionId } = await runtime.start()
+    expect(server.requests('thread/name/set')).toHaveLength(0)
+
+    await runtime.setTitle('Renamed by the user')
+    expect(server.requests('thread/name/set')[0]!.params).toEqual({
+      threadId: sessionId,
+      name: 'Renamed by the user',
+    })
+    // The same title again is not sent again.
+    await runtime.setTitle('Renamed by the user')
+    expect(server.requests('thread/name/set')).toHaveLength(1)
+
+    server.notify('thread/name/updated', { threadId: sessionId!, threadName: 'Codex’s own name' })
+    await vi.waitFor(() => expect(titles(events)).toEqual(['Codex’s own name']))
+    expect(onSessionTitle).toHaveBeenCalledWith({
+      threadId: 'thread-1',
+      workspaceId: undefined,
+      title: 'Codex’s own name',
+    })
+  })
+
+  it('names the thread with a title set before it was open', async () => {
+    const { server, runtime } = build()
+    echoNames(server)
+    await runtime.setTitle('Set while starting')
+    expect(server.requests('thread/name/set')).toHaveLength(0)
+    await runtime.start()
+    const request = await server.nextRequest('thread/name/set')
+    expect(request.params.name).toBe('Set while starting')
+  })
+
+  it('never fails over a name Codex refuses', async () => {
+    const { server, runtime, events, log } = build()
+    server.fail('thread/name/set', -32600, 'no rollout found for thread id x')
+    await runtime.start()
+    await expect(runtime.setTitle('A title')).resolves.toBeUndefined()
+    expect(log).toHaveBeenCalledWith(expect.objectContaining({ level: 'warn', scope: 'codex' }))
+    expect(titles(events)).toEqual([])
+  })
+
+  it('on resume, leaves a thread that has the title alone and renames one that does not', async () => {
+    // One app-server per runtime, as in production.
+    const resuming = () => {
+      const server = new FakeCodexAppServer()
+      server.respond('model/list', MODELS as never)
+      echoNames(server)
+      const thread = server.thread({ id: 'stored', name: 'Same title' })
+      server.respond('thread/resume', thread.startResponse() as never)
+      return server
+    }
+    const sameServer = resuming()
+    const same = build({ server: sameServer, spec: { sessionId: 'stored', title: 'Same title' } })
+    await same.runtime.start()
+    await settle()
+    expect(sameServer.requests('thread/name/set')).toHaveLength(0)
+    expect(titles(same.events)).toEqual([])
+
+    const otherServer = resuming()
+    const other = build({ server: otherServer, spec: { sessionId: 'stored', title: 'Ours wins' } })
+    await other.runtime.start()
+    const request = await otherServer.nextRequest('thread/name/set')
+    expect(request.params).toEqual({ threadId: 'stored', name: 'Ours wins' })
+    await settle()
+    expect(titles(other.events)).toEqual([])
+  })
+
+  it('on resume without a title of ours, reports the name the thread has as the agent’s title', async () => {
+    const server = new FakeCodexAppServer()
+    server.respond('model/list', MODELS as never)
+    const thread = server.thread({ id: 'stored', name: 'Named in Codex' })
+    server.respond('thread/resume', thread.startResponse() as never)
+    const { runtime, events } = build({ server, spec: { sessionId: 'stored' } })
+    await runtime.start()
+    expect(titles(events)).toEqual(['Named in Codex'])
+    expect(server.requests('thread/name/set')).toHaveLength(0)
+  })
+
+  it('unarchives a thread archived outside openmanager, then resumes it', async () => {
+    const server = new FakeCodexAppServer()
+    server.respond('model/list', MODELS as never)
+    const thread = server.thread({ id: 'stored' })
+    server.respond('thread/resume', thread.startResponse() as never)
+    server.fail(
+      'thread/resume',
+      -32600,
+      'session stored is archived. Run `codex unarchive stored` to unarchive it first.',
+      { times: 1 },
+    )
+    server.respond('thread/unarchive', { thread: thread.thread })
+    const { runtime } = build({ server, spec: { sessionId: 'stored' } })
+
+    await expect(runtime.start()).resolves.toMatchObject({ sessionId: 'stored', state: 'loaded' })
+    expect(server.requests('thread/unarchive')[0]!.params).toEqual({ threadId: 'stored' })
+    expect(server.requests('thread/resume')).toHaveLength(2)
+    expect(server.requests('thread/start')).toHaveLength(0)
+  })
+
+  it('archives its own thread, and takes a thread Codex no longer has as archived', async () => {
+    const { server, runtime } = build()
+    server.respond('thread/archive', {})
+    const { sessionId } = await runtime.start()
+    await runtime.archive()
+    expect(server.requests('thread/archive')[0]!.params).toEqual({ threadId: sessionId })
+
+    server.fail('thread/archive', -32600, `no rollout found for thread id ${sessionId}`)
+    await expect(runtime.archive()).resolves.toBeUndefined()
+    server.fail('thread/archive', -32600, `thread ${sessionId} already has an active writer`)
+    await expect(runtime.archive()).rejects.toThrow(/active writer/)
   })
 })
 

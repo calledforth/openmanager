@@ -47,6 +47,12 @@ export type SessionRuntimeSpec = {
    * `instructions`, or, for an agent with no such place, a block ahead of the
    * first message of a new session that the transcript never shows. */
   instructions?: string
+  /** The session's title, when the user or the title model wrote it. A
+   * provider that keeps names of its own (Codex) gives it to the session once
+   * it is open, so the session is recognisable in the provider's own history;
+   * the rest ignore it. A later change reaches a live runtime through
+   * `setTitle`. */
+  title?: string
 }
 
 /** The per-session runtime: one child process, one session, one applied state
@@ -129,6 +135,17 @@ export interface SessionRuntime {
    * unlike a health probe, which writes config on Cursor and therefore always
    * gets a throwaway process (invariant 9). */
   listSessions(): Promise<ProviderSessionInfo[]>
+
+  /** Give the session the title openmanager now shows for it. Best-effort:
+   * resolves whether or not the provider took it. Before the session is open
+   * it is remembered and given once it is. Absent on providers with no name
+   * of their own for a session. */
+  setTitle?(title: string): Promise<void>
+  /** The user deleted the session: put it where the provider keeps sessions
+   * nobody uses any more (`ProbeRuntime.archiveSession`), on this runtime's
+   * own connection, since the provider may refuse it to any other while this
+   * one holds the session. Absent with `ProbeRuntime.archiveSession`. */
+  archive?(): Promise<void>
 
   setModel(modelId: string): Promise<void>
   setMode(modeId: string): Promise<void>

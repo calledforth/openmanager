@@ -53,8 +53,10 @@ export const codex: CodexProviderConfig = {
     supportsAuthentication: false,
     // No ACP side-channel: everything Codex says is in its own protocol.
     supportsExtensions: false,
-    // Openmanager owns the session list. Deleting archives the Codex thread
-    // (CAL-271), which is not what `canDeleteSession` advertises.
+    // Openmanager owns the session list, and deleting a session is always
+    // openmanager's own. `canDeleteSession` advertises deleting from the
+    // provider's list, which Codex never does: a deleted session's thread is
+    // archived instead, through `AgentRuntime.retireSession`.
     canDeleteSession: false,
     canListSessions: false,
   },

@@ -28,6 +28,7 @@ import {
 import type { ExecFile } from '../providers/opencode-models.js'
 import type { AcpConnectionFactory } from '../session/AcpConnection.js'
 import type { ClaudeSdk } from '../session/claude/sdk.js'
+import type { CodexStarter } from '../session/codex/start.js'
 import type { ProbeResult, ProbeRuntime, ProbeRuntimeFactory } from '../session/ProbeRuntime.js'
 import {
   ProviderProbeRuntimeFactory,
@@ -99,6 +100,10 @@ export type RuntimeSessionArgs = RuntimeRoute & {
    * cache on every `ensureSession`, which costs zero RPCs when nothing has
    * changed — that is what replaces the per-message preamble. */
   desiredConfig?: DesiredSessionConfig
+  /** The session's title when the user or the title model wrote it
+   * (`SessionRuntimeSpec.title`). Read when a runtime starts; a change after
+   * that goes through `setSessionTitle`. */
+  title?: string
 }
 
 /** `SessionResumeRecord` minus the fields the map key and the caller's args
@@ -165,6 +170,9 @@ export type AgentRuntimeOptions = {
   /** The same seam for the Claude arm, which spawns its CLI through the SDK
    * rather than through `connections`. Tests inject `FakeClaudeSdk`. */
   claudeSdk?: ClaudeSdk
+  /** The Codex arm's seam: starts one app-server. Tests inject a starter
+   * wired to `FakeCodexAppServer`. */
+  codexStart?: CodexStarter
   /** The third seam: how a provider asked through its own CLI, rather than
    * over a connection, is run. Defaults to `node:child_process`. */
   execFile?: ExecFile
@@ -291,6 +299,7 @@ export class AgentRuntime {
         interactions: this.interactions,
         connections: () => this.acpConnections(),
         ...(options.claudeSdk ? { claudeSdk: options.claudeSdk } : {}),
+        ...(options.codexStart ? { codexStart: options.codexStart } : {}),
         ...(options.timeouts ? { timeouts: options.timeouts } : {}),
       }),
       onEvent: (providerId, event) => this.forward(providerId, event),
@@ -312,6 +321,7 @@ export class AgentRuntime {
       host,
       connections: () => this.acpConnections(),
       ...(options.claudeSdk ? { claudeSdk: options.claudeSdk } : {}),
+      ...(options.codexStart ? { codexStart: options.codexStart } : {}),
       ...(options.timeouts ? { timeouts: options.timeouts } : {}),
       ...(options.execFile ? { execFile: options.execFile } : {}),
     })
@@ -352,6 +362,9 @@ export class AgentRuntime {
           // Optional on the interface: pass it through only where it exists,
           // or every provider would read as able to report limits.
           ...(probe.readUsageLimits ? { readUsageLimits: () => probe.readUsageLimits!() } : {}),
+          ...(probe.archiveSession
+            ? { archiveSession: (sessionId: string) => probe.archiveSession!(sessionId) }
+            : {}),
           dispose: () => probe.dispose(),
         }
       },
@@ -936,6 +949,7 @@ export class AgentRuntime {
         resumeCursor: args.resumeCursor,
         ...(desired ? { desiredConfig: desired } : {}),
         ...(instructions ? { instructions } : {}),
+        ...(args.title ? { title: args.title } : {}),
       })
       // Spawn, handshake, auth and session bootstrap all just succeeded
       // against this CLI. That is a stronger and more recent observation than
@@ -1196,6 +1210,65 @@ export class AgentRuntime {
     if (entry && entry.providerId === args.providerId)
       await this.registry.remove(args.threadId, { reason: 'session_deleted' })
     this.forgetThread(args.threadId)
+  }
+
+  /** The title openmanager now shows for a thread's session, to a provider
+   * that keeps names of its own (Codex: `thread/name/set`).
+   *
+   * Never respawns, like `cancel`: a thread with no live process gets the
+   * title when one next starts (`RuntimeSessionArgs.title`), so a rename
+   * never costs a process. Best-effort; a provider that refuses is logged
+   * by its runtime. */
+  async setSessionTitle(args: {
+    providerId: ProviderId
+    threadId: string
+    title: string
+  }): Promise<void> {
+    const entry = this.registry.get(args.threadId)
+    if (!entry || entry.providerId !== args.providerId || !isRuntimeAlive(entry.runtime.phase))
+      return
+    await entry.runtime.setTitle?.(args.title)
+  }
+
+  /** The user deleted the session: put its provider session away where the
+   * provider keeps ones nobody uses (Codex archives its thread, never
+   * deleting it), then stop the thread's process as `closeThread` does.
+   *
+   * A live runtime archives on its own connection, since Codex refuses the
+   * thread to any other process while one holds it; with none, a throwaway
+   * probe does. A provider with neither (every one but Codex) is only
+   * closed. A failed archive is logged and the thread is closed anyway: the
+   * session is gone from openmanager whatever the provider says. */
+  async retireSession(args: RuntimeRoute & { sessionId: string }): Promise<void> {
+    const entry = this.registry.get(args.threadId)
+    const live =
+      entry && entry.providerId === args.providerId && isRuntimeAlive(entry.runtime.phase)
+        ? entry.runtime
+        : undefined
+    try {
+      if (live) await live.archive?.()
+      else await this.archiveInProbe(args)
+    } catch (error) {
+      this.host.log({
+        scope: 'agent-runtime',
+        level: 'warn',
+        message: 'Could not archive the deleted session with its provider',
+        data: {
+          providerId: args.providerId,
+          error: error instanceof Error ? error.message : String(error),
+        },
+      })
+    }
+    await this.closeThread(args)
+  }
+
+  private async archiveInProbe(args: RuntimeRoute & { sessionId: string }): Promise<void> {
+    const probe = this.probeRuntime(args, false)
+    try {
+      await probe.archiveSession?.(args.sessionId)
+    } finally {
+      await probe.dispose()
+    }
   }
 
   // Permissions and raw extension requests live entirely in the app-wide

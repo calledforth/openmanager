@@ -59,7 +59,7 @@ export const CODEX_SUBAGENT_STOP_MS = 10_000
 
 export type CodexSessionRuntimeDeps = {
   config: CodexProviderConfig
-  host: Pick<HostDeps, 'log'>
+  host: Pick<HostDeps, 'log' | 'onSessionTitle'>
   permissions: PermissionBroker
   interactions: InteractionBroker
   /** Starts the app-server. The real binary when absent. */
@@ -92,10 +92,11 @@ type ActiveTurn = {
  * Covered here: start and resume, prompts that resolve on the turn's own
  * `turn/completed`, assistant text and reasoning summaries, usage, steer,
  * interrupt, subagents (child threads on this connection, kept apart by
- * `CodexSubagents` and stopped with the parent), and exit. Tool items,
- * approvals and questions are later changes; until approvals exist, every
- * approval Codex asks for is declined, so nothing runs outside the sandbox
- * without a person having said yes. */
+ * `CodexSubagents` and stopped with the parent), exit, and the thread's name
+ * and archive (docs/decisions/codex-app-server.md, "Threads: archive on
+ * delete, no import"). Tool items, approvals and questions are later changes;
+ * until approvals exist, every approval Codex asks for is declined, so nothing
+ * runs outside the sandbox without a person having said yes. */
 export class CodexSessionRuntime implements ManagedSessionRuntime {
   readonly providerId: ProviderId
   readonly cwd: string
@@ -146,6 +147,16 @@ export class CodexSessionRuntime implements ManagedSessionRuntime {
   /** Steers waiting for Codex to name their turn, not sent yet, by
    * `steerId`. One taken back meanwhile is marked and never sent. */
   private readonly preparingSteers = new Map<string, { withdrawn: boolean }>()
+  /** The title openmanager shows for the session, when the user or the title
+   * model wrote it: what the thread's name should be. */
+  private title: string | undefined
+  /** The thread's name as Codex last said it, or as we last set it. */
+  private codexName: string | undefined
+  /** Names we set whose `thread/name/updated` has not come back yet. Codex
+   * echoes every `thread/name/set` to the connection that sent it (_probed_,
+   * 0.170), and our own title coming back is not the agent naming the
+   * session. */
+  private readonly nameEchoes = new Map<string, number>()
 
   constructor(
     private readonly spec: SessionRuntimeSpec,
@@ -155,6 +166,7 @@ export class CodexSessionRuntime implements ManagedSessionRuntime {
     this.cwd = spec.cwd
     this.threadIdValue = spec.threadId
     this.workspaceIdValue = spec.workspaceId
+    this.title = spec.title?.trim() || undefined
     this.timeouts = { ...DEFAULT_RUNTIME_TIMEOUTS, ...deps.timeouts }
     this.access = codexAccess(defaultCodexAccessPreset(deps.platform))
     this.exited = new Promise((resolve) => {
@@ -277,6 +289,7 @@ export class CodexSessionRuntime implements ManagedSessionRuntime {
     this.sessionIdValue = opened.threadId
     this.models = codexModelListing(await catalog)
     this.modelId ??= opened.model
+    this.codexName = opened.name
     if (this.exitValue || this.stopRequest) throw new Error('Codex session runtime stopped while starting')
 
     const info = client.info
@@ -309,15 +322,23 @@ export class CodexSessionRuntime implements ManagedSessionRuntime {
         { models: { ...this.models, ...(opened.model ? { currentModelId: opened.model } : {}) } },
       ),
     )
+    // Our title outranks a name the thread got elsewhere (a rename in Codex
+    // while no runtime held it); without one, that name is the agent's title
+    // for the session. Never held up for: a name is bookkeeping.
+    if (this.title) void this.giveName()
+    else if (opened.name) this.reportName(opened.name)
     return { sessionId: opened.threadId, state: opened.state }
   }
 
   /** `thread/resume` for a stored thread, `thread/start` otherwise. A thread
    * Codex no longer has falls back to a fresh one, unless the caller requires
    * the old one (`load: 'require'`). */
-  private async openThread(
-    client: CodexAppServerClient,
-  ): Promise<{ threadId: string; model: string | undefined; state: 'created' | 'loaded' }> {
+  private async openThread(client: CodexAppServerClient): Promise<{
+    threadId: string
+    model: string | undefined
+    name: string | undefined
+    state: 'created' | 'loaded'
+  }> {
     const settings = {
       cwd: this.cwd,
       approvalPolicy: this.access.approvalPolicy,
@@ -329,11 +350,7 @@ export class CodexSessionRuntime implements ManagedSessionRuntime {
     const existing = this.spec.sessionId
     if (existing) {
       try {
-        const resumed = await client.request(
-          'thread/resume',
-          { ...settings, threadId: existing, excludeTurns: true },
-          { timeoutMs: this.timeouts.loadSessionMs },
-        )
+        const resumed = await this.resumeThread(client, { ...settings, threadId: existing })
         // A subagent's thread is its parent's, never a session of its own:
         // treated as one this session does not have.
         if (isCodexSubagentThread(resumed.thread)) {
@@ -341,7 +358,12 @@ export class CodexSessionRuntime implements ManagedSessionRuntime {
           await this.unsubscribe(client, resumed.thread.id)
           throw new CodexSubagentThreadError(existing)
         }
-        return { threadId: resumed.thread.id, model: resumed.model, state: 'loaded' }
+        return {
+          threadId: resumed.thread.id,
+          model: resumed.model,
+          name: resumed.thread.name?.trim() || undefined,
+          state: 'loaded',
+        }
       } catch (error) {
         if (!isMissingThread(error) && !(error instanceof CodexSubagentThreadError)) throw error
         if (this.spec.load === 'require') throw new SessionUnknownError(this.providerId, existing)
@@ -364,7 +386,44 @@ export class CodexSessionRuntime implements ManagedSessionRuntime {
       },
       { timeoutMs: this.timeouts.newSessionMs },
     )
-    return { threadId: started.thread.id, model: started.model, state: 'created' }
+    return {
+      threadId: started.thread.id,
+      model: started.model,
+      name: started.thread.name?.trim() || undefined,
+      state: 'created',
+    }
+  }
+
+  /** `thread/resume`, through an archive made outside openmanager: Codex
+   * refuses an archived thread (`-32600`, "is archived", _probed_), so it is
+   * unarchived and resumed again, once. */
+  private async resumeThread(
+    client: CodexAppServerClient,
+    params: Omit<v2.ThreadResumeParams, 'excludeTurns'>,
+  ): Promise<v2.ThreadResumeResponse> {
+    const resume = () =>
+      client.request(
+        'thread/resume',
+        { ...params, excludeTurns: true },
+        { timeoutMs: this.timeouts.loadSessionMs },
+      )
+    try {
+      return await resume()
+    } catch (error) {
+      if (!isArchivedThread(error)) throw error
+      this.deps.host.log({
+        scope: 'codex',
+        level: 'info',
+        message: 'Codex had archived this thread; unarchiving it to resume',
+        data: { threadId: params.threadId },
+      })
+      await client.request(
+        'thread/unarchive',
+        { threadId: params.threadId },
+        { timeoutMs: this.timeouts.controlRequestMs },
+      )
+      return resume()
+    }
   }
 
   private async unsubscribe(client: CodexAppServerClient, threadId: string): Promise<void> {
@@ -761,6 +820,9 @@ export class CodexSessionRuntime implements ManagedSessionRuntime {
     if (namedTurn !== undefined && this.finishedTurnIds.has(namedTurn)) return
     const active = this.active
     switch (method) {
+      case 'thread/name/updated':
+        this.nameUpdated((params as v2.ThreadNameUpdatedNotification).threadName)
+        return
       case 'turn/started': {
         const { turn } = params as v2.TurnStartedNotification
         if (active && !active.turn.turnId) {
@@ -928,6 +990,96 @@ export class CodexSessionRuntime implements ManagedSessionRuntime {
   private emitSubagentOutput(output: CodexSubagentOutput): void {
     const category = output.event === 'subtask_update' ? 'session' : 'tool'
     this.emit(routeEvent(this.route(), this.sessionIdValue, category, output.event, output.data))
+  }
+
+  // ---------------------------------------------------------------------------
+  // Name and archive
+
+  /** The title openmanager now shows, as the thread's name. Before the
+   * thread is open it is only remembered; `bootstrap` gives it. */
+  async setTitle(title: string): Promise<void> {
+    const next = title.trim()
+    if (!next || this.exitValue) return
+    this.title = next
+    if (this.sessionIdValue) await this.giveName()
+  }
+
+  /** `thread/name/set` with the current title, unless the thread already has
+   * it. Best-effort: a name Codex refuses is logged, never thrown. */
+  private async giveName(): Promise<void> {
+    const name = this.title
+    const client = this.client
+    const threadId = this.sessionIdValue
+    if (!name || !client || !threadId || name === this.codexName || this.exitValue) return
+    this.nameEchoes.set(name, (this.nameEchoes.get(name) ?? 0) + 1)
+    try {
+      await client.request(
+        'thread/name/set',
+        { threadId, name },
+        { timeoutMs: this.timeouts.controlRequestMs },
+      )
+      this.codexName = name
+    } catch (error) {
+      this.takeEcho(name)
+      this.deps.host.log({
+        scope: 'codex',
+        level: 'warn',
+        message: 'Codex did not take the session title as the thread name',
+        data: { threadId, error: errorMessage(error) },
+      })
+    }
+  }
+
+  /** `thread/name/updated`: our own name coming back, or the thread named
+   * by someone else, which is the agent's title for the session. Openmanager
+   * weighs it against the titles it has (`shouldReplaceSessionTitle`). */
+  private nameUpdated(threadName: string | undefined): void {
+    const name = threadName?.trim()
+    if (!name) return
+    this.codexName = name
+    if (this.takeEcho(name)) return
+    this.reportName(name)
+  }
+
+  private takeEcho(name: string): boolean {
+    const pending = this.nameEchoes.get(name)
+    if (!pending) return false
+    if (pending > 1) this.nameEchoes.set(name, pending - 1)
+    else this.nameEchoes.delete(name)
+    return true
+  }
+
+  private reportName(name: string): void {
+    this.emit(
+      routeEvent(this.route(), this.sessionIdValue, 'session', 'session_info_update', {
+        title: name,
+        updatedAt: null,
+      }),
+    )
+    this.deps.host.onSessionTitle?.({
+      threadId: this.threadIdValue,
+      workspaceId: this.workspaceIdValue,
+      title: name,
+    })
+  }
+
+  /** `thread/archive` for the session the user deleted, on this connection:
+   * Codex refuses it to any other process while this one holds the thread
+   * ("already has an active writer", _probed_). A thread Codex no longer has
+   * is already out of the way. Never a hard delete, so the thread can still
+   * be recovered in Codex. */
+  async archive(): Promise<void> {
+    await this.ready()
+    const threadId = this.sessionIdValue!
+    try {
+      await this.client!.request(
+        'thread/archive',
+        { threadId },
+        { timeoutMs: this.timeouts.controlRequestMs },
+      )
+    } catch (error) {
+      if (!isMissingThread(error)) throw error
+    }
   }
 
   // ---------------------------------------------------------------------------
@@ -1159,6 +1311,13 @@ export function codexInput(prompt: PromptInput): v2.UserInput[] {
 export function isMissingThread(error: unknown): boolean {
   if (!(error instanceof CodexRpcError) || error.code !== -32600) return false
   return /no rollout found|invalid session id/i.test(error.message)
+}
+
+/** `thread/resume` for a thread archived outside openmanager: `-32600`
+ * with "session … is archived. Run `codex unarchive …`" (_probed_ on 0.170). */
+export function isArchivedThread(error: unknown): boolean {
+  if (!(error instanceof CodexRpcError)) return false
+  return /is archived/i.test(error.message)
 }
 
 function errorMessage(error: unknown): string {

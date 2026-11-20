@@ -1,4 +1,5 @@
 import { createHash, randomUUID } from 'node:crypto'
+import { homedir } from 'node:os'
 import { basename } from 'node:path'
 import type { DatabaseSync, StatementSync } from 'node:sqlite'
 import {
@@ -58,6 +59,7 @@ import {
   type AgentRuntime,
   type HostDeps,
   type ProtocolEventContext,
+  type RuntimeRoute,
   type RuntimeSessionArgs,
 } from '@agentpack/runtime/node'
 import {
@@ -329,6 +331,8 @@ type InteractionRuntime = Pick<AgentRuntime, 'ensureSession' | 'prompt' | 'cance
       | 'stopBackgroundTasks'
       | 'stopSubtask'
       | 'closeThread'
+      | 'retireSession'
+      | 'setSessionTitle'
       | 'steer'
       | 'withdrawSteer'
     >
@@ -767,17 +771,51 @@ export function createThreadService(
   const loadOnly = (record: ThreadRecord) =>
     !!record.session.parentSessionId && record.subagent?.origin !== 'openmanager'
 
-  const route = (record: ThreadRecord, sessionId?: string): RuntimeSessionArgs => ({
-    providerId: record.providerId,
-    threadId: record.thread.threadId,
-    workspaceId: record.session.workspaceId,
-    cwd: record.cwd,
-    ...(sessionId ? { sessionId } : {}),
-    // A sub-agent's transcript lives in the agent: a fresh session in its
-    // place would lose it, so the runtime may only load it, on every start and
-    // every respawn (docs/sync-foundations.md §4.7.4 (e)).
-    ...(loadOnly(record) || record.moved ? { load: 'require' as const } : {}),
-  })
+  /**
+   * The title a provider that names its sessions (Codex) is given: one the
+   * user or the title model wrote. A fallback is only the first prompt, which
+   * the provider already shows, and a provider's own title is its to keep. A
+   * provider's subagent is named by its parent's agent.
+   */
+  const providerTitle = (record: ThreadRecord): string | undefined =>
+    (record.titleSource === 'user' || record.titleSource === 'generated') && !loadOnly(record)
+      ? record.session.title?.trim() || undefined
+      : undefined
+
+  const route = (record: ThreadRecord, sessionId?: string): RuntimeSessionArgs => {
+    const title = providerTitle(record)
+    return {
+      providerId: record.providerId,
+      threadId: record.thread.threadId,
+      workspaceId: record.session.workspaceId,
+      cwd: record.cwd,
+      ...(sessionId ? { sessionId } : {}),
+      // A sub-agent's transcript lives in the agent: a fresh session in its
+      // place would lose it, so the runtime may only load it, on every start and
+      // every respawn (docs/sync-foundations.md §4.7.4 (e)).
+      ...(loadOnly(record) || record.moved ? { load: 'require' as const } : {}),
+      // Given to the provider when its process starts; a change after that
+      // goes through `sendTitle`.
+      ...(title ? { title } : {}),
+    }
+  }
+
+  /**
+   * A title the user or the title model just wrote, to the session's live
+   * runtimes. One with no live process gets it from `route` when it next
+   * starts, so a rename never starts a process. Best-effort: a provider that
+   * refuses it never fails the rename.
+   */
+  const sendTitle = (sessionId: string) => {
+    for (const item of threads.values()) {
+      if (item.session.sessionId !== sessionId) continue
+      const title = providerTitle(item)
+      if (!title) continue
+      void runtime
+        .setSessionTitle?.({ providerId: item.providerId, threadId: item.thread.threadId, title })
+        .catch(() => undefined)
+    }
+  }
 
   /**
    * The provider session of a child its parent's runtime fills: none. Every
@@ -1384,6 +1422,59 @@ export function createThreadService(
 
   /** How to put back the draft each just-created session was sent from, until it starts. */
   const sentDrafts = new Map<string, () => void>()
+
+  /**
+   * What deleting this session asks of each provider session going with it
+   * (the session and every one under it): retire it, which for Codex
+   * archives the thread and never deletes it (docs/decisions/codex-app-server.md,
+   * "Threads: archive on delete, no import"). A provider's own subagent is its
+   * parent's agent's to keep. Read before the rows are deleted; each resolves
+   * to undefined when the provider never received the session.
+   */
+  const retirements = (
+    sessionId: string,
+  ): Array<() => Promise<(RuntimeRoute & { sessionId: string }) | undefined>> => {
+    const database = options.database
+    return sessionTree(sessionId).flatMap((id) => {
+      const record = sessions.get(id)
+      if (record) {
+        if (loadOnly(record)) return []
+        const target = {
+          providerId: record.providerId,
+          threadId: record.thread.threadId,
+          workspaceId: record.session.workspaceId,
+          cwd: record.cwd,
+        }
+        const stored = database ? getProviderSessionId(database, id) : undefined
+        return [
+          async () => {
+            const providerSessionId = database ? stored : await record.runtimeSession
+            return providerSessionId ? { ...target, sessionId: providerSessionId } : undefined
+          },
+        ]
+      }
+      if (!database) return []
+      const summary = getSessionSummary(database, id)
+      const providerSessionId = getProviderSessionId(database, id)
+      const threadId = listThreadsForSession(database, id)[0]?.threadId
+      if (!summary || !providerSessionId || !threadId) return []
+      if (summary.parentSessionId && summary.subagent?.origin !== 'openmanager') return []
+      let cwd = homedir()
+      try {
+        cwd = resolveWorkspace(summary.workspaceId)?.cwd ?? cwd
+      } catch {
+        /* the folder is gone; archiving needs none */
+      }
+      const target = {
+        providerId: summary.providerId as ProviderId,
+        threadId,
+        workspaceId: summary.workspaceId,
+        cwd,
+        sessionId: providerSessionId,
+      }
+      return [async () => target]
+    })
+  }
 
   /**
    * Delete a session in one write that says everything going with it: each
@@ -2210,6 +2301,7 @@ export function createThreadService(
       item.session.title = title
       item.titleSource = 'generated'
     }
+    sendTitle(sessionId)
     return true
   }
 
@@ -5132,6 +5224,8 @@ export function createThreadService(
               })
             : undefined
         if (parsed.data.name === 'session.delete' && session.parentSessionId) forgetChild(sessionId)
+        // Read before the rows go: what each deleted session's provider holds.
+        const retiring = parsed.data.name === 'session.delete' ? retirements(sessionId) : []
         // Deleted, or renamed: a title still being written is not wanted.
         if (parsed.data.name === 'session.delete') forgetTitleWork(sessionId)
         else titleWork.get(sessionId)?.controller?.abort()
@@ -5152,6 +5246,7 @@ export function createThreadService(
             item.titleSource = 'user'
             item.session.title = parsed.data.payload.title
           }
+          sendTitle(sessionId)
           return ProofResponseSchemas['session.rename'].parse({
             type: 'response',
             requestId: command.requestId,
@@ -5159,6 +5254,11 @@ export function createThreadService(
           })
         }
         for (const item of dropSessionRecords(sessionId)) abandon(item)
+        for (const retire of retiring) {
+          void retire()
+            .then((target) => (target ? runtime.retireSession?.(target) : undefined))
+            .catch(() => undefined)
+        }
         return ProofResponseSchemas['session.delete'].parse({
           type: 'response',
           requestId: command.requestId,
