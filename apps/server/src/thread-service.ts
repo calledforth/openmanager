@@ -5499,6 +5499,7 @@ export function createThreadService(
         const stops: Promise<void>[] = []
         for (const record of records) {
           if (!runtime.stopBackgroundTasks) continue
+          if (!providers[record.providerId].capabilities.supportsBackgroundTasks) continue
           if (!taskIds) {
             // Every task the provider has, not only the ones this host lists:
             // the roster it announces is capped, the work is not.

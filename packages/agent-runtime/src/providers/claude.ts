@@ -94,6 +94,9 @@ export const claude: ClaudeProviderConfig = {
     // The `AskUserQuestion` tool, surfaced through the `InteractionBroker` and
     // answered back into the tool's `{questions, answers}` input shape.
     supportsQuestions: true,
+    // `background_tasks_changed` is the roster (backgrounded `Bash`, `Agent`,
+    // `Monitor`), and `query.stopTask` stops one. See `claude-background.ts`.
+    supportsBackgroundTasks: true,
   },
   // Attaching the adapter is not enough on its own — `ClaudeMessageTranslator`
   // has to invoke it and track the ids it claims, the way

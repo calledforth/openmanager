@@ -243,6 +243,12 @@ export class CodexTurn {
     return this.tokenUsage?.total
   }
 
+  /** The processes of this turn's commands still running (unified exec).
+   * Read before `finish`. */
+  runningProcesses(): string[] {
+    return this.tools.runningProcesses()
+  }
+
   /** Close whatever is still open: a turn can end (interrupted, failed) with
    * a reasoning item that never completed, and an open thought would leave
    * the timeline showing "thinking" forever.

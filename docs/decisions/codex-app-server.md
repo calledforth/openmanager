@@ -78,7 +78,7 @@ Decoding is tolerant, because the surface moves weekly (four types changed betwe
 
 ### Experimental API
 
-Opted in: `initialize` sends `experimentalApi: true`. Ordered approval choices (`availableDecisions`) and the `auto_review` reviewer depend on it, and so would plan mode (`collaborationMode`) and `turn/settings/update`, which are not used. Every experimental use has a fallback that keeps the session working when the field is missing or rejected: approval choices then come from the stable decision set.
+Opted in: `initialize` sends `experimentalApi: true`. Ordered approval choices (`availableDecisions`) and the `auto_review` reviewer depend on it, and so would plan mode (`collaborationMode`) and `turn/settings/update`, which are not used. `thread/backgroundTerminals/list` and `/terminate` need it too (_probed_: without it, `-32600 … requires experimentalApi capability`). Every experimental use has a fallback that keeps the session working when the field is missing or rejected: approval choices then come from the stable decision set, and a Codex that refuses the terminal list shows no background tasks.
 
 ### MCP extensions
 
@@ -156,12 +156,25 @@ Each tool item of the session's own turn is a tool call (`CodexTools`, `session/
 - **Others.** `dynamicToolCall`, `webSearch` (search, open page, find in page, from its `action`), `sleep`, `imageView`. Hook runs (`hook/started`, `hook/completed`) are rows of their own, and a `hookPrompt` item is a row holding the text the hook added.
 - **Declined and cancelled.** Codex's `declined` status is the declined outcome. Codex has no status for an interrupted call: a call that fails while the turn is being stopped reads as cancelled, and one still open when the turn ends is closed as cancelled by the server.
 - **No matches.** A search command (`commandActions` all `search`) that exits 1 with no output found nothing, and completes, like any search with no hits.
-- **Background commands.** A unified-exec command (one with a `processId`) still open when its turn ends runs on in the background. It settles as completed, with `[Still running in the background]` as the last line of its output, rather than being closed as cancelled. Not when the turn was stopped.
+- **Background commands.** A unified-exec command (one with a `processId`) still open when its turn ends runs on in the background. It settles as completed, with `[Still running in the background]` as the last line of its output, rather than being closed as cancelled. Not when the turn was stopped: then its process is ended too (see Background terminals).
 - **Hook rows.** Each `hook/started` opens a row of its own, and `hook/completed` settles the one its run opened: `HookRunSummary.id` may name the handler rather than one firing (not probed), and a row per handler would hide every firing after the first.
 - **Patch order.** A `patchUpdated` that arrives before its item's `item/started` opens the row.
 - **Plan.** `turn/plan/updated` is the todo checklist (`plan_update`), and a row (`update_plan`) where the model updated it, since Codex has no item for that call.
 - **Skipped on purpose.** `functionCallOutput` is the echo of a `toolOutput` a client hands Codex with `turn/start`; openmanager sends none. `item/fileChange/outputDelta` is deprecated and no longer sent. `plan` items and `item/plan/delta` belong to plan mode, which is not ported. `imageGeneration` is not translated yet.
 - A subagent's own items stay out of the parent's turn (see Subagents).
+
+### Background terminals
+
+A command left running when its turn ends is a background task of kind `shell`, in the background tasks pill like Claude's, keyed by Codex's `processId`, labelled with the command (`CodexBackgroundTerminals`, `session/codex/codex-background.ts`). Built in [CAL-272](https://linear.app/calledforth/issue/CAL-272/stop-and-show-codex-background-terminals), gated by the provider-neutral `supportsBackgroundTasks` capability (host-side only: clients show the tasks a session reports and gate Stop on `session.background.stop`).
+
+What 0.170 does (_probed_): an interrupted turn leaves its running command running, and the thread retains it. Codex announces no terminal starting or ending; the command's own `item/completed` arrives late, under the turn that started it, when the process ends (`completed` by itself, `failed` when terminated). `thread/backgroundTerminals/list` names each by `itemId` (the command's item id), `processId` and the command without its shell wrapper; `osPid`, `cpuPercent` and `rssKb` come back null. `thread/backgroundTerminals/terminate` answers `terminated: true`, or `false` for a process already gone. Both answer `-32600 thread not found: …` for a thread the process does not hold.
+
+- **Roster.** Read from `thread/backgroundTerminals/list` whenever it can have changed: a turn ended with a command still running, a listed command's late `item/completed`, a stop. Nothing is asked when no turn left anything running. It is reported as `background_tasks_update` (replace semantics), like Claude's.
+- **Stop.** The pill's Stop (`session.background.stop`) calls `thread/backgroundTerminals/terminate` for each named process, or each listed one. A process already gone (`terminated: false`) and a thread not found count as stopped; any other refusal is a stop that failed.
+- **Stopping a turn.** The user's Stop ends the processes of the turn's commands still running, as T3 Code does, since their rows close as cancelled.
+- **Stopping the session.** Any stop of the runtime (deletion, a move, an update, shutdown) lists the thread's terminals afresh and terminates each before the process is terminated, bounded at 2 s. Process gone and thread not found count as stopped. On Linux a SIGTERM to `app-server` ends them as well (_probed_); terminating them first does not depend on that, or on the process exiting cleanly.
+- **Busy.** A listed terminal keeps the runtime `busy`, so the idle reaper and LRU eviction never stop it under a running command.
+- **Refused.** A Codex that refuses the list (older, or without the experimental API) has no background tasks for the rest of that process; the commands still run, and end with the process.
 
 ### Notifications
 

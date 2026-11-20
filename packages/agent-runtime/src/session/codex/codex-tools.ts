@@ -179,6 +179,15 @@ export class CodexTools {
     }
   }
 
+  /** The processes of commands still open: unified-exec commands Codex has
+   * not reported ending. Read before `finish`, which forgets them. */
+  runningProcesses(): string[] {
+    const running: string[] = []
+    for (const [id, command] of this.commands)
+      if (command.processId && this.open.has(id)) running.push(command.processId)
+    return running
+  }
+
   /**
    * The turn ended. A command with a process of its own (unified exec) that
    * is still open runs on in the background: Codex reports no end for it in
