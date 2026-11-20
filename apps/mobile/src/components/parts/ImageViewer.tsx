@@ -47,7 +47,14 @@ const INK_DIM = 'rgba(255,255,255,0.35)'
 const PILL = 'rgba(255,255,255,0.14)'
 const PILL_PRESSED = 'rgba(255,255,255,0.28)'
 
-const clamp = (value: number, low: number, high: number) => Math.min(high, Math.max(low, value))
+/**
+ * A worklet: the pinch, pan and double-tap call it on the UI thread, where a
+ * plain JS function is not there to call (a pinch used to crash the app).
+ */
+function clamp(value: number, low: number, high: number) {
+  'worklet'
+  return Math.min(high, Math.max(low, value))
+}
 
 type Zoom = {
   scale: SharedValue<number>

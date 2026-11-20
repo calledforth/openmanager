@@ -35,7 +35,7 @@ export const CodeBlock = memo(function CodeBlock({
 }: {
   code: string
   info?: string
-  /** Outside the transcript; in a row a long press opens the message's actions. */
+  /** Native text selection on the code (a long press), as the rest of a reply has. */
   selectable?: boolean
 }) {
   const theme = usePhoneTheme()
