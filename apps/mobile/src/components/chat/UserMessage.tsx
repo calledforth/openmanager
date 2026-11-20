@@ -10,12 +10,12 @@ import Animated, {
 } from 'react-native-reanimated'
 import type { ArtifactSource, MessagePart, OptimisticImage } from '@openmanager/app-core/logic'
 
-import { MessageLongPress } from '../../session/message-actions'
 import { useSendSteerNow } from '../../session/steer-now'
 import { usePhoneTheme } from '../../theme/ThemeProvider'
 import { tap } from '../../ui/haptics'
 import { Press } from '../../ui/Press'
 import { ImageGroup, useTranscriptWidth, type GalleryImage } from '../parts/ImageGroup'
+import { LinkedText } from '../parts/LinkedText'
 import { AppText } from '../ui/AppText'
 
 /** The images a prompt carries: its own parts once confirmed, its echo's before. */
@@ -176,8 +176,7 @@ export const UserMessage = memo(function UserMessage({
       <Animated.View style={[{ width: '100%', alignItems: 'flex-end', gap: 6 }, dim]}>
         {images.length > 0 ? <ImageGroup images={images} width={width} align="end" /> : null}
         {content ? (
-          // Held, the message's actions: copy it, or select from it.
-          <MessageLongPress
+          <View
             style={{
               maxWidth: '86%',
               backgroundColor: theme.bubble,
@@ -190,8 +189,12 @@ export const UserMessage = memo(function UserMessage({
               ...(isQueued && !sendError ? { opacity: 0.6 } : null),
             }}
           >
-            <AppText variant="chat-user" style={{ color: theme.fg, fontSize: 15, lineHeight: 22 }}>
-              {content}
+            <AppText
+              variant="chat-user"
+              selectable
+              style={{ color: theme.fg, fontSize: 15, lineHeight: 22 }}
+            >
+              <LinkedText text={content} />
             </AppText>
             {isQueued && !sendError ? (
               <View className="mt-1 flex-row items-center justify-end gap-1">
@@ -201,7 +204,7 @@ export const UserMessage = memo(function UserMessage({
                 </AppText>
               </View>
             ) : null}
-          </MessageLongPress>
+          </View>
         ) : null}
       </Animated.View>
       {steer ? <SteerStatus steer={steer} queueItemId={queueItemId} /> : null}

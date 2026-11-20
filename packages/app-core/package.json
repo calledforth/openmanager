@@ -12,6 +12,7 @@
     "./lib/environment-thread": "./src/lib/environment-thread.ts",
     "./lib/chat-search": "./src/lib/chat-search.ts",
     "./lib/fonts": "./src/lib/fonts.ts",
+    "./lib/link-heading": "./src/lib/link-heading.ts",
     "./lib/provider-health-view": "./src/lib/provider-health-view.ts",
     "./lib/pull-requests": "./src/lib/pull-requests/use-pull-requests.ts",
     "./lib/scratchpad": "./src/lib/scratchpad/use-scratchpad.ts",
