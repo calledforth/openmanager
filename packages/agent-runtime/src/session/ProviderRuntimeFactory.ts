@@ -13,6 +13,7 @@ import {
 } from './AcpSessionRuntimeImpl.js'
 import { ClaudeProbeRuntime } from './claude/ClaudeProbeRuntime.js'
 import { CodexProbeRuntime } from './codex/CodexProbeRuntime.js'
+import { CodexService } from './codex/CodexService.js'
 import { CodexSessionRuntime } from './codex/CodexSessionRuntime.js'
 import type { CodexStarter } from './codex/start.js'
 import { ClaudeSessionRuntime } from './claude/ClaudeSessionRuntime.js'
@@ -63,8 +64,13 @@ export type ProviderProbeRuntimeFactoryDeps = {
   execFile?: ExecFile
   /** The SDK a Claude probe drives; the real module when absent. */
   claudeSdk?: ClaudeSdk
-  /** How a Codex probe starts its app-server; the real binary when absent. */
+  /** How the Codex service process starts its app-server; the real binary
+   * when absent. Unused when `codexService` is given. */
   codexStart?: CodexStarter
+  /** The environment's Codex service process, which serves every Codex
+   * probe. `AgentRuntime` owns it; without one the factory keeps its own,
+   * stopped by `shutdown()`. */
+  codexService?: (providerId: ProviderId) => CodexService
 }
 
 export class ProviderSessionRuntimeFactory implements ManagedSessionRuntimeFactory {
@@ -120,6 +126,8 @@ export class ProviderSessionRuntimeFactory implements ManagedSessionRuntimeFacto
 
 export class ProviderProbeRuntimeFactory implements ProbeRuntimeFactory {
   private acp: AcpProbeRuntimeFactoryImpl | undefined
+  /** Service processes this factory had to build itself, per provider. */
+  private readonly ownCodexServices = new Map<ProviderId, CodexService>()
 
   constructor(private readonly deps: ProviderProbeRuntimeFactoryDeps) {}
 
@@ -161,12 +169,33 @@ export class ProviderProbeRuntimeFactory implements ProbeRuntimeFactory {
           {
             config,
             host: this.deps.host,
-            ...(this.deps.timeouts ? { timeouts: this.deps.timeouts } : {}),
-            ...(this.deps.codexStart ? { start: this.deps.codexStart } : {}),
+            service: this.codexService(providerId),
             ...(options?.onEvent ? { onEvent: options.onEvent } : {}),
           },
         )
     }
+  }
+
+  /** The service process that answers this provider's probes. */
+  codexService(providerId: ProviderId): CodexService {
+    if (this.deps.codexService) return this.deps.codexService(providerId)
+    let service = this.ownCodexServices.get(providerId)
+    if (!service) {
+      service = new CodexService({
+        providerId,
+        host: this.deps.host,
+        ...(this.deps.codexStart ? { start: this.deps.codexStart } : {}),
+        ...(this.deps.timeouts ? { timeouts: this.deps.timeouts } : {}),
+      })
+      this.ownCodexServices.set(providerId, service)
+    }
+    return service
+  }
+
+  /** Stop the service processes this factory built for itself. */
+  async shutdown(): Promise<void> {
+    await Promise.all([...this.ownCodexServices.values()].map((service) => service.shutdown()))
+    this.ownCodexServices.clear()
   }
 
   private acpFactory(): AcpProbeRuntimeFactoryImpl {

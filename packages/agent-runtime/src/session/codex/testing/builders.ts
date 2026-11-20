@@ -344,3 +344,138 @@ export function elicitationParams(
     ...overrides,
   } as v2.McpServerElicitationRequestParams
 }
+
+// ---------------------------------------------------------------------------
+// Outside any thread: the account and the catalog, as the service process
+// reads them
+
+/** A ChatGPT login, as `account/read` answers it. A signed-in account also
+ * says `requiresOpenaiAuth: true`. */
+export function buildAccountResponse(
+  overrides: Partial<v2.GetAccountResponse> = {},
+): v2.GetAccountResponse {
+  return {
+    account: { type: 'chatgpt', email: 'user@example.com', planType: 'plus', workspaceName: null },
+    userId: 'user-1',
+    requiresOpenaiAuth: true,
+    workspaceRouting: null,
+    ...overrides,
+  }
+}
+
+/** One `model/list` row, shaped like 0.170's `gpt-6.2-sol`. */
+export function buildModel(id: string, overrides: Partial<v2.Model> = {}): v2.Model {
+  return {
+    id,
+    model: id,
+    upgrade: null,
+    upgradeInfo: null,
+    availabilityNux: null,
+    displayName: id.toUpperCase(),
+    description: `${id} model`,
+    modelSpecialty: null,
+    hidden: false,
+    supportedReasoningEfforts: [
+      { reasoningEffort: 'low', description: 'Fast responses with lighter reasoning' },
+      { reasoningEffort: 'high', description: 'Greater reasoning depth for complex problems' },
+    ],
+    defaultReasoningEffort: 'low',
+    inputModalities: ['text', 'image'],
+    supportsPersonality: false,
+    multiAgentVersion: null,
+    additionalSpeedTiers: [],
+    serviceTiers: [{ id: 'priority', name: 'Fast', description: '2x speed, increased usage' }],
+    defaultServiceTier: null,
+    availableAccessPrograms: null,
+    isDefault: false,
+    ...overrides,
+  }
+}
+
+/** A rate-limit snapshot as `account/rateLimits/read` carries it. */
+export function buildRateLimits(overrides: Partial<v2.RateLimitSnapshot> = {}): v2.RateLimitSnapshot {
+  return {
+    limitId: 'codex',
+    limitName: null,
+    normalModelSlug: null,
+    primary: { usedPercent: 1, windowDurationMins: 300, resetsAt: FAKE_NOW_S + 3_600 },
+    secondary: { usedPercent: 33, windowDurationMins: 10_080, resetsAt: FAKE_NOW_S + 86_400 },
+    credits: null,
+    individualLimit: null,
+    spendControlReached: false,
+    planType: 'plus',
+    rateLimitReachedType: null,
+    ...overrides,
+  }
+}
+
+/** The built-in permission profiles 0.170 lists when nothing restricts them. */
+export function buildPermissionProfiles(
+  allowed: Partial<Record<string, boolean>> = {},
+): v2.PermissionProfileSummary[] {
+  return [':read-only', ':workspace', ':danger-full-access'].map((id) => ({
+    id,
+    description: null,
+    allowed: allowed[id] ?? true,
+  }))
+}
+
+/** `configRequirements.requirements` with nothing required; override what a
+ * test's policy says. */
+export function buildRequirements(overrides: Partial<v2.ConfigRequirements> = {}): v2.ConfigRequirements {
+  return {
+    modelProvider: null,
+    modelProviders: null,
+    allowedLoginMethods: null,
+    cliAuthCredentialsStore: null,
+    chatgptBaseUrl: null,
+    additionalDeveloperInstructions: null,
+    allowedApprovalPolicies: null,
+    allowedApprovalsReviewers: null,
+    allowedSandboxModes: null,
+    allowedWindowsSandboxImplementations: null,
+    allowedPermissionProfiles: null,
+    defaultPermissions: null,
+    allowedWebSearchModes: null,
+    allowManagedHooksOnly: null,
+    allowBrowserAndComputerUse: null,
+    allowAppshots: null,
+    allowRemoteControl: null,
+    computerUse: null,
+    browserUse: null,
+    inAppBrowser: null,
+    featureRequirements: null,
+    hooks: null,
+    enforceResidency: null,
+    network: null,
+    application: null,
+    autoReview: null,
+    models: null,
+    sqliteHome: null,
+    logDir: null,
+    modelCatalogJson: null,
+    checkForUpdateOnStartup: null,
+    allowLoginShell: null,
+    feedback: null,
+    otel: null,
+    ...overrides,
+  }
+}
+
+/** An `experimentalFeature/list` row. */
+export function buildFeature(
+  name: string,
+  enabled: boolean,
+  overrides: Partial<v2.ExperimentalFeature> = {},
+): v2.ExperimentalFeature {
+  return {
+    name,
+    stage: 'stable',
+    displayName: null,
+    description: null,
+    announcement: null,
+    enabled,
+    defaultEnabled: enabled,
+    ...overrides,
+  }
+}

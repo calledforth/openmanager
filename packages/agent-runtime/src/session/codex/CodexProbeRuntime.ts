@@ -1,17 +1,27 @@
 import type { ModelListing, ProviderId, ProviderSessionInfo } from '@agentpack/contract'
-import type { v2 } from '@openmanager/codex-app-server-protocol'
 import type { BackendEvent, BackendRoute } from '../../backends/Backend.js'
 import { AuthRequiredError, CapabilityMissingError } from '../../core/errors.js'
 import type { HostDeps } from '../../host.js'
 import type { CodexProviderConfig } from '../../providers/index.js'
-import { DEFAULT_RUNTIME_TIMEOUTS, type RuntimeTimeouts } from '../constants.js'
 import type { ThreadId } from '../lifecycle.js'
-import type { ProbeResult, ProbeRuntime } from '../ProbeRuntime.js'
+import type { ProbeResult, ProbeRuntime, ProbeUpdateAdvisory } from '../ProbeRuntime.js'
 import { routeEvent } from '../wire.js'
-import { codexModelListing, readCodexModels } from './codex-catalog.js'
-import type { CodexAppServerClient } from './CodexAppServerClient.js'
-import { isMissingThread } from './CodexSessionRuntime.js'
-import { startRealCodex, type CodexStarter } from './start.js'
+import {
+  CODEX_LOGIN_HINT,
+  CODEX_SIGNED_OUT_MESSAGE,
+  codexAccountLabel,
+} from './codex-account.js'
+import { codexModelListing, codexPolicy } from './codex-catalog.js'
+import type { CodexHandshake } from './CodexAppServerClient.js'
+import type { CodexService } from './CodexService.js'
+import { CODEX_MIN_VERSION, CODEX_RECOMMENDED_VERSION } from './version.js'
+
+// Kept importable from here, where they were first defined.
+export {
+  CODEX_LOGIN_HINT,
+  codexAccountState,
+  type CodexAccountState,
+} from './codex-account.js'
 
 export type CodexProbeSpec = {
   providerId: ProviderId
@@ -23,59 +33,37 @@ export type CodexProbeSpec = {
 export type CodexProbeDeps = {
   config: CodexProviderConfig
   host: Pick<HostDeps, 'log'>
-  timeouts?: Partial<RuntimeTimeouts>
-  /** Starts the app-server. The real binary when absent. */
-  start?: CodexStarter
-  env?: NodeJS.ProcessEnv
+  /** The environment's service process, which answers every question. */
+  service: CodexService
   onEvent?: (event: BackendEvent) => void
 }
 
-/** What `account/read` says about signing in, told apart properly: a
- * signed-in account *also* reports `requiresOpenaiAuth: true`, so that flag
- * alone means nothing. */
-export type CodexAccountState =
-  | { state: 'signed_in'; account: v2.Account }
-  | { state: 'signed_out' }
-  | { state: 'not_required' }
-
-export function codexAccountState(response: v2.GetAccountResponse): CodexAccountState {
-  if (response.account) return { state: 'signed_in', account: response.account }
-  return response.requiresOpenaiAuth ? { state: 'signed_out' } : { state: 'not_required' }
-}
-
-export const CODEX_LOGIN_HINT = 'codex login'
-
-/** Provider-level questions for Codex, answered by a short-lived app-server
- * that never starts a thread: the handshake, the account, and the model
- * catalog. Nothing here costs tokens or leaves a thread in the user's Codex
- * history.
+/** Provider-level questions for Codex, answered by the environment's service
+ * process (`CodexService`) rather than a process of its own: the handshake,
+ * the account, the model catalog, the permission profiles, the managed
+ * policy and the feature flags. Nothing here starts a thread, so nothing
+ * costs tokens or lands in the user's Codex history.
  *
- * This is the first cut: the long-lived service process the decision calls
- * for (one per environment, shared with login, limits and MCP status) replaces
- * the throwaway process in CAL-249, and the fuller catalog (service tiers,
- * policy limits, feature flags) arrives in CAL-250. */
+ * The process belongs to the service, so disposing a probe only abandons
+ * its own questions; the process stays for the next caller until it idles. */
 export class CodexProbeRuntime implements ProbeRuntime {
   readonly providerId: ProviderId
   private result: ProbeResult | undefined
   private inFlight: Promise<ProbeResult> | undefined
-  private client: CodexAppServerClient | undefined
-  /** The app-server still being started, so `dispose` can wait for it. */
-  private starting: Promise<CodexAppServerClient> | undefined
-  private disposed = false
-  private readonly timeouts: RuntimeTimeouts
+  private readonly abort = new AbortController()
 
   constructor(
     private readonly spec: CodexProbeSpec,
     private readonly deps: CodexProbeDeps,
   ) {
     this.providerId = spec.providerId
-    this.timeouts = { ...DEFAULT_RUNTIME_TIMEOUTS, ...deps.timeouts }
   }
 
-  /** Spawn, handshake, read the account and the catalog. Throws
-   * `CodexNotInstalledError` (read as "missing"), `AuthRequiredError` when
-   * signed out, and the handshake's own error for a CLI that runs but is
-   * unusable (too old, crashed). Memoised. */
+  /** Read the account, and when it may be used, the catalog and policy.
+   * Throws `CodexNotInstalledError` (read as "missing"),
+   * `CodexVersionUnsupportedError` for a CLI too old to run,
+   * `AuthRequiredError` when signed out, and the process's own error for a
+   * CLI that runs but is unusable. Memoised. */
   probe(): Promise<ProbeResult> {
     if (this.result) return Promise.resolve(this.result)
     this.inFlight ??= this.run().finally(() => {
@@ -84,41 +72,15 @@ export class CodexProbeRuntime implements ProbeRuntime {
     return this.inFlight
   }
 
-  /** The probe's app-server: the one already up, else a new one. */
-  private async connect(): Promise<CodexAppServerClient> {
-    if (this.client) return this.client
-    if (this.starting) return this.starting
-    this.starting = (this.deps.start ?? startRealCodex)({
-      cwd: this.spec.cwd,
-      env: this.deps.env ?? process.env,
-      timeouts: this.timeouts,
-      log: this.deps.host.log,
-    })
-    let client: CodexAppServerClient
-    try {
-      client = await this.starting
-    } finally {
-      this.starting = undefined
-    }
-    if (this.disposed) {
-      // Disposed while the process was still starting: nobody wants it.
-      await client.terminate({ reason: 'disposed' }).catch(() => undefined)
-      throw new Error('Codex probe was disposed before it finished starting')
-    }
-    this.client = client
-    return client
-  }
-
   private async run(): Promise<ProbeResult> {
-    // A retry after a failed probe starts afresh; the earlier process goes.
-    const previous = this.client
-    this.client = undefined
-    if (previous) await previous.terminate({ reason: 'disposed' }).catch(() => undefined)
-    const client = await this.connect()
-    const info = client.info
+    const discovery = await this.deps.service.discover({
+      cwd: this.spec.cwd,
+      signal: this.abort.signal,
+    })
+    const handshake = discovery.handshake
     const agentInfo = {
       name: 'Codex',
-      ...(info?.version.version ? { version: info.version.version } : {}),
+      ...(handshake?.version.version ? { version: handshake.version.version } : {}),
     }
     this.emit(
       routeEvent(this.route(), undefined, 'lifecycle', 'process_spawned', {
@@ -127,23 +89,38 @@ export class CodexProbeRuntime implements ProbeRuntime {
         args: ['app-server'],
       }),
     )
+    if (discovery.account.state === 'signed_out')
+      throw new AuthRequiredError(this.providerId, CODEX_SIGNED_OUT_MESSAGE, CODEX_LOGIN_HINT)
 
-    const account = codexAccountState(await client.request('account/read', { refreshToken: false }))
-    if (account.state === 'signed_out')
-      throw new AuthRequiredError(
-        this.providerId,
-        'Codex is signed out. Run `codex login` on this machine.',
-        CODEX_LOGIN_HINT,
-      )
-
-    const models = codexModelListing(await readCodexModels(client))
+    const context = {
+      ...(discovery.requirements ? { requirements: discovery.requirements.requirements } : {}),
+      ...(discovery.features ? { features: discovery.features } : {}),
+    }
+    const models = codexModelListing(discovery.models, context)
+    // Asked and answered (even "no policy") is a policy; a CLI that could
+    // not say leaves it absent, so an older answer is not wiped.
+    const policy =
+      discovery.requirements || discovery.permissionProfiles || discovery.features
+        ? codexPolicy({
+            ...(discovery.requirements ? { requirements: discovery.requirements.requirements } : {}),
+            ...(discovery.permissionProfiles
+              ? { permissionProfiles: discovery.permissionProfiles }
+              : {}),
+            ...(discovery.features ? { features: discovery.features } : {}),
+          })
+        : undefined
+    const accountLabel = codexAccountLabel(discovery.account)
+    const update = codexUpdateAdvisory(handshake)
     const result: ProbeResult = {
       agentInfo,
       authMethods: [],
       authenticated: true,
+      ...(accountLabel ? { accountLabel } : {}),
+      ...(update ? { update } : {}),
       sessionListAdvertised: false,
       loadSessionAdvertised: this.deps.config.capabilities.canLoadSession,
       models,
+      ...(policy ? { policy } : {}),
     }
     this.emit(
       routeEvent(this.route(), undefined, 'lifecycle', 'initialized', {
@@ -155,12 +132,17 @@ export class CodexProbeRuntime implements ProbeRuntime {
     this.deps.host.log({
       scope: 'codex',
       level: 'info',
-      message: 'Codex probe initialized',
+      message: 'Codex probe answered',
       data: {
-        version: info?.version.version,
-        versionStatus: info?.version.status,
-        account: account.state === 'signed_in' ? account.account.type : account.state,
+        version: handshake?.version.version,
+        versionStatus: handshake?.version.status,
+        account:
+          discovery.account.state === 'signed_in'
+            ? discovery.account.account.type
+            : discovery.account.state,
         models: models.availableModels?.length ?? 0,
+        managedPolicy: discovery.requirements ? discovery.requirements.requirements !== null : 'unknown',
+        features: discovery.features,
       },
     })
     this.result = result
@@ -173,45 +155,23 @@ export class CodexProbeRuntime implements ProbeRuntime {
     )
   }
 
-  /** `thread/archive` for a session the user deleted while no runtime held
-   * it. No handshake beyond `initialize`: archiving needs neither the account
-   * nor the catalog. A thread Codex no longer has is already out of the way;
-   * one another Codex process holds is refused ("already has an active
-   * writer") and the refusal is thrown. */
-  async archiveSession(sessionId: string): Promise<void> {
-    const client = await this.connect()
-    try {
-      await client.request(
-        'thread/archive',
-        { threadId: sessionId },
-        { timeoutMs: this.timeouts.controlRequestMs },
-      )
-    } catch (error) {
-      if (!isMissingThread(error)) throw error
-    }
+  /** Archive a deleted session's thread on the service process
+   * (`CodexService.archiveThread`). */
+  archiveSession(sessionId: string): Promise<void> {
+    return this.deps.service.archiveThread(sessionId)
   }
 
-  /** The catalog `probe()` read; asking twice costs one process. */
+  /** The catalog `probe()` read; asking twice asks once. */
   async listModels(_cwd: string): Promise<ModelListing> {
     return (await this.probe()).models ?? {}
   }
 
-  /** Stops the process at once, even mid-probe: a probe is disposed when its
-   * caller gave up on it (a health timeout), and waiting for a wedged one to
-   * finish would hold the process for no one. */
+  /** Abandons this probe's questions at once, even mid-probe: a probe is
+   * disposed when its caller gave up on it (a health timeout). The service
+   * process stays; a wedged one is replaced by the service itself when a
+   * request times out. */
   async dispose(): Promise<void> {
-    this.disposed = true
-    const client = this.client
-    this.client = undefined
-    if (client) await client.terminate({ reason: 'disposed' }).catch(() => undefined)
-    // A process still starting is waited for and stopped here, so `dispose`
-    // resolves only once nothing is left running: the health monitor lets the
-    // next probe go when this one's process is gone.
-    const starting = this.starting
-    if (starting) {
-      const late = await starting.catch(() => undefined)
-      if (late) await late.terminate({ reason: 'disposed' }).catch(() => undefined)
-    }
+    this.abort.abort(new Error('Codex probe was disposed before it finished'))
   }
 
   private route(): BackendRoute {
@@ -223,5 +183,31 @@ export class CodexProbeRuntime implements ProbeRuntime {
 
   private emit(event: BackendEvent): void {
     this.deps.onEvent?.(event)
+  }
+}
+
+/** The handshake's version against what openmanager supports. A version
+ * below the minimum never gets here: the handshake refuses it. */
+export function codexUpdateAdvisory(handshake: CodexHandshake | undefined): ProbeUpdateAdvisory | undefined {
+  const check = handshake?.version
+  if (!check) return undefined
+  const bounds = { latestVersion: CODEX_RECOMMENDED_VERSION, minimumVersion: CODEX_MIN_VERSION }
+  switch (check.status) {
+    case 'supported':
+      return { state: 'current', ...bounds }
+    case 'outdated':
+      return {
+        state: 'behind',
+        ...bounds,
+        message: `Codex ${check.version ?? ''} works; ${CODEX_RECOMMENDED_VERSION} is recommended.`,
+      }
+    case 'unsupported':
+      return {
+        state: 'unsupported',
+        ...bounds,
+        message: `Update Codex to ${CODEX_MIN_VERSION} or later.`,
+      }
+    case 'unknown':
+      return { state: 'unknown', ...bounds }
   }
 }

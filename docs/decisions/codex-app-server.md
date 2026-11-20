@@ -44,6 +44,15 @@ Account state, login, usage limits, the model catalog, sandbox setup, MCP status
 
 So `AgentRuntime` owns **one Codex service process per environment**: started lazily on first need, reaped after idle, never holding a thread. It also answers the boot probe ([CAL-250](https://linear.app/calledforth/issue/CAL-250/discover-codexs-account-policies-and-models-at-boot)), so discovery does not spawn a second process. It does not count toward the session cap. Built in [CAL-249](https://linear.app/calledforth/issue/CAL-249/run-a-codex-service-process-for-work-outside-sessions).
 
+As built (`CodexService`, reached through `AgentRuntime.codexService(providerId)`):
+
+- It runs in the user's home directory: it serves the environment, and a question about a project names its directory (`permissionProfile/list` takes `cwd`).
+- It is reaped after **2 minutes** with nothing in flight, shorter than the 5-minute health interval, so an unused environment holds no standing ~100 MB and each health refresh pays a ~0.3s start instead.
+- A crash fails what was waiting on it; the next request starts a fresh process. A request that times out is taken as a wedged process, which is replaced the same way.
+- `account/updated` and `account/rateLimits/updated` carry no `threadId`. They are merged into one provider-level state (rate-limit updates are sparse: a `null` keeps the last value). A sign-out announced this way reaches provider health at once.
+- The runtime census reports it as `serviceProcesses`, beside the sessions and never among them.
+- The boot probe reads `account/read`, then (signed in, or no sign-in needed) paginated `model/list`, `permissionProfile/list`, `configRequirements/read` and `experimentalFeature/list` (only `fast_mode` and `guardian_approval` are kept). `collaborationMode/list` is not read: there is no plan mode. Only the first two can fail the probe. Because it asks a process that is kept anyway, the health monitor runs it beside its one-slot probe queue rather than behind other providers' CLIs.
+
 ### Executable
 
 Resolved in this order, by one helper shared with title generation (`apps/server/src/session-titles/generator.ts`), so `CODEX_BIN` means the same binary everywhere, as `acpCommandBin` does for ACP providers:

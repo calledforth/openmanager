@@ -119,6 +119,17 @@ export {
   type CodexExecutable,
   type CodexExecutableResolution,
 } from './session/codex/executable.js'
+// The environment's Codex service process, owned by `AgentRuntime`
+// (`codexService(providerId)`), and the provider-level account it keeps.
+export {
+  CODEX_SERVICE_IDLE_MS,
+  CodexService,
+  type CodexDiscovery,
+  type CodexServiceDeps,
+  type CodexServiceState,
+  type CodexServiceStatus,
+} from './session/codex/CodexService.js'
+export type { CodexAccountState, CodexProviderState } from './session/codex/codex-account.js'
 export type {
   AcpProviderConfig,
   ClaudeProviderConfig,

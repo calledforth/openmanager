@@ -38,3 +38,16 @@ export class AuthRequiredError extends Error {
     super(message)
   }
 }
+
+/** The provider's CLI runs, but is older than openmanager supports. Health
+ * reads it as an unusable install with an `unsupported` update advisory. */
+export class ProviderVersionUnsupportedError extends Error {
+  constructor(
+    message: string,
+    readonly version: string,
+    readonly minimumVersion: string,
+  ) {
+    super(message)
+    this.name = 'ProviderVersionUnsupportedError'
+  }
+}

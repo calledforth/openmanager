@@ -10,8 +10,9 @@ import { FakeClaudeSdk } from '../session/claude/test-sdk.js'
 import { CodexAppServerClient } from '../session/codex/CodexAppServerClient.js'
 import type { CodexStarter } from '../session/codex/start.js'
 import { FakeCodexAppServer, type FakeCodexTurn } from '../session/codex/testing/index.js'
+import { fakeCodexStarter } from '../session/codex/testing/index.js'
 import { FakeConnectionFactory, type FakeWire } from '../session/test-connection.js'
-import { AgentRuntime } from './AgentRuntime.js'
+import { AgentRuntime, type ProviderCatalog } from './AgentRuntime.js'
 
 const configs = { cursor, opencode, claude, codex }
 const ROUTE = {
@@ -1535,13 +1536,32 @@ describe('AgentRuntime Codex titles and deletion', () => {
     expect(servers[0]!.exited).toBe(true)
   })
 
-  it('archives in a throwaway process when no runtime holds the thread', async () => {
+  it('archives on the Codex service process when no runtime holds the thread', async () => {
     const { runtime, servers } = buildCodex()
     await runtime.retireSession({ ...CODEX, threadId: 't2', sessionId: 'stored' })
     expect(servers).toHaveLength(1)
     expect(servers[0]!.requests('thread/start')).toHaveLength(0)
     expect(servers[0]!.requests('thread/archive')[0]!.params).toEqual({ threadId: 'stored' })
+    // Work outside sessions: the service process, kept for the next question.
+    expect(runtime.codexService('codex')!.status.state).toBe('running')
+    await runtime.shutdown()
     expect(servers[0]!.exited).toBe(true)
+  })
+
+  it('logs an archive the service process cannot do, and retires the thread anyway', async () => {
+    const log = vi.fn()
+    const runtime = new AgentRuntime({ emitEvent: vi.fn(), log }, configs, {
+      codexStart: async () => {
+        throw Object.assign(new Error('codex not found'), { code: 'ENOENT' })
+      },
+    })
+    await expect(
+      runtime.retireSession({ ...CODEX, threadId: 't2', sessionId: 'stored' }),
+    ).resolves.toBeUndefined()
+    expect(log).toHaveBeenCalledWith(
+      expect.objectContaining({ message: 'Could not archive the deleted session with its provider' }),
+    )
+    await runtime.shutdown()
   })
 
   it('only stops the process of a provider that keeps no archive', async () => {
@@ -1586,7 +1606,7 @@ describe('AgentRuntime Codex titles and deletion', () => {
     expect(methods.indexOf('turn/interrupt')).toBeLessThan(methods.indexOf('thread/archive'))
   })
 
-  it('archives many unloaded threads in one process at a time', async () => {
+  it('archives many unloaded threads on one process', async () => {
     const { runtime, servers, peak } = buildCodex()
     await Promise.all(
       ['a', 'b', 'c'].map((id) =>
@@ -1599,6 +1619,8 @@ describe('AgentRuntime Codex titles and deletion', () => {
       { threadId: 'stored-b' },
       { threadId: 'stored-c' },
     ])
+    expect(servers).toHaveLength(1)
+    await runtime.shutdown()
     expect(servers.every((server) => server.exited)).toBe(true)
   })
 
@@ -1610,5 +1632,52 @@ describe('AgentRuntime Codex titles and deletion', () => {
     const acp = build(sequentialSessions())
     await acp.runtime.retireSession({ ...ROUTE, threadId: 'thread-1', sessionId: 'session-1' })
     expect(acp.connections.connections).toHaveLength(0)
+  })
+})
+
+describe('AgentRuntime Codex service process', () => {
+  function buildCodex() {
+    const fakes = fakeCodexStarter()
+    const catalogs: Array<{ providerId: string; catalog: ProviderCatalog }> = []
+    const runtime = new AgentRuntime(
+      { emitEvent: () => undefined, log: vi.fn() },
+      configs,
+      { codexStart: fakes.start, codexService: { setTimer: () => ({ cancel: () => undefined }) } },
+    )
+    runtime.onProviderCatalog((providerId, catalog) => catalogs.push({ providerId, catalog }))
+    return { runtime, fakes, catalogs }
+  }
+  const CODEX_ROUTE = { providerId: 'codex' as const, threadId: 'desktop-bootstrap:codex', cwd: '/work' }
+
+  it('serves the boot probe and health from one process it owns, outside the session census', async () => {
+    const { runtime, fakes, catalogs } = buildCodex()
+    expect(runtime.codexService('cursor')).toBeUndefined()
+    expect(fakes.servers).toHaveLength(0)
+
+    const bootstrap = await runtime.probeProvider(CODEX_ROUTE)
+    expect(bootstrap.models?.availableModels?.[0]?.id).toBe('gpt-6.2-sol')
+    expect(catalogs.at(-1)).toMatchObject({ providerId: 'codex', catalog: { policy: {} } })
+    await runtime.health.refresh('codex', 'user')
+    expect(fakes.servers).toHaveLength(1)
+
+    const health = runtime.health.health('codex')
+    expect(health.auth).toMatchObject({ state: 'authenticated', accountLabel: 'user@example.com' })
+    expect(health.update.state).toBe('current')
+    expect(health.runtime).toMatchObject({ liveProcesses: 0, serviceProcesses: 1, state: 'never_started' })
+    await runtime.shutdown()
+    expect(fakes.last.exited).toBe(true)
+  })
+
+  it('tells health at once when Codex says it signed out', async () => {
+    const { runtime, fakes } = buildCodex()
+    await runtime.probeProvider(CODEX_ROUTE)
+    fakes.last.notify('account/updated', { authMode: null, planType: null })
+    await vi.waitFor(() =>
+      expect(runtime.health.health('codex').auth).toMatchObject({
+        state: 'unauthenticated',
+        loginHint: 'codex login',
+      }),
+    )
+    await runtime.shutdown()
   })
 })

@@ -6,6 +6,7 @@ import type {
   ModelListing,
   PromptCapabilities,
   ProviderId,
+  ProviderPolicy,
   ProviderSessionInfo,
   UsageLimitsResult,
 } from '@agentpack/contract'
@@ -62,6 +63,17 @@ export type ProbeResult = {
   authenticated: boolean
   /** Populated when authentication was attempted and refused. */
   authError?: string
+  /** Who is signed in, as health shows it (an email, "API key"). Absent
+   * when the provider does not say. */
+  accountLabel?: string
+  /** How the installed version compares with what openmanager supports,
+   * when the provider can tell. A version too old to run is a thrown
+   * `ProviderVersionUnsupportedError` instead. */
+  update?: ProbeUpdateAdvisory
+  /** What the provider's own configuration rules out (a managed policy, a
+   * switched-off feature), read before any session exists. Absent when the
+   * probe has no way to ask; empty when it asked and nothing is. */
+  policy?: ProviderPolicy
   promptCapabilities?: PromptCapabilities
   sessionListAdvertised: boolean
   loadSessionAdvertised: boolean
@@ -97,6 +109,15 @@ export type ProbeResult = {
    * composer's mode picker only renders for a provider that has already run a
    * session, so a fresh Claude draft gets no mode control at all. */
   modes?: ModeListing
+}
+
+/** The shape of `ProviderHealth.update`, which this package's contract
+ * cannot name. */
+export type ProbeUpdateAdvisory = {
+  state: 'unknown' | 'current' | 'behind' | 'unsupported'
+  latestVersion?: string
+  minimumVersion?: string
+  message?: string
 }
 
 /** What a probe needs beyond a provider and a directory.

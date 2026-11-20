@@ -7,7 +7,7 @@ import {
 import { describe, expect, it, vi } from 'vitest'
 import type { ProbeResult, ProbeRuntime, ProbeRuntimeFactory } from '../session/ProbeRuntime.js'
 import type { SessionRuntimeExit } from '../session/lifecycle.js'
-import { AuthRequiredError } from './errors.js'
+import { AuthRequiredError, ProviderVersionUnsupportedError } from './errors.js'
 import { ProviderHealthMonitor, type ProviderRuntimeCensus } from './ProviderHealthMonitor.js'
 
 const HEALTHY: ProbeResult = {
@@ -95,6 +95,8 @@ function build(
     catalogTimeoutMs?: number
     /** Present-but-undefined means "no workspace is known yet". */
     cwd?: string | undefined
+    parallel?: readonly ProviderId[]
+    providerIds?: readonly ProviderId[]
   } = {},
 ) {
   // Read on every probe, so a test can make a directory known later on.
@@ -108,8 +110,11 @@ function build(
   const clock = { value: 1_000_000_000 }
   const now = (): number => (clock.value += 1_000)
   const monitor = new ProviderHealthMonitor({
-    providerIds: ['cursor', 'opencode'],
+    providerIds: options.providerIds ?? ['cursor', 'opencode'],
     probes,
+    ...(options.parallel
+      ? { probeInParallel: (providerId: ProviderId) => options.parallel!.includes(providerId) }
+      : {}),
     census: (providerId) => census[providerId] ?? NOTHING_RUNNING,
     probeCwd: () => directory.value,
     host: { log },
@@ -235,6 +240,42 @@ describe('ProviderHealthMonitor axes', () => {
   })
 })
 
+describe('ProviderHealthMonitor versions and accounts', () => {
+  it('takes the version advisory and account label a probe could read', async () => {
+    const { monitor, probes } = build({ providerIds: ['cursor', 'opencode', 'codex'] })
+    probes.answers.set('codex', async () => ({
+      ...HEALTHY,
+      accountLabel: 'user@example.com',
+      update: { state: 'behind', latestVersion: '0.170.0', minimumVersion: '0.160.0' },
+    }))
+    await monitor.refresh('codex', 'user')
+    const health = monitor.health('codex')
+    expect(health.auth).toEqual({ state: 'authenticated', accountLabel: 'user@example.com' })
+    expect(health.update).toMatchObject({ state: 'behind', latestVersion: '0.170.0' })
+    // Runs, with a notice: a warning still lets a session start.
+    expect(summarizeProviderHealth(health)).toBe('warning')
+  })
+
+  it('reports a CLI too old to run as unusable, with an unsupported advisory', async () => {
+    const { monitor, probes } = build({ providerIds: ['cursor', 'opencode', 'codex'] })
+    probes.answers.set('codex', async () => {
+      throw new ProviderVersionUnsupportedError('Codex 0.150.0 is too old.', '0.150.0', '0.160.0')
+    })
+    await monitor.refresh('codex', 'user')
+    const health = monitor.health('codex')
+    expect(health.install).toMatchObject({ state: 'unusable', version: '0.150.0' })
+    expect(health.update).toMatchObject({ state: 'unsupported', minimumVersion: '0.160.0' })
+    expect(health.lastProbe?.outcome).toBe('failed')
+  })
+
+  it('shows a service process beside the sessions, never as one', () => {
+    const { monitor, census } = build({ providerIds: ['cursor', 'opencode', 'codex'] })
+    census.codex = { liveProcesses: 0, readyProcesses: 0, activeTurns: 0, serviceProcesses: 1 }
+    const runtime = monitor.health('codex').runtime
+    expect(runtime).toMatchObject({ state: 'never_started', liveProcesses: 0, serviceProcesses: 1 })
+  })
+})
+
 describe('ProviderHealthMonitor runtime rollup', () => {
   it('stops reading healthy once the process is gone', async () => {
     const { monitor, census, ui } = build()
@@ -343,6 +384,24 @@ describe('ProviderHealthMonitor refresh policy', () => {
     await Promise.all([monitor.refresh('cursor', 'user'), monitor.refresh('opencode', 'user')])
     expect(peak).toBe(1)
     expect(probes.created).toHaveLength(2)
+  })
+
+  it('runs a provider whose probe asks a kept process beside the queue', async () => {
+    const { monitor, probes } = build({ parallel: ['codex'], providerIds: ['cursor', 'opencode', 'codex'] })
+    let releaseCursor: () => void = () => undefined
+    probes.answers.set(
+      'cursor',
+      () => new Promise<ProbeResult>((resolve) => (releaseCursor = () => resolve(HEALTHY))),
+    )
+    const cursor = monitor.refresh('cursor', 'user')
+    // Codex answers while Cursor's slow CLI still holds the queue.
+    await monitor.refresh('codex', 'user')
+    expect(monitor.health('codex').lastProbe?.outcome).toBe('ok')
+    expect(monitor.health('cursor').lastProbe).toBeNull()
+    releaseCursor()
+    await cursor
+    await monitor.drain()
+    expect(monitor.health('cursor').lastProbe?.outcome).toBe('ok')
   })
 
   it('derives from a live session instead of spawning a probe on the timer', async () => {

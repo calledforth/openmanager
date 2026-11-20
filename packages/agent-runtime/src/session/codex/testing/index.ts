@@ -44,3 +44,4 @@ export type {
 } from './fixture.js'
 export { createCodexMockExecutable } from './mock-executable.js'
 export * as codexBuilders from './builders.js'
+export { fakeCodexStarter } from './fake-starter.js'
