@@ -48,6 +48,10 @@ The workflow refuses a tag that does not match `apps/server/package.json`. Never
 published tag; fix forward with a new patch version. To ship a newer embedded Node, bump
 `SEA_NODE_VERSION` in the workflow and release.
 
+**A protocol bump needs a server release.** Clients refuse a server on another protocol, so a PR
+that raises `PROTOCOL_VERSION` (`packages/protocol/src/negotiation.ts`) also bumps
+`apps/server/package.json`, and the `server-v*` tag is pushed as soon as it merges.
+
 After publishing, check an install from the release on Windows and on Linux or WSL
 ([install.md](./install.md)), and `openmanager update` from the previous version.
 
