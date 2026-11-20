@@ -74,6 +74,8 @@ function serveDiscovery(server: FakeCodexAppServer): void {
         nextCursor: null,
       },
     ],
+    // The user's config sets no web search mode.
+    ['config/read', { config: { web_search: null }, origins: {}, layers: null }],
   ]
   for (const [method, answer] of defaults) server.respond(method, answer as never)
 }

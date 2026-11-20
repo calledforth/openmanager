@@ -92,6 +92,17 @@ function build(
   return { server, runtime, events, exits, log, onSessionTitle }
 }
 
+/** A recording, with the reads a session makes before its thread answered
+ * here: the recordings predate them. */
+function replay(scenario: ConstructorParameters<typeof ReplayCodexAppServer>[0]): ReplayCodexAppServer {
+  const server = new ReplayCodexAppServer(scenario)
+  server.respond('model/list', MODELS as never)
+  server.respond('configRequirements/read', { requirements: null } as never)
+  server.respond('experimentalFeature/list', { data: [], nextCursor: null } as never)
+  server.respond('config/read', { config: {}, origins: {}, layers: null } as never)
+  return server
+}
+
 const names = (events: BackendEvent[]) => events.map((event) => event.event)
 const texts = (events: BackendEvent[]) =>
   events
@@ -889,8 +900,7 @@ describe('CodexSessionRuntime against a recording', () => {
   // receiving (bar the model catalog, which the recording predates) and
   // handles everything it said back.
   it('runs the recorded simple turn', async () => {
-    const server = new ReplayCodexAppServer('simple-turn')
-    server.respond('model/list', MODELS as never)
+    const server = replay('simple-turn')
     const { runtime, events } = build({ server })
     await runtime.start()
     await runtime.prompt({ prompt: PROMPT })
@@ -904,8 +914,7 @@ describe('CodexSessionRuntime against a recording', () => {
   })
 
   it('steers the recorded turn and places the message where Codex echoed it', async () => {
-    const server = new ReplayCodexAppServer('steer')
-    server.respond('model/list', MODELS as never)
+    const server = replay('steer')
     const { runtime, events } = build({ server })
     await runtime.start()
     const prompt = runtime.prompt({ prompt: PROMPT })
@@ -1155,5 +1164,311 @@ describe('CodexSessionRuntime, final review', () => {
     expect(echoes.size).toBe(0)
     turns[0]!.completed()
     await prompt
+  })
+})
+
+describe('CodexSessionRuntime composer settings', () => {
+  const { buildModel, buildRequirements } = codexBuilders
+  const CATALOG = {
+    data: [
+      buildModel('gpt-6-luna', {
+        isDefault: true,
+        inputModalities: ['text', 'image'],
+        supportedReasoningEfforts: [
+          { reasoningEffort: 'low', description: 'Fast responses with lighter reasoning' },
+          { reasoningEffort: 'high', description: 'Greater reasoning depth for complex problems' },
+          { reasoningEffort: 'ultra', description: 'Maximum reasoning with automatic task delegation' },
+        ],
+      }),
+      buildModel('gpt-6-mini', {
+        inputModalities: ['text'],
+        supportedReasoningEfforts: [
+          { reasoningEffort: 'low', description: '' },
+          { reasoningEffort: 'medium', description: '' },
+        ],
+        defaultReasoningEffort: 'medium',
+      }),
+    ],
+    nextCursor: null,
+  }
+
+  function session(
+    options: {
+      spec?: Partial<SessionRuntimeSpec>
+      onTurn?: (turn: FakeCodexTurn) => void
+      setup?: (server: FakeCodexAppServer) => void
+    } = {},
+  ) {
+    const server = new FakeCodexAppServer()
+    server.respond('model/list', CATALOG as never).serveThreads(options.onTurn)
+    options.setup?.(server)
+    return build({ server, ...(options.spec ? { spec: options.spec } : {}) })
+  }
+
+  const option = (events: BackendEvent[], id: string) => {
+    const last = [...events]
+      .reverse()
+      .find((e) => e.event === 'config_option_update' || e.event === 'session_created')
+    const options = (last?.data as { configOptions?: Array<{ id: string; currentValue: unknown }> })
+      .configOptions
+    return options?.find((candidate) => candidate.id === id)?.currentValue
+  }
+
+  it('announces Access, effort, speed and web search with the session', async () => {
+    const { runtime, events } = session()
+    await runtime.start()
+    const created = events.find((e) => e.event === 'session_created')!
+    expect(created.data).toMatchObject({
+      modes: {
+        currentModeId: 'auto-accept-edits',
+        availableModes: [
+          { id: 'supervised', displayName: 'Supervised' },
+          { id: 'auto-accept-edits', displayName: 'Auto-accept edits' },
+          { id: 'auto', displayName: 'Auto' },
+          { id: 'full-access', displayName: 'Full access' },
+        ],
+      },
+      configOptions: [
+        {
+          id: 'effort',
+          currentValue: 'low',
+          options: [
+            { value: 'low', name: 'Low' },
+            { value: 'high', name: 'High' },
+            { value: 'ultra', name: 'Ultra', description: expect.stringMatching(/May start subagents on its own/) },
+          ],
+        },
+        { id: 'service_tier', currentValue: 'default' },
+        { id: 'web_search', currentValue: 'cached' },
+      ],
+    })
+  })
+
+  it('sends a change between turns through thread/settings/update and shows what Codex reads back', async () => {
+    let turn: FakeCodexTurn | undefined
+    const { server, runtime, events } = session({ onTurn: (t) => (turn = t) })
+    await runtime.start()
+
+    await runtime.setConfigOption('effort', 'high')
+    await runtime.setConfigOption('service_tier', 'priority')
+    expect(server.requests('thread/settings/update').map((r) => r.params)).toEqual([
+      { threadId: runtime.sessionId, effort: 'high' },
+      { threadId: runtime.sessionId, serviceTier: 'priority' },
+    ])
+    expect(option(events, 'effort')).toBe('high')
+    expect(option(events, 'service_tier')).toBe('priority')
+
+    // A value Codex already has is not sent again: it would read nothing back.
+    await runtime.setConfigOption('effort', 'high')
+    expect(server.requests('thread/settings/update')).toHaveLength(2)
+
+    await runtime.setMode('supervised')
+    expect(server.requests('thread/settings/update')[2]!.params).toEqual({
+      threadId: runtime.sessionId,
+      approvalPolicy: 'untrusted',
+      approvalsReviewer: 'user',
+      sandboxPolicy: { type: 'readOnly', networkAccess: false },
+    })
+    expect(events.filter((e) => e.event === 'current_mode_update').at(-1)).toMatchObject({
+      data: { currentModeId: 'supervised' },
+    })
+
+    // Every turn still sends every setting.
+    const prompt = runtime.prompt({ prompt: PROMPT })
+    await vi.waitFor(() => expect(turn).toBeDefined())
+    expect(server.requests('turn/start')[0]!.params).toMatchObject({
+      model: 'gpt-6-luna',
+      effort: 'high',
+      serviceTier: 'priority',
+      approvalPolicy: 'untrusted',
+      sandboxPolicy: { type: 'readOnly' },
+    })
+    turn!.completed()
+    await prompt
+  })
+
+  it('refuses a change Codex reads back otherwise, and shows what it kept', async () => {
+    const { server, runtime, events } = session()
+    await runtime.start()
+    server.respond('thread/settings/update', (params) => {
+      setImmediate(() =>
+        server.notify('thread/settings/updated', {
+          threadId: params.threadId,
+          threadSettings: codexBuilders.buildThreadSettings({ model: 'gpt-6-luna', effort: 'low', serviceTier: 'default' }),
+        }),
+      )
+      return {}
+    })
+    await expect(runtime.setConfigOption('effort', 'high')).rejects.toThrow(/kept its own effort: low/)
+    expect(option(events, 'effort')).toBe('low')
+  })
+
+  it('refuses values the model does not offer, and presets a policy rules out', async () => {
+    const { runtime } = session({
+      setup: (server) =>
+        server.respond('configRequirements/read', {
+          supportsIndependentSpeedModes: true,
+          requirements: buildRequirements({ allowedSandboxModes: ['read-only', 'workspace-write'] }),
+        } as never),
+    })
+    await runtime.start()
+    await expect(runtime.setConfigOption('effort', 'medium')).rejects.toThrow(/does not offer medium/)
+    await expect(runtime.setConfigOption('bogus', 'x')).rejects.toThrow(/no setting bogus/)
+    await expect(runtime.setMode('plan')).rejects.toThrow(/no access preset plan/)
+    await expect(runtime.setMode('full-access')).rejects.toThrow(/administrator/)
+  })
+
+  it('queues a change made during a turn for the next turn/start', async () => {
+    const turns: FakeCodexTurn[] = []
+    const { server, runtime, events } = session({ onTurn: (t) => turns.push(t) })
+    await runtime.start()
+    const first = runtime.prompt({ prompt: PROMPT })
+    await vi.waitFor(() => expect(turns).toHaveLength(1))
+
+    await runtime.setMode('full-access')
+    await runtime.setConfigOption('effort', 'ultra')
+    expect(server.requests('thread/settings/update')).toHaveLength(0)
+    // Shown as what the next turn runs with.
+    expect(events.filter((e) => e.event === 'current_mode_update').at(-1)).toMatchObject({
+      data: { currentModeId: 'full-access' },
+    })
+    expect(option(events, 'effort')).toBe('ultra')
+
+    turns[0]!.completed()
+    await first
+    const second = runtime.prompt({ prompt: PROMPT })
+    await vi.waitFor(() => expect(turns).toHaveLength(2))
+    expect(server.requests('turn/start')[1]!.params).toMatchObject({
+      approvalPolicy: 'never',
+      sandboxPolicy: { type: 'dangerFullAccess' },
+      effort: 'ultra',
+    })
+    turns[1]!.completed()
+    await second
+  })
+
+  it('moves effort to what a new model offers when the model changes', async () => {
+    const { server, runtime, events } = session()
+    await runtime.start()
+    await runtime.setConfigOption('effort', 'ultra')
+    await runtime.setModel('gpt-6-mini')
+    expect(server.requests('thread/settings/update').at(-1)!.params).toEqual({
+      threadId: runtime.sessionId,
+      model: 'gpt-6-mini',
+      effort: 'medium',
+    })
+    expect(events.filter((e) => e.event === 'current_model_update').at(-1)).toMatchObject({
+      data: { currentModelId: 'gpt-6-mini' },
+    })
+    expect(option(events, 'effort')).toBe('medium')
+  })
+
+  it('opens the thread again with a new web search mode, which sticks to the thread', async () => {
+    let turn: FakeCodexTurn | undefined
+    const { server, runtime } = session({ onTurn: (t) => (turn = t) })
+    await runtime.start()
+    const threadId = runtime.sessionId
+    const prompt = runtime.prompt({ prompt: PROMPT })
+    await vi.waitFor(() => expect(turn).toBeDefined())
+    turn!.completed()
+    await prompt
+
+    await runtime.setConfigOption('web_search', 'live')
+    expect(server.requests('thread/unsubscribe')[0]!.params).toEqual({ threadId })
+    expect(server.requests('thread/resume')[0]!.params).toMatchObject({
+      threadId,
+      config: { notify: [], web_search: 'live' },
+      approvalPolicy: 'on-request',
+      sandbox: 'workspace-write',
+    })
+    expect(runtime.sessionId).toBe(threadId)
+  })
+
+  it('starts a thread that never ran a turn again for a new web search mode', async () => {
+    const { server, runtime, events } = session()
+    await runtime.start()
+    const first = runtime.sessionId
+    await runtime.setConfigOption('web_search', 'disabled')
+    // Nothing on disk to resume: a fresh thread, announced so the host stamps it.
+    expect(server.requests('thread/start')).toHaveLength(2)
+    expect(server.requests('thread/start')[1]!.params).toMatchObject({
+      config: { notify: [], web_search: 'disabled' },
+    })
+    expect(runtime.sessionId).not.toBe(first)
+    expect(events.filter((e) => e.event === 'session_created').at(-1)!.sessionId).toBe(runtime.sessionId)
+  })
+
+  it('restores the session’s access preset and settings when its process starts', async () => {
+    let turn: FakeCodexTurn | undefined
+    const { server, runtime, events } = session({
+      onTurn: (t) => (turn = t),
+      spec: {
+        desiredConfig: {
+          modeId: 'supervised',
+          values: { effort: 'high', service_tier: 'priority', web_search: 'disabled' },
+        },
+      },
+    })
+    await runtime.start()
+    expect(server.requests('thread/start')[0]!.params).toMatchObject({
+      approvalPolicy: 'untrusted',
+      sandbox: 'read-only',
+      config: { notify: [], web_search: 'disabled' },
+    })
+    expect(events.find((e) => e.event === 'session_created')!.data).toMatchObject({
+      modes: { currentModeId: 'supervised' },
+    })
+    const prompt = runtime.prompt({ prompt: PROMPT })
+    await vi.waitFor(() => expect(turn).toBeDefined())
+    expect(server.requests('turn/start')[0]!.params).toMatchObject({
+      effort: 'high',
+      serviceTier: 'priority',
+      approvalPolicy: 'untrusted',
+    })
+    turn!.completed()
+    await prompt
+  })
+
+  it('refuses an image for a model that cannot read one, before the turn', async () => {
+    const { server, runtime } = session()
+    await runtime.start()
+    await runtime.setModel('gpt-6-mini')
+    await expect(
+      runtime.prompt({
+        prompt: {
+          text: 'look',
+          blocks: [
+            { type: 'text', text: 'look' },
+            { type: 'image', mimeType: 'image/png', data: 'AAAA' },
+          ],
+        },
+      }),
+    ).rejects.toThrow(/GPT-6-MINI cannot read images/)
+    expect(server.requests('turn/start')).toHaveLength(0)
+  })
+
+  it('shows a rerouted model in the turn', async () => {
+    let turn: FakeCodexTurn | undefined
+    const { server, runtime, events } = session({ onTurn: (t) => (turn = t) })
+    await runtime.start()
+    const prompt = runtime.prompt({ prompt: PROMPT })
+    await vi.waitFor(() => expect(turn).toBeDefined())
+    server.notify('model/rerouted', {
+      threadId: runtime.sessionId!,
+      turnId: turn!.id,
+      fromModel: 'gpt-6-luna',
+      toModel: 'gpt-6-mini',
+      reason: 'highRiskCyberActivity',
+    })
+    turn!.completed()
+    await prompt
+    expect(events.find((e) => e.event === 'provider_notice')).toMatchObject({
+      category: 'session',
+      data: {
+        kind: 'model_fallback',
+        model: { to: 'GPT-6-MINI' },
+        detail: 'Codex moved this turn off GPT-6-LUNA: the request looked like high-risk cyber activity.',
+      },
+    })
   })
 })

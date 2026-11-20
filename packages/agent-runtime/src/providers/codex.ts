@@ -23,17 +23,22 @@ export const codex: CodexProviderConfig = {
     canLoadSession: true,
     // `turn/interrupt`, a bounded wait, then the turn is closed regardless.
     canCancelPrompt: true,
-    // Every `turn/start` names the model, so a change applies next turn.
+    // Between turns through `thread/settings/update`; every `turn/start`
+    // names the model too.
     canSetModel: true,
     // Reasoning summaries, one short headline per part (`summary: "detailed"`).
     supportsThoughtStreaming: true,
     // Per-turn token counts and the context window, from
     // `thread/tokenUsage/updated`.
     supportsUsage: true,
-    // --- arrives with the composer (CAL-260) ------------------------------
-    // Access presets are the mode; reasoning effort and speed are options.
-    canSetMode: false,
-    canSetConfigOption: false,
+    // --- delivered with the composer (CAL-260) -----------------------------
+    // Access presets are the mode; reasoning effort, speed and web search are
+    // options. Between turns each goes through `thread/settings/update` and
+    // is read back from `thread/settings/updated`; web search reopens the
+    // thread with its `config`. During a turn a change waits for the next
+    // `turn/start`.
+    canSetMode: true,
+    canSetConfigOption: true,
     // --- delivered with steer (CAL-262) -----------------------------------
     // `turn/steer` into the turn in flight, shown where Codex echoes it. A
     // refused steer is queued for the next turn; one already sent cannot be

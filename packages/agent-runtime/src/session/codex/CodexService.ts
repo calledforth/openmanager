@@ -1,6 +1,6 @@
 import { homedir } from 'node:os'
 import type { ProviderId } from '@agentpack/contract'
-import type { v2 } from '@openmanager/codex-app-server-protocol'
+import type { v2, WebSearchMode } from '@openmanager/codex-app-server-protocol'
 import type { HostDeps } from '../../host.js'
 import { DEFAULT_RUNTIME_TIMEOUTS, type RuntimeTimeouts } from '../constants.js'
 import type { ProcessExit, SessionRuntimeStopReason } from '../lifecycle.js'
@@ -13,6 +13,7 @@ import {
   type CodexProviderState,
 } from './codex-account.js'
 import {
+  codexConfiguredWebSearch,
   readCodexFeatures,
   readCodexModels,
   readCodexPermissionProfiles,
@@ -107,6 +108,10 @@ export type CodexDiscovery = {
   requirements?: v2.ConfigRequirementsReadResponse
   /** The feature flags openmanager relies on, as Codex has them now. */
   features?: CodexFeatures
+  /** The web search mode the user's config sets for the directory asked
+   * about (`config/read`); `null` when it sets none. Absent when the CLI
+   * could not say. */
+  webSearch?: WebSearchMode | null
 }
 
 /** One `codex app-server` per environment for everything that is not a
@@ -351,7 +356,7 @@ export class CodexService {
         })
         return undefined
       })
-    const [models, permissionProfiles, requirements, features] = await Promise.all([
+    const [models, permissionProfiles, requirements, features, config] = await Promise.all([
       readCodexModels({ request: ask }),
       optional(
         'permissionProfile/list',
@@ -359,7 +364,12 @@ export class CodexService {
       ),
       optional('configRequirements/read', askOptional('configRequirements/read', undefined)),
       optional('experimentalFeature/list', readCodexFeatures({ request: askOptional })),
+      optional(
+        'config/read',
+        askOptional('config/read', options.cwd ? { cwd: options.cwd } : {}),
+      ),
     ])
+    const webSearch = config ? codexConfiguredWebSearch(config) : undefined
     return {
       handshake: this.handshake ?? handshake,
       spawned,
@@ -368,6 +378,7 @@ export class CodexService {
       ...(permissionProfiles ? { permissionProfiles } : {}),
       ...(requirements ? { requirements } : {}),
       ...(features ? { features } : {}),
+      ...(webSearch !== undefined ? { webSearch } : {}),
     }
   }
 

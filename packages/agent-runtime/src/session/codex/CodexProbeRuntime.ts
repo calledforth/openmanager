@@ -11,6 +11,7 @@ import {
   CODEX_SIGNED_OUT_MESSAGE,
   codexAccountLabel,
 } from './codex-account.js'
+import { codexModeListing, defaultCodexAccessPreset } from './codex-access.js'
 import { codexModelListing, codexPolicy } from './codex-catalog.js'
 import type { CodexHandshake } from './CodexAppServerClient.js'
 import type { CodexService } from './CodexService.js'
@@ -36,6 +37,8 @@ export type CodexProbeDeps = {
   /** The environment's service process, which answers every question. */
   service: CodexService
   onEvent?: (event: BackendEvent) => void
+  /** The machine's platform, for the default access preset. */
+  platform?: NodeJS.Platform
 }
 
 /** Provider-level questions for Codex, answered by the environment's service
@@ -101,6 +104,7 @@ export class CodexProbeRuntime implements ProbeRuntime {
     const context = {
       ...(discovery.requirements ? { requirements: discovery.requirements.requirements } : {}),
       ...(discovery.features ? { features: discovery.features } : {}),
+      ...(discovery.webSearch !== undefined ? { webSearch: discovery.webSearch } : {}),
     }
     const models = codexModelListing(discovery.models, context)
     // Asked and answered (even "no policy") is a policy; a CLI that could
@@ -126,6 +130,9 @@ export class CodexProbeRuntime implements ProbeRuntime {
       sessionListAdvertised: false,
       loadSessionAdvertised: this.deps.config.capabilities.canLoadSession,
       models,
+      // Access is Codex's mode control: the presets, with the one a new
+      // session starts in.
+      modes: codexModeListing(defaultCodexAccessPreset(this.deps.platform)),
       ...(policy ? { policy } : {}),
     }
     this.emit(

@@ -381,7 +381,7 @@ export function createComposerService(
       agentInfo?: Parameters<ComposerStore['upsertProfile']>[1]['agentInfo']
       promptCapabilities?: Parameters<ComposerStore['upsertProfile']>[1]['promptCapabilities']
       models?: Parameters<typeof modelPatch>[0]
-      modes?: Parameters<typeof modePatch>[0]
+      modes?: Parameters<typeof modePatch>[0] & { currentModeId?: string }
       policy?: unknown
     },
   ) => {
@@ -400,6 +400,12 @@ export function createComposerService(
       // No probe can ask an ACP agent for its modes, so a probe's answer only
       // ever fills a gap here.
       ...(current?.availableModes === undefined ? modePatch(catalog.modes) : {}),
+      // The mode a new session starts in, when no session has said yet: a
+      // draft opens on it rather than on the first mode listed (Codex's
+      // Auto-accept edits, not Supervised).
+      ...(current?.defaultModeId === undefined && catalog.modes?.currentModeId
+        ? { defaultModeId: catalog.modes.currentModeId }
+        : {}),
       // Only a probe reads it, and a probe that could not say leaves it out,
       // so whatever arrives is the provider's current answer.
       ...policyPatch(catalog.policy),

@@ -272,6 +272,14 @@ export class FakeCodexAppServer implements TerminableChild {
    * the test's to script: `onTurn` gets each one as it starts. Enough for code
    * that only needs a session to come up.
    *
+   * Each thread keeps its settings as Codex does. `thread/settings/update`
+   * and a `turn/start` with overrides change them and read them back with
+   * `thread/settings/updated`, only when something changed (_probed_): the
+   * update's answer comes first, a turn's read-back before its answer.
+   * `thread/unsubscribe` unloads a thread and `thread/resume` loads it again
+   * with the config it is given, once it has run a turn; before that Codex
+   * has nothing on disk and answers `no rollout found`.
+   *
    * `turn/steer` is answered as Codex 0.170 answers it (probed): the running
    * turn takes the input and echoes it at once as a `userMessage` carrying
    * the `clientUserMessageId`; a turn id that is not the running one, or no
@@ -279,6 +287,47 @@ export class FakeCodexAppServer implements TerminableChild {
   serveThreads(onTurn?: (turn: FakeCodexTurn) => void): this {
     const threads = new Map<string, FakeCodexThread>()
     const turns = new Map<string, FakeCodexTurn>()
+    const loaded = new Set<string>()
+    const prompted = new Set<string>()
+    /** Apply what a request sets; read back when anything changed. */
+    const change = (
+      thread: FakeCodexThread,
+      params: Partial<v2.ThreadSettingsUpdateParams>,
+    ): (() => void) | undefined => {
+      const before = JSON.stringify(thread.settings)
+      const next = { ...thread.settings }
+      if (params.model) next.model = params.model
+      if (params.effort !== undefined) next.effort = params.effort
+      if (params.serviceTier !== undefined) next.serviceTier = params.serviceTier ?? 'default'
+      if (params.approvalPolicy) next.approvalPolicy = params.approvalPolicy
+      if (params.approvalsReviewer) next.approvalsReviewer = params.approvalsReviewer
+      if (params.sandboxPolicy) next.sandboxPolicy = params.sandboxPolicy
+      thread.settings = next
+      if (JSON.stringify(next) === before) return undefined
+      return () => this.notify('thread/settings/updated', { threadId: thread.id, threadSettings: next })
+    }
+    const opened = (
+      thread: FakeCodexThread,
+      params: { model?: string | null; serviceTier?: string | null; approvalPolicy?: v2.AskForApproval | null; approvalsReviewer?: v2.ApprovalsReviewer | null; sandbox?: v2.SandboxMode | null },
+    ) => {
+      thread.settings = {
+        ...thread.settings,
+        ...(params.model ? { model: params.model } : {}),
+        ...(params.serviceTier !== undefined ? { serviceTier: params.serviceTier } : {}),
+        ...(params.approvalPolicy ? { approvalPolicy: params.approvalPolicy } : {}),
+        ...(params.approvalsReviewer ? { approvalsReviewer: params.approvalsReviewer } : {}),
+        ...(params.sandbox ? { sandboxPolicy: sandboxPolicy(params.sandbox) } : {}),
+      }
+      loaded.add(thread.id)
+      return thread.startResponse({
+        model: thread.settings.model,
+        serviceTier: thread.settings.serviceTier,
+        reasoningEffort: thread.settings.effort,
+        approvalPolicy: thread.settings.approvalPolicy,
+        approvalsReviewer: thread.settings.approvalsReviewer,
+        sandbox: thread.settings.sandboxPolicy,
+      })
+    }
     this.respond(
       'thread/start',
       (params) => {
@@ -288,19 +337,47 @@ export class FakeCodexAppServer implements TerminableChild {
           ephemeral: params.ephemeral ?? false,
         })
         threads.set(thread.id, thread)
-        return thread.startResponse({
-          ...(params.approvalPolicy ? { approvalPolicy: params.approvalPolicy } : {}),
-          sandbox: sandboxPolicy(params.sandbox),
-        })
+        return opened(thread, params)
       },
       { after: (_request, result) => threads.get(result.thread.id)?.started() },
     )
+    this.respond('thread/settings/update', (params) => {
+      const thread = threads.get(params.threadId)
+      if (!thread || !loaded.has(thread.id))
+        throw new CodexRpcError(RPC_INVALID_REQUEST, `thread not found: ${params.threadId}`)
+      const readBack = change(thread, params)
+      // Answered first, read back after (probed).
+      if (readBack) setImmediate(readBack)
+      return {}
+    })
+    this.respond('thread/unsubscribe', (params) => {
+      loaded.delete(params.threadId)
+      return { status: 'unsubscribed' } as v2.ThreadUnsubscribeResponse
+    })
+    this.respond('thread/resume', (params) => {
+      const thread = threads.get(params.threadId)
+      if (!thread || !prompted.has(thread.id))
+        throw new CodexRpcError(RPC_INVALID_REQUEST, `no rollout found for thread id ${params.threadId}`)
+      // A thread still loaded keeps the config it has (probed).
+      if (!loaded.has(thread.id)) thread.config = params.config ?? null
+      return {
+        ...opened(thread, params),
+        collaborationMode: thread.settings.collaborationMode,
+        initialTurnsPage: null,
+        turnsBackwardsCursor: null,
+        itemsBackwardsCursor: null,
+      } as unknown as v2.ThreadResumeResponse
+    })
     this.respond(
       'turn/start',
       (params) => {
         const thread = threads.get(params.threadId)
         // What codex 0.170 answers for a thread it has not started or resumed.
-        if (!thread) throw new CodexRpcError(RPC_INVALID_REQUEST, `thread not found: ${params.threadId}`)
+        if (!thread || !loaded.has(thread.id))
+          throw new CodexRpcError(RPC_INVALID_REQUEST, `thread not found: ${params.threadId}`)
+        // Overrides stick, and are read back before the answer (probed).
+        change(thread, params)?.()
+        prompted.add(thread.id)
         const turn = thread.turn()
         turns.set(turn.id, turn)
         return turn.startResponse()

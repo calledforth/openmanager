@@ -104,7 +104,7 @@ function PillSelect<T extends string>({
   describeOnHover,
 }: {
   value: T
-  options: Array<{ id: T; name: string; description?: string }>
+  options: Array<{ id: T; name: string; description?: string; disabledReason?: string }>
   onChange: (id: T) => void
   disabled?: boolean
   variant?: 'filled' | 'ghost'
@@ -127,6 +127,13 @@ function PillSelect<T extends string>({
             ? describeOnHover
               ? { title: option.description }
               : { description: option.description }
+            : {}),
+          // Listed, not pickable, and saying why: a policy or a switched-off
+          // feature rules it out.
+          ...(option.disabledReason
+            ? describeOnHover
+              ? { disabled: true, title: option.disabledReason }
+              : { disabled: true, description: option.disabledReason }
             : {}),
         })),
       },
@@ -347,7 +354,7 @@ export interface MessageInputViewProps {
   providerModelGroups: ProviderModelGroup[]
   currentModelId: string
   configOptions: SessionConfigOption[]
-  modeOptions: Array<{ id: string; name: string; description?: string }>
+  modeOptions: Array<{ id: string; name: string; description?: string; disabledReason?: string }>
   /** Reasoning-effort levels the selected model accepts, cheapest first. Empty
    * hides the pill entirely — a model with no effort control must not show
    * one, and which levels exist is per-model, not per-provider. */

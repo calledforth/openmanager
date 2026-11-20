@@ -1,4 +1,9 @@
-import type { ProviderId, ProviderMetadata, PromptCapabilities } from '@agentpack/contract'
+import type {
+  ProviderId,
+  ProviderMetadata,
+  PromptCapabilities,
+  SessionConfigOption,
+} from '@agentpack/contract'
 import { deriveSessionChrome } from '@agentpack/view'
 import { providerBlocksComposer, type ProviderUiStatus } from '../../providers/platform-provider'
 import type {
@@ -26,8 +31,15 @@ export type ComposerControlsUsage = {
   cost?: { amount: number; currency: string }
 }
 
-/** A pick the composer offers: a mode, or an effort level. */
-export type ComposerChoice = { id: string; name: string; description?: string }
+/** A pick the composer offers: a mode, or an effort level. A choice the
+ * provider's own configuration rules out (a managed policy, a switched-off
+ * feature) is listed but cannot be picked, and says why. */
+export type ComposerChoice = {
+  id: string
+  name: string
+  description?: string
+  disabledReason?: string
+}
 
 /** What the composer is derived from: the session, composer and platform state it sits on. */
 export interface ComposerControlsInput {
@@ -77,6 +89,9 @@ export interface ComposerControls {
   effortLevels: string[]
   /** The provider's own effort setting, with its labels, when it lists one. */
   effortOptions?: ComposerChoice[]
+  /** The settings the composer offers, less the values the provider's
+   * policy rules out (the one in force stays, so it still reads). */
+  configOptions: SessionConfigOption[]
   effortConfigId: string
   /** Blank until the session or the workspace says otherwise. */
   currentEffort: string
@@ -222,10 +237,19 @@ export function deriveComposerControls({
   const capabilitiesKnown = modelOptions.some(
     (model) => model.supportsAutoMode || model.effortLevels?.length,
   )
-  const modeOptions =
+  // What the provider's own configuration rules out (Codex's managed policy
+  // and feature flags): a mode is listed but cannot be picked, saying why; a
+  // setting's value is not offered at all.
+  const policy = providerComposerProfiles[currentProviderId]?.policy
+  const blockedModes = new Map((policy?.blockedModes ?? []).map((block) => [block.id, block.reason]))
+  const modeOptions = (
     capabilitiesKnown && selectedModel && !selectedModel.supportsAutoMode
       ? allModeOptions.filter((mode) => mode.id !== 'auto')
       : allModeOptions
+  ).map((mode) => {
+    const reason = blockedModes.get(mode.id)
+    return reason ? { ...mode, disabledReason: reason } : mode
+  })
   const rawModeId =
     runtimeState?.modes?.currentModeId ??
     chrome.modePicker?.currentModeId ??
@@ -242,7 +266,8 @@ export function deriveComposerControls({
   // whatever id the provider gives it. Claude's level list on the model row is
   // the fallback, for a draft whose catalog carries no settings.
   const effortLevels = selectedModel?.effortLevels ?? []
-  const effortOption = effortConfigOption(runtimeState?.configOptions)
+  const configOptions = withoutBlockedValues(runtimeState?.configOptions, policy?.blockedConfigValues)
+  const effortOption = effortConfigOption(configOptions)
   const effortConfigId = effortOption?.id ?? 'effort'
   const effortOptions = effortOption?.options.map((option) => ({
     id: option.value,
@@ -345,6 +370,7 @@ export function deriveComposerControls({
     currentModeId,
     effortLevels,
     ...(effortOptions ? { effortOptions } : {}),
+    configOptions,
     effortConfigId,
     currentEffort,
     slashCommands,
@@ -363,6 +389,27 @@ export function deriveComposerControls({
     planBuildModeId,
     draftKey,
   }
+}
+
+const NO_CONFIG_OPTIONS: SessionConfigOption[] = []
+
+/** Settings less the values a policy blocks. The value in force is kept even
+ * when blocked, so the setting still says what the session runs with. */
+export function withoutBlockedValues(
+  options: SessionConfigOption[] | undefined,
+  blocked: ReadonlyArray<{ configId: string; id: string }> | undefined,
+): SessionConfigOption[] {
+  if (!options) return NO_CONFIG_OPTIONS
+  if (!blocked?.length) return options
+  return options.map((option) => {
+    if (option.type !== 'select') return option
+    const values = option.options.filter(
+      (entry) =>
+        entry.value === option.currentValue ||
+        !blocked.some((block) => block.configId === option.id && block.id === entry.value),
+    )
+    return values.length === option.options.length ? option : { ...option, options: values }
+  })
 }
 
 /**

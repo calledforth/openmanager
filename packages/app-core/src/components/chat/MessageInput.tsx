@@ -127,7 +127,6 @@ export function useMessageInputBinding() {
   // session is created.
   const disabled = !activeWorkspacePath || (!activeSessionId && !isSessionDraftOpen)
   const {
-    runtimeState,
     currentProviderId,
     currentProviderName,
     providerReady,
@@ -138,6 +137,7 @@ export function useMessageInputBinding() {
     currentModeId,
     effortLevels,
     effortOptions,
+    configOptions,
     effortConfigId,
     currentEffort,
     slashCommands,
@@ -323,7 +323,7 @@ export function useMessageInputBinding() {
     currentProviderId,
     providerModelGroups,
     currentModelId,
-    configOptions: runtimeState?.configOptions ?? [],
+    configOptions,
     modeOptions,
     currentModeId,
     effortLevels,

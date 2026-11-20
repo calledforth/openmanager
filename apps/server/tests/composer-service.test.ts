@@ -279,6 +279,22 @@ describe('composer service commands', () => {
       expect(store.getProfile('cursor')?.defaultModelId).toBeUndefined()
     })
 
+    it('takes the mode a new session starts in from a probe, until something has said', async () => {
+      const { service, store } = await harness()
+      const availableModes = [
+        { id: 'supervised', displayName: 'Supervised' },
+        { id: 'auto-accept-edits', displayName: 'Auto-accept edits' },
+      ]
+      service.observeCatalog('cursor', { modes: { availableModes, currentModeId: 'auto-accept-edits' } })
+      // A draft opens on it, not on the first mode listed.
+      expect(store.getProfile('cursor')).toMatchObject({
+        availableModes: [{ id: 'supervised' }, { id: 'auto-accept-edits' }],
+        defaultModeId: 'auto-accept-edits',
+      })
+      service.observeCatalog('cursor', { modes: { availableModes, currentModeId: 'supervised' } })
+      expect(store.getProfile('cursor')?.defaultModeId).toBe('auto-accept-edits')
+    })
+
     it("keeps a provider's policy and each model's upgrade, replacing both with a newer answer", async () => {
       const { service, store } = await harness()
       const policy = {
