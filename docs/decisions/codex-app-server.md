@@ -180,6 +180,15 @@ Codex is signed in the way Cursor and OpenCode are: on the machine, with `codex 
 - **An archive or delete made outside openmanager** does not delete the session. The next resume follows the resume fallback: it unarchives an archived thread, and starts fresh with a note when the thread is missing.
 - **Existing Codex threads are not imported.** [CAL-276](https://linear.app/calledforth/issue/CAL-276/import-existing-codex-threads) stays parked.
 
+How it works (_probed_ on 0.170):
+
+- `thread/name/set` echoes `thread/name/updated` to the connection that sent it, every time, even for the same name, so the runtime drops the echo of its own names. Codex trims a name and keeps the rest (no collapsing, no truncation at 600 characters); an update that arrives while a set is unanswered counts as its echo even if it differs. A refused set is tried again after the next turn. Any other `thread/name/updated`, and the name a resumed thread already has when openmanager has no title of its own, is the agent's title, weighed like any provider title (fallback < provider < generated < user).
+- Only user and generated titles are sent. A live runtime gets a rename at once; a session with no live runtime gets its title when its runtime next starts, so a rename never starts a process.
+- Codex refuses `thread/archive` (and `thread/resume`) from a second process while another holds the thread ("already has an active writer"). So a deletion first waits for any start or stop of the session's runtime, then archives on that runtime's own connection when one is live (interrupting a running turn first), else in a throwaway app-server, and the runtime is then stopped. Throwaway archives run one app-server at a time, which archives every queued thread before it goes. A thread Codex no longer has (`no rollout found`) counts as archived.
+- Removing a project retires its sessions the same way, since their rows go with it.
+- Because of the same refusal, an outside archive can only happen while openmanager holds no runtime for the thread, and resuming it answers `-32600` "session … is archived". The runtime unarchives it and resumes once.
+- `canDeleteSession` stays false: it advertises deleting from the provider's own list, which this is not.
+
 Built in [CAL-271](https://linear.app/calledforth/issue/CAL-271/sync-titles-archive-and-delete-with-codex).
 
 ### Persistent approvals

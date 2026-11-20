@@ -7,6 +7,9 @@ import { opencode } from '../providers/opencode.js'
 import type { ProviderConfig } from '../providers/index.js'
 import type { AcpConnectionSpec } from '../session/AcpConnection.js'
 import { FakeClaudeSdk } from '../session/claude/test-sdk.js'
+import { CodexAppServerClient } from '../session/codex/CodexAppServerClient.js'
+import type { CodexStarter } from '../session/codex/start.js'
+import { FakeCodexAppServer, type FakeCodexTurn } from '../session/codex/testing/index.js'
 import { FakeConnectionFactory, type FakeWire } from '../session/test-connection.js'
 import { AgentRuntime } from './AgentRuntime.js'
 
@@ -1465,5 +1468,147 @@ describe('AgentRuntime subagent messages', () => {
       'toolu_agent',
     )
     vi.unstubAllEnvs()
+  })
+})
+
+/** An `AgentRuntime` whose Codex processes are fakes, one per start, kept in
+ * start order. */
+function buildCodex(
+  options: { onTurn?: (turn: FakeCodexTurn) => void; startDelayMs?: number } = {},
+) {
+  const servers: FakeCodexAppServer[] = []
+  /** The most app-servers ever alive at once. */
+  let peak = 0
+  const codexStart: CodexStarter = async () => {
+    if (options.startDelayMs)
+      await new Promise((resolve) => setTimeout(resolve, options.startDelayMs))
+    const server = new FakeCodexAppServer()
+    server.respond('model/list', { data: [], nextCursor: null }).serveThreads(options.onTurn)
+    server.respond('thread/name/set', {})
+    server.respond('thread/archive', {})
+    servers.push(server)
+    peak = Math.max(peak, servers.filter((each) => !each.exited).length)
+    const client = new CodexAppServerClient(server, {
+      log: vi.fn(),
+      terminateGraceMs: 50,
+      requestTimeoutMs: 2_000,
+      exitDrainMs: 10,
+    })
+    await client.initialize({ clientVersion: 'test' })
+    return client
+  }
+  const runtime = new AgentRuntime({ emitEvent: vi.fn(), log: vi.fn() }, configs, {
+    codexStart,
+    timeouts: { interruptGraceMs: 200 },
+  })
+  return { runtime, servers, peak: () => peak }
+}
+
+const CODEX = { providerId: 'codex' as const, workspaceId: '/work', cwd: '/work' }
+
+describe('AgentRuntime Codex titles and deletion', () => {
+  it('gives a live thread a new title, and a thread with no process its title when it starts', async () => {
+    const { runtime, servers } = buildCodex()
+    // Nothing live: a rename starts no process.
+    await runtime.setSessionTitle({ providerId: 'codex', threadId: 't1', title: 'Early' })
+    expect(servers).toHaveLength(0)
+
+    const { sessionId } = await runtime.ensureSession({ ...CODEX, threadId: 't1', title: 'First' })
+    const first = await servers[0]!.nextRequest('thread/name/set')
+    expect(first.params).toEqual({ threadId: sessionId, name: 'First' })
+
+    await runtime.setSessionTitle({ providerId: 'codex', threadId: 't1', title: 'Second' })
+    expect(servers[0]!.requests('thread/name/set').map((r) => r.params.name)).toEqual([
+      'First',
+      'Second',
+    ])
+    expect(servers).toHaveLength(1)
+    await runtime.shutdown()
+  })
+
+  it('archives a deleted session’s thread on the process holding it, then stops it', async () => {
+    const { runtime, servers } = buildCodex()
+    const { sessionId } = await runtime.ensureSession({ ...CODEX, threadId: 't1' })
+    await runtime.retireSession({ ...CODEX, threadId: 't1', sessionId })
+    expect(servers).toHaveLength(1)
+    expect(servers[0]!.requests('thread/archive')[0]!.params).toEqual({ threadId: sessionId })
+    expect(servers[0]!.exited).toBe(true)
+  })
+
+  it('archives in a throwaway process when no runtime holds the thread', async () => {
+    const { runtime, servers } = buildCodex()
+    await runtime.retireSession({ ...CODEX, threadId: 't2', sessionId: 'stored' })
+    expect(servers).toHaveLength(1)
+    expect(servers[0]!.requests('thread/start')).toHaveLength(0)
+    expect(servers[0]!.requests('thread/archive')[0]!.params).toEqual({ threadId: 'stored' })
+    expect(servers[0]!.exited).toBe(true)
+  })
+
+  it('only stops the process of a provider that keeps no archive', async () => {
+    const { runtime, connections } = build(sequentialSessions())
+    await runtime.ensureSession({ ...ROUTE, threadId: 'thread-1' })
+    await runtime.retireSession({ ...ROUTE, threadId: 'thread-1', sessionId: 'session-1' })
+    expect(connections.connections).toHaveLength(1)
+    // Stopped: the thread's next use needs a process of its own again.
+    await runtime.ensureSession({ ...ROUTE, threadId: 'thread-1' })
+    expect(connections.connections).toHaveLength(2)
+  })
+
+  it('archives on a runtime still starting once it is up, never in a second process', async () => {
+    const { runtime, servers } = buildCodex({ startDelayMs: 30 })
+    const starting = runtime.ensureSession({ ...CODEX, threadId: 't1' })
+    starting.catch(() => undefined)
+    // Deleted before its first start has finished: no provider session id yet.
+    await runtime.retireSession({ ...CODEX, threadId: 't1' })
+    const { sessionId } = await starting
+    expect(servers).toHaveLength(1)
+    expect(servers[0]!.requests('thread/archive')[0]!.params).toEqual({ threadId: sessionId })
+    expect(servers[0]!.exited).toBe(true)
+  })
+
+  it('interrupts a running turn before archiving its thread', async () => {
+    let turn: FakeCodexTurn | undefined
+    const { runtime, servers } = buildCodex({ onTurn: (t) => (turn = t) })
+    const { sessionId } = await runtime.ensureSession({ ...CODEX, threadId: 't1' })
+    const server = servers[0]!
+    server.respond('turn/interrupt', () => {
+      setTimeout(() => turn!.interrupted(), 5)
+      return {}
+    })
+    const prompting = runtime.prompt({ ...CODEX, threadId: 't1', sessionId, prompt: PROMPT })
+    prompting.catch(() => undefined)
+    await vi.waitFor(() => expect(turn).toBeDefined())
+
+    await runtime.retireSession({ ...CODEX, threadId: 't1', sessionId })
+    const methods = server.requests().map((request) => request.method)
+    expect(methods).toContain('thread/archive')
+    expect(methods.indexOf('turn/interrupt')).toBeGreaterThan(-1)
+    expect(methods.indexOf('turn/interrupt')).toBeLessThan(methods.indexOf('thread/archive'))
+  })
+
+  it('archives many unloaded threads in one process at a time', async () => {
+    const { runtime, servers, peak } = buildCodex()
+    await Promise.all(
+      ['a', 'b', 'c'].map((id) =>
+        runtime.retireSession({ ...CODEX, threadId: `t-${id}`, sessionId: `stored-${id}` }),
+      ),
+    )
+    expect(peak()).toBe(1)
+    expect(servers.flatMap((server) => server.requests('thread/archive')).map((r) => r.params)).toEqual([
+      { threadId: 'stored-a' },
+      { threadId: 'stored-b' },
+      { threadId: 'stored-c' },
+    ])
+    expect(servers.every((server) => server.exited)).toBe(true)
+  })
+
+  it('starts nothing for a thread with no runtime and no provider session, or no archive', async () => {
+    const codex = buildCodex()
+    await codex.runtime.retireSession({ ...CODEX, threadId: 't1' })
+    expect(codex.servers).toHaveLength(0)
+
+    const acp = build(sequentialSessions())
+    await acp.runtime.retireSession({ ...ROUTE, threadId: 'thread-1', sessionId: 'session-1' })
+    expect(acp.connections.connections).toHaveLength(0)
   })
 })

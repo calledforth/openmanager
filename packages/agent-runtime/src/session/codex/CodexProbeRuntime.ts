@@ -10,6 +10,7 @@ import type { ProbeResult, ProbeRuntime } from '../ProbeRuntime.js'
 import { routeEvent } from '../wire.js'
 import { codexModelListing, readCodexModels } from './codex-catalog.js'
 import type { CodexAppServerClient } from './CodexAppServerClient.js'
+import { isMissingThread } from './CodexSessionRuntime.js'
 import { startRealCodex, type CodexStarter } from './start.js'
 
 export type CodexProbeSpec = {
@@ -83,11 +84,10 @@ export class CodexProbeRuntime implements ProbeRuntime {
     return this.inFlight
   }
 
-  private async run(): Promise<ProbeResult> {
-    // A retry after a failed probe starts afresh; the earlier process goes.
-    const previous = this.client
-    this.client = undefined
-    if (previous) await previous.terminate({ reason: 'disposed' }).catch(() => undefined)
+  /** The probe's app-server: the one already up, else a new one. */
+  private async connect(): Promise<CodexAppServerClient> {
+    if (this.client) return this.client
+    if (this.starting) return this.starting
     this.starting = (this.deps.start ?? startRealCodex)({
       cwd: this.spec.cwd,
       env: this.deps.env ?? process.env,
@@ -106,6 +106,15 @@ export class CodexProbeRuntime implements ProbeRuntime {
       throw new Error('Codex probe was disposed before it finished starting')
     }
     this.client = client
+    return client
+  }
+
+  private async run(): Promise<ProbeResult> {
+    // A retry after a failed probe starts afresh; the earlier process goes.
+    const previous = this.client
+    this.client = undefined
+    if (previous) await previous.terminate({ reason: 'disposed' }).catch(() => undefined)
+    const client = await this.connect()
     const info = client.info
     const agentInfo = {
       name: 'Codex',
@@ -162,6 +171,24 @@ export class CodexProbeRuntime implements ProbeRuntime {
     return Promise.reject(
       new CapabilityMissingError(this.providerId, 'canListSessions', 'listing sessions'),
     )
+  }
+
+  /** `thread/archive` for a session the user deleted while no runtime held
+   * it. No handshake beyond `initialize`: archiving needs neither the account
+   * nor the catalog. A thread Codex no longer has is already out of the way;
+   * one another Codex process holds is refused ("already has an active
+   * writer") and the refusal is thrown. */
+  async archiveSession(sessionId: string): Promise<void> {
+    const client = await this.connect()
+    try {
+      await client.request(
+        'thread/archive',
+        { threadId: sessionId },
+        { timeoutMs: this.timeouts.controlRequestMs },
+      )
+    } catch (error) {
+      if (!isMissingThread(error)) throw error
+    }
   }
 
   /** The catalog `probe()` read; asking twice costs one process. */

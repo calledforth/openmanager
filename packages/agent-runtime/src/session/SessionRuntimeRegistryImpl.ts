@@ -361,6 +361,22 @@ export class SessionRuntimeRegistryImpl implements SessionRuntimeRegistry {
     return exit
   }
 
+  async settled(threadId: ThreadId): Promise<void> {
+    for (;;) {
+      const inFlight = this.starting.get(threadId)
+      if (inFlight) {
+        await inFlight.run.then(noop, noop)
+        continue
+      }
+      const entry = this.byThread.get(threadId)
+      if (entry && entry.runtime.phase === 'stopping') {
+        await entry.runtime.exited
+        continue
+      }
+      return
+    }
+  }
+
   onRuntimeExit(
     listener: (entry: SessionRuntimeEntry, exit: SessionRuntimeExit) => void,
   ): () => void {

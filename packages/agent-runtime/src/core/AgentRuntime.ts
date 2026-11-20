@@ -28,6 +28,7 @@ import {
 import type { ExecFile } from '../providers/opencode-models.js'
 import type { AcpConnectionFactory } from '../session/AcpConnection.js'
 import type { ClaudeSdk } from '../session/claude/sdk.js'
+import type { CodexStarter } from '../session/codex/start.js'
 import type { ProbeResult, ProbeRuntime, ProbeRuntimeFactory } from '../session/ProbeRuntime.js'
 import {
   ProviderProbeRuntimeFactory,
@@ -99,6 +100,10 @@ export type RuntimeSessionArgs = RuntimeRoute & {
    * cache on every `ensureSession`, which costs zero RPCs when nothing has
    * changed — that is what replaces the per-message preamble. */
   desiredConfig?: DesiredSessionConfig
+  /** The session's title when the user or the title model wrote it
+   * (`SessionRuntimeSpec.title`). Read when a runtime starts; a change after
+   * that goes through `setSessionTitle`. */
+  title?: string
 }
 
 /** `SessionResumeRecord` minus the fields the map key and the caller's args
@@ -165,6 +170,9 @@ export type AgentRuntimeOptions = {
   /** The same seam for the Claude arm, which spawns its CLI through the SDK
    * rather than through `connections`. Tests inject `FakeClaudeSdk`. */
   claudeSdk?: ClaudeSdk
+  /** The Codex arm's seam: starts one app-server. Tests inject a starter
+   * wired to `FakeCodexAppServer`. */
+  codexStart?: CodexStarter
   /** The third seam: how a provider asked through its own CLI, rather than
    * over a connection, is run. Defaults to `node:child_process`. */
   execFile?: ExecFile
@@ -291,6 +299,7 @@ export class AgentRuntime {
         interactions: this.interactions,
         connections: () => this.acpConnections(),
         ...(options.claudeSdk ? { claudeSdk: options.claudeSdk } : {}),
+        ...(options.codexStart ? { codexStart: options.codexStart } : {}),
         ...(options.timeouts ? { timeouts: options.timeouts } : {}),
       }),
       onEvent: (providerId, event) => this.forward(providerId, event),
@@ -312,6 +321,7 @@ export class AgentRuntime {
       host,
       connections: () => this.acpConnections(),
       ...(options.claudeSdk ? { claudeSdk: options.claudeSdk } : {}),
+      ...(options.codexStart ? { codexStart: options.codexStart } : {}),
       ...(options.timeouts ? { timeouts: options.timeouts } : {}),
       ...(options.execFile ? { execFile: options.execFile } : {}),
     })
@@ -352,9 +362,13 @@ export class AgentRuntime {
           // Optional on the interface: pass it through only where it exists,
           // or every provider would read as able to report limits.
           ...(probe.readUsageLimits ? { readUsageLimits: () => probe.readUsageLimits!() } : {}),
+          ...(probe.archiveSession
+            ? { archiveSession: (sessionId: string) => probe.archiveSession!(sessionId) }
+            : {}),
           dispose: () => probe.dispose(),
         }
       },
+      archives: (providerId) => probes.archives(providerId),
     }
     this.health = new ProviderHealthMonitor({
       providerIds: Object.keys(configs) as ProviderId[],
@@ -830,7 +844,13 @@ export class AgentRuntime {
     this.bindProvider(args.threadId, args.providerId)
     if (args.sessionId) this.require(args, 'canLoadSession', 'load session')
     const desired = this.desiredFor(args)
-    const result = await this.startOrRebind(args, this.desiredFor(args, 'start'))
+    const opening = this.startOrRebind(args, this.desiredFor(args, 'start'))
+    this.opening.set(args.threadId, opening)
+    void opening.then(
+      () => this.forgetOpening(args.threadId, opening),
+      () => this.forgetOpening(args.threadId, opening),
+    )
+    const result = await opening
     this.remember(args, result.sessionId)
     // A runtime applies `desiredConfig` once at start; a *reused* one never
     // saw it. Reconciling here covers both, and the applied-state cache makes
@@ -839,6 +859,10 @@ export class AgentRuntime {
     // than the one the composer shows.
     if (reconcile && desired) await this.entry(args).runtime.applyDesiredConfig(desired)
     return result
+  }
+
+  private forgetOpening(threadId: string, opening: Promise<unknown>): void {
+    if (this.opening.get(threadId) === opening) this.opening.delete(threadId)
   }
 
   /** The desired config to open this session with: the host's durable
@@ -936,6 +960,7 @@ export class AgentRuntime {
         resumeCursor: args.resumeCursor,
         ...(desired ? { desiredConfig: desired } : {}),
         ...(instructions ? { instructions } : {}),
+        ...(args.title ? { title: args.title } : {}),
       })
       // Spawn, handshake, auth and session bootstrap all just succeeded
       // against this CLI. That is a stronger and more recent observation than
@@ -1196,6 +1221,114 @@ export class AgentRuntime {
     if (entry && entry.providerId === args.providerId)
       await this.registry.remove(args.threadId, { reason: 'session_deleted' })
     this.forgetThread(args.threadId)
+  }
+
+  /** The title openmanager now shows for a thread's session, to a provider
+   * that keeps names of its own (Codex: `thread/name/set`).
+   *
+   * Never respawns, like `cancel`: a thread with no live process gets the
+   * title when one next starts (`RuntimeSessionArgs.title`), so a rename
+   * never costs a process. Best-effort; a provider that refuses is logged
+   * by its runtime. */
+  async setSessionTitle(args: {
+    providerId: ProviderId
+    threadId: string
+    title: string
+  }): Promise<void> {
+    const entry = this.registry.get(args.threadId)
+    if (!entry || entry.providerId !== args.providerId || !isRuntimeAlive(entry.runtime.phase))
+      return
+    await entry.runtime.setTitle?.(args.title)
+  }
+
+  /** The user deleted the session: put its provider session away where the
+   * provider keeps ones nobody uses (Codex archives its thread, never
+   * deleting it), then stop the thread's process as `closeThread` does.
+   *
+   * A start or stop already under way for the thread is waited for first, so
+   * the choice below is made against what will stay. A live runtime archives
+   * on its own connection (its turn interrupted first), since Codex refuses
+   * the thread to any other process while one holds it; with none, a probe
+   * archives `sessionId`, one probe at a time. With neither a live runtime
+   * nor a `sessionId` (the provider never got the session), or for a
+   * provider with no archive, the thread is only closed. A failed archive is
+   * logged and the thread is closed anyway: the session is gone from
+   * openmanager whatever the provider says. */
+  async retireSession(args: RuntimeRoute & { sessionId?: string }): Promise<void> {
+    // An open that has not reached the registry yet is a start all the same.
+    await this.opening.get(args.threadId)?.catch(() => undefined)
+    await this.registry.settled(args.threadId)
+    const entry = this.registry.get(args.threadId)
+    const live =
+      entry && entry.providerId === args.providerId && isRuntimeAlive(entry.runtime.phase)
+        ? entry.runtime
+        : undefined
+    try {
+      if (live) await live.archive?.()
+      else if (args.sessionId && this.probes.archives?.(args.providerId))
+        await this.archiveInProbe({ ...args, sessionId: args.sessionId })
+    } catch (error) {
+      this.host.log({
+        scope: 'agent-runtime',
+        level: 'warn',
+        message: 'Could not archive the deleted session with its provider',
+        data: {
+          providerId: args.providerId,
+          error: error instanceof Error ? error.message : String(error),
+        },
+      })
+    }
+    await this.closeThread(args)
+  }
+
+  /** Opens in flight per thread, from before they reach the registry. */
+  private readonly opening = new Map<string, Promise<unknown>>()
+  /** Archive requests waiting for a probe, in arrival order. */
+  private archives: Array<{
+    args: RuntimeRoute & { sessionId: string }
+    resolve: () => void
+    reject: (error: unknown) => void
+  }> = []
+  private archiving = false
+
+  /** Archive in a probe, never more than one probe at a time: deleting a
+   * project's worth of sessions must not start one app-server per session.
+   * A probe archives every queued request for its provider before it goes,
+   * including those that arrive while it works. */
+  private archiveInProbe(args: RuntimeRoute & { sessionId: string }): Promise<void> {
+    return new Promise((resolve, reject) => {
+      this.archives.push({ args, resolve, reject })
+      if (!this.archiving) void this.drainArchives()
+    })
+  }
+
+  private async drainArchives(): Promise<void> {
+    this.archiving = true
+    try {
+      for (let first = this.archives[0]; first; first = this.archives[0]) {
+        const providerId = first.args.providerId
+        const probe = this.probeRuntime(first.args, false)
+        try {
+          for (
+            let index = this.archives.findIndex((item) => item.args.providerId === providerId);
+            index !== -1;
+            index = this.archives.findIndex((item) => item.args.providerId === providerId)
+          ) {
+            const [item] = this.archives.splice(index, 1)
+            try {
+              await probe.archiveSession!(item!.args.sessionId)
+              item!.resolve()
+            } catch (error) {
+              item!.reject(error)
+            }
+          }
+        } finally {
+          await probe.dispose()
+        }
+      }
+    } finally {
+      this.archiving = false
+    }
   }
 
   // Permissions and raw extension requests live entirely in the app-wide

@@ -9,6 +9,7 @@ import {
   type CodexHandshake,
 } from './CodexAppServerClient.js'
 import { codexAccountState, CodexProbeRuntime } from './CodexProbeRuntime.js'
+import { CodexRpcError } from './CodexRpcPeer.js'
 import { CodexNotInstalledError, type CodexStarter } from './start.js'
 
 
@@ -197,6 +198,33 @@ describe('CodexProbeRuntime', () => {
     await expect(probe.probe()).resolves.toMatchObject({ authenticated: true })
     expect(first.terminate).toHaveBeenCalledTimes(1)
     expect(second.terminate).not.toHaveBeenCalled()
+  })
+
+  // A session deleted while no runtime held its thread.
+  it('archives a thread without reading the account or the catalog', async () => {
+    const { client, requests, terminate } = stubClient({ 'thread/archive': {} })
+    const probe = build(async () => client)
+    await probe.archiveSession('thread-9')
+    expect(requests).toEqual([{ method: 'thread/archive', params: { threadId: 'thread-9' } }])
+    await probe.dispose()
+    expect(terminate).toHaveBeenCalledTimes(1)
+  })
+
+  it('takes a thread Codex no longer has as archived, and throws any other refusal', async () => {
+    const gone = stubClient({
+      'thread/archive': () => {
+        throw new CodexRpcError(-32600, 'no rollout found for thread id thread-9')
+      },
+    })
+    await expect(build(async () => gone.client).archiveSession('thread-9')).resolves.toBeUndefined()
+    const held = stubClient({
+      'thread/archive': () => {
+        throw new CodexRpcError(-32600, 'thread thread-9 already has an active writer')
+      },
+    })
+    await expect(build(async () => held.client).archiveSession('thread-9')).rejects.toThrow(
+      /active writer/,
+    )
   })
 
   it('does not list sessions', async () => {

@@ -61,6 +61,7 @@ async function setup(durable = true, onPersistenceError?: (error: unknown) => vo
     cancel: vi.fn().mockResolvedValue(undefined),
     stopBackgroundTasks: vi.fn().mockResolvedValue(undefined),
     closeThread: vi.fn().mockResolvedValue(undefined),
+    retireSession: vi.fn().mockResolvedValue(undefined),
   }
   const service = createThreadService(
     runtime as unknown as Pick<AgentRuntime, 'ensureSession' | 'prompt' | 'cancel'>,
@@ -461,13 +462,22 @@ describe('background work', () => {
     })
   })
 
-  it('leaves the process of a deleted session with no background work alone', async () => {
+  it('retires the provider session of a deleted session with no background work', async () => {
     const h = await setup()
     await h.userTurn()
 
     h.dispatch('session.delete', { sessionId: h.sessionId })
 
+    // Nothing in the background to end at once; the session's process is
+    // stopped (and, for Codex, its thread archived) by retiring it.
     expect(h.runtime.closeThread).not.toHaveBeenCalled()
+    expect(h.runtime.retireSession).toHaveBeenCalledWith({
+      providerId: 'claude',
+      threadId: h.created.thread.threadId,
+      workspaceId: '/workspace/project',
+      cwd: '/workspace/project',
+      sessionId: 'provider-session',
+    })
   })
 
   it('keeps a roster whose write had to be retried, so its tasks can still be stopped', async () => {

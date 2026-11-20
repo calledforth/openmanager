@@ -64,6 +64,10 @@ export interface SessionRuntimeRegistry {
 
   /** Stop and forget. Resolves once the child is gone. */
   remove(threadId: ThreadId, request: TerminationRequest): Promise<SessionRuntimeExit | undefined>
+  /** Resolves once no start is in flight for the thread and its runtime, if
+   * it has one, is not on its way out: what is live then stays live until
+   * someone stops it. */
+  settled(threadId: ThreadId): Promise<void>
 
   /** Called by the registry itself when a runtime exits unexpectedly, so the
    * entry never outlives its process — the bug that lets the UI report
