@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { createMockEnvironmentClient } from '../src/mock'
+import { createMockEnvironmentClient, MOCK_CODEX_PROVIDER } from '../src/mock'
 import { EnvironmentClientError } from '../src/errors'
 import { selectActiveThread, selectPendingInteractions, selectSessionList } from '../src/state'
 import { SESSION, THREAD, WORKSPACE, permission } from './fixtures'
@@ -480,6 +480,33 @@ it('validates explicit mock creation and returns its first turn', async () => {
     status: 'running',
   })
   expect(client.calls.some((call) => call.command === 'sendTurn')).toBe(false)
+})
+
+it('runs Codex like any provider the product ships, and seeds its catalog from the fixture', async () => {
+  const input = {
+    environmentId: 'mock-environment',
+    workspaceId: WORKSPACE.workspaceId,
+    providerId: 'codex',
+  }
+  // No catalog seeded: the providers this product ships, Codex among them.
+  const unseeded = createMockEnvironmentClient({ seed })
+  const created = await unseeded.commands.createSession(input)
+  expect(unseeded.getState().sessions[created.session.sessionId]?.providerId).toBe('codex')
+
+  const withCodex = createMockEnvironmentClient({
+    seed: { ...seed, providers: [MOCK_CODEX_PROVIDER] },
+  })
+  const [codex] = await withCodex.commands.getProviderCatalog()
+  expect(codex).toMatchObject({ id: 'codex', displayName: 'Codex' })
+  expect(codex?.profile?.availableModels?.map((model) => model.modelId)).toEqual([
+    'gpt-6.2-sol',
+    'gpt-6-luna',
+  ])
+  expect(codex?.profile?.availableModels?.[0]).toMatchObject({
+    effortLevels: ['low', 'medium', 'high', 'xhigh'],
+    supportsImageInput: true,
+  })
+  await expect(withCodex.commands.createSession(input)).resolves.toBeDefined()
 })
 
 it('pairs a device through a link once, and redeems as an already paired device', async () => {

@@ -1,6 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
 import type { Meta, StoryObj } from '@storybook/react-vite'
-import type { ProviderId } from '@agentpack/contract'
 import { ThemeProvider } from '../../providers/theme-provider'
 import type { DraftDiscardOptions, PendingDraftDiscard } from '../../providers/sidebar-provider'
 import { SidebarInset, SidebarProvider } from '../../components/fluid/ui/sidebar'
@@ -29,14 +28,14 @@ const initial: SidebarWorkspace[] = [
         externalId: 'sess-001',
         title: 'Status-based sidebar with settle',
         status: 'running',
-        providerId: 'claude' as ProviderId,
+        providerId: 'claude',
         updatedAt: ago(1),
       },
       {
         externalId: 'sess-001-a',
         title: 'Explore t3code settle mechanism',
         status: 'ready',
-        providerId: 'claude' as ProviderId,
+        providerId: 'claude',
         parentExternalId: 'sess-001',
         updatedAt: ago(3),
       },
@@ -44,14 +43,14 @@ const initial: SidebarWorkspace[] = [
         externalId: 'sess-002',
         title: 'Composer image capabilities',
         status: 'waiting',
-        providerId: 'codex' as ProviderId,
+        providerId: 'codex',
         updatedAt: ago(12),
       },
       {
         externalId: 'sess-003',
         title: 'Theme token audit',
         status: 'ready',
-        providerId: 'cursor' as ProviderId,
+        providerId: 'cursor',
         updatedAt: ago(60 * 5),
         settledAt: ago(60 * 4),
       },
@@ -59,7 +58,7 @@ const initial: SidebarWorkspace[] = [
         externalId: 'sess-004',
         title: 'Streaming re-render cascade',
         status: 'ready',
-        providerId: 'opencode' as ProviderId,
+        providerId: 'opencode',
         updatedAt: ago(60 * 30),
         settledAt: ago(60 * 26),
       },
@@ -74,7 +73,7 @@ const initial: SidebarWorkspace[] = [
         externalId: 'sess-101',
         title: 'Port Graphite scheme',
         status: 'error',
-        providerId: 'cursor' as ProviderId,
+        providerId: 'cursor',
         updatedAt: ago(40),
       },
       {
@@ -82,14 +81,14 @@ const initial: SidebarWorkspace[] = [
         title: 'Connect screen inputs',
         // Finished while the user was elsewhere: done until it is opened.
         status: 'done',
-        providerId: 'opencode' as ProviderId,
+        providerId: 'opencode',
         updatedAt: ago(60 * 20),
       },
       {
         externalId: 'sess-103',
         title: 'Tighten the theme picker',
         status: 'ready',
-        providerId: 'cursor' as ProviderId,
+        providerId: 'cursor',
         updatedAt: ago(60 * 26),
       },
     ],
@@ -104,7 +103,7 @@ const initial: SidebarWorkspace[] = [
         externalId: 'sess-201',
         title: 'Weekly review',
         status: 'ready',
-        providerId: 'claude' as ProviderId,
+        providerId: 'claude',
         workspaceUnavailable: true,
         updatedAt: ago(60 * 24 * 3),
       },
@@ -122,7 +121,7 @@ const draft = (
   draftId,
   sessionId: `${draftId}-session`,
   workspaceId,
-  providerId: 'claude' as ProviderId,
+  providerId: 'claude',
   preview,
   imageCount: 0,
   editedAt: Date.now() - minutesAgo * 60_000,
@@ -138,7 +137,7 @@ const DRAFT = draft(
 const DRAFT_NO_PROJECT = draft('draft-2', null, 'Try the notes importer again', 30)
 const DRAFT_PROJECT_MISSING = draft('draft-3', '/workspace/notes', 'Weekly review outline', 90)
 const DRAFT_NOT_SYNCED = draft('draft-4', '/workspace/tend', 'Port the Graphite scheme', 8, {
-  providerId: 'cursor' as ProviderId,
+  providerId: 'cursor',
   unsynced: 'offline',
 })
 const DRAFT_IMAGES = draft('draft-5', '/workspace/tend', '', 12, { imageCount: 2 })
@@ -164,7 +163,7 @@ const EVERY_STATUS: SidebarWorkspace[] = [
         title: 'Pick a schema for drafts',
         status: 'waiting',
         waitingOn: 'question',
-        providerId: 'claude' as ProviderId,
+        providerId: 'claude',
         updatedAt: ago(1),
       },
       {
@@ -172,14 +171,14 @@ const EVERY_STATUS: SidebarWorkspace[] = [
         title: 'Delete old build folders',
         status: 'waiting',
         waitingOn: 'permission',
-        providerId: 'codex' as ProviderId,
+        providerId: 'codex',
         updatedAt: ago(2),
       },
       {
         externalId: 'status-working',
         title: 'Fix the flaky upload test',
         status: 'running',
-        providerId: 'claude' as ProviderId,
+        providerId: 'claude',
         updatedAt: ago(3),
       },
       {
@@ -189,28 +188,28 @@ const EVERY_STATUS: SidebarWorkspace[] = [
         inBackground: true,
         backgroundTaskCount: 2,
         backgroundTaskNames: 'pnpm test:e2e\nTail the server log',
-        providerId: 'claude' as ProviderId,
+        providerId: 'claude',
         updatedAt: ago(4),
       },
       {
         externalId: 'status-done',
         title: 'Composer image capabilities',
         status: 'done',
-        providerId: 'opencode' as ProviderId,
+        providerId: 'opencode',
         updatedAt: ago(9),
       },
       {
         externalId: 'status-error',
         title: 'Port Graphite scheme',
         status: 'error',
-        providerId: 'cursor' as ProviderId,
+        providerId: 'cursor',
         updatedAt: ago(14),
       },
       {
         externalId: 'status-ready',
         title: 'Tighten the theme picker',
         status: 'ready',
-        providerId: 'cursor' as ProviderId,
+        providerId: 'cursor',
         updatedAt: ago(60 * 3),
       },
     ],
@@ -430,7 +429,7 @@ const SUBAGENT_COUNTS: SidebarWorkspace[] = [
         externalId: 'sub-working',
         title: 'Harden session authentication',
         status: 'running',
-        providerId: 'claude' as ProviderId,
+        providerId: 'claude',
         subagentCount: 3,
         subagentsLive: 2,
         updatedAt: ago(1),
@@ -442,7 +441,7 @@ const SUBAGENT_COUNTS: SidebarWorkspace[] = [
         inBackground: true,
         // Only its subagents keep it going: no Background pill, the count says it.
         inBackgroundForSubagents: true,
-        providerId: 'claude' as ProviderId,
+        providerId: 'claude',
         subagentCount: 2,
         subagentsLive: 1,
         updatedAt: ago(2),
@@ -455,7 +454,7 @@ const SUBAGENT_COUNTS: SidebarWorkspace[] = [
         // A command and a subagent in the background: only the command is counted here.
         backgroundTaskCount: 1,
         backgroundTaskNames: 'pnpm test:e2e',
-        providerId: 'claude' as ProviderId,
+        providerId: 'claude',
         subagentCount: 1,
         subagentsLive: 1,
         updatedAt: ago(4),
@@ -464,7 +463,7 @@ const SUBAGENT_COUNTS: SidebarWorkspace[] = [
         externalId: 'sub-done',
         title: 'Map every caller of verifySession',
         status: 'done',
-        providerId: 'claude' as ProviderId,
+        providerId: 'claude',
         subagentCount: 4,
         updatedAt: ago(9),
       },
@@ -472,7 +471,7 @@ const SUBAGENT_COUNTS: SidebarWorkspace[] = [
         externalId: 'sub-ready',
         title: 'Tighten the theme picker',
         status: 'ready',
-        providerId: 'cursor' as ProviderId,
+        providerId: 'cursor',
         subagentCount: 1,
         updatedAt: ago(60 * 3),
       },

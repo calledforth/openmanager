@@ -151,6 +151,7 @@ export { createDraftSync, DRAFT_SAVE_DEBOUNCE_MS, type DraftSyncOptions } from '
 export { UPLOAD_TICKET_COMMAND, WIRE_COMMANDS, type WireCommandName } from './wire'
 export {
   createMockEnvironmentClient,
+  MOCK_CODEX_PROVIDER,
   type MockCommandCall,
   type MockEnvironmentClient,
   type MockEnvironmentClientOptions,

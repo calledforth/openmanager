@@ -1,7 +1,7 @@
 import { OpenAiLogoIcon } from '@phosphor-icons/react'
+import type { ProviderId } from '@agentpack/contract'
 import { isLightTheme, useTheme } from '../../providers/theme-provider'
 import { cn } from '../../lib/utils'
-import type { ProviderIconId } from './providerIconId'
 
 /** SVGL brand marks — https://svgl.app (OpenCode, Cursor). */
 function OpenCodeIcon({ dark, className }: { dark: boolean; className?: string }) {
@@ -60,7 +60,7 @@ function CursorIcon({ dark, className }: { dark: boolean; className?: string }) 
   )
 }
 
-/** Unlike the other two marks this takes no `dark`: the burst is drawn in
+/** Unlike OpenCode's and Cursor's marks this takes no `dark`: the burst is drawn in
  * Anthropic's terracotta, which is the brand colour on both themes and clears
  * contrast against either surface. A theme variant would be inventing one. */
 function ClaudeIcon({ className }: { className?: string }) {
@@ -74,13 +74,11 @@ function ClaudeIcon({ className }: { className?: string }) {
   )
 }
 
-export type { ProviderIconId }
-
 export function ProviderIcon({
   providerId,
   className,
 }: {
-  providerId: ProviderIconId
+  providerId: ProviderId
   className?: string
 }) {
   const { theme } = useTheme()

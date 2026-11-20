@@ -2,6 +2,7 @@ import type { ModelListing, ProviderCapabilities, ProviderId } from '@agentpack/
 import type { ExtensionHandlers, SubtaskAdapter } from '../backends/acp/extensions.js'
 import type { HostDeps } from '../host.js'
 import { claude } from './claude.js'
+import { codex } from './codex.js'
 import { cursor } from './cursor.js'
 import type { ExecFile } from './opencode-models.js'
 import { opencode } from './opencode.js'
@@ -163,7 +164,18 @@ export type ClaudeProviderConfig = ProviderConfigBase & {
   subtasks?: SubtaskAdapter
 }
 
-export type ProviderConfig = AcpProviderConfig | ClaudeProviderConfig
+/** A provider driven through `codex app-server`, its own JSON-RPC protocol
+ * over a child process's stdio. Like Claude, there is no ACP `command`,
+ * `auth` or `extensions`: the app-server owns its credentials (`codex
+ * login`), and its protocol is spoken by `CodexAppServerClient`. `binary`
+ * keeps the env override every provider has; the rest of the search is
+ * `resolveCodexExecutable`'s. */
+export type CodexProviderConfig = ProviderConfigBase & {
+  kind: 'codex'
+  binary: { envOverride: string }
+}
+
+export type ProviderConfig = AcpProviderConfig | ClaudeProviderConfig | CodexProviderConfig
 
 /** Look a provider up and prove it speaks ACP.
  *
@@ -183,5 +195,10 @@ export function requireAcpConfig(
   return config
 }
 
-export const providers: Readonly<Record<ProviderId, ProviderConfig>> = { cursor, opencode, claude }
-export { claude, cursor, opencode }
+export const providers: Readonly<Record<ProviderId, ProviderConfig>> = {
+  cursor,
+  opencode,
+  claude,
+  codex,
+}
+export { claude, codex, cursor, opencode }

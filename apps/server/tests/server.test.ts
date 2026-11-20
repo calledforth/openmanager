@@ -99,6 +99,7 @@ describe('headless listener', () => {
         'cursor',
         'opencode',
         'claude',
+        'codex',
       ])
       expect(firstBootstrap.providers).toEqual(
         expect.arrayContaining([

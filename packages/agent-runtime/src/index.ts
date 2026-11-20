@@ -114,6 +114,11 @@ export {
   resolveClaudeExecutable,
 } from './session/claude/executable.js'
 export { treeKiller } from './session/ChildProcessConnection.js'
+export {
+  resolveCodexExecutable,
+  type CodexExecutable,
+  type CodexExecutableResolution,
+} from './session/codex/executable.js'
 export type {
   AcpProviderConfig,
   ClaudeProviderConfig,

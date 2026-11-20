@@ -7,6 +7,7 @@ import { AgentRuntime } from '../core/AgentRuntime.js'
 import { InteractionBroker } from '../core/InteractionBroker.js'
 import { PermissionBroker } from '../core/PermissionBroker.js'
 import { claude } from '../providers/claude.js'
+import { codex } from '../providers/codex.js'
 import { cursor } from '../providers/cursor.js'
 import type { AcpProviderConfig } from '../providers/index.js'
 import { opencode, opencodeInstructionsEnv } from '../providers/opencode.js'
@@ -192,7 +193,7 @@ describe('the host deciding the instructions', () => {
     const sessionInstructions = vi.fn(() => note)
     const runtime = new AgentRuntime(
       { emitEvent: (_event: AgentEvent) => undefined, log: vi.fn(), sessionInstructions },
-      { cursor, opencode, claude },
+      { cursor, opencode, claude, codex },
       { claudeSdk: sdk },
     )
     vi.stubEnv('CLAUDE_CODE_BIN', process.execPath)

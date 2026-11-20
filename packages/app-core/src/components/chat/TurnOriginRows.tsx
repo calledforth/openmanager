@@ -1,5 +1,6 @@
 import { useCallback, useState } from 'react'
 import { ArrowBendDownRightIcon, CaretRightIcon, FlowArrowIcon } from '@phosphor-icons/react'
+import type { ProviderId } from '@agentpack/contract'
 import type { EnvironmentState } from '@openmanager/environment-client'
 import { cn } from '../../lib/utils'
 import {
@@ -9,7 +10,6 @@ import {
 import { useViewActions } from '../../providers/view-actions'
 import { Markdown } from '../markdown/Markdown'
 import { ProviderIcon } from '../providers/ProviderIcon'
-import type { ProviderIconId } from '../providers/providerIconId'
 import { providerName } from '../parts/subagent-card'
 
 /** Who handed a subagent its work: the parent session's agent. */
@@ -37,7 +37,7 @@ export function DelegatedPrompt({ content, from }: { content: string; from?: Del
     <div className="flex w-full flex-col gap-1.5 pt-6 pb-1" data-turn-origin="delegated">
       <div className="flex min-w-0 items-center gap-1.5 px-1 text-ui-sm text-[var(--basis-text-faint)]">
         {from ? (
-          <ProviderIcon providerId={from.providerId as ProviderIconId} className="size-3" />
+          <ProviderIcon providerId={from.providerId as ProviderId} className="size-3" />
         ) : (
           <ArrowBendDownRightIcon size={12} aria-hidden />
         )}

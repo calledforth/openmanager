@@ -1,7 +1,7 @@
 import type { ProviderCapabilities } from './capabilities.js'
 import type { SessionConfigOption } from './events.js'
 
-export const PROVIDER_IDS = ['opencode', 'cursor', 'claude'] as const
+export const PROVIDER_IDS = ['opencode', 'cursor', 'claude', 'codex'] as const
 
 export type ProviderId = (typeof PROVIDER_IDS)[number]
 
