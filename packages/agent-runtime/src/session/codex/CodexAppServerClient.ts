@@ -58,6 +58,8 @@ export interface CodexResponses {
   'permissionProfile/list': v2.PermissionProfileListResponse
   'configRequirements/read': v2.ConfigRequirementsReadResponse
   'experimentalFeature/list': v2.ExperimentalFeatureListResponse
+  'config/read': v2.ConfigReadResponse
+  'thread/unsubscribe': v2.ThreadUnsubscribeResponse
 }
 export type ClientResult<M extends ClientMethod> = M extends keyof CodexResponses
   ? CodexResponses[M]

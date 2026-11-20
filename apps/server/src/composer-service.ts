@@ -381,7 +381,7 @@ export function createComposerService(
       agentInfo?: Parameters<ComposerStore['upsertProfile']>[1]['agentInfo']
       promptCapabilities?: Parameters<ComposerStore['upsertProfile']>[1]['promptCapabilities']
       models?: Parameters<typeof modelPatch>[0]
-      modes?: Parameters<typeof modePatch>[0]
+      modes?: Parameters<typeof modePatch>[0] & { currentModeId?: string }
       policy?: unknown
     },
   ) => {
@@ -400,6 +400,10 @@ export function createComposerService(
       // No probe can ask an ACP agent for its modes, so a probe's answer only
       // ever fills a gap here.
       ...(current?.availableModes === undefined ? modePatch(catalog.modes) : {}),
+      // The mode a new session starts in, as the provider's own probe says:
+      // a draft opens on it rather than on the first mode listed (Codex's
+      // Auto-accept edits, not Supervised).
+      ...(catalog.modes?.currentModeId ? { defaultModeId: catalog.modes.currentModeId } : {}),
       // Only a probe reads it, and a probe that could not say leaves it out,
       // so whatever arrives is the provider's current answer.
       ...policyPatch(catalog.policy),
@@ -510,7 +514,7 @@ export function createComposerService(
      */
     seedSession(
       sessionId: string,
-      selection: Pick<WorkspaceComposerPreference, 'modelId' | 'configValues'>,
+      selection: Pick<WorkspaceComposerPreference, 'modelId' | 'modeId' | 'configValues'>,
     ) {
       updateSelection(sessionId, selection)
     },
@@ -552,6 +556,10 @@ export function createComposerService(
         }
         const sessionId = options.sessionForThread?.(event.threadId)
         if (event.event === 'session_created' || event.event === 'session_loaded') {
+          // A session that already had a mode (a draft's, seeded at create;
+          // one Codex restores) reports that mode, not what a new session
+          // starts in: only one with none may say the provider's default.
+          const reportsDefault = !sessionId || selectionOf(sessionId).modeId === undefined
           if (sessionId) {
             // The first report seeds a session that has no selection yet from
             // the workspace preference; after that the session owns it.
@@ -574,7 +582,7 @@ export function createComposerService(
             ...(event.event === 'session_created' && event.data.models?.currentModelId
               ? { defaultModelId: event.data.models.currentModelId }
               : {}),
-            ...(event.event === 'session_created' && event.data.modes?.currentModeId
+            ...(event.event === 'session_created' && event.data.modes?.currentModeId && reportsDefault
               ? { defaultModeId: event.data.modes.currentModeId }
               : {}),
           })

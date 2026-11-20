@@ -24,7 +24,13 @@ function serviceOn(start: CodexStarter): CodexService {
 function build(service: CodexService, events: BackendEvent[] = []) {
   return new CodexProbeRuntime(
     { providerId: 'codex', cwd: '/work', threadId: 'probe-thread' },
-    { config: codex, host: { log: vi.fn() }, service, onEvent: (event) => events.push(event) },
+    {
+      config: codex,
+      host: { log: vi.fn() },
+      service,
+      onEvent: (event) => events.push(event),
+      platform: 'linux',
+    },
   )
 }
 
@@ -84,6 +90,14 @@ describe('CodexProbeRuntime', () => {
     })
     expect(result.models?.availableModels?.[1]?.supportsImageInput).toBe(false)
     expect(result.policy?.blockedModes?.map((block) => block.id)).toEqual(['full-access'])
+    // Access is the mode control, starting in Auto-accept edits; no plan mode.
+    expect(result.modes?.availableModes?.map((mode) => mode.id)).toEqual([
+      'supervised',
+      'auto-accept-edits',
+      'auto',
+      'full-access',
+    ])
+    expect(result.modes?.currentModeId).toBe('auto-accept-edits')
     expect(events.map((e) => e.event)).toEqual(['process_spawned', 'initialized'])
   })
 

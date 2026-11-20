@@ -40,6 +40,7 @@ import {
   type AcpSessionRuntimeState,
   type ComposerStateValue,
 } from './composer-provider'
+import { selectModelReroute } from '../lib/model-reroute'
 import { DraftPageContext, DraftPicksContext, type DraftPagePicks } from './draft-pages'
 import { resolveDraftProvider } from './draft-provider'
 import { latestSendingDraft, sendingNewSessionDraft } from './environment-drafts'
@@ -282,6 +283,9 @@ export function EnvironmentComposerStateProvider({ children }: { children: React
   const sessionListing = useEnvironmentState((state) =>
     activeSessionId ? selectSessionListing(state, activeSessionId) : null,
   )
+  const modelReroute = useEnvironmentState((state) =>
+    activeSessionId ? selectModelReroute(state, activeSessionId) : null,
+  )
   const acpSessionState = useMemo<AcpSessionRuntimeState | null>(() => {
     if (!activeSessionId) return null
     const runtime: AcpSessionRuntimeState = {
@@ -296,6 +300,7 @@ export function EnvironmentComposerStateProvider({ children }: { children: React
         ? { availableCommands: toAcpCommands(sessionListing.availableCommands) }
         : {}),
       ...(sessionComposer?.usage ? { usage: sessionComposer.usage } : {}),
+      ...(modelReroute ? { modelReroute } : {}),
     }
     return resolveSessionComposerRuntime(
       runtime,
@@ -307,6 +312,7 @@ export function EnvironmentComposerStateProvider({ children }: { children: React
     )
   }, [
     activeSessionId,
+    modelReroute,
     preference,
     providerComposerProfiles,
     sessionComposer,
@@ -510,7 +516,7 @@ export function EnvironmentComposerStateProvider({ children }: { children: React
         if (target?.type === 'new_session') kept = { draftId: id, sessionId: target.sessionId }
       }
       const launchWorkspaceId = sending ? sending.workspaceId : workspaceId
-      const { providerId, picked, profile, preference, resolved } = draftFor(
+      const { providerId, picked, preference, resolved } = draftFor(
         launchWorkspaceId ?? workspaceId,
         id,
       )
@@ -524,17 +530,24 @@ export function EnvironmentComposerStateProvider({ children }: { children: React
         ...(settings ? { configValues: settings } : {}),
       }
       const modeId = resolved.modes?.currentModeId
+      const providerCanSetMode =
+        selectProviderCatalog(client.getState()).find((entry) => entry.id === providerId)
+          ?.capabilities.canSetMode === true
       const launch: DraftLaunch = {
         providerId,
         ...(Object.keys(picks).length > 0 ? { preference: picks } : {}),
-        ...(modeId && modeId !== profile?.defaultModeId ? { modeId } : {}),
+        // The mode the draft shows always goes, picked or not: the profile's
+        // default can be stale, and a launch without its mode starts in
+        // whatever the provider's own settings say (for Claude, possibly
+        // `bypassPermissions`). Only a listed mode is ever shown.
+        ...(modeId && canSetMode && providerCanSetMode ? { modeId } : {}),
         ...(sending ? { workspaceId: launchWorkspaceId } : {}),
         ...(kept ? { draft: kept } : {}),
       }
       if (id) launchedPages.current.set(launch, id)
       return launch
     },
-    [client, draftFor, sync],
+    [canSetMode, client, draftFor, sync],
   )
 
   const launchInternals = useMemo<DraftLaunchInternals>(

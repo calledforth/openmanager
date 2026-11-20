@@ -2,7 +2,9 @@ import type { MessagePhase, v2 } from '@openmanager/codex-app-server-protocol'
 import type { ServerRequestMethod, ServerRequestParams } from '../CodexAppServerClient.js'
 import {
   agentMessageItem,
+  buildThreadSettings,
   buildThreadStartResponse,
+  FAKE_MODEL,
   buildTurn,
   commandApprovalParams,
   commandExecutionItem,
@@ -20,6 +22,7 @@ import {
 import type { FakeCodexAppServer, FakeServerAnswer } from './FakeCodexAppServer.js'
 
 type Item = v2.ThreadItem
+type FakeThreadSettings = v2.ThreadSettings
 
 /** One thread on a `FakeCodexAppServer`, speaking in the notifications Codex
  * 0.170 sends for it.
@@ -30,10 +33,19 @@ type Item = v2.ThreadItem
  * threads, alternated; a notification after a turn ended is a call after
  * `completed()`. */
 export class FakeCodexThread {
+  /** What the thread runs with, as `thread/settings/updated` reads it back. */
+  settings: FakeThreadSettings
+  /** The `config` the thread was last loaded with (`thread/resume`). */
+  config: { [key: string]: unknown } | null = null
+
   constructor(
     readonly server: FakeCodexAppServer,
     public thread: v2.Thread,
-  ) {}
+  ) {
+    this.settings = {
+      ...buildThreadSettings({ cwd: thread.cwd, model: thread.model ?? FAKE_MODEL }),
+    }
+  }
 
   get id(): string {
     return this.thread.id

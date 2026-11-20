@@ -114,6 +114,29 @@ export function buildThreadStartResponse(
   }
 }
 
+/** A thread's settings as `thread/settings/updated` carries them. */
+export function buildThreadSettings(overrides: Partial<v2.ThreadSettings> = {}): v2.ThreadSettings {
+  const model = overrides.model ?? FAKE_MODEL
+  return {
+    disabledPluginIds: [],
+    cwd: '/work',
+    environments: null,
+    approvalPolicy: 'on-request',
+    approvalsReviewer: 'user',
+    sandboxPolicy: sandboxPolicy('workspace-write'),
+    activePermissionProfile: null,
+    model,
+    modelProvider: 'openai',
+    serviceTier: null,
+    effort: null,
+    summary: null,
+    collaborationMode: { mode: 'default', settings: { model, reasoning_effort: null, developer_instructions: null } },
+    multiAgentMode: 'explicitRequestOnly',
+    personality: null,
+    ...overrides,
+  }
+}
+
 export function buildTurn(overrides: Partial<v2.Turn> = {}): v2.Turn {
   const id = overrides.id ?? fakeId()
   return {

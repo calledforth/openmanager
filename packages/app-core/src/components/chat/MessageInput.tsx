@@ -127,7 +127,6 @@ export function useMessageInputBinding() {
   // session is created.
   const disabled = !activeWorkspacePath || (!activeSessionId && !isSessionDraftOpen)
   const {
-    runtimeState,
     currentProviderId,
     currentProviderName,
     providerReady,
@@ -138,6 +137,7 @@ export function useMessageInputBinding() {
     currentModeId,
     effortLevels,
     effortOptions,
+    configOptions,
     effortConfigId,
     currentEffort,
     slashCommands,
@@ -150,6 +150,7 @@ export function useMessageInputBinding() {
     providerImageSupport,
     catalogImageSupport,
     sendBlockedReason: providerBlockedReason,
+    modelReroute,
     planBuildModeId,
     draftKey,
   } = deriveComposerControls({
@@ -323,7 +324,7 @@ export function useMessageInputBinding() {
     currentProviderId,
     providerModelGroups,
     currentModelId,
-    configOptions: runtimeState?.configOptions ?? [],
+    configOptions,
     modeOptions,
     currentModeId,
     effortLevels,
@@ -360,6 +361,7 @@ export function useMessageInputBinding() {
     nameFailure,
     slashCommands,
     usage,
+    modelReroute,
     onModeChange: (id) => {
       if (activeSessionId) {
         void setSessionMode(activeSessionId, id)

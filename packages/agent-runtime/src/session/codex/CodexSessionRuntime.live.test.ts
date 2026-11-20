@@ -74,3 +74,46 @@ describe.skipIf(!live)('Codex session runtime, live', () => {
     }
   })
 })
+
+/** Settings between turns against the real `codex`: no turn, so no tokens.
+ * Opt in with `OPENMANAGER_LIVE_CODEX=1`. */
+describe.skipIf(process.env.OPENMANAGER_LIVE_CODEX !== '1')('Codex session settings, live', () => {
+  it('changes effort, speed and access through thread/settings/update and reads them back', { timeout: 60_000 }, async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'openmanager-codex-settings-'))
+    const events: BackendEvent[] = []
+    const runtime = new CodexSessionRuntime(
+      { threadId: 't-settings', providerId: 'codex', cwd },
+      {
+        config: codex,
+        host: { log: vi.fn() },
+        permissions: new PermissionBroker(),
+        interactions: new InteractionBroker(),
+      },
+    )
+    runtime.events((event) => events.push(event))
+    const current = (id: string) => {
+      const last = [...events]
+        .reverse()
+        .find((e) => e.event === 'config_option_update' || e.event === 'session_created')
+      return (last?.data as { configOptions: Array<{ id: string; currentValue: unknown }> }).configOptions.find(
+        (option) => option.id === id,
+      )?.currentValue
+    }
+    try {
+      await runtime.start()
+      await runtime.setConfigOption('effort', 'high')
+      expect(current('effort')).toBe('high')
+      await runtime.setConfigOption('service_tier', 'priority')
+      expect(current('service_tier')).toBe('priority')
+      await runtime.setConfigOption('service_tier', 'default')
+      expect(current('service_tier')).toBe('default')
+      await runtime.setMode('supervised')
+      expect(events.filter((e) => e.event === 'current_mode_update').at(-1)?.data).toMatchObject({
+        currentModeId: 'supervised',
+      })
+    } finally {
+      await runtime.stop({ reason: 'disposed' })
+      await rm(cwd, { recursive: true, force: true })
+    }
+  })
+})
