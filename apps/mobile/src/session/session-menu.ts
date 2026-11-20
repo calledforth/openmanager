@@ -36,6 +36,8 @@ export interface SessionMenuInput {
   pinned?: boolean
   /** Background tasks the environment lists for it. */
   backgroundTaskCount: number
+  /** Kept running by background work, even when it shows as done beside it. */
+  inBackground?: boolean
   /**
    * Why nothing can be sent right now (a sample session, the environment not
    * connected); null when commands can go.
@@ -101,7 +103,7 @@ export function sessionMenuItems(input: SessionMenuInput): SessionMenuItem[] {
       label: 'Settle',
       disabledReason:
         gate(input, 'settleSession', 'This environment cannot settle sessions') ??
-        (LIVE.has(input.mark) ? 'Live work cannot be settled' : null),
+        (LIVE.has(input.mark) || input.inBackground ? 'Live work cannot be settled' : null),
     })
   }
   if (input.mark === 'background' || input.backgroundTaskCount > 0) {

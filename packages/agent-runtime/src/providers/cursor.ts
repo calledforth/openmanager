@@ -215,6 +215,8 @@ export const cursor: AcpProviderConfig = {
     supportsSubtasks: true,
     supportsExtensions: true,
     supportsQuestions: true,
+    // ACP has no background work that outlives a turn.
+    supportsBackgroundTasks: false,
   },
   extensions: {
     // Unlisted methods fall back to ExtensionRegistry defaults (requests →

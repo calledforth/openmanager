@@ -1595,11 +1595,13 @@ function SessionCardBody({
   const lastSeen = sessionBusyTone(session.status, session)
   const tone = offline ? null : lastSeen
   const moment = useStatusMoment(lastSeen, offline)
-  // Live work cannot be settled. Anything can go cooking except a session
-  // that already needs the user (asking, done, or failed): what would bring
-  // it back has already happened.
+  // Live work cannot be settled, background work included (a session done
+  // beside it too). Anything can go cooking except a session that already
+  // needs the user (asking, done, or failed): what would bring it back has
+  // already happened.
   const canSettleHere =
     Boolean(settleHere) &&
+    !session.inBackground &&
     tone !== 'working' &&
     tone !== 'background' &&
     tone !== 'needs' &&

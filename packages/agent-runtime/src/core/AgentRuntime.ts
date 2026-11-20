@@ -1317,8 +1317,10 @@ export class AgentRuntime {
    *
    * Like `cancel`, this never respawns a missing runtime. Background tasks are
    * children of the provider process, so a thread with no live process has
-   * none left to stop. */
+   * none left to stop. A provider without `supportsBackgroundTasks` has none
+   * to stop either. */
   async stopBackgroundTasks(args: RuntimeRoute & { taskIds?: readonly string[] }): Promise<void> {
+    if (!this.configs[args.providerId].capabilities.supportsBackgroundTasks) return
     const entry = this.registry.get(args.threadId)
     if (!entry || entry.providerId !== args.providerId || !isRuntimeAlive(entry.runtime.phase))
       return

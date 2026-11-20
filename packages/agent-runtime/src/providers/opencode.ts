@@ -168,6 +168,8 @@ export const opencode: AcpProviderConfig = {
     supportsSubtasks: true,
     supportsExtensions: false,
     supportsQuestions: true,
+    // ACP has no background work that outlives a turn.
+    supportsBackgroundTasks: false,
   },
   extensions: {},
   subtasks: { fromToolCall: opencodeSubtaskFromTool },
