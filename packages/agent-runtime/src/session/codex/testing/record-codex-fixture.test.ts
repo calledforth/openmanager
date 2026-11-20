@@ -1,13 +1,13 @@
 import { describe, expect, it } from 'vitest'
 
-/** The recorder's sanitiser (`scripts/record-codex-fixture.mjs`), which every
- * committed fixture went through. A plain-Node script, so it is imported by
+/** The recorder's sanitiser (`scripts/codex-fixture-sanitizer.mjs`, used by
+ * `record-codex-fixture.mjs`), which every committed fixture went through. A plain-Node script, so it is imported by
  * URL and typed here by hand. */
 type Sanitizer = {
   entry: (entry: unknown) => unknown
   leaks: (serialised: string) => string[]
 }
-const script = new URL('../../../../scripts/record-codex-fixture.mjs', import.meta.url).href
+const script = new URL('../../../../scripts/codex-fixture-sanitizer.mjs', import.meta.url).href
 const { makeSanitizer } = (await import(script)) as {
   makeSanitizer: (machine: { workspace: string; home: string; codexHome?: string; user: string; host: string }) => Sanitizer
 }
