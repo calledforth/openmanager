@@ -1,3 +1,4 @@
+import { spawnSync } from 'node:child_process'
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -9,7 +10,7 @@ import {
   type CodexAppServerClient,
 } from '../CodexAppServerClient.js'
 import type { CodexExecutable } from '../executable.js'
-import { readCodexFixture, serializeCodexFixture, type CodexFixture } from './fixture.js'
+import { codexMockAppServerPath, readCodexFixture, serializeCodexFixture, type CodexFixture } from './fixture.js'
 import { createCodexMockExecutable } from './mock-executable.js'
 
 /** The mock app-server as a real child process, spawned the way production
@@ -36,14 +37,22 @@ function writeFixture(fixture: CodexFixture): string {
   return path
 }
 
+/** Passed as `-c` flags. The mock refuses to start unless they arrive exactly
+ * like this, so a value with spaces and quotes checks the quoting through the
+ * launcher (on Windows, `cmd.exe` and a `.cmd` shim). */
+const CONFIG = ['features.request_permissions_tool=true', 'developer_instructions="say \\"hi\\" twice"']
+
 async function start(env: Record<string, string>, options: { terminateGraceMs?: number } = {}) {
   const client = await startCodexAppServer(
     {
       executable,
       cwd: dir,
-      env: { ...(process.env as Record<string, string>), ...env },
-      // Passed through as `-c` flags, which the mock accepts and ignores.
-      config: ['features.request_permissions_tool=true'],
+      env: {
+        ...(process.env as Record<string, string>),
+        CODEX_MOCK_EXPECT_ARGS: JSON.stringify([...CONFIG.flatMap((entry) => ['-c', entry]), 'app-server']),
+        ...env,
+      },
+      config: CONFIG,
       spawnTimeoutMs: 10_000,
       clientVersion: '0.0.0-fixture',
       initializeTimeoutMs: 10_000,
@@ -126,6 +135,19 @@ describe('mock codex app-server process', () => {
     await expect(start({ CODEX_MOCK_USER_AGENT: 'OpenManager/0.150.0 (Mock; x86_64)' })).rejects.toBeInstanceOf(
       CodexVersionUnsupportedError,
     )
+  })
+
+  it('refuses a command line that is not `[-c key=value]... app-server`', { timeout: 20_000 }, () => {
+    for (const args of [[], ['app-server', 'extra'], ['-c', 'app-server'], ['-c', 'a=b', 'proto']]) {
+      const result = spawnSync(process.execPath, [codexMockAppServerPath(), ...args], { encoding: 'utf8', input: '' })
+      expect(result.status, JSON.stringify(args)).toBe(2)
+      expect(result.stderr).toMatch(/^mock codex app-server: /)
+    }
+    const ok = spawnSync(process.execPath, [codexMockAppServerPath(), '-c', 'a=b c', 'app-server'], {
+      encoding: 'utf8',
+      input: '',
+    })
+    expect(ok.status).toBe(0)
   })
 
   it.skipIf(process.platform === 'win32')(

@@ -5,10 +5,12 @@
 //
 //   node mock-app-server.mjs [-c key=value]... app-server
 //
-// The arguments `spawnCodexAppServer` passes (`-c` overrides, `app-server`)
-// are accepted and ignored, so a test spawns it with
-// `executable: { command: process.execPath, … }` and the script path as the
-// first argument (see `codexMockSpawn` in the tests).
+// The arguments must be what `spawnCodexAppServer` passes: `-c key=value`
+// pairs, then `app-server` last. Anything else (an argument split or merged by
+// bad quoting on the way through a Windows `.cmd` launcher, say) is refused
+// with exit code 2, so a test spawning it through `createCodexMockExecutable`
+// checks the command line arrived intact. The overrides themselves are
+// ignored.
 //
 // Driven by the environment:
 //
@@ -23,10 +25,31 @@
 //                             answer with. Every other request gets -32601.
 //   CODEX_MOCK_IGNORE_SIGTERM `1` to ignore SIGTERM, so a test can watch the
 //                             termination ladder escalate to SIGKILL.
+//   CODEX_MOCK_EXPECT_ARGS    A JSON array: the exact arguments to expect,
+//                             refused (exit code 2) if they arrive otherwise.
 //
 // Like Codex, it exits when stdin closes.
 
 import { readFileSync } from 'node:fs'
+
+checkArguments(process.argv.slice(2))
+
+function checkArguments(args) {
+  const fail = (why) => {
+    process.stderr.write(`mock codex app-server: ${why} (arguments: ${JSON.stringify(args)})\n`)
+    process.exit(2)
+  }
+  if (args.at(-1) !== 'app-server') fail('`app-server` must be the last argument')
+  const overrides = args.slice(0, -1)
+  for (let i = 0; i < overrides.length; i += 2) {
+    if (overrides[i] !== '-c') fail(`expected -c, got ${JSON.stringify(overrides[i])}`)
+    const value = overrides[i + 1]
+    if (value === undefined || !/^[^=\s]+=/.test(value)) fail(`-c needs key=value, got ${JSON.stringify(value)}`)
+  }
+  const expected = process.env.CODEX_MOCK_EXPECT_ARGS
+  if (expected !== undefined && JSON.stringify(args) !== JSON.stringify(JSON.parse(expected)))
+    fail(`expected the arguments ${expected}`)
+}
 
 if (process.env.CODEX_MOCK_IGNORE_SIGTERM === '1') process.on('SIGTERM', () => undefined)
 

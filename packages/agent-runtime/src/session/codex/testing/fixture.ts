@@ -112,8 +112,8 @@ export function codexMockAppServerPath(): string {
 }
 
 /** A file that lives next to this module in `src`. The build compiles only the
- * TypeScript into `dist`, so when this module runs from `dist` (as
- * `@agentpack/runtime/testing` does) the file is looked up in `src`. */
+ * TypeScript into `dist`, so should this module ever run from `dist` the file
+ * is looked up in `src`. */
 function codexTestingAsset(relative: string): string {
   const beside = fileURLToPath(new URL(relative, import.meta.url))
   if (existsSync(beside)) return beside

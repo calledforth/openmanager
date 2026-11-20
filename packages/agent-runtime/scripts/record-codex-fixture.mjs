@@ -31,13 +31,14 @@
 // happened, each with milliseconds since spawn. Before anything is written it
 // is sanitised (home and workspace paths, account ids and emails, anything
 // token-like) and then checked: a fixture that still contains the home
-// directory, the user name or an email address is refused, not written.
+// directory, any user's home (`/Users/…`, `C:\Users\…`), the user or machine
+// name, or an email address is refused, not written.
 //
 // No dependencies, so it runs with plain `node` and needs no build.
 
 import { spawn } from 'node:child_process'
 import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
-import { homedir, tmpdir, userInfo } from 'node:os'
+import { homedir, hostname, tmpdir, userInfo } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
@@ -324,20 +325,35 @@ class Session {
 // ---------------------------------------------------------------------------
 // Sanitising
 
-const REDACTED_KEYS = /^(email|userId|user_id|accountId|account_id|chatgptAccountId|chatgpt_account_id|chatgptUserId|chatgpt_user_id|organizationId|organization_id|orgId|installationId|installation_id)$/i
+const REDACTED_KEYS = /^(email|userId|user_id|accountId|account_id|chatgptAccountId|chatgpt_account_id|chatgptUserId|chatgpt_user_id|organizationId|organization_id|orgId|workspaceId|workspace_id|installationId|installation_id)$/i
 const SECRET_KEYS = /(token|secret|password|authorization|cookie|api_?key|encrypted)/i
 const SECRET_VALUES = [
   [/eyJ[\w-]{8,}\.[\w-]{8,}\.[\w-]{8,}/g, '<redacted-jwt>'],
   [/\bsk-[A-Za-z0-9_-]{16,}/g, '<redacted-key>'],
   [/\b(?:ghp|gho|ghs|ghu|github_pat)_[A-Za-z0-9_]{16,}/g, '<redacted-key>'],
   [/\bBearer\s+[A-Za-z0-9._~+/=-]{16,}/g, 'Bearer <redacted>'],
-  [/[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}/g, 'user@example.com'],
+  // Not an address at all, so a committed fixture holds none (the leak check
+  // and the fixture test refuse any).
+  [/[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}/g, '<email>'],
 ]
+
+/** Home directories of any user, on macOS, Windows and Windows seen from WSL,
+ * whoever recorded: the account name in them is not this process's user name
+ * on WSL (`/mnt/c/Users/<WindowsName>`). The name runs to the next separator
+ * or quote, spaces included (Windows allows them). Replaced with the home
+ * placeholder, and refused by the leak check if anything survives.
+ * JSON-escaped backslashes count as one. */
+const FOREIGN_HOMES = [
+  /\/mnt\/[a-z]\/Users\/[^/\\"'\n]+/gi,
+  /(?<![A-Za-z0-9])\/Users\/[^/\\"'\n]+/g,
+  /\b[A-Za-z]:(?:\\)+Users(?:\\)+[^/\\"'\n]+/gi,
+]
+const FOREIGN_HOME_LEAK = /\/Users\/|\b[A-Za-z]:(?:\\)+Users\b/i
 
 /** A sanitiser for one recording: literal path and name replacements first
  * (longest first, so the workspace inside the home directory wins), then
  * account fields by key, then token-like values wherever they appear. */
-function makeSanitizer({ workspace, home, codexHome, user }) {
+function makeSanitizer({ workspace, home, codexHome, user, host }) {
   const pairs = []
   const add = (from, to) => {
     if (!from || from.length < 3) return
@@ -351,11 +367,21 @@ function makeSanitizer({ workspace, home, codexHome, user }) {
   add(tmpdir(), '/tmp')
   pairs.sort((a, b) => b[0].length - a[0].length)
 
-  const userPattern = user && user.length >= 3 ? new RegExp(`\\b${escapeRegExp(user)}\\b`, 'g') : undefined
+  // Any case, and bounded by anything but a letter or digit, so `Cletus`,
+  // `cletus_dev` and `cletus-pc` all go (`\b` treats `_` as part of a word).
+  // Too short to tell from ordinary text, or already the placeholder: left be.
+  const named = (name, placeholder) =>
+    name && name.length >= 3 && name.toLowerCase() !== placeholder
+      ? new RegExp(`(?<![A-Za-z0-9])${escapeRegExp(name)}(?![A-Za-z0-9])`, 'gi')
+      : undefined
+  const userPattern = named(user, 'user')
+  const hostPattern = named(host, 'host')
   const text = (value) => {
     let out = value
     for (const [from, to] of pairs) out = out.split(from).join(to)
+    for (const pattern of FOREIGN_HOMES) out = out.replace(pattern, '/home/user')
     for (const [pattern, to] of SECRET_VALUES) out = out.replace(pattern, to)
+    if (hostPattern) out = out.replace(hostPattern, 'host')
     if (userPattern) out = out.replace(userPattern, 'user')
     return out
   }
@@ -365,7 +391,8 @@ function makeSanitizer({ workspace, home, codexHome, user }) {
       if (key !== undefined && SECRET_KEYS.test(key)) return '<redacted>'
       return text(value)
     }
-    if (Array.isArray(value)) return value.map((item) => walk(item))
+    // An array's items are its key's values: `emails: [...]` is redacted too.
+    if (Array.isArray(value)) return value.map((item) => walk(item, key))
     if (value && typeof value === 'object') {
       const out = {}
       for (const [k, v] of Object.entries(value)) out[text(k)] = walk(v, k)
@@ -373,14 +400,19 @@ function makeSanitizer({ workspace, home, codexHome, user }) {
     }
     return value
   }
-  const leaks = [home, safeRealpath(home), user && user.length >= 3 ? user : undefined].filter(Boolean)
+  const homes = [home, safeRealpath(home)].filter((path) => path && path.length >= 3 && path !== '/home/user')
   return {
     entry: (entry) => walk(entry),
     /** Anything that survived sanitising and must not be committed. */
     leaks(serialised) {
-      const found = leaks.filter((needle) => serialised.includes(needle))
-      const email = /[A-Za-z0-9._%+-]+@(?!example\.com)[A-Za-z0-9.-]+\.[A-Za-z]{2,}/.exec(serialised)
-      if (email) found.push(email[0])
+      const lower = serialised.toLowerCase()
+      const found = homes.filter((path) => lower.includes(path.toLowerCase()))
+      const patterns = [/[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}/, FOREIGN_HOME_LEAK, userPattern, hostPattern]
+      for (const pattern of patterns.filter(Boolean)) {
+        pattern.lastIndex = 0
+        const match = pattern.exec(serialised)
+        if (match) found.push(match[0])
+      }
       return found
     },
   }
@@ -405,13 +437,25 @@ function codexCommand() {
   return process.env.CODEX_BIN || 'codex'
 }
 
+/** Start `codex <args>`. On Windows `codex` is usually npm's `codex.cmd` shim,
+ * which Node runs only through a shell (since the CVE-2024-27980 fix), and a
+ * shell takes one command line. Only a `CODEX_BIN` with spaces needs quoting:
+ * the scenarios' own arguments are plain `-c key=value` words. */
+function spawnCodex(args, options) {
+  if (process.platform !== 'win32') return spawn(codexCommand(), args, options)
+  for (const arg of args)
+    if (/[\s"&|<>^()%!]/.test(arg)) throw new Error(`recorder: ${JSON.stringify(arg)} needs quoting for cmd.exe`)
+  const command = /\s/.test(codexCommand()) ? `"${codexCommand()}"` : codexCommand()
+  return spawn([command, ...args].join(' '), { ...options, shell: true, windowsHide: true })
+}
+
 async function record(name, options) {
   const scenario = SCENARIOS[name]
   const workspace = mkdtempSync(join(tmpdir(), 'codex-fixture-'))
   const args = [...(scenario.config ?? []).flatMap((entry) => ['-c', entry]), 'app-server']
   const started = Date.now()
   const entries = []
-  const child = spawn(codexCommand(), args, { cwd: workspace, env: process.env, stdio: ['pipe', 'pipe', 'pipe'] })
+  const child = spawnCodex(args, { cwd: workspace, env: process.env, stdio: ['pipe', 'pipe', 'pipe'] })
   const exited = new Promise((resolve) => child.on('exit', (code, signal) => resolve({ code, signal })))
   child.on('error', (error) => {
     console.error(`could not start ${codexCommand()}: ${error.message}`)
@@ -471,6 +515,7 @@ async function record(name, options) {
     home: homedir(),
     codexHome: initialize?.codexHome,
     user: userInfo().username,
+    host: hostname(),
   })
   const header = {
     format: FORMAT,

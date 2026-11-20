@@ -70,6 +70,26 @@ export function buildThread(overrides: Partial<v2.Thread> = {}): v2.Thread {
   }
 }
 
+/** The sandbox policy Codex reports for the `sandbox` mode a thread was
+ * started with, as codex 0.170 spells it (a workspace-write policy lists no
+ * extra roots: the workspace is implied). No mode: workspace-write. */
+export function sandboxPolicy(mode: v2.SandboxMode | null | undefined): v2.SandboxPolicy {
+  switch (mode) {
+    case 'read-only':
+      return { type: 'readOnly', networkAccess: false }
+    case 'danger-full-access':
+      return { type: 'dangerFullAccess' }
+    default:
+      return {
+        type: 'workspaceWrite',
+        writableRoots: [],
+        networkAccess: false,
+        excludeTmpdirEnvVar: false,
+        excludeSlashTmp: false,
+      }
+  }
+}
+
 /** The answer to `thread/start` (and, with `turns` filled, `thread/resume`). */
 export function buildThreadStartResponse(
   thread: v2.Thread,
@@ -86,13 +106,7 @@ export function buildThreadStartResponse(
     instructionSources: [],
     approvalPolicy: 'on-request',
     approvalsReviewer: 'user',
-    sandbox: {
-      type: 'workspaceWrite',
-      writableRoots: [thread.cwd],
-      networkAccess: false,
-      excludeTmpdirEnvVar: false,
-      excludeSlashTmp: false,
-    },
+    sandbox: sandboxPolicy('workspace-write'),
     activePermissionProfile: null,
     reasoningEffort: null,
     multiAgentMode: 'explicitRequestOnly',

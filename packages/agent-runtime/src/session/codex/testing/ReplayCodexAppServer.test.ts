@@ -1,3 +1,4 @@
+import { hostname, userInfo } from 'node:os'
 import type { v2 } from '@openmanager/codex-app-server-protocol'
 import { describe, expect, it } from 'vitest'
 import {
@@ -55,17 +56,12 @@ function next<M extends NotificationMethod>(
 
 /** The recording played to its end, and the client sent what Codex was
  * recorded receiving: the same messages, in the same order, with the same
- * params and answers. */
+ * answers and (these tests drive the client exactly as the recorder drove
+ * Codex) the same params. */
 async function expectPlayedAsRecorded(server: ReplayCodexAppServer) {
   await server.done
-  expect(server.waitingFor).toBeUndefined()
-  expect(server.unmatched).toEqual([])
+  server.assertPlayedAsRecorded({ params: true })
   expect(server.matched).toHaveLength(server.recordedClientMessages().length)
-  for (const { recorded, actual } of server.matched) {
-    expect(actual.method).toBe(recorded.method)
-    expect(actual.params).toEqual(recorded.params)
-    expect(actual.result).toEqual(recorded.result)
-  }
 }
 
 function text(input: string): ClientParams<'turn/start'>['input'] {
@@ -82,12 +78,22 @@ const lowCost = { effort: 'low', summary: 'detailed', model: 'gpt-6-luna' } as c
 
 describe('codex replay fixtures', () => {
   it('are all recorded from the pinned codex, sanitised, and end with the recorder shutting codex down', () => {
+    const machine = hostname().toLowerCase()
+    const user = userInfo().username.toLowerCase().replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
     for (const name of CODEX_FIXTURES) {
       const fixture = readCodexFixture(name)
       expect(fixture.header).toMatchObject({ scenario: name, codexVersion: '0.170.0' })
       const text = JSON.stringify(fixture)
       expect(text).not.toMatch(/\/home\/(?!user\b)[a-z]/)
-      expect(text).not.toMatch(/[A-Za-z0-9._%+-]+@(?!example\.com)[A-Za-z0-9.-]+\.[A-Za-z]{2,}/)
+      expect(text).not.toMatch(/\/Users\//)
+      expect(text).not.toMatch(/\/mnt\/[a-z]\/Users\//i)
+      // `C:\Users`, however many times its backslash is escaped.
+      expect(text).not.toMatch(/[A-Z]:(\\)+Users/i)
+      // No email at all: the recorder's placeholder is not committed either.
+      expect(text).not.toMatch(/[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}/)
+      // This machine's name and user, which is whoever recorded last.
+      if (machine.length >= 4) expect(text.toLowerCase()).not.toContain(machine)
+      if (user.length >= 3 && user !== 'user') expect(text.toLowerCase()).not.toMatch(new RegExp(`[\\\\/]${user}\\b`))
       expect(fixture.entries.at(-1)).toMatchObject({ exit: { cause: 'client' } })
     }
   })
@@ -411,6 +417,105 @@ describe('ReplayCodexAppServer', () => {
     await expect(waiting).rejects.toThrow(/exit code 101\): thread 'main' panicked at src\/x\.rs:1:2: boom/)
     await server.done
     expect(server.exitCode).toBe(101)
+  })
+
+  /** Raw lines into the replay, as a client that gets the protocol wrong
+   * would write them. */
+  function write(server: ReplayCodexAppServer, ...messages: unknown[]) {
+    for (const message of messages) server.stdin.write(`${JSON.stringify(message)}\n`)
+  }
+  const flush = async () => {
+    for (let i = 0; i < 10; i++) await new Promise<void>((resolve) => process.nextTick(resolve))
+  }
+
+  it('refuses a request sent before the message the recording has next', async () => {
+    const server = new ReplayCodexAppServer(
+      small([
+        { atMs: 1, from: 'client', message: { id: 2, method: 'model/list', params: {} } },
+        { atMs: 2, from: 'server', message: { id: 2, result: { data: [], nextCursor: null } } },
+      ]),
+    )
+    const initialize = readCodexFixture('simple-turn').entries.find(
+      (entry) => entry.from === 'client' && 'message' in entry && entry.message.method === 'initialize',
+    )!
+    // A request before `initialized`, which the recording has next.
+    write(server, (initialize as { message: unknown }).message, { id: 2, method: 'model/list', params: {} })
+    await flush()
+    expect(server.sent.find((m) => m.id === 2)).toMatchObject({
+      error: { code: -32600, message: 'replay: expected notification initialized next, not request model/list' },
+    })
+    expect(server.mismatches).toEqual([
+      { kind: 'order', expected: { method: 'initialized' }, actual: { id: 2, method: 'model/list', params: {} } },
+    ])
+    expect(server.waitingFor).toMatchObject({ method: 'initialized' })
+    expect(() => server.assertPlayedAsRecorded()).toThrow(/expected notification initialized, the client sent/)
+  })
+
+  it('reports an answer to a server request unlike the recorded one', async () => {
+    const { server, client } = await replay('command-approval')
+    client.handle('item/commandExecution/requestApproval', () => ({ decision: 'decline' }))
+    const { thread } = await client.request('thread/start', {
+      cwd: WORKSPACE,
+      ephemeral: true,
+      approvalPolicy: 'untrusted',
+      sandbox: 'workspace-write',
+      config: { notify: [] },
+      model: 'gpt-6-luna',
+    })
+    await client.request('turn/start', {
+      threadId: thread.id,
+      input: text('Use the shell to run exactly: mkdir made-by-codex\nThen reply "done". Do nothing else.'),
+      ...lowCost,
+      approvalPolicy: 'untrusted',
+    })
+    await server.done
+    expect(server.unmatched).toEqual([])
+    expect(server.mismatches).toEqual([
+      {
+        kind: 'answer',
+        recorded: { id: 0, result: { decision: 'accept' } },
+        actual: { id: 0, result: { decision: 'decline' } },
+      },
+    ])
+    expect(() => server.assertPlayedAsRecorded()).toThrow(/answer to server request 0/)
+  })
+
+  it('compares params only when asked to', async () => {
+    const fixture = small([
+      { atMs: 1, from: 'client', message: { id: 2, method: 'model/list', params: { limit: 5 } } },
+      { atMs: 2, from: 'server', message: { id: 2, result: { data: [], nextCursor: null } } },
+    ])
+    const { server, client } = await replay(fixture)
+    await client.request('model/list', { limit: 6 })
+    await server.done
+    expect(() => server.assertPlayedAsRecorded()).not.toThrow()
+    expect(() => server.assertPlayedAsRecorded({ params: true })).toThrow(/request model\/list had params \{"limit":6\}/)
+  })
+
+  it('answers a request the test scripted itself outside the recording', async () => {
+    const { server, client } = await replay(small())
+    server.respond('account/read', { account: null, userId: null, requiresOpenaiAuth: true, workspaceRouting: null })
+    await expect(client.request('account/read', { refreshToken: false })).resolves.toMatchObject({
+      requiresOpenaiAuth: true,
+    })
+    await server.done
+    server.assertPlayedAsRecorded()
+  })
+
+  it('stops a paced replay when the process exits', async () => {
+    const fixture = small([{ atMs: 60_000, from: 'server', stderr: 'a minute later' }])
+    fixture.entries.forEach((entry, index) => {
+      if (index < 3) entry.atMs = 0
+    })
+    const server = new ReplayCodexAppServer(fixture, { pace: 'recorded' })
+    const client = new CodexAppServerClient(server, { log: () => undefined, terminateGraceMs: 1, requestTimeoutMs: 0 })
+    await client.initialize({ clientVersion: CLIENT_VERSION })
+    await client.terminate({ reason: 'disposed' })
+    // `done` settles on exit instead of a minute later; nothing was played.
+    await server.done
+    expect(server.finished).toBe(false)
+    expect(client.stderrTail).not.toContain('a minute later')
+    expect(() => server.assertPlayedAsRecorded()).toThrow(/stopped at entry 4 of 4/)
   })
 
   it('keeps the recorded gaps when asked to', async () => {

@@ -13,7 +13,7 @@ import type {
 } from '../CodexAppServerClient.js'
 import { CodexRpcError, RPC_METHOD_NOT_FOUND, type RpcId } from '../CodexRpcPeer.js'
 import { CODEX_RECOMMENDED_VERSION } from '../version.js'
-import { buildThread } from './builders.js'
+import { buildThread, sandboxPolicy } from './builders.js'
 import { FakeCodexThread, type FakeCodexTurn } from './FakeCodexThread.js'
 
 /** `codex app-server` in-process, for tests of anything built on
@@ -30,6 +30,13 @@ import { FakeCodexThread, type FakeCodexTurn } from './FakeCodexThread.js'
  * really emits), server requests whose answers it can await, delays, errors and
  * crashes. Everything the client sends is kept in `received` for assertions.
  *
+ * It refuses what Codex refuses: any request before `initialize` is answered
+ * `-32600 Not initialized`, a second `initialize` `-32600 Already
+ * initialized` (codex 0.170 accepts requests between the `initialize` answer
+ * and the `initialized` notification, and so does this). A line from the
+ * client that is not JSON fails the test run (`allowStrayLines` to keep it
+ * quietly in `strayLines` instead).
+ *
  * Exit follows a real child's order: `exit` fires first, the pipes close after
  * (unless `closePipesOnExit` is off, to play the late part of a stream by hand).
  *
@@ -37,6 +44,10 @@ import { FakeCodexThread, type FakeCodexTurn } from './FakeCodexThread.js'
 
 // ---------------------------------------------------------------------------
 // Wire
+
+/** JSON-RPC "invalid request": what Codex answers a request it will not take
+ * (`Not initialized`, `thread not found: …`). */
+const RPC_INVALID_REQUEST = -32600
 
 export type WireError = { code: number; message: string; data?: unknown }
 
@@ -94,7 +105,8 @@ export type FakeServerRequest<M extends ServerRequestMethod = ServerRequestMetho
   id: RpcId
   method: M
   params: ServerRequestParams<M>
-  /** Never settles if the client does not answer (or the fake exits first). */
+  /** Never settles if the client does not answer; rejects if the fake exits
+   * first. */
   answered: Promise<FakeServerAnswer<M>>
 }
 
@@ -140,6 +152,13 @@ export type FakeCodexAppServerOptions = {
   /** Answer `initialize` automatically. Off to script the handshake by hand
    * (`respond('initialize', …)`) or leave it unanswered. Default true. */
   initialize?: boolean
+  /** Refuse requests before `initialize` (and a second `initialize`) as
+   * Codex does. Off for a test that deliberately skips the handshake.
+   * Default true. */
+  requireHandshake?: boolean
+  /** Keep client lines that are not JSON in `strayLines` without failing the
+   * test. By default each one is thrown, asynchronously, so the run fails. */
+  allowStrayLines?: boolean
   /** Ignore SIGTERM, so the termination ladder has to escalate. */
   ignoreSigterm?: boolean
   /** Close stdout and stderr after `exit`, as a real child does. Default true. */
@@ -171,6 +190,8 @@ export class FakeCodexAppServer implements TerminableChild {
   readonly strayAnswers: WireMessage[] = []
   /** Requests answered `-32601` (or ignored) because nothing was scripted. */
   readonly unscripted: WireRequest[] = []
+  /** Lines from the client that were not JSON. */
+  readonly strayLines: string[] = []
 
   ignoreSigterm: boolean
   closePipesOnExit: boolean
@@ -178,10 +199,14 @@ export class FakeCodexAppServer implements TerminableChild {
   private readonly options: FakeCodexAppServerOptions
   private readonly scripts = new Map<string, Scripted[]>()
   private readonly exitListeners: Array<(code: number | null, signal: NodeJS.Signals | null) => void> = []
-  private readonly pending = new Map<string, (answer: WireMessage) => void>()
+  private readonly pending = new Map<
+    string,
+    { method: string; resolve: (answer: WireMessage) => void; reject: (error: Error) => void }
+  >()
   private readonly waiters = new Set<(message: WireMessage) => boolean>()
   private readonly claimed = new Set<WireMessage>()
   private nextServerRequestId: number
+  private initializeReceived = false
 
   constructor(options: FakeCodexAppServerOptions = {}) {
     this.options = options
@@ -240,8 +265,10 @@ export class FakeCodexAppServer implements TerminableChild {
   }
 
   /** Answer every `thread/start` with a new thread and every `turn/start`
-   * with a new turn, announcing each the way Codex does (`thread/started`;
-   * `thread/status/changed` and `turn/started`). What happens in the turn is
+   * on one of those threads with a new turn, announcing each the way Codex
+   * does (`thread/started`; `thread/status/changed` and `turn/started`). A
+   * `turn/start` for any other thread is refused as Codex refuses it (`-32600
+   * thread not found`). What happens in the turn is
    * the test's to script: `onTurn` gets each one as it starts. Enough for code
    * that only needs a session to come up. */
   serveThreads(onTurn?: (turn: FakeCodexTurn) => void): this {
@@ -256,18 +283,19 @@ export class FakeCodexAppServer implements TerminableChild {
           ephemeral: params.ephemeral ?? false,
         })
         threads.set(thread.id, thread)
-        return thread.startResponse(params.approvalPolicy ? { approvalPolicy: params.approvalPolicy } : {})
+        return thread.startResponse({
+          ...(params.approvalPolicy ? { approvalPolicy: params.approvalPolicy } : {}),
+          sandbox: sandboxPolicy(params.sandbox),
+        })
       },
       { after: (_request, result) => threads.get(result.thread.id)?.started() },
     )
     this.respond(
       'turn/start',
       (params) => {
-        let thread = threads.get(params.threadId)
-        if (!thread) {
-          thread = new FakeCodexThread(this, buildThread({ id: params.threadId }))
-          threads.set(thread.id, thread)
-        }
+        const thread = threads.get(params.threadId)
+        // What codex 0.170 answers for a thread it has not started or resumed.
+        if (!thread) throw new CodexRpcError(RPC_INVALID_REQUEST, `thread not found: ${params.threadId}`)
         const turn = thread.turn()
         turns.set(turn.id, turn)
         return turn.startResponse()
@@ -311,9 +339,16 @@ export class FakeCodexAppServer implements TerminableChild {
     options: { id?: RpcId } = {},
   ): FakeServerRequest<M> {
     const id = options.id ?? this.nextServerRequestId++
-    const answered = new Promise<FakeServerAnswer<M>>((resolve) => {
-      this.pending.set(String(id), (answer) => resolve(answer as FakeServerAnswer<M>))
+    const answered = new Promise<FakeServerAnswer<M>>((resolve, reject) => {
+      this.pending.set(String(id), {
+        method,
+        resolve: (answer) => resolve(answer as FakeServerAnswer<M>),
+        reject,
+      })
     })
+    // Rejected on exit; a test that never awaits the answer must not see that
+    // as an unhandled rejection.
+    answered.catch(() => undefined)
     this.send({ id, method, params })
     return { id, method, params, answered }
   }
@@ -365,10 +400,13 @@ export class FakeCodexAppServer implements TerminableChild {
 
   /** The next request of `method` that no earlier `nextRequest` returned. */
   async nextRequest<M extends ClientMethod>(method: M): Promise<FakeClientRequest<M>> {
-    const message = await this.waitFor(
-      (m) => isWireRequest(m) && m.method === method && !this.claimed.has(m),
-    )
-    this.claimed.add(message)
+    // Claimed in the predicate, so two callers waiting at once get two
+    // different requests.
+    const message = await this.waitFor((m) => {
+      if (!isWireRequest(m) || m.method !== method || this.claimed.has(m)) return false
+      this.claimed.add(m)
+      return true
+    })
     return message as FakeClientRequest<M>
   }
 
@@ -409,8 +447,16 @@ export class FakeCodexAppServer implements TerminableChild {
     this.signalCode = signal
     this.exitCode = code
     for (const listener of this.exitListeners) listener(code, signal)
+    // A dead process asks nothing more: its questions go unanswered.
+    for (const [id, { method, reject }] of this.pending)
+      reject(new Error(`fake codex app-server exited before the client answered ${method} (id ${id})`))
+    this.pending.clear()
+    this.onExit()
     if (this.closePipesOnExit) this.closePipes()
   }
+
+  /** Runs once the process has exited, before the pipes close. */
+  protected onExit(): void {}
 
   // ------------------------------------------------------------- receiving
 
@@ -419,8 +465,14 @@ export class FakeCodexAppServer implements TerminableChild {
     try {
       message = JSON.parse(line) as WireMessage
     } catch {
-      // The client only ever writes JSON; keep the evidence if it does not.
-      message = { method: '(unparseable)', params: line }
+      // The client only ever writes JSON. Thrown outside the client's write
+      // call, so the test run fails without the client seeing an error.
+      this.strayLines.push(line)
+      if (!this.options.allowStrayLines)
+        queueMicrotask(() => {
+          throw new Error(`fake codex app-server: the client wrote a line that is not JSON: ${line}`)
+        })
+      return
     }
     this.received.push(message)
     for (const waiter of this.waiters) if (waiter(message)) this.waiters.delete(waiter)
@@ -434,19 +486,45 @@ export class FakeCodexAppServer implements TerminableChild {
   protected onClientMessage(message: WireMessage): void {
     if (isWireResponse(message)) {
       const key = String(message.id)
-      const settle = this.pending.get(key)
-      if (!settle) {
+      const pending = this.pending.get(key)
+      if (!pending) {
         this.strayAnswers.push(message)
         return
       }
       this.pending.delete(key)
-      settle(message)
+      pending.resolve(message)
       return
     }
     if (isWireRequest(message)) void this.answer(message)
   }
 
+  /** Whether this fake sent server request `id` and still waits for its
+   * answer. */
+  protected awaitsAnswer(id: RpcId): boolean {
+    return this.pending.has(String(id))
+  }
+
+  /** Whether a `respond` script would answer the next request of `method`. */
+  protected hasScript(method: string): boolean {
+    return this.scripts.get(method)?.some((entry) => entry.remaining > 0) ?? false
+  }
+
   private async answer(request: WireRequest): Promise<void> {
+    if (this.options.requireHandshake !== false) {
+      const refusal =
+        request.method === 'initialize'
+          ? this.initializeReceived
+            ? 'Already initialized'
+            : undefined
+          : this.initializeReceived
+            ? undefined
+            : 'Not initialized'
+      if (request.method === 'initialize') this.initializeReceived = true
+      if (refusal) {
+        this.send({ id: request.id, error: { code: RPC_INVALID_REQUEST, message: refusal } })
+        return
+      }
+    }
     const scripted = this.takeScript(request.method)
     if (!scripted) {
       if (request.method === 'initialize' && this.options.initialize !== false) {

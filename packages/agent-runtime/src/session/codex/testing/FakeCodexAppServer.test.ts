@@ -55,6 +55,24 @@ describe('FakeCodexAppServer handshake', () => {
     )
   })
 
+  it('refuses requests before initialize, and a second initialize, as codex does', async () => {
+    const server = new FakeCodexAppServer()
+    const client = connect(server)
+    await expect(client.request('model/list', {})).rejects.toMatchObject({ code: -32600, message: 'Not initialized' })
+    await client.initialize({ clientVersion: '1' })
+    server.respond('model/list', { data: [], nextCursor: null })
+    await expect(client.request('model/list', {})).resolves.toEqual({ data: [], nextCursor: null })
+    await expect(
+      client.request('initialize', { clientInfo: { name: 'again', title: null, version: '1' }, capabilities: null }),
+    ).rejects.toMatchObject({ code: -32600, message: 'Already initialized' })
+  })
+
+  it('answers before the handshake when a test opts out', async () => {
+    const server = new FakeCodexAppServer({ requireHandshake: false })
+    server.respond('model/list', { data: [], nextCursor: null })
+    await expect(connect(server).request('model/list', {})).resolves.toEqual({ data: [], nextCursor: null })
+  })
+
   it('leaves initialize to the test when asked', async () => {
     const server = new FakeCodexAppServer({ initialize: false })
     server.respond('initialize', {
@@ -113,6 +131,43 @@ describe('FakeCodexAppServer responses', () => {
     await vi.advanceTimersByTimeAsync(1)
     await flush()
     expect(answered).toBe(true)
+  })
+
+  it('hands two callers waiting at once two different requests', async () => {
+    const { server, client } = await started()
+    server.respond('thread/name/set', {})
+    const first = server.nextRequest('thread/name/set')
+    const second = server.nextRequest('thread/name/set')
+    void client.request('thread/name/set', { threadId: 'a', name: 'one' })
+    void client.request('thread/name/set', { threadId: 'a', name: 'two' })
+    const names = (await Promise.all([first, second])).map((request) => request.params.name)
+    expect(names.sort()).toEqual(['one', 'two'])
+  })
+
+  it('fails the run on a client line that is not JSON, or keeps it when allowed', async () => {
+    const thrown: unknown[] = []
+    const spy = vi.spyOn(globalThis, 'queueMicrotask').mockImplementation((callback) => {
+      try {
+        callback()
+      } catch (error) {
+        thrown.push(error)
+      }
+    })
+    try {
+      const server = new FakeCodexAppServer()
+      server.stdin.write('not json\n')
+      await flush()
+      expect(server.strayLines).toEqual(['not json'])
+      expect(server.received).toEqual([])
+    } finally {
+      spy.mockRestore()
+    }
+    expect(thrown).toEqual([new Error('fake codex app-server: the client wrote a line that is not JSON: not json')])
+
+    const lenient = new FakeCodexAppServer({ allowStrayLines: true })
+    lenient.stdin.write('still not json\n')
+    await flush()
+    expect(lenient.strayLines).toEqual(['still not json'])
   })
 
   it('lets a test wait for the next request of a method', async () => {
@@ -183,6 +238,28 @@ describe('FakeCodexAppServer threads and turns', () => {
       (m) => m.method === 'item/completed' && (m.params.item as v2.ThreadItem).type === 'commandExecution',
     )!.params.item
     expect(command).toMatchObject({ status: 'completed', exitCode: 0, aggregatedOutput: 'a.txt\nb.txt\n' })
+  })
+
+  it('reports the sandbox the thread was started with', async () => {
+    const { server, client } = await started()
+    server.serveThreads()
+    const sandboxes = []
+    for (const sandbox of ['read-only', 'workspace-write', 'danger-full-access', undefined] as const)
+      sandboxes.push((await client.request('thread/start', sandbox ? { sandbox } : {})).sandbox)
+    expect(sandboxes).toEqual([
+      { type: 'readOnly', networkAccess: false },
+      expect.objectContaining({ type: 'workspaceWrite', writableRoots: [] }),
+      { type: 'dangerFullAccess' },
+      expect.objectContaining({ type: 'workspaceWrite' }),
+    ])
+  })
+
+  it('refuses a turn on a thread it never started, as codex does', async () => {
+    const { server, client } = await started()
+    server.serveThreads()
+    await expect(
+      client.request('turn/start', { threadId: 'thread-nobody-started', input: [] }),
+    ).rejects.toMatchObject({ code: -32600, message: 'thread not found: thread-nobody-started' })
   })
 
   it("interleaves a child thread's notifications with its parent's, each under its own threadId", async () => {
@@ -336,6 +413,16 @@ describe('FakeCodexAppServer server requests', () => {
 })
 
 describe('FakeCodexAppServer process', () => {
+  it('fails a question still waiting for its answer when it exits', async () => {
+    const { server, client } = await started()
+    // The user never answers.
+    client.handle('item/tool/requestUserInput', () => new Promise(() => undefined))
+    const turn = server.thread().turn().started()
+    const asked = turn.requestUserInput()
+    server.crash({ code: 1 })
+    await expect(asked).rejects.toThrow(/exited before the client answered item\/tool\/requestUserInput/)
+  })
+
   it('crashes with stderr and an exit code, failing what was waiting', async () => {
     const { server, client } = await started()
     server.respond('model/list', () => new Promise(() => undefined))

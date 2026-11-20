@@ -1,3 +1,4 @@
+import { isDeepStrictEqual } from 'node:util'
 import type { RpcId } from '../CodexRpcPeer.js'
 import {
   FakeCodexAppServer,
@@ -9,7 +10,10 @@ import {
 } from './FakeCodexAppServer.js'
 import { readCodexFixture, type CodexFixture, type CodexFixtureEntry, type CodexFixtureName } from './fixture.js'
 
-export type ReplayCodexAppServerOptions = Omit<FakeCodexAppServerOptions, 'initialize' | 'unscripted'> & {
+export type ReplayCodexAppServerOptions = Omit<
+  FakeCodexAppServerOptions,
+  'initialize' | 'unscripted' | 'requireHandshake'
+> & {
   /** `instant` (the default) plays the server's lines as soon as the
    * recording reaches them, which keeps tests fast and deterministic.
    * `recorded` keeps the recorded gaps between them, divided by `speed`. */
@@ -20,30 +24,55 @@ export type ReplayCodexAppServerOptions = Omit<FakeCodexAppServerOptions, 'initi
 /** One client message the recording expected, and the one the client sent. */
 export type ReplayMatch = { recorded: WireMessage; actual: WireMessage }
 
+/** Where the client parted from the recording.
+ *
+ * - `order`: the client sent `actual` when the recording expected `expected`
+ *   next. A request is answered `-32600` at once, so the client fails fast
+ *   instead of waiting for an answer that will never come.
+ * - `answer`: the client answered a server request (`actual`) differently from
+ *   the recording (`recorded`): another `result`, or another error code.
+ * - `params` (only from `assertPlayedAsRecorded({ params: true })`): a request
+ *   or notification matched by method but carried other params. */
+export type ReplayMismatch =
+  | { kind: 'order'; expected: WireMessage; actual: WireMessage }
+  | { kind: 'answer'; recorded: WireMessage; actual: WireMessage }
+  | { kind: 'params'; recorded: WireMessage; actual: WireMessage }
+
 /** A fake `codex app-server` that plays a recording (see `fixture.ts`) to the
- * real client.
+ * real client, and checks the client says what Codex was recorded hearing.
  *
  * It walks the recording in order. A server line is played when the walk
  * reaches it. A client line is a wait: the walk stops until the client has
- * sent a matching message, so the server never runs ahead of what the client
- * has actually done. Matching is by kind and method, in order, never by raw
- * id: the client numbers its own requests, and the recorded answer goes back
- * under the id the client used. Server requests keep their recorded ids (the
- * server owns those), so the client's answer is matched by that id.
+ * sent a message, so the server never runs ahead of what the client has
+ * actually done. That message must be the one the recording has next, matched
+ * by kind and method, never by raw id: the client numbers its own requests,
+ * and the recorded answer goes back under the id the client used. Server
+ * requests keep their recorded ids (the server owns those), so the client's
+ * answer is matched by that id, and its `result` (or error code) is compared
+ * with the recorded one.
  *
- * A client message arriving before the walk needs it waits in an inbox; one
- * the recording has no place for stays there, and after the end of the
- * recording a request is answered `-32601`. Either way it shows up in
- * `unmatched`, which a test asserts is empty to prove the client sent exactly
- * what Codex was recorded receiving. `matched` pairs each recorded client
- * message with the real one, for asserting on params.
+ * Client messages are taken strictly in the order they arrive. One that is not
+ * what the recording expects next is an `order` mismatch, and dropped (a
+ * request is refused with `-32600`); an answer unlike the recorded one is an
+ * `answer` mismatch, and the walk goes on. A request the test scripted with
+ * `respond` is answered from the script and is not part of the recording.
+ * After the end of the recording a request is answered `-32601` and kept in
+ * `unmatched`, as is anything still waiting when the test looks.
+ *
+ * `assertPlayedAsRecorded()` checks all of it at the end of a test: the whole
+ * recording played, nothing unmatched, no mismatches (and, opted into, the
+ * same params). Params are not compared by default: ids, versions and paths
+ * legitimately differ between a recording and a replay. `matched` pairs each
+ * recorded client message with the real one, for finer assertions.
  *
  * When a test hangs, `waitingFor` says which client message the replay is
  * still waiting for. */
 export class ReplayCodexAppServer extends FakeCodexAppServer {
   readonly fixture: CodexFixture
   readonly matched: ReplayMatch[] = []
-  /** Resolves when the recording has been played to its end. */
+  readonly mismatches: ReplayMismatch[] = []
+  /** Resolves when the recording has been played to its end, or the process
+   * has exited. */
   readonly done: Promise<void>
 
   private readonly pace: 'instant' | 'recorded'
@@ -59,7 +88,8 @@ export class ReplayCodexAppServer extends FakeCodexAppServer {
   private finish!: () => void
 
   constructor(fixture: CodexFixture | CodexFixtureName, options: ReplayCodexAppServerOptions = {}) {
-    super({ ...options, initialize: false, unscripted: 'ignore' })
+    // The recording holds the handshake, and the walk checks its order.
+    super({ ...options, initialize: false, unscripted: 'ignore', requireHandshake: false })
     this.fixture = typeof fixture === 'string' ? readCodexFixture(fixture) : fixture
     this.pace = options.pace ?? 'instant'
     this.speed = options.speed ?? 1
@@ -74,7 +104,8 @@ export class ReplayCodexAppServer extends FakeCodexAppServer {
     return this.cursor >= this.fixture.entries.length
   }
 
-  /** Client messages the recording had no place for. */
+  /** Client messages the recording had no place for: sent after its end, or
+   * still waiting for the walk. */
   get unmatched(): WireMessage[] {
     return [...this.inbox, ...this.afterEnd]
   }
@@ -90,7 +121,38 @@ export class ReplayCodexAppServer extends FakeCodexAppServer {
     return this.fixture.entries.flatMap((entry) => (entry.from === 'client' ? [entry.message] : []))
   }
 
+  /** Throw unless the client said exactly what Codex was recorded hearing:
+   * the recording played to its end, in order, with the recorded answers to
+   * server requests and nothing left over. `params: true` also requires each
+   * request and notification to carry the recorded params. Call it once the
+   * test is done with the client (after `await server.done`). */
+  assertPlayedAsRecorded(options: { params?: boolean } = {}): void {
+    const problems: string[] = []
+    if (!this.finished)
+      problems.push(
+        `the recording stopped at entry ${this.cursor + 1} of ${this.fixture.entries.length}` +
+          (this.waitingFor ? `, waiting for the client to send ${describe(this.waitingFor)}` : ''),
+      )
+    const mismatches = [...this.mismatches]
+    if (options.params)
+      for (const { recorded, actual } of this.matched)
+        if (!isWireResponse(recorded) && !isDeepStrictEqual(actual.params, recorded.params))
+          mismatches.push({ kind: 'params', recorded, actual })
+    for (const mismatch of mismatches) problems.push(describeMismatch(mismatch))
+    for (const message of this.unmatched) problems.push(`the recording has no place for ${JSON.stringify(message)}`)
+    if (problems.length > 0)
+      throw new Error(`${this.fixture.header.scenario} was not played as recorded:\n- ${problems.join('\n- ')}`)
+  }
+
   protected override onClientMessage(message: WireMessage): void {
+    // Outside the recording: what the test scripted itself.
+    if (
+      (isWireRequest(message) && this.hasScript(message.method)) ||
+      (isWireResponse(message) && this.awaitsAnswer(message.id))
+    ) {
+      super.onClientMessage(message)
+      return
+    }
     if (this.finished) {
       this.afterEnd.push(message)
       if (isWireRequest(message))
@@ -102,6 +164,12 @@ export class ReplayCodexAppServer extends FakeCodexAppServer {
     }
     this.inbox.push(message)
     this.advance()
+  }
+
+  protected override onExit(): void {
+    if (this.timer) clearTimeout(this.timer)
+    this.timer = undefined
+    this.finish()
   }
 
   private advance(): void {
@@ -128,6 +196,8 @@ export class ReplayCodexAppServer extends FakeCodexAppServer {
               this.cursor++
               this.advance()
             }, wait)
+            // A replay left waiting must not keep the test process alive.
+            this.timer.unref()
             return
           }
         }
@@ -137,17 +207,32 @@ export class ReplayCodexAppServer extends FakeCodexAppServer {
     } finally {
       this.busy = false
     }
-    if (this.finished || this.exited) this.end()
+    if (this.finished || this.exited) this.finish()
   }
 
-  /** Take the client message `recorded` waits for out of the inbox. */
+  /** Take the client message `recorded` waits for: the oldest one in the
+   * inbox. Anything older that is not it was sent out of order. */
   private consume(recorded: WireMessage): boolean {
-    const index = this.inbox.findIndex((actual) => matches(recorded, actual))
-    if (index === -1) return false
-    const [actual] = this.inbox.splice(index, 1)
-    if (isWireRequest(recorded)) this.ids.set(String(recorded.id), actual!.id!)
-    this.matched.push({ recorded, actual: actual! })
-    return true
+    for (let actual = this.inbox.shift(); actual !== undefined; actual = this.inbox.shift()) {
+      if (!matches(recorded, actual)) {
+        this.mismatches.push({ kind: 'order', expected: recorded, actual })
+        if (isWireRequest(actual))
+          this.send({
+            id: actual.id,
+            error: {
+              code: -32600,
+              message: `replay: expected ${describe(recorded)} next, not ${describe(actual)}`,
+            },
+          })
+        continue
+      }
+      if (isWireRequest(recorded)) this.ids.set(String(recorded.id), actual.id!)
+      if (isWireResponse(recorded) && !sameAnswer(recorded, actual))
+        this.mismatches.push({ kind: 'answer', recorded, actual })
+      this.matched.push({ recorded, actual })
+      return true
+    }
+    return false
   }
 
   private play(entry: Exclude<CodexFixtureEntry, { from: 'client' }>): void {
@@ -167,9 +252,27 @@ export class ReplayCodexAppServer extends FakeCodexAppServer {
     else this.crash({ code: entry.exit.code ?? 1 })
   }
 
-  private end(): void {
-    this.cursor = this.fixture.entries.length
-    this.finish()
+}
+
+function sameAnswer(recorded: WireMessage, actual: WireMessage): boolean {
+  if (recorded.error || actual.error) return recorded.error?.code === actual.error?.code
+  return isDeepStrictEqual(actual.result, recorded.result)
+}
+
+function describe(message: WireMessage): string {
+  if (isWireRequest(message)) return `request ${message.method}`
+  if (isWireNotification(message)) return `notification ${message.method}`
+  return `the answer to server request ${String(message.id)}`
+}
+
+function describeMismatch(mismatch: ReplayMismatch): string {
+  switch (mismatch.kind) {
+    case 'order':
+      return `expected ${describe(mismatch.expected)}, the client sent ${JSON.stringify(mismatch.actual)}`
+    case 'answer':
+      return `${describe(mismatch.recorded)} was ${JSON.stringify(mismatch.actual)}, recorded as ${JSON.stringify(mismatch.recorded)}`
+    case 'params':
+      return `${describe(mismatch.recorded)} had params ${JSON.stringify(mismatch.actual.params)}, recorded as ${JSON.stringify(mismatch.recorded.params)}`
   }
 }
 

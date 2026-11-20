@@ -23,7 +23,8 @@ type Wire = Record<string, any>
  * the stream by hand). */
 class FakeChild extends FakeCodexAppServer {
   constructor() {
-    super({ initialize: false, unscripted: 'ignore' })
+    // These tests play the handshake (or skip it) by hand.
+    super({ initialize: false, unscripted: 'ignore', requireHandshake: false })
   }
 
   get written(): Wire[] {

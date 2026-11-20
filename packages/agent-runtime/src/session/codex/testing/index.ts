@@ -1,5 +1,7 @@
-// The Codex test doubles, re-exported by `@agentpack/runtime/testing`.
-// Shipping paths must not import this.
+// The Codex test doubles: `@agentpack/runtime/testing/codex`. Shipping paths
+// must not import this. It is TypeScript source for vitest (it reaches the
+// generated protocol, which is .ts only), so it is not part of
+// `@agentpack/runtime/testing`, which plain Node loads from `dist`.
 export {
   FakeCodexAppServer,
   FakeCodexAppServerFactory,
@@ -23,7 +25,7 @@ export type {
 export { FakeCodexThread, FakeCodexTurn } from './FakeCodexThread.js'
 export type { CommandScript } from './FakeCodexThread.js'
 export { ReplayCodexAppServer } from './ReplayCodexAppServer.js'
-export type { ReplayCodexAppServerOptions, ReplayMatch } from './ReplayCodexAppServer.js'
+export type { ReplayCodexAppServerOptions, ReplayMatch, ReplayMismatch } from './ReplayCodexAppServer.js'
 export {
   CODEX_FIXTURE_FORMAT,
   CODEX_FIXTURES,

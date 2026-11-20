@@ -299,7 +299,8 @@ export class FakeCodexTurn {
 
   /** Ask the client to approve a command, as Codex does: the thread is marked
    * waiting, the request goes out, and once answered `serverRequest/resolved`
-   * follows and the thread is active again. Resolves with the answer. */
+   * follows and the thread is active again. Resolves with the answer;
+   * rejects if the fake exits before the client answers. */
   requestCommandApproval(
     item: { id: string },
     overrides: Partial<v2.CommandExecutionRequestApprovalParams> = {},
