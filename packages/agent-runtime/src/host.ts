@@ -3,7 +3,7 @@ import type { DesiredSessionConfig } from './session/lifecycle.js'
 import type { AgentToolsHost } from './tools/agent-tools.js'
 
 export type HostLogEntry = {
-  scope: 'agent-runtime' | 'acp' | 'claude'
+  scope: 'agent-runtime' | 'acp' | 'claude' | 'codex'
   level: 'info' | 'warn' | 'error'
   message: string
   data?: unknown

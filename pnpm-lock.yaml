@@ -483,6 +483,9 @@ importers:
       '@opencode-ai/sdk':
         specifier: 1.18.3
         version: 1.18.3
+      '@openmanager/codex-app-server-protocol':
+        specifier: workspace:*
+        version: link:../codex-app-server-protocol
       '@openmanager/protocol':
         specifier: workspace:*
         version: link:../protocol
@@ -702,6 +705,12 @@ importers:
       vitest:
         specifier: ^4.0.18
         version: 4.1.9(@opentelemetry/api@1.9.1)(@types/node@26.1.0)(jsdom@26.1.0)(vite@7.3.6(@types/node@26.1.0)(jiti@2.7.0)(lightningcss@1.33.0)(terser@5.48.0)(yaml@2.9.0))
+
+  packages/codex-app-server-protocol:
+    devDependencies:
+      typescript:
+        specifier: ^5.9.3
+        version: 5.9.3
 
   packages/convex:
     dependencies:
