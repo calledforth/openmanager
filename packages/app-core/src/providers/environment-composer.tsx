@@ -533,7 +533,12 @@ export function EnvironmentComposerStateProvider({ children }: { children: React
       const launch: DraftLaunch = {
         providerId,
         ...(Object.keys(picks).length > 0 ? { preference: picks } : {}),
-        ...(modeId && modeId !== profile?.defaultModeId ? { modeId } : {}),
+        // A mode picked here always goes: the profile's default can be stale
+        // (a session that reported its own mode), and a launch without its
+        // mode starts in whatever the provider defaults to.
+        ...(modeId && (picked?.modeId === modeId || modeId !== profile?.defaultModeId)
+          ? { modeId }
+          : {}),
         ...(sending ? { workspaceId: launchWorkspaceId } : {}),
         ...(kept ? { draft: kept } : {}),
       }

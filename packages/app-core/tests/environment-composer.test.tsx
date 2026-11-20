@@ -573,6 +573,27 @@ describe('the composer over the environment client', () => {
     expect(client.getState().sessions[sessionId]?.composer?.modeId).toBe('plan')
   })
 
+  // Review: a stale profile default (Plan) made a picked Plan launch with no
+  // mode, so it ran in the provider's real default.
+  it('launches in a picked mode even when the profile names it as the default', async () => {
+    const client = createMockEnvironmentClient({
+      seed: {
+        ...SEED,
+        providers: [
+          { ...OPENCODE, profile: { ...OPENCODE.profile!, defaultModeId: 'plan' } },
+          CURSOR,
+          BROKEN_CLAUDE,
+        ],
+      },
+    })
+    await mount(client)
+    await openDraft(client)
+    await act(() => probe.composer.setDraftMode('plan'))
+    await act(() => probe.thread.sendMessage('plan this'))
+    await settle(client)
+    expect(inputOf(client, 'createSession')).toMatchObject({ firstMessage: 'plan this', modeId: 'plan' })
+  })
+
   it('keeps the draft open with what was typed when the environment refuses the launch', async () => {
     const client = createMockEnvironmentClient({ seed: SEED })
     await mount(client)

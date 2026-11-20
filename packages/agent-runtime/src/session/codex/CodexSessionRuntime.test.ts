@@ -1947,7 +1947,7 @@ describe('CodexSessionRuntime composer settings', () => {
   })
 
   it('refuses a change Codex reads back otherwise, and shows what it kept', async () => {
-    const { server, runtime, events } = session({ controlRequestMs: 200 })
+    const { server, runtime, events } = session()
     await runtime.start()
     server.respond('thread/settings/update', (params) => {
       setImmediate(() =>
@@ -1958,7 +1958,11 @@ describe('CodexSessionRuntime composer settings', () => {
       )
       return {}
     })
+    // Settled after a short grace, not the whole control budget, so nothing
+    // queued behind it waits long.
+    const startedAt = Date.now()
     await expect(runtime.setConfigOption('effort', 'high')).rejects.toThrow(/kept its own effort: low/)
+    expect(Date.now() - startedAt).toBeLessThan(2_000)
     expect(option(events, 'effort')).toBe('low')
   })
 
@@ -2292,5 +2296,91 @@ describe('CodexSessionRuntime composer settings', () => {
       sandbox: 'workspace-write',
       approvalPolicy: 'on-request',
     })
+    // Said outright: a load keeps the session's remembered mode otherwise.
+    expect(restored.events.filter((e) => e.event === 'current_mode_update').at(-1)).toMatchObject({
+      data: { currentModeId: 'auto-accept-edits' },
+    })
+  })
+
+  // Verification: a config reopen dropped the handover a restart still owed.
+  it('keeps a handover still owed across a web search reopen', async () => {
+    const { runtime } = session({ spec: { sessionId: 'gone' } })
+    await runtime.start()
+    const handover = () => (runtime as unknown as { handover?: { from: string } }).handover
+    expect(handover()).toEqual({ from: 'gone' })
+    await runtime.setConfigOption('web_search', 'live')
+    expect(handover()).toEqual({ from: 'gone' })
+  })
+
+  // Verification: a reopen that failed after letting the thread go left the
+  // next turn on an unloaded thread.
+  it('opens the thread again at the next turn after a web search reopen fails', async () => {
+    const { server, runtime, turn, events } = await prompted()
+    server.fail('thread/resume', -32603, 'database is locked', { times: 1 })
+    await expect(runtime.setConfigOption('web_search', 'live')).rejects.toThrow(/database is locked/)
+    expect(option(events, 'web_search')).toBe('cached')
+    const params = await turn()
+    expect(server.requests('thread/resume')).toHaveLength(2)
+    expect(params.threadId).toBe(runtime.sessionId)
+  })
+
+  // Verification: a cancel while the prompt waited for a change still ran it.
+  it('starts no turn when stopped while it waited for a settings change', async () => {
+    const { server, runtime } = await prompted({ controlRequestMs: 300 })
+    server.respond('thread/settings/update', {} as never, { delayMs: 100 })
+    const change = runtime.setConfigOption('effort', 'high').catch(() => undefined)
+    const prompt = runtime.prompt({ prompt: PROMPT })
+    await runtime.cancel()
+    await prompt
+    await change
+    expect(server.requests('turn/start')).toHaveLength(1)
+  })
+
+  // Verification: Standard did not clear a Fast an older CLI never read back.
+  it('clears a tier it sent when Standard is picked on a Codex that reads nothing back', async () => {
+    const { server, runtime, turn } = await prompted()
+    server.fail('thread/settings/update', -32601, 'unknown method')
+    await runtime.setConfigOption('service_tier', 'priority')
+    expect(await turn()).toMatchObject({ serviceTier: 'priority' })
+    await runtime.setConfigOption('service_tier', 'default')
+    expect(await turn()).toMatchObject({ serviceTier: null })
+    expect(await turn()).not.toHaveProperty('serviceTier')
+  })
+
+  // Verification: a refused change still reached the next turn through the queue.
+  it('sends what Codex kept, not a refused change, at the next turn', async () => {
+    const { server, runtime, turn } = await prompted()
+    await runtime.applyDesiredConfig({ values: { effort: 'high' } })
+    server.respond('thread/settings/update', (params) => {
+      setImmediate(() =>
+        server.notify('thread/settings/updated', {
+          threadId: params.threadId,
+          threadSettings: codexBuilders.buildThreadSettings({ model: 'gpt-6-luna', effort: 'low', serviceTier: 'default' }),
+        }),
+      )
+      return {}
+    })
+    await expect(runtime.setConfigOption('effort', 'ultra')).rejects.toThrow(/kept its own effort/)
+    expect(await turn()).toMatchObject({ effort: 'low' })
+  })
+
+  // Verification: a change made while a prompt was being prepared could be
+  // sent under its turn/start.
+  it('queues a change made while a prompt is starting for the turn after it', async () => {
+    const { server, runtime, turns } = await prompted()
+    const updates = server.requests('thread/settings/update').length
+    const next = runtime.prompt({ prompt: PROMPT })
+    const change = runtime.setConfigOption('effort', 'high')
+    await change
+    await vi.waitFor(() => expect(turns).toHaveLength(2))
+    expect(server.requests('thread/settings/update')).toHaveLength(updates)
+    expect(server.requests('turn/start')[1]!.params).toMatchObject({ effort: 'low' })
+    turns[1]!.completed()
+    await next
+    const third = runtime.prompt({ prompt: PROMPT })
+    await vi.waitFor(() => expect(turns).toHaveLength(3))
+    expect(server.requests('turn/start')[2]!.params).toMatchObject({ effort: 'high' })
+    turns[2]!.completed()
+    await third
   })
 })

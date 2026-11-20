@@ -279,7 +279,7 @@ describe('composer service commands', () => {
       expect(store.getProfile('cursor')?.defaultModelId).toBeUndefined()
     })
 
-    it('takes the mode a new session starts in from a probe, over what a session reported', async () => {
+    it('takes the mode a new session starts in from a probe', async () => {
       const { service, store } = await harness()
       const availableModes = [
         { id: 'supervised', displayName: 'Supervised' },
@@ -291,23 +291,53 @@ describe('composer service commands', () => {
         availableModes: [{ id: 'supervised' }, { id: 'auto-accept-edits' }],
         defaultModeId: 'auto-accept-edits',
       })
-      // A session reports its own mode (a draft's Supervised): not the default.
-      service.onRuntimeEvent({
-        id: 'event-1',
-        seq: 1,
-        timestamp: '2026-09-09T00:00:00.000Z',
-        providerId: 'cursor',
-        threadId: 'thread-1',
-        workspaceId: 'workspace-1',
-        sessionId: 'provider-session-1',
-        category: 'lifecycle',
-        event: 'session_created',
-        data: { modes: { availableModes, currentModeId: 'supervised' } },
-      })
-      expect(store.getProfile('cursor')?.defaultModeId).toBe('auto-accept-edits')
-      // A probe's newer answer replaces it.
       service.observeCatalog('cursor', { modes: { availableModes, currentModeId: 'supervised' } })
       expect(store.getProfile('cursor')?.defaultModeId).toBe('supervised')
+    })
+
+    // Review: Claude's first session launched in Plan made Plan the default
+    // for good, and later Plan drafts then launched without their mode.
+    it('takes no default mode from a session that started in a mode of its own', async () => {
+      const { runtime, store } = await harness()
+      const service = createComposerService(
+        runtime,
+        { snapshot: () => [provider], rejection: () => undefined },
+        store,
+        () => undefined,
+        { sessionForThread: (threadId) => threadId.replace('thread', 'session') },
+      )
+      const created = (threadId: string, currentModeId: string) =>
+        service.onRuntimeEvent({
+          id: `event-${threadId}`,
+          seq: 1,
+          timestamp: '2026-09-09T00:00:00.000Z',
+          providerId: 'cursor',
+          threadId,
+          workspaceId: 'workspace-1',
+          sessionId: `provider-${threadId}`,
+          category: 'lifecycle',
+          event: 'session_created',
+          data: {
+            modes: {
+              availableModes: [
+                { id: 'default', displayName: 'Default' },
+                { id: 'plan', displayName: 'Plan' },
+              ],
+              currentModeId,
+            },
+          },
+        })
+      // A draft launched in Plan: its mode is seeded before the process reports.
+      service.seedSession('session-1', { modeId: 'plan' })
+      created('thread-1', 'plan')
+      expect(store.getProfile('cursor')?.defaultModeId).toBeUndefined()
+      expect(service.sessionComposer('session-1').modeId).toBe('plan')
+      // One launched with no mode of its own says what a new session starts in.
+      created('thread-2', 'default')
+      expect(store.getProfile('cursor')?.defaultModeId).toBe('default')
+      service.seedSession('session-3', { modeId: 'plan' })
+      created('thread-3', 'plan')
+      expect(store.getProfile('cursor')?.defaultModeId).toBe('default')
     })
 
     it("keeps a provider's policy and each model's upgrade, replacing both with a newer answer", async () => {

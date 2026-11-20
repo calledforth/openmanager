@@ -556,6 +556,10 @@ export function createComposerService(
         }
         const sessionId = options.sessionForThread?.(event.threadId)
         if (event.event === 'session_created' || event.event === 'session_loaded') {
+          // A session that already had a mode (a draft's, seeded at create;
+          // one Codex restores) reports that mode, not what a new session
+          // starts in: only one with none may say the provider's default.
+          const reportsDefault = !sessionId || selectionOf(sessionId).modeId === undefined
           if (sessionId) {
             // The first report seeds a session that has no selection yet from
             // the workspace preference; after that the session owns it.
@@ -578,12 +582,7 @@ export function createComposerService(
             ...(event.event === 'session_created' && event.data.models?.currentModelId
               ? { defaultModelId: event.data.models.currentModelId }
               : {}),
-            // Only while nothing has said what a new session starts in: a
-            // session reports its own mode, which (Codex restoring a draft's
-            // Supervised) need not be the provider's default a probe gave.
-            ...(event.event === 'session_created' &&
-            event.data.modes?.currentModeId &&
-            store.getProfile(event.providerId)?.defaultModeId === undefined
+            ...(event.event === 'session_created' && event.data.modes?.currentModeId && reportsDefault
               ? { defaultModeId: event.data.modes.currentModeId }
               : {}),
           })
