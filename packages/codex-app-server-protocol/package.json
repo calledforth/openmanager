@@ -1,0 +1,21 @@
+{
+  "name": "@openmanager/codex-app-server-protocol",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "sideEffects": false,
+  "description": "Types for `codex app-server`, generated from a pinned codex-cli. Regenerate with `pnpm --filter @openmanager/codex-app-server-protocol generate`.",
+  "exports": {
+    ".": {
+      "types": "./src/index.ts",
+      "default": "./src/index.ts"
+    }
+  },
+  "scripts": {
+    "generate": "node scripts/generate.mjs",
+    "typecheck": "tsc --noEmit -p tsconfig.json"
+  },
+  "devDependencies": {
+    "typescript": "^5.9.3"
+  }
+}
