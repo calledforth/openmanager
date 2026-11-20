@@ -256,6 +256,7 @@ export function coalesceDeltas<E extends ProofEvent>(events: readonly E[]): E[] 
       previous.payload.messageId === event.payload.messageId &&
       previous.payload.turnId === event.payload.turnId &&
       previous.payload.role === event.payload.role &&
+      previous.payload.phase === event.payload.phase &&
       previous.payload.content.type === 'text' &&
       event.payload.content.type === 'text'
     ) {

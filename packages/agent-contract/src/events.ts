@@ -158,9 +158,25 @@ export type PromptInput = {
   attachments?: PromptAttachment[]
 }
 
+/**
+ * What an assistant message is, when its provider says: narration while the
+ * agent works (`commentary`), or answer text (`partial_answer` for a piece of
+ * it, `final_answer` for the answer the turn ends with). Codex marks every
+ * assistant message so; providers that do not leave it out, and a client
+ * guesses the answer from the turn's last run of text. A provider value
+ * outside these is the adapter's to map or drop: the set is closed here.
+ */
+export type MessagePhase = 'commentary' | 'partial_answer' | 'final_answer'
+
 export type StreamedMessageChunk = {
   messageId?: string
   content: ContentBlock
+  /**
+   * The phase of the assistant message this chunk belongs to. One message
+   * has one phase: the host starts a new message where it changes. Only
+   * `agent_message_chunk` carries it; a user chunk's is ignored.
+   */
+  phase?: MessagePhase
 }
 
 /** Reasoning is not always text.

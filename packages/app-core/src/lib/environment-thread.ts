@@ -215,7 +215,14 @@ function textParts(message: Message, sessionId: string): MessagePart[] {
   let parts = textPartsByMessage.get(message)
   if (!parts) {
     parts = [
-      { type: 'text', id: message.messageId, text: contentText(message.content) },
+      {
+        type: 'text',
+        id: message.messageId,
+        text: contentText(message.content),
+        // Whether the text is the agent's narration or its answer, when its
+        // provider says (see `partitionSettledTurnParts`).
+        ...(message.phase ? { phase: message.phase } : {}),
+      },
       ...mediaParts(message, sessionId),
     ]
     textPartsByMessage.set(message, parts)

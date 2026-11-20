@@ -24,6 +24,7 @@ import {
   type InteractionKind,
   type InteractionResponse,
   type Message,
+  type MessagePhase,
   type ProofEvent,
   type ProofResponse,
   type Session,
@@ -172,6 +173,12 @@ type ActiveTurn = {
    * lets every client keep thoughts, text and tools in the order they happened.
    */
   textRunId?: string
+  /**
+   * The phase of the open text run, as its provider marked it. One message
+   * has one phase, so a chunk of another phase opens a run of its own: Codex
+   * can send its commentary and its answer back to back.
+   */
+  textRunPhase?: MessagePhase
   reasoningRunId?: string
   /**
    * Thoughts of this turn that no `stop` has closed yet, by host message id.
@@ -226,14 +233,26 @@ const RUN_BREAKING_EVENTS: ReadonlySet<RuntimeEvent['event']> = new Set<RuntimeE
 /**
  * The host message id an event of the turn is filed under. Text and thought
  * chunks continue their open run or start a new one; a run-breaking event
- * closes both runs, so the next chunk of either kind starts fresh. A thought's
+ * closes both runs, so the next chunk of either kind starts fresh, and so does
+ * a text chunk whose phase differs from its run's. A thought's
  * `stop` closes its own run after it is filed, which keeps providers that frame
  * their blocks (Claude Code) at one id per block.
  */
 function runMessageId(active: ActiveTurn, event: RuntimeEvent): string | undefined {
   if (event.event === 'agent_message_chunk') {
     active.reasoningRunId = undefined
-    return (active.textRunId ??= randomUUID())
+    // Only a chunk that names a phase can start a new message. One that names
+    // none (null counts as none) belongs to the run it arrives in, so a
+    // provider that marks only some chunks of a message never has it broken
+    // in two mid-sentence.
+    const phase = event.data.phase ?? undefined
+    if (active.textRunId && phase !== undefined && active.textRunPhase !== phase)
+      active.textRunId = undefined
+    if (!active.textRunId) {
+      active.textRunId = randomUUID()
+      active.textRunPhase = phase
+    }
+    return active.textRunId
   }
   if (event.event === 'agent_thought_chunk') {
     active.textRunId = undefined
@@ -1554,7 +1573,15 @@ export function createThreadService(
         ? toolCallsFor(active)
         : active.toolCalls
       : undefined
-    const projected = projectAgentEvent(event, {
+    // A text chunk that names no phase takes its run's, so it is stored with
+    // the message it joins rather than refused as a mismatch.
+    const source =
+      event.event === 'agent_message_chunk' &&
+      (event.data.phase ?? undefined) === undefined &&
+      active?.textRunPhase !== undefined
+        ? { ...event, data: { ...event.data, phase: active.textRunPhase } }
+        : event
+    const projected = projectAgentEvent(source, {
       eventId: randomUUID(),
       environmentId,
       workspaceId: record.session.workspaceId,

@@ -20,6 +20,7 @@ import {
   type DurableTurnNotice,
   type Interaction,
   type Message,
+  type MessagePhase,
   type ReasoningBlock,
   type ToolCallState,
   type SessionStatus,
@@ -169,6 +170,8 @@ type MessageRow = {
   turn_id: string
   role: 'user' | 'assistant'
   ordinal: number
+  /** Selected by the thread's message query; null on a message no provider marked. */
+  phase?: MessagePhase | null
 }
 type PartRow = { content_json: string }
 type ThreadPartRow = { message_id: string; content_json: string }
@@ -327,6 +330,7 @@ export function readThreadState(
     turnId: row.turn_id,
     role: row.role,
     content: parts.get(row.message_id) ?? [],
+    ...(row.phase ? { phase: row.phase } : {}),
   }))
   const activityRows = database
     .prepare(TURN_ACTIVITY_FOR_THREAD_SQL)
@@ -564,6 +568,7 @@ function messageFromRow(database: DatabaseSync, row: MessageRow): Message {
     turnId: row.turn_id,
     role: row.role,
     content: parts.map((part) => ContentBlockSchema.parse(JSON.parse(part.content_json))),
+    ...(row.phase ? { phase: row.phase } : {}),
   }
 }
 

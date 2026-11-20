@@ -327,6 +327,7 @@ export function createAgentEventTranslator(options: {
               turnId,
               role: 'assistant',
               content: event.data.content,
+              ...(event.data.phase ? { phase: event.data.phase } : {}),
             },
           },
         ]

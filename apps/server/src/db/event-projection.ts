@@ -272,7 +272,7 @@ export function createEventProjector(
     ),
 
     selectMessage: database.prepare(
-      'SELECT turn_id, thread_id, role, is_final FROM messages WHERE message_id = ?',
+      'SELECT turn_id, thread_id, role, is_final, phase FROM messages WHERE message_id = ?',
     ),
     // One counter across messages, turn activity, notices and subagents, so
     // sorting them on `ordinal` gives the order text, thoughts, tools, notices
@@ -308,8 +308,8 @@ export function createEventProjector(
     insertMessage: database.prepare(
       `INSERT INTO messages (
          message_id, workspace_id, thread_id, turn_id, role, ordinal, is_final,
-         created_at, updated_at
-       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+         created_at, updated_at, phase
+       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     ),
     touchMessage: database.prepare('UPDATE messages SET updated_at = ? WHERE message_id = ?'),
     finalizeTurnMessages: database.prepare(
@@ -362,6 +362,7 @@ export function createEventProjector(
       isFinal ? 1 : 0,
       at,
       at,
+      message.phase ?? null,
     )
     for (const content of message.content) appendContent(message.messageId, content, at)
   }
@@ -421,25 +422,35 @@ export function createEventProjector(
   }
 
   function projectMessageDelta(event: MessageDelta, at: number): void {
-    const { messageId, turnId, role, content } = event.payload
+    const { messageId, turnId, role, content, phase } = event.payload
     const turn = s.selectTurnWorkspace.get(turnId, event.scope.threadId) as TurnRow | undefined
     if (!turn) throw new ProjectionRefusal(`Cannot project message for missing turn ${turnId}`)
     if (finished(turn))
       throw new ProjectionRefusal(`Cannot add a message to finished turn ${turnId}`)
     const existing = s.selectMessage.get(messageId) as
-      { turn_id: string; thread_id: string; role: string; is_final: number } | undefined
+      | { turn_id: string; thread_id: string; role: string; is_final: number; phase: string | null }
+      | undefined
+    // One message, one phase: the host opens a new message where it changes.
     if (
       existing &&
       (existing.turn_id !== turnId ||
         existing.thread_id !== event.scope.threadId ||
         existing.role !== role ||
+        existing.phase !== (phase ?? null) ||
         existing.is_final !== 0)
     ) {
       throw new ProjectionRefusal(`Cannot append to mismatched or finalized message ${messageId}`)
     }
     if (!existing) {
       insertMessage(
-        { messageId, threadId: event.scope.threadId, turnId, role, content: [] },
+        {
+          messageId,
+          threadId: event.scope.threadId,
+          turnId,
+          role,
+          content: [],
+          ...(phase ? { phase } : {}),
+        },
         turn.workspace_id,
         false,
         at,

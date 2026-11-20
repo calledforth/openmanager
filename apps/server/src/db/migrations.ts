@@ -1288,6 +1288,21 @@ export const MIGRATIONS: readonly Migration[] = [
       `)
     },
   },
+  {
+    version: 35,
+    name: 'message_phase',
+    up(database) {
+      // An assistant message's phase, as its provider marked it (Codex:
+      // narration while it works, or answer text), written once by the
+      // `message.delta` that creates the row. Null for user messages, for
+      // providers that mark none, and for every message before this: a
+      // client then takes a turn's last run of text as its answer.
+      const columns = database.prepare('PRAGMA table_info(messages)').all() as { name: string }[]
+      if (columns.some((column) => column.name === 'phase')) return
+      database.exec(`ALTER TABLE messages ADD COLUMN phase TEXT
+        CHECK (phase IS NULL OR phase IN ('commentary', 'partial_answer', 'final_answer'))`)
+    },
+  },
 ]
 
 type RetainedActivityRow = {

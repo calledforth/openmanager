@@ -22,10 +22,16 @@ export interface TurnPartPartition {
 }
 
 /**
- * A settled turn's last visible text run is its terminal answer. Everything
- * before it is the work transcript. Projectors already split text whenever a
- * tool, thought, plan, or subtask arrives, so this preserves every existing
- * part and only derives a presentation boundary.
+ * A settled turn's answer, and the work before it. Projectors already split
+ * text whenever a tool, thought, plan, or subtask arrives, so this preserves
+ * every existing part and only derives a presentation boundary.
+ *
+ * A provider that marks its messages (Codex) says which text is which: its
+ * `partial_answer` and `final_answer` text is the answer, wherever it stands,
+ * and its `commentary` is narration of the work, never the answer. Text
+ * without a phase (older history, other providers, a review's output) keeps
+ * the rule from before phases: the turn's last visible run of text is its
+ * answer, and commentary ends that run as a tool would.
  */
 export function partitionSettledTurnParts(parts: readonly StreamMessagePart[]): TurnPartPartition {
   // What the turn ended on (its failure, a notice the provider sent after the
@@ -35,16 +41,22 @@ export function partitionSettledTurnParts(parts: readonly StreamMessagePart[]): 
   // place; it must not end the text run either.
   let answerEnd = parts.length
   while (answerEnd > 0 && isTrailer(parts[answerEnd - 1])) answerEnd -= 1
-  let finalStart = answerEnd
-
-  while (finalStart > 0) {
-    const part = parts[finalStart - 1]
-    if (!part || part.type !== 'text' || part.synthetic || part.ignored) break
-    finalStart -= 1
+  let finalStart = lastTextRunStart(parts, answerEnd, true)
+  // Answer text the provider marked before the last run (a partial answer a
+  // tool call followed) is answer all the same.
+  let marked = new Set(parts.slice(0, finalStart).filter(isMarkedAnswer))
+  // A turn that marks nothing as its answer and ends on commentary (stopped,
+  // or failed, while it narrated) would otherwise show no text at all below
+  // the fold. It falls back to the rule from before phases: its last run of
+  // text is what the reader sees.
+  if (marked.size === 0 && !parts.slice(finalStart, answerEnd).some(isVisibleText)) {
+    finalStart = lastTextRunStart(parts, answerEnd, false)
+    marked = new Set()
   }
 
-  const beforeAnswer = parts.slice(0, finalStart)
-  const answer = parts.slice(finalStart)
+  const earlier = parts.slice(0, finalStart)
+  const beforeAnswer = marked.size ? earlier.filter((part) => !marked.has(part)) : earlier
+  const answer = [...marked, ...parts.slice(finalStart)]
   // Generated artifacts are answer content even though Cursor emits their
   // callback before it streams its closing text. Keep the tool trace folded,
   // but never hide the result the user asked for inside "Worked". Notices
@@ -69,8 +81,38 @@ export function partitionSettledTurnParts(parts: readonly StreamMessagePart[]): 
   }
 }
 
+/** Where the run of visible text that ends at `end` starts. Commentary ends
+ * the run, as a tool would, unless `throughCommentary`. */
+function lastTextRunStart(
+  parts: readonly StreamMessagePart[],
+  end: number,
+  stopAtCommentary: boolean,
+): number {
+  let start = end
+  while (start > 0) {
+    const part = parts[start - 1]
+    if (!isVisibleText(part) || (stopAtCommentary && textPhase(part) === 'commentary')) break
+    start -= 1
+  }
+  return start
+}
+
 function isSubagent(part: StreamMessagePart): boolean {
   return part.type === 'subagent'
+}
+
+function isVisibleText(part: StreamMessagePart | undefined): part is StreamMessagePart {
+  return part?.type === 'text' && !part.synthetic && !part.ignored
+}
+
+/** The phase a text part's message has, when its provider marked one. */
+function textPhase(part: StreamMessagePart): string | undefined {
+  return typeof part.phase === 'string' ? part.phase : undefined
+}
+
+function isMarkedAnswer(part: StreamMessagePart): boolean {
+  const phase = textPhase(part)
+  return isVisibleText(part) && (phase === 'partial_answer' || phase === 'final_answer')
 }
 
 /**

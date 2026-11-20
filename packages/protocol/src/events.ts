@@ -19,6 +19,7 @@ import {
   TurnInterruptionSchema,
   BackgroundTaskListSchema,
   ContentBlockSchema,
+  MessagePhaseSchema,
   ToolCallUpdateSchema,
   InteractionSchema,
   InteractionResponseSchema,
@@ -63,8 +64,9 @@ const event = <N extends string, S extends z.ZodType, P extends z.ZodType>(
  *    a durable notice carries `move` (where it went, on the turn that resumed it there).
  * 10: `subagent.updated`; a `session.created` summary can carry `subagent`; a turn's
  *     `origin` can be `delegated` or `subagents`; a queued message can carry `origin`.
+ * 11: an assistant `message.delta` can carry its message's `phase`.
  */
-export const EVENT_FORMAT_VERSION = 10 as const
+export const EVENT_FORMAT_VERSION = 11 as const
 
 /** A turn's state once an interaction event is applied: still asking, or running again. */
 export const InteractionTurnStateSchema = z.enum(['running', 'waiting'])
@@ -256,6 +258,8 @@ export const ProofEventSchemas = {
       turnId: EntityIdSchema,
       role: z.enum(['user', 'assistant']),
       content: ContentBlockSchema,
+      /** The assistant message's phase, on every delta of a message that has one. */
+      phase: MessagePhaseSchema.optional(),
     }),
   ),
   'message.reasoning': event(

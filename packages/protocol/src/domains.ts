@@ -402,12 +402,28 @@ export const ContentBlockSchema = z.discriminatedUnion('type', [
     data: z.string().optional(),
   }),
 ])
+/**
+ * What an assistant message is, when its provider says: narration while the
+ * agent works (`commentary`), or answer text (`partial_answer` for a piece of
+ * it, `final_answer` for the answer the turn ends with). Codex marks every
+ * assistant message so. Closed, like every enum here: a value added later is
+ * a protocol change.
+ */
+export const MessagePhaseSchema = z.enum(['commentary', 'partial_answer', 'final_answer'])
+export type MessagePhase = z.infer<typeof MessagePhaseSchema>
 export const MessageSchema = z.object({
   messageId: EntityIdSchema,
   threadId: EntityIdSchema,
   turnId: EntityIdSchema,
   role: z.enum(['user', 'assistant']),
   content: z.array(ContentBlockSchema),
+  /**
+   * An assistant message's phase, as its provider marked it; one per message.
+   * Absent on a user message, from a provider that does not mark its
+   * messages, and in older history: a client then takes the turn's last run
+   * of text as its answer.
+   */
+  phase: MessagePhaseSchema.optional(),
 })
 /**
  * One reasoning block of a turn, as `message.reasoning` events accumulate it:

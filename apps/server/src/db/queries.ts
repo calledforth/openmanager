@@ -137,7 +137,7 @@ export const THREAD_STATE_BYTES_SQL = `
 
 /** Every message of a thread in order, for the whole-thread snapshot. */
 export const MESSAGES_FOR_THREAD_SQL = `
-  SELECT message_id, thread_id, turn_id, role, ordinal
+  SELECT message_id, thread_id, turn_id, role, ordinal, phase
   FROM messages
   WHERE thread_id = ?
   ORDER BY ordinal`

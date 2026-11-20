@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import { createMockEnvironmentClient, createThreadState } from '@openmanager/environment-client'
 import type { Subagent } from '@openmanager/protocol'
+import { partitionSettledTurnParts } from '../components/parts/turn-work-group'
 import { contentText, createEnvironmentThreadStores, projectThread } from './environment-thread'
 
 const THREAD = { threadId: 'thread-1', sessionId: 'session-1' }
@@ -103,6 +104,41 @@ describe('projectThread', () => {
     // Separate runs stay separate paragraphs in the plain-text fallback.
     expect(row.content.content).toBe('Looking closer\n\nFound it')
     expect(row.message.isFinal).toBe(true)
+  })
+
+  it("marks each text part with its message's phase, so the answer is the one the provider named", () => {
+    const message = (messageId: string, text: string, phase?: 'commentary' | 'final_answer') => ({
+      messageId,
+      threadId: THREAD.threadId,
+      turnId: 't1',
+      role: 'assistant' as const,
+      content: [{ type: 'text' as const, text }],
+      ...(phase ? { phase } : {}),
+    })
+    const state = thread({
+      turns: [{ turnId: 't1', threadId: THREAD.threadId, state: 'completed' }],
+      messages: [
+        message('a1', 'Reading the code.', 'commentary'),
+        message('a2', 'Noted.', 'commentary'),
+        message('a3', 'It works.', 'final_answer'),
+      ],
+      tools: [{ toolCallId: 'tool-1', turnId: 't1', title: 'Read', status: 'completed' }],
+      order: [
+        { kind: 'message', id: 'a1', turnId: 't1' },
+        { kind: 'tool', id: 'tool-1', turnId: 't1' },
+        { kind: 'message', id: 'a2', turnId: 't1' },
+        { kind: 'message', id: 'a3', turnId: 't1' },
+      ],
+    })
+    const parts = projectThread(state).byId.get('a1')!.content.parts!
+    expect(parts.filter((part) => part.type === 'text')).toEqual([
+      { type: 'text', id: 'a1', text: 'Reading the code.', phase: 'commentary' },
+      { type: 'text', id: 'a2', text: 'Noted.', phase: 'commentary' },
+      { type: 'text', id: 'a3', text: 'It works.', phase: 'final_answer' },
+    ])
+    const partition = partitionSettledTurnParts(parts)
+    expect(partition.workParts.map((part) => part.id)).toEqual(['a1', 'tool-1', 'a2'])
+    expect(partition.finalParts.map((part) => part.id)).toEqual(['a3'])
   })
 
   it('labels a settled row with how long the turn ran when the environment says', () => {

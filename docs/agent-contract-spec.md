@@ -732,6 +732,13 @@ export type StreamedMessageChunk = {
   /** Groups successive chunks belonging to the same logical message. */
   messageId?: string;
   content: ContentBlock;
+  /**
+   * Assistant chunks only, and only from a provider that marks its messages
+   * (Codex): narration while it works (`commentary`), or answer text
+   * (`partial_answer`, `final_answer`). Absent otherwise. The host starts a
+   * new message where it changes.
+   */
+  phase?: "commentary" | "partial_answer" | "final_answer";
 };
 
 /**
