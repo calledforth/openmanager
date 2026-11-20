@@ -5,6 +5,7 @@ import { AuthRequiredError } from '../../core/errors.js'
 import { InteractionBroker } from '../../core/InteractionBroker.js'
 import { PermissionBroker } from '../../core/PermissionBroker.js'
 import { codex } from '../../providers/codex.js'
+import { providers } from '../../providers/index.js'
 import { ProviderSessionRuntimeFactory } from '../ProviderRuntimeFactory.js'
 import { codexPlanLabel, codexUsageReading, windowName } from './codex-usage-limits.js'
 import { CodexProbeRuntime } from './CodexProbeRuntime.js'
@@ -176,7 +177,7 @@ describe('Codex usage limits: a session’s updates', () => {
   async function session(service: CodexService) {
     const fakes = fakeCodexStarter((server) => server.serveThreads())
     const factory = new ProviderSessionRuntimeFactory({
-      configs: { codex },
+      configs: providers,
       host: { log: vi.fn() },
       permissions: new PermissionBroker(),
       interactions: new InteractionBroker(),
