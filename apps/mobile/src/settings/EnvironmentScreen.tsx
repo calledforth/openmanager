@@ -21,6 +21,7 @@ import {
   usePhoneConnection,
   usePhoneConnectionController,
 } from '../environment/PhoneEnvironmentProvider'
+import { forgetEnvironmentImages } from '../lib/image-cache'
 import { usePhoneTheme } from '../theme/ThemeProvider'
 import { coveredBySheet } from '../ui/a11y-focus'
 import { SectionLabel } from '../ui/chrome'
@@ -135,6 +136,7 @@ export function EnvironmentScreen({ environmentId }: { environmentId: string }) 
               setSheet(null)
               // Closes this environment's connection only; every other stays.
               controller.removeEnvironment(environmentId)
+              forgetEnvironmentImages(environmentId)
               goBack()
             }}
           />

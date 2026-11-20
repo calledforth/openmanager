@@ -4,6 +4,7 @@ import { Image, type ImageLoadEventData, type NativeSyntheticEvent } from 'react
 import { useEnvironmentClientOptional, type ArtifactSource } from '@openmanager/app-core/logic'
 
 import { readAsDataUri } from '../../lib/dataUri'
+import { keepImage, keptImageUri } from '../../lib/image-cache'
 import { usePhoneTheme } from '../../theme/ThemeProvider'
 import { tap } from '../../ui/haptics'
 import { Press } from '../../ui/Press'
@@ -23,11 +24,11 @@ export const imageKey = (image: GalleryImage) =>
 export const imageName = (image: GalleryImage) => image.name?.trim() || 'Image'
 
 /*
- * Stored bytes once read, kept as data URIs up to a budget of characters,
- * oldest out first: a row that remounts (the list opens anew, the page comes
- * back) and the viewer over a gallery show the image at once instead of
- * asking the environment again. A read that failed is not kept, so a remount
- * tries again.
+ * Stored bytes once read, by what the native image view is handed: the kept
+ * file's URI (`image-cache.ts`), or the data URI when it could not be kept,
+ * up to a budget of characters, oldest out first. A row that remounts (the
+ * list opens anew, the page comes back) and the viewer over a gallery show
+ * the image at once. A read that failed is not kept, so a remount tries again.
  */
 const CACHE_BUDGET = 48 * 1024 * 1024
 const cache = new Map<string, string>()
@@ -63,12 +64,18 @@ const UNREADABLE: ImageSource = { uri: undefined, failed: true }
  */
 export function useImageSource(image: Pick<GalleryImage, 'url' | 'artifact'>): ImageSource {
   const client = useEnvironmentClientOptional()
+  const environmentId = client?.getState().environment?.environmentId
   const artifact = image.url ? undefined : image.artifact
   const key = artifact ? artifactKey(artifact) : null
   const sessionId = artifact?.sessionId
   const draftId = artifact?.draftId
   const artifactId = artifact?.artifactId
   const [fetched, setFetched] = useState<{ key: string; uri: string | null } | null>(null)
+  // Read on this phone before, in this run or an earlier one: shown from disk at once.
+  if (key && artifactId && environmentId && !cache.has(key)) {
+    const kept = keptImageUri(environmentId, artifactId)
+    if (kept) remember(key, kept)
+  }
   useEffect(() => {
     if (!key || !artifactId || cache.has(key)) return
     if (!client?.fetchArtifact) {
@@ -82,7 +89,8 @@ export function useImageSource(image: Pick<GalleryImage, 'url' | 'artifact'>): I
       .fetchArtifact(target, { signal: controller.signal })
       .then(readAsDataUri)
       .then(
-        (uri) => {
+        (dataUri) => {
+          const uri = (environmentId && keepImage(environmentId, artifactId, dataUri)) || dataUri
           remember(key, uri)
           if (!controller.signal.aborted) setFetched({ key, uri })
         },
@@ -91,7 +99,7 @@ export function useImageSource(image: Pick<GalleryImage, 'url' | 'artifact'>): I
         },
       )
     return () => controller.abort()
-  }, [artifactId, client, draftId, key, sessionId])
+  }, [artifactId, client, draftId, environmentId, key, sessionId])
 
   if (image.url) return { uri: image.url, failed: false }
   if (!key) return UNREADABLE

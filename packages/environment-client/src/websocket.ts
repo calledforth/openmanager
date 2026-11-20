@@ -95,6 +95,7 @@ import {
 } from './overlay'
 import { createEnvironmentStore, type EnvironmentStore } from './store'
 import type {
+  ArtifactCache,
   ComposerPreferenceTarget,
   ConnectionFailure,
   EnvironmentClient,
@@ -155,6 +156,11 @@ export interface WebSocketEnvironmentClientOptions {
   WebSocket?: WebSocketConstructor
   /** Used for artifact reads; defaults to the global `fetch`. */
   fetch?: typeof globalThis.fetch
+  /**
+   * Images this environment's artifacts were read as, kept by the host so a
+   * chat opened again shows them without asking the environment.
+   */
+  artifactCache?: ArtifactCache
   reconnect?: Partial<ReconnectPolicy>
   now?: () => number
   requestId?: () => string
@@ -196,6 +202,8 @@ export function reconnectDelayMs(
   return Math.round(window * (1 - jitter) + roll * window * jitter)
 }
 
+/** The largest image a host's `artifactCache` is handed: the most one upload may be. */
+export const MAX_CACHED_ARTIFACT_BYTES = 25 * 1024 * 1024
 const OPEN = 1
 const HANDSHAKE_NAME = 'protocol.handshake'
 const SUBSCRIBE_NAME = 'subscription.subscribe'
@@ -2197,6 +2205,10 @@ export function createWebSocketEnvironmentClient(
       }
     },
     async fetchArtifact(input, init) {
+      const cache = options.artifactCache
+      // A kept copy needs no token, so it answers offline too.
+      const kept = await cache?.read(input.artifactId).catch(() => undefined)
+      if (kept) return kept
       // The token goes in this request, so it goes only where a handshake is
       // holding now. After a drop nothing says the address still leads here.
       if (!ready) {
@@ -2224,7 +2236,12 @@ export function createWebSocketEnvironmentClient(
       if (!response.ok) {
         throw await artifactTransferError(response, 'The artifact could not be read.')
       }
-      return response.blob()
+      const bytes = await response.blob()
+      // Images only: a video is streamed in ranges, never kept whole.
+      if (cache && bytes.type.startsWith('image/') && bytes.size <= MAX_CACHED_ARTIFACT_BYTES) {
+        void cache.write(input.artifactId, bytes).catch(() => undefined)
+      }
+      return bytes
     },
     async artifactStreamUrl(input, init) {
       // The credential goes only where a handshake is holding, as for bytes.
