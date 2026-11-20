@@ -184,3 +184,21 @@ describe('ClaudeProbeRuntime modes', () => {
     await probe.dispose()
   })
 })
+
+describe('ClaudeProbeRuntime account', () => {
+  // Health names the account, so provider limits can tell a switch.
+  it('names the account by the email the handshake carried', async () => {
+    const { probe } = build({
+      account: { email: 'someone@example.com', subscriptionType: 'Claude Max' },
+    } as Partial<SDKControlInitializeResponse>)
+    expect((await probe.probe()).accountLabel).toBe('someone@example.com')
+  })
+
+  // Bedrock, Vertex and API keys carry no account: still signed in, unnamed.
+  it('names no account when the handshake carries none', async () => {
+    const { probe } = build({ account: undefined } as unknown as Partial<SDKControlInitializeResponse>)
+    const result = await probe.probe()
+    expect(result.authenticated).toBe(true)
+    expect(result.accountLabel).toBeUndefined()
+  })
+})

@@ -481,14 +481,16 @@ export async function startServer(config: ServerConfig) {
   )
   let observeProviderCatalog: (providerId: string, result: RuntimeProviderBootstrap) => void = () =>
     undefined
-  // Usage limits (CAL-242): Claude Code only for now. Read in a throwaway CLI
-  // in the most recent project, or the home directory before there is one.
+  // Usage limits (CAL-242): Claude Code, read in a throwaway CLI in the most
+  // recent project (or the home directory before there is one), and Codex,
+  // read on its service process (CAL-266).
   const providerLimitsStore = openProviderLimitsStore(config.dataDir)
   const providerLimits = createProviderLimits({
     providerIds: Object.keys(providers),
-    supports: (providerId) =>
-      config.probeProviders === true &&
-      providers[providerId as keyof typeof providers]?.kind === 'claude',
+    supports: (providerId) => {
+      const kind = providers[providerId as keyof typeof providers]?.kind
+      return config.probeProviders === true && (kind === 'claude' || kind === 'codex')
+    },
     read: (providerId) =>
       runtime.readUsageLimits({
         providerId: providerId as keyof typeof providers,
@@ -498,6 +500,13 @@ export async function startServer(config: ServerConfig) {
     store: providerLimitsStore,
     log,
   })
+  // Limits follow health: no card for a CLI that is not there, and a fresh
+  // read when someone else signs in.
+  for (const providerId of Object.keys(providers) as Array<keyof typeof providers>)
+    providerLimits.observeHealth(providerId, runtime.health.report(providerId).health)
+  const stopLimitsHealth = runtime.health.onChange((providerId, report) =>
+    providerLimits.observeHealth(providerId, report.health),
+  )
   const providerService = createProviderService(
     runtime,
     providers,
@@ -1101,6 +1110,7 @@ export async function startServer(config: ServerConfig) {
     await sockets.close()
     stopHealthEvents()
     stopLimitsEvents()
+    stopLimitsHealth()
     providerLimits.stop()
     providerService.stop()
     composerService.stop()
@@ -1219,6 +1229,7 @@ export async function startServer(config: ServerConfig) {
         })
         stopHealthEvents()
         stopLimitsEvents()
+        stopLimitsHealth()
         providerLimits.stop()
         providerService.stop()
         pullRequests.stop()

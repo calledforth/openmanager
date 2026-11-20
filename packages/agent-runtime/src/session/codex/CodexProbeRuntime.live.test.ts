@@ -47,6 +47,20 @@ describe.skipIf(!live)('Codex probe, live', () => {
       const limits = await service.readRateLimits()
       expect(limits.rateLimits).toBeDefined()
       expect(service.state.rateLimits).toBeDefined()
+
+      // And maps them for provider limits: a ChatGPT login has the codex
+      // bucket's 5-hour and weekly windows; any other login has none.
+      const usage = await probe.readUsageLimits!()
+      if (usage.outcome === 'ok') {
+        const ids = usage.reading.windows.map((window) => window.id)
+        expect(ids.every((id) => id === 'five_hour' || id === 'seven_day' || id.startsWith('window:'))).toBe(true)
+        for (const window of usage.reading.windows) {
+          expect(window.usedPercent).toBeGreaterThanOrEqual(0)
+          expect(window.resetsAt === null || Date.parse(window.resetsAt) > Date.now() - 60_000).toBe(true)
+        }
+      } else {
+        expect(usage.outcome).toBe('unavailable')
+      }
     } finally {
       await probe.dispose()
       await factory.shutdown()

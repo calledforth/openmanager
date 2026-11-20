@@ -1,4 +1,4 @@
-import type { ProviderLimits, ProviderLimitWindow } from '@openmanager/protocol'
+import type { ProviderCredits, ProviderLimits, ProviderLimitWindow } from '@openmanager/protocol'
 
 /**
  * How a usage-limit reading reads on screen (CAL-242). Pure, so the sidebar
@@ -96,4 +96,14 @@ export function ringLabel(window: ProviderLimitWindow | null, now: number): stri
   const reset = formatResetsAt(window.resetsAt, now)
   if (reset) parts.push(reset.toLowerCase())
   return parts.join(', ')
+}
+
+/** The credits line: "Unlimited", the balance, or null for an account with
+ * none to spend (an empty balance says nothing the windows do not). */
+export function creditsText(credits: ProviderCredits | undefined): string | null {
+  if (!credits) return null
+  if (credits.unlimited) return 'Unlimited'
+  if (!credits.hasCredits) return null
+  const balance = credits.balance?.trim()
+  return balance ? `${balance} left` : 'Available'
 }

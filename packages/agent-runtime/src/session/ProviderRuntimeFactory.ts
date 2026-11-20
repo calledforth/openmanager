@@ -16,6 +16,7 @@ import { CodexProbeRuntime } from './codex/CodexProbeRuntime.js'
 import { CodexService } from './codex/CodexService.js'
 import { CodexSessionRuntime } from './codex/CodexSessionRuntime.js'
 import type { CodexStarter } from './codex/start.js'
+import { codexUsageObservations } from './codex/codex-usage-limits.js'
 import { ClaudeSessionRuntime } from './claude/ClaudeSessionRuntime.js'
 import type { ClaudeSdk } from './claude/sdk.js'
 import type { RuntimeTimeouts } from './constants.js'
@@ -53,6 +54,10 @@ export type ProviderSessionRuntimeFactoryDeps = {
   /** The Codex arm's transport seam: starts one app-server. Defaults to
    * spawning the real binary; tests inject a starter wired to a fake. */
   codexStart?: CodexStarter
+  /** The environment's Codex service, whose provider-level state a
+   * session's rate-limit updates are merged into. Without one a session
+   * drops them. */
+  codexService?: (providerId: ProviderId) => CodexService
   timeouts?: Partial<RuntimeTimeouts>
 }
 
@@ -97,17 +102,27 @@ export class ProviderSessionRuntimeFactory implements ManagedSessionRuntimeFacto
           ...(this.deps.claudeSdk ? { sdk: this.deps.claudeSdk } : {}),
           ...(this.deps.timeouts ? { timeouts: this.deps.timeouts } : {}),
         })
-      case 'codex':
+      case 'codex': {
         // One app-server per session, like Claude's one query per session:
-        // nothing shared to build or memoise.
+        // nothing shared to build or memoise. Its rate-limit updates describe
+        // the account, not the session, so they are merged into the
+        // service's provider-level state, which starts no process (CAL-266).
+        const service = this.deps.codexService?.(spec.providerId)
         return new CodexSessionRuntime(spec, {
           config,
           host: this.deps.host,
           permissions: this.deps.permissions,
           interactions: this.deps.interactions,
+          ...(service
+            ? {
+                rateLimits: (update) =>
+                  codexUsageObservations(service.noteRateLimits(update), update.rateLimits),
+              }
+            : {}),
           ...(this.deps.codexStart ? { start: this.deps.codexStart } : {}),
           ...(this.deps.timeouts ? { timeouts: this.deps.timeouts } : {}),
         })
+      }
     }
   }
 

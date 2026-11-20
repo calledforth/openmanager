@@ -5,6 +5,7 @@ import type { HostDeps } from '../../host.js'
 import { DEFAULT_RUNTIME_TIMEOUTS, type RuntimeTimeouts } from '../constants.js'
 import type { ProcessExit, SessionRuntimeStopReason } from '../lifecycle.js'
 import {
+  applyAccountRead,
   applyAccountUpdated,
   applyRateLimitsRead,
   applyRateLimitsUpdated,
@@ -269,7 +270,7 @@ export class CodexService {
       options?.signal ? { signal: options.signal } : {},
     )
     const account = codexAccountState(response)
-    this.setState({ ...this.stateValue, account, updatedAt: this.iso() })
+    this.setState(applyAccountRead(this.stateValue, account, this.iso()))
     return account
   }
 
@@ -283,6 +284,15 @@ export class CodexService {
     )
     this.setState(applyRateLimitsRead(this.stateValue, response, this.iso()))
     return response
+  }
+
+  /** An `account/rateLimits/updated` from any process, this one's or a
+   * session's: they all describe the same account, so they are merged into
+   * the one provider-level state. Asks the process nothing. Returns the
+   * state after the merge. */
+  noteRateLimits(update: v2.AccountRateLimitsUpdatedNotification): CodexProviderState {
+    if (!this.disposed) this.setState(applyRateLimitsUpdated(this.stateValue, update, this.iso()))
+    return this.stateValue
   }
 
   /** `thread/archive` for a session the user deleted while no session
@@ -441,9 +451,7 @@ export class CodexService {
       // again so its details (and the label health shows) are current.
       if (update.authMode !== null) this.refreshAccount()
     })
-    client.on('account/rateLimits/updated', (update) =>
-      this.setState(applyRateLimitsUpdated(this.stateValue, update, this.iso())),
-    )
+    client.on('account/rateLimits/updated', (update) => this.noteRateLimits(update))
     void client.exited.then((exit) => this.onExit(client, exit))
     const { lastExit } = this.statusValue
     this.setStatus({

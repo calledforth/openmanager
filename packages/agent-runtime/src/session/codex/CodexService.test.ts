@@ -315,6 +315,65 @@ describe('CodexService provider-level state', () => {
     await service.shutdown()
   })
 
+  // T3 Code: another bucket's update, taken as the main one, overwrote it.
+  it('keeps another bucket out of the main limits, even before any read', async () => {
+    const { service, fakes } = build()
+    await service.readAccount()
+    const updated = nextState(service)
+    fakes.last.notify('account/rateLimits/updated', {
+      rateLimits: buildRateLimits({ limitId: 'codex_other' }),
+    })
+    const state = await updated
+    expect(state.rateLimits).toBeUndefined()
+    expect(state.rateLimitsByLimitId?.codex_other?.primary?.usedPercent).toBe(1)
+    await service.shutdown()
+  })
+
+  // Review: one account's limits stayed up after switching to another.
+  it('forgets the limits when the account changes', async () => {
+    const { service, fakes } = build((server) =>
+      server.respond('account/rateLimits/read', {
+        ordinaryUsageAllowed: true,
+        rateLimits: buildRateLimits(),
+        rateLimitsByLimitId: null,
+        rateLimitResetCredits: null,
+        accountId: null,
+        rateLimitUpsell: null,
+      }),
+    )
+    await service.readAccount()
+    await service.readRateLimits()
+
+    // The same login announcing itself again keeps them.
+    fakes.last.notify('account/updated', { authMode: 'chatgpt', planType: 'plus' })
+    await vi.waitFor(() => expect(fakes.last.requests('account/read')).toHaveLength(2))
+    expect(service.state.rateLimits).toBeDefined()
+
+    // A new plan is new limits.
+    const planChanged = nextState(service)
+    fakes.last.notify('account/updated', { authMode: 'chatgpt', planType: 'pro' })
+    expect((await planChanged).rateLimits).toBeUndefined()
+
+    // Another account on the same kind of login: told by the account read.
+    await service.readRateLimits()
+    fakes.last.respond(
+      'account/read',
+      buildAccountResponse({
+        account: { type: 'chatgpt', email: 'other@example.com', planType: 'plus', workspaceName: null },
+      }),
+    )
+    await service.readAccount()
+    expect(service.state.rateLimits).toBeUndefined()
+    expect(service.state.rateLimitsByLimitId).toBeUndefined()
+
+    // An API key in place of the login.
+    await service.readRateLimits()
+    const switched = nextState(service)
+    fakes.last.notify('account/updated', { authMode: 'apikey', planType: null })
+    expect((await switched).rateLimits).toBeUndefined()
+    await service.shutdown()
+  })
+
   // Review: health stayed signed out after signing back in.
   it('reads the account again when Codex says the login changed', async () => {
     const { service, fakes } = build()

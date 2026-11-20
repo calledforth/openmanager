@@ -17,6 +17,7 @@ import {
 import { useNow } from '../../lib/relative-time'
 import { cn } from '../../lib/utils'
 import {
+  creditsText,
   formatPercent,
   formatResetsAt,
   formatUpdated,
@@ -289,6 +290,8 @@ export function ProviderLimitsCard({
   const updated = formatUpdated(limits.reading?.at, now)
   const comfortable = size === 'comfortable'
   const extra = limits.reading?.extraUsage
+  const plan = limits.reading?.plan
+  const credits = creditsText(limits.reading?.credits)
   return (
     <div>
       <div className="flex items-center gap-2">
@@ -303,6 +306,7 @@ export function ProviderLimitsCard({
         >
           {entry.displayName}
         </span>
+        {plan ? <span className="truncate text-[11px] text-faint">{plan}</span> : null}
         <span className="ml-auto truncate text-[11px] text-faint">
           {limits.refreshing && limits.reading ? 'Refreshing…' : updated}
         </span>
@@ -344,6 +348,17 @@ export function ProviderLimitsCard({
                 : 'On'
               : 'Off'}
           </span>
+        </div>
+      ) : null}
+      {credits ? (
+        <div
+          className={cn(
+            'flex items-baseline gap-2 text-muted-foreground',
+            comfortable ? 'mt-4 text-[13px]' : 'mt-3 text-[12px]',
+          )}
+        >
+          <span>Credits</span>
+          <span className="ml-auto tabular-nums">{credits}</span>
         </div>
       ) : null}
       {footer}

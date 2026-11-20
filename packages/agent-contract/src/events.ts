@@ -76,8 +76,9 @@ export type AgentEventName =
    * `rpc_error`, whose contract the terminal-cleanup sites depend on. */
   | 'provider_notice'
   /** A live session's word on one usage-limit window (Claude's
-   * `rate_limit_event`). Sparse; see `UsageLimitObservation`. Provider-wide,
-   * not a turn's: consumers fold it into the provider's limits. */
+   * `rate_limit_event`, Codex's `account/rateLimits/updated`). Sparse; see
+   * `UsageLimitObservation`. Provider-wide, not a turn's: consumers fold it
+   * into the provider's limits. */
   | 'usage_limits_update'
   | 'extension_request'
   | 'extension_resolved'
@@ -493,6 +494,10 @@ export type UsageLimitWindow = {
 export type UsageLimitsReading = {
   windows: UsageLimitWindow[]
   extraUsage: { enabled: boolean; usedPercent: number | null } | null
+  /** The plan, as display text ("Plus"). Absent when the provider did not say. */
+  plan?: string
+  /** Prepaid credits (Codex). Absent for a provider without them. */
+  credits?: { hasCredits: boolean; unlimited: boolean; balance: string | null }
 }
 
 /** What reading a provider's limits came to. `unavailable`: the account has
@@ -514,6 +519,9 @@ export type UsageLimitObservation = {
   resetsAt?: string
   /** A lower bound on the percent used: the threshold the provider says was crossed. */
   usedPercentAtLeast?: number
+  /** The percent used, exactly, when the provider states it (Codex's
+   * `account/rateLimits/updated`). Replaces what was known. */
+  usedPercent?: number
 }
 
 /** `recoverable: true` is a statement about the TURN, not about the process.

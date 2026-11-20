@@ -352,6 +352,7 @@ export class AgentRuntime {
         connections: () => this.acpConnections(),
         ...(options.claudeSdk ? { claudeSdk: options.claudeSdk } : {}),
         ...(options.codexStart ? { codexStart: options.codexStart } : {}),
+        codexService: (providerId) => this.requireCodexService(providerId),
         ...(options.timeouts ? { timeouts: options.timeouts } : {}),
       }),
       onEvent: (providerId, event) => this.forward(providerId, event),

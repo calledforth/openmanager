@@ -78,9 +78,22 @@ export const ProviderExtraUsageSchema = z.strictObject({
   usedPercent: z.number().min(0).max(100).nullable(),
 })
 
+/** Prepaid credits that keep turns going once a window is used up (Codex). */
+export const ProviderCreditsSchema = z.strictObject({
+  hasCredits: z.boolean(),
+  unlimited: z.boolean(),
+  /** The balance as the provider wrote it ("120", "4.50"). Null when not given. */
+  balance: z.string().max(64).nullable(),
+})
+
 export const ProviderLimitsReadingSchema = z.strictObject({
   windows: z.array(ProviderLimitWindowSchema).max(32),
   extraUsage: ProviderExtraUsageSchema.nullable(),
+  /** The plan these limits belong to, as display text ("Plus", "Pro").
+   * Absent when the provider did not say. */
+  plan: z.string().min(1).max(64).optional(),
+  /** Absent for a provider without credits. */
+  credits: ProviderCreditsSchema.optional(),
   /** When these numbers were read, or last moved by a live session. */
   at: TimestampSchema,
 })
@@ -181,6 +194,7 @@ export const ProviderLimitsChangedEventSchema = EventEnvelopeSchema.extend({
 
 export type ProviderLimitWindow = z.infer<typeof ProviderLimitWindowSchema>
 export type ProviderExtraUsage = z.infer<typeof ProviderExtraUsageSchema>
+export type ProviderCredits = z.infer<typeof ProviderCreditsSchema>
 export type ProviderLimitsReading = z.infer<typeof ProviderLimitsReadingSchema>
 export type ProviderLimits = z.infer<typeof ProviderLimitsSchema>
 export type ProviderLimitsRefreshCommand = z.infer<typeof ProviderLimitsRefreshCommandSchema>

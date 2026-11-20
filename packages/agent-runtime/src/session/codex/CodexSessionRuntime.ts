@@ -12,6 +12,7 @@ import type {
   ProviderSessionInfo,
   QuestionOutcome,
   SessionConfigOption,
+  UsageLimitObservation,
 } from '@agentpack/contract'
 import type { v2, WebSearchMode } from '@openmanager/codex-app-server-protocol'
 import type { BackendEvent, BackendEventListener, BackendRoute, SessionResult } from '../../backends/Backend.js'
@@ -142,6 +143,10 @@ export type CodexSessionRuntimeDeps = {
   platform?: NodeJS.Platform
   /** `CODEX_SUBAGENT_STOP_MS` when absent. */
   subagentStopMs?: number
+  /** Takes this connection's `account/rateLimits/updated` (the account's,
+   * not the thread's) into the provider's limits, and answers with the
+   * windows to announce as `usage_limits_update`. Dropped when absent. */
+  rateLimits?: (update: v2.AccountRateLimitsUpdatedNotification) => UsageLimitObservation[]
 }
 
 type ActiveTurn = {
@@ -1407,6 +1412,11 @@ export class CodexSessionRuntime implements ManagedSessionRuntime {
    * subagents, the connection (nothing acts on those yet), or nowhere. A
    * thread-scoped one never falls through to this thread. */
   private onNotification(method: string, params: unknown): void {
+    if (method === 'account/rateLimits/updated' && this.deps.rateLimits) {
+      for (const observation of this.deps.rateLimits(params as v2.AccountRateLimitsUpdatedNotification))
+        this.emit(routeEvent(this.route(), this.sessionIdValue, 'session', 'usage_limits_update', observation))
+      return
+    }
     const scope = codexNotificationScope(method, params)
     // The connection's own: this process serves this one session, so what
     // it warns about (config, deprecations, an MCP server that did not

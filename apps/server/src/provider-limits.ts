@@ -21,7 +21,7 @@ import { openEnvironmentDatabase } from './db/database.ts'
 export type UsageLimitsResult =
   | {
       outcome: 'ok'
-      reading: Pick<ProviderLimitsReading, 'windows' | 'extraUsage'>
+      reading: Pick<ProviderLimitsReading, 'windows' | 'extraUsage' | 'plan' | 'credits'>
     }
   | { outcome: 'unavailable' }
   | { outcome: 'unsupported' }
@@ -33,6 +33,7 @@ export type UsageLimitObservation = {
   status?: 'ok' | 'warning' | 'limited'
   resetsAt?: string
   usedPercentAtLeast?: number
+  usedPercent?: number
 }
 
 /** No reading younger than this is read again, whatever a client asks: one
@@ -40,6 +41,13 @@ export type UsageLimitObservation = {
 export const MIN_REFRESH_INTERVAL_MS = 60_000
 /** What a refresh that names no age accepts. */
 export const DEFAULT_REFRESH_MAX_AGE_MS = 5 * 60_000
+/** How long "this account has no plan limits" stands for a passive ask (a
+ * page or the sidebar, `maxAgeMs > 0`). An account changes kind rarely, and a
+ * change is followed by a read of its own (`observeHealth`), so asking sooner
+ * only costs a CLI per hover. A deliberate refresh (`maxAgeMs: 0`) is held
+ * only to `MIN_REFRESH_INTERVAL_MS`: the provider may have said so for a
+ * moment. */
+export const UNAVAILABLE_REFRESH_MS = 30 * 60_000
 /** A window whose reset moves by more than this has rolled over: its old
  * percent belongs to the previous window. */
 const ROLLOVER_TOLERANCE_MS = 60_000
@@ -54,6 +62,13 @@ export type ProviderLimitsStore = {
     lastRefresh: LastRefresh | null,
   ): void
   close(): void
+}
+
+/** What limits need from provider health: whether the CLI is there, and
+ * whose account it is. */
+export type LimitsHealth = {
+  install: { state: 'unknown' | 'installed' | 'missing' | 'unusable' }
+  auth: { state: 'unknown' | 'authenticated' | 'unauthenticated' | 'error'; accountLabel?: string }
 }
 
 export type ProviderLimitsDeps = {
@@ -89,14 +104,48 @@ export function createProviderLimits(deps: ProviderLimitsDeps) {
   const listeners = new Set<(event: ReturnType<typeof limitsEvent>) => void>()
   const state = new Map<string, ProviderLimits>()
   const inFlight = new Map<string, Promise<void>>()
+  /** Bumped when the account changes: a read started before is the old one's. */
+  const generation = new Map<string, number>()
+  /** Providers whose probe turned out to have no route to limits. */
+  const noRoute = new Set<string>()
+  /** Providers a read has answered (numbers, or "no plan limits"), in this
+   * run or one before: their CLI has worked. */
+  const readBefore = new Set<string>()
+  const accounts = new Map<string, { signedIn: boolean; label: string | undefined }>()
   let stopped = false
+
+  /** Whether a provider shows limits once health says `install`. Only a
+   * confirmed `missing` hides a card: nothing can be read. `unknown` (not
+   * probed yet, a probe that ran out of time, no project to probe in) says
+   * nothing, so the card stays as it was. `unusable` is often passing (a
+   * handshake that timed out, a CLI mid-update): a provider that has had a
+   * reading keeps its card; one never read hides it, as its reads can only
+   * fail. */
+  const supportedWhen = (
+    providerId: string,
+    current: boolean,
+    install: LimitsHealth['install']['state'],
+  ): boolean => {
+    if (!deps.supports(providerId) || noRoute.has(providerId)) return false
+    switch (install) {
+      case 'installed':
+        return true
+      case 'missing':
+        return false
+      case 'unusable':
+        return readBefore.has(providerId) ? current : false
+      case 'unknown':
+        return current
+    }
+  }
 
   const persisted = deps.store.load()
   for (const providerId of deps.providerIds) {
-    const supported = deps.supports(providerId)
-    const saved = supported ? persisted.get(providerId) : undefined
+    const saved = deps.supports(providerId) ? persisted.get(providerId) : undefined
+    if (saved?.reading || (saved?.lastRefresh && saved.lastRefresh.outcome !== 'failed'))
+      readBefore.add(providerId)
     state.set(providerId, {
-      supported,
+      supported: deps.supports(providerId),
       reading: saved?.reading ?? null,
       refreshing: false,
       lastRefresh: saved?.lastRefresh ?? null,
@@ -137,15 +186,21 @@ export function createProviderLimits(deps: ProviderLimitsDeps) {
     if (!current.supported || stopped) return current
     if (inFlight.has(providerId)) return current
     const floor = Math.max(maxAgeMs, MIN_REFRESH_INTERVAL_MS)
-    // Measured from the last full read, not the reading's `at`: a live session
-    // nudging one window does not make the others fresh.
-    if (current.lastRefresh?.outcome === 'ok' && ageMs(current.lastRefresh.at) < floor)
-      return current
-    // An attempt of any outcome counts toward the floor, so a failing read
-    // cannot be retried in a loop by a client that keeps asking.
-    if (ageMs(current.lastRefresh?.at) < MIN_REFRESH_INTERVAL_MS) return current
+    // Measured from the last attempt, not the reading's `at`: a live session
+    // nudging one window does not make the others fresh. Every outcome holds
+    // the client's age, so neither a failing read nor an account without
+    // limits starts a CLI each time a client asks; "no limits" holds longer.
+    const last = current.lastRefresh
+    if (last) {
+      const hold =
+        last.outcome === 'unavailable' && maxAgeMs > 0
+          ? Math.max(floor, UNAVAILABLE_REFRESH_MS)
+          : floor
+      if (ageMs(last.at) < hold) return current
+    }
 
     set(providerId, { ...current, refreshing: true }, false)
+    const started = generation.get(providerId) ?? 0
     const run = (async () => {
       let result: UsageLimitsResult | undefined
       try {
@@ -155,7 +210,13 @@ export function createProviderLimits(deps: ProviderLimitsDeps) {
       }
       const at = new Date(clock()).toISOString()
       const before = get(providerId)
+      // The account changed while this read ran: it may be the old one's.
+      if ((generation.get(providerId) ?? 0) !== started) {
+        set(providerId, { ...before, refreshing: false }, false)
+        return
+      }
       if (result?.outcome === 'unsupported') {
+        noRoute.add(providerId)
         set(providerId, { ...before, supported: false, refreshing: false }, false)
         return
       }
@@ -165,16 +226,34 @@ export function createProviderLimits(deps: ProviderLimitsDeps) {
       }
       const reading =
         result?.outcome === 'ok'
-          ? sanitize({ windows: result.reading.windows, extraUsage: result.reading.extraUsage, at })
+          ? sanitize({
+              windows: result.reading.windows,
+              extraUsage: result.reading.extraUsage,
+              ...(result.reading.plan !== undefined ? { plan: result.reading.plan } : {}),
+              ...(result.reading.credits !== undefined ? { credits: result.reading.credits } : {}),
+              at,
+            })
           : // A failed read keeps the last numbers up, with their age; an account
             // without plan limits has nothing to keep.
             result?.outcome === 'unavailable'
             ? null
             : before.reading
+      if (lastRefresh.outcome !== 'failed') readBefore.add(providerId)
       set(providerId, { ...before, reading, refreshing: false, lastRefresh }, true)
     })().finally(() => inFlight.delete(providerId))
     inFlight.set(providerId, run)
     return get(providerId)
+  }
+
+  /** Another account: what was read is not its own. Cleared now, read
+   * again at once, after any read still running for the old one. */
+  const accountChanged = (providerId: string) => {
+    const current = get(providerId)
+    generation.set(providerId, (generation.get(providerId) ?? 0) + 1)
+    set(providerId, { ...current, reading: null, lastRefresh: null }, true)
+    const running = inFlight.get(providerId)
+    if (running) void running.then(() => refresh(providerId, 0))
+    else refresh(providerId, 0)
   }
 
   return {
@@ -192,6 +271,43 @@ export function createProviderLimits(deps: ProviderLimitsDeps) {
       await Promise.all([...inFlight.values()])
     },
 
+    /** Provider health moved. A CLI confirmed missing shows no limits
+     * (`supportedWhen`: nothing to read, so no card that can only fail); a
+     * sign-in,
+     * sign-out or another account drops the reading, which was the previous
+     * login's, and reads again. The first word on the account after a start
+     * changes nothing: the kept reading stands, with its age. */
+    observeHealth(providerId: string, health: LimitsHealth): void {
+      const current = state.get(providerId)
+      if (!current || stopped) return
+      const supported = supportedWhen(providerId, current.supported, health.install.state)
+      if (supported !== current.supported) set(providerId, { ...current, supported }, false)
+      if (!supported) return
+
+      const auth = health.auth
+      if (auth.state !== 'authenticated' && auth.state !== 'unauthenticated') return
+      const signedIn = auth.state === 'authenticated'
+      const before = accounts.get(providerId)
+      // A sign-in can be announced before it is named; it keeps the name known.
+      const label = signedIn
+        ? (auth.accountLabel ?? (before?.signedIn ? before.label : undefined))
+        : undefined
+      accounts.set(providerId, { signedIn, label })
+      if (!before) return
+      // An unnamed account gaining a name is news only where the last read
+      // found no plan limits: an API key (no email) becoming a subscription.
+      // Elsewhere it is the same account being named late.
+      const named =
+        before.label === undefined &&
+        label !== undefined &&
+        current.lastRefresh?.outcome === 'unavailable'
+      const changed =
+        before.signedIn !== signedIn ||
+        named ||
+        (before.label !== undefined && label !== undefined && before.label !== label)
+      if (changed) accountChanged(providerId)
+    },
+
     /** Fold a live session's `usage_limits_update` into the reading. */
     observe(providerId: string, observation: UsageLimitObservation): void {
       const current = state.get(providerId)
@@ -205,7 +321,9 @@ export function createProviderLimits(deps: ProviderLimitsDeps) {
       } else {
         windows.push(merged)
       }
+      // The plan and credits are a full read's; a window's word keeps them.
       const reading = sanitize({
+        ...current.reading,
         windows,
         extraUsage: current.reading?.extraUsage ?? null,
         at: new Date(clock()).toISOString(),
@@ -270,11 +388,17 @@ function mergeObservation(
   if (observation.usedPercentAtLeast !== undefined) {
     usedPercent = Math.max(usedPercent ?? 0, observation.usedPercentAtLeast)
   }
+  // An exact number (Codex) is the number, whatever was known.
+  if (observation.usedPercent !== undefined) usedPercent = observation.usedPercent
+  // Below 100% with no verdict given, an old refusal no longer holds.
+  const freed = observation.usedPercent !== undefined && observation.usedPercent < 100
   return {
     ...base,
     usedPercent,
     resetsAt,
-    status: observation.status ?? (rolledOver || released ? null : base.status),
+    status:
+      observation.status ??
+      (rolledOver || released || (freed && base.status === 'limited') ? null : base.status),
   }
 }
 

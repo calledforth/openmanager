@@ -110,7 +110,10 @@ import {
 // (the modes and config values the provider's own configuration rules out,
 // Codex's managed policy). Both objects are strict, so a v23 client would
 // reject every catalog and `provider.catalog.updated` event carrying them.
-export const PROTOCOL_VERSION = 24 as const
+// v25: a provider's limits reading can carry `plan` (display text) and
+// `credits` (Codex's prepaid balance). The reading is strict, so a v24
+// client would reject every Codex provider entry and `provider_limits_changed`.
+export const PROTOCOL_VERSION = 25 as const
 
 export const ProtocolVersionSchema = z.number().int().positive().max(Number.MAX_SAFE_INTEGER)
 export const CapabilitySchema = MessageNameSchema
