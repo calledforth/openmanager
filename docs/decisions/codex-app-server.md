@@ -98,8 +98,9 @@ What applies to our threads, by default:
 | Memories | Inherited | Same |
 | Apps connector (`codex_apps`) | Inherited | Same. Costs ~20 MB per thread (_probed_) |
 | `notify` program | **Off** | Openmanager sends its own notifications. The user's program would fire for every turn we run, doubling them |
+| `update_plan` tool | **Forced on** | Off unless a client turns it on (_probed_: with the default config the model has no `update_plan` and no `turn/plan/updated` arrives). It is what keeps the todo checklist. The per-thread value overrides the user's own `tools.update_plan.enabled`, so a user who turned it off gets it back in openmanager's threads |
 
-`notify` is switched off per thread, by `config: { notify: [] }` on `thread/start` and `thread/resume`, never by editing the user's `config.toml`. _Probed_: with `notify` set globally, a thread without the override ran its program once per turn, and a thread with `notify: []` ran it zero times. Per-thread `config` also starts extra MCP servers (_probed_), so the mechanism is sound for any later default.
+Both are set per thread, by `config: { notify: [], "tools.update_plan.enabled": true }` on `thread/start` and `thread/resume`, never by editing the user's `config.toml`. `tools.update_plan.enabled` is not in the generated types (`config` is an untyped map). _Probed_: 0.160 and 0.170 both know the key, and both start the thread with a key they do not know, so an older or newer CLI that dropped it would lose the checklist, not the thread. _Probed_: with `notify` set globally, a thread without the override ran its program once per turn, and a thread with `notify: []` ran it zero times. Per-thread `config` also starts extra MCP servers (_probed_), so the mechanism is sound for any later default.
 
 ### Spellings
 
@@ -121,7 +122,7 @@ Named permission profiles (`permissions`) are new since 0.160 and cannot be comb
 - **Between turns**, a change from the composer goes through `thread/settings/update`, and the state shown is read back from `thread/settings/updated` (_probed_), never assumed from what was sent. Built in [CAL-260](https://linear.app/calledforth/issue/CAL-260/codex-models-reasoning-speed-and-access-in-the-composer). What 0.170 does (_probed_): it answers the update first and reads the settings back after; an update that changes nothing reads nothing back, so the runtime only sends fields that differ from the last read-back; it accepts an effort the model does not offer (`"bogus"` read back as is), so the runtime checks every value against the catalog first; a `null` service tier reads back as `"default"` (standard speed). A read-back that differs from what was asked refuses the change with what Codex kept, so the session's selection is not updated. One that never comes is logged; the next `turn/start` sends the value again.
 - **During a turn**, the model and effort are not changed. A change made while a turn runs is queued for the next `turn/start`, which carries every setting; the composer shows it as what the next turn runs with, and a read-back from the running turn does not undo it. `turn/settings/update` is experimental and is left unused for now.
 - **Web search** (`disabled`, `cached`, `indexed`, `live`) is not a turn setting: it is the thread's `config.web_search`, given on `thread/start` and `thread/resume` beside `notify: []`, so it sticks per thread (per openmanager session). A resume of a thread that is still loaded keeps its old config (_probed_), so a change reopens the thread: `thread/unsubscribe` (Codex unloads a thread nobody is subscribed to) then `thread/resume` with the new `config`, at once when nothing runs, else before the next turn. A thread that has not run a turn has nothing on disk to resume (`no rollout found`, _probed_) and is started again; the new id is announced with `session_created`, which the host stamps. Not chosen, the user's own `config.toml` applies (read with `config/read`, shown as `cached` when it says nothing).
-- **Rerouted model.** `model/rerouted` (Codex moved a turn to another model, e.g. for `highRiskCyberActivity`) is shown in the turn as a model switch (`provider_notice`, `model_fallback`). The session's selection stays as chosen.
+- **Rerouted model.** `model/rerouted` (Codex moved a turn to another model, e.g. for `highRiskCyberActivity`) is a model switch notice in the turn (see Notices). The composer also says it beside the model picker ("Ran on …", with the reason on hover) while that turn is the session's newest; the selection stays as chosen, and the next turn starts on it again.
 
 ### History
 
@@ -129,7 +130,8 @@ Openmanager's SQLite stays the transcript of record, as for every provider. For 
 
 ### Resume fallback
 
-- **Missing thread.** `thread/resume` answers `-32600` with `no rollout found for thread id …` (_probed_). The runtime starts a fresh thread, durably re-stamps `provider_session_id` before the first prompt runs, and shows a note in the conversation that Codex lost the earlier context. _Not yet built:_ the note; the loss is only logged for now ([CAL-254](https://linear.app/calledforth/issue/CAL-254/keep-codex-sessions-consistent-across-restarts-outside-changes-and-errors)). Handing the context over with `thread/inject_items` is follow-up work ([CAL-254](https://linear.app/calledforth/issue/CAL-254/keep-codex-sessions-consistent-across-restarts-outside-changes-and-errors)).
+- **Missing thread.** `thread/resume` answers `-32600` with `no rollout found for thread id …` (_probed_). The runtime starts a fresh thread, and the server durably re-stamps `provider_session_id` before the first prompt runs: from the start result when the session is opened, from `session_created` when the thread is replaced mid-life. The server also points its in-memory record at the new id, so a later respawn resumes the replacement instead of missing the old thread again and losing a second history. Built in [CAL-254](https://linear.app/calledforth/issue/CAL-254/keep-codex-sessions-consistent-across-restarts-outside-changes-and-errors).
+- **Handing the context over.** At the next turn, before `turn/start`, the runtime reads the conversation openmanager stored (`HostDeps.sessionHistory`: the thread's newest 200 messages, attachments named) and gives it to the fresh thread with `thread/inject_items`, as Responses API `message` items (user `input_text`, assistant `output_text`). The prompt about to run is left out by its message id. Each message is cut at 8,000 characters, and the newest are kept within 60,000. The turn then shows a note: the conversation continues in a new Codex thread, with the earlier messages passed on, or without them when Codex refused the items or the host keeps no history. When the stored conversation holds nothing before this prompt, nothing was lost and no note is shown. The fresh thread's token counts start from zero. Tool calls and reasoning are not handed over. Not probed against a live Codex.
 - **Archived thread.** Unarchived, then resumed again once.
 - **Malformed id.** Also `-32600` (`invalid session id: …`, _probed_), and treated as missing.
 - Matching is on the message text as well as the code, because `-32600` is the generic invalid-request code. The matcher lives in one place with a test per known message.
@@ -145,18 +147,87 @@ A subagent is a child thread on its parent's connection ([CAL-257](https://linea
 - **Busy.** A runtime with a running child is `busy`, so the idle reaper and LRU eviction leave it alone.
 - **Never a session.** A child's id never becomes a session id, and `thread/resume` of a subagent's thread unsubscribes from it (`thread/unsubscribe`) and is treated as a missing thread. Listing (not used yet) must keep `thread/list`'s default interactive `sourceKinds`, which exclude subagent threads.
 
+### Tool calls
+
+Each tool item of the session's own turn is a tool call (`CodexTools`, `session/codex/codex-tools.ts`), keyed on Codex's item id, in the shape every provider's tool rows take (docs/sync-foundations.md §6.7). Shapes were checked against 0.170 in the `tool-items` and `terminal-interaction` fixtures.
+
+- **Names.** A built-in tool keeps Codex's item type as its name (`commandExecution`, `fileChange`, `webSearch`, `imageView`, `sleep`); an MCP tool is `mcp__<server>__<tool>`, the name the model calls it by; a dynamic tool is `<namespace>.<tool>`. The shared presenter reads the rest from the input.
+- **`commandExecution`.** Input: the command without Codex's `/bin/bash -lc '…'` wrapper, `cwd`, `source`, `commandActions`, and at the end `exitCode` and anything written to it with `write_stdin` (`stdin`, from `item/commandExecution/terminalInteraction`, which names the command it went to). Output streams from `item/commandExecution/outputDelta`; `aggregatedOutput` is what it settles with. A command whose actions are all `read` is a read, with the paths as locations and no output kept, like any read; one `search` or `listFiles` is labelled as that (`Searched for "x" in src`, `Listed src`); anything else is a command. Duration is the row's `startedAt` to `finishedAt`.
+- **`fileChange`.** Every change (add, delete, update, move) as a file touched, with line counts read off the diff Codex reported for it. No diff leaves the runtime. `item/fileChange/patchUpdated` keeps it live.
+- **`mcpToolCall`.** Arguments as input; `structuredContent` as the result when there is one, else the text content; images move into the reply under the call's id, like any tool's; an error fails it; `item/mcpToolCall/progress` streams as lines of output.
+- **Others.** `dynamicToolCall`, `webSearch` (search, open page, find in page, from its `action`), `sleep`, `imageView`. Hook runs (`hook/started`, `hook/completed`) are rows of their own, and a `hookPrompt` item is a row holding the text the hook added.
+- **Declined and cancelled.** Codex's `declined` status is the declined outcome. Codex has no status for an interrupted call: a call that fails while the turn is being stopped reads as cancelled, and one still open when the turn ends is closed as cancelled by the server.
+- **No matches.** A search command (`commandActions` all `search`) that exits 1 with no output found nothing, and completes, like any search with no hits.
+- **Background commands.** A unified-exec command (one with a `processId`) still open when its turn ends runs on in the background. It settles as completed, with `[Still running in the background]` as the last line of its output, rather than being closed as cancelled. Not when the turn was stopped.
+- **Hook rows.** Each `hook/started` opens a row of its own, and `hook/completed` settles the one its run opened: `HookRunSummary.id` may name the handler rather than one firing (not probed), and a row per handler would hide every firing after the first.
+- **Patch order.** A `patchUpdated` that arrives before its item's `item/started` opens the row.
+- **Plan.** `turn/plan/updated` is the todo checklist (`plan_update`), and a row (`update_plan`) where the model updated it, since Codex has no item for that call.
+- **Skipped on purpose.** `functionCallOutput` is the echo of a `toolOutput` a client hands Codex with `turn/start`; openmanager sends none. `item/fileChange/outputDelta` is deprecated and no longer sent. `plan` items and `item/plan/delta` belong to plan mode, which is not ported. `imageGeneration` is not translated yet.
+- A subagent's own items stay out of the parent's turn (see Subagents).
+
 ### Notifications
 
 `initialize` sends `optOutNotificationMethods`:
 
-- `turn/diff/updated`: the whole turn diff on every change, which openmanager rebuilds from file-change items. T3 opts out too.
+- `turn/diff/updated`: the whole turn diff on every change. Chat carries no diffs, and each file change's paths and line counts come with its own item. T3 opts out too.
 - `remoteControl/status/changed`: remote control is out of scope (openmanager is the remote).
 
 Everything else is received. Notifications we do not act on are dropped at decode, which is cheaper than maintaining a long opt-out list that changes with every CLI version.
 
+### Restarts
+
+Built in [CAL-254](https://linear.app/calledforth/issue/CAL-254/keep-codex-sessions-consistent-across-restarts-outside-changes-and-errors).
+
+- **After a server restart** a session has no process. The server restores it from SQLite with its stored `provider_session_id`, and the next prompt (or open) starts a runtime that resumes that thread (`thread/resume`). Nothing is started before then.
+- **Shutdown and the update handoff** stop every runtime (`AgentRuntime.shutdown`, reason `disposed`). A turn still running is interrupted first and given up to 2 s (bounded by the interrupt grace) to end on its own `turn/completed`, so Codex records it as interrupted. Then the process is terminated. The same holds for any stop the host makes (a move, an eviction). Such a turn fails with a typed problem whose action is "retry" and whose detail says why (a restart or update, a move, an eviction): only the user's own Stop (`cancel`) ends a turn as stopped. Interactions still waiting settle as cancelled (`session_closed`) as the process goes.
+- **Busy.** A turn Codex began by itself keeps the runtime `busy`, like a running subagent, so the idle reaper and LRU eviction never stop it.
+
+### Outside changes
+
+Codex threads live in `~/.codex`, which the user's CLI and desktop app share. What another client does to a session's thread reaches the session's runtime as notifications. Built in [CAL-254](https://linear.app/calledforth/issue/CAL-254/keep-codex-sessions-consistent-across-restarts-outside-changes-and-errors).
+
+- **Closed, archived or deleted** (`thread/closed`, `thread/archived`, `thread/deleted`, and `thread/status/changed` to `notLoaded`): the change is shown as a notice, and the runtime reopens the thread before its next turn through the resume fallback (unarchive and resume; a fresh thread with the context handed over when it is gone). A turn running at that moment fails with a typed problem whose action is "retry": Codex no longer runs the thread for this connection. One that fails to reopen fails its prompt and is tried again with the next, so the session never wedges.
+- **Our own archive** (deleting a session) and our own unarchive (resuming an archived thread) come back as the same notifications and are not reported.
+- **`thread/unarchived`** from elsewhere is shown as an info notice.
+- **`thread/status/changed` to `systemError`** is shown as a notice, and the thread is reopened before the next turn unless Codex reports it idle or active again first. A reopen that fails after a system error is logged, and the turn is tried anyway.
+- **`thread/reverted`** from elsewhere is shown as a notice and logged. _Not yet built (CAL-234):_ reconciling the stored history with Codex's, by bounded pagination over native ids as one history revision, and not applying a revert we caused twice. Until then the transcript keeps what it had.
+
+Notices said while no turn runs are kept (up to 16, never repeated) and shown at the start of the next turn, because the host files a notice under a turn.
+
+### Errors and notices
+
+How Codex's errors and notices map onto the typed failures and turn notices every provider shares (docs/sync-foundations.md, F7). The mapping is in `session/codex/codex-problems.ts`, with a test for every variant. Built in [CAL-254](https://linear.app/calledforth/issue/CAL-254/keep-codex-sessions-consistent-across-restarts-outside-changes-and-errors).
+
+- **Failures.** A failed turn's `TurnError.codexErrorInfo` (from `turn/completed`, or an earlier `error` notification without `willRetry`) is typed. An upstream HTTP status, when the variant carries one, wins: 401/403 unauthorized, 413 context window, 429 rate limited, 503/529 overloaded, other 5xx server error, and any other 4xx `unknown` (an answered request that was refused is no network error, and is not offered a retry).
+
+  | `codexErrorInfo` | Problem |
+  | -- | -- |
+  | `contextWindowExceeded` | `context_window_exceeded` (no compact action: openmanager does not compact a Codex thread yet) |
+  | `usageLimitExceeded`, `sessionBudgetExceeded` | `usage_limit` |
+  | `rateLimitExceeded` | `rate_limited` |
+  | `serverOverloaded`, `flexUnavailable`, `policyCapacityUnavailable` | `overloaded` |
+  | `internalServerError` | `server_error` |
+  | `unauthorized` | `unauthorized` |
+  | `httpConnectionFailed`, `responseStreamConnectionFailed`, `responseStreamDisconnected`, `responseTooManyFailedAttempts` | `network`, or by HTTP status |
+  | `cyberPolicy`, `misalignmentPolicyViolation`, `inferenceHookDenied` | `refused` |
+  | `modelNotFound`, `badRequest`, `sandboxError`, `tooManyDenials`, `threadRollbackFailed`, `activeTurnNotSteerable`, `other`, anything newer | `unknown` |
+
+  Codex's own explanation goes with it as the failure's detail: a policy block's `misalignment.detailedExplanation` when there is one, else the message, then `additionalDetails`. A `turn/start` Codex refuses with a `codexErrorInfo` in its error data is typed the same way.
+- **Retries.** An `error` notification with `willRetry` is a recoverable `rpc_error` with a typed problem, so it shows as a live "retrying" notice and the turn goes on. "Reconnecting… n/m" in its message gives the attempt and the maximum.
+- **Notices.** `warning`, `guardianWarning`, `configWarning` (with its file), `deprecationNotice` and an MCP server that failed to start (`mcpServer/startupStatus/updated`, with a sign-in hint when it needs reauthentication) are warning notices. `model/rerouted` is a model switch notice (`model_fallback`), which the composer also shows beside the model picker ([CAL-260](https://linear.app/calledforth/issue/CAL-260/codex-models-reasoning-speed-and-access-in-the-composer), "Settings flow"). `model/verification` is an info notice. Notices without a thread come from the session's own process, so they are the session's.
+- **Logged, by choice.** Auth recovery (`modelProvider/authRecoveryStarted`/`Completed`) resolves itself or ends in an `unauthorized` failure that is shown. Safety buffering only slows a turn. Moderation metadata is for OpenAI's own clients.
+
+### Turns Codex starts itself
+
+A `turn/started` for the session's thread with no turn open and no `turn/start` out is a turn Codex began by itself: a goal continuing, or an automatic compaction. The runtime opens it as a background turn (`background_turn_started`, as Claude's background turns), reports its id, and ends it on its `turn/completed` like any other. It can be stopped and steered (Codex refuses steering a compaction, and the message is queued). A prompt that arrives meanwhile waits for it to end; the server files what it says under that prompt's turn. A stop during that wait stops the prompt too: no turn is started. Built in [CAL-254](https://linear.app/calledforth/issue/CAL-254/keep-codex-sessions-consistent-across-restarts-outside-changes-and-errors). Not probed against a live goal or compaction.
+
+### Usage
+
+A turn's token counts are the thread's cumulative `total` now, less where the turn began (the last turn's `total`, or for a process's first turn, its first reading's `total` less `last`), so a tool loop's every request counts and a resumed thread's history does not. The context meter is `last.totalTokens` against `modelContextWindow`. A subagent's usage arrives under its own thread id and never reaches the parent's turn. A reading outside any turn moves the next turn's starting point.
+
 ### Platform notes
 
-- **Linux.** Without `bubblewrap` on `PATH`, `app-server` logs an error and sends a `configWarning` at startup, then falls back to a bundled copy (_probed_). The warning is surfaced in provider health as advice, not a failure. _Not yet built:_ the warning is logged, not shown in health.
+- **Linux.** Without `bubblewrap` on `PATH`, `app-server` logs an error and sends a `configWarning` at startup, then falls back to a bundled copy (_probed_). The warning is surfaced in provider health as advice, not a failure. _Not yet built:_ the warning is not shown in health. A session's own process shows it as a notice in the session's next turn ([CAL-254](https://linear.app/calledforth/issue/CAL-254/keep-codex-sessions-consistent-across-restarts-outside-changes-and-errors)).
 - **Windows.** The sandbox runs commands as a separate Windows user, which breaks Git ("dubious ownership") and `%TEMP%` folders. Until [CAL-273](https://linear.app/calledforth/issue/CAL-273/make-the-codex-sandbox-work-on-windows) solves it, native Windows defaults to Full access (see Access presets).
 
 ## Product
@@ -191,7 +262,7 @@ Codex is signed in the way Cursor and OpenCode are: on the machine, with `codex 
 
 - **Titles** go from openmanager to Codex (`thread/name/set`), so a thread is recognisable in the user's Codex history.
 - **Deleting a session archives its Codex thread** (`thread/archive`). It never hard-deletes, so the thread can still be recovered in Codex.
-- **An archive or delete made outside openmanager** does not delete the session. The next resume follows the resume fallback: it unarchives an archived thread, and starts fresh with a note when the thread is missing.
+- **An archive or delete made outside openmanager** does not delete the session. The next resume follows the resume fallback: it unarchives an archived thread, and starts fresh with a note when the thread is missing. A live runtime that hears of it reopens the thread the same way before its next turn (see "Outside changes").
 - **Existing Codex threads are not imported.** [CAL-276](https://linear.app/calledforth/issue/CAL-276/import-existing-codex-threads) stays parked.
 
 How it works (_probed_ on 0.170):

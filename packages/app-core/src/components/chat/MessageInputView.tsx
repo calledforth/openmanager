@@ -11,6 +11,7 @@ import {
 } from 'react'
 import {
   ArrowUpIcon,
+  ArrowsLeftRightIcon,
   ArrowsOutIcon,
   PlusIcon,
   CaretDownIcon,
@@ -392,6 +393,9 @@ export interface MessageInputViewProps {
   imageSupportMessage: string | null
   /** Last failure from changing the model, mode or a setting. */
   settingsError?: string | null
+  /** The newest turn ran on another model than the one picked (the
+   * provider rerouted it): shown beside the picker, which keeps the pick. */
+  modelReroute?: { to: string; detail?: string } | null
   /** Why this draft cannot be sent as it stands (its provider or project is
    * unavailable). Send is held, and the reason shown, until it clears. */
   sendBlockedReason?: string | null
@@ -1122,6 +1126,7 @@ export function MessageInputView(props: MessageInputViewProps) {
     settingsError,
     sendBlockedReason,
     usage,
+    modelReroute,
     onModeChange,
     onProviderModelChange,
     onConfigOptionChange,
@@ -1302,6 +1307,24 @@ export function MessageInputView(props: MessageInputViewProps) {
                 shortcut="mod+shift+m"
                 onDone={focusTextarea}
               />
+            )}
+
+            {modelReroute && (
+              <Tooltip
+                content={
+                  modelReroute.detail
+                    ? `The last turn ran on ${modelReroute.to}. ${modelReroute.detail}`
+                    : `The last turn ran on ${modelReroute.to}.`
+                }
+              >
+                <span
+                  data-testid="model-reroute"
+                  className={cn(composerChip, 'max-w-[180px] gap-1 text-[var(--basis-text-muted)]')}
+                >
+                  <ArrowsLeftRightIcon size={11} className="shrink-0" aria-hidden />
+                  <span className="truncate">Ran on {modelReroute.to}</span>
+                </span>
+              </Tooltip>
             )}
 
             <ModelSettingsControl

@@ -3169,6 +3169,48 @@ describe('durable session lifecycle', () => {
     }
   })
 
+  it('sends every later prompt to the re-stamped provider session, not the forgotten one', async () => {
+    const h = setup()
+    try {
+      const { sessionId } = h.created.session
+      await h.service.resolveRuntimeSession(sessionId)
+      const restarted = h.fresh()
+      await restarted.resolveRuntimeSession(sessionId)
+      // A Codex thread deleted outside openmanager: the runtime replaces it
+      // with a fresh one mid-life and says so.
+      restarted.onRuntimeEvent({
+        providerId: 'opencode',
+        threadId: h.created.thread.threadId,
+        workspaceId: '/workspace/project',
+        sessionId: 'provider-replacement',
+        id: 'created',
+        seq: 1,
+        timestamp: new Date().toISOString(),
+        category: 'lifecycle',
+        event: 'session_created',
+        data: {},
+      } as never)
+      expect(h.database.prepare('SELECT provider_session_id FROM sessions').get()).toEqual({
+        provider_session_id: 'provider-replacement',
+      })
+      await vi.waitFor(() =>
+        expect(restarted.resolveRuntimeSession(sessionId)).resolves.toMatchObject({
+          sessionId: 'provider-replacement',
+        }),
+      )
+      h.runtime.prompt.mockClear()
+      expect(
+        h.dispatch(restarted, 'turn.send', { ...h.created.thread, text: 'Carry on' }),
+      ).toMatchObject({ type: 'response' })
+      await vi.waitFor(() => expect(h.runtime.prompt).toHaveBeenCalled())
+      expect(h.runtime.prompt).toHaveBeenCalledWith(
+        expect.objectContaining({ sessionId: 'provider-replacement' }),
+      )
+    } finally {
+      h.close()
+    }
+  })
+
   it('keeps a session eligible after one failed start, and the next command loads it', async () => {
     const h = setup()
     try {

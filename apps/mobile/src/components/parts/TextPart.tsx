@@ -1,5 +1,5 @@
 import { memo, useMemo, useState } from 'react'
-import { StyleSheet, Text, View } from 'react-native'
+import { Linking, StyleSheet, Text, View } from 'react-native'
 import * as MarkdownLibrary from 'react-native-markdown-display'
 import Markdown, {
   AstRenderer,
@@ -10,11 +10,11 @@ import Markdown, {
   type RenderRules,
 } from 'react-native-markdown-display'
 
-import { MessageLongPress, useMessageRow } from '../../session/message-actions'
 import { countRender } from '../../session/render-probe'
 import type { PhoneTheme } from '../../theme/tokens'
 import { usePhoneTheme } from '../../theme/ThemeProvider'
 import { CodeBlock } from './CodeBlock'
+import { bareLinkHeading, LINKIFY_OPTIONS, plainTextOf, type LinkifyIt } from './link-text'
 import { createMarkdownScanner, keyByPlace } from './markdown-blocks'
 import { buildMarkdownStyles } from './markdownStyles'
 
@@ -22,45 +22,68 @@ import { buildMarkdownStyles } from './markdownStyles'
 const trimEnd = (content: string) => (content.endsWith('\n') ? content.slice(0, -1) : content)
 
 /**
- * The phone's rules over the library's. `selectable` text is for markdown
- * outside the transcript (a plan in its sheet): in a transcript row a long
- * press opens the message's actions instead (`message-actions.tsx`), whose
- * select-text sheet selects across the whole message, which these per-run
- * text views cannot.
+ * The phone's rules over the library's. All of it natively selectable, as
+ * web's is: a long press selects (within a paragraph, each its own text
+ * view), and a tap on a link opens it.
  */
-function rulesOf(selectable: boolean): RenderRules {
-  return {
-    // The library's root takes a new key on every render, which would remount
-    // the whole block however little changed.
-    body: (_node, children, _parent, styles) => (
-      <View key="body" style={styles._VIEW_SAFE_body}>
-        {children}
-      </View>
-    ),
-    textgroup: (node, children, _parent, styles) => (
-      <Text key={node.key} selectable={selectable} style={styles.textgroup}>
-        {children}
-      </Text>
-    ),
-    fence: (node) => (
-      <CodeBlock
+const RULES: RenderRules = {
+  // The library's root takes a new key on every render, which would remount
+  // the whole block however little changed.
+  body: (_node, children, _parent, styles) => (
+    <View key="body" style={styles._VIEW_SAFE_body}>
+      {children}
+    </View>
+  ),
+  textgroup: (node, children, _parent, styles) => (
+    <Text key={node.key} selectable style={styles.textgroup}>
+      {children}
+    </Text>
+  ),
+  // As web draws a link: a bare URL reads as its short heading
+  // (`github.com/org/repo` → `org/repo`), anything else as written.
+  link: (node, children, _parent, styles) => {
+    const href = typeof node.attributes.href === 'string' ? node.attributes.href : ''
+    const heading = bareLinkHeading(href, plainTextOf(node))
+    return (
+      <Text
         key={node.key}
-        code={trimEnd(node.content)}
-        info={(node as unknown as { sourceInfo?: string }).sourceInfo}
-        selectable={selectable}
-      />
-    ),
-    code_block: (node) => (
-      <CodeBlock key={node.key} code={trimEnd(node.content)} selectable={selectable} />
-    ),
-  }
+        style={styles.link}
+        accessibilityRole="link"
+        onPress={() => openLink(href)}
+      >
+        {heading ?? children}
+      </Text>
+    )
+  },
+  fence: (node) => (
+    <CodeBlock
+      key={node.key}
+      code={trimEnd(node.content)}
+      info={(node as unknown as { sourceInfo?: string }).sourceInfo}
+      selectable
+    />
+  ),
+  code_block: (node) => (
+    <CodeBlock key={node.key} code={trimEnd(node.content)} selectable />
+  ),
+}
+
+/** Opens a link in the phone's browser (or the app that owns it); a bad one does nothing. */
+function openLink(href: string) {
+  if (!href) return
+  Linking.openURL(href).catch(() => {})
 }
 
 // The library builds a markdown-it, a style sheet and a renderer for every
 // mounted block of text (its defaults are made anew on each render). Rows
 // mount as the reader scrolls, so the phone makes one of each, per theme for
 // the renderer, and hands them in.
-const MARKDOWN_IT = MarkdownIt({ typographer: true })
+// Bare URLs become links, as web's GFM autolinks do (`link-text.ts`).
+const MARKDOWN_IT = MarkdownIt({ typographer: true, linkify: true })
+
+/** The URL finder the transcript's markdown uses, for text drawn without markdown (a prompt). */
+export const LINKIFY = (MARKDOWN_IT as unknown as { linkify: LinkifyIt }).linkify
+LINKIFY.set(LINKIFY_OPTIONS)
 const IMAGE_HANDLERS = [
   'data:image/png;base64',
   'data:image/gif;base64',
@@ -94,20 +117,15 @@ function mergedStyles(style: Styles): Styles {
   return StyleSheet.create(merged) as Styles
 }
 
-const RENDERERS = new WeakMap<PhoneTheme, Map<boolean, AstRenderer>>()
+const RENDERERS = new WeakMap<PhoneTheme, AstRenderer>()
 
-/** One renderer per theme and kind of text, shared by every block of text. */
-function rendererFor(theme: PhoneTheme, selectable: boolean): AstRenderer {
-  let forTheme = RENDERERS.get(theme)
-  if (!forTheme) {
-    forTheme = new Map()
-    RENDERERS.set(theme, forTheme)
-  }
-  let renderer = forTheme.get(selectable)
+/** One renderer per theme, shared by every block of text. */
+function rendererFor(theme: PhoneTheme): AstRenderer {
+  let renderer = RENDERERS.get(theme)
   if (!renderer) {
     const Renderer = AstRenderer as unknown as new (...args: unknown[]) => AstRenderer
     renderer = new Renderer(
-      { ...renderRules, ...rulesOf(selectable) },
+      { ...renderRules, ...RULES },
       mergedStyles(buildMarkdownStyles(theme)),
       undefined,
       null,
@@ -116,7 +134,7 @@ function rendererFor(theme: PhoneTheme, selectable: boolean): AstRenderer {
       'https://',
       false,
     )
-    forTheme.set(selectable, renderer)
+    RENDERERS.set(theme, renderer)
   }
   return renderer
 }
@@ -163,31 +181,25 @@ function astOf(text: string, live: boolean): ASTNode[] {
 const MarkdownBlock = memo(function MarkdownBlock({
   text,
   live,
-  selectable,
 }: {
   text: string
   live: boolean
-  selectable: boolean
 }) {
   countRender('MarkdownBlock')
   const theme = usePhoneTheme()
   const ast = useMemo(() => astOf(text, live), [text, live])
   return (
-    <Markdown renderer={rendererFor(theme, selectable)} {...STABLE_PROPS}>
+    <Markdown renderer={rendererFor(theme)} {...STABLE_PROPS}>
       {/* A parsed tree is drawn as it is (the library's own path for an array). */}
       {ast as unknown as string}
     </Markdown>
   )
 })
 
-/** A message's markdown, parsed whole, for its select-text sheet (`message-text.ts`). */
-export const parseMessage = (text: string): ASTNode[] => parseTree(text, keyByPlace, MARKDOWN_IT)
-
 /**
  * Assistant markdown with the theme's styles and highlighted code fences,
  * block by block (`markdown-blocks.ts`): a streamed token re-renders only the
- * block it lands in, and a reply settling re-renders only its last. In a
- * transcript row, held to open the message's actions.
+ * block it lands in, and a reply settling re-renders only its last.
  */
 export const TextPart = memo(function TextPart({
   text,
@@ -198,18 +210,17 @@ export const TextPart = memo(function TextPart({
   live?: boolean
 }) {
   countRender('TextPart')
-  const inRow = useMessageRow() !== null
   const [scanner] = useState(createMarkdownScanner)
   const { closed, tail } = useMemo(() => scanner.read(text), [scanner, text])
 
   if (!text) return null
 
   return (
-    <MessageLongPress>
+    <View>
       {closed.map((block, index) => (
-        <MarkdownBlock key={index} text={block} live={false} selectable={!inRow} />
+        <MarkdownBlock key={index} text={block} live={false} />
       ))}
-      <MarkdownBlock key={closed.length} text={tail} live={live} selectable={!inRow} />
-    </MessageLongPress>
+      <MarkdownBlock key={closed.length} text={tail} live={live} />
+    </View>
   )
 })

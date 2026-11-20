@@ -1,9 +1,11 @@
 import { describe, expect, it, vi } from 'vitest'
+import type { ToolCall, ToolCallUpdate } from '@agentpack/contract'
 import type { BackendEvent } from '../../backends/Backend.js'
 import { SessionUnknownError } from '../../core/errors.js'
 import { InteractionBroker } from '../../core/InteractionBroker.js'
 import { PermissionBroker } from '../../core/PermissionBroker.js'
 import { codex } from '../../providers/codex.js'
+import type { HostDeps } from '../../host.js'
 import type { SessionRuntimeSpec } from '../SessionRuntime.js'
 import { CodexAppServerClient } from './CodexAppServerClient.js'
 import { CodexRpcError } from './CodexRpcPeer.js'
@@ -51,6 +53,7 @@ function build(
     server?: FakeCodexAppServer
     interruptGraceMs?: number
     controlRequestMs?: number
+    sessionHistory?: HostDeps['sessionHistory']
   } = {},
 ) {
   const server = options.server ?? new FakeCodexAppServer()
@@ -75,7 +78,11 @@ function build(
     { threadId: 'thread-1', providerId: 'codex', cwd: '/work', ...options.spec },
     {
       config: codex,
-      host: { log, onSessionTitle },
+      host: {
+        log,
+        onSessionTitle,
+        ...(options.sessionHistory ? { sessionHistory: options.sessionHistory } : {}),
+      },
       permissions: new PermissionBroker(),
       interactions: new InteractionBroker(),
       start,
@@ -124,7 +131,7 @@ describe('CodexSessionRuntime start', () => {
       approvalPolicy: 'on-request',
       approvalsReviewer: 'user',
       sandbox: 'workspace-write',
-      config: { notify: [] },
+      config: { notify: [], 'tools.update_plan.enabled': true },
       historyMode: 'paginated',
       developerInstructions: 'Be brief.',
     })
@@ -347,6 +354,44 @@ describe('CodexSessionRuntime turns', () => {
     void runtime.prompt({ prompt: PROMPT }).catch(() => undefined)
     await expect(runtime.prompt({ prompt: PROMPT })).rejects.toThrow(/already running/)
     runtime.dispose()
+  })
+
+  it('reports the turn’s tools as tool calls, its plan as the checklist, and never a child’s', async () => {
+    let turn: FakeCodexTurn | undefined
+    const { server, runtime, events } = build({ onTurn: (t) => (turn = t) })
+    await runtime.start()
+    const prompt = runtime.prompt({ prompt: PROMPT })
+    await vi.waitFor(() => expect(turn).toBeDefined())
+    turn!.started()
+    server.notify('turn/plan/updated', {
+      threadId: turn!.threadId,
+      turnId: turn!.id,
+      explanation: null,
+      plan: [{ step: 'Test', status: 'inProgress' }],
+    })
+    const command = turn!.command('npm test', { chunks: ['ok 1\n', 'ok 2\n'], output: 'ok 1\nok 2\n' })
+    turn!.thread.child().turn().started().command('echo from the subagent')
+    turn!.completed()
+    await prompt
+
+    const tools = events.filter((e) => e.category === 'tool')
+    expect(tools.map((e) => e.event)).toEqual([
+      'tool_call',
+      'tool_call',
+      'tool_call_content',
+      'tool_call_content',
+      'tool_call_update',
+    ])
+    expect(tools[1]).toMatchObject({
+      sessionId: runtime.sessionId,
+      data: { toolCallId: command.id, toolName: 'commandExecution', rawInput: { command: 'npm test' } },
+    })
+    expect(tools.at(-1)).toMatchObject({ data: { status: 'completed', rawInput: { exitCode: 0 } } })
+    expect(events.find((e) => e.event === 'plan_update')).toMatchObject({
+      category: 'session',
+      data: { entries: [{ content: 'Test', status: 'in_progress' }] },
+    })
+    expect(JSON.stringify(events)).not.toContain('from the subagent')
   })
 
   it('declines approvals until there is a UI for them', async () => {
@@ -913,6 +958,69 @@ describe('CodexSessionRuntime against a recording', () => {
     runtime.dispose()
   })
 
+  // A read, a search, a listing, a failing listing and an edit, with the plan
+  // before and after: what the real Codex says about them, as tool calls.
+  it('reports the recorded tools as tool calls', async () => {
+    const server = new ReplayCodexAppServer('tool-items')
+    server.respond('model/list', MODELS as never)
+    const { runtime, events } = build({ server })
+    await runtime.start()
+    await runtime.prompt({ prompt: PROMPT })
+    await server.done
+    expect(server.unmatched).toEqual([])
+    const calls = events.filter((e) => e.event === 'tool_call').map((e) => e.data as ToolCall)
+    expect(calls.map((call) => [call.toolName, call.kind])).toEqual([
+      ['update_plan', 'think'],
+      ['commandExecution', 'read'],
+      ['commandExecution', 'search'],
+      ['commandExecution', 'search'],
+      ['commandExecution', 'search'],
+      ['fileChange', 'edit'],
+      ['update_plan', 'think'],
+    ])
+    expect(calls.slice(1, 5).map((call) => (call.rawInput as { command: string }).command)).toEqual([
+      'cat notes.txt',
+      'rg -n hello',
+      'ls',
+      'ls does-not-exist',
+    ])
+    const settled = events.filter((e) => e.event === 'tool_call_update').map((e) => e.data as ToolCallUpdate)
+    expect(settled.map((update) => update.status)).toEqual(['completed', 'completed', 'completed', 'failed', 'completed'])
+    expect(settled[3]).toMatchObject({ rawInput: { exitCode: 2 } })
+    expect(settled[4]).toMatchObject({
+      locations: [{ path: '/workspace/notes.txt' }],
+      lineChanges: { added: 1, removed: 1 },
+    })
+    expect(events.filter((e) => e.event === 'plan_update').map((e) => e.data)).toEqual([
+      {
+        entries: [
+          { content: 'Look around', priority: 'medium', status: 'in_progress' },
+          { content: 'Edit notes', priority: 'medium', status: 'pending' },
+        ],
+      },
+      {
+        entries: [
+          { content: 'Look around', priority: 'medium', status: 'completed' },
+          { content: 'Edit notes', priority: 'medium', status: 'completed' },
+        ],
+      },
+    ])
+    runtime.dispose()
+  })
+
+  it('shows what the recorded write_stdin sent on the command it went to', async () => {
+    const server = new ReplayCodexAppServer('terminal-interaction')
+    server.respond('model/list', MODELS as never)
+    const { runtime, events } = build({ server })
+    await runtime.start()
+    await runtime.prompt({ prompt: PROMPT })
+    await server.done
+    const updates = events.filter((e) => e.event === 'tool_call_update').map((e) => e.data as ToolCallUpdate)
+    expect(updates[0]).toMatchObject({ rawInput: { stdin: ['ada\n'] } })
+    expect(updates.at(-1)).toMatchObject({ status: 'completed', rawInput: { stdin: ['ada\n'], exitCode: 0 } })
+    runtime.dispose()
+  })
+
   it('steers the recorded turn and places the message where Codex echoed it', async () => {
     const server = replay('steer')
     const { runtime, events } = build({ server })
@@ -1164,6 +1272,550 @@ describe('CodexSessionRuntime, final review', () => {
     expect(echoes.size).toBe(0)
     turns[0]!.completed()
     await prompt
+  })
+})
+
+/** Serve a thread Codex already has (`thread/resume`), and turns on it. */
+function serveStored(
+  server: FakeCodexAppServer,
+  id: string,
+  onTurn?: (turn: FakeCodexTurn) => void,
+) {
+  const thread = server.thread({ id })
+  server.respond('thread/resume', thread.startResponse() as never)
+  let last: FakeCodexTurn | undefined
+  server.respond(
+    'turn/start',
+    (params) => {
+      if (params.threadId !== id) throw new CodexRpcError(-32600, `thread not found: ${params.threadId}`)
+      last = thread.turn()
+      return last.startResponse()
+    },
+    {
+      after: () => {
+        last!.started()
+        onTurn?.(last!)
+      },
+    },
+  )
+  return thread
+}
+
+const notices = (events: BackendEvent[]) =>
+  events
+    .filter((e) => e.event === 'provider_notice')
+    .map((e) => e.data as { kind: string; message: string })
+
+describe('CodexSessionRuntime consistency (CAL-254)', () => {
+  it('hands a fresh thread the conversation a missing one held, and says so in the next turn', async () => {
+    const server = new FakeCodexAppServer()
+    server.respond('model/list', MODELS as never).serveThreads((t) => t.completed())
+    server.fail('thread/resume', -32600, 'no rollout found for thread id gone')
+    server.respond('thread/inject_items', {})
+    const sessionHistory = vi.fn(() => [
+      { messageId: 'm1', role: 'user' as const, text: 'Remember the number 7' },
+      { messageId: 'm2', role: 'assistant' as const, text: 'Noted: 7.' },
+      { messageId: 'msg-now', role: 'user' as const, text: 'What was it?' },
+    ])
+    const { runtime, events } = build({ server, spec: { sessionId: 'gone' }, sessionHistory })
+    const { sessionId } = await runtime.start()
+    await runtime.prompt({ prompt: PROMPT, userMessageId: 'msg-now' })
+
+    expect(sessionHistory).toHaveBeenCalledWith({ providerId: 'codex', threadId: 'thread-1' })
+    // The prompt about to run is not history.
+    expect(server.requests('thread/inject_items')[0]!.params).toEqual({
+      threadId: sessionId,
+      items: [
+        { type: 'message', role: 'user', content: [{ type: 'input_text', text: 'Remember the number 7' }] },
+        { type: 'message', role: 'assistant', content: [{ type: 'output_text', text: 'Noted: 7.' }] },
+      ],
+    })
+    const order = names(events)
+    expect(order.indexOf('prompt_started')).toBeLessThan(order.indexOf('provider_notice'))
+    expect(notices(events)).toEqual([
+      expect.objectContaining({ kind: 'warning', message: expect.stringMatching(/passed on/) }),
+    ])
+    // Once only.
+    await runtime.prompt({ prompt: PROMPT })
+    expect(server.requests('thread/inject_items')).toHaveLength(1)
+    expect(notices(events)).toHaveLength(1)
+  })
+
+  it('says the context was lost when Codex refuses the earlier messages', async () => {
+    const server = new FakeCodexAppServer()
+    server.respond('model/list', MODELS as never).serveThreads((t) => t.completed())
+    server.fail('thread/resume', -32600, 'no rollout found for thread id gone')
+    server.fail('thread/inject_items', -32601, 'method not found')
+    const { runtime, events } = build({
+      server,
+      spec: { sessionId: 'gone' },
+      sessionHistory: () => [{ messageId: 'm1', role: 'user', text: 'Earlier' }],
+    })
+    await runtime.start()
+    await runtime.prompt({ prompt: PROMPT })
+    expect(notices(events)).toEqual([
+      expect.objectContaining({ message: expect.stringMatching(/without the earlier context/) }),
+    ])
+  })
+
+  it('says nothing about lost context when there was none', async () => {
+    const server = new FakeCodexAppServer()
+    server.respond('model/list', MODELS as never).serveThreads((t) => t.completed())
+    server.fail('thread/resume', -32600, 'no rollout found for thread id gone')
+    const { runtime, events } = build({
+      server,
+      spec: { sessionId: 'gone' },
+      // Only the prompt about to run.
+      sessionHistory: () => [{ messageId: 'msg-now', role: 'user', text: 'First words' }],
+    })
+    await runtime.start()
+    await runtime.prompt({ prompt: PROMPT, userMessageId: 'msg-now' })
+    expect(server.requests('thread/inject_items')).toHaveLength(0)
+    expect(notices(events)).toEqual([])
+  })
+
+  it('counts a fresh thread’s tokens from zero after replacing a deleted one', async () => {
+    let turn: FakeCodexTurn | undefined
+    const { server, runtime, events } = build({ onTurn: (t) => (turn = t) })
+    const { sessionId } = await runtime.start()
+    let prompt = runtime.prompt({ prompt: PROMPT })
+    await vi.waitFor(() => expect(turn).toBeDefined())
+    turn!.tokenUsage({ totalTokens: 500 }, { totalTokens: 5_000 })
+    turn!.completed()
+    await prompt
+    server.fail('thread/resume', -32600, `no rollout found for thread id ${sessionId}`)
+    server.notify('thread/deleted', { threadId: sessionId })
+    await settle()
+    turn = undefined
+    prompt = runtime.prompt({ prompt: PROMPT })
+    await vi.waitFor(() => expect(turn).toBeDefined())
+    turn!.tokenUsage({ totalTokens: 120 }, { totalTokens: 120 })
+    turn!.completed()
+    await prompt
+    expect(events.filter((e) => e.event === 'prompt_completed').at(-1)).toMatchObject({
+      data: { usage: { totalTokens: 120 } },
+    })
+  })
+
+  it('shows an outside archive, and unarchives and resumes the thread before the next turn', async () => {
+    const { server, runtime, events } = build({ onTurn: (t) => t.completed() })
+    const { sessionId } = await runtime.start()
+    const thread = server.thread({ id: sessionId })
+    server.respond('thread/resume', thread.startResponse() as never)
+    server.fail('thread/resume', -32600, `session ${sessionId} is archived. Run \`codex unarchive\``, {
+      times: 1,
+    })
+    server.respond('thread/unarchive', { thread: thread.thread }, {
+      after: () => server.notify('thread/unarchived', { threadId: sessionId }),
+    })
+
+    server.notify('thread/archived', { threadId: sessionId })
+    await settle()
+    // Nothing runs, so the notice waits for the next turn.
+    expect(notices(events)).toEqual([])
+    await runtime.prompt({ prompt: PROMPT })
+
+    expect(server.requests('thread/unarchive')).toHaveLength(1)
+    expect(server.requests('thread/resume')).toHaveLength(2)
+    expect(runtime.sessionId).toBe(sessionId)
+    // Our own unarchive is not reported as an outside one.
+    expect(notices(events)).toEqual([expect.objectContaining({ message: expect.stringMatching(/archived in Codex/) })])
+    expect(names(events)).toContain('prompt_completed')
+  })
+
+  it('fails a turn Codex closes outside openmanager, and reopens the thread for the next one', async () => {
+    let turn: FakeCodexTurn | undefined
+    const { server, runtime, events } = build({ onTurn: (t) => (turn = t) })
+    const { sessionId } = await runtime.start()
+    const prompt = runtime.prompt({ prompt: PROMPT })
+    await vi.waitFor(() => expect(turn).toBeDefined())
+    server.notify('thread/closed', { threadId: sessionId })
+    await expect(prompt).rejects.toThrow(/closed/)
+    expect(events.find((e) => e.event === 'runtime_error')).toMatchObject({
+      data: { kind: 'provider', problem: { code: 'unknown', action: 'retry' } },
+    })
+    expect(notices(events)).toEqual([expect.objectContaining({ message: expect.stringMatching(/closed/) })])
+
+    turn = undefined
+    server.respond('thread/resume', server.thread({ id: sessionId }).startResponse() as never)
+    const next = runtime.prompt({ prompt: PROMPT })
+    await vi.waitFor(() => expect(turn).toBeDefined())
+    turn!.completed()
+    await next
+    expect(server.requests('thread/resume')[0]!.params).toMatchObject({ threadId: sessionId })
+  })
+
+  it('replaces a thread deleted outside openmanager with a fresh one, re-stamped and handed over', async () => {
+    const { server, runtime, events } = build({
+      onTurn: (t) => t.completed(),
+      sessionHistory: () => [{ messageId: 'm1', role: 'user', text: 'Earlier' }],
+    })
+    const { sessionId } = await runtime.start()
+    server.fail('thread/resume', -32600, `no rollout found for thread id ${sessionId}`)
+    server.respond('thread/inject_items', {})
+    server.notify('thread/deleted', { threadId: sessionId })
+    await settle()
+    await runtime.prompt({ prompt: PROMPT })
+
+    expect(runtime.sessionId).not.toBe(sessionId)
+    const created = events.filter((e) => e.event === 'session_created')
+    expect(created.at(-1)).toMatchObject({ sessionId: runtime.sessionId })
+    // Stamped before the turn is sent.
+    expect(names(events).lastIndexOf('session_created')).toBeLessThan(names(events).indexOf('prompt_started'))
+    expect(server.requests('thread/inject_items')[0]!.params).toMatchObject({ threadId: runtime.sessionId })
+    expect(server.requests('turn/start').at(-1)!.params).toMatchObject({ threadId: runtime.sessionId })
+    expect(notices(events).map((n) => n.message)).toEqual([
+      expect.stringMatching(/deleted in Codex/),
+      expect.stringMatching(/passed on/),
+    ])
+  })
+
+  it('does not take its own archive for an outside one', async () => {
+    const { server, runtime, events } = build({ onTurn: (t) => t.completed() })
+    const { sessionId } = await runtime.start()
+    server.respond('thread/archive', {}, {
+      after: () => {
+        server.notify('thread/archived', { threadId: sessionId })
+        server.notify('thread/closed', { threadId: sessionId })
+      },
+    })
+    await runtime.archive()
+    await settle()
+    await runtime.prompt({ prompt: PROMPT })
+    expect(notices(events)).toEqual([])
+    expect(server.requests('thread/resume')).toHaveLength(0)
+  })
+
+  it('shows a system error on the thread, and reopens it unless Codex says it recovered', async () => {
+    const { server, runtime, events } = build({ onTurn: (t) => t.completed() })
+    const { sessionId } = await runtime.start()
+    const thread = server.thread({ id: sessionId })
+    server.respond('thread/resume', thread.startResponse() as never)
+    thread.status({ type: 'systemError' })
+    await settle()
+    await runtime.prompt({ prompt: PROMPT })
+    expect(notices(events)).toEqual([expect.objectContaining({ message: expect.stringMatching(/system error/) })])
+    expect(server.requests('thread/resume')).toHaveLength(1)
+
+    thread.status({ type: 'systemError' })
+    thread.status({ type: 'idle' })
+    await settle()
+    await runtime.prompt({ prompt: PROMPT })
+    expect(server.requests('thread/resume')).toHaveLength(1)
+  })
+
+  it('shows a rewind made outside openmanager without touching the history', async () => {
+    const { server, runtime, events, log } = build({ onTurn: (t) => t.completed() })
+    const { sessionId } = await runtime.start()
+    server.notify('thread/reverted', { threadId: sessionId })
+    await settle()
+    await runtime.prompt({ prompt: PROMPT })
+    expect(notices(events)).toEqual([expect.objectContaining({ message: expect.stringMatching(/rewound/) })])
+    expect(log).toHaveBeenCalledWith(expect.objectContaining({ message: expect.stringMatching(/not reconciled/) }))
+  })
+
+  it('reports Codex’s retries as recoverable, with how far through them it is', async () => {
+    let turn: FakeCodexTurn | undefined
+    const { server, runtime, events } = build({ onTurn: (t) => (turn = t) })
+    const { sessionId } = await runtime.start()
+    const prompt = runtime.prompt({ prompt: PROMPT })
+    await vi.waitFor(() => expect(turn).toBeDefined())
+    server.notify('error', {
+      threadId: sessionId,
+      turnId: turn!.id,
+      willRetry: true,
+      error: {
+        message: 'Reconnecting... 2/5',
+        codexErrorInfo: { responseStreamDisconnected: { httpStatusCode: null } },
+        additionalDetails: null,
+        misalignment: null,
+      },
+    })
+    turn!.agentMessage('Back.')
+    turn!.completed()
+    await prompt
+    expect(events.find((e) => e.event === 'rpc_error')).toMatchObject({
+      data: { recoverable: true, problem: { code: 'network', retry: { attempt: 2, maxAttempts: 5 } } },
+    })
+    expect(names(events)).toContain('prompt_completed')
+  })
+
+  it('types a failed turn from its codexErrorInfo', async () => {
+    const { runtime, events } = build({
+      onTurn: (t) => t.failed('You have hit your usage limit', 'usageLimitExceeded'),
+    })
+    await runtime.start()
+    await expect(runtime.prompt({ prompt: PROMPT })).rejects.toThrow(/usage limit/)
+    expect(events.find((e) => e.event === 'runtime_error')).toMatchObject({
+      data: {
+        kind: 'provider',
+        problem: { code: 'usage_limit', detail: 'You have hit your usage limit' },
+      },
+    })
+  })
+
+  it('types a failure Codex reported before the turn ended', async () => {
+    let turn: FakeCodexTurn | undefined
+    const { server, runtime, events } = build({ onTurn: (t) => (turn = t) })
+    const { sessionId } = await runtime.start()
+    const prompt = runtime.prompt({ prompt: PROMPT })
+    await vi.waitFor(() => expect(turn).toBeDefined())
+    server.notify('error', {
+      threadId: sessionId,
+      turnId: turn!.id,
+      willRetry: false,
+      error: {
+        message: 'Context full',
+        codexErrorInfo: 'contextWindowExceeded',
+        additionalDetails: null,
+        misalignment: null,
+      },
+    })
+    turn!.completed({ status: 'failed' })
+    await expect(prompt).rejects.toThrow(/Context full/)
+    expect(events.find((e) => e.event === 'runtime_error')).toMatchObject({
+      data: { problem: { code: 'context_window_exceeded' } },
+    })
+  })
+
+  it('shows warnings said before a turn at its start, and a reroute inside it', async () => {
+    let turn: FakeCodexTurn | undefined
+    const { server, runtime, events } = build({ onTurn: (t) => (turn = t) })
+    const { sessionId } = await runtime.start()
+    server.notify('configWarning', { summary: 'bubblewrap not found', details: null })
+    server.notify('mcpServer/startupStatus/updated', {
+      threadId: sessionId,
+      name: 'linear',
+      status: 'failed',
+      error: 'boom',
+      failureReason: null,
+    })
+    server.notify('deprecationNotice', { summary: 'Old flag', details: null })
+    // Said twice, kept once.
+    server.notify('configWarning', { summary: 'bubblewrap not found', details: null })
+    await settle()
+    expect(notices(events)).toEqual([])
+    const prompt = runtime.prompt({ prompt: PROMPT })
+    await vi.waitFor(() => expect(turn).toBeDefined())
+    server.notify('model/rerouted', {
+      threadId: sessionId,
+      turnId: turn!.id,
+      fromModel: 'gpt-6',
+      toModel: 'gpt-6-safe',
+      reason: 'highRiskCyberActivity',
+    })
+    server.notify('modelProvider/authRecoveryStarted', {
+      threadId: sessionId,
+      turnId: turn!.id,
+      provider: 'openai',
+      message: 'Refreshing',
+    })
+    turn!.completed()
+    await prompt
+    expect(notices(events).map((n) => n.kind + ': ' + n.message)).toEqual([
+      'warning: bubblewrap not found',
+      'warning: The MCP server linear did not start',
+      'warning: Old flag',
+      'model_fallback: Codex moved this turn from gpt-6 to gpt-6-safe',
+    ])
+    const order = names(events)
+    expect(order.indexOf('prompt_started')).toBeLessThan(order.indexOf('provider_notice'))
+  })
+
+  it('opens a background turn for one Codex starts itself, and a prompt waits for it', async () => {
+    let turn: FakeCodexTurn | undefined
+    const { server, runtime, events } = build({ onTurn: (t) => (turn = t) })
+    const { sessionId } = await runtime.start()
+    const thread = server.thread({ id: sessionId })
+    const own = thread.turn()
+    own.started()
+    await vi.waitFor(() => expect(names(events)).toContain('background_turn_started'))
+    expect(events.find((e) => e.event === 'turn_identified')).toMatchObject({
+      data: { providerTurnId: own.id },
+    })
+    own.agentMessage('Continuing the goal.')
+
+    const prompt = runtime.prompt({ prompt: PROMPT })
+    await settle()
+    expect(server.requests('turn/start')).toHaveLength(0)
+    own.completed()
+    await vi.waitFor(() => expect(turn).toBeDefined())
+    turn!.completed()
+    await prompt
+
+    const order = names(events).filter((n) =>
+      ['background_turn_started', 'prompt_started', 'prompt_completed'].includes(n),
+    )
+    expect(order).toEqual(['background_turn_started', 'prompt_completed', 'prompt_started', 'prompt_completed'])
+    expect(texts(events)).toBe('Continuing the goal.')
+  })
+
+  it('reports a background turn’s tools, and settles a command it leaves running', async () => {
+    const { server, runtime, events } = build()
+    const { sessionId } = await runtime.start()
+    const own = server.thread({ id: sessionId }).turn()
+    own.started()
+    await vi.waitFor(() => expect(names(events)).toContain('background_turn_started'))
+    own.itemStarted({ ...codexBuilders.commandExecutionItem('npm run dev'), id: 'dev', processId: '77' })
+    own.command('npm test', { output: 'ok\n' })
+    own.completed()
+    await vi.waitFor(() => expect(names(events)).toContain('prompt_completed'))
+    const order = names(events)
+    expect(order.indexOf('background_turn_started')).toBeLessThan(order.indexOf('tool_call'))
+    const settled = events
+      .filter((e) => e.event === 'tool_call_update')
+      .map((e) => e.data as ToolCallUpdate)
+    expect(settled).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ toolCallId: 'dev', status: 'completed' }),
+        expect.objectContaining({ status: 'completed', rawInput: expect.objectContaining({ exitCode: 0 }) }),
+      ]),
+    )
+    expect(order.lastIndexOf('tool_call_update')).toBeLessThan(order.indexOf('prompt_completed'))
+  })
+
+  it('leaves a running command to the server when the host stops the turn', async () => {
+    let turn: FakeCodexTurn | undefined
+    const { runtime, events } = build({ onTurn: (t) => (turn = t), interruptGraceMs: 30 })
+    await runtime.start()
+    const prompt = runtime.prompt({ prompt: PROMPT }).catch(() => undefined)
+    await vi.waitFor(() => expect(turn).toBeDefined())
+    turn!.started()
+    turn!.itemStarted({ ...codexBuilders.commandExecutionItem('npm run dev'), id: 'dev', processId: '77' })
+    await vi.waitFor(() => expect(names(events)).toContain('tool_call'))
+    await runtime.cancel()
+    await prompt
+    expect(events.filter((e) => e.event === 'tool_call_update')).toEqual([])
+  })
+
+  it('counts a background turn as busy, so it is not reaped or evicted under it', async () => {
+    const { server, runtime, events } = build()
+    const { sessionId } = await runtime.start()
+    expect(runtime.busy).toBe(false)
+    const own = server.thread({ id: sessionId }).turn()
+    own.started()
+    await vi.waitFor(() => expect(names(events)).toContain('background_turn_started'))
+    expect(runtime.busy).toBe(true)
+    own.completed()
+    await vi.waitFor(() => expect(names(events)).toContain('prompt_completed'))
+    expect(runtime.busy).toBe(false)
+  })
+
+  it('starts no turn for a prompt stopped while it waited on a background turn', async () => {
+    const { server, runtime, events } = build({ onTurn: (t) => t.completed() })
+    server.respond('turn/interrupt', {}, { after: () => own.interrupted() })
+    const { sessionId } = await runtime.start()
+    const own = server.thread({ id: sessionId }).turn()
+    own.started()
+    await vi.waitFor(() => expect(names(events)).toContain('background_turn_started'))
+    const prompt = runtime.prompt({ prompt: PROMPT })
+    await settle()
+    await runtime.cancel()
+    await expect(prompt).resolves.toBeUndefined()
+    expect(server.requests('turn/start')).toHaveLength(0)
+    expect(names(events)).not.toContain('prompt_started')
+    // And the next prompt runs.
+    await runtime.prompt({ prompt: PROMPT })
+    expect(server.requests('turn/start')).toHaveLength(1)
+  })
+
+  it('stops a background turn on cancel', async () => {
+    const { server, runtime, events } = build()
+    server.respond('turn/interrupt', {}, { after: () => own.interrupted() })
+    const { sessionId } = await runtime.start()
+    const own = server.thread({ id: sessionId }).turn()
+    own.started()
+    await vi.waitFor(() => expect(names(events)).toContain('background_turn_started'))
+    await runtime.cancel()
+    expect(events.find((e) => e.event === 'prompt_completed')).toMatchObject({
+      data: { stopReason: 'cancelled' },
+    })
+  })
+
+  it('counts neither a subagent’s tokens nor the thread’s history in a turn, and sizes the context from the last request', async () => {
+    let turn: FakeCodexTurn | undefined
+    const { runtime, events } = build({ onTurn: (t) => (turn = t) })
+    await runtime.start()
+    const prompt = runtime.prompt({ prompt: PROMPT })
+    await vi.waitFor(() => expect(turn).toBeDefined())
+    turn!.tokenUsage({ totalTokens: 100, inputTokens: 90, outputTokens: 10 }, { totalTokens: 1_100, inputTokens: 1_000, outputTokens: 100 })
+    turn!.thread.child().turn().started().tokenUsage({ totalTokens: 5_000 }, { totalTokens: 50_000 })
+    turn!.tokenUsage({ totalTokens: 300, inputTokens: 250, outputTokens: 50 }, { totalTokens: 1_400, inputTokens: 1_250, outputTokens: 150 })
+    turn!.completed()
+    await prompt
+    expect(events.find((e) => e.event === 'prompt_completed')).toMatchObject({
+      data: { usage: { totalTokens: 400, inputTokens: 340, outputTokens: 60 } },
+    })
+    const usage = events.filter((e) => e.event === 'usage_update').at(-1)
+    expect((usage!.data as { used: number }).used).toBe(300)
+  })
+})
+
+describe('CodexSessionRuntime restarts (CAL-254)', () => {
+  it('interrupts a running turn before the process goes, fails it for a retry, and settles what waits', async () => {
+    let turn: FakeCodexTurn | undefined
+    const { server, runtime, events, exits } = build({ onTurn: (t) => (turn = t) })
+    server.respond('turn/interrupt', {}, { after: () => setTimeout(() => turn!.interrupted(), 5) })
+    const settleThread = vi.spyOn(InteractionBroker.prototype, 'settleThread')
+    try {
+      await runtime.start()
+      const prompt = runtime.prompt({ prompt: PROMPT })
+      await vi.waitFor(() => expect(turn).toBeDefined())
+      await vi.waitFor(() => expect(names(events)).toContain('turn_identified'))
+      await runtime.stop({ reason: 'disposed' })
+      await expect(prompt).rejects.toThrow(/stopped Codex/)
+      expect(server.requests('turn/interrupt')[0]!.params).toMatchObject({ turnId: turn!.id })
+      // Not the user's Stop: it fails, and can be sent again.
+      expect(names(events)).not.toContain('prompt_completed')
+      expect(events.filter((e) => e.event === 'runtime_error')).toEqual([
+        expect.objectContaining({
+          data: expect.objectContaining({
+            kind: 'process',
+            problem: { code: 'unknown', action: 'retry', detail: expect.stringMatching(/restarted or updated/) },
+          }),
+        }),
+      ])
+      expect(events.find((e) => e.event === 'process_exited')).toMatchObject({ data: { expected: true } })
+      expect(exits).toMatchObject([{ expected: true, reason: 'disposed' }])
+      expect(settleThread).toHaveBeenCalledWith('codex', 'thread-1')
+    } finally {
+      settleThread.mockRestore()
+    }
+  })
+
+  it('does not wait long on a turn that ignores the interrupt at shutdown', async () => {
+    let turn: FakeCodexTurn | undefined
+    const { server, runtime, exits, events } = build({ onTurn: (t) => (turn = t), interruptGraceMs: 30 })
+    server.respond('turn/interrupt', {})
+    await runtime.start()
+    const prompt = runtime.prompt({ prompt: PROMPT })
+    await vi.waitFor(() => expect(turn).toBeDefined())
+    await runtime.stop({ reason: 'evicted' })
+    await expect(prompt).rejects.toThrow(/stopped Codex/)
+    expect(exits).toMatchObject([{ expected: true }])
+    expect(events.find((e) => e.event === 'runtime_error')).toMatchObject({
+      data: { problem: { action: 'retry' } },
+    })
+  })
+
+  it('resumes the session on the next prompt after the process went away', async () => {
+    const first = build({ onTurn: (t) => t.completed() })
+    const { sessionId } = await first.runtime.start()
+    await first.runtime.prompt({ prompt: PROMPT })
+    await first.runtime.stop({ reason: 'disposed' })
+
+    const server = new FakeCodexAppServer()
+    server.respond('model/list', MODELS as never)
+    serveStored(server, sessionId, (t) => t.completed())
+    const second = build({ server, spec: { sessionId } })
+    await second.runtime.prompt({ prompt: PROMPT })
+    expect(server.requests('thread/resume')[0]!.params).toMatchObject({ threadId: sessionId })
+    expect(server.requests('thread/start')).toHaveLength(0)
+    expect(server.requests('turn/start')[0]!.params).toMatchObject({ threadId: sessionId })
+    expect(names(second.events)).toEqual(
+      expect.arrayContaining(['session_loaded', 'prompt_started', 'prompt_completed']),
+    )
+    expect(names(second.events)).not.toContain('session_created')
   })
 })
 
@@ -1445,30 +2097,5 @@ describe('CodexSessionRuntime composer settings', () => {
       }),
     ).rejects.toThrow(/GPT-6-MINI cannot read images/)
     expect(server.requests('turn/start')).toHaveLength(0)
-  })
-
-  it('shows a rerouted model in the turn', async () => {
-    let turn: FakeCodexTurn | undefined
-    const { server, runtime, events } = session({ onTurn: (t) => (turn = t) })
-    await runtime.start()
-    const prompt = runtime.prompt({ prompt: PROMPT })
-    await vi.waitFor(() => expect(turn).toBeDefined())
-    server.notify('model/rerouted', {
-      threadId: runtime.sessionId!,
-      turnId: turn!.id,
-      fromModel: 'gpt-6-luna',
-      toModel: 'gpt-6-mini',
-      reason: 'highRiskCyberActivity',
-    })
-    turn!.completed()
-    await prompt
-    expect(events.find((e) => e.event === 'provider_notice')).toMatchObject({
-      category: 'session',
-      data: {
-        kind: 'model_fallback',
-        model: { to: 'GPT-6-MINI' },
-        detail: 'Codex moved this turn off GPT-6-LUNA: the request looked like high-risk cyber activity.',
-      },
-    })
   })
 })

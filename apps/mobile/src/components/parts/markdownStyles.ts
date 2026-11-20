@@ -1,4 +1,5 @@
 import type { TextStyle, ViewStyle } from 'react-native'
+import { withAlpha } from '@openmanager/app-core/lib/theme-tokens'
 
 import type { PhoneTheme } from '../../theme/tokens'
 
@@ -28,7 +29,12 @@ export function buildMarkdownStyles(theme: PhoneTheme): Record<string, TextStyle
     em: { fontStyle: 'italic', color: text },
     s: { color: theme.muted },
 
-    link: { color: theme.fg, textDecorationLine: 'underline' },
+    // Web's: the strong ink, a soft underline (iOS draws its colour; Android the ink's).
+    link: {
+      color: theme.fg,
+      textDecorationLine: 'underline',
+      textDecorationColor: withAlpha(theme.fg, 0.35),
+    },
 
     code_inline: {
       fontFamily: MONO,

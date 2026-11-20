@@ -75,6 +75,8 @@ export const CODEX_FIXTURES = [
   'subagent',
   'interrupt-with-child',
   'steer',
+  'tool-items',
+  'terminal-interaction',
 ] as const
 export type CodexFixtureName = (typeof CODEX_FIXTURES)[number]
 

@@ -150,6 +150,7 @@ export function useMessageInputBinding() {
     providerImageSupport,
     catalogImageSupport,
     sendBlockedReason: providerBlockedReason,
+    modelReroute,
     planBuildModeId,
     draftKey,
   } = deriveComposerControls({
@@ -360,6 +361,7 @@ export function useMessageInputBinding() {
     nameFailure,
     slashCommands,
     usage,
+    modelReroute,
     onModeChange: (id) => {
       if (activeSessionId) {
         void setSessionMode(activeSessionId, id)

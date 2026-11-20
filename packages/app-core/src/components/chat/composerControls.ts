@@ -115,6 +115,9 @@ export interface ComposerControls {
   planBuildModeId: string | undefined
   /** Where the composer keeps its unsent text and images. */
   draftKey: string
+  /** The newest turn ran on another model than the one shown: its name,
+   * and why when the provider said. Null on a draft and when it did not. */
+  modelReroute: { to: string; detail?: string } | null
 }
 
 /** The command listing as the composer's slash popup takes it. */
@@ -388,7 +391,20 @@ export function deriveComposerControls({
     sendBlockedReason,
     planBuildModeId,
     draftKey,
+    modelReroute: activeSessionId ? modelRerouteOf(runtimeState, modelOptions) : null,
   }
+}
+
+/** The reroute in the composer's words: the model by the name the picker
+ * gives it, when it lists it. */
+function modelRerouteOf(
+  runtimeState: AcpSessionRuntimeState | null,
+  models: readonly ComposerModelChoice[],
+): { to: string; detail?: string } | null {
+  const reroute = runtimeState?.modelReroute
+  if (!reroute) return null
+  const to = models.find((model) => model.id === reroute.to)?.name ?? reroute.to
+  return { to, ...(reroute.detail ? { detail: reroute.detail } : {}) }
 }
 
 const NO_CONFIG_OPTIONS: SessionConfigOption[] = []

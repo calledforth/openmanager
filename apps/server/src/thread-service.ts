@@ -6111,6 +6111,17 @@ export function createThreadService(
         } catch (error) {
           options.onPersistenceError?.(error, 'session.created')
         }
+        // And in memory: every later prompt, open and respawn names the
+        // provider session `runtimeSession` resolves to. Left on the forgotten
+        // one, the next process would resume that again, miss it, and start
+        // yet another fresh session, losing this one's history.
+        const created = event.sessionId
+        void record.runtimeSession.then(
+          (current) => {
+            if (current !== created) record.runtimeSession = Promise.resolve(created)
+          },
+          () => undefined,
+        )
       }
 
       // A subagent's reports and its work go to its record and its child,

@@ -132,3 +132,41 @@ describe('withoutBlockedValues', () => {
     ])
   })
 })
+
+describe('a rerouted turn', () => {
+  it('names the model the newest turn ran on, by the picker’s name, in a session only', () => {
+    const session: AcpSessionRuntimeState = {
+      sessionId: 'session-1',
+      providerId: 'codex',
+      models: {
+        currentModelId: 'gpt-6.2-sol',
+        availableModels: [
+          { modelId: 'gpt-6.2-sol', name: 'GPT-6.2 Sol' },
+          { modelId: 'gpt-6-luna', name: 'GPT-6 Luna' },
+        ],
+      },
+      modelReroute: { to: 'gpt-6-luna', from: 'gpt-6.2-sol', detail: 'Flagged as high-risk.' },
+    }
+    const controls = deriveComposerControls({
+      session: {
+        activeSessionId: 'session-1',
+        activeWorkspacePath: '/work',
+        isSessionDraftOpen: false,
+        defaultProviderId: 'codex',
+        localSessionStatus: null,
+      },
+      composer: {
+        acpSessionState: session,
+        draftSessionState: null,
+        agentEvents: [],
+        providerComposerProfiles: {},
+        composerConfigValues: {},
+      },
+      platform: { providers: [], agentUiStatusByProvider: {}, acpPromptCapabilitiesByProvider: {} },
+    })
+    // The pick stays; the reroute is said beside it.
+    expect(controls.currentModelId).toBe('gpt-6.2-sol')
+    expect(controls.modelReroute).toEqual({ to: 'GPT-6 Luna', detail: 'Flagged as high-risk.' })
+    expect(codexDraft().modelReroute).toBeNull()
+  })
+})

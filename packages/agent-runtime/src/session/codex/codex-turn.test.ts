@@ -97,8 +97,17 @@ describe('CodexTurn', () => {
   it('ignores our own userMessage echo and items it does not translate', () => {
     const { turn: t, out } = turn()
     t.itemStarted({ type: 'userMessage', id: 'u', clientId: null, content: [] } as v2.ThreadItem)
-    t.itemStarted({ type: 'webSearch', id: 'w' } as unknown as v2.ThreadItem)
+    t.itemStarted({ type: 'contextCompaction', id: 'c' })
     expect(out).toEqual([])
+  })
+
+  it('hands tool items and tool notifications to the tool translator', () => {
+    const { turn: t, out } = turn()
+    t.itemStarted({ type: 'webSearch', id: 'w', query: 'codex', action: null, results: null })
+    expect(t.toolNotification('item/mcpToolCall/progress', { itemId: 'w', message: 'x' })).toBe(true)
+    expect(t.toolNotification('item/agentMessage/delta', {})).toBe(false)
+    t.itemCompleted({ type: 'webSearch', id: 'w', query: 'codex', action: null, results: null })
+    expect(out.map((output) => output.event)).toEqual(['tool_call', 'tool_call_content', 'tool_call_update'])
   })
 
   it('reports this turn’s tokens and the context window', () => {

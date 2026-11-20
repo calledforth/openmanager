@@ -40,6 +40,7 @@ import {
   type AcpSessionRuntimeState,
   type ComposerStateValue,
 } from './composer-provider'
+import { selectModelReroute } from '../lib/model-reroute'
 import { DraftPageContext, DraftPicksContext, type DraftPagePicks } from './draft-pages'
 import { resolveDraftProvider } from './draft-provider'
 import { latestSendingDraft, sendingNewSessionDraft } from './environment-drafts'
@@ -282,6 +283,9 @@ export function EnvironmentComposerStateProvider({ children }: { children: React
   const sessionListing = useEnvironmentState((state) =>
     activeSessionId ? selectSessionListing(state, activeSessionId) : null,
   )
+  const modelReroute = useEnvironmentState((state) =>
+    activeSessionId ? selectModelReroute(state, activeSessionId) : null,
+  )
   const acpSessionState = useMemo<AcpSessionRuntimeState | null>(() => {
     if (!activeSessionId) return null
     const runtime: AcpSessionRuntimeState = {
@@ -296,6 +300,7 @@ export function EnvironmentComposerStateProvider({ children }: { children: React
         ? { availableCommands: toAcpCommands(sessionListing.availableCommands) }
         : {}),
       ...(sessionComposer?.usage ? { usage: sessionComposer.usage } : {}),
+      ...(modelReroute ? { modelReroute } : {}),
     }
     return resolveSessionComposerRuntime(
       runtime,
@@ -307,6 +312,7 @@ export function EnvironmentComposerStateProvider({ children }: { children: React
     )
   }, [
     activeSessionId,
+    modelReroute,
     preference,
     providerComposerProfiles,
     sessionComposer,
