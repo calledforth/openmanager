@@ -45,6 +45,9 @@ export const codex: CodexProviderConfig = {
     // `thread/backgroundTerminals/terminate`. A Codex that refuses the list
     // reports no background tasks.
     supportsBackgroundTasks: true,
+    // A terminal that ends starts no turn: a turn completing beside a dev
+    // server is done.
+    backgroundTasksWakeAgent: false,
     // --- arrives with tool items, approvals and questions -----------------
     supportsPermissionRequests: false,
     supportsQuestions: false,

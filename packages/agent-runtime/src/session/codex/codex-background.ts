@@ -2,11 +2,20 @@ import type { BackgroundTask } from '@agentpack/contract'
 import type { v2 } from '@openmanager/codex-app-server-protocol'
 import type { HostLogEntry } from '../../host.js'
 import type { CodexAppServerClient } from './CodexAppServerClient.js'
-import { CodexRpcError } from './CodexRpcPeer.js'
+import { CodexRpcError, RPC_METHOD_NOT_FOUND } from './CodexRpcPeer.js'
 
 /** Pages of `thread/backgroundTerminals/list` read at most. The host shows
  * 64 tasks a session at most; this is well past that. */
 const LIST_PAGES_MAX = 8
+
+/** How long a command Codex reported finished is kept out of list replies:
+ * a list answered just before the completion is applied after it. */
+const COMPLETED_TTL_MS = 60_000
+
+/** Waits before reading a list that failed again (a timeout, a transient
+ * error), one per retry. After the last, the roster waits for the next
+ * change. */
+export const CODEX_LIST_RETRY_MS: readonly number[] = [500, 2_000]
 
 export type CodexBackgroundTerminalsDeps = {
   /** The provider's `supportsBackgroundTasks`: false lists and stops nothing. */
@@ -19,6 +28,8 @@ export type CodexBackgroundTerminalsDeps = {
   /** Every live terminal, whenever the set changes (`background_tasks_update`). */
   announce: (tasks: BackgroundTask[]) => void
   log: (entry: HostLogEntry) => void
+  /** `CODEX_LIST_RETRY_MS` when absent. */
+  listRetryMs?: readonly number[]
 }
 
 /**
@@ -37,8 +48,10 @@ export type CodexBackgroundTerminalsDeps = {
  * both answer `-32600 thread not found` for a thread the process does not
  * hold. Both count as stopped.
  *
- * A Codex that refuses the list (an older one, or one without the
- * experimental API) has no background tasks for the rest of the process.
+ * A Codex that does not have the list (an older one: `-32600 unknown
+ * variant`, or `-32601`) or refuses it without the experimental API has no
+ * background tasks for the rest of the process. Any other failure is
+ * retried, and leaves the roster as it was.
  */
 export class CodexBackgroundTerminals {
   private tasks: BackgroundTask[] = []
@@ -51,6 +64,10 @@ export class CodexBackgroundTerminals {
   private closed = false
   private refreshing: Promise<void> | undefined
   private dirty = false
+  /** Commands Codex reported finished, by item id (the list names the same
+   * id; a process id could be reused), with when each is forgotten. A list
+   * reply never brings one back. */
+  private readonly completed = new Map<string, number>()
 
   constructor(private readonly deps: CodexBackgroundTerminalsDeps) {}
 
@@ -82,13 +99,20 @@ export class CodexBackgroundTerminals {
   }
 
   /** `item/completed`, from any turn: a listed command that ended (by
-   * itself, or stopped) changes the roster. */
+   * itself, or stopped) changes the roster. One that ends while a list is
+   * out may be in its reply, so it is remembered as finished and read again. */
   itemCompleted(item: v2.ThreadItem): void {
-    if (!this.active || item.type !== 'commandExecution') return
-    const listed =
-      (item.processId !== null && this.items.has(item.processId)) ||
-      [...this.items.values()].includes(item.id)
-    if (listed) void this.refresh()
+    if (!this.active || item.type !== 'commandExecution' || item.processId === null) return
+    this.completed.set(item.id, Date.now() + COMPLETED_TTL_MS)
+    const listed = this.items.has(item.processId) || [...this.items.values()].includes(item.id)
+    if (listed || this.refreshing) void this.refresh()
+  }
+
+  /** The thread was let go, closed, archived, deleted or reopened between
+   * turns: what it retains may have changed (a thread Codex no longer holds
+   * lists as none). Asks only when something was listed. */
+  threadChanged(): void {
+    if (this.active && this.tasks.length > 0) void this.refresh()
   }
 
   /** Stop the named terminals, or every listed one. Ids no longer listed are
@@ -140,18 +164,39 @@ export class CodexBackgroundTerminals {
   }
 
   private async drain(): Promise<void> {
+    const retries = this.deps.listRetryMs ?? CODEX_LIST_RETRY_MS
+    let failures = 0
     while (this.dirty && this.active) {
       this.dirty = false
       let listed: v2.ThreadBackgroundTerminal[] | undefined
       try {
         listed = await this.list()
       } catch (error) {
-        // Not read (a timeout, the pipe): what was listed stays listed.
+        // Not read (a timeout, a transient error): what was listed stays
+        // listed, and the list is read again after a wait, a few times.
         this.warn('Could not list Codex background terminals', error)
+        const wait = retries[failures++]
+        if (wait === undefined) continue
+        await new Promise<void>((resolve) => {
+          const timer = setTimeout(resolve, wait)
+          timer.unref?.()
+        })
+        this.dirty = true
         continue
       }
-      if (listed && this.active) this.apply(listed.map(toTask), listed)
+      failures = 0
+      if (!listed || !this.active) continue
+      const live = listed.filter((terminal) => !this.finished(terminal))
+      this.apply(live.map(toTask), live)
     }
+  }
+
+  /** Codex reported this terminal's command finished, lately enough that a
+   * list may still name it. */
+  private finished(terminal: v2.ThreadBackgroundTerminal): boolean {
+    const now = Date.now()
+    for (const [key, forget] of this.completed) if (forget <= now) this.completed.delete(key)
+    return this.completed.has(terminal.itemId)
   }
 
   /** Every terminal the thread holds; undefined when there is nothing to
@@ -176,7 +221,7 @@ export class CodexBackgroundTerminals {
       }
     } catch (error) {
       if (threadGone(error)) return []
-      if (!(error instanceof CodexRpcError)) throw error
+      if (!unsupported(error)) throw error
       this.unsupported = true
       this.deps.log({
         scope: 'codex',
@@ -237,6 +282,17 @@ function toTask(terminal: v2.ThreadBackgroundTerminal): BackgroundTask {
  * such thread, so it holds none of its terminals either. */
 function threadGone(error: unknown): boolean {
   return error instanceof CodexRpcError && /thread not found/i.test(error.message)
+}
+
+/** Codex has no such method (`-32601`; `-32600 Invalid request: unknown
+ * variant …` is how 0.170 answers a method it does not know, probed), or
+ * refuses it without the experimental API (`-32600 … requires
+ * experimentalApi capability`, probed). */
+function unsupported(error: unknown): error is CodexRpcError {
+  return (
+    error instanceof CodexRpcError &&
+    (error.code === RPC_METHOD_NOT_FOUND || /unknown variant|requires experimentalApi/i.test(error.message))
+  )
 }
 
 function sameTasks(a: readonly BackgroundTask[], b: readonly BackgroundTask[]): boolean {

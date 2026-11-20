@@ -26,6 +26,13 @@ export type ProviderCapabilities = {
    * `session.background.stop`, so capabilities read off the wire leave it
    * out. Absent means false. */
   supportsBackgroundTasks?: boolean
+  /** A background task that ends wakes the agent, which runs a turn on its
+   * result by itself (Claude Code). A turn that ends while such tasks run is
+   * then not done yet: the turn that reports the result is. False where the
+   * work just runs on (Codex's background terminals: a dev server), so a
+   * turn that completes beside it is done. Host-side only, like
+   * `supportsBackgroundTasks`. Absent means false. */
+  backgroundTasksWakeAgent?: boolean
 }
 
 /** A capability name usable in typed `capability_missing` events. */
@@ -48,3 +55,4 @@ export type CapabilityKey =
   | 'supportsExtensions'
   | 'supportsQuestions'
   | 'supportsBackgroundTasks'
+  | 'backgroundTasksWakeAgent'

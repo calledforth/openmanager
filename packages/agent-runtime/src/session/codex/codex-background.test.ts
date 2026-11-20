@@ -237,15 +237,15 @@ describe('Codex background terminals', () => {
     expect(terminals.size).toBe(0)
   })
 
-  it('shows none, and asks once, when Codex refuses the experimental list', async () => {
+  it.each([
+    [-32600, 'thread/backgroundTerminals/list requires experimentalApi capability'],
+    [-32600, 'Invalid request: unknown variant `thread/backgroundTerminals/list`, expected one of …'],
+    [-32601, 'method not found'],
+  ])('shows none, and asks once, when Codex refuses the list (%i %s)', async (code, message) => {
     const harness = build({ serve: false })
     const { server, runtime, log, rosters, turns } = harness
     const { sessionId } = await runtime.start()
-    server.fail(
-      'thread/backgroundTerminals/list',
-      -32600,
-      'thread/backgroundTerminals/list requires experimentalApi capability',
-    )
+    server.fail('thread/backgroundTerminals/list', code, message)
     await leaveRunning(harness, sessionId)
     await vi.waitFor(() => expect(server.requests('thread/backgroundTerminals/list')).toHaveLength(1))
     expect(rosters()).toEqual([])
@@ -261,6 +261,101 @@ describe('Codex background terminals', () => {
     await runtime.stop({ reason: 'disposed' })
     expect(server.requests('thread/backgroundTerminals/list')).toHaveLength(1)
     expect(server.requests('thread/backgroundTerminals/terminate')).toEqual([])
+  })
+
+  it('never brings back a command that ended while the list was out', async () => {
+    const harness = build()
+    const { server, runtime, terminals, rosters } = harness
+    const { sessionId } = await runtime.start()
+    // The first list is answered as Codex saw it when asked, after the
+    // command's completion has already arrived.
+    let release!: () => void
+    const held = new Promise<void>((resolve) => (release = resolve))
+    server.respond(
+      'thread/backgroundTerminals/list',
+      async () => {
+        const stale = [...terminals.entries()].map(([processId, terminal]) => ({
+          itemId: terminal.itemId,
+          processId,
+          command: terminal.command,
+          cwd: '/work',
+          osPid: null,
+          cpuPercent: null,
+          rssKb: null,
+        }))
+        await held
+        return { data: stale, nextCursor: null }
+      },
+      { times: 1 },
+    )
+    const { turn, item } = await leaveRunning(harness, sessionId)
+    await vi.waitFor(() => expect(server.requests('thread/backgroundTerminals/list')).toHaveLength(1))
+    terminals.delete('77')
+    turn.itemCompleted({ ...item, status: 'completed', exitCode: 0 })
+    // Let the completion arrive before the stale answer does.
+    await new Promise((resolve) => setTimeout(resolve, 20))
+    release()
+
+    await vi.waitFor(() => expect(server.requests('thread/backgroundTerminals/list')).toHaveLength(2))
+    await new Promise((resolve) => setTimeout(resolve, 20))
+    expect(rosters()).toEqual([])
+    expect(runtime.busy).toBe(false)
+  })
+
+  it('reads a list that failed again, and keeps showing the background tasks', async () => {
+    const harness = build()
+    const { server, runtime, rosters, log } = harness
+    const { sessionId } = await runtime.start()
+    // A transient error, not a Codex without the method.
+    server.fail('thread/backgroundTerminals/list', -32603, 'internal error', { times: 1 })
+    await leaveRunning(harness, sessionId)
+
+    await vi.waitFor(
+      () => expect(rosters()).toEqual([[{ taskId: '77', kind: 'shell', description: 'sleep 300' }]]),
+      { timeout: 3_000 },
+    )
+    expect(server.requests('thread/backgroundTerminals/list')).toHaveLength(2)
+    expect(log).not.toHaveBeenCalledWith(expect.objectContaining({ message: expect.stringMatching(/refused to list/) }))
+    // Still stoppable.
+    await runtime.stopBackgroundTasks(['77'])
+    expect(server.requests('thread/backgroundTerminals/terminate')).toHaveLength(1)
+  })
+
+  it('reads the list again when the thread is lost between turns', async () => {
+    const harness = build()
+    const { server, runtime, rosters } = harness
+    const { sessionId } = await runtime.start()
+    await leaveRunning(harness, sessionId)
+    await vi.waitFor(() => expect(rosters()).toHaveLength(1))
+
+    server.fail('thread/backgroundTerminals/list', -32600, `thread not found: ${sessionId}`, { times: 1 })
+    server.notify('thread/closed', { threadId: sessionId })
+    await vi.waitFor(() => expect(rosters().at(-1)).toEqual([]))
+    expect(runtime.busy).toBe(false)
+  })
+
+  it('settles a failed turn’s running command as running on, as the list shows it', async () => {
+    const { runtime, terminals, turns, events, rosters } = build()
+    const { sessionId } = await runtime.start()
+    const prompt = runtime.prompt({ prompt: PROMPT })
+    await vi.waitFor(() => expect(turns).toHaveLength(1))
+    turns[0]!.started()
+    turns[0]!.itemStarted(codexBuilders.commandExecutionItem('npm run dev', { id: 'exec-dev', processId: '78' }))
+    terminals.set('78', { threadId: sessionId, itemId: 'exec-dev', command: 'npm run dev' })
+    turns[0]!.failed('model overloaded')
+    await expect(prompt).rejects.toThrow()
+
+    const settled = events
+      .filter((e) => e.event === 'tool_call_update')
+      .map((e) => e.data as { toolCallId: string; status?: string })
+    expect(settled).toContainEqual(expect.objectContaining({ toolCallId: 'exec-dev', status: 'completed' }))
+    const note = events.find(
+      (e) => e.event === 'tool_call_content' && (e.data as { toolCallId: string }).toolCallId === 'exec-dev',
+    )
+    expect(JSON.stringify(note?.data)).toContain('Still running in the background')
+    await vi.waitFor(() =>
+      expect(rosters()).toEqual([[{ taskId: '78', kind: 'shell', description: 'npm run dev' }]]),
+    )
   })
 
   it('lists and stops nothing for a provider without supportsBackgroundTasks', async () => {

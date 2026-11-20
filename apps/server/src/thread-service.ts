@@ -94,6 +94,7 @@ import { withSettledText } from './db/tool-output.ts'
 import { waitingKind } from './db/session-activity.ts'
 import type { WriteOptions } from './db/event-repository.ts'
 import { sessionDeletionEvents } from './db/deletions.ts'
+import { backgroundTasksWakeAgent } from './background-wake.ts'
 import type { CommandContext } from './command-context.ts'
 import { formatTitleContext, type TitleContextMessage } from './session-titles/context.ts'
 import { TitleGenerationError, type TitleGenerator } from './session-titles/generator.ts'
@@ -961,12 +962,13 @@ export function createThreadService(
     ) {
       const record = threads.get(event.scope.threadId)
       // Mirrors the SQLite projection: only a completed turn leaves news
-      // behind, and not while background work is still running.
+      // behind, and not while background work that will wake the agent is
+      // still running.
       if (record) {
+        const awaitingWake =
+          !!record.backgroundTasks?.length && backgroundTasksWakeAgent(record.providerId)
         record.doneAt =
-          event.name === 'turn.completed' && !record.backgroundTasks?.length
-            ? Date.parse(event.timestamp)
-            : undefined
+          event.name === 'turn.completed' && !awaitingWake ? Date.parse(event.timestamp) : undefined
       }
       // Deferred until the caller has marked the turn completed, which it
       // does right after announcing it.
@@ -2407,7 +2409,9 @@ export function createThreadService(
       record.settledAt !== undefined && (status === 'running' || status === 'waiting')
     if (unsettle) record.settledAt = undefined
     // A new turn supersedes the last result, as `turn.started` does in SQLite.
-    if (status === 'running' || status === 'waiting') record.doneAt = undefined
+    // Running on background work alone is no new turn: the result stands.
+    const backgroundOnly = status === 'running' && !record.activeTurn && !!record.backgroundTasks?.length
+    if ((status === 'running' && !backgroundOnly) || status === 'waiting') record.doneAt = undefined
     // And as it does for cooking: asking, failing or finishing brings it back.
     const uncook =
       record.cookingAt !== undefined &&

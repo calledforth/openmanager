@@ -713,6 +713,7 @@ export class CodexSessionRuntime implements ManagedSessionRuntime {
     this.assertUsable()
     this.sessionIdValue = opened.threadId
     this.codexName = opened.name
+    this.terminals.threadChanged()
     this.deps.host.log({
       scope: 'codex',
       level: 'info',
@@ -815,6 +816,7 @@ export class CodexSessionRuntime implements ManagedSessionRuntime {
     this.notice(codexThreadChangeNotice(change))
     const active = this.active
     if (active) this.failTurn(active, new CodexThreadGoneError(change))
+    this.terminals.threadChanged()
   }
 
   /** `thread/status/changed`: Codex's own word on the thread. A system error
@@ -838,6 +840,7 @@ export class CodexSessionRuntime implements ManagedSessionRuntime {
       case 'notLoaded':
         if (this.ownArchive || this.reopening) return
         if (this.reopen === undefined || this.reopen === 'systemError') this.reopen = 'closed'
+        this.terminals.threadChanged()
         return
       case 'idle':
       case 'active':
@@ -1389,9 +1392,12 @@ export class CodexSessionRuntime implements ManagedSessionRuntime {
     this.rememberFinished(active)
     active.markIdentified()
     const running = active.turn.runningProcesses()
-    active.turn.finish()
-    // A failed turn's commands run on; a stop under way ends them itself.
-    if (this.phaseValue === 'ready') this.terminals.turnEnded(running, false)
+    // A failed turn's commands run on, and say so, as the background tasks
+    // list them. Not when the thread is gone (it holds no terminals any
+    // more), nor when a stop is under way: that ends them itself.
+    const ready = this.phaseValue === 'ready'
+    active.turn.finish(ready && !(error instanceof CodexThreadGoneError))
+    if (ready) this.terminals.turnEnded(running, active.turn.interruptRequested)
     if (this.active === active) this.active = undefined
     // Children run on past a failed turn too; not past the process.
     if (this.phaseValue !== 'exited') this.subagents.parentTurnEnded()
