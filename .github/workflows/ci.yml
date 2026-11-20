@@ -79,6 +79,9 @@ jobs:
       - name: Install server workspace
         run: pnpm --filter @openmanager/server... install --frozen-lockfile
 
+      - name: Typecheck and test the agent runtime
+        run: pnpm run ci:runtime
+
       - name: Typecheck, lint, test, and build server
         run: pnpm run ci:server
 

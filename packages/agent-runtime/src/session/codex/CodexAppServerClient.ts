@@ -170,11 +170,11 @@ export class CodexAppServerClient {
     private readonly options: CodexAppServerClientOptions,
   ) {
     this.stderrTailChars = options.stderrTailChars ?? 16 * 1024
-    const killTree =
-      options.killTree ??
-      // On Windows the tree goes too, shell or not: Codex's MCP servers and
-      // command shells are its descendants, and nothing else reaps them.
-      (process.platform === 'win32' ? treeKiller(options.terminateGraceMs) : undefined)
+    // The tree killer is chosen where the process is spawned
+    // (`startCodexAppServer`), never defaulted here: this client may wrap a
+    // child that is not an OS process (a test double), and `taskkill` on its
+    // made-up pid would at best do nothing and at worst kill a stranger.
+    const killTree = options.killTree
     this.lifecycle = new ChildProcessLifecycle(child, {
       graceMs: options.terminateGraceMs,
       log: options.log,
@@ -427,7 +427,14 @@ export async function startCodexAppServer(
         data: { error: String(error) },
       }),
   })
-  const client = new CodexAppServerClient(child, options)
+  const client = new CodexAppServerClient(child, {
+    ...options,
+    // On Windows the tree goes too, shell or not: Codex's MCP servers and
+    // command shells are its descendants, and nothing else reaps them.
+    ...(process.platform === 'win32' && !options.killTree
+      ? { killTree: treeKiller(options.terminateGraceMs) }
+      : {}),
+  })
   try {
     await client.initialize({
       clientVersion: spec.clientVersion,
