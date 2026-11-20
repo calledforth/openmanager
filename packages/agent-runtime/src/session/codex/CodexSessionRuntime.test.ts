@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from 'vitest'
+import type { ToolCall, ToolCallUpdate } from '@agentpack/contract'
 import type { BackendEvent } from '../../backends/Backend.js'
 import { SessionUnknownError } from '../../core/errors.js'
 import { InteractionBroker } from '../../core/InteractionBroker.js'
@@ -119,7 +120,7 @@ describe('CodexSessionRuntime start', () => {
       approvalPolicy: 'on-request',
       approvalsReviewer: 'user',
       sandbox: 'workspace-write',
-      config: { notify: [] },
+      config: { notify: [], 'tools.update_plan.enabled': true },
       historyMode: 'paginated',
       developerInstructions: 'Be brief.',
     })
@@ -342,6 +343,44 @@ describe('CodexSessionRuntime turns', () => {
     void runtime.prompt({ prompt: PROMPT }).catch(() => undefined)
     await expect(runtime.prompt({ prompt: PROMPT })).rejects.toThrow(/already running/)
     runtime.dispose()
+  })
+
+  it('reports the turn’s tools as tool calls, its plan as the checklist, and never a child’s', async () => {
+    let turn: FakeCodexTurn | undefined
+    const { server, runtime, events } = build({ onTurn: (t) => (turn = t) })
+    await runtime.start()
+    const prompt = runtime.prompt({ prompt: PROMPT })
+    await vi.waitFor(() => expect(turn).toBeDefined())
+    turn!.started()
+    server.notify('turn/plan/updated', {
+      threadId: turn!.threadId,
+      turnId: turn!.id,
+      explanation: null,
+      plan: [{ step: 'Test', status: 'inProgress' }],
+    })
+    const command = turn!.command('npm test', { chunks: ['ok 1\n', 'ok 2\n'], output: 'ok 1\nok 2\n' })
+    turn!.thread.child().turn().started().command('echo from the subagent')
+    turn!.completed()
+    await prompt
+
+    const tools = events.filter((e) => e.category === 'tool')
+    expect(tools.map((e) => e.event)).toEqual([
+      'tool_call',
+      'tool_call',
+      'tool_call_content',
+      'tool_call_content',
+      'tool_call_update',
+    ])
+    expect(tools[1]).toMatchObject({
+      sessionId: runtime.sessionId,
+      data: { toolCallId: command.id, toolName: 'commandExecution', rawInput: { command: 'npm test' } },
+    })
+    expect(tools.at(-1)).toMatchObject({ data: { status: 'completed', rawInput: { exitCode: 0 } } })
+    expect(events.find((e) => e.event === 'plan_update')).toMatchObject({
+      category: 'session',
+      data: { entries: [{ content: 'Test', status: 'in_progress' }] },
+    })
+    expect(JSON.stringify(events)).not.toContain('from the subagent')
   })
 
   it('declines approvals until there is a UI for them', async () => {
@@ -906,6 +945,69 @@ describe('CodexSessionRuntime against a recording', () => {
     expect(events.find((e) => e.event === 'prompt_completed')).toMatchObject({
       data: { stopReason: 'end_turn' },
     })
+    runtime.dispose()
+  })
+
+  // A read, a search, a listing, a failing listing and an edit, with the plan
+  // before and after: what the real Codex says about them, as tool calls.
+  it('reports the recorded tools as tool calls', async () => {
+    const server = new ReplayCodexAppServer('tool-items')
+    server.respond('model/list', MODELS as never)
+    const { runtime, events } = build({ server })
+    await runtime.start()
+    await runtime.prompt({ prompt: PROMPT })
+    await server.done
+    expect(server.unmatched).toEqual([])
+    const calls = events.filter((e) => e.event === 'tool_call').map((e) => e.data as ToolCall)
+    expect(calls.map((call) => [call.toolName, call.kind])).toEqual([
+      ['update_plan', 'think'],
+      ['commandExecution', 'read'],
+      ['commandExecution', 'search'],
+      ['commandExecution', 'search'],
+      ['commandExecution', 'search'],
+      ['fileChange', 'edit'],
+      ['update_plan', 'think'],
+    ])
+    expect(calls.slice(1, 5).map((call) => (call.rawInput as { command: string }).command)).toEqual([
+      'cat notes.txt',
+      'rg -n hello',
+      'ls',
+      'ls does-not-exist',
+    ])
+    const settled = events.filter((e) => e.event === 'tool_call_update').map((e) => e.data as ToolCallUpdate)
+    expect(settled.map((update) => update.status)).toEqual(['completed', 'completed', 'completed', 'failed', 'completed'])
+    expect(settled[3]).toMatchObject({ rawInput: { exitCode: 2 } })
+    expect(settled[4]).toMatchObject({
+      locations: [{ path: '/workspace/notes.txt' }],
+      lineChanges: { added: 1, removed: 1 },
+    })
+    expect(events.filter((e) => e.event === 'plan_update').map((e) => e.data)).toEqual([
+      {
+        entries: [
+          { content: 'Look around', priority: 'medium', status: 'in_progress' },
+          { content: 'Edit notes', priority: 'medium', status: 'pending' },
+        ],
+      },
+      {
+        entries: [
+          { content: 'Look around', priority: 'medium', status: 'completed' },
+          { content: 'Edit notes', priority: 'medium', status: 'completed' },
+        ],
+      },
+    ])
+    runtime.dispose()
+  })
+
+  it('shows what the recorded write_stdin sent on the command it went to', async () => {
+    const server = new ReplayCodexAppServer('terminal-interaction')
+    server.respond('model/list', MODELS as never)
+    const { runtime, events } = build({ server })
+    await runtime.start()
+    await runtime.prompt({ prompt: PROMPT })
+    await server.done
+    const updates = events.filter((e) => e.event === 'tool_call_update').map((e) => e.data as ToolCallUpdate)
+    expect(updates[0]).toMatchObject({ rawInput: { stdin: ['ada\n'] } })
+    expect(updates.at(-1)).toMatchObject({ status: 'completed', rawInput: { stdin: ['ada\n'], exitCode: 0 } })
     runtime.dispose()
   })
 
@@ -1537,6 +1639,44 @@ describe('CodexSessionRuntime consistency (CAL-254)', () => {
     )
     expect(order).toEqual(['background_turn_started', 'prompt_completed', 'prompt_started', 'prompt_completed'])
     expect(texts(events)).toBe('Continuing the goal.')
+  })
+
+  it('reports a background turn’s tools, and settles a command it leaves running', async () => {
+    const { server, runtime, events } = build()
+    const { sessionId } = await runtime.start()
+    const own = server.thread({ id: sessionId }).turn()
+    own.started()
+    await vi.waitFor(() => expect(names(events)).toContain('background_turn_started'))
+    own.itemStarted({ ...codexBuilders.commandExecutionItem('npm run dev'), id: 'dev', processId: '77' })
+    own.command('npm test', { output: 'ok\n' })
+    own.completed()
+    await vi.waitFor(() => expect(names(events)).toContain('prompt_completed'))
+    const order = names(events)
+    expect(order.indexOf('background_turn_started')).toBeLessThan(order.indexOf('tool_call'))
+    const settled = events
+      .filter((e) => e.event === 'tool_call_update')
+      .map((e) => e.data as ToolCallUpdate)
+    expect(settled).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ toolCallId: 'dev', status: 'completed' }),
+        expect.objectContaining({ status: 'completed', rawInput: expect.objectContaining({ exitCode: 0 }) }),
+      ]),
+    )
+    expect(order.lastIndexOf('tool_call_update')).toBeLessThan(order.indexOf('prompt_completed'))
+  })
+
+  it('leaves a running command to the server when the host stops the turn', async () => {
+    let turn: FakeCodexTurn | undefined
+    const { runtime, events } = build({ onTurn: (t) => (turn = t), interruptGraceMs: 30 })
+    await runtime.start()
+    const prompt = runtime.prompt({ prompt: PROMPT }).catch(() => undefined)
+    await vi.waitFor(() => expect(turn).toBeDefined())
+    turn!.started()
+    turn!.itemStarted({ ...codexBuilders.commandExecutionItem('npm run dev'), id: 'dev', processId: '77' })
+    await vi.waitFor(() => expect(names(events)).toContain('tool_call'))
+    await runtime.cancel()
+    await prompt
+    expect(events.filter((e) => e.event === 'tool_call_update')).toEqual([])
   })
 
   it('counts a background turn as busy, so it is not reaped or evicted under it', async () => {

@@ -42,6 +42,12 @@ const TOOL_NAME_ALIASES: Record<string, string> = {
   'generate-image': 'GenerateImage',
   generate_image: 'GenerateImage',
   'generate image': 'GenerateImage',
+  // Codex names its built-in tools by item type (the presenter refines a
+  // command or a patch from what its input says it did).
+  commandexecution: 'Bash',
+  filechange: 'Edit',
+  imageview: 'Read',
+  update_plan: 'TodoWrite',
 }
 
 function normalizePath(input: unknown): string {

@@ -91,6 +91,79 @@ describe('every row reads from its input alone', () => {
     ).toBe('linear list issues')
   })
 
+  it('Codex, whose tools are named by item type and described by their items', () => {
+    const shell = (command: string, commandActions: unknown[], locations?: { path: string }[]) =>
+      done(
+        { toolName: 'commandExecution', title: 'commandExecution', ...(locations ? { locations } : {}) },
+        { command, cwd: '/w', source: 'agent', commandActions },
+      )
+    expect(line(shell('npm test', [{ type: 'unknown', command: 'npm test' }]))).toBe('Ran npm test')
+    expect(
+      line(
+        shell('cat a/notes.txt', [
+          { type: 'read', command: 'cat a/notes.txt', name: 'notes.txt', path: '/w/a/notes.txt' },
+        ]),
+      ),
+    ).toBe('Read notes.txt')
+    expect(
+      line(shell('rg -n hello src', [{ type: 'search', command: 'rg', query: 'hello', path: 'src' }])),
+    ).toBe('Searched for "hello" in src')
+    expect(line(shell('ls', [{ type: 'listFiles', command: 'ls', path: null }]))).toBe(
+      'Listed files',
+    )
+    expect(line(shell('ls src', [{ type: 'listFiles', command: 'ls src', path: 'src' }]))).toBe(
+      'Listed src',
+    )
+    expect(
+      line(
+        shell('cat a | rg x', [
+          { type: 'read', command: 'cat a', name: 'a', path: '/w/a' },
+          { type: 'search', command: 'rg x', query: 'x', path: null },
+        ]),
+      ),
+    ).toBe('Ran cat a | rg x')
+    const patch = (changes: unknown[], locations: { path: string }[]) =>
+      done({ toolName: 'fileChange', title: 'fileChange', kind: 'edit', locations }, { changes })
+    expect(
+      line(patch([{ path: '/w/a.ts', kind: 'add' }], [{ path: '/w/a.ts' }])),
+    ).toBe('Wrote a.ts')
+    expect(
+      line(patch([{ path: '/w/a.ts', kind: 'delete' }], [{ path: '/w/a.ts' }])),
+    ).toBe('Deleted a.ts')
+    expect(
+      line(
+        patch(
+          [
+            { path: '/w/a.ts', kind: 'update' },
+            { path: '/w/b.ts', kind: 'add' },
+          ],
+          [{ path: '/w/a.ts' }, { path: '/w/b.ts' }],
+        ),
+      ),
+    ).toBe('Edited a.ts')
+    const web = (input: unknown) => done({ toolName: 'webSearch', title: 'webSearch' }, input)
+    expect(line(web({ action: 'search', query: 'codex' }))).toBe('Searched the web for "codex"')
+    expect(line(web({ action: 'openPage', url: 'https://a.example' }))).toBe(
+      'Fetched https://a.example',
+    )
+    expect(line(web({ action: 'findInPage', url: 'https://a.example', pattern: 'x' }))).toBe(
+      'Searched for "x" in https://a.example',
+    )
+    expect(line(done({ toolName: 'imageView' }, { path: '/w/shot.png' }))).toBe('Read shot.png')
+    expect(line(done({ toolName: 'sleep' }, { durationMs: 90_000 }))).toBe('Waited 1m 30s')
+    expect(line(done({ toolName: 'sleep' }, { durationMs: 250 }))).toBe('Waited 250 ms')
+    expect(line(done({ toolName: 'hook' }, { eventName: 'preToolUse' }))).toBe(
+      'Ran hook preToolUse',
+    )
+    expect(line(done({ toolName: 'hookPrompt' }, { hookRunIds: ['r'] }))).toBe(
+      'Hook added a prompt',
+    )
+    expect(line(done({ toolName: 'update_plan' }, { plan: [] }))).toBe('Updated tasks')
+    expect(line(done({ toolName: 'mcp__github__search_issues' }, { q: 'x' }))).toBe(
+      'github search issues',
+    )
+  })
+
   it('OpenCode, whose title becomes prose once the name is known', () => {
     const named = (toolName: string, title: string, kind: string, input?: unknown) =>
       line(done({ toolName, title, kind }, input))

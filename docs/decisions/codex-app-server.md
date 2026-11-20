@@ -98,8 +98,9 @@ What applies to our threads, by default:
 | Memories | Inherited | Same |
 | Apps connector (`codex_apps`) | Inherited | Same. Costs ~20 MB per thread (_probed_) |
 | `notify` program | **Off** | Openmanager sends its own notifications. The user's program would fire for every turn we run, doubling them |
+| `update_plan` tool | **Forced on** | Off unless a client turns it on (_probed_: with the default config the model has no `update_plan` and no `turn/plan/updated` arrives). It is what keeps the todo checklist. The per-thread value overrides the user's own `tools.update_plan.enabled`, so a user who turned it off gets it back in openmanager's threads |
 
-`notify` is switched off per thread, by `config: { notify: [] }` on `thread/start` and `thread/resume`, never by editing the user's `config.toml`. _Probed_: with `notify` set globally, a thread without the override ran its program once per turn, and a thread with `notify: []` ran it zero times. Per-thread `config` also starts extra MCP servers (_probed_), so the mechanism is sound for any later default.
+Both are set per thread, by `config: { notify: [], "tools.update_plan.enabled": true }` on `thread/start` and `thread/resume`, never by editing the user's `config.toml`. `tools.update_plan.enabled` is not in the generated types (`config` is an untyped map). _Probed_: 0.160 and 0.170 both know the key, and both start the thread with a key they do not know, so an older or newer CLI that dropped it would lose the checklist, not the thread. _Probed_: with `notify` set globally, a thread without the override ran its program once per turn, and a thread with `notify: []` ran it zero times. Per-thread `config` also starts extra MCP servers (_probed_), so the mechanism is sound for any later default.
 
 ### Spellings
 
@@ -144,11 +145,29 @@ A subagent is a child thread on its parent's connection ([CAL-257](https://linea
 - **Busy.** A runtime with a running child is `busy`, so the idle reaper and LRU eviction leave it alone.
 - **Never a session.** A child's id never becomes a session id, and `thread/resume` of a subagent's thread unsubscribes from it (`thread/unsubscribe`) and is treated as a missing thread. Listing (not used yet) must keep `thread/list`'s default interactive `sourceKinds`, which exclude subagent threads.
 
+### Tool calls
+
+Each tool item of the session's own turn is a tool call (`CodexTools`, `session/codex/codex-tools.ts`), keyed on Codex's item id, in the shape every provider's tool rows take (docs/sync-foundations.md §6.7). Shapes were checked against 0.170 in the `tool-items` and `terminal-interaction` fixtures.
+
+- **Names.** A built-in tool keeps Codex's item type as its name (`commandExecution`, `fileChange`, `webSearch`, `imageView`, `sleep`); an MCP tool is `mcp__<server>__<tool>`, the name the model calls it by; a dynamic tool is `<namespace>.<tool>`. The shared presenter reads the rest from the input.
+- **`commandExecution`.** Input: the command without Codex's `/bin/bash -lc '…'` wrapper, `cwd`, `source`, `commandActions`, and at the end `exitCode` and anything written to it with `write_stdin` (`stdin`, from `item/commandExecution/terminalInteraction`, which names the command it went to). Output streams from `item/commandExecution/outputDelta`; `aggregatedOutput` is what it settles with. A command whose actions are all `read` is a read, with the paths as locations and no output kept, like any read; one `search` or `listFiles` is labelled as that (`Searched for "x" in src`, `Listed src`); anything else is a command. Duration is the row's `startedAt` to `finishedAt`.
+- **`fileChange`.** Every change (add, delete, update, move) as a file touched, with line counts read off the diff Codex reported for it. No diff leaves the runtime. `item/fileChange/patchUpdated` keeps it live.
+- **`mcpToolCall`.** Arguments as input; `structuredContent` as the result when there is one, else the text content; images move into the reply under the call's id, like any tool's; an error fails it; `item/mcpToolCall/progress` streams as lines of output.
+- **Others.** `dynamicToolCall`, `webSearch` (search, open page, find in page, from its `action`), `sleep`, `imageView`. Hook runs (`hook/started`, `hook/completed`) are rows of their own, and a `hookPrompt` item is a row holding the text the hook added.
+- **Declined and cancelled.** Codex's `declined` status is the declined outcome. Codex has no status for an interrupted call: a call that fails while the turn is being stopped reads as cancelled, and one still open when the turn ends is closed as cancelled by the server.
+- **No matches.** A search command (`commandActions` all `search`) that exits 1 with no output found nothing, and completes, like any search with no hits.
+- **Background commands.** A unified-exec command (one with a `processId`) still open when its turn ends runs on in the background. It settles as completed, with `[Still running in the background]` as the last line of its output, rather than being closed as cancelled. Not when the turn was stopped.
+- **Hook rows.** Each `hook/started` opens a row of its own, and `hook/completed` settles the one its run opened: `HookRunSummary.id` may name the handler rather than one firing (not probed), and a row per handler would hide every firing after the first.
+- **Patch order.** A `patchUpdated` that arrives before its item's `item/started` opens the row.
+- **Plan.** `turn/plan/updated` is the todo checklist (`plan_update`), and a row (`update_plan`) where the model updated it, since Codex has no item for that call.
+- **Skipped on purpose.** `functionCallOutput` is the echo of a `toolOutput` a client hands Codex with `turn/start`; openmanager sends none. `item/fileChange/outputDelta` is deprecated and no longer sent. `plan` items and `item/plan/delta` belong to plan mode, which is not ported. `imageGeneration` is not translated yet.
+- A subagent's own items stay out of the parent's turn (see Subagents).
+
 ### Notifications
 
 `initialize` sends `optOutNotificationMethods`:
 
-- `turn/diff/updated`: the whole turn diff on every change, which openmanager rebuilds from file-change items. T3 opts out too.
+- `turn/diff/updated`: the whole turn diff on every change. Chat carries no diffs, and each file change's paths and line counts come with its own item. T3 opts out too.
 - `remoteControl/status/changed`: remote control is out of scope (openmanager is the remote).
 
 Everything else is received. Notifications we do not act on are dropped at decode, which is cheaper than maintaining a long opt-out list that changes with every CLI version.

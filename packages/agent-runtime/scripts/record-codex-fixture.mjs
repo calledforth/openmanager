@@ -164,6 +164,59 @@ const SCENARIOS = {
     },
   },
 
+  'tool-items': {
+    description:
+      'One turn with a plan (turn/plan/updated), a read, a search and a listing through the shell (commandActions), a failing command, and an apply_patch edit (fileChange; a patch this small sends no patchUpdated).',
+    setup(workspace) {
+      writeFileSync(join(workspace, 'notes.txt'), 'hello world\nsecond line\n')
+    },
+    async run(s) {
+      // `update_plan` is off unless a client turns it on (probed on 0.170);
+      // openmanager does, on every thread.
+      const thread = await s.startThread({
+        approvalPolicy: 'never',
+        sandbox: 'workspace-write',
+        config: { notify: [], 'tools.update_plan.enabled': true },
+      })
+      await s.runTurn(
+        thread,
+        [
+          'Do these steps in order, one tool call each, and nothing else:',
+          '1. Call update_plan with two steps: "Look around" (in progress) and "Edit notes" (pending).',
+          '2. Use the shell to run exactly: cat notes.txt',
+          '3. Use the shell to run exactly: rg -n hello',
+          '4. Use the shell to run exactly: ls',
+          '5. Use the shell to run exactly: ls does-not-exist',
+          '6. Use apply_patch to replace "hello world" with "goodbye world" in notes.txt.',
+          '7. Call update_plan with both steps completed.',
+          'Then reply "done".',
+        ].join('\n'),
+        { approvalPolicy: 'never', sandboxPolicy: { type: 'workspaceWrite', writableRoots: [], networkAccess: false, excludeTmpdirEnvVar: false, excludeSlashTmp: false } },
+      )
+    },
+  },
+
+  'terminal-interaction': {
+    description:
+      'A command that waits on stdin, answered with write_stdin: item/commandExecution/terminalInteraction names the command it wrote to.',
+    async run(s) {
+      const thread = await s.startThread({
+        approvalPolicy: 'never',
+        sandbox: 'workspace-write',
+        config: { notify: [], 'tools.update_plan.enabled': true },
+      })
+      await s.runTurn(
+        thread,
+        [
+          'Use exec_command with tty enabled to start exactly: read -p "name? " n; echo "hi $n"',
+          'It waits for input. Then use write_stdin to send "ada" followed by a newline to that session.',
+          'Then reply "done". Do nothing else.',
+        ].join('\n'),
+        { approvalPolicy: 'never' },
+      )
+    },
+  },
+
   steer: {
     description: 'A running turn receives more input through turn/steer and finishes as one turn.',
     async run(s) {
@@ -345,6 +398,7 @@ function spawnCodex(args, options) {
 async function record(name, options) {
   const scenario = SCENARIOS[name]
   const workspace = mkdtempSync(join(tmpdir(), 'codex-fixture-'))
+  scenario.setup?.(workspace)
   const args = [...(scenario.config ?? []).flatMap((entry) => ['-c', entry]), 'app-server']
   const started = Date.now()
   const entries = []

@@ -1,5 +1,6 @@
 import type { MessagePhase as ChunkPhase, SessionUsage, TokenUsage } from '@agentpack/contract'
 import type { MessagePhase, v2 } from '@openmanager/codex-app-server-protocol'
+import { CodexTools, type CodexToolOutput } from './codex-tools.js'
 
 /** What a turn says, in openmanager's terms. The runtime stamps the route. */
 export type CodexTurnOutput =
@@ -16,6 +17,7 @@ export type CodexTurnOutput =
       }
     }
   | { event: 'steer_delivered' | 'steer_withdrawn'; data: { steerId: string } }
+  | CodexToolOutput
 
 type OpenMessage = { phase: MessagePhase | null; streamed: boolean }
 type OpenReasoning = { started: boolean; streamed: boolean; lastPart: number }
@@ -24,11 +26,9 @@ type OpenReasoning = { started: boolean; streamed: boolean; lastPart: number }
  * Codex has answered its `turn/steer`. */
 type PendingSteer = { steerId: string; text: string; answered: boolean }
 
-/** One Codex turn, translated: assistant text, reasoning summaries, and where
- * the messages steered into it landed.
- *
- * Tool items (commands, file changes, MCP calls, …) are CAL-255's and are not
- * translated here; this only notes that they happened. Reasoning arrives as
+/** One Codex turn, translated: assistant text, reasoning summaries, where
+ * the messages steered into it landed, and its tools (`CodexTools`: commands,
+ * file changes, MCP calls, hooks, the plan, …). Reasoning arrives as
  * short headline summaries, and only because every turn asks for
  * `summary: "detailed"`: the raw chain of thought (`item/reasoning/textDelta`,
  * `item.content`) is never sent by OpenAI over this protocol and is dropped
@@ -55,6 +55,7 @@ export class CodexTurn {
   private readonly echoes = new Set<string>()
   /** Whether the turn's first `userMessage`, the prompt's echo, was seen. */
   private promptEchoed = false
+  private readonly tools: CodexTools
 
   constructor(
     private readonly emit: (output: CodexTurnOutput) => void,
@@ -62,7 +63,9 @@ export class CodexTurn {
      * Unknown for the first turn a process sees (a resumed thread's history
      * counts too); the turn's first reading supplies it then. */
     private baseline?: v2.TokenUsageBreakdown,
-  ) {}
+  ) {
+    this.tools = new CodexTools(emit)
+  }
 
   itemStarted(item: v2.ThreadItem): void {
     switch (item.type) {
@@ -76,9 +79,15 @@ export class CodexTurn {
         this.userMessage(item)
         return
       default:
-        // Everything CAL-255 will translate.
+        this.tools.itemStarted(item)
         return
     }
+  }
+
+  /** A notification about the turn's tools (output, progress, the plan,
+   * hooks). False when it is not one. */
+  toolNotification(method: string, params: unknown): boolean {
+    return this.tools.notification(method, params)
   }
 
   /** A message is being steered into this turn: watch for Codex placing it.
@@ -216,6 +225,7 @@ export class CodexTurn {
         this.userMessage(item)
         return
       default:
+        this.tools.itemCompleted(item)
         return
     }
   }
@@ -244,8 +254,14 @@ export class CodexTurn {
    * so no echo by `turn/completed` means it never reached the conversation;
    * running it again is the safe side, losing it is not. (A turn closed
    * without `turn/completed` settles its unanswered steers first:
-   * `placeUnansweredSteers`.) */
-  finish(): void {
+   * `placeUnansweredSteers`.)
+   *
+   * `endedNormally`: Codex completed the turn and nothing stopped it, so a
+   * command left running with a process of its own runs on in the
+   * background, and settles as such (`CodexTools.finish`). Otherwise the
+   * server closes what is still open. */
+  finish(endedNormally = false): void {
+    this.tools.finish(!endedNormally || this.interruptRequested)
     for (const id of [...this.reasoning.keys()]) this.closeReasoning(id)
     this.messages.clear()
     this.deliverPlaced(true)
