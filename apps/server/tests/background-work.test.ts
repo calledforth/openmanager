@@ -547,11 +547,23 @@ describe('background work', () => {
         },
         'assistant-2',
       )
+      // Sent cooking while the turn runs: finishing beside the terminal is
+      // news, so it comes back, as the sidebar shows it done.
+      expect(h.dispatch('session.cook', { sessionId: h.sessionId, cooking: true })).toMatchObject({
+        type: 'response',
+      })
+      expect(h.summary().cookingAt).toEqual(expect.any(String))
       h.text('assistant-2', 'It is up.')
       h.completed('assistant-2')
 
       const session = h.summary()
       expect(session.doneAt).toEqual(expect.any(String))
+      expect(session.cookingAt ?? null).toBeNull()
+      // Done, so it cannot be sent cooking again until it is seen.
+      expect(h.dispatch('session.cook', { sessionId: h.sessionId, cooking: true })).toMatchObject({
+        type: 'error',
+        error: { code: 'conflict' },
+      })
       // Still working in the background, for the reaper and the sidebar.
       expect(session).toMatchObject({ status: 'running', inBackground: true })
       expect(session.backgroundTasks).toHaveLength(1)

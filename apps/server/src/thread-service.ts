@@ -2410,14 +2410,16 @@ export function createThreadService(
     if (unsettle) record.settledAt = undefined
     // A new turn supersedes the last result, as `turn.started` does in SQLite.
     // Running on background work alone is no new turn: the result stands.
-    const backgroundOnly = status === 'running' && !record.activeTurn && !!record.backgroundTasks?.length
+    const backgroundOnly =
+      status === 'running' && !record.activeTurn && !!record.backgroundTasks?.length
     if ((status === 'running' && !backgroundOnly) || status === 'waiting') record.doneAt = undefined
-    // And as it does for cooking: asking, failing or finishing brings it back.
+    // And as it does for cooking: asking, failing or finishing brings it back,
+    // finishing beside background work that just runs on included.
     const uncook =
       record.cookingAt !== undefined &&
       (status === 'waiting' ||
         status === 'error' ||
-        (status === 'idle' && record.doneAt !== undefined))
+        ((status === 'idle' || backgroundOnly) && record.doneAt !== undefined))
     if (uncook) record.cookingAt = undefined
     const activity = activityOf(record, status)
     record.announced = activity

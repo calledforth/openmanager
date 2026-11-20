@@ -70,6 +70,36 @@ describe('groupSidebarSessions', () => {
     expect(uncounted).not.toHaveProperty('inBackgroundForSubagents')
   })
 
+  it('shows a session done beside background work that just runs on, still in the background', () => {
+    const shell = { taskId: 't-shell', kind: 'shell' as const, description: 'npm run dev' }
+    const [doneBeside] = rows([
+      summary({
+        sessionId: 'p',
+        providerId: 'codex',
+        status: 'running',
+        inBackground: true,
+        doneAt: '2026-11-19T10:05:00.000Z',
+        backgroundTasks: [shell],
+      }),
+    ])
+    expect(doneBeside).toMatchObject({
+      status: 'done',
+      inBackground: true,
+      backgroundTaskCount: 1,
+      backgroundTaskNames: 'npm run dev',
+    })
+    // Without news, background work alone reads as background work.
+    const [working] = rows([
+      summary({ sessionId: 'p', status: 'running', inBackground: true, backgroundTasks: [shell] }),
+    ])
+    expect(working).toMatchObject({ status: 'running', inBackground: true })
+    // A turn in flight is never done, whatever an earlier one left behind.
+    const [turn] = rows([
+      summary({ sessionId: 'p', status: 'running', doneAt: '2026-11-19T10:05:00.000Z' }),
+    ])
+    expect(turn).toMatchObject({ status: 'running' })
+  })
+
   it('counts a parent live while a subagent of its subagent works, and names them all', () => {
     const [parent] = rows([
       summary({ sessionId: 'parent' }),

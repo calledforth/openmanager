@@ -4,7 +4,9 @@ import type { BackendEvent } from '../../backends/Backend.js'
 import { InteractionBroker } from '../../core/InteractionBroker.js'
 import { PermissionBroker } from '../../core/PermissionBroker.js'
 import { codex } from '../../providers/codex.js'
+import { CodexBackgroundTerminals } from './codex-background.js'
 import { CodexAppServerClient } from './CodexAppServerClient.js'
+import { CodexRpcError } from './CodexRpcPeer.js'
 import { CodexSessionRuntime } from './CodexSessionRuntime.js'
 import type { CodexStarter } from './start.js'
 import { codexBuilders, FakeCodexAppServer, type FakeCodexTurn } from './testing/index.js'
@@ -368,5 +370,90 @@ describe('Codex background terminals', () => {
     expect(server.requests('thread/backgroundTerminals/list')).toEqual([])
     expect(server.requests('thread/backgroundTerminals/terminate')).toEqual([])
     expect(rosters()).toEqual([])
+  })
+})
+
+describe('CodexBackgroundTerminals', () => {
+  const terminal = (processId: string, itemId: string) => ({
+    itemId,
+    processId,
+    command: 'sleep 300',
+    cwd: '/work',
+    osPid: null,
+    cpuPercent: null,
+    rssKb: null,
+  })
+
+  /** On a client that answers each request with `answer`. */
+  function unit(answer: (method: string, params: unknown) => unknown, listRetryMs = [20, 20]) {
+    const request = vi.fn(async (method: string, params: unknown) => answer(method, params))
+    const announced: BackgroundTask[][] = []
+    const terminals = new CodexBackgroundTerminals({
+      enabled: true,
+      client: () => ({ request }) as unknown as CodexAppServerClient,
+      threadId: () => 'thread-a',
+      timeoutMs: 1_000,
+      announce: (tasks) => announced.push(tasks),
+      log: vi.fn(),
+      listRetryMs,
+    })
+    const lists = () => request.mock.calls.filter(([method]) => method === 'thread/backgroundTerminals/list')
+    return { terminals, request, announced, lists }
+  }
+  const completedSize = (terminals: CodexBackgroundTerminals) =>
+    (terminals as unknown as { completed: Map<string, number> }).completed.size
+
+  it('reads again when a listed command completes, by its item id alone', async () => {
+    let data = [terminal('77', 'exec-a')]
+    const { terminals, announced, lists } = unit(() => ({ data, nextCursor: null }))
+    await terminals.refresh()
+    expect(announced).toEqual([[{ taskId: '77', kind: 'shell', description: 'sleep 300' }]])
+
+    data = []
+    terminals.itemCompleted({ ...codexBuilders.commandExecutionItem('sleep 300'), id: 'exec-a', processId: null })
+    await vi.waitFor(() => expect(lists()).toHaveLength(2))
+    await vi.waitFor(() => expect(announced.at(-1)).toEqual([]))
+  })
+
+  it('forgets a finished command once a list can no longer name it, and all of them on close', async () => {
+    vi.useFakeTimers({ toFake: ['Date'] })
+    try {
+      const { terminals } = unit(() => ({ data: [], nextCursor: null }))
+      for (const id of ['a', 'b', 'c'])
+        terminals.itemCompleted({ ...codexBuilders.commandExecutionItem('x'), id, processId: '1' })
+      expect(completedSize(terminals)).toBe(3)
+      vi.advanceTimersByTime(61_000)
+      terminals.itemCompleted({ ...codexBuilders.commandExecutionItem('x'), id: 'd', processId: '2' })
+      expect(completedSize(terminals)).toBe(1)
+      terminals.close()
+      expect(completedSize(terminals)).toBe(0)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('retries, rather than giving up, on an unknown variant that is not its own method', async () => {
+    let calls = 0
+    const { terminals, announced, lists } = unit(() => {
+      if (++calls === 1) throw new CodexRpcError(-32600, 'Invalid request: unknown variant `thread/other`')
+      return { data: [terminal('77', 'exec-a')], nextCursor: null }
+    })
+    await terminals.refresh()
+    expect(lists()).toHaveLength(2)
+    expect(announced).toEqual([[{ taskId: '77', kind: 'shell', description: 'sleep 300' }]])
+  })
+
+  it('stops waiting to read again once the process is gone', async () => {
+    const { terminals, lists } = unit(() => {
+      throw new Error('timed out')
+    }, [60_000])
+    const refreshing = terminals.refresh()
+    await vi.waitFor(() => expect(lists()).toHaveLength(1))
+    terminals.close()
+    // Ends at once, not after the minute's wait.
+    await expect(
+      Promise.race([refreshing.then(() => 'ended'), new Promise((resolve) => setTimeout(() => resolve('waiting'), 200))]),
+    ).resolves.toBe('ended')
+    expect(lists()).toHaveLength(1)
   })
 })

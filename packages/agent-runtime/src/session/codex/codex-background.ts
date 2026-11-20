@@ -64,6 +64,8 @@ export class CodexBackgroundTerminals {
   private closed = false
   private refreshing: Promise<void> | undefined
   private dirty = false
+  /** The wait before a failed list is read again, while it runs. */
+  private retry: { timer: ReturnType<typeof setTimeout>; resolve: () => void } | undefined
   /** Commands Codex reported finished, by item id (the list names the same
    * id; a process id could be reused), with when each is forgotten. A list
    * reply never brings one back. */
@@ -102,9 +104,13 @@ export class CodexBackgroundTerminals {
    * itself, or stopped) changes the roster. One that ends while a list is
    * out may be in its reply, so it is remembered as finished and read again. */
   itemCompleted(item: v2.ThreadItem): void {
-    if (!this.active || item.type !== 'commandExecution' || item.processId === null) return
-    this.completed.set(item.id, Date.now() + COMPLETED_TTL_MS)
-    const listed = this.items.has(item.processId) || [...this.items.values()].includes(item.id)
+    if (!this.active || item.type !== 'commandExecution') return
+    const now = Date.now()
+    this.pruneCompleted(now)
+    this.completed.set(item.id, now + COMPLETED_TTL_MS)
+    const listed =
+      (item.processId !== null && this.items.has(item.processId)) ||
+      [...this.items.values()].includes(item.id)
     if (listed || this.refreshing) void this.refresh()
   }
 
@@ -150,6 +156,13 @@ export class CodexBackgroundTerminals {
   close(): void {
     if (this.closed) return
     this.closed = true
+    // A read waiting to be retried ends now, and finds nothing left to do.
+    if (this.retry) {
+      clearTimeout(this.retry.timer)
+      this.retry.resolve()
+      this.retry = undefined
+    }
+    this.completed.clear()
     this.apply([])
   }
 
@@ -176,10 +189,15 @@ export class CodexBackgroundTerminals {
         // listed, and the list is read again after a wait, a few times.
         this.warn('Could not list Codex background terminals', error)
         const wait = retries[failures++]
-        if (wait === undefined) continue
+        // Closed while the list was out: nothing is left to read.
+        if (wait === undefined || !this.active) continue
         await new Promise<void>((resolve) => {
-          const timer = setTimeout(resolve, wait)
+          const timer = setTimeout(() => {
+            this.retry = undefined
+            resolve()
+          }, wait)
           timer.unref?.()
+          this.retry = { timer, resolve }
         })
         this.dirty = true
         continue
@@ -194,9 +212,12 @@ export class CodexBackgroundTerminals {
   /** Codex reported this terminal's command finished, lately enough that a
    * list may still name it. */
   private finished(terminal: v2.ThreadBackgroundTerminal): boolean {
-    const now = Date.now()
-    for (const [key, forget] of this.completed) if (forget <= now) this.completed.delete(key)
+    this.pruneCompleted(Date.now())
     return this.completed.has(terminal.itemId)
+  }
+
+  private pruneCompleted(now: number): void {
+    for (const [itemId, forget] of this.completed) if (forget <= now) this.completed.delete(itemId)
   }
 
   /** Every terminal the thread holds; undefined when there is nothing to
@@ -291,7 +312,9 @@ function threadGone(error: unknown): boolean {
 function unsupported(error: unknown): error is CodexRpcError {
   return (
     error instanceof CodexRpcError &&
-    (error.code === RPC_METHOD_NOT_FOUND || /unknown variant|requires experimentalApi/i.test(error.message))
+    (error.code === RPC_METHOD_NOT_FOUND ||
+      /unknown variant `thread\/backgroundTerminals\/(list|terminate)`/.test(error.message) ||
+      /thread\/backgroundTerminals\/(list|terminate) requires experimentalApi/.test(error.message))
   )
 }
 
