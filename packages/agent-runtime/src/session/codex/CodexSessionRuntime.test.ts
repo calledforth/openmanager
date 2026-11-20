@@ -1852,10 +1852,16 @@ describe('CodexSessionRuntime composer settings', () => {
       onTurn?: (turn: FakeCodexTurn) => void
       setup?: (server: FakeCodexAppServer) => void
       controlRequestMs?: number
+      turnStartDelayMs?: number
     } = {},
   ) {
     const server = new FakeCodexAppServer()
-    server.respond('model/list', CATALOG as never).serveThreads(options.onTurn)
+    server
+      .respond('model/list', CATALOG as never)
+      .serveThreads(
+        options.onTurn,
+        options.turnStartDelayMs ? { turnStartDelayMs: options.turnStartDelayMs } : {},
+      )
     options.setup?.(server)
     return build({
       server,
@@ -2366,6 +2372,32 @@ describe('CodexSessionRuntime composer settings', () => {
 
   // Verification: a change made while a prompt was being prepared could be
   // sent under its turn/start.
+  // Third check: a change made while turn/start was out was dropped from the
+  // queue, and the turn's read-back then undid it.
+  it('keeps a change made while turn/start is out for the next turn', async () => {
+    const { server, runtime, turns } = await prompted({ turnStartDelayMs: 100 })
+    const next = runtime.prompt({ prompt: PROMPT })
+    await vi.waitFor(() => expect(server.requests('turn/start')).toHaveLength(2))
+    await runtime.setMode('supervised')
+    await vi.waitFor(() => expect(turns).toHaveLength(2))
+    expect(server.requests('turn/start')[1]!.params).toMatchObject({ approvalPolicy: 'on-request' })
+    // The turn reads back what it ran with: the change is still to come.
+    server.notify('thread/settings/updated', {
+      threadId: runtime.sessionId!,
+      threadSettings: codexBuilders.buildThreadSettings({ model: 'gpt-6-luna', effort: 'low', serviceTier: 'default' }),
+    })
+    turns[1]!.completed()
+    await next
+    const third = runtime.prompt({ prompt: PROMPT })
+    await vi.waitFor(() => expect(turns).toHaveLength(3))
+    expect(server.requests('turn/start')[2]!.params).toMatchObject({
+      approvalPolicy: 'untrusted',
+      sandboxPolicy: { type: 'readOnly' },
+    })
+    turns[2]!.completed()
+    await third
+  })
+
   it('queues a change made while a prompt is starting for the turn after it', async () => {
     const { server, runtime, turns } = await prompted()
     const updates = server.requests('thread/settings/update').length

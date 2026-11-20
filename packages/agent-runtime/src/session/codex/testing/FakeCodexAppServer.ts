@@ -284,7 +284,14 @@ export class FakeCodexAppServer implements TerminableChild {
    * turn takes the input and echoes it at once as a `userMessage` carrying
    * the `clientUserMessageId`; a turn id that is not the running one, or no
    * running turn, is `-32600` with Codex's own words. */
-  serveThreads(onTurn?: (turn: FakeCodexTurn) => void): this {
+  serveThreads(
+    onTurn?: (turn: FakeCodexTurn) => void,
+    options: {
+      /** Hold each `turn/start` answer this long, so a test can act while
+       * one is out. */
+      turnStartDelayMs?: number
+    } = {},
+  ): this {
     const threads = new Map<string, FakeCodexThread>()
     const turns = new Map<string, FakeCodexTurn>()
     const loaded = new Set<string>()
@@ -383,6 +390,7 @@ export class FakeCodexAppServer implements TerminableChild {
         return turn.startResponse()
       },
       {
+        ...(options.turnStartDelayMs ? { delayMs: options.turnStartDelayMs } : {}),
         after: (_request, result) => {
           const turn = turns.get(result.turn.id)
           if (!turn) return

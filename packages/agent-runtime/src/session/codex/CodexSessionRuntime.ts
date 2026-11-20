@@ -752,12 +752,11 @@ export class CodexSessionRuntime implements ManagedSessionRuntime {
     if (generation !== this.stopGeneration) return
     if (this.active) throw new Error('A Codex turn is already running in this session')
     // A composer change or a reopen still under way finishes first, and none
-    // starts until this turn is open: one made after that is queued for the
-    // next turn, never sent under this one's `turn/start`.
+    // starts until this turn is open. One made after that is queued: it goes
+    // with this turn's `turn/start` if made before it is sent (during the
+    // handover), else with the next turn.
     const release = await this.holdSettings()
     try {
-      // Stopped while it waited: no turn is started behind the host.
-      if (cancels !== this.cancels) return
       if (this.active) throw new Error('A Codex turn is already running in this session')
       if (args.desiredConfig) await this.applyDesiredConfig(args.desiredConfig)
       const input = codexInput(args.prompt)
@@ -767,9 +766,10 @@ export class CodexSessionRuntime implements ManagedSessionRuntime {
       // unless subagents still run on it.
       if (this.reopen || (this.configChanged() && !this.subagents.running)) {
         await this.reopenThread()
-        if (cancels !== this.cancels) return
         if (this.active) throw new Error('A Codex turn is already running in this session')
       }
+      // Stopped while it waited: no turn is started behind the host.
+      if (cancels !== this.cancels) return
       return await this.startTurn(args, input, release)
     } finally {
       release()
@@ -821,6 +821,7 @@ export class CodexSessionRuntime implements ManagedSessionRuntime {
       // Every setting, every turn: overrides are sticky, so one left out is
       // whatever the last turn set, not the default.
       const tier = this.turnServiceTier()
+      const sent = this.sentSettings()
       const response = await client.request(
         'turn/start',
         {
@@ -838,8 +839,11 @@ export class CodexSessionRuntime implements ManagedSessionRuntime {
         { timeoutMs: this.timeouts.controlRequestMs },
       )
       if ('serviceTier' in tier) this.threadTier = tier.serviceTier ?? CODEX_STANDARD_SERVICE_TIER
-      // Sent: from here Codex's read-back is the answer for them too.
-      this.queued.clear()
+      // Sent: from here Codex's read-back is the answer for them too. A
+      // change made while `turn/start` was out did not go with it, and stays
+      // queued for the next turn.
+      for (const field of [...this.queued])
+        if (this.sentSettings()[field] === sent[field]) this.queued.delete(field)
       // `turn/started` may have named it already. Named only now, after this
       // runtime closed it, it is an orphan Codex is still running: this
       // answer names exactly that turn, so blocking it can never catch
@@ -2129,6 +2133,17 @@ export class CodexSessionRuntime implements ManagedSessionRuntime {
     throw new CodexSettingsKeptError(
       `Codex kept its own ${kept.join(' and ')}: ${kept.map((field) => readBackValue(field, read)).join(', ')}`,
     )
+  }
+
+  /** The settings a `turn/start` sends, by field, to tell which queued
+   * changes it carried. */
+  private sentSettings(): Record<CodexSettingField, string | undefined> {
+    return {
+      model: this.modelId,
+      effort: this.desired.effort,
+      serviceTier: this.desired.serviceTier,
+      preset: this.desired.preset,
+    }
   }
 
   /** What `turn/start` says about speed: a tier other than standard is

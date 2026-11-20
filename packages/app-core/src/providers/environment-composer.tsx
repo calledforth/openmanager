@@ -516,7 +516,7 @@ export function EnvironmentComposerStateProvider({ children }: { children: React
         if (target?.type === 'new_session') kept = { draftId: id, sessionId: target.sessionId }
       }
       const launchWorkspaceId = sending ? sending.workspaceId : workspaceId
-      const { providerId, picked, profile, preference, resolved } = draftFor(
+      const { providerId, picked, preference, resolved } = draftFor(
         launchWorkspaceId ?? workspaceId,
         id,
       )
@@ -530,22 +530,24 @@ export function EnvironmentComposerStateProvider({ children }: { children: React
         ...(settings ? { configValues: settings } : {}),
       }
       const modeId = resolved.modes?.currentModeId
+      const providerCanSetMode =
+        selectProviderCatalog(client.getState()).find((entry) => entry.id === providerId)
+          ?.capabilities.canSetMode === true
       const launch: DraftLaunch = {
         providerId,
         ...(Object.keys(picks).length > 0 ? { preference: picks } : {}),
-        // A mode picked here always goes: the profile's default can be stale
-        // (a session that reported its own mode), and a launch without its
-        // mode starts in whatever the provider defaults to.
-        ...(modeId && (picked?.modeId === modeId || modeId !== profile?.defaultModeId)
-          ? { modeId }
-          : {}),
+        // The mode the draft shows always goes, picked or not: the profile's
+        // default can be stale, and a launch without its mode starts in
+        // whatever the provider's own settings say (for Claude, possibly
+        // `bypassPermissions`). Only a listed mode is ever shown.
+        ...(modeId && canSetMode && providerCanSetMode ? { modeId } : {}),
         ...(sending ? { workspaceId: launchWorkspaceId } : {}),
         ...(kept ? { draft: kept } : {}),
       }
       if (id) launchedPages.current.set(launch, id)
       return launch
     },
-    [client, draftFor, sync],
+    [canSetMode, client, draftFor, sync],
   )
 
   const launchInternals = useMemo<DraftLaunchInternals>(
