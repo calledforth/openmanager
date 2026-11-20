@@ -997,38 +997,26 @@ describe('CodexSessionRuntime review regressions', () => {
     })
   })
 
-  // Review: a turn closed before Codex named it was never blocked: its late
-  // `turn/completed` was claimed by the next prompt.
-  it('blocks and interrupts a turn Codex names only after its start timed out', async () => {
-    const turns: FakeCodexTurn[] = []
-    const { server, runtime, events } = build({ onTurn: (t) => turns.push(t), controlRequestMs: 50 })
-    server.respond('turn/interrupt', {} as never)
+  // Review: a `turn/start` that times out may leave Codex running a turn it
+  // never names to us. Guessing which later turn is that one hijacked the
+  // next prompt; the process is replaced instead, so that turn dies with it.
+  it('replaces the process when a turn/start never answers', async () => {
+    const { server, runtime, exits } = build({ controlRequestMs: 50 })
     await runtime.start()
-    // The first `turn/start` answers too late for its budget.
-    const thread = server.thread({ id: runtime.sessionId! } as never)
-    const orphan = thread.turn()
     server.respond('turn/start', () => new Promise(() => undefined) as never, { times: 1 })
-    const first = runtime.prompt({ prompt: PROMPT })
-    await expect(first).rejects.toThrow(/did not answer/)
-    // Codex started it all the same, and says so now.
-    orphan.started()
-    await vi.waitFor(() =>
-      expect(server.requests('turn/interrupt').map((r) => r.params.turnId)).toContain(orphan.id),
-    )
-    let secondDone = false
-    const second = runtime.prompt({ prompt: PROMPT }).then(() => (secondDone = true))
-    await vi.waitFor(() => expect(turns).toHaveLength(1))
-    orphan.completed() // the orphan's end must not end the second prompt
-    await new Promise((resolve) => setTimeout(resolve, 10))
-    expect(secondDone).toBe(false)
-    turns[0]!.agentMessage('second answer')
-    turns[0]!.completed()
-    await second
-    expect(texts(events)).toContain('second answer')
-    const identified = events.filter((e) => e.event === 'turn_identified')
-    expect(identified.map((e) => (e.data as { providerTurnId: string }).providerTurnId)).toEqual([
-      turns[0]!.id,
-    ])
+    await expect(runtime.prompt({ prompt: PROMPT })).rejects.toThrow(/did not answer/)
+    await runtime.exited
+    expect(exits).toMatchObject([{ reason: 'restart', expected: true }])
+    expect(server.requests('turn/interrupt')).toHaveLength(0)
+  })
+
+  // A `turn/start` Codex refuses started nothing: the process stays.
+  it('keeps the process when Codex refuses a turn/start', async () => {
+    const { server, runtime } = build()
+    await runtime.start()
+    server.fail('turn/start', -32600, 'nope', { times: 1 })
+    await expect(runtime.prompt({ prompt: PROMPT })).rejects.toThrow(/nope/)
+    expect(runtime.phase).toBe('ready')
   })
 
   it('blocks and interrupts a turn Codex names only after a grace close', async () => {

@@ -81,12 +81,6 @@ type ActiveTurn = {
    * names the turn it is for (`expectedTurnId`). */
   identified: Promise<void>
   markIdentified: () => void
-  /** Where its `turn/start` stands: answered (named), refused (Codex
-   * started nothing), or still out or lost to a timeout, when Codex may yet
-   * be running a turn for it. */
-  start: 'pending' | 'answered' | 'refused' | 'unknown'
-  /** Closed while unnamed and counted in `unnamedClosedTurns`. */
-  countedUnnamed: boolean
 }
 
 /** How many finished turn ids a runtime remembers, newest kept: only a
@@ -137,11 +131,6 @@ export class CodexSessionRuntime implements ManagedSessionRuntime {
    * after an interrupt timed out. Anything Codex later says about them (its
    * own late `turn/completed`) must never be taken for the next turn's. */
   private readonly finishedTurnIds = new Set<string>()
-  /** Turns whose `turn/start` this runtime sent but which it closed before
-   * Codex named them (a grace close, a `turn/start` that timed out). Codex
-   * runs them all the same, and names each in order, before any later turn:
-   * every one so named is an orphan to block and interrupt. */
-  private unnamedClosedTurns = 0
   /** The thread's cumulative token counts before the turn in flight, so a
    * turn reports its own usage rather than the last model request's. */
   private tokenBaseline: v2.TokenUsageBreakdown | undefined
@@ -532,25 +521,30 @@ export class CodexSessionRuntime implements ManagedSessionRuntime {
         },
         { timeoutMs: this.timeouts.controlRequestMs },
       )
-      active.start = 'answered'
       // `turn/started` may have named it already. Named only now, after this
-      // runtime closed it, it is an orphan Codex is still running.
+      // runtime closed it, it is an orphan Codex is still running: this
+      // answer names exactly that turn, so blocking it can never catch
+      // another.
       if (active.settled && !active.turn.turnId) this.orphanTurn(response.turn.id)
       else {
         this.identifyTurn(active, response.turn.id)
         if (active.turn.interruptRequested) void this.sendInterrupt(active)
       }
     } catch (error) {
-      // An answer that refuses means no turn exists; anything else (a
-      // timeout) leaves Codex perhaps running one.
-      if (error instanceof CodexRpcError) {
-        active.start = 'refused'
-        if (active.countedUnnamed) {
-          active.countedUnnamed = false
-          this.unnamedClosedTurns = Math.max(0, this.unnamedClosedTurns - 1)
-        }
-      } else active.start = 'unknown'
       this.failTurn(active, error)
+      // An answer that refuses means no turn exists. Anything else (a
+      // timeout) leaves Codex perhaps running a turn nobody will ever name
+      // to us: the process is replaced, so that turn dies with it and the
+      // next prompt never lands on a busy thread or mistakes it for its own.
+      if (!(error instanceof CodexRpcError) && !this.exitValue && this.phaseValue === 'ready') {
+        this.deps.host.log({
+          scope: 'codex',
+          level: 'warn',
+          message: 'Replacing the Codex process after a turn/start it never answered',
+          data: { error: errorMessage(error) },
+        })
+        void this.stop({ reason: 'restart' })
+      }
     }
     // The RPC only says the turn began; the turn ends on `turn/completed`.
     return active.done
@@ -575,8 +569,6 @@ export class CodexSessionRuntime implements ManagedSessionRuntime {
       settled: false,
       identified,
       markIdentified,
-      start: 'pending',
-      countedUnnamed: false,
     }
     // Nobody may be listening yet if the caller dropped the promise.
     done.catch(() => undefined)
@@ -628,18 +620,21 @@ export class CodexSessionRuntime implements ManagedSessionRuntime {
           message: 'Closing a turn with steers Codex has not answered; counting them as delivered',
           data: { turnId: active.turn.turnId, steerIds: placed },
         })
-      this.completeTurn(active, 'cancelled')
       // Codex may still be running that turn, and the next `turn/start` would
       // land on a busy thread. The process is replaced instead (as
       // `interruptGraceMs` says, and as Claude's watchdog does): the session
-      // resumes on its next prompt, and the turn dies with the process.
+      // resumes on its next prompt, and the turn dies with the process. The
+      // stop is begun before the turn is closed, so anything reacting to the
+      // close already sees the runtime stopping.
       this.deps.host.log({
         scope: 'codex',
         level: 'warn',
         message: 'Replacing the Codex process after an interrupt it did not finish',
         data: { turnId: active.turn.turnId },
       })
-      await this.stop({ reason: 'restart' })
+      const stopping = this.stop({ reason: 'restart' })
+      this.completeTurn(active, 'cancelled')
+      await stopping
     }
   }
 
@@ -911,12 +906,6 @@ export class CodexSessionRuntime implements ManagedSessionRuntime {
         return
       case 'turn/started': {
         const { turn } = params as v2.TurnStartedNotification
-        // Codex starts turns in the order they were asked for, so while a
-        // closed turn is still unnamed, the next one it announces is that.
-        if (this.unnamedClosedTurns > 0) {
-          this.orphanTurn(turn.id)
-          return
-        }
         if (active && !active.turn.turnId) {
           this.identifyTurn(active, turn.id)
           if (active.turn.interruptRequested) void this.sendInterrupt(active)
@@ -1060,12 +1049,6 @@ export class CodexSessionRuntime implements ManagedSessionRuntime {
 
   private rememberFinished(active: ActiveTurn): void {
     if (active.turn.turnId) this.rememberFinishedId(active.turn.turnId)
-    // Closed before Codex named it, with a turn perhaps running: Codex will
-    // name it, and that turn is an orphan.
-    else if (active.start === 'pending' || active.start === 'unknown') {
-      active.countedUnnamed = true
-      this.unnamedClosedTurns++
-    }
     const totals = active.turn.threadTotals
     if (totals) this.tokenBaseline = totals
   }
@@ -1082,7 +1065,6 @@ export class CodexSessionRuntime implements ManagedSessionRuntime {
    * says about it may reach a later turn, and it is told to stop. */
   private orphanTurn(turnId: string): void {
     if (this.finishedTurnIds.has(turnId)) return
-    if (this.unnamedClosedTurns > 0) this.unnamedClosedTurns--
     this.rememberFinishedId(turnId)
     this.deps.host.log({
       scope: 'codex',
