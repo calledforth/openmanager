@@ -923,3 +923,75 @@ describe('projectThread with subagents', () => {
     expect(projection.byId.get('t3-u')?.content.origin).toBeUndefined()
   })
 })
+
+describe('projectThread with operation turns (CAL-268)', () => {
+  const user = (turnId: string, text: string) => ({
+    messageId: `${turnId}-u`,
+    threadId: THREAD.threadId,
+    turnId,
+    role: 'user' as const,
+    content: [{ type: 'text' as const, text }],
+  })
+  const reply = (turnId: string, messageId: string, text: string, phase?: 'final_answer') => ({
+    messageId,
+    threadId: THREAD.threadId,
+    turnId,
+    role: 'assistant' as const,
+    content: [{ type: 'text' as const, text }],
+    ...(phase ? { phase } : {}),
+  })
+  const marker = (turnId: string, noticeId: string, phase: 'started' | 'finished') => ({
+    noticeId,
+    turnId,
+    kind: 'info' as const,
+    message: phase === 'started' ? 'Reviewing current changes' : 'Review finished',
+    review: { phase, ...(phase === 'started' ? { target: 'current changes' } : {}) },
+  })
+  const review = (state: 'completed' | 'interrupted') =>
+    thread({
+      turns: [{ turnId: 't1', threadId: THREAD.threadId, state, origin: 'review' }],
+      messages: [user('t1', '/review'), reply('t1', 'a1', '- [P1] Return the sum', 'final_answer')],
+      tools: [{ toolCallId: 'tool-1', turnId: 't1', title: 'git diff', status: 'completed' }],
+      notices: [marker('t1', 'n1', 'started'), marker('t1', 'n2', 'finished')],
+      order: [
+        { kind: 'message', id: 't1-u', turnId: 't1' },
+        { kind: 'notice', id: 'n1', turnId: 't1' },
+        { kind: 'tool', id: 'tool-1', turnId: 't1' },
+        { kind: 'notice', id: 'n2', turnId: 't1' },
+        { kind: 'message', id: 'a1', turnId: 't1' },
+      ],
+    })
+
+  it('marks the command of an operation turn, so it opens its turn as the operation', () => {
+    const state = thread({
+      turns: [
+        { turnId: 't1', threadId: THREAD.threadId, state: 'completed', origin: 'review' },
+        { turnId: 't2', threadId: THREAD.threadId, state: 'completed', origin: 'compact' },
+      ],
+      messages: [user('t1', '/review base main'), user('t2', '/compact')],
+    })
+    const projection = projectThread(state)
+    expect(projection.byId.get('t1-u')?.content.origin).toBe('review')
+    expect(projection.byId.get('t2-u')?.content.origin).toBe('compact')
+  })
+
+  it("shows a review's findings as its findings, under its finished marker, with the work folded above", () => {
+    const parts = projectThread(review('completed')).byId.get('a1')!.content.parts!
+    expect(parts.find((part) => part.id === 'a1')).toMatchObject({ type: 'text', findings: true })
+    const { workParts, finalParts } = partitionSettledTurnParts(parts)
+    expect(workParts.map((part) => part.id)).toEqual(['notice:n1', 'tool-1'])
+    expect(finalParts.map((part) => part.id)).toEqual(['notice:n2', 'a1'])
+  })
+
+  it('shows a stopped review’s last words as text, not as findings', () => {
+    const parts = projectThread(review('interrupted')).byId.get('a1')!.content.parts!
+    expect(parts.find((part) => part.id === 'a1')).not.toHaveProperty('findings')
+  })
+
+  it('marks no findings in a turn that is not a review', () => {
+    const state = review('completed')
+    const plain = { ...state, turns: [{ ...state.turns[0]!, origin: undefined }] }
+    const parts = projectThread(plain).byId.get('a1')!.content.parts!
+    expect(parts.find((part) => part.id === 'a1')).not.toHaveProperty('findings')
+  })
+})

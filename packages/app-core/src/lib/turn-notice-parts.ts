@@ -200,6 +200,14 @@ export function describeNotice(
       }
     }
     case 'info':
+      if (notice.review)
+        return notice.review.phase === 'started'
+          ? {
+              label: 'Review started',
+              ...(notice.review.target ? { detail: notice.review.target } : {}),
+              tone: 'muted',
+            }
+          : { label: 'Review finished', tone: 'muted' }
       return notice.move
         ? { label: `Moved to ${notice.move.name}`, detail: notice.move.path, tone: 'muted' }
         : { label: notice.message, ...(body ? { body } : {}), tone: 'muted' }

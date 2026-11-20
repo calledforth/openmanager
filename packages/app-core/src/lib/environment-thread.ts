@@ -1,6 +1,12 @@
 import { isTurnSettled } from '@agentpack/view'
 export { isTurnSettled } from '@agentpack/view'
-import type { ContentBlock, Message, Subagent, Turn } from '@openmanager/protocol'
+import {
+  isOperationTurnOrigin,
+  type ContentBlock,
+  type Message,
+  type Subagent,
+  type Turn,
+} from '@openmanager/protocol'
 import {
   resendablePrompt,
   selectActiveThread,
@@ -136,6 +142,8 @@ function mediaParts(message: Message, sessionId: string): MessagePart[] {
 const reasoningParts = new WeakMap<ReasoningEntry, { settled: boolean; part: MessagePart }>()
 const toolParts = new WeakMap<ToolState, MessagePart>()
 const textPartsByMessage = new WeakMap<Message, MessagePart[]>()
+/** The same, for a review's findings (see `textParts`). */
+const findingsPartsByMessage = new WeakMap<Message, MessagePart[]>()
 /** The row of a send still waiting on the environment, kept while it stays where it is. */
 const outboxRows = new WeakMap<OutboxEntry, UIMessage>()
 /** The row each steered message last had, kept while it says the same thing. */
@@ -210,9 +218,14 @@ function toolPart(tool: ToolState, sessionId: string): MessagePart {
   return part
 }
 
-/** A message belongs to one thread for good, so its session never changes under it. */
-function textParts(message: Message, sessionId: string): MessagePart[] {
-  let parts = textPartsByMessage.get(message)
+/**
+ * A message belongs to one thread for good, so its session never changes
+ * under it. `findings`: the text is what a review found, after its
+ * `finished` marker, and shows as the review's findings card.
+ */
+function textParts(message: Message, sessionId: string, findings = false): MessagePart[] {
+  const cache = findings ? findingsPartsByMessage : textPartsByMessage
+  let parts = cache.get(message)
   if (!parts) {
     parts = [
       {
@@ -222,12 +235,18 @@ function textParts(message: Message, sessionId: string): MessagePart[] {
         // Whether the text is the agent's narration or its answer, when its
         // provider says (see `partitionSettledTurnParts`).
         ...(message.phase ? { phase: message.phase } : {}),
+        ...(findings && message.phase !== 'commentary' ? { findings: true } : {}),
       },
       ...mediaParts(message, sessionId),
     ]
-    textPartsByMessage.set(message, parts)
+    cache.set(message, parts)
   }
   return parts
+}
+
+/** Whether a notice is a review's `finished` marker: what follows is its findings. */
+function isReviewFinished(notice: { kind: string; review?: { phase: string } }): boolean {
+  return notice.kind === 'info' && notice.review?.phase === 'finished'
 }
 
 const EMPTY: readonly never[] = []
@@ -350,9 +369,13 @@ function projectTurn(
     const content = contentText(message.content)
     const parts = mediaParts(message, sessionId)
     // The prompt of a turn nobody typed: the parent agent's, or the
-    // environment's word that subagents finished.
+    // environment's word that subagents finished. Or the command that ran an
+    // operation (`/review`, `/compact`).
     const origin =
-      message === prompt && (turn.origin === 'delegated' || turn.origin === 'subagents')
+      message === prompt &&
+      (turn.origin === 'delegated' ||
+        turn.origin === 'subagents' ||
+        isOperationTurnOrigin(turn.origin))
         ? turn.origin
         : undefined
     entries.push({
@@ -417,6 +440,10 @@ function projectTurn(
   type Segment = { after: Message | null; parts: MessagePart[]; texts: Message[] }
   const segments: Segment[] = [{ after: null, parts: [], texts: [] }]
   const placed = new Set<string>()
+  // A review's text after its `finished` marker is what it found. Not a
+  // stopped one's: Codex then says why it has nothing.
+  const review = turn.origin === 'review' && turn.state !== 'interrupted'
+  let findings = false
   for (const ref of order) {
     const key = `${ref.kind}:${ref.id}`
     if (placed.has(key)) continue
@@ -438,11 +465,12 @@ function projectTurn(
       placedParts = tool ? [toolOrCard(tool)] : subagent ? [subagentPart(subagent)] : undefined
     } else if (ref.kind === 'notice') {
       const notice = noticesById.get(ref.id)
+      if (notice && review && isReviewFinished(notice)) findings = true
       placedParts = notice ? [noticePart(notice)] : undefined
     } else {
       const message = assistantById.get(ref.id)
       if (message) segment.texts.push(message)
-      placedParts = message ? textParts(message, sessionId) : undefined
+      placedParts = message ? textParts(message, sessionId, findings) : undefined
     }
     if (!placedParts) continue
     placed.add(key)
@@ -461,7 +489,10 @@ function projectTurn(
     // One nothing places (an environment that predates subagent places)
     // shows where the turn's work is.
     ...subagents.filter((subagent) => !placedSubagents.has(subagent.subagentId)).map(subagentPart),
-    ...unplacedTexts.flatMap((message) => textParts(message, sessionId)),
+    // With nothing placed, the findings are the review's text once it finished.
+    ...unplacedTexts.flatMap((message) =>
+      textParts(message, sessionId, findings || (review && notices.some(isReviewFinished))),
+    ),
     ...notices
       .filter((notice) => !placed.has(`notice:${notice.noticeId}`))
       .map((notice) => noticePart(notice)),

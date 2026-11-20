@@ -1883,3 +1883,38 @@ describe('AgentRuntime background tasks (CAL-272)', () => {
     await runtime.shutdown()
   })
 })
+
+describe('AgentRuntime operation turns (CAL-268)', () => {
+  const COMPACT: PromptInput = { text: '/compact', blocks: [{ type: 'text', text: '/compact' }] }
+
+  it('runs an operation only on a provider that offers it', async () => {
+    const { runtime, connections, events } = build(sequentialSessions())
+    await expect(
+      runtime.prompt({ ...ROUTE, threadId: 'thread-1', prompt: COMPACT, operation: { kind: 'compact' } }),
+    ).rejects.toMatchObject({ name: 'CapabilityMissingError', capability: 'operations' })
+    // Refused before anything started: no process, and the host is told why.
+    expect(connections.connections).toHaveLength(0)
+    expect(events.at(-1)).toMatchObject({ event: 'capability_missing', data: { capability: 'operations' } })
+  })
+
+  it('hands the operation to a Codex runtime in place of the prompt', async () => {
+    let turn: FakeCodexTurn | undefined
+    const fakes = fakeCodexStarter((server) =>
+      server.respond('model/list', { data: [], nextCursor: null }).serveThreads((t) => (turn = t)),
+    )
+    const runtime = new AgentRuntime({ emitEvent: vi.fn(), log: vi.fn() }, configs, {
+      codexStart: fakes.start,
+      codexService: { setTimer: () => ({ cancel: () => undefined }) },
+    })
+    const route = { providerId: 'codex' as const, workspaceId: '/work', cwd: '/work', threadId: 't1' }
+    const prompt = runtime.prompt({ ...route, prompt: COMPACT, operation: { kind: 'compact' } })
+    await vi.waitFor(() => expect(turn).toBeDefined())
+    turn!.compaction()
+    turn!.completed()
+    await prompt
+    const server = fakes.servers[0]!
+    expect(server.requests('thread/compact/start')).toHaveLength(1)
+    expect(server.requests('turn/start')).toHaveLength(0)
+    await runtime.shutdown()
+  })
+})

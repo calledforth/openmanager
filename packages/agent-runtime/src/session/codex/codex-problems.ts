@@ -105,10 +105,14 @@ export function codexProblem(error: v2.TurnError): ProviderProblem {
     codeOfStatus(status) ??
     (status !== undefined && status >= 400 && status < 500 ? 'unknown' : codeOfName(name))
   const detail = detailOf(error)
-  // No `action`: the host's default for the code is right (try again, sign
-  // in), and openmanager cannot compact a Codex thread yet, so a full context
-  // offers nothing in the app.
-  return { code, ...(detail ? { detail } : {}) }
+  // A full context offers `/compact`, which runs Codex's own compaction (an
+  // operation turn). Otherwise the host's default for the code is right
+  // (try again, sign in).
+  return {
+    code,
+    ...(code === 'context_window_exceeded' ? { action: 'compact' as const } : {}),
+    ...(detail ? { detail } : {}),
+  }
 }
 
 /** The typed problem a refused request carries in its error data, if Codex

@@ -1,9 +1,12 @@
 export { AgentRuntime } from './core/AgentRuntime.js'
+export { describeTurnOperation, parseTurnOperation } from '@agentpack/contract'
+export type { ReviewTarget, TurnOperation, TurnOperationKind } from '@agentpack/contract'
 export type {
   AgentRuntimeOptions,
   ProviderBootstrap,
   ProviderCatalog,
   RuntimeRoute,
+  PromptArgs,
   RuntimeSessionArgs,
 } from './core/AgentRuntime.js'
 export { PermissionBroker, PERMISSION_TIMEOUT_MS } from './core/PermissionBroker.js'

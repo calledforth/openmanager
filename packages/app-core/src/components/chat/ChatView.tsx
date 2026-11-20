@@ -38,7 +38,7 @@ import { useOpenEnvironmentId } from '../../providers/environment-client'
 import { PendingPermissionFallback } from '../permissions/InlinePermissionPrompt'
 import { NewSessionLanding } from './NewSessionLanding'
 import { ScrollToEndButton } from './ScrollToEndButton'
-import { DelegatedPromptRow, SubagentsFinishedNotice } from './TurnOriginRows'
+import { DelegatedPromptRow, OperationPrompt, SubagentsFinishedNotice } from './TurnOriginRows'
 import {
   measurementsFromRememberedHeights,
   recallTimelinePosition,
@@ -945,6 +945,13 @@ const ResolvedMessage = memo(function ResolvedMessage(props: {
   }
   if (props.role === 'user' && contentDoc?.origin === 'subagents') {
     return <SubagentsFinishedNotice content={content} />
+  }
+  // A command that ran an operation (`/review`, `/compact`).
+  if (
+    props.role === 'user' &&
+    (contentDoc?.origin === 'review' || contentDoc?.origin === 'compact')
+  ) {
+    return <OperationPrompt content={content} origin={contentDoc.origin} />
   }
 
   if (props.role === 'user') {

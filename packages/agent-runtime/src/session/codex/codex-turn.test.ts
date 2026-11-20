@@ -97,8 +97,8 @@ describe('CodexTurn', () => {
   it('ignores our own userMessage echo and items it does not translate', () => {
     const { turn: t, out } = turn()
     t.itemStarted({ type: 'userMessage', id: 'u', clientId: null, content: [] } as v2.ThreadItem)
-    t.itemStarted({ type: 'contextCompaction', id: 'c' })
-    expect(out).toEqual([])
+    t.itemStarted({ type: 'imageView', id: 'i', path: '/x.png' } as v2.ThreadItem)
+    expect(out.filter((o) => o.event !== 'tool_call' && o.event !== 'tool_call_update')).toEqual([])
   })
 
   it('hands tool items and tool notifications to the tool translator', () => {
@@ -356,5 +356,105 @@ describe('CodexTurn reasoning parts', () => {
       .filter((o) => o.event === 'agent_thought_chunk' && (o.data as { phase: string }).phase === 'delta')
       .map((o) => (o.data as { content: { text: string } }).content.text)
     expect(deltas).toEqual(['**One**', '\n\n', '**Two**'])
+  })
+})
+
+describe('CodexTurn operations', () => {
+  const usage = (last: number): v2.ThreadTokenUsage => {
+    const breakdown = (total: number) => ({
+      totalTokens: total,
+      inputTokens: total,
+      cachedInputTokens: 0,
+      cacheWriteInputTokens: 0,
+      outputTokens: 0,
+      reasoningOutputTokens: 0,
+    })
+    return { total: breakdown(20_000), last: breakdown(last), modelContextWindow: 200_000 }
+  }
+  const notices = (out: CodexTurnOutput[]) =>
+    out.filter((o) => o.event === 'provider_notice').map((o) => o.data)
+
+  it('a compaction: compacting while it runs, compacted once, then the meter from the emptied window', () => {
+    const out: CodexTurnOutput[] = []
+    const t = new CodexTurn((o) => out.push(o), undefined, undefined, 'compact')
+    t.tokenUsageUpdated(usage(150_000))
+    t.itemStarted({ type: 'contextCompaction', id: 'c' })
+    t.tokenUsageUpdated(usage(9_000))
+    t.itemCompleted({ type: 'contextCompaction', id: 'c' })
+    t.itemCompleted({ type: 'contextCompaction', id: 'c' })
+    expect(out.map((o) => o.event)).toEqual(['provider_notice', 'provider_notice', 'usage_update'])
+    expect(notices(out)).toEqual([
+      { kind: 'compacting', message: 'Compacting the conversation' },
+      { kind: 'compacted', message: 'Conversation compacted', compaction: { trigger: 'manual' } },
+    ])
+    expect(out.at(-1)).toEqual({ event: 'usage_update', data: { used: 9_000, size: 200_000 } })
+    // The deprecated notification after the item says nothing more.
+    t.threadCompacted()
+    expect(notices(out)).toHaveLength(2)
+  })
+
+  it('an automatic compaction inside a prompted turn, and thread/compacted from a Codex with no item', () => {
+    const auto = turn()
+    auto.turn.itemStarted({ type: 'contextCompaction', id: 'c' })
+    auto.turn.itemCompleted({ type: 'contextCompaction', id: 'c' })
+    // No reading during it: the meter waits for the turn's own.
+    expect(auto.out.map((o) => o.event)).toEqual(['provider_notice', 'provider_notice'])
+    expect(notices(auto.out)[1]).toEqual({
+      kind: 'compacted',
+      message: 'Conversation compacted automatically',
+      compaction: { trigger: 'auto' },
+    })
+
+    const legacy = turn()
+    legacy.turn.threadCompacted()
+    expect(notices(legacy.out)).toEqual([
+      { kind: 'compacted', message: 'Conversation compacted automatically', compaction: { trigger: 'auto' } },
+    ])
+  })
+
+  it('a review: its markers once each, then its findings as the answer, not repeated', () => {
+    const out: CodexTurnOutput[] = []
+    const t = new CodexTurn((o) => out.push(o), undefined, undefined, 'review')
+    const entered = { type: 'enteredReviewMode', id: 'e', review: 'current changes' } as const
+    t.itemStarted(entered)
+    t.itemCompleted(entered)
+    // Codex's own prompt for the review is not ours to show.
+    t.itemStarted({
+      type: 'userMessage',
+      id: 'u',
+      clientId: null,
+      content: [{ type: 'text', text: 'Review the current code changes', text_elements: [] }],
+    } as v2.ThreadItem)
+    // The model's own message in review mode never streams.
+    t.itemStarted(message('m-model', '', 'final_answer'))
+    const findings = '- [P1] Return the sum — add.js:2'
+    const exited = { type: 'exitedReviewMode', id: 'x', review: findings } as const
+    t.itemStarted(exited)
+    t.itemCompleted(exited)
+    t.itemStarted(message('m-again', findings))
+    t.itemCompleted(message('m-again', findings))
+    t.finish(true)
+    expect(notices(out)).toEqual([
+      {
+        kind: 'info',
+        message: 'Reviewing current changes',
+        review: { phase: 'started', target: 'current changes' },
+      },
+      { kind: 'info', message: 'Review finished', review: { phase: 'finished' } },
+    ])
+    expect(out.filter((o) => o.event === 'agent_message_chunk').map((o) => o.data)).toEqual([
+      { messageId: 'x', content: { type: 'text', text: findings }, phase: 'final_answer' },
+    ])
+  })
+
+  it('a stopped review shows why, not that the reviewer failed', () => {
+    const out: CodexTurnOutput[] = []
+    const t = new CodexTurn((o) => out.push(o), undefined, undefined, 'review')
+    t.interruptRequested = true
+    t.itemCompleted({ type: 'exitedReviewMode', id: 'x', review: 'Reviewer failed to output a response.' })
+    t.itemStarted(message('m', 'Review was interrupted. Please re-run /review.'))
+    t.itemCompleted(message('m', 'Review was interrupted. Please re-run /review.'))
+    expect(notices(out)).toEqual([{ kind: 'info', message: 'Review finished', review: { phase: 'finished' } }])
+    expect(text(out)).toBe('Review was interrupted. Please re-run /review.')
   })
 })

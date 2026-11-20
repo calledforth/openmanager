@@ -307,6 +307,49 @@ export class FakeCodexTurn {
     return this
   }
 
+  /** What this turn runs instead of a prompt, when `review/start` or
+   * `thread/compact/start` started it. Such a turn refuses a steer. */
+  operation: 'review' | 'compact' | undefined = undefined
+  /** A review's working turn: the extra `turn/started` names it. */
+  workingTurnId: string | undefined = undefined
+
+  /** A review entering review mode, then its working turn starting, as
+   * codex 0.170 orders them (the `review` fixture): `enteredReviewMode`
+   * under this turn, then `turn/started` for another turn whose
+   * `rootTurnId` is this one. */
+  reviewStarted(review = 'current changes'): this {
+    const entered = { type: 'enteredReviewMode' as const, id: fakeId(), review }
+    this.itemStarted(entered)
+    this.itemCompleted(entered)
+    const working = buildTurn({ rootTurnId: this.id })
+    this.workingTurnId = working.id
+    this.thread.status({ type: 'active', activeFlags: [] })
+    this.server.notify('turn/started', { threadId: this.threadId, turn: working })
+    return this
+  }
+
+  /** A review leaving review mode with its findings, then the same words
+   * again as an agent message with no phase, whole. */
+  reviewFinished(review: string, message: string = review): this {
+    const exited = { type: 'exitedReviewMode' as const, id: fakeId(), review }
+    this.itemStarted(exited)
+    this.itemCompleted(exited)
+    const item = agentMessageItem(message, { phase: null })
+    this.itemStarted(item)
+    this.itemCompleted(item)
+    return this
+  }
+
+  /** A `contextCompaction` item. `during` runs between its start and end
+   * (Codex reads the emptied window there: `tokenUsage`). */
+  compaction(during?: () => void): this {
+    const item = { type: 'contextCompaction' as const, id: fakeId() }
+    this.itemStarted(item)
+    during?.()
+    this.itemCompleted(item)
+    return this
+  }
+
   /** `turn/completed`, after the thread goes idle, as Codex orders them. A
    * completed turn carries its final answer (`itemsView: "summary"`); an
    * interrupted or failed one carries no items. */

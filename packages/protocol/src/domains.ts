@@ -334,6 +334,16 @@ export type TurnFailure = z.infer<typeof TurnFailureSchema>
 /** Who ended an interrupted turn: the user, or a restart that cut it off. */
 export const TurnInterruptionSchema = z.enum(['user', 'server_restarted'])
 export type TurnInterruption = z.infer<typeof TurnInterruptionSchema>
+/** Who began a turn, when it was not a prompt the user sent; see `Turn.origin`. */
+export const TurnOriginSchema = z.enum(['background', 'delegated', 'subagents', 'review', 'compact'])
+export type TurnOrigin = z.infer<typeof TurnOriginSchema>
+/** The origins of operation turns: a provider operation the user asked for. */
+export const OPERATION_TURN_ORIGINS = ['review', 'compact'] as const
+export function isOperationTurnOrigin(
+  origin: TurnOrigin | undefined,
+): origin is (typeof OPERATION_TURN_ORIGINS)[number] {
+  return origin === 'review' || origin === 'compact'
+}
 export const TurnSchema = z.object({
   turnId: EntityIdSchema,
   threadId: EntityIdSchema,
@@ -358,8 +368,13 @@ export const TurnSchema = z.object({
    * `subagents`: a turn the environment began in a parent session to tell its
    * agent that subagents it started have finished; its user message is that
    * notice.
+   *
+   * `review` and `compact`: an operation turn. The user's message asked the
+   * provider to run one of its own operations (`/review`, `/compact`) rather
+   * than sent the agent a prompt; its user message is that command. The
+   * provider runs it with no prompt, and it cannot be steered.
    */
-  origin: z.enum(['background', 'delegated', 'subagents']).optional(),
+  origin: TurnOriginSchema.optional(),
   /**
    * The command that started the turn, so a client matches its own send to
    * the turn by id rather than by text. Absent on a turn nobody sent.
@@ -572,6 +587,18 @@ const turnNotice = <K extends z.ZodType>(kind: K) =>
         trigger: z.enum(['manual', 'auto']),
         tokensBefore: z.number().int().nonnegative().optional(),
         tokensAfter: z.number().int().nonnegative().optional(),
+      })
+      .optional(),
+    /**
+     * `info`: the marker of a review turn entering review mode, with what it
+     * reviews as the provider described it (`started`), or leaving it
+     * (`finished`), after which the turn's answer is the review's findings.
+     * Carried on an `info` notice for the same reason as `move`.
+     */
+    review: z
+      .object({
+        phase: z.enum(['started', 'finished']),
+        target: z.string().optional(),
       })
       .optional(),
     /** `usage_warning`: when the limit it warns about resets. */

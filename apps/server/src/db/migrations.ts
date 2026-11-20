@@ -1357,6 +1357,28 @@ export const MIGRATIONS: readonly Migration[] = [
       )
     },
   },
+  {
+    version: 38,
+    name: 'operation_turns',
+    up(database) {
+      // `turns.origin` gains `review` and `compact` (CAL-268): a message that
+      // ran a provider operation instead of a prompt. Replaced as a column,
+      // as in version 33, since SQLite cannot widen a CHECK in place.
+      const turnSql = (
+        database
+          .prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'turns'")
+          .get() as { sql: string } | undefined
+      )?.sql
+      if (!turnSql || turnSql.includes("'compact'")) return
+      database.exec(`
+        ALTER TABLE turns ADD COLUMN origin_v38 TEXT
+          CHECK (origin_v38 IS NULL OR origin_v38 IN ('background', 'delegated', 'subagents', 'review', 'compact'));
+        UPDATE turns SET origin_v38 = origin WHERE origin IS NOT NULL;
+        ALTER TABLE turns DROP COLUMN origin;
+        ALTER TABLE turns RENAME COLUMN origin_v38 TO origin;
+      `)
+    },
+  },
 ]
 
 type RetainedActivityRow = {

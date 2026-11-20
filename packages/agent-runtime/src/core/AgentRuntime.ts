@@ -15,6 +15,7 @@ import type {
   QuestionOutcome,
   SubtaskStatus,
   SubtaskUpdate,
+  TurnOperation,
   UsageLimitsResult,
 } from '@agentpack/contract'
 import { isRecoverableError } from '@agentpack/contract'
@@ -105,6 +106,15 @@ export type ProviderCatalog = {
   /** What the provider's own configuration rules out, when the probe could
    * ask (Codex). */
   policy?: ProviderPolicy
+}
+
+/** What a turn sends: a prompt, or an operation the provider runs in its
+ * place (`TurnOperation`, gated by `capabilities.operations`). The prompt is
+ * then the command as typed, kept for the host's own record. */
+export type PromptArgs = {
+  prompt: PromptInput
+  userMessageId?: string
+  operation?: TurnOperation
 }
 
 export type RuntimeSessionArgs = RuntimeRoute & {
@@ -1189,8 +1199,13 @@ export class AgentRuntime {
    * minutes. Applying config here and dispatching later means a second prompt
    * arriving in between decides what model the first one runs on. */
   async prompt(
-    args: RuntimeSessionArgs & { prompt: PromptInput; userMessageId?: string },
+    args: RuntimeSessionArgs & PromptArgs,
   ): Promise<SessionResult> {
+    // An operation runs only on a provider that offers it: anywhere else the
+    // command would reach the agent as a prompt it was never meant to be.
+    const operation = args.operation
+    if (operation && !this.configs[args.providerId].capabilities.operations?.includes(operation.kind))
+      this.missing(args, 'operations', `run ${operation.kind}`)
     const session = await this.openSession(args, false)
     const key = args.threadId
     const previous = this.promptQueues.get(key) ?? Promise.resolve()
@@ -1208,9 +1223,7 @@ export class AgentRuntime {
     return session
   }
 
-  private async runPrompt(
-    args: RuntimeSessionArgs & { prompt: PromptInput; userMessageId?: string },
-  ): Promise<void> {
+  private async runPrompt(args: RuntimeSessionArgs & PromptArgs): Promise<void> {
     const entry = this.entry(args)
     const userMessageId = args.userMessageId ?? `agent_usr_${crypto.randomUUID()}`
     // Re-resolved here rather than reused from `openSession`: this runs when
@@ -1223,15 +1236,14 @@ export class AgentRuntime {
         prompt: args.prompt,
         userMessageId,
         ...(desired ? { desiredConfig: desired } : {}),
+        ...(args.operation ? { operation: args.operation } : {}),
       })
     } finally {
       this.registry.endTurn(args.threadId)
     }
   }
 
-  sendPrompt(
-    args: RuntimeSessionArgs & { prompt: PromptInput; userMessageId?: string },
-  ): Promise<SessionResult> {
+  sendPrompt(args: RuntimeSessionArgs & PromptArgs): Promise<SessionResult> {
     return this.prompt(args)
   }
   /** Wait until the current prompt for a thread has fully settled. Interactive

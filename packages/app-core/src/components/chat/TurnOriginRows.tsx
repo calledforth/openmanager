@@ -1,6 +1,12 @@
 import { useCallback, useState } from 'react'
-import { ArrowBendDownRightIcon, CaretRightIcon, FlowArrowIcon } from '@phosphor-icons/react'
-import type { ProviderId } from '@agentpack/contract'
+import {
+  ArrowBendDownRightIcon,
+  ArrowsInLineVerticalIcon,
+  CaretRightIcon,
+  FlowArrowIcon,
+  MagnifyingGlassIcon,
+} from '@phosphor-icons/react'
+import { describeTurnOperation, parseTurnOperation, type ProviderId } from '@agentpack/contract'
 import type { EnvironmentState } from '@openmanager/environment-client'
 import { cn } from '../../lib/utils'
 import {
@@ -176,4 +182,43 @@ function ConnectedDelegatedPrompt({ content }: { content: string }) {
       }
     : undefined
   return <DelegatedPrompt content={content} from={from} />
+}
+
+/**
+ * The command that ran a provider operation (`/review`, `/compact`): a person
+ * sent it, but as an instruction to the provider, not words for the agent. So
+ * it opens its turn as one line saying what ran, with the command as typed
+ * beside it, rather than as a message bubble.
+ */
+export function OperationPrompt({
+  content,
+  origin,
+}: {
+  content: string
+  origin: 'review' | 'compact'
+}) {
+  const operation = parseTurnOperation(content)
+  const { label, detail } = operation
+    ? describeTurnOperation(operation)
+    : { label: origin === 'review' ? 'Code review' : 'Compact the conversation', detail: undefined }
+  const Glyph = origin === 'review' ? MagnifyingGlassIcon : ArrowsInLineVerticalIcon
+  return (
+    <div
+      className="flex w-full min-w-0 items-baseline gap-1.5 px-1 pt-6 pb-1 text-ui-md"
+      data-turn-origin={origin}
+    >
+      <Glyph
+        size={13}
+        aria-hidden
+        className="relative top-[2px] shrink-0 text-[var(--basis-text-faint)]"
+      />
+      <span className="shrink-0 text-[var(--basis-text)]">{label}</span>
+      {detail ? (
+        <span className="min-w-0 truncate text-[var(--basis-text-muted)]">{detail}</span>
+      ) : null}
+      <code className="ml-auto shrink-0 rounded bg-[var(--basis-surface)] px-1.5 py-0.5 font-mono text-ui-xs text-[var(--basis-text-faint)]">
+        {content.trim().split(/\s+/)[0]}
+      </code>
+    </div>
+  )
 }

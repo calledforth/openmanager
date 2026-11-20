@@ -347,3 +347,47 @@ describe('MessageParts', () => {
     expect(model.expandedText).toContain('one.ts')
   })
 })
+
+describe('MessageParts for a review (CAL-268)', () => {
+  it("shows a review's markers, and its findings on a card of their own", () => {
+    const html = renderToStaticMarkup(
+      <MessageParts
+        parts={[
+          {
+            type: 'notice',
+            id: 'notice:n1',
+            notice: {
+              noticeId: 'n1',
+              turnId: 't1',
+              kind: 'info',
+              message: 'Reviewing current changes',
+              review: { phase: 'started', target: 'current changes' },
+            },
+          },
+          {
+            type: 'notice',
+            id: 'notice:n2',
+            notice: {
+              noticeId: 'n2',
+              turnId: 't1',
+              kind: 'info',
+              message: 'Review finished',
+              review: { phase: 'finished' },
+            },
+          },
+          { type: 'text', id: 'a1', text: '- [P1] Return the sum', findings: true },
+          { type: 'text', id: 'a2', text: 'Plain words' },
+        ]}
+        isStreaming={false}
+      />,
+    )
+    expect(html).toContain('data-review="started"')
+    expect(html).toContain('Review started')
+    expect(html).toContain('current changes')
+    expect(html).toContain('data-review="finished"')
+    expect(html).toContain('Review finished')
+    expect(html).toMatch(/data-review-findings[^>]*>.*Findings.*Return the sum.*<\/section>/s)
+    expect(html.split('data-review-findings').length).toBe(2)
+    expect(html).toContain('Plain words')
+  })
+})

@@ -1,4 +1,5 @@
-import { mkdtemp, rm } from 'node:fs/promises'
+import { execFileSync } from 'node:child_process'
+import { mkdtemp, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { describe, expect, it, vi } from 'vitest'
@@ -111,6 +112,55 @@ describe.skipIf(process.env.OPENMANAGER_LIVE_CODEX !== '1')('Codex session setti
       expect(events.filter((e) => e.event === 'current_mode_update').at(-1)?.data).toMatchObject({
         currentModeId: 'supervised',
       })
+    } finally {
+      await runtime.stop({ reason: 'disposed' })
+      await rm(cwd, { recursive: true, force: true })
+    }
+  })
+})
+
+/** Spends tokens like the turn test: a small review and a compaction. */
+describe.skipIf(!live)('Codex operation turns, live', () => {
+  it('runs /review on uncommitted changes, then /compact, as operation turns (CAL-268)', { timeout: 300_000 }, async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'openmanager-codex-ops-'))
+    const git = (...args: string[]) => execFileSync('git', args, { cwd, stdio: 'ignore' })
+    git('init', '-q')
+    git('-c', 'user.email=t@example.invalid', '-c', 'user.name=t', 'commit', '-q', '--allow-empty', '-m', 'init')
+    await writeFile(join(cwd, 'add.js'), 'export function add(a, b) {\n  return a - b\n}\n')
+    const events: BackendEvent[] = []
+    const runtime = new CodexSessionRuntime(
+      { threadId: 't1', providerId: 'codex', cwd },
+      {
+        config: codex,
+        host: { log: vi.fn() },
+        permissions: new PermissionBroker(),
+        interactions: new InteractionBroker(),
+      },
+    )
+    runtime.events((event) => events.push(event))
+    const command = (text: string) => ({ text, blocks: [{ type: 'text' as const, text }] })
+    try {
+      await runtime.start()
+      await runtime.prompt({
+        prompt: command('/review'),
+        operation: { kind: 'review', target: { type: 'uncommitted_changes' } },
+        desiredConfig: { modelId: process.env.OPENMANAGER_LIVE_CODEX_MODEL ?? 'gpt-6-luna' },
+      })
+      const notices = events.filter((e) => e.event === 'provider_notice').map((e) => e.data as { review?: unknown })
+      expect(notices.filter((notice) => notice.review)).toEqual([
+        expect.objectContaining({ review: expect.objectContaining({ phase: 'started' }) }),
+        expect.objectContaining({ review: { phase: 'finished' } }),
+      ])
+      expect(events.filter((e) => e.event === 'agent_message_chunk').length).toBe(1)
+      expect(events.map((e) => e.event)).not.toContain('background_turn_started')
+
+      events.length = 0
+      await runtime.prompt({ prompt: command('/compact'), operation: { kind: 'compact' } })
+      expect(
+        events.filter((e) => e.event === 'provider_notice').map((e) => (e.data as { kind: string }).kind),
+      ).toEqual(expect.arrayContaining(['compacting', 'compacted']))
+      expect(events.map((e) => e.event)).toContain('usage_update')
+      expect(events.find((e) => e.event === 'prompt_completed')).toMatchObject({ data: { stopReason: 'end_turn' } })
     } finally {
       await runtime.stop({ reason: 'disposed' })
       await rm(cwd, { recursive: true, force: true })

@@ -42,7 +42,12 @@ describe('codexProblem', () => {
     ['sandboxError', 'unknown'],
     ['other', 'unknown'],
   ] as const)('maps %s to %s', (variant, code) => {
-    expect(codexProblem(error(variant))).toEqual({ code, detail: 'It went wrong' })
+    expect(codexProblem(error(variant))).toEqual({
+      code,
+      // A full context offers `/compact`, an operation turn.
+      ...(code === 'context_window_exceeded' ? { action: 'compact' } : {}),
+      detail: 'It went wrong',
+    })
   })
 
   it.each([

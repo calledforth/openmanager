@@ -77,6 +77,10 @@ export const CODEX_FIXTURES = [
   'steer',
   'tool-items',
   'terminal-interaction',
+  'compact',
+  'auto-compact',
+  'review',
+  'review-interrupt',
   'image-view',
   'image-generation',
 ] as const

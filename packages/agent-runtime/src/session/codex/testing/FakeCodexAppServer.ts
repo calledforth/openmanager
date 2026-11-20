@@ -431,6 +431,54 @@ export class FakeCodexAppServer implements TerminableChild {
         },
       },
     )
+    // `review/start` (inline) and `thread/compact/start`, as codex 0.170
+    // answers them (the `review` and `compact` fixtures): a review's turn is
+    // named in the answer and enters review mode at once; a compaction's
+    // answer is empty and its turn is named by `turn/started`. `onTurn`
+    // scripts the rest (`reviewFinished`, `compaction`, `completed`).
+    this.respond(
+      'review/start',
+      (params) => {
+        const thread = threads.get(params.threadId)
+        if (!thread || !loaded.has(thread.id))
+          throw new CodexRpcError(RPC_INVALID_REQUEST, `thread not found: ${params.threadId}`)
+        prompted.add(thread.id)
+        const turn = thread.turn()
+        turn.operation = 'review'
+        turns.set(turn.id, turn)
+        return { turn: { ...turn.startResponse().turn, rootTurnId: null }, reviewThreadId: thread.id }
+      },
+      {
+        after: (_request, result) => {
+          const turn = turns.get(result.turn.id)
+          if (!turn) return
+          turn.reviewStarted()
+          onTurn?.(turn)
+        },
+      },
+    )
+    let compacting: FakeCodexTurn | undefined
+    this.respond(
+      'thread/compact/start',
+      (params) => {
+        const thread = threads.get(params.threadId)
+        if (!thread || !loaded.has(thread.id))
+          throw new CodexRpcError(RPC_INVALID_REQUEST, `thread not found: ${params.threadId}`)
+        compacting = thread.turn()
+        compacting.operation = 'compact'
+        turns.set(compacting.id, compacting)
+        return {}
+      },
+      {
+        after: () => {
+          const turn = compacting
+          compacting = undefined
+          if (!turn) return
+          turn.started()
+          onTurn?.(turn)
+        },
+      },
+    )
     this.respond(
       'turn/steer',
       (params) => {
@@ -438,6 +486,11 @@ export class FakeCodexAppServer implements TerminableChild {
           (turn) => turn.threadId === params.threadId && turn.turn.status === 'inProgress',
         )
         if (!running) throw new CodexRpcError(-32600, 'no active turn to steer')
+        if (running.operation)
+          throw new CodexRpcError(-32600, `cannot steer a ${running.operation} turn`, {
+            message: `cannot steer a ${running.operation} turn`,
+            codexErrorInfo: { activeTurnNotSteerable: { turnKind: running.operation } },
+          })
         if (running.id !== params.expectedTurnId)
           throw new CodexRpcError(
             -32600,

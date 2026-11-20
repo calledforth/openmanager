@@ -1,4 +1,10 @@
-import type { MessagePhase as ChunkPhase, SessionUsage, TokenUsage } from '@agentpack/contract'
+import type {
+  MessagePhase as ChunkPhase,
+  ProviderNotice,
+  SessionUsage,
+  TokenUsage,
+  TurnOperationKind,
+} from '@agentpack/contract'
 import type { MessagePhase, v2 } from '@openmanager/codex-app-server-protocol'
 import { CodexTools, type CodexToolOutput } from './codex-tools.js'
 
@@ -17,6 +23,10 @@ export type CodexTurnOutput =
       }
     }
   | { event: 'steer_delivered' | 'steer_withdrawn'; data: { steerId: string } }
+  /** A review's markers, and a compaction under way and done. */
+  | { event: 'provider_notice'; data: ProviderNotice }
+  /** The context meter, once a compaction has emptied the window. */
+  | { event: 'usage_update'; data: SessionUsage }
   | CodexToolOutput
 
 type OpenMessage = { phase: MessagePhase | null; streamed: boolean }
@@ -56,6 +66,24 @@ export class CodexTurn {
   /** Whether the turn's first `userMessage`, the prompt's echo, was seen. */
   private promptEchoed = false
   private readonly tools: CodexTools
+  /** A review's working turn: the extra `turn/started` a review emits names
+   * it (its `rootTurnId` is the review's turn), and only it can be
+   * interrupted. Every item and the `turn/completed` name the review's. */
+  workingTurnId: string | undefined
+  /** Review and compaction items already shown, by id: each arrives twice
+   * (`item/started`, `item/completed`) and counts once. */
+  private readonly marked = new Set<string>()
+  /** A compaction under way, and whether Codex read the context since it
+   * began (it reads it again once the compaction is done). */
+  private compaction: { read: boolean } | undefined
+  /** Whether a `contextCompaction` item was seen: then the deprecated
+   * `thread/compacted` says nothing more. */
+  private compactionItems = false
+  /** What a review found, as `exitedReviewMode` said: the message Codex
+   * sends after it with the same words is not shown twice. */
+  private findings: string | undefined
+  /** Agent messages not shown, by id: a review's findings sent again. */
+  private readonly skipped = new Set<string>()
 
   constructor(
     private readonly emit: (output: CodexTurnOutput) => void,
@@ -65,6 +93,8 @@ export class CodexTurn {
     private baseline?: v2.TokenUsageBreakdown,
     /** The session's working directory, which relative paths are read from. */
     cwd?: string,
+    /** The operation this turn runs instead of a prompt (`TurnOperation`). */
+    readonly operation?: TurnOperationKind,
   ) {
     this.tools = new CodexTools(emit, cwd ? { cwd } : {})
   }
@@ -78,7 +108,13 @@ export class CodexTurn {
   itemStarted(item: v2.ThreadItem): void {
     switch (item.type) {
       case 'agentMessage':
+        if (this.isFindingsAgain(item)) return
         this.messages.set(item.id, { phase: item.phase, streamed: false })
+        return
+      case 'enteredReviewMode':
+      case 'exitedReviewMode':
+      case 'contextCompaction':
+        this.marker(item, 'started')
         return
       case 'reasoning':
         this.openReasoning(item.id)
@@ -180,7 +216,7 @@ export class CodexTurn {
   }
 
   agentMessageDelta(params: v2.AgentMessageDeltaNotification): void {
-    if (!params.delta) return
+    if (!params.delta || this.skipped.has(params.itemId)) return
     const message = this.messages.get(params.itemId)
     if (message) message.streamed = true
     else this.messages.set(params.itemId, { phase: null, streamed: true })
@@ -210,6 +246,7 @@ export class CodexTurn {
   itemCompleted(item: v2.ThreadItem): void {
     switch (item.type) {
       case 'agentMessage': {
+        if (this.skipped.has(item.id) || (!this.messages.has(item.id) && this.isFindingsAgain(item))) return
         const message = this.messages.get(item.id)
         // A message whose deltas never arrived (a short one can come whole)
         // is backfilled from the completed item, so no answer is lost.
@@ -232,17 +269,104 @@ export class CodexTurn {
         // whose start was never seen.
         this.userMessage(item)
         return
+      case 'enteredReviewMode':
+      case 'exitedReviewMode':
+      case 'contextCompaction':
+        this.marker(item, 'completed')
+        return
       default:
         this.tools.itemCompleted(item)
         return
     }
   }
 
+  /** A review entering and leaving review mode, and a compaction. Each is
+   * shown once, at whichever of its `item/started` and `item/completed`
+   * comes first, except a compaction, which is under way between the two.
+   *
+   * - `enteredReviewMode`: the review's first marker, with what it reviews
+   *   as Codex put it ("current changes").
+   * - `exitedReviewMode`: the second marker, then what the review found as
+   *   the turn's answer. Not when the review was stopped: Codex then says it
+   *   "failed to output a response", and its next message says why.
+   * - `contextCompaction`: "compacting" while it runs, "compacted" once done
+   *   (`manual` in a `/compact` turn, else Codex compacted by itself), and
+   *   the context meter from Codex's reading of the emptied window. */
+  private marker(
+    item: Extract<v2.ThreadItem, { type: 'enteredReviewMode' | 'exitedReviewMode' | 'contextCompaction' }>,
+    phase: 'started' | 'completed',
+  ): void {
+    if (item.type === 'contextCompaction') {
+      this.compactionItems = true
+      if (phase === 'started') {
+        if (this.marked.has(`start:${item.id}`)) return
+        this.marked.add(`start:${item.id}`)
+        this.compaction = { read: false }
+        this.notice({ kind: 'compacting', message: 'Compacting the conversation' })
+        return
+      }
+      if (this.marked.has(item.id)) return
+      this.marked.add(item.id)
+      const read = this.compaction?.read === true
+      this.compaction = undefined
+      this.compacted()
+      const context = this.contextUsage
+      if (read && context) this.emit({ event: 'usage_update', data: context })
+      return
+    }
+    if (this.marked.has(item.id)) return
+    this.marked.add(item.id)
+    const target = item.review.trim()
+    if (item.type === 'enteredReviewMode') {
+      this.notice({
+        kind: 'info',
+        message: target ? `Reviewing ${target}` : 'Review started',
+        review: { phase: 'started', ...(target ? { target } : {}) },
+      })
+      return
+    }
+    this.notice({ kind: 'info', message: 'Review finished', review: { phase: 'finished' } })
+    if (!target || this.interruptRequested) return
+    this.findings = item.review
+    this.text(item.id, item.review, 'final_answer')
+  }
+
+  /** `thread/compacted`, deprecated for the `contextCompaction` item: shown
+   * only by a Codex that sends no such item. */
+  threadCompacted(): void {
+    if (this.compactionItems) return
+    this.compacted()
+  }
+
+  private compacted(): void {
+    const manual = this.operation === 'compact'
+    this.notice({
+      kind: 'compacted',
+      message: manual ? 'Conversation compacted' : 'Conversation compacted automatically',
+      compaction: { trigger: manual ? 'manual' : 'auto' },
+    })
+  }
+
+  /** The agent message Codex sends after a review, repeating its findings. */
+  private isFindingsAgain(item: Extract<v2.ThreadItem, { type: 'agentMessage' }>): boolean {
+    if (this.findings === undefined || item.text !== this.findings) return false
+    this.skipped.add(item.id)
+    return true
+  }
+
+  private notice(notice: ProviderNotice): void {
+    this.emit({ event: 'provider_notice', data: notice })
+  }
+
   tokenUsageUpdated(usage: v2.ThreadTokenUsage): void {
     // With no baseline yet, the thread's total before this reading's own
     // request is where the turn began.
-    this.baseline ??= subtract(usage.total, usage.last)
+    // A compaction's reading is an estimate of the emptied window (`last`),
+    // not a request it spent (`total` does not move, _probed_): it began at
+    // `total`.
+    this.baseline ??= this.operation === 'compact' ? usage.total : subtract(usage.total, usage.last)
     this.tokenUsage = usage
+    if (this.compaction) this.compaction.read = true
   }
 
   /** The thread's cumulative counts as of the last reading: the next turn's

@@ -12,6 +12,7 @@ import type {
   ProviderSessionInfo,
   QuestionOutcome,
   SessionConfigOption,
+  TurnOperation,
   UsageLimitObservation,
 } from '@agentpack/contract'
 import type { v2, WebSearchMode } from '@openmanager/codex-app-server-protocol'
@@ -200,7 +201,8 @@ const HANDOVER_TOTAL_MAX_CHARS = 60_000
  * and archive (docs/decisions/codex-app-server.md, "Threads: archive on
  * delete, no import"). So are a thread that changed outside openmanager
  * (closed, archived, deleted, rewound, a system error), turns Codex begins by
- * itself, Codex's typed errors and its notices (`codex-problems.ts`; the
+ * itself, operation turns (`/review`, `/compact`: `runOperation`), Codex's
+ * typed errors and its notices (`codex-problems.ts`; the
  * decisions doc's "Errors and notices"). Tool items, approvals and questions are later changes;
  * until approvals exist, every approval Codex asks for is declined, so nothing
  * runs outside the sandbox without a person having said yes. */
@@ -335,6 +337,14 @@ export class CodexSessionRuntime implements ManagedSessionRuntime {
   /** A `turn/start` is out: a `turn/started` with no turn open is then that
    * one's (closed early), never a turn Codex began by itself. */
   private turnStarting = false
+  /** A `/compact` this runtime closed because Codex never started it: a
+   * turn Codex begins before the next prompt is that compaction. */
+  private compactionOwed = false
+  /** A review's working turns not tied to an open review, by the review's
+   * turn id (the extra `turn/started` came first), and reviews closed before
+   * Codex named them: either way the working turn is what an interrupt names. */
+  private readonly workingTurns = new Map<string, string>()
+  private readonly orphanedReviews = new Set<string>()
 
   constructor(
     private readonly spec: SessionRuntimeSpec,
@@ -761,6 +771,7 @@ export class CodexSessionRuntime implements ManagedSessionRuntime {
     prompt: PromptInput
     userMessageId?: string
     desiredConfig?: DesiredSessionConfig
+    operation?: TurnOperation
   }): Promise<void> {
     // A stop from here on stops this prompt too, wherever it is waiting.
     const cancels = this.cancels
@@ -781,8 +792,9 @@ export class CodexSessionRuntime implements ManagedSessionRuntime {
     try {
       if (this.active) throw new Error('A Codex turn is already running in this session')
       if (args.desiredConfig) await this.applyDesiredConfig(args.desiredConfig)
-      const input = codexInput(args.prompt)
-      this.assertReadsImages(args.prompt)
+      // An operation sends no prompt: the command as typed is the host's.
+      const input = args.operation ? [] : codexInput(args.prompt)
+      if (!args.operation) this.assertReadsImages(args.prompt)
       this.assertUsable()
       // A web search mode chosen since the thread was opened takes effect now,
       // unless subagents still run on it.
@@ -814,7 +826,7 @@ export class CodexSessionRuntime implements ManagedSessionRuntime {
 
   /** Send the turn, releasing the settings chain once it is open. */
   private async startTurn(
-    args: { prompt: PromptInput; userMessageId?: string },
+    args: { prompt: PromptInput; userMessageId?: string; operation?: TurnOperation },
     input: v2.UserInput[],
     release: () => void,
   ): Promise<void> {
@@ -832,7 +844,9 @@ export class CodexSessionRuntime implements ManagedSessionRuntime {
         ...(args.prompt.attachments?.length ? { attachments: args.prompt.attachments } : {}),
       }),
     )
-    const active = this.openTurn(false)
+    const operation = args.operation
+    this.compactionOwed = false
+    const active = this.openTurn(false, operation)
     // Open: a composer change from here waits for the next turn.
     release()
     this.flushNotices()
@@ -840,40 +854,43 @@ export class CodexSessionRuntime implements ManagedSessionRuntime {
     try {
       await this.handOver(client, threadId, userMessageId)
       this.threadRanTurn = true
-      // Every setting, every turn: overrides are sticky, so one left out is
-      // whatever the last turn set, not the default.
-      const tier = this.turnServiceTier()
-      const sent = this.sentSettings()
-      const response = await client.request(
-        'turn/start',
-        {
-          threadId,
-          input,
-          clientUserMessageId: userMessageId,
-          approvalPolicy: this.access.approvalPolicy,
-          approvalsReviewer: this.access.approvalsReviewer,
-          sandboxPolicy: this.access.sandboxPolicy,
-          summary: 'detailed',
-          ...(this.modelId ? { model: this.modelId } : {}),
-          ...(this.desired.effort ? { effort: this.desired.effort } : {}),
-          ...tier,
-        },
-        { timeoutMs: this.timeouts.controlRequestMs },
-      )
-      if ('serviceTier' in tier) this.threadTier = tier.serviceTier ?? CODEX_STANDARD_SERVICE_TIER
-      // Sent: from here Codex's read-back is the answer for them too. A
-      // change made while `turn/start` was out did not go with it, and stays
-      // queued for the next turn.
-      for (const field of [...this.queued])
-        if (this.sentSettings()[field] === sent[field]) this.queued.delete(field)
-      // `turn/started` may have named it already. Named only now, after this
-      // runtime closed it, it is an orphan Codex is still running: this
-      // answer names exactly that turn, so blocking it can never catch
-      // another.
-      if (active.settled && !active.turn.turnId) this.orphanTurn(response.turn.id)
+      if (operation) await this.runOperation(client, threadId, active, operation)
       else {
-        this.identifyTurn(active, response.turn.id)
-        if (active.turn.interruptRequested) void this.sendInterrupt(active)
+        // Every setting, every turn: overrides are sticky, so one left out is
+        // whatever the last turn set, not the default.
+        const tier = this.turnServiceTier()
+        const sent = this.sentSettings()
+        const response = await client.request(
+          'turn/start',
+          {
+            threadId,
+            input,
+            clientUserMessageId: userMessageId,
+            approvalPolicy: this.access.approvalPolicy,
+            approvalsReviewer: this.access.approvalsReviewer,
+            sandboxPolicy: this.access.sandboxPolicy,
+            summary: 'detailed',
+            ...(this.modelId ? { model: this.modelId } : {}),
+            ...(this.desired.effort ? { effort: this.desired.effort } : {}),
+            ...tier,
+          },
+          { timeoutMs: this.timeouts.controlRequestMs },
+        )
+        if ('serviceTier' in tier) this.threadTier = tier.serviceTier ?? CODEX_STANDARD_SERVICE_TIER
+        // Sent: from here Codex's read-back is the answer for them too. A
+        // change made while `turn/start` was out did not go with it, and stays
+        // queued for the next turn.
+        for (const field of [...this.queued])
+          if (this.sentSettings()[field] === sent[field]) this.queued.delete(field)
+        // `turn/started` may have named it already. Named only now, after this
+        // runtime closed it, it is an orphan Codex is still running: this
+        // answer names exactly that turn, so blocking it can never catch
+        // another.
+        if (active.settled && !active.turn.turnId) this.orphanTurn(response.turn.id)
+        else {
+          this.identifyTurn(active, response.turn.id)
+          if (active.turn.interruptRequested) void this.sendInterrupt(active)
+        }
       }
     } catch (error) {
       this.failTurn(active, error)
@@ -897,7 +914,112 @@ export class CodexSessionRuntime implements ManagedSessionRuntime {
     return active.done
   }
 
-  private openTurn(background: boolean): ActiveTurn {
+  /** Run an operation as the turn just opened (docs/decisions/codex-app-server.md,
+   * "Operation turns"). Neither request carries settings, so the session's
+   * own go first (`applySettingsNow`): a review runs shell commands under the
+   * thread's sandbox and model, and a compaction runs on its model. Either is
+   * refused (an error answer) like a `turn/start`, and the turn ends on its
+   * `turn/completed`.
+   *
+   * - `review/start`, delivered inline: Codex names the review's turn in its
+   *   answer, files every item and the `turn/completed` under it, and starts
+   *   the review's work as another turn (the extra `turn/started`, whose
+   *   `rootTurnId` is the review's), the one an interrupt must name.
+   * - `thread/compact/start`: Codex answers with nothing, then starts the
+   *   compaction as a turn that `turn/started` names. One it never names is
+   *   closed after the control timeout, so the session never waits on it. */
+  private async runOperation(
+    client: CodexAppServerClient,
+    threadId: string,
+    active: ActiveTurn,
+    operation: TurnOperation,
+  ): Promise<void> {
+    await this.applySettingsNow(client, threadId)
+    if (operation.kind === 'compact' && operation.instructions)
+      this.notice({
+        kind: 'info',
+        message: 'Codex compacts without instructions, so the words after /compact were not used',
+        detail: operation.instructions,
+      })
+    if (operation.kind === 'review') {
+      const response = await client.request(
+        'review/start',
+        { threadId, target: codexReviewTarget(operation.target), delivery: 'inline' },
+        { timeoutMs: this.timeouts.controlRequestMs },
+      )
+      if (active.settled && !active.turn.turnId) this.orphanReview(response.turn.id)
+      else {
+        this.identifyTurn(active, response.turn.id)
+        if (active.turn.interruptRequested) void this.sendInterrupt(active)
+      }
+      return
+    }
+    await client.request('thread/compact/start', { threadId }, { timeoutMs: this.timeouts.controlRequestMs })
+    const named = await Promise.race([
+      active.identified.then(() => true),
+      new Promise<false>((resolve) => {
+        const timer = setTimeout(() => resolve(false), this.timeouts.controlRequestMs)
+        timer.unref?.()
+      }),
+    ])
+    if (!named && !active.settled) {
+      this.deps.host.log({
+        scope: 'codex',
+        level: 'warn',
+        message: 'Codex accepted thread/compact/start but started no turn; closing it',
+        data: { threadId },
+      })
+      // Should it start after all, it is still this compaction, not one
+      // Codex began by itself.
+      this.compactionOwed = true
+      this.failTurn(active, new CodexTurnFailedError('Codex accepted the compaction but did not start it'))
+    }
+  }
+
+  /** Send the session's settings that Codex's read-back does not already
+   * show, now, before an operation that carries none, and wait for Codex to
+   * read them back. A change queued during the last turn goes this way. One
+   * Codex does not read back still went; one it refuses fails the turn, as a
+   * refused `turn/start` would. */
+  private async applySettingsNow(client: CodexAppServerClient, threadId: string): Promise<void> {
+    const fields: CodexSettingField[] = ['model', 'effort', 'serviceTier', 'preset']
+    const update = this.settingsUpdate(fields)
+    if (!update) {
+      for (const field of fields) this.queued.delete(field)
+      return
+    }
+    const since = this.settingsVersion
+    try {
+      await client.request(
+        'thread/settings/update',
+        { threadId, ...update },
+        { timeoutMs: this.timeouts.controlRequestMs },
+      )
+    } catch (error) {
+      if (!(error instanceof CodexRpcError) || error.code !== RPC_METHOD_NOT_FOUND) throw error
+      this.deps.host.log({
+        scope: 'codex',
+        level: 'warn',
+        message: 'This Codex has no thread/settings/update; the operation runs on the thread as it is',
+        data: { fields: Object.keys(update) },
+      })
+      return
+    }
+    if ('serviceTier' in update) this.threadTier = update.serviceTier ?? CODEX_STANDARD_SERVICE_TIER
+    for (const field of fields) this.queued.delete(field)
+    const read = await this.settingsReadBack(since, (candidate) =>
+      Object.keys(update).every((field) => this.readBackMatches(field, update, candidate)),
+    )
+    if (!read)
+      this.deps.host.log({
+        scope: 'codex',
+        level: 'warn',
+        message: 'Codex did not read back the settings sent before an operation',
+        data: { fields: Object.keys(update) },
+      })
+  }
+
+  private openTurn(background: boolean, operation?: TurnOperation): ActiveTurn {
     let resolve!: () => void
     let reject!: (error: unknown) => void
     const done = new Promise<void>((res, rej) => {
@@ -909,7 +1031,12 @@ export class CodexSessionRuntime implements ManagedSessionRuntime {
       markIdentified = res
     })
     const active: ActiveTurn = {
-      turn: new CodexTurn((output) => this.emitTurnOutput(output), this.tokenBaseline, this.cwd),
+      turn: new CodexTurn(
+        (output) => this.emitTurnOutput(output),
+        this.tokenBaseline,
+        this.cwd,
+        operation?.kind,
+      ),
       background,
       resolve,
       reject,
@@ -929,7 +1056,10 @@ export class CodexSessionRuntime implements ManagedSessionRuntime {
    * under, and it ends like any other, on its `turn/completed`. */
   private openBackgroundTurn(turnId: string): void {
     this.threadRanTurn = true
-    const active = this.openTurn(true)
+    // A `/compact` closed for never starting, starting after all.
+    const owed = this.compactionOwed
+    this.compactionOwed = false
+    const active = this.openTurn(true, owed ? { kind: 'compact' } : undefined)
     this.emit(routeEvent(this.route(), this.sessionIdValue, 'lifecycle', 'background_turn_started', {}))
     this.identifyTurn(active, turnId)
     this.flushNotices()
@@ -1315,6 +1445,13 @@ export class CodexSessionRuntime implements ManagedSessionRuntime {
         'no_turn',
         `Codex has no turn to steer on thread ${this.threadIdValue}`,
       )
+    // A review or compaction takes no input (Codex refuses it as
+    // `activeTurnNotSteerable`): refused here, without asking.
+    if (active.turn.operation)
+      throw new CodexSteerRefusedError(
+        'not_steerable',
+        `Codex cannot steer a ${active.turn.operation} turn`,
+      )
     // Converted before anything is recorded, as a prompt is: an unsupported
     // block refuses the steer instead of leaving it pending.
     const input = codexInput(args.prompt)
@@ -1383,7 +1520,10 @@ export class CodexSessionRuntime implements ManagedSessionRuntime {
   }
 
   private async sendInterrupt(active: ActiveTurn): Promise<void> {
-    const turnId = active.turn.turnId
+    // A review is interrupted through its working turn (_probed_: naming the
+    // review's own turn is refused, "expected active turn id"). Until the
+    // extra `turn/started` names it, the interrupt waits for it.
+    const turnId = active.turn.operation === 'review' ? active.turn.workingTurnId : active.turn.turnId
     if (!turnId || active.settled || !this.client || active.turn.interruptSent) return
     // Once per turn: a second cancel, or `turn/started` racing the
     // `turn/start` answer, must not send it again.
@@ -1549,6 +1689,29 @@ export class CodexSessionRuntime implements ManagedSessionRuntime {
         return
       case 'turn/started': {
         const { turn } = params as v2.TurnStartedNotification
+        // A review's extra `turn/started`: its working turn, rooted at the
+        // review's own, which goes on naming every item and its end.
+        const root = turn.rootTurnId
+        if (root && root !== turn.id) {
+          if (active?.turn.operation === 'review' && this.ownsTurn(active, root)) {
+            this.identifyTurn(active, root)
+            active.turn.workingTurnId = turn.id
+            if (active.turn.interruptRequested) void this.sendInterrupt(active)
+            return
+          }
+          // One for a review closed before Codex named it is stopped.
+          if (this.orphanedReviews.delete(root)) {
+            this.interruptOrphan(turn.id)
+            return
+          }
+          // One whose review is not named yet, or is already closed, starts
+          // nothing; it is kept in case the review is closed unnamed.
+          if (this.turnStarting || this.finishedTurnIds.has(root)) {
+            this.workingTurns.set(root, turn.id)
+            if (this.workingTurns.size > 8) this.workingTurns.delete(this.workingTurns.keys().next().value!)
+            return
+          }
+        }
         if (active) {
           if (!active.turn.turnId) {
             this.identifyTurn(active, turn.id)
@@ -1585,6 +1748,16 @@ export class CodexSessionRuntime implements ManagedSessionRuntime {
           )
         } else if (active && this.ownsTurn(active, notice.turnId)) {
           active.turn.error = notice.error
+          // An operation that fails ends there: a review Codex could not
+          // start (not a git repository, _probed_) gets no `turn/completed`.
+          // Like a `turn/completed`, it waits for any image still being read.
+          if (active.turn.operation) {
+            const failed = () =>
+              this.failTurn(active, new CodexTurnFailedError(notice.error.message, notice.error))
+            const reading = active.turn.imagesRead()
+            if (reading) void reading.then(failed)
+            else failed()
+          }
         }
         return
       }
@@ -1603,6 +1776,9 @@ export class CodexSessionRuntime implements ManagedSessionRuntime {
         return
       case 'item/agentMessage/delta':
         active.turn.agentMessageDelta(params as v2.AgentMessageDeltaNotification)
+        return
+      case 'thread/compacted':
+        active.turn.threadCompacted()
         return
       case 'item/reasoning/summaryPartAdded':
         active.turn.reasoningPartAdded(params as v2.ReasoningSummaryPartAddedNotification)
@@ -1704,7 +1880,12 @@ export class CodexSessionRuntime implements ManagedSessionRuntime {
     // Children run on past a failed turn too; not past the process.
     if (this.phaseValue !== 'exited') this.subagents.parentTurnEnded()
     const message = errorMessage(error)
-    const problem = problemOf(error)
+    const typed = problemOf(error)
+    // Compacting again is no remedy for a compaction that failed.
+    const problem =
+      typed?.action === 'compact' && active.turn.operation === 'compact'
+        ? (({ action: _action, ...rest }) => rest)(typed)
+        : typed
     this.emit(
       routeEvent(this.route(), this.sessionIdValue, 'error', 'runtime_error', {
         kind:
@@ -1745,6 +1926,28 @@ export class CodexSessionRuntime implements ManagedSessionRuntime {
       message: 'Codex named a turn this session already closed; interrupting it',
       data: { turnId },
     })
+    this.interruptOrphan(turnId)
+  }
+
+  /** A review Codex names after this runtime closed it. Only its working
+   * turn can be interrupted (_probed_), so that is stopped: now if the extra
+   * `turn/started` already named it, else when it does. */
+  private orphanReview(turnId: string): void {
+    if (this.finishedTurnIds.has(turnId)) return
+    this.rememberFinishedId(turnId)
+    this.deps.host.log({
+      scope: 'codex',
+      level: 'warn',
+      message: 'Codex named a review this session already closed; interrupting it',
+      data: { turnId },
+    })
+    const working = this.workingTurns.get(turnId)
+    this.workingTurns.delete(turnId)
+    if (working) this.interruptOrphan(working)
+    else this.orphanedReviews.add(turnId)
+  }
+
+  private interruptOrphan(turnId: string): void {
     const client = this.client
     if (!client || !this.sessionIdValue) return
     void client
@@ -1763,7 +1966,9 @@ export class CodexSessionRuntime implements ManagedSessionRuntime {
     const steer = output.event === 'steer_delivered' || output.event === 'steer_withdrawn'
     const category = steer
       ? 'lifecycle'
-      : output.event === 'plan_update'
+      : output.event === 'plan_update' ||
+          output.event === 'provider_notice' ||
+          output.event === 'usage_update'
         ? 'session'
         : output.event.startsWith('tool_')
           ? 'tool'
@@ -2784,9 +2989,10 @@ export class CodexSteerRefusedError extends Error {
 /** `turn/steer`'s refusals, by kind. Codex answers `-32600` both for a turn
  * that is not the active one ("expected active turn id `x` but found `y`",
  * "no active turn to steer", probed on 0.170) and for one that cannot be
- * steered, which also names `activeTurnNotSteerable` (`CodexErrorInfo`). That
- * one was not probed (it needs a review or compaction running), so it is
- * recognised by name anywhere in the error. Any other error is passed on as
+ * steered, which also names `activeTurnNotSteerable` (`CodexErrorInfo`;
+ * _probed_ on 0.170: "cannot steer a review turn", the `review` fixture). It
+ * is recognised by name anywhere in the error. The runtime refuses a steer
+ * into its own operation turns before asking. Any other error is passed on as
  * it is. `steer` only calls this for an answer Codex gave (`CodexRpcError`):
  * a missing answer is no refusal. */
 export function steerRefusal(error: unknown): Error {
@@ -2804,6 +3010,20 @@ export function steerRefusal(error: unknown): Error {
       )
   }
   return error instanceof Error ? error : new Error(String(error))
+}
+
+/** A review's target in Codex's spelling. */
+export function codexReviewTarget(target: Extract<TurnOperation, { kind: 'review' }>['target']): v2.ReviewTarget {
+  switch (target.type) {
+    case 'uncommitted_changes':
+      return { type: 'uncommittedChanges' }
+    case 'base_branch':
+      return { type: 'baseBranch', branch: target.branch }
+    case 'commit':
+      return { type: 'commit', sha: target.sha, title: target.title ?? null }
+    case 'custom':
+      return { type: 'custom', instructions: target.instructions }
+  }
 }
 
 /** The prompt as Codex input. Text blocks join into one text input; images

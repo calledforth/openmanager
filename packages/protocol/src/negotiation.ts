@@ -113,7 +113,13 @@ import {
 // v25: a provider's limits reading can carry `plan` (display text) and
 // `credits` (Codex's prepaid balance). The reading is strict, so a v24
 // client would reject every Codex provider entry and `provider_limits_changed`.
-export const PROTOCOL_VERSION = 25 as const
+// v26: operation turns. A turn's `origin` can be `review` or `compact` (a
+// message that ran a provider operation, `/review` or `/compact`, instead of
+// a prompt), which a v25 client's enum refuses along with the turn; an `info`
+// notice can carry `review` (a review turn's markers); and a provider's
+// capabilities can carry `operations`, which a v25 client's strict schema
+// refuses along with every provider entry.
+export const PROTOCOL_VERSION = 26 as const
 
 export const ProtocolVersionSchema = z.number().int().positive().max(Number.MAX_SAFE_INTEGER)
 export const CapabilitySchema = MessageNameSchema

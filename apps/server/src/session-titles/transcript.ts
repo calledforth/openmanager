@@ -13,9 +13,16 @@ export const TITLE_TRANSCRIPT_RECENT_MESSAGES = 60
 type Row = { message_id: string; role: 'user' | 'assistant'; ordinal: number }
 type PartRow = { content_json: string }
 
+/** A user message that is a prompt, not a command that ran a provider
+ * operation (`/review`, `/compact`): a command says nothing about what the
+ * chat is about, and is not the prompt a title is written from. */
+const IS_PROMPT_SQL = `NOT EXISTS (
+    SELECT 1 FROM turns
+    WHERE turns.turn_id = messages.turn_id AND turns.origin IN ('review', 'compact')
+  )`
 const FIRST_USER_MESSAGE_SQL = `
   SELECT message_id, role, ordinal FROM messages
-  WHERE thread_id = ? AND role = 'user'
+  WHERE thread_id = ? AND role = 'user' AND ${IS_PROMPT_SQL}
   ORDER BY ordinal
   LIMIT 1`
 const RECENT_MESSAGES_SQL = `
@@ -25,7 +32,7 @@ const RECENT_MESSAGES_SQL = `
   LIMIT ?`
 const PARTS_SQL = `SELECT content_json FROM message_parts WHERE message_id = ? ORDER BY ordinal`
 const USER_MESSAGE_COUNT_SQL = `
-  SELECT COUNT(*) AS count FROM messages WHERE thread_id = ? AND role = 'user'`
+  SELECT COUNT(*) AS count FROM messages WHERE thread_id = ? AND role = 'user' AND ${IS_PROMPT_SQL}`
 
 /** A thread's conversation as the title model reads it, oldest first. */
 export function readTitleTranscript(
@@ -52,7 +59,8 @@ export function readTitleTranscript(
     )
 }
 
-/** How many prompts the user has sent in a thread. */
+/** How many prompts the user has sent in a thread; commands that ran an
+ * operation are not prompts. */
 export function countUserMessages(database: DatabaseSync, threadId: string): number {
   const row = database.prepare(USER_MESSAGE_COUNT_SQL).get(threadId) as { count: number }
   return row.count

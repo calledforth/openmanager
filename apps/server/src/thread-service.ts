@@ -46,12 +46,14 @@ import {
   type QueuedMessageSettings,
   type ThreadQueue,
   type ThreadQueuePause,
+  isOperationTurnOrigin,
   isSettledSubagentStatus,
   type SessionSubagent,
   type Subagent,
   type SubagentStatus,
 } from '@openmanager/protocol/node'
 import {
+  parseTurnOperation,
   projectAgentEvent,
   providers,
   ToolCallTracker,
@@ -61,6 +63,7 @@ import {
   type ProtocolEventContext,
   type RuntimeRoute,
   type RuntimeSessionArgs,
+  type TurnOperation,
 } from '@agentpack/runtime/node'
 import {
   cancelledInteractionIds,
@@ -2268,15 +2271,24 @@ export function createThreadService(
       return readTitleTranscript(options.database, threadId)
     }
     // The in-memory seam keeps only prompts; SQLite has the whole conversation.
-    return (record?.messages ?? []).map((message) => titleMessage(message.role, message.content))
+    return (record?.messages ?? [])
+      .filter((message) => !record || isPrompt(record, message))
+      .map((message) => titleMessage(message.role, message.content))
   }
+
+  /** A user message that is a prompt, not a command that ran an operation
+   * (`/review`, `/compact`), which says nothing about what the chat is about. */
+  const isPrompt = (record: ThreadRecord, message: Message): boolean =>
+    message.role !== 'user' ||
+    !isOperationTurnOrigin(record.turns.find((turn) => turn.turnId === message.turnId)?.origin)
 
   const userPromptCount = (record: ThreadRecord): number => {
     if (options.database) {
       options.flush?.()
       return countUserMessages(options.database, record.thread.threadId)
     }
-    return record.messages.filter((message) => message.role === 'user').length
+    return record.messages.filter((message) => message.role === 'user' && isPrompt(record, message))
+      .length
   }
 
   const reportTitleFailure = (sessionId: string) => (error: unknown) => {
@@ -3671,6 +3683,24 @@ export function createThreadService(
   }
 
   /**
+   * The provider operation a sent message asks for (`/review`, `/compact`),
+   * when its provider runs that operation itself (`capabilities.operations`).
+   * Only a message the user sent, as typed, with no images: anything else is
+   * a prompt, and a provider that runs no operations (Claude Code takes its
+   * slash commands as prompt text) gets the text as it is.
+   */
+  const turnOperationOf = (
+    record: ThreadRecord,
+    input: { text: string; artifactIds?: string[] },
+    commandId: string | undefined,
+    origin: string | undefined,
+  ): TurnOperation | undefined => {
+    if (!commandId || origin || input.artifactIds?.length) return undefined
+    const offered = providers[record.providerId].capabilities.operations
+    return offered?.length ? parseTurnOperation(input.text, offered) : undefined
+  }
+
+  /**
    * Start a turn on a thread nothing holds: record it, then hand the prompt
    * to the provider. `queueAfter` is what the chat's queue becomes when the
    * turn is a queued message's: the two are written in one transaction, so
@@ -3738,6 +3768,9 @@ export function createThreadService(
     if ('type' in attachments) return attachments
     const artifactContent = attachments.content
     let promptImages = attachments.images
+    // `/review` or `/compact` the user sent, on a provider that runs it as an
+    // operation of its own: an operation turn, with no prompt for the agent.
+    const operation = turnOperationOf(record, input, commandId, opts.origin)
     const startedAt = new Date().toISOString()
     const turn: Turn = {
       turnId: randomUUID(),
@@ -3747,9 +3780,11 @@ export function createThreadService(
       ...(commandId ? { commandId } : {}),
       ...(opts.origin
         ? { origin: opts.origin }
-        : commandId
-          ? {}
-          : { origin: 'background' as const }),
+        : operation
+          ? { origin: operation.kind }
+          : commandId
+            ? {}
+            : { origin: 'background' as const }),
     }
     const userMessage: Message | undefined = commandId
       ? {
@@ -3783,7 +3818,9 @@ export function createThreadService(
       )
     }
     // Only with the turn's own start, so the marker comes before anything in it.
-    const movedTo = events.length > 0 ? record.movedTo : undefined
+    // Not on an operation turn, which sends the agent no prompt to say it in:
+    // the move stays owed to the next prompted turn, marker and note both.
+    const movedTo = events.length > 0 && !operation ? record.movedTo : undefined
     if (movedTo) {
       const notice: DurableTurnNotice = {
         noticeId: randomUUID(),
@@ -3803,7 +3840,8 @@ export function createThreadService(
         }),
       )
     }
-    // The environment's own prompt already says where the session is.
+    // The environment's own prompt already says where the session is. An
+    // operation sends the agent no prompt to say it in.
     const promptText =
       movedTo && userMessage
         ? `${movedNote(movedTo.name, movedTo.path)}\n\n${input.text}`
@@ -3827,8 +3865,9 @@ export function createThreadService(
       record.messages.push(userMessage)
       record.commandTurns.set(commandId, started as TurnStart)
     }
-    // The environment's notice is not what the chat is about.
-    if (userMessage && commandId && opts.origin !== 'subagents') {
+    // The environment's notice is not what the chat is about, and neither is
+    // a command.
+    if (userMessage && commandId && opts.origin !== 'subagents' && !operation) {
       const title = titleFromPrompt(input.text)
       if (title) applyTitle(record, title, 'fallback')
       titleFromFirstPrompt(record, userMessage)
@@ -3880,6 +3919,7 @@ export function createThreadService(
             ],
           },
           userMessageId: userMessage?.messageId ?? active.promptId,
+          ...(operation ? { operation } : {}),
         })
       })
       .then(() => {
@@ -5672,6 +5712,10 @@ export function createThreadService(
           active.promptStarted === true &&
           // A turn the provider began by itself has no prompt to add to.
           active.userMessage !== undefined &&
+          // A review or compaction takes no input: the message waits for the next turn.
+          !isOperationTurnOrigin(active.turn.origin) &&
+          // Nor is `/review` or `/compact` words for the agent: it runs as a turn of its own.
+          !turnOperationOf(record, input, input.commandId, undefined) &&
           !active.interruptRequested &&
           !record.cancellation &&
           !record.pendingBuild

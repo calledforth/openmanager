@@ -67,8 +67,9 @@ const event = <N extends string, S extends z.ZodType, P extends z.ZodType>(
  * 11: an assistant `message.delta` can carry its message's `phase`.
  *     Same release: `provider.catalog.updated`'s profile can carry `policy`, and its
  *     model rows `upgrade`.
+ * 12: a turn's `origin` can be `review` or `compact`; an `info` notice can carry `review`.
  */
-export const EVENT_FORMAT_VERSION = 11 as const
+export const EVENT_FORMAT_VERSION = 12 as const
 
 /** A turn's state once an interaction event is applied: still asking, or running again. */
 export const InteractionTurnStateSchema = z.enum(['running', 'waiting'])

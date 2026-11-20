@@ -5,6 +5,7 @@ import type {
   ProviderId,
   ProviderSessionInfo,
   QuestionOutcome,
+  TurnOperation,
 } from '@agentpack/contract'
 import type { BackendEventListener, SessionResult } from '../backends/Backend.js'
 import type { AppliedSessionState } from './AppliedConfigCache.js'
@@ -107,6 +108,10 @@ export interface SessionRuntime {
     prompt: PromptInput
     userMessageId?: string
     desiredConfig?: DesiredSessionConfig
+    /** Run this provider operation in place of the prompt (`TurnOperation`).
+     * Only sent to a runtime whose provider offers it
+     * (`capabilities.operations`); the prompt is then the command as typed. */
+    operation?: TurnOperation
   }): Promise<void>
   cancel(): Promise<void>
   /** Add a message to the turn in flight; see `ClaudeSessionRuntime.steer`.
