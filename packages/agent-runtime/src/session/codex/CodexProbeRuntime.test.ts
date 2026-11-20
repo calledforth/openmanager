@@ -95,7 +95,7 @@ describe('CodexProbeRuntime', () => {
   it('reads the account and the whole catalog without starting a thread', async () => {
     const { client, requests } = stubClient({
       'account/read': SIGNED_IN,
-      'model/list': (params) =>
+      'model/list': (params: unknown) =>
         (params as { cursor?: string }).cursor === 'page-2'
           ? { data: [model('gpt-6-luna', { inputModalities: ['text'] })], nextCursor: null }
           : {
