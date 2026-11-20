@@ -280,6 +280,32 @@ describe('ProviderModelPicker', () => {
     expect(onChange).toHaveBeenCalledWith('claude', 'sonnet')
   })
 
+  it('admits Codex: its tab comes last whatever order it arrives in, and its stars persist', () => {
+    localStorage.setItem(FAVORITE_MODELS_STORAGE_KEY, JSON.stringify(['codex:gpt-6.2-sol']))
+    const codex: ProviderModelGroup = {
+      providerId: 'codex',
+      providerName: 'Codex',
+      models: [
+        { id: 'gpt-6.2-sol', name: 'gpt-6.2-sol', effortLevels: ['low', 'medium', 'high'] },
+        { id: 'gpt-6-luna', name: 'gpt-6-luna', effortLevels: ['low', 'medium', 'high'] },
+      ],
+    }
+    const { onChange } = render({ groups: [codex, ...GROUPS] })
+    openWithShortcut()
+    const tabs = [...document.querySelectorAll('[role="tab"]')].map((tab) => tab.textContent)
+    expect(tabs).toHaveLength(5)
+    expect(tabs[4]).toContain('Codex')
+    press('Tab', { shiftKey: true })
+    expect(selectedTab()).toContain('Favorites')
+    expect(labels()).toEqual(['gpt-6.2-sol'])
+    press('Tab', { shiftKey: true })
+    expect(selectedTab()).toContain('Codex')
+    expect(labels()).toEqual(['gpt-6.2-sol', 'gpt-6-luna'])
+    press('ArrowDown')
+    press('Enter')
+    expect(onChange).toHaveBeenCalledWith('codex', 'gpt-6-luna')
+  })
+
   it('closes on Escape even with a query typed', () => {
     const { onDone } = render()
     const input = openWithShortcut()

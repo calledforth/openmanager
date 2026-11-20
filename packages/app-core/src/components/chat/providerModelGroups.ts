@@ -1,6 +1,5 @@
 import type { ProviderId, ProviderMetadata, SessionConfigOption } from '@agentpack/contract'
 import type { ProviderComposerProfiles } from '@openmanager/shared/contracts/composer-profile'
-import type { ProviderIconId } from '../providers/providerIconId'
 
 export type ProviderModelOption = {
   id: string
@@ -14,10 +13,7 @@ export type ProviderModelOption = {
   configOptions?: SessionConfigOption[]
 }
 
-/** A tool whose models the picker lists: a session provider, or Codex for titles. */
-export type PickerProviderId = ProviderIconId
-
-export type ProviderModelGroup<P extends PickerProviderId = ProviderId> = {
+export type ProviderModelGroup<P extends ProviderId = ProviderId> = {
   providerId: P
   providerName: string
   models: ProviderModelOption[]

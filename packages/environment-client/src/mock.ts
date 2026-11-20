@@ -2470,7 +2470,74 @@ const followUpPayload = (input: QueueMessageInput & { commandId: string }) => ({
 })
 
 /** The providers an environment of this product can run, for a mock seeded with no catalog. */
-const MOCK_RUNNABLE_PROVIDERS: readonly string[] = ['opencode', 'cursor', 'claude']
+const MOCK_RUNNABLE_PROVIDERS: readonly string[] = ['opencode', 'cursor', 'claude', 'codex']
+
+/** Every effort level Codex's frontier models accept, cheapest first. */
+const CODEX_EFFORTS = ['low', 'medium', 'high', 'xhigh']
+
+/**
+ * Codex as a signed-in environment reports it after its probe: the catalog
+ * `model/list` returned, each model with its own efforts and image support,
+ * and no session run yet. Capabilities are as the runtime registers Codex
+ * today: off until the change that delivers each one.
+ */
+export const MOCK_CODEX_PROVIDER: ProviderCatalogEntry = {
+  id: 'codex',
+  displayName: 'Codex',
+  capabilities: {
+    canSetModel: false,
+    canSetMode: false,
+    canSetConfigOption: false,
+    canDeleteSession: false,
+    canLoadSession: false,
+    canListSessions: false,
+    canCancelPrompt: false,
+    canSteer: false,
+    supportsPlans: false,
+    supportsAvailableCommands: false,
+    supportsUsage: false,
+    supportsPermissionRequests: false,
+    supportsAuthentication: false,
+    supportsThoughtStreaming: false,
+    supportsSubtasks: false,
+    supportsExtensions: false,
+    supportsQuestions: false,
+  },
+  health: {
+    summary: 'ready',
+    available: true,
+    refreshing: false,
+    install: 'installed',
+    auth: 'authenticated',
+    runtime: { state: 'never_started', liveProcesses: 0, activeTurns: 0 },
+    // Checked as the module loads, so it reads as a fresh probe rather than a stale one.
+    lastProbe: { outcome: 'ok', at: new Date().toISOString(), durationMs: 1_840 },
+    update: 'current',
+  },
+  limits: { supported: false, reading: null, refreshing: false, lastRefresh: null },
+  profile: {
+    providerId: 'codex',
+    agentInfo: { name: 'Codex', version: '0.170.0' },
+    availableModels: [
+      {
+        modelId: 'gpt-6.2-sol',
+        name: 'gpt-6.2-sol',
+        description: 'Latest frontier agentic coding model.',
+        effortLevels: CODEX_EFFORTS,
+        supportsImageInput: true,
+      },
+      {
+        modelId: 'gpt-6-luna',
+        name: 'gpt-6-luna',
+        description: 'Smaller and faster, for quick everyday edits.',
+        effortLevels: CODEX_EFFORTS,
+        supportsImageInput: true,
+      },
+    ],
+    defaultModelId: 'gpt-6.2-sol',
+    updatedAt: 1_700_000_000_000,
+  },
+}
 
 function splitChunks(text: string, size = 12): string[] {
   const chunks: string[] = []

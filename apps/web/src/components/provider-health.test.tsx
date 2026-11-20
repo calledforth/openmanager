@@ -4,6 +4,7 @@ import userEvent from '@testing-library/user-event'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import {
   createMockEnvironmentClient,
+  MOCK_CODEX_PROVIDER,
   type MockSeed,
   type ProviderCatalogEntry,
 } from '@openmanager/environment-client'
@@ -134,6 +135,18 @@ describe('provider health on web', () => {
     )
     // The mock's health never moves, so the retry comes back still broken.
     expect(await screen.findByRole('alert')).toHaveTextContent('Failed to connect to Cursor.')
+  })
+
+  it('gives Codex its own row next to the other providers', async () => {
+    renderConnected('/settings?tab=providers', [
+      provider('opencode', 'OpenCode', {}),
+      MOCK_CODEX_PROVIDER,
+    ])
+    // Named as its probe reported itself, with the same health wording and its own mark.
+    const codex = (await screen.findByText('Codex 0.170.0')).closest('li')
+    expect(codex).toHaveTextContent('Ready · No session running')
+    expect(codex?.querySelector('svg')).not.toBeNull()
+    expect(screen.getByText('OpenCode')).toBeInTheDocument()
   })
 
   it('stops calling a provider ready once its last check is too old to trust', async () => {

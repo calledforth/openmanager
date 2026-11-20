@@ -36,11 +36,7 @@ import { behindModal } from '../../lib/modal-layers'
 import { useHoldFocus, useRegisterPicker } from '../command/pickerRegistry'
 import { modelHint, modelLabel } from './modelLabel'
 import { contextWindowConfigOption, effortConfigOption } from './modelConfig'
-import type {
-  PickerProviderId,
-  ProviderModelGroup,
-  ProviderModelOption,
-} from './providerModelGroups'
+import type { ProviderModelGroup, ProviderModelOption } from './providerModelGroups'
 import {
   favoriteModelKey,
   parseFavoriteModelKey,
@@ -50,13 +46,13 @@ import {
   type FavoriteModelKey,
 } from './favoriteModels'
 
-export type { PickerProviderId, ProviderModelGroup, ProviderModelOption }
+export type { ProviderModelGroup, ProviderModelOption }
 
 /** Tab order after Favorites. */
-const PROVIDER_ORDER: readonly PickerProviderId[] = ['claude', 'cursor', 'opencode', 'codex']
+const PROVIDER_ORDER: readonly ProviderId[] = ['claude', 'cursor', 'opencode', 'codex']
 
 const FAVORITES_SCOPE = 'favorites'
-type Scope = typeof FAVORITES_SCOPE | PickerProviderId
+type Scope = typeof FAVORITES_SCOPE | ProviderId
 
 const MENU_WIDTH = 440
 /** Favorites past this many have no Alt+digit key. */
@@ -64,7 +60,7 @@ const FAVORITE_KEYS = 9
 
 type FlatModel = {
   key: FavoriteModelKey
-  providerId: PickerProviderId
+  providerId: ProviderId
   providerName: string
   modelId: string
   label: string
@@ -82,8 +78,8 @@ type MetaRow = { label: string; value: string }
 const FavoritesIcon = phosphorIcon(StarIcon)
 
 /** One stable icon component per provider, for the tabs. */
-const providerTabIcons = new Map<PickerProviderId, (props: IconComponentProps) => ReactElement>()
-function providerTabIcon(providerId: PickerProviderId) {
+const providerTabIcons = new Map<ProviderId, (props: IconComponentProps) => ReactElement>()
+function providerTabIcon(providerId: ProviderId) {
   let icon = providerTabIcons.get(providerId)
   if (!icon) {
     icon = function ProviderTabIcon({ className }: IconComponentProps) {
@@ -94,7 +90,7 @@ function providerTabIcon(providerId: PickerProviderId) {
   return icon
 }
 
-function sortGroups<G extends { providerId: PickerProviderId }>(groups: G[]): G[] {
+function sortGroups<G extends { providerId: ProviderId }>(groups: G[]): G[] {
   const rank = new Map(PROVIDER_ORDER.map((id, index) => [id, index]))
   return [...groups].sort((a, b) => (rank.get(a.providerId) ?? 99) - (rank.get(b.providerId) ?? 99))
 }
@@ -104,7 +100,7 @@ function sortGroups<G extends { providerId: PickerProviderId }>(groups: G[]): G[
  * stays in Favorites after another is picked.
  */
 function withStarredTypedIds(
-  group: ProviderModelGroup<PickerProviderId>,
+  group: ProviderModelGroup<ProviderId>,
   favorites: readonly FavoriteModelKey[],
 ): ProviderModelOption[] {
   if (!group.acceptsTypedIds) return group.models
@@ -131,6 +127,11 @@ const range = (values: readonly string[]) => {
   return first === last ? first : `${first}–${last}`
 }
 
+/** Providers whose catalog lists every model's effort levels, so a row with
+ * none has no effort control rather than one nobody reported. Fast mode is
+ * not on the same footing: only Claude's catalog says which models have it. */
+const CATALOG_KNOWS_EFFORT: ReadonlySet<ProviderId> = new Set(['claude', 'codex'])
+
 /** What the hover card says about a model, from whatever its catalog row
  * carries. Rows that know nothing about a setting leave it out rather than
  * claim "not supported" for a provider that never said. */
@@ -151,7 +152,7 @@ function metaRowsFor(model: FlatModel | undefined): MetaRow[] | null {
     rows.push({ label: 'Reasoning', value: range(effort.options.map((option) => option.name)) })
   } else if (model.effortLevels?.length) {
     rows.push({ label: 'Reasoning', value: range(model.effortLevels) })
-  } else if (options || model.providerId === 'claude') {
+  } else if (options || CATALOG_KNOWS_EFFORT.has(model.providerId)) {
     rows.push({ label: 'Reasoning', value: 'No effort control' })
   }
 
@@ -192,7 +193,7 @@ const CUSTOM_ROW = '\u0000custom'
  * The composer's copy is the command palette's "Switch model…"; any other
  * copy (Settings) leaves that to it with `paletteEntry={false}`.
  */
-export function ProviderModelPicker<P extends PickerProviderId = ProviderId>({
+export function ProviderModelPicker<P extends ProviderId = ProviderId>({
   groups,
   currentProviderId,
   currentModelId,

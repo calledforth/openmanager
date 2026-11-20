@@ -1,11 +1,11 @@
 import { useEffect, useId, useState } from 'react'
 import { CaretRightIcon, CheckIcon, CircleNotchIcon, StopIcon, XIcon } from '@phosphor-icons/react'
+import type { ProviderId } from '@agentpack/contract'
 import type { Subagent } from '@openmanager/protocol'
 import { cn } from '../../lib/utils'
 import { useEnvironmentClientOptional } from '../../providers/environment-client'
 import { useViewActions } from '../../providers/view-actions'
 import { ProviderIcon } from '../providers/ProviderIcon'
-import type { ProviderIconId } from '../providers/providerIconId'
 import { SessionBusyLoader } from '../sidebar/SessionBusyLoader'
 import { Tooltip } from '../ui/Tooltip'
 import {
@@ -247,7 +247,7 @@ export function SubagentCard({ part, className }: { part: SubagentPart; classNam
         <StatusFlag subagent={subagent} />
         <span className="flex max-w-[11rem] min-w-0 items-center gap-1.5 max-sm:hidden">
           <ProviderIcon
-            providerId={subagent.providerId as ProviderIconId}
+            providerId={subagent.providerId as ProviderId}
             className="size-3 shrink-0 opacity-90"
           />
           <span className="truncate">{model}</span>
@@ -282,10 +282,7 @@ function ProviderStack({ subagents }: { subagents: readonly Subagent[] }) {
           className={chip}
           title={`${subagentName(subagent)} · ${providerName(subagent.providerId)} · ${subagentStatusLabel(subagent)}`}
         >
-          <ProviderIcon
-            providerId={subagent.providerId as ProviderIconId}
-            className="size-[11px]"
-          />
+          <ProviderIcon providerId={subagent.providerId as ProviderId} className="size-[11px]" />
         </span>
       ))}
       {rest > 0 ? (

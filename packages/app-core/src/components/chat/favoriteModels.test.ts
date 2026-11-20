@@ -1,4 +1,5 @@
 import { describe, expect, it, beforeEach, afterEach } from 'vitest'
+import { PROVIDER_IDS } from '@agentpack/contract'
 import {
   favoriteModelKey,
   parseFavoriteModelKey,
@@ -76,5 +77,18 @@ describe('favoriteModels', () => {
     })
     expect(parseFavoriteModelKey('unknown:x')).toBeNull()
     expect(parseFavoriteModelKey('codex:')).toEqual({ providerId: 'codex', modelId: '' })
+  })
+
+  it('admits every provider the contract knows, Codex included', () => {
+    for (const providerId of PROVIDER_IDS) {
+      expect(parseFavoriteModelKey(`${providerId}:some-model`)).toEqual({
+        providerId,
+        modelId: 'some-model',
+      })
+    }
+    expect(parseFavoriteModelKey('codex:gpt-6.2-sol')).toEqual({
+      providerId: 'codex',
+      modelId: 'gpt-6.2-sol',
+    })
   })
 })

@@ -1,5 +1,6 @@
 import { useCallback } from 'react'
 import { ArrowUpRightIcon, LockSimpleIcon } from '@phosphor-icons/react'
+import type { ProviderId } from '@agentpack/contract'
 import { isSettledSubagentStatus, type Subagent, type Turn } from '@openmanager/protocol'
 import {
   selectSubagentOfSession,
@@ -10,7 +11,6 @@ import { cn } from '../../lib/utils'
 import { useEnvironmentState } from '../../providers/environment-client'
 import { useSessionState } from '../../providers/session-provider'
 import { ProviderIcon } from '../providers/ProviderIcon'
-import type { ProviderIconId } from '../providers/providerIconId'
 import { subagentStatusColor, useTick } from '../parts/SubagentCard'
 import {
   formatElapsed,
@@ -120,7 +120,7 @@ export function SubagentStatusLine({
       data-subagent-status-line
     >
       <ProviderIcon
-        providerId={identity.providerId as ProviderIconId}
+        providerId={identity.providerId as ProviderId}
         className="size-3 shrink-0 opacity-90"
       />
       <span className="min-w-0 max-w-[12rem] truncate">

@@ -81,6 +81,24 @@ const meta = {
           { id: 'claude-opus', name: 'Claude Opus' },
         ],
       },
+      {
+        providerId: 'codex',
+        providerName: 'Codex',
+        models: [
+          {
+            id: 'gpt-6.2-sol',
+            name: 'gpt-6.2-sol',
+            description: 'Latest frontier agentic coding model.',
+            effortLevels: ['low', 'medium', 'high', 'xhigh'],
+          },
+          {
+            id: 'gpt-6-luna',
+            name: 'gpt-6-luna',
+            description: 'Smaller and faster, for quick everyday edits.',
+            effortLevels: ['low', 'medium', 'high', 'xhigh'],
+          },
+        ],
+      },
     ],
     currentModelId: 'gpt-5.1',
     configOptions: [

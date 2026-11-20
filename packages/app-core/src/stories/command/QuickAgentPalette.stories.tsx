@@ -2,6 +2,7 @@ import type { Meta, StoryObj } from '@storybook/react-vite'
 import { useEffect, useMemo } from 'react'
 import {
   createMockEnvironmentClient,
+  MOCK_CODEX_PROVIDER,
   selectDraftContent,
   type MockEnvironmentClient,
   type ProviderCatalogEntry,
@@ -87,7 +88,7 @@ function useEnvironments() {
       seed: {
         environment: { environmentId: 'wsl', name: 'WSL' },
         workspaces: [project('openmanager', 1), project('website', 6)],
-        providers: [CLAUDE],
+        providers: [CLAUDE, MOCK_CODEX_PROVIDER],
       },
     })
     const mac = createMockEnvironmentClient({

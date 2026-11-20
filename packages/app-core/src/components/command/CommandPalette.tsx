@@ -137,7 +137,7 @@ export function CommandPalette({ commands }: CommandPaletteProps = {}) {
               icon: ModelIcon,
               group: 'Actions',
               shortcut: 'mod+shift+m',
-              keywords: ['model', 'provider', 'claude', 'cursor', 'opencode', 'change'],
+              keywords: ['model', 'provider', 'claude', 'cursor', 'opencode', 'codex', 'change'],
               onSelect: () => void requestPicker('model'),
             },
           ]
