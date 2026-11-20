@@ -16,6 +16,15 @@ import {
   type ShareableType,
 } from './upload-limits.ts'
 
+/**
+ * Where a generated artifact came from, kept with its row: the tool call that
+ * returned it, by the host's id (the reply's image part names the same one,
+ * and the call's activity row holds the provider's own id).
+ */
+export type ArtifactProvenance = {
+  toolCallId?: string
+}
+
 /** Why a file an agent shared was refused, in words the agent can act on. */
 export class ShareRefusedError extends Error {}
 
@@ -159,7 +168,12 @@ export function createArtifactStore(
     }
     return join(directory, artifactId)
   }
-  const record = (metadata: RecordedArtifact, clientId?: string) => {
+  const record = (
+    metadata: RecordedArtifact,
+    clientId?: string,
+    /** Where it came from, kept beside it (`metadata_json`). */
+    provenance?: ArtifactProvenance,
+  ) => {
     if (metadata.sessionId === undefined) {
       // The workspace's foreign key refuses a workspace removed mid-transfer.
       insertHeld.run(metadata.artifactId, metadata.workspaceId, clientId ?? null,
@@ -170,7 +184,7 @@ export function createArtifactStore(
     const result = insert.run(metadata.artifactId, clientId ?? null,
       `uploads/${metadata.artifactId}`, metadata.name, metadata.mimeType, metadata.sizeBytes,
       metadata.createdAt, metadata.source,
-      JSON.stringify({ sessionId: metadata.sessionId, source: metadata.source }),
+      JSON.stringify({ sessionId: metadata.sessionId, source: metadata.source, ...provenance }),
       metadata.sessionId, metadata.workspaceId)
     if (result.changes !== 1) throw new Error('Artifact session not found')
   }
@@ -285,7 +299,13 @@ export function createArtifactStore(
       return { type: 'artifact' as const, artifactId: metadata.artifactId,
         mimeType: metadata.mimeType, name: metadata.name, sizeBytes: metadata.sizeBytes }
     },
-    generated(sessionId: string, workspaceId: string, mimeType: string, data: string) {
+    generated(
+      sessionId: string,
+      workspaceId: string,
+      mimeType: string,
+      data: string,
+      provenance?: ArtifactProvenance,
+    ) {
       if (!isAllowedUploadType(mimeType) || !data.length ||
         data.length > 4 * Math.ceil(MAX_ATTACHMENT_BYTES / 3) ||
         data.length % 4 !== 0 || !/^[A-Za-z0-9+/]+={0,2}$/.test(data)) {
@@ -305,7 +325,7 @@ export function createArtifactStore(
       try {
         writeFileSync(partialPath, bytes, { flag: 'wx' })
         renameSync(partialPath, finalPath)
-        record(metadata)
+        record(metadata, undefined, provenance)
       } catch (error) {
         rmSync(partialPath, { force: true })
         rmSync(finalPath, { force: true })

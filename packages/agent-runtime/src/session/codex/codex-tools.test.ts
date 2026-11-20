@@ -1,4 +1,7 @@
-import { describe, expect, it } from 'vitest'
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+import { afterAll, describe, expect, it } from 'vitest'
 import type { AgentEvent } from '@agentpack/contract'
 import type { v2 } from '@openmanager/codex-app-server-protocol'
 import { applyToolUpdate, type ToolCallState, type ToolCallUpdate } from '@openmanager/protocol'
@@ -533,13 +536,6 @@ describe('other items', () => {
     expect(row('sleep-1')).toBe('Waited 5s')
   })
 
-  it('imageView: a read of the image it looked at', () => {
-    const { tools, state, row } = harness()
-    tools.itemCompleted({ type: 'imageView', id: 'img-1', path: '/work/shot.png' })
-    expect(state('img-1')).toMatchObject({ kind: 'read', locations: [{ path: '/work/shot.png' }] })
-    expect(row('img-1')).toBe('Read shot.png')
-  })
-
   it('functionCallOutput is skipped: it echoes a tool output a client handed in', () => {
     const { tools, outputs } = harness()
     const item: Item = { type: 'functionCallOutput', id: 'fco-1', name: 'x', namespace: null, output: 'y' }
@@ -677,5 +673,155 @@ describe('turn/plan/updated', () => {
     expect(state('plan-codex-turn-1')).toMatchObject({ toolName: 'update_plan', status: 'completed' })
     expect(state('plan-codex-turn-2').input).toMatchObject({ plan: [{ step: 'Look around', status: 'completed' }, {}] })
     expect(row('plan-codex-turn-2')).toBe('Updated tasks')
+  })
+})
+
+describe('images', () => {
+  /** A 1x1 PNG, as a file would hold it. */
+  const PNG = Buffer.from(
+    'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAADElEQVR4nGP4z8AAAAMBAQDJ/pLvAAAAAElFTkSuQmCC',
+    'base64',
+  )
+  const dir = mkdtempSync(join(tmpdir(), 'codex-images-'))
+  afterAll(() => rmSync(dir, { recursive: true, force: true }))
+  const file = (name: string, bytes: Uint8Array) => {
+    const path = join(dir, name)
+    writeFileSync(path, bytes)
+    return path
+  }
+  const imageContent = (outputs: CodexToolOutput[], id: string) =>
+    outputs.flatMap((output) =>
+      (output.event === 'tool_call' || output.event === 'tool_call_update') && output.data.toolCallId === id
+        ? (output.data.content ?? []).filter((item) => item.type === 'content' && item.content.type === 'image')
+        : [],
+    )
+  const generation = (
+    overrides: Partial<Extract<Item, { type: 'imageGeneration' }>> & { result?: string } = {},
+  ): Extract<Item, { type: 'imageGeneration' }> =>
+    ({
+      type: 'imageGeneration',
+      id: 'ig-1',
+      status: 'completed',
+      revisedPrompt: 'A flat red circle on white.',
+      failure: null,
+      generationId: 'gen-1',
+      result: '',
+      ...overrides,
+    }) as Extract<Item, { type: 'imageGeneration' }>
+
+  it('imageView: a read whose result is the image the model looked at', () => {
+    const { tools, outputs, state, row, wire } = harness()
+    const path = file('shot.png', PNG)
+    tools.itemStarted({ type: 'imageView', id: 'img-1', path })
+    tools.itemCompleted({ type: 'imageView', id: 'img-1', path })
+    expect(state('img-1')).toMatchObject({ kind: 'read', status: 'completed', locations: [{ path }] })
+    expect(row('img-1')).toBe('Read shot.png')
+    expect(imageContent(outputs, 'img-1')).toEqual([
+      { type: 'content', content: { type: 'image', mimeType: 'image/png', data: PNG.toString('base64') } },
+    ])
+    // The bytes go to the environment as image content, never as the row's output.
+    expect(wire()).not.toContain(PNG.toString('base64'))
+  })
+
+  it('imageView: a file that cannot be shown fails the row with the reason', () => {
+    const { tools, outputs, state, tracker } = harness()
+    const missing = join(dir, 'gone.png')
+    tools.itemCompleted({ type: 'imageView', id: 'img-1', path: missing })
+    expect(state('img-1')).toMatchObject({ status: 'failed' })
+    expect(tracker.takeBody('img-1')).toEqual(expect.stringContaining('There is no file at'))
+
+    const key = file('id_ed25519.png', Buffer.from('-----BEGIN OPENSSH PRIVATE KEY-----\nabc\n'))
+    tools.itemCompleted({ type: 'imageView', id: 'img-2', path: key })
+    expect(state('img-2')).toMatchObject({ status: 'failed' })
+    expect(tracker.takeBody('img-2')).toEqual(expect.stringContaining('is not a PNG, JPEG or WebP image'))
+
+    const gif = file('anim.gif', Buffer.from('GIF89a\x01\x00\x01\x00\x00\x00\x00;', 'latin1'))
+    tools.itemCompleted({ type: 'imageView', id: 'img-3', path: gif })
+    expect(state('img-3')).toMatchObject({ status: 'failed' })
+    expect(tracker.takeBody('img-3')).toEqual(expect.stringContaining('is a GIF'))
+
+    const folder = join(dir, 'folder.png')
+    mkdirSync(folder)
+    tools.itemCompleted({ type: 'imageView', id: 'img-4', path: folder })
+    expect(state('img-4')).toMatchObject({ status: 'failed' })
+    expect(tracker.takeBody('img-4')).toEqual(expect.stringContaining('is not a file'))
+
+    tools.itemCompleted({ type: 'imageView', id: 'img-5', path: 'relative.png' })
+    expect(state('img-5')).toMatchObject({ status: 'failed' })
+    expect(tracker.takeBody('img-5')).toEqual(expect.stringContaining('not an absolute path'))
+    expect(imageContent(outputs, 'img-1')).toEqual([])
+  })
+
+  it('imageView: an image over the ceiling is refused, not read', async () => {
+    const { readImageFile } = await import('./codex-images.js')
+    const path = file('big.png', Buffer.concat([PNG, Buffer.alloc(64)]))
+    expect(readImageFile(path, 32)).toEqual({ error: expect.stringContaining('is larger than') })
+    expect(readImageFile(path)).toMatchObject({ image: { mimeType: 'image/png' } })
+  })
+
+  it('imageGeneration: a row, then the image Codex saved, read before the file goes', () => {
+    const { tools, outputs, state, row } = harness()
+    tools.itemStarted(generation({ status: 'in_progress', revisedPrompt: null, generationId: null }))
+    expect(state('ig-1')).toMatchObject({ toolName: 'imageGeneration', kind: 'other', status: 'in_progress' })
+    expect(row('ig-1')).toBe('Generating image')
+
+    const savedPath = file('ig-1.png', PNG)
+    // The file is read when the completed item names it; deleting it after
+    // (as Codex's temp directory does) loses nothing.
+    tools.itemCompleted(generation({ savedPath }))
+    rmSync(savedPath)
+    expect(state('ig-1')).toMatchObject({
+      status: 'completed',
+      input: { revisedPrompt: 'A flat red circle on white.', savedPath, generationId: 'gen-1' },
+    })
+    expect(row('ig-1')).toBe('Generated image')
+    expect(imageContent(outputs, 'ig-1')).toEqual([
+      { type: 'content', content: { type: 'image', mimeType: 'image/png', data: PNG.toString('base64') } },
+    ])
+  })
+
+  it('imageGeneration: read as soon as an item names the saved file, even before it completes', () => {
+    const { tools, outputs } = harness()
+    const savedPath = file('ig-early.png', PNG)
+    tools.itemStarted(generation({ status: 'in_progress', savedPath }))
+    rmSync(savedPath)
+    tools.itemCompleted(generation({ savedPath }))
+    expect(imageContent(outputs, 'ig-1')).toHaveLength(1)
+  })
+
+  it("imageGeneration: the item's own bytes stand in for a saved file that is gone", () => {
+    const { tools, outputs, state, tracker } = harness()
+    tools.itemCompleted(generation({ savedPath: join(dir, 'vanished.png'), result: PNG.toString('base64') }))
+    expect(state('ig-1')).toMatchObject({ status: 'completed' })
+    expect(imageContent(outputs, 'ig-1')).toHaveLength(1)
+  })
+
+  it('imageGeneration: an image that cannot be kept fails the row with the reason', () => {
+    const { tools, outputs, state, tracker } = harness()
+    tools.itemCompleted(generation({ savedPath: join(dir, 'vanished.png') }))
+    expect(state('ig-1')).toMatchObject({ status: 'failed' })
+    expect(tracker.takeBody('ig-1')).toEqual(expect.stringMatching(/^The generated image could not be kept: There is no file at /))
+    const svg = file('drawing.png', Buffer.from('<svg xmlns="http://www.w3.org/2000/svg"></svg>'))
+    tools.itemCompleted(generation({ id: 'ig-2', savedPath: svg }))
+    expect(state('ig-2')).toMatchObject({ status: 'failed' })
+    expect(tracker.takeBody('ig-2')).toEqual(expect.stringContaining('is not a PNG, JPEG or WebP'))
+    expect(imageContent(outputs, 'ig-1')).toEqual([])
+    expect(imageContent(outputs, 'ig-2')).toEqual([])
+  })
+
+  it('imageGeneration: a generation Codex failed shows why', () => {
+    const { tools, state, tracker } = harness()
+    tools.itemStarted(generation({ status: 'in_progress' }))
+    tools.itemCompleted(
+      generation({
+        status: 'failed',
+        failure: { type: 'usageLimitExceeded', limitId: 'images', resetsAt: 1_795_200_000 },
+      }),
+    )
+    expect(state('ig-1')).toMatchObject({ status: 'failed' })
+    expect(tracker.takeBody('ig-1')).toEqual('The image generation limit was reached. It resets at 2026-11-20 18:40 UTC.')
+    tools.itemCompleted(generation({ id: 'ig-2', status: 'incomplete' }))
+    expect(state('ig-2')).toMatchObject({ status: 'failed' })
+    expect(tracker.takeBody('ig-2')).toEqual('Image generation ended as incomplete.')
   })
 })

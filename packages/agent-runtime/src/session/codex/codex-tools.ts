@@ -10,6 +10,7 @@ import type {
   ToolLineChanges,
 } from '@agentpack/contract'
 import type { v2 } from '@openmanager/codex-app-server-protocol'
+import { generatedImage, generationFailure, readImageFile, type ImageRead } from './codex-images.js'
 
 /** What Codex's tool work says, in openmanager's terms. The runtime stamps the
  * route. */
@@ -32,6 +33,7 @@ export const CODEX_TOOL_NAMES = {
   fileChange: 'fileChange',
   webSearch: 'webSearch',
   imageView: 'imageView',
+  imageGeneration: 'imageGeneration',
   sleep: 'sleep',
   hook: 'hook',
   hookPrompt: 'hookPrompt',
@@ -56,7 +58,13 @@ export const CODEX_TOOL_NAMES = {
  *   each file change's paths and line counts come with its own item.
  * - `item/fileChange/outputDelta`: deprecated; Codex no longer sends it.
  * - `plan` items and `item/plan/delta`: plan mode, which is not ported.
- * - `imageGeneration`, review mode and compaction: not tool calls.
+ * - Review mode and compaction: not tool calls.
+ *
+ * Images: an `imageGeneration` is a row whose result is the image Codex
+ * saved, and an `imageView` a read whose result is the image the model
+ * looked at. Each file is read as soon as the item names it (`codex-images.ts`),
+ * since a generated image's file does not last, and goes out as the call's
+ * image content, which the environment stores and files in the reply.
  *
  * Subagent items are `CodexSubagents`'s, and never reach this.
  */
@@ -78,6 +86,9 @@ export class CodexTools {
   private readonly hookRows = new Map<string, string>()
   private hooks = 0
   private plans = 0
+  /** A generated image read when its item first named the saved file, before
+   * the item completed, by tool call id. */
+  private readonly images = new Map<string, ImageRead>()
 
   constructor(private readonly emit: (output: CodexToolOutput) => void) {}
 
@@ -90,6 +101,7 @@ export class CodexTools {
     }
     const call = this.callOf(item)
     if (!call) return false
+    this.keepGenerated(item)
     if (this.open.has(call.toolCallId) || this.settled.has(call.toolCallId)) return true
     this.open.add(call.toolCallId)
     if (item.type === 'commandExecution')
@@ -113,9 +125,11 @@ export class CodexTools {
     if (!call) return false
     const id = call.toolCallId
     if (this.settled.has(id)) return true
+    this.keepGenerated(item)
     const opened = this.open.delete(id)
     this.settled.add(id)
     const result = this.resultOf(item)
+    this.images.delete(id)
     const stdin = this.commands.get(id)?.stdin ?? []
     this.commands.delete(id)
     // A command's exit code joins its input: the row reads a call from its
@@ -177,6 +191,14 @@ export class CodexTools {
       default:
         return false
     }
+  }
+
+  /** Read a generated image the moment its item names the saved file: the
+   * file is temporary. Once, whichever sight of the item names it first. */
+  private keepGenerated(item: Item): void {
+    if (item.type !== 'imageGeneration' || this.images.has(item.id) || this.settled.has(item.id)) return
+    if (!item.savedPath) return
+    this.images.set(item.id, generatedImage(item))
   }
 
   /** The processes of commands still open: unified-exec commands Codex has
@@ -303,6 +325,20 @@ export class CodexTools {
     })
   }
 
+  /** A generation's image, kept, or why there is none. Codex's statuses are
+   * the Responses API's (`in_progress`, `completed`, ..., _probed_): only
+   * `completed` made an image. */
+  private generationResult(
+    item: ItemOf<'imageGeneration'>,
+  ): Pick<ToolCall, 'status' | 'content'> {
+    if (item.failure || item.status !== 'completed')
+      return { status: 'failed', content: [textContent(generationFailure(item))] }
+    const kept = this.images.get(item.id) ?? generatedImage(item)
+    if ('error' in kept)
+      return { status: 'failed', content: [textContent(`The generated image could not be kept: ${kept.error}`)] }
+    return { status: 'completed', content: [{ type: 'content', content: kept.image }] }
+  }
+
   /** What an item says about its call before it has a result. */
   private callOf(item: Item): ToolCall | undefined {
     switch (item.type) {
@@ -346,6 +382,14 @@ export class CodexTools {
           rawInput: { path: item.path },
           locations: [{ path: item.path }],
         }
+      case 'imageGeneration':
+        return {
+          toolCallId: item.id,
+          title: CODEX_TOOL_NAMES.imageGeneration,
+          toolName: CODEX_TOOL_NAMES.imageGeneration,
+          kind: 'other',
+          rawInput: generationInput(item),
+        }
       case 'sleep':
         return {
           toolCallId: item.id,
@@ -360,7 +404,7 @@ export class CodexTools {
   }
 
   /** How a completed item ended, and what it left to read. */
-  private resultOf(item: Item): Pick<ToolCall, 'status' | 'outcome' | 'content'> {
+  private resultOf(item: Item): Pick<ToolCall, 'status' | 'outcome' | 'content' | 'rawOutput'> {
     switch (item.type) {
       case 'commandExecution': {
         const output = item.aggregatedOutput
@@ -381,6 +425,15 @@ export class CodexTools {
         const content = dynamicContent(item.contentItems)
         const failed = item.status === 'failed' || item.success === false
         return { status: failed ? 'failed' : 'completed', ...(content.length > 0 ? { content } : {}) }
+      }
+      case 'imageGeneration':
+        return this.generationResult(item)
+      case 'imageView': {
+        // The model has seen it; what is left to say is whether the chat can.
+        const read = readImageFile(item.path)
+        if ('error' in read)
+          return { status: 'failed', rawOutput: { error: `The image could not be shown: ${read.error}` } }
+        return { status: 'completed', content: [{ type: 'content', content: read.image }] }
       }
       case 'webSearch':
         return {
@@ -606,6 +659,20 @@ function dynamicContent(items: readonly v2.DynamicToolCallOutputContentItem[] | 
     }
     return []
   })
+}
+
+// ---------------------------------------------------------------------------
+// Image generation
+
+/** What a generation was asked, as Codex rewrote the prompt, and where the
+ * image came from: the file Codex saved and its generation id. The file is
+ * temporary; the chat keeps its own copy. */
+function generationInput(item: ItemOf<'imageGeneration'>): Record<string, unknown> {
+  return {
+    ...(item.revisedPrompt ? { revisedPrompt: item.revisedPrompt } : {}),
+    ...(item.savedPath ? { savedPath: item.savedPath } : {}),
+    ...(item.generationId ? { generationId: item.generationId } : {}),
+  }
 }
 
 // ---------------------------------------------------------------------------

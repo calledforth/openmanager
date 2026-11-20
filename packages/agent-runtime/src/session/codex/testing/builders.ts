@@ -216,6 +216,22 @@ export function fileChangeItem(
   return { type: 'fileChange', id: fakeId('exec-'), changes, status: 'inProgress', ...overrides }
 }
 
+/** An image generation, as 0.170 starts it (_probed_): in progress, with an
+ * empty `result` and no file yet. Completed, it carries the image's base64
+ * as `result` and the file Codex saved it to as `savedPath`. */
+export function imageGenerationItem(overrides: Partial<ItemOf<'imageGeneration'>> & { result?: string } = {}): ItemOf<'imageGeneration'> {
+  return {
+    type: 'imageGeneration',
+    id: fakeId('exec-'),
+    status: 'in_progress',
+    revisedPrompt: null,
+    failure: null,
+    generationId: null,
+    result: '',
+    ...overrides,
+  } as ItemOf<'imageGeneration'>
+}
+
 /** The parent's record of a subagent starting or finishing. Codex 0.170 sends
  * no `thread/started` for a child thread: this item, and then the child's own
  * notifications carrying its `threadId`, are how the parent learns of it. */

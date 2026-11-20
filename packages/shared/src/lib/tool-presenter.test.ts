@@ -150,6 +150,15 @@ describe('every row reads from its input alone', () => {
       'Searched for "x" in https://a.example',
     )
     expect(line(done({ toolName: 'imageView' }, { path: '/w/shot.png' }))).toBe('Read shot.png')
+    const generation = done({ toolName: 'imageGeneration' }, { revisedPrompt: 'A red circle' })
+    expect(line(generation)).toBe('Generated image')
+    expect(presentToolPart(generation).fullDetail).toBe('A red circle')
+    expect(
+      line({
+        toolName: 'imageGeneration',
+        state: { status: 'error', output: 'The image generation limit was reached.' },
+      }),
+    ).toBe('Generate image')
     expect(line(done({ toolName: 'sleep' }, { durationMs: 90_000 }))).toBe('Waited 1m 30s')
     expect(line(done({ toolName: 'sleep' }, { durationMs: 250 }))).toBe('Waited 250 ms')
     expect(line(done({ toolName: 'hook' }, { eventName: 'preToolUse' }))).toBe(
