@@ -50,6 +50,10 @@ const FORMAT = 'openmanager.codex-replay/1'
  * every fixture would then carry and every replay would have to request. */
 const DEFAULT_MODEL = 'gpt-6-luna'
 
+/** A 1x1 red PNG: the image the `image-view` scenario shows the model, and
+ * what the `image-generation` scenario keeps in place of the real one. */
+const TINY_PNG = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAADElEQVR4nGP4z8AAAAMBAQDJ/pLvAAAAAElFTkSuQmCC'
+
 /** What openmanager's own client sends (CodexAppServerClient.initialize), so a
  * replay of the recording sees the handshake the real client makes. */
 const INITIALIZE_CAPABILITIES = {
@@ -299,6 +303,42 @@ const SCENARIOS = {
       const done = s.turnCompleted(thread, turn)
       await s.request('turn/interrupt', { threadId: thread, turnId: workingTurn })
       await done
+    },
+  },
+
+  'image-view': {
+    description: 'The model looks at a small PNG in the workspace with view_image (an imageView item).',
+    setup(workspace) {
+      writeFileSync(join(workspace, 'dot.png'), Buffer.from(TINY_PNG, 'base64'))
+    },
+    async run(s) {
+      const thread = await s.startThread({ approvalPolicy: 'never', sandbox: 'read-only' })
+      await s.runTurn(
+        thread,
+        'Use the view_image tool to look at the file dot.png in the current directory, then reply with one word naming its main colour. Do nothing else.',
+        { approvalPolicy: 'never' },
+      )
+    },
+  },
+
+  'image-generation': {
+    description:
+      'The model generates one image (an imageGeneration item, saved to a temporary file under the Codex home: savedPath). The base64 `result` is cut down to a tiny PNG before the fixture is written.',
+    async run(s) {
+      const thread = await s.startThread({ approvalPolicy: 'never', sandbox: 'read-only' })
+      await s.runTurn(
+        thread,
+        'Generate one very small, simple image: a flat red circle on a white background. Then reply "done". Do nothing else.',
+        { approvalPolicy: 'never' },
+      )
+    },
+    /** A generated image's bytes are ~1 MB of base64 on every item that
+     * carries them; the fixture keeps the shape with a tiny stand-in. */
+    shrink(entry) {
+      const item = entry.message?.params?.item
+      if (item?.type === 'imageGeneration' && typeof item.result === 'string' && item.result.length > 0)
+        item.result = TINY_PNG
+      return entry
     },
   },
 
@@ -559,7 +599,8 @@ async function record(name, options) {
     config: scenario.config ?? [],
     placeholders: { workspace: '/workspace', home: '/home/user', codexHome: '/home/user/.codex' },
   }
-  const body = [header, ...entries.map(sanitize.entry)].map((line) => JSON.stringify(line)).join('\n') + '\n'
+  const shrink = scenario.shrink ?? ((entry) => entry)
+  const body = [header, ...entries.map((entry) => sanitize.entry(shrink(entry)))].map((line) => JSON.stringify(line)).join('\n') + '\n'
   const leaks = sanitize.leaks(body)
   if (leaks.length > 0) throw new Error(`refusing to write ${name}: still contains ${leaks.map((l) => JSON.stringify(l)).join(', ')}`)
   mkdirSync(options.out, { recursive: true })

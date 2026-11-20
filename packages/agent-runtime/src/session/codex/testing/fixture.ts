@@ -81,6 +81,8 @@ export const CODEX_FIXTURES = [
   'auto-compact',
   'review',
   'review-interrupt',
+  'image-view',
+  'image-generation',
 ] as const
 export type CodexFixtureName = (typeof CODEX_FIXTURES)[number]
 

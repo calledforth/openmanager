@@ -968,7 +968,12 @@ export class CodexSessionRuntime implements ManagedSessionRuntime {
       markIdentified = res
     })
     const active: ActiveTurn = {
-      turn: new CodexTurn((output) => this.emitTurnOutput(output), this.tokenBaseline, operation?.kind),
+      turn: new CodexTurn(
+        (output) => this.emitTurnOutput(output),
+        this.tokenBaseline,
+        this.cwd,
+        operation?.kind,
+      ),
       background,
       resolve,
       reject,
@@ -1646,7 +1651,10 @@ export class CodexSessionRuntime implements ManagedSessionRuntime {
         const { turn } = params as v2.TurnCompletedNotification
         if (active && (!active.turn.turnId || active.turn.turnId === turn.id)) {
           this.identifyTurn(active, turn.id)
-          this.finishTurn(active, turn)
+          // An image still being read settles its row inside the turn.
+          const reading = active.turn.imagesRead()
+          if (reading) void reading.then(() => this.finishTurn(active, turn))
+          else this.finishTurn(active, turn)
         }
         return
       }
@@ -1666,8 +1674,14 @@ export class CodexSessionRuntime implements ManagedSessionRuntime {
           active.turn.error = notice.error
           // An operation that fails ends there: a review Codex could not
           // start (not a git repository, _probed_) gets no `turn/completed`.
-          if (active.turn.operation)
-            this.failTurn(active, new CodexTurnFailedError(notice.error.message, notice.error))
+          // Like a `turn/completed`, it waits for any image still being read.
+          if (active.turn.operation) {
+            const failed = () =>
+              this.failTurn(active, new CodexTurnFailedError(notice.error.message, notice.error))
+            const reading = active.turn.imagesRead()
+            if (reading) void reading.then(failed)
+            else failed()
+          }
         }
         return
       }

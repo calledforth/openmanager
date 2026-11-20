@@ -1864,6 +1864,8 @@ export function createThreadService(
           record.session.workspaceId,
           content.mimeType,
           content.data,
+          // Where it came from, beside its row: the call that returned it.
+          imageToolCallId ? { toolCallId: imageToolCallId } : undefined,
         )
         projected.payload.content = {
           ...options.artifacts.reference(metadata),

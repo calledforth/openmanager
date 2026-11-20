@@ -10,7 +10,7 @@ import { ActivityGroup } from './ActivityGroup'
 import { SubtaskCard } from './SubtaskCard'
 import { SubagentCard, SubagentGroup } from './SubagentCard'
 import type { SubagentPart } from './subagent-card'
-import { resolveTool } from '@openmanager/shared/lib/tool-presenter'
+import { presentToolPart, resolveTool } from '@openmanager/shared/lib/tool-presenter'
 import { AskedQuestionPart } from '../questions/AskedQuestionPart'
 import { readAskedQuestions } from '../questions/askedQuestion'
 import { ImageGenerationToolPart } from './ImageGenerationToolPart'
@@ -80,7 +80,11 @@ function renderPart(
       const callID = (part as { callID?: string }).callID
       let toolElement: ReactNode
       const asked = toolName === 'AskUserQuestion' ? readAskedQuestions(part.state) : null
-      if (toolName === 'GenerateImage') {
+      // A generation that failed is a plain row, which opens on its error.
+      if (
+        toolName === 'GenerateImage' &&
+        presentToolPart(part as ToolRowPart).outcome !== 'failed'
+      ) {
         toolElement = (
           <ImageGenerationToolPart
             part={part as Parameters<typeof ImageGenerationToolPart>[0]['part']}

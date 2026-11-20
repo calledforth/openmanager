@@ -1,3 +1,6 @@
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import { describe, expect, it, vi } from 'vitest'
 import type { ToolCall, ToolCallUpdate } from '@agentpack/contract'
 import type { BackendEvent } from '../../backends/Backend.js'
@@ -1010,6 +1013,62 @@ describe('CodexSessionRuntime against a recording', () => {
     runtime.dispose()
   })
 
+  // The recording's file was in a throwaway workspace, gone now: the read
+  // completes (the model saw it) with a note on why the chat cannot show it.
+  it('reports the recorded image view as a read, with why its file cannot be shown', async () => {
+    const server = new ReplayCodexAppServer('image-view')
+    server.respond('model/list', MODELS as never)
+    const { runtime, events } = build({ server })
+    await runtime.start()
+    await runtime.prompt({ prompt: PROMPT })
+    await server.done
+    expect(server.unmatched).toEqual([])
+    const calls = events.filter((e) => e.event === 'tool_call').map((e) => e.data as ToolCall)
+    expect(calls).toEqual([
+      expect.objectContaining({ toolName: 'imageView', kind: 'read', locations: [{ path: '/workspace/dot.png' }] }),
+    ])
+    const settled = events.filter((e) => e.event === 'tool_call_update').map((e) => e.data as ToolCallUpdate)
+    expect(settled).toEqual([
+      expect.objectContaining({
+        status: 'completed',
+        content: [
+          {
+            type: 'content',
+            content: { type: 'text', text: 'Not shown in the chat: There is no file at /workspace/dot.png any more.' },
+          },
+        ],
+      }),
+    ])
+    runtime.dispose()
+  })
+
+  // The file Codex saved is on the recording machine; the completed item's
+  // own bytes (cut to a tiny PNG in the fixture) stand in for it.
+  it('keeps the recorded generated image as the call’s image', async () => {
+    const server = new ReplayCodexAppServer('image-generation')
+    server.respond('model/list', MODELS as never)
+    const { runtime, events } = build({ server })
+    await runtime.start()
+    await runtime.prompt({ prompt: PROMPT })
+    await server.done
+    expect(server.unmatched).toEqual([])
+    const call = events.find((e) => e.event === 'tool_call')!.data as ToolCall
+    expect(call).toMatchObject({ toolName: 'imageGeneration', kind: 'other', status: 'in_progress' })
+    const settled = events.filter((e) => e.event === 'tool_call_update').map((e) => e.data as ToolCallUpdate)
+    expect(settled).toEqual([
+      expect.objectContaining({
+        toolCallId: call.toolCallId,
+        status: 'completed',
+        rawInput: expect.objectContaining({
+          revisedPrompt: expect.stringContaining('red circle'),
+          savedPath: expect.stringMatching(/^\/home\/user\/\.codex\/generated_images\/.+\.png$/),
+        }),
+        content: [{ type: 'content', content: { type: 'image', mimeType: 'image/png', data: expect.any(String) } }],
+      }),
+    ])
+    runtime.dispose()
+  })
+
   it('shows what the recorded write_stdin sent on the command it went to', async () => {
     const server = new ReplayCodexAppServer('terminal-interaction')
     server.respond('model/list', MODELS as never)
@@ -1048,6 +1107,129 @@ describe('CodexSessionRuntime against a recording', () => {
     ])
     expect(texts(events)).toBe('first second')
     expect(events.filter((e) => e.event === 'prompt_completed')).toHaveLength(1)
+    runtime.dispose()
+  })
+})
+
+describe('CodexSessionRuntime images', () => {
+  const PNG = Buffer.from(
+    'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAADElEQVR4nGP4z8AAAAMBAQDJ/pLvAAAAAElFTkSuQmCC',
+    'base64',
+  )
+  const images = (events: BackendEvent[]) =>
+    events.flatMap((e) =>
+      e.event === 'tool_call' || e.event === 'tool_call_update'
+        ? ((e.data as ToolCallUpdate).content ?? []).flatMap((item) =>
+            item.type === 'content' && item.content.type === 'image'
+              ? [{ toolCallId: (e.data as ToolCallUpdate).toolCallId, ...item.content }]
+              : [],
+          )
+        : [],
+    )
+
+  it('keeps a generated image whose saved file is gone by the time the turn ends', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'codex-generated-'))
+    try {
+      let turn: FakeCodexTurn | undefined
+      const { runtime, events } = build({ onTurn: (t) => (turn = t) })
+      await runtime.start()
+      const prompt = runtime.prompt({ prompt: PROMPT })
+      await vi.waitFor(() => expect(turn).toBeDefined())
+      turn!.started()
+      const savedPath = join(dir, 'ig.png')
+      writeFileSync(savedPath, PNG)
+      const item = turn!.imageGeneration({ savedPath })
+      // Codex's temp file goes; the copy was taken when the item said where it was.
+      await vi.waitFor(() => expect(images(events)).toHaveLength(1))
+      rmSync(savedPath)
+      turn!.agentMessage('Here it is.', { phase: 'final_answer' })
+      turn!.completed()
+      await prompt
+      expect(images(events)).toEqual([
+        { toolCallId: item.id, type: 'image', mimeType: 'image/png', data: PNG.toString('base64') },
+      ])
+      expect(events.find((e) => e.event === 'tool_call_update')).toMatchObject({
+        data: { toolCallId: item.id, status: 'completed', rawInput: { savedPath } },
+      })
+      runtime.dispose()
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  it('shows the image the model looked at, under its read', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'codex-viewed-'))
+    try {
+      const path = join(dir, 'shot.png')
+      writeFileSync(path, PNG)
+      let viewed: { id: string } | undefined
+      const { runtime, events } = build({
+        onTurn: (t) => {
+          t.started()
+          viewed = t.imageView(path)
+          t.completed()
+        },
+      })
+      await runtime.start()
+      await runtime.prompt({ prompt: PROMPT })
+      expect(images(events)).toEqual([
+        { toolCallId: viewed!.id, type: 'image', mimeType: 'image/png', data: PNG.toString('base64') },
+      ])
+      // Codex completed the turn the moment the item completed; the read is
+      // asynchronous, and the turn ends after the row settles with its image.
+      const order = names(events)
+      expect(order.indexOf('tool_call_update')).toBeGreaterThan(-1)
+      expect(order.indexOf('tool_call_update')).toBeLessThan(order.indexOf('prompt_completed'))
+      expect(events.find((e) => e.event === 'tool_call')).toMatchObject({
+        data: { toolName: 'imageView', kind: 'read', locations: [{ path }] },
+      })
+      runtime.dispose()
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  it('reads a relative path the model looked at from the session’s directory', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'codex-viewed-'))
+    try {
+      writeFileSync(join(dir, 'shot.png'), PNG)
+      const { runtime, events } = build({
+        spec: { cwd: dir },
+        onTurn: (t) => {
+          t.started()
+          t.imageView('shot.png')
+          t.completed()
+        },
+      })
+      await runtime.start()
+      await runtime.prompt({ prompt: PROMPT })
+      expect(images(events)).toHaveLength(1)
+      runtime.dispose()
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  it('fails a generation Codex could not finish, with why', async () => {
+    const { runtime, events } = build({
+      onTurn: (t) => {
+        t.started()
+        t.imageGeneration({
+          status: 'failed',
+          failure: { type: 'usageLimitExceeded', limitId: 'images', resetsAt: null },
+        })
+        t.completed()
+      },
+    })
+    await runtime.start()
+    await runtime.prompt({ prompt: PROMPT })
+    expect(images(events)).toEqual([])
+    expect(events.find((e) => e.event === 'tool_call_update')).toMatchObject({
+      data: {
+        status: 'failed',
+        content: [{ type: 'content', content: { type: 'text', text: 'The image generation limit was reached.' } }],
+      },
+    })
     runtime.dispose()
   })
 })

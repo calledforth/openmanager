@@ -376,7 +376,7 @@ describe('CodexTurn operations', () => {
 
   it('a compaction: compacting while it runs, compacted once, then the meter from the emptied window', () => {
     const out: CodexTurnOutput[] = []
-    const t = new CodexTurn((o) => out.push(o), undefined, 'compact')
+    const t = new CodexTurn((o) => out.push(o), undefined, undefined, 'compact')
     t.tokenUsageUpdated(usage(150_000))
     t.itemStarted({ type: 'contextCompaction', id: 'c' })
     t.tokenUsageUpdated(usage(9_000))
@@ -414,7 +414,7 @@ describe('CodexTurn operations', () => {
 
   it('a review: its markers once each, then its findings as the answer, not repeated', () => {
     const out: CodexTurnOutput[] = []
-    const t = new CodexTurn((o) => out.push(o), undefined, 'review')
+    const t = new CodexTurn((o) => out.push(o), undefined, undefined, 'review')
     const entered = { type: 'enteredReviewMode', id: 'e', review: 'current changes' } as const
     t.itemStarted(entered)
     t.itemCompleted(entered)
@@ -449,7 +449,7 @@ describe('CodexTurn operations', () => {
 
   it('a stopped review shows why, not that the reviewer failed', () => {
     const out: CodexTurnOutput[] = []
-    const t = new CodexTurn((o) => out.push(o), undefined, 'review')
+    const t = new CodexTurn((o) => out.push(o), undefined, undefined, 'review')
     t.interruptRequested = true
     t.itemCompleted({ type: 'exitedReviewMode', id: 'x', review: 'Reviewer failed to output a response.' })
     t.itemStarted(message('m', 'Review was interrupted. Please re-run /review.'))

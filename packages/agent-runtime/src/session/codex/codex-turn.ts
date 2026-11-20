@@ -91,10 +91,18 @@ export class CodexTurn {
      * Unknown for the first turn a process sees (a resumed thread's history
      * counts too); the turn's first reading supplies it then. */
     private baseline?: v2.TokenUsageBreakdown,
+    /** The session's working directory, which relative paths are read from. */
+    cwd?: string,
     /** The operation this turn runs instead of a prompt (`TurnOperation`). */
     readonly operation?: TurnOperationKind,
   ) {
-    this.tools = new CodexTools(emit)
+    this.tools = new CodexTools(emit, cwd ? { cwd } : {})
+  }
+
+  /** Settles once the turn's images are read (`CodexTools.imagesRead`);
+   * undefined when none is being read. */
+  imagesRead(): Promise<void> | undefined {
+    return this.tools.imagesRead()
   }
 
   itemStarted(item: v2.ThreadItem): void {

@@ -9,10 +9,11 @@ import {
   commandApprovalParams,
   commandExecutionItem,
   elicitationParams,
-  FAKE_NOW_MS,
   fakeId,
+  FAKE_NOW_MS,
   fileChangeApprovalParams,
   fileChangeItem,
+  imageGenerationItem,
   permissionsApprovalParams,
   reasoningItem,
   subAgentActivityItem,
@@ -255,6 +256,30 @@ export class FakeCodexTurn {
 
   fileChangeStarted(changes: v2.FileUpdateChange[]): Extract<Item, { type: 'fileChange' }> {
     return this.itemStarted(fileChangeItem(changes))
+  }
+
+  /** The model looks at an image with `view_image`: started and completed at
+   * once, as 0.170 sends it (_probed_). */
+  imageView(path: string): Item {
+    const item: Item = { type: 'imageView', id: fakeId('exec-'), path }
+    this.itemStarted(item)
+    return this.itemCompleted(item)
+  }
+
+  /** An image generated: started with no file, completed as `completed`
+   * carries it (the saved file, the image's base64 as `result`, the prompt as
+   * Codex rewrote it). Override any of it, a failure included. */
+  imageGeneration(completed: Partial<Extract<Item, { type: 'imageGeneration' }>> & { result?: string } = {}): Item {
+    const item = this.itemStarted(imageGenerationItem())
+    return this.itemCompleted(
+      imageGenerationItem({
+        id: item.id,
+        status: 'completed',
+        revisedPrompt: 'A flat red circle on white.',
+        generationId: fakeId('gen-'),
+        ...completed,
+      }),
+    )
   }
 
   /** The parent's `subAgentActivity` item for a child starting. Follow it with

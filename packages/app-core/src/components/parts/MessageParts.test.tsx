@@ -150,7 +150,7 @@ describe('MessageParts', () => {
   it.each([
     ['cancelled', 'Image generation cancelled'],
     ['declined', 'Image generation declined'],
-    ['error', 'Image generation failed'],
+    ['error', 'Failed'],
   ])('never claims an image when the call ended %s', (status, line) => {
     const html = renderToStaticMarkup(
       <MessageParts
@@ -166,6 +166,25 @@ describe('MessageParts', () => {
       />,
     )
     expect(html).toContain(line)
+    expect(html).not.toContain('Generated image')
+  })
+
+  it('shows a failed generation as a row that opens on its error', () => {
+    const html = renderToStaticMarkup(
+      <MessageParts
+        parts={[
+          {
+            type: 'tool',
+            id: 'image-tool',
+            tool: 'imageGeneration',
+            toolName: 'imageGeneration',
+            state: { status: 'error', output: 'The image generation limit was reached.' },
+          },
+        ]}
+      />,
+    )
+    expect(html).toContain('Generate')
+    expect(html).toContain('Failed')
     expect(html).not.toContain('Generated image')
   })
 

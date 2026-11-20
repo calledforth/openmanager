@@ -506,6 +506,18 @@ export function presentToolPart(part: ToolPartData): ToolPresenterModel {
     }
   }
 
+  if (canonical === 'GenerateImage') {
+    // Codex says how it rewrote the prompt; Cursor's title says nothing more.
+    const prompt = text((state.input as { revisedPrompt?: unknown } | undefined)?.revisedPrompt)
+    return {
+      ...base,
+      uiKind: 'generic',
+      verb: said('Generating', 'Generated', 'Generate'),
+      detail: 'image',
+      ...(prompt ? { fullDetail: prompt } : {}),
+    }
+  }
+
   if (canonical === 'TodoWrite') {
     return {
       ...base,
