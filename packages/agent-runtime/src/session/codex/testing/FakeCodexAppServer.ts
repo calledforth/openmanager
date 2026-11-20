@@ -270,7 +270,12 @@ export class FakeCodexAppServer implements TerminableChild {
    * `turn/start` for any other thread is refused as Codex refuses it (`-32600
    * thread not found`). What happens in the turn is
    * the test's to script: `onTurn` gets each one as it starts. Enough for code
-   * that only needs a session to come up. */
+   * that only needs a session to come up.
+   *
+   * `turn/steer` is answered as Codex 0.170 answers it (probed): the running
+   * turn takes the input and echoes it at once as a `userMessage` carrying
+   * the `clientUserMessageId`; a turn id that is not the running one, or no
+   * running turn, is `-32600` with Codex's own words. */
   serveThreads(onTurn?: (turn: FakeCodexTurn) => void): this {
     const threads = new Map<string, FakeCodexThread>()
     const turns = new Map<string, FakeCodexTurn>()
@@ -307,6 +312,27 @@ export class FakeCodexAppServer implements TerminableChild {
           turn.started()
           onTurn?.(turn)
         },
+      },
+    )
+    this.respond(
+      'turn/steer',
+      (params) => {
+        const running = [...turns.values()].find(
+          (turn) => turn.threadId === params.threadId && turn.turn.status === 'inProgress',
+        )
+        if (!running) throw new CodexRpcError(-32600, 'no active turn to steer')
+        if (running.id !== params.expectedTurnId)
+          throw new CodexRpcError(
+            -32600,
+            `expected active turn id \`${params.expectedTurnId}\` but found \`${running.id}\``,
+          )
+        return { turnId: running.id }
+      },
+      {
+        after: (request, result) =>
+          turns.get(result.turnId)?.userMessage(request.params.input, {
+            clientId: request.params.clientUserMessageId ?? null,
+          }),
       },
     )
     return this

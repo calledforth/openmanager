@@ -1,7 +1,7 @@
 import type { MessagePhase, v2 } from '@openmanager/codex-app-server-protocol'
 import { describe, expect, it } from 'vitest'
 import { CodexRpcError } from './CodexRpcPeer.js'
-import { codexInput, isMissingThread } from './CodexSessionRuntime.js'
+import { codexInput, CodexSteerRefusedError, isMissingThread, steerRefusal } from './CodexSessionRuntime.js'
 import { CodexTurn, type CodexTurnOutput } from './codex-turn.js'
 
 function turn() {
@@ -161,6 +161,127 @@ describe('isMissingThread', () => {
     expect(isMissingThread(new CodexRpcError(-32600, 'thread not found'))).toBe(false)
     expect(isMissingThread(new CodexRpcError(-32603, 'no rollout found for thread id x'))).toBe(false)
     expect(isMissingThread(new Error('no rollout found'))).toBe(false)
+  })
+})
+
+describe('steerRefusal', () => {
+  it('tells a turn that ended or is another one from one that cannot be steered', () => {
+    const ended = steerRefusal(new CodexRpcError(-32600, 'no active turn to steer'))
+    expect(ended).toBeInstanceOf(CodexSteerRefusedError)
+    expect(ended).toMatchObject({ reason: 'turn_ended' })
+    expect(
+      steerRefusal(new CodexRpcError(-32600, 'expected active turn id `a` but found `b`')),
+    ).toMatchObject({ reason: 'turn_ended' })
+    expect(
+      steerRefusal(
+        new CodexRpcError(-32600, 'cannot steer a review turn', {
+          codexErrorInfo: { activeTurnNotSteerable: { turnKind: 'review' } },
+        }),
+      ),
+    ).toMatchObject({ reason: 'not_steerable' })
+    expect(steerRefusal(new CodexRpcError(-32600, 'active turn is not steerable'))).toMatchObject({
+      reason: 'not_steerable',
+    })
+    // Not a refusal: passed on as it is.
+    const other = new Error('codex app-server did not answer turn/steer within 30000ms')
+    expect(steerRefusal(other)).toBe(other)
+  })
+})
+
+describe('CodexTurn steers', () => {
+  const userMessage = (text: string, clientId: string | null = null) =>
+    ({ type: 'userMessage', id: `u-${text}`, clientId, content: [{ type: 'text', text, text_elements: [] }] }) as v2.ThreadItem
+  const input = (text: string): v2.UserInput[] => [{ type: 'text', text, text_elements: [] }]
+
+  it('places a steer at its echo, known by client id, once', () => {
+    const { turn: t, out } = turn()
+    t.expectSteer('s1', input('also this'))
+    // The prompt's echo, with its own client id, is not a steer.
+    t.itemStarted(userMessage('the prompt', 'prompt-1'))
+    t.itemCompleted(userMessage('the prompt', 'prompt-1'))
+    expect(out).toEqual([])
+    t.itemStarted(userMessage('also this', 's1'))
+    t.itemCompleted(userMessage('also this', 's1'))
+    expect(out).toEqual([{ event: 'steer_delivered', data: { steerId: 's1' } }])
+    t.finish()
+    expect(out).toHaveLength(1)
+  })
+
+  // A recording made without client ids: the echo is matched by its words.
+  it('matches an echo without a client id by its words, oldest first', () => {
+    const { turn: t, out } = turn()
+    t.expectSteer('s1', input('same'))
+    t.expectSteer('s2', input('same'))
+    t.itemStarted(userMessage('the prompt'))
+    t.itemStarted(userMessage('same'))
+    expect(out).toEqual([{ event: 'steer_delivered', data: { steerId: 's1' } }])
+  })
+
+  // Each echo arrives twice (started, completed). With identical words and no
+  // client ids, the second sighting of the first echo must not claim the
+  // second steer; nor may the prompt's echo, first in the turn, claim one.
+  it('counts each echo once and never takes the prompt’s for a steer', () => {
+    const { turn: t, out } = turn()
+    t.expectSteer('s1', input('same'))
+    t.expectSteer('s2', input('same'))
+    const prompt = { ...userMessage('same'), id: 'prompt' } as v2.ThreadItem
+    t.itemStarted(prompt)
+    t.itemCompleted(prompt)
+    expect(out).toEqual([])
+    const first = { ...userMessage('same'), id: 'echo-1' } as v2.ThreadItem
+    t.itemStarted(first)
+    t.itemCompleted(first)
+    expect(out).toEqual([{ event: 'steer_delivered', data: { steerId: 's1' } }])
+    const second = { ...userMessage('same'), id: 'echo-2' } as v2.ThreadItem
+    t.itemStarted(second)
+    t.itemCompleted(second)
+    expect(out.map((o) => o.data)).toEqual([{ steerId: 's1' }, { steerId: 's2' }])
+  })
+
+  it('holds a delivery while a message or thought streams, and reports it at the end at the latest', () => {
+    const { turn: t, out } = turn()
+    t.expectSteer('s1', input('a'))
+    t.expectSteer('s2', input('b'))
+    t.itemStarted(message('m1', ''))
+    t.agentMessageDelta({ ...ids, itemId: 'm1', delta: 'Hel' })
+    t.itemStarted(userMessage('a', 's1'))
+    t.agentMessageDelta({ ...ids, itemId: 'm1', delta: 'lo' })
+    expect(out.some((o) => o.event === 'steer_delivered')).toBe(false)
+    t.itemCompleted(message('m1', 'Hello'))
+    expect(out.at(-1)).toEqual({ event: 'steer_delivered', data: { steerId: 's1' } })
+    // A thought left open by an interrupted turn: delivered when it ends.
+    t.itemStarted(reasoning('r1'))
+    t.itemStarted(userMessage('b', 's2'))
+    expect(out.filter((o) => o.event === 'steer_delivered')).toHaveLength(1)
+    t.finish()
+    expect(out.filter((o) => o.event.startsWith('steer_'))).toEqual([
+      { event: 'steer_delivered', data: { steerId: 's1' } },
+      { event: 'steer_delivered', data: { steerId: 's2' } },
+    ])
+  })
+
+  it('counts a steer Codex never answered as placed when the turn is closed early', () => {
+    const { turn: t, out } = turn()
+    t.expectSteer('s1', input('one'))
+    t.expectSteer('s2', input('two'))
+    t.steerAnswered('s2')
+    expect(t.placeUnansweredSteers()).toEqual(['s1'])
+    t.finish()
+    expect(out).toEqual([
+      { event: 'steer_delivered', data: { steerId: 's1' } },
+      { event: 'steer_withdrawn', data: { steerId: 's2' } },
+    ])
+  })
+
+  it('gives back a steer the turn ended without echoing, and forgets a refused one', () => {
+    const { turn: t, out } = turn()
+    t.expectSteer('s1', input('one'))
+    t.expectSteer('s2', input('two'))
+    expect(t.forgetSteer('s2')).toBe(true)
+    expect(t.forgetSteer('s2')).toBe(false)
+    t.finish()
+    expect(out).toEqual([{ event: 'steer_withdrawn', data: { steerId: 's1' } }])
+    expect(t.forgetSteer('s1')).toBe(false)
   })
 })
 

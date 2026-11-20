@@ -154,9 +154,16 @@ export class FakeCodexTurn {
   }
 
   /** The user's prompt as Codex echoes it at the start of a turn (and again
-   * for each `turn/steer`). */
-  userMessage(text: string): Item {
-    const item = userMessageItem(text)
+   * for each `turn/steer`), as text or as the input sent. `clientId` is the
+   * request's `clientUserMessageId`. */
+  userMessage(
+    text: string | v2.UserInput[],
+    overrides: Partial<Extract<Item, { type: 'userMessage' }>> = {},
+  ): Item {
+    const item =
+      typeof text === 'string'
+        ? userMessageItem(text, overrides)
+        : userMessageItem('', { content: text, ...overrides })
     this.itemStarted(item)
     return this.itemCompleted(item)
   }
