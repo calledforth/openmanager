@@ -168,15 +168,35 @@ describe('CodexProbeRuntime', () => {
     expect(start).toHaveBeenCalledTimes(1)
   })
 
-  it('stops the process on dispose, even one still starting', async () => {
+  // The health monitor lets the next probe go once dispose resolves, so it
+  // must not resolve while a process it started is still on its way up.
+  it('waits for a process still starting, and stops it, before dispose resolves', async () => {
     const { client, terminate } = stubClient({})
     let finishStart: (c: CodexAppServerClient) => void = () => undefined
     const probe = build(() => new Promise((resolve) => (finishStart = resolve)))
     const probing = probe.probe()
-    await probe.dispose()
+    let disposed = false
+    const disposing = probe.dispose().then(() => (disposed = true))
+    await new Promise((resolve) => setTimeout(resolve, 5))
+    expect(disposed).toBe(false)
     finishStart(client)
+    await disposing
     await expect(probing).rejects.toThrow(/disposed/)
-    expect(terminate).toHaveBeenCalledTimes(1)
+    expect(terminate).toHaveBeenCalled()
+  })
+
+  it('stops the earlier process when a failed probe is retried', async () => {
+    const first = stubClient({ 'account/read': { ...SIGNED_IN, account: null } })
+    const second = stubClient({
+      'account/read': SIGNED_IN,
+      'model/list': { data: [model('a')], nextCursor: null },
+    })
+    const clients = [first.client, second.client]
+    const probe = build(async () => clients.shift()!)
+    await expect(probe.probe()).rejects.toBeInstanceOf(AuthRequiredError)
+    await expect(probe.probe()).resolves.toMatchObject({ authenticated: true })
+    expect(first.terminate).toHaveBeenCalledTimes(1)
+    expect(second.terminate).not.toHaveBeenCalled()
   })
 
   it('does not list sessions', async () => {

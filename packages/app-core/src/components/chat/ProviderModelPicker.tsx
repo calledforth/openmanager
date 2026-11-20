@@ -130,7 +130,7 @@ const range = (values: readonly string[]) => {
 /** Providers whose catalog lists every model's effort levels, so a row with
  * none has no effort control rather than one nobody reported. Fast mode is
  * not on the same footing: only Claude's catalog says which models have it. */
-const CATALOG_KNOWS_EFFORT: ReadonlySet<ProviderId> = new Set(['claude', 'codex'])
+const CATALOG_KNOWS_EFFORT: ReadonlySet<ProviderId> = new Set(['claude'])
 
 /** What the hover card says about a model, from whatever its catalog row
  * carries. Rows that know nothing about a setting leave it out rather than

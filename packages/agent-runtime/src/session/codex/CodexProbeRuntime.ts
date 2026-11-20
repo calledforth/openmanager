@@ -58,6 +58,8 @@ export class CodexProbeRuntime implements ProbeRuntime {
   private result: ProbeResult | undefined
   private inFlight: Promise<ProbeResult> | undefined
   private client: CodexAppServerClient | undefined
+  /** The app-server still being started, so `dispose` can wait for it. */
+  private starting: Promise<CodexAppServerClient> | undefined
   private disposed = false
   private readonly timeouts: RuntimeTimeouts
 
@@ -82,12 +84,22 @@ export class CodexProbeRuntime implements ProbeRuntime {
   }
 
   private async run(): Promise<ProbeResult> {
-    const client = await (this.deps.start ?? startRealCodex)({
+    // A retry after a failed probe starts afresh; the earlier process goes.
+    const previous = this.client
+    this.client = undefined
+    if (previous) await previous.terminate({ reason: 'disposed' }).catch(() => undefined)
+    this.starting = (this.deps.start ?? startRealCodex)({
       cwd: this.spec.cwd,
       env: this.deps.env ?? process.env,
       timeouts: this.timeouts,
       log: this.deps.host.log,
     })
+    let client: CodexAppServerClient
+    try {
+      client = await this.starting
+    } finally {
+      this.starting = undefined
+    }
     if (this.disposed) {
       // Disposed while the process was still starting: nobody wants it.
       await client.terminate({ reason: 'disposed' }).catch(() => undefined)
@@ -159,13 +171,20 @@ export class CodexProbeRuntime implements ProbeRuntime {
 
   /** Stops the process at once, even mid-probe: a probe is disposed when its
    * caller gave up on it (a health timeout), and waiting for a wedged one to
-   * finish would hold the process for no one. A process still starting is
-   * stopped as soon as it exists. */
+   * finish would hold the process for no one. */
   async dispose(): Promise<void> {
     this.disposed = true
     const client = this.client
     this.client = undefined
     if (client) await client.terminate({ reason: 'disposed' }).catch(() => undefined)
+    // A process still starting is waited for and stopped here, so `dispose`
+    // resolves only once nothing is left running: the health monitor lets the
+    // next probe go when this one's process is gone.
+    const starting = this.starting
+    if (starting) {
+      const late = await starting.catch(() => undefined)
+      if (late) await late.terminate({ reason: 'disposed' }).catch(() => undefined)
+    }
   }
 
   private route(): BackendRoute {

@@ -146,7 +146,7 @@ export function createSpawnAgentTools(host: SpawnHost): readonly AgentTool[] {
         .string()
         .min(1)
         .max(64)
-        .describe('Provider id, e.g. `opencode`, `cursor`, `claude`.'),
+        .describe('Provider id, e.g. `opencode`, `cursor`, `claude`, `codex`.'),
       model: z
         .string()
         .min(1)
