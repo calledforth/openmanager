@@ -503,6 +503,18 @@ export type ArtifactTarget =
   | { sessionId: string; draftId?: never; artifactId: string }
   | { draftId: string; sessionId?: never; artifactId: string }
 
+/**
+ * Where a client keeps the images it has read, so each one crosses the
+ * network once. An artifact's bytes never change after it is stored, so a
+ * kept copy is never stale; it is keyed by artifact ID alone, inside the one
+ * environment the cache belongs to. Both methods may fail: the client then
+ * reads from the environment as if nothing were kept.
+ */
+export interface ArtifactCache {
+  read(artifactId: string): Promise<Blob | undefined>
+  write(artifactId: string, bytes: Blob): Promise<void>
+}
+
 /** A file the composer attaches. The environment stores it under the session. */
 /**
  * One file for one session, or for a draft's workspace: a draft has no

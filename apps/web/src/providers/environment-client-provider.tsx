@@ -18,6 +18,7 @@ import {
   routeHealthFromConnection,
   type ConnectionUiState,
 } from '@openmanager/environment-client/connection'
+import { createArtifactCache } from '../lib/artifact-cache'
 import { createEnvironmentCache, writeEnvironmentCache } from '../lib/environment-cache'
 import { useConnection } from './connection-provider'
 import type { EnvironmentLink } from '../lib/environment-link'
@@ -146,6 +147,7 @@ function EnvironmentHost({
         credential,
         environmentId,
         store,
+        artifactCache: createArtifactCache(environmentId),
       })
       const cached = cachedView(next)
       let authorized = false

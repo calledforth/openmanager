@@ -1755,6 +1755,66 @@ describe('websocket environment client', () => {
     client.dispose()
   })
 
+  it('keeps images it read in the host cache, and answers from it offline', async () => {
+    const kept = new Map<string, Blob>()
+    const artifactCache = {
+      read: async (artifactId: string) => kept.get(artifactId),
+      write: async (artifactId: string, bytes: Blob) => {
+        kept.set(artifactId, bytes)
+      },
+    }
+    const fetchBytes = vi.fn(
+      async (input: RequestInfo | URL) =>
+        new Response(
+          new Blob([String(input)], {
+            type: String(input).includes('video') ? 'video/mp4' : 'image/png',
+          }),
+        ),
+    )
+    const { client, socket } = await connected(
+      FULL_CAPABILITIES,
+      {},
+      { fetch: fetchBytes, artifactCache },
+    )
+    const first = await client.fetchArtifact!({ sessionId: 's', artifactId: 'image' })
+    await client.fetchArtifact!({ sessionId: 's', artifactId: 'video' })
+    await flush()
+    expect([...kept.keys()]).toEqual(['image'])
+
+    // Gone from the network, the kept image still answers; nothing else does.
+    socket.close(1006)
+    await flush()
+    const again = await client.fetchArtifact!({ sessionId: 's', artifactId: 'image' })
+    expect(await again.text()).toBe(await first.text())
+    await expect(
+      client.fetchArtifact!({ sessionId: 's', artifactId: 'video' }),
+    ).rejects.toMatchObject({ code: 'unavailable' })
+    expect(fetchBytes).toHaveBeenCalledTimes(2)
+    client.dispose()
+  })
+
+  it('reads from the environment when the host cache fails', async () => {
+    const artifactCache = {
+      read: async () => {
+        throw new Error('quota')
+      },
+      write: async () => {
+        throw new Error('quota')
+      },
+    }
+    const { client } = await connected(
+      FULL_CAPABILITIES,
+      {},
+      {
+        artifactCache,
+        fetch: async () => new Response(new Blob(['png'], { type: 'image/png' })),
+      },
+    )
+    const blob = await client.fetchArtifact!({ sessionId: 's', artifactId: 'a' })
+    expect(await blob.text()).toBe('png')
+    client.dispose()
+  })
+
   it('reads settled tool output over the authorized route', async () => {
     const requests: Array<{ url: string; authorization: string | null }> = []
     const { client } = await connected(

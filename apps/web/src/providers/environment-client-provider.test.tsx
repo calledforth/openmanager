@@ -336,6 +336,7 @@ describe('WebEnvironmentClientProvider', () => {
       credential: 'client-token',
       environmentId: 'env-local',
       store: expect.any(Object),
+      artifactCache: expect.any(Object),
     })
 
     stores[0]!.update(() => ({ ...createInitialState(), activeSessionId: 'cached-session' }))
@@ -346,6 +347,7 @@ describe('WebEnvironmentClientProvider', () => {
         credential: 'client-token',
         environmentId: 'env-local',
         store: expect.any(Object),
+        artifactCache: expect.any(Object),
       }),
     )
     // The old socket is gone, and the environment is still one record.

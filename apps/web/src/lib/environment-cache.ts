@@ -7,6 +7,7 @@ import {
   type EnvironmentStore,
 } from '@openmanager/environment-client'
 import { EVENT_FORMAT_VERSION, PROTOCOL_VERSION } from '@openmanager/protocol'
+import { deleteArtifactCache } from './artifact-cache'
 
 const CACHE_VERSION = 1
 
@@ -193,6 +194,8 @@ export function holdsUnsentWork(state: EnvironmentState): boolean {
  * reached keeps its copy.
  */
 export function deleteEnvironmentCache(environmentId: string): Promise<void> {
+  // Images are no one's only copy: they go even when unsent work keeps the rest.
+  void deleteArtifactCache(environmentId)
   const store = live.get(environmentId)
   // Kept, and its client's last save keeps the latest of it.
   if (store && holdsUnsentWork(store.getServerState())) return Promise.resolve()

@@ -2,6 +2,7 @@ export type {
   AddWorkspaceInput,
   AuthorizedClient,
   AuthorizedClientList,
+  ArtifactCache,
   ArtifactTarget,
   ToolOutputTarget,
   BackgroundTask,
