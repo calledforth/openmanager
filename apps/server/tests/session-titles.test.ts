@@ -200,6 +200,10 @@ describe('title generator', () => {
     expect(request!.args).toEqual(
       expect.arrayContaining(['exec', '--ephemeral', '--model', 'gpt-6-luna', '-']),
     )
+    // The user's `notify` program must not fire for every generated title.
+    const notify = request!.args.indexOf('notify=[]')
+    expect(notify).toBeGreaterThan(0)
+    expect(request!.args[notify - 1]).toBe('--config')
   })
 
   it('hands Cursor its request as a file it reads in ask mode', async () => {

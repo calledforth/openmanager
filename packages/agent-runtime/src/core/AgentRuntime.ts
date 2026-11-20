@@ -10,6 +10,7 @@ import type {
   PromptCapabilities,
   PromptInput,
   ProviderId,
+  ProviderPolicy,
   ProviderSessionInfo,
   QuestionOutcome,
   SubtaskStatus,
@@ -28,6 +29,15 @@ import {
 import type { ExecFile } from '../providers/opencode-models.js'
 import type { AcpConnectionFactory } from '../session/AcpConnection.js'
 import type { ClaudeSdk } from '../session/claude/sdk.js'
+import {
+  CODEX_LOGIN_HINT,
+  CODEX_SIGNED_OUT_MESSAGE,
+  codexAccountLabel,
+  codexSignInState,
+  type CodexProviderState,
+} from '../session/codex/codex-account.js'
+import { CodexConnectionClosedError } from '../session/codex/CodexRpcPeer.js'
+import { CodexService, type CodexServiceDeps } from '../session/codex/CodexService.js'
 import type { CodexStarter } from '../session/codex/start.js'
 import type { ProbeResult, ProbeRuntime, ProbeRuntimeFactory } from '../session/ProbeRuntime.js'
 import {
@@ -35,7 +45,11 @@ import {
   ProviderSessionRuntimeFactory,
 } from '../session/ProviderRuntimeFactory.js'
 import { ChildProcessConnectionFactory } from '../session/ChildProcessConnection.js'
-import { SHUTDOWN_BUDGET_MS, type RuntimeTimeouts } from '../session/constants.js'
+import {
+  MAX_CODEX_SESSION_RUNTIMES,
+  SHUTDOWN_BUDGET_MS,
+  type RuntimeTimeouts,
+} from '../session/constants.js'
 import type { DesiredSessionConfig, SessionResumeRecord } from '../session/lifecycle.js'
 import { withTimeout } from '../session/timeout.js'
 import { SessionRuntimeRegistryImpl } from '../session/SessionRuntimeRegistryImpl.js'
@@ -88,6 +102,9 @@ export type ProviderCatalog = {
   promptCapabilities?: PromptCapabilities
   models?: ModelListing
   modes?: ModeListing
+  /** What the provider's own configuration rules out, when the probe could
+   * ask (Codex). */
+  policy?: ProviderPolicy
 }
 
 export type RuntimeSessionArgs = RuntimeRoute & {
@@ -163,6 +180,18 @@ function mergeDesired(
   }
 }
 
+/** Each Codex provider is capped at `MAX_CODEX_SESSION_RUNTIMES`; the
+ * caller's overrides win. */
+function providerRuntimeLimits(
+  configs: Readonly<Record<ProviderId, ProviderConfig>>,
+  overrides: Partial<Record<ProviderId, number>> | undefined,
+): Partial<Record<ProviderId, number>> {
+  const limits: Partial<Record<ProviderId, number>> = {}
+  for (const [providerId, config] of Object.entries(configs) as Array<[ProviderId, ProviderConfig]>)
+    if (config.kind === 'codex') limits[providerId] = MAX_CODEX_SESSION_RUNTIMES
+  return { ...limits, ...overrides }
+}
+
 export type AgentRuntimeOptions = {
   /** Transport seam. Defaults to spawning the provider's CLI; tests inject a
    * fake so runtimes can be exercised without one. */
@@ -170,9 +199,21 @@ export type AgentRuntimeOptions = {
   /** The same seam for the Claude arm, which spawns its CLI through the SDK
    * rather than through `connections`. Tests inject `FakeClaudeSdk`. */
   claudeSdk?: ClaudeSdk
-  /** The Codex arm's seam: starts one app-server. Tests inject a starter
-   * wired to `FakeCodexAppServer`. */
+  /** The same seam for Codex: how an app-server is started, for sessions and
+   * for the service process alike. Tests hand in a starter wired to a fake. */
   codexStart?: CodexStarter
+  /** Overrides for the Codex service process: its idle reap and timer, its
+   * request budgets, and where it runs. */
+  codexService?: Pick<
+    CodexServiceDeps,
+    | 'idleMs'
+    | 'setTimer'
+    | 'cwd'
+    | 'env'
+    | 'requestTimeoutMs'
+    | 'optionalRequestTimeoutMs'
+    | 'hungAfterMs'
+  >
   /** The third seam: how a provider asked through its own CLI, rather than
    * over a connection, is run. Defaults to `node:child_process`. */
   execFile?: ExecFile
@@ -192,6 +233,9 @@ export type AgentRuntimeOptions = {
   /** Soft LRU ceiling on live session runtimes. Defaults to
    * `MAX_SESSION_RUNTIMES`; `0` disables eviction. */
   maxRuntimes?: number
+  /** Soft LRU ceilings per provider, laid over the defaults: Codex runtimes
+   * are capped at `MAX_CODEX_SESSION_RUNTIMES`, other providers not at all. */
+  maxRuntimesByProvider?: Partial<Record<ProviderId, number>>
 }
 
 /** Owns the registry of per-thread session runtimes, the two app-wide brokers,
@@ -267,6 +311,12 @@ export class AgentRuntime {
    * a dying runtime settles only its own thread's requests. */
   private readonly permissions: PermissionBroker
   private readonly interactions: InteractionBroker
+  /** One Codex service process per environment, per Codex provider, built
+   * on first need (docs/decisions/codex-app-server.md, "One service process
+   * for work outside sessions"). */
+  private readonly codexServices = new Map<ProviderId, CodexService>()
+  private readonly codexStart: CodexStarter | undefined
+  private readonly codexServiceOptions: AgentRuntimeOptions['codexService']
 
   constructor(
     private readonly host: HostDeps,
@@ -277,6 +327,8 @@ export class AgentRuntime {
     this.connectionsValue = options.connections
     this.timeouts = options.timeouts
     this.execFile = options.execFile
+    this.codexStart = options.codexStart
+    this.codexServiceOptions = options.codexService
     this.permissions = new PermissionBroker((settlement) =>
       this.forward(settlement.providerId, {
         threadId: settlement.threadId,
@@ -305,6 +357,7 @@ export class AgentRuntime {
       onEvent: (providerId, event) => this.forward(providerId, event),
       log: host.log,
       ...(options.maxRuntimes !== undefined ? { limit: options.maxRuntimes } : {}),
+      providerLimits: providerRuntimeLimits(configs, options.maxRuntimesByProvider),
     })
     this.reaper = new SessionReaper({
       registry: this.registry,
@@ -321,7 +374,7 @@ export class AgentRuntime {
       host,
       connections: () => this.acpConnections(),
       ...(options.claudeSdk ? { claudeSdk: options.claudeSdk } : {}),
-      ...(options.codexStart ? { codexStart: options.codexStart } : {}),
+      codexService: (providerId) => this.requireCodexService(providerId),
       ...(options.timeouts ? { timeouts: options.timeouts } : {}),
       ...(options.execFile ? { execFile: options.execFile } : {}),
     })
@@ -341,6 +394,7 @@ export class AgentRuntime {
                 : {}),
               ...(result.models ? { models: result.models } : {}),
               ...(result.modes ? { modes: result.modes } : {}),
+              ...(result.policy ? { policy: result.policy } : {}),
             })
             return result
           },
@@ -375,6 +429,13 @@ export class AgentRuntime {
       probes: this.probes,
       census: (providerId) => this.census(providerId),
       probeCwd: (providerId) => this.lastCwdByProvider.get(providerId) ?? this.defaultProbeCwd,
+      // Codex's probe asks the service process. While that process is up it
+      // costs no spawn, so it need not wait behind another provider's CLI;
+      // when it is not (it is reaped between health ticks) the probe would
+      // start one, so it takes its turn in the queue like any other.
+      probeInParallel: (providerId) =>
+        this.configs[providerId]?.kind === 'codex' &&
+        this.codexServices.get(providerId)?.status.state === 'running',
       host,
       ...(options.health ?? {}),
     })
@@ -449,6 +510,56 @@ export class AgentRuntime {
     }
   }
 
+  /** The Codex service process for this provider, if it is a Codex
+   * provider. Built on first ask; its process starts on its first request.
+   * Where account, limits, MCP status, thread listing, skills and file search
+   * ask Codex when no session exists. */
+  codexService(providerId: ProviderId): CodexService | undefined {
+    if (this.configs[providerId]?.kind !== 'codex') return undefined
+    let service = this.codexServices.get(providerId)
+    if (!service) {
+      service = new CodexService({
+        providerId,
+        host: this.host,
+        ...(this.codexStart ? { start: this.codexStart } : {}),
+        ...(this.timeouts ? { timeouts: this.timeouts } : {}),
+        ...(this.codexServiceOptions ?? {}),
+      })
+      this.watchCodexAccount(service)
+      this.codexServices.set(providerId, service)
+    }
+    return service
+  }
+
+  private requireCodexService(providerId: ProviderId): CodexService {
+    const service = this.codexService(providerId)
+    if (!service) throw new Error(`${providerId} is not a Codex provider`)
+    return service
+  }
+
+  /** A sign-out or sign-in Codex announces on its own (`account/updated`)
+   * reaches health at once, not at the next probe, and so does a change of
+   * who is signed in. Only changes are reported: the probe that read the
+   * account reports it itself. A sign-in announced before the account is
+   * read again counts as signed in; the re-read then names the account. */
+  private watchCodexAccount(service: CodexService): void {
+    const reading = (state: CodexProviderState) => {
+      const signIn = codexSignInState(state)
+      const label = state.account ? codexAccountLabel(state.account) : undefined
+      return { signIn, label }
+    }
+    let last = reading(service.state)
+    service.onStateChange((state) => {
+      const now = reading(state)
+      if (now.signIn === last.signIn && (now.label === last.label || now.label === undefined)) return
+      last = now
+      if (now.signIn === 'signed_out')
+        this.health.observeAuthRequired(service.providerId, CODEX_SIGNED_OUT_MESSAGE, CODEX_LOGIN_HINT)
+      else if (now.signIn === 'signed_in' || now.signIn === 'not_required')
+        this.health.observeAuthenticated(service.providerId, undefined, now.label)
+    })
+  }
+
   private census(providerId: ProviderId): ProviderRuntimeCensus {
     let liveProcesses = 0
     let readyProcesses = 0
@@ -459,7 +570,17 @@ export class AgentRuntime {
       if (entry.runtime.phase === 'ready') readyProcesses += 1
       if (entry.activeTurn !== null) activeTurns += 1
     }
-    return { liveProcesses, readyProcesses, activeTurns }
+    // The service process is accounted for here, beside the sessions and
+    // never among them: it holds no thread, is not under the session cap,
+    // and proves nothing about whether a session can start.
+    const service = this.codexServices.get(providerId)
+    const serviceProcesses = service && service.status.state !== 'stopped' ? 1 : 0
+    return {
+      liveProcesses,
+      readyProcesses,
+      activeTurns,
+      ...(serviceProcesses ? { serviceProcesses } : {}),
+    }
   }
 
   getProvider(providerId: ProviderId): ProviderConfig {
@@ -1248,12 +1369,14 @@ export class AgentRuntime {
    * A start or stop already under way for the thread is waited for first, so
    * the choice below is made against what will stay. A live runtime archives
    * on its own connection (its turn interrupted first), since Codex refuses
-   * the thread to any other process while one holds it; with none, a probe
-   * archives `sessionId`, one probe at a time. With neither a live runtime
-   * nor a `sessionId` (the provider never got the session), or for a
-   * provider with no archive, the thread is only closed. A failed archive is
-   * logged and the thread is closed anyway: the session is gone from
-   * openmanager whatever the provider says. */
+   * the thread to any other process while one holds it; with none, the
+   * environment's Codex service process archives `sessionId`, which is work
+   * outside sessions: one process serves every such archive, so deleting a
+   * project's worth of sessions starts at most one app-server. With neither
+   * a live runtime nor a `sessionId` (the provider never got the session),
+   * or for a provider with no archive, the thread is only closed and nothing
+   * is built. A failed archive is logged and the thread is closed anyway:
+   * the session is gone from openmanager whatever the provider says. */
   async retireSession(args: RuntimeRoute & { sessionId?: string }): Promise<void> {
     // An open that has not reached the registry yet is a start all the same.
     await this.opening.get(args.threadId)?.catch(() => undefined)
@@ -1263,10 +1386,22 @@ export class AgentRuntime {
       entry && entry.providerId === args.providerId && isRuntimeAlive(entry.runtime.phase)
         ? entry.runtime
         : undefined
+    const viaService = (sessionId: string | undefined) =>
+      sessionId ? this.codexService(args.providerId)?.archiveThread(sessionId) : undefined
     try {
-      if (live) await live.archive?.()
-      else if (args.sessionId && this.probes.archives?.(args.providerId))
-        await this.archiveInProbe({ ...args, sessionId: args.sessionId })
+      if (live) {
+        try {
+          await live.archive?.()
+        } catch (error) {
+          // The runtime went away between the look and the archive (it was
+          // replaced after an interrupt, or its process died). Once it is
+          // gone no process holds the thread, so the service process can.
+          if (live.phase === 'stopping' || error instanceof CodexConnectionClosedError)
+            await live.exited
+          if (isRuntimeAlive(live.phase)) throw error
+          await viaService(live.sessionId ?? args.sessionId)
+        }
+      } else await viaService(args.sessionId)
     } catch (error) {
       this.host.log({
         scope: 'agent-runtime',
@@ -1283,53 +1418,6 @@ export class AgentRuntime {
 
   /** Opens in flight per thread, from before they reach the registry. */
   private readonly opening = new Map<string, Promise<unknown>>()
-  /** Archive requests waiting for a probe, in arrival order. */
-  private archives: Array<{
-    args: RuntimeRoute & { sessionId: string }
-    resolve: () => void
-    reject: (error: unknown) => void
-  }> = []
-  private archiving = false
-
-  /** Archive in a probe, never more than one probe at a time: deleting a
-   * project's worth of sessions must not start one app-server per session.
-   * A probe archives every queued request for its provider before it goes,
-   * including those that arrive while it works. */
-  private archiveInProbe(args: RuntimeRoute & { sessionId: string }): Promise<void> {
-    return new Promise((resolve, reject) => {
-      this.archives.push({ args, resolve, reject })
-      if (!this.archiving) void this.drainArchives()
-    })
-  }
-
-  private async drainArchives(): Promise<void> {
-    this.archiving = true
-    try {
-      for (let first = this.archives[0]; first; first = this.archives[0]) {
-        const providerId = first.args.providerId
-        const probe = this.probeRuntime(first.args, false)
-        try {
-          for (
-            let index = this.archives.findIndex((item) => item.args.providerId === providerId);
-            index !== -1;
-            index = this.archives.findIndex((item) => item.args.providerId === providerId)
-          ) {
-            const [item] = this.archives.splice(index, 1)
-            try {
-              await probe.archiveSession!(item!.args.sessionId)
-              item!.resolve()
-            } catch (error) {
-              item!.reject(error)
-            }
-          }
-        } finally {
-          await probe.dispose()
-        }
-      }
-    } finally {
-      this.archiving = false
-    }
-  }
 
   // Permissions and raw extension requests live entirely in the app-wide
   // brokers, keyed by requestId; only questions and plans need the runtime that
@@ -1423,7 +1511,11 @@ export class AgentRuntime {
     try {
       await withTimeout(
         // The probe the monitor was holding is a child like any other.
-        Promise.all([this.registry.shutdown({ reason: 'disposed' }), this.health.drain()]),
+        Promise.all([
+          this.registry.shutdown({ reason: 'disposed' }),
+          this.health.drain(),
+          ...[...this.codexServices.values()].map((service) => service.shutdown()),
+        ]),
         SHUTDOWN_BUDGET_MS,
         () => new Error(`Session runtimes did not all exit within ${SHUTDOWN_BUDGET_MS}ms`),
       )
@@ -1447,6 +1539,7 @@ export class AgentRuntime {
     this.permissions.settleAll()
     this.interactions.settleAll()
     this.registry.disposeAll()
+    for (const service of this.codexServices.values()) service.dispose()
     this.clearBookkeeping()
   }
   disposeAll(): void {

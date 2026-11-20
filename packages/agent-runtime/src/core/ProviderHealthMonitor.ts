@@ -10,11 +10,12 @@ import {
   type ProviderProbe,
   type ProviderRuntimeHealth,
   type ProviderRuntimeState,
+  type ProviderUpdateAdvisory,
 } from '@openmanager/shared/contracts/provider-health'
 import type { ProbeResult, ProbeRuntime, ProbeRuntimeFactory } from '../session/ProbeRuntime.js'
 import type { SessionRuntimeExit } from '../session/lifecycle.js'
 import { withTimeout } from '../session/timeout.js'
-import { AuthRequiredError } from './errors.js'
+import { AuthRequiredError, ProviderVersionUnsupportedError } from './errors.js'
 import type { HostDeps } from '../host.js'
 
 /** Re-probe cadence. Matches the reference architecture's 5 minutes: long
@@ -52,6 +53,10 @@ export type ProviderRuntimeCensus = {
   readyProcesses: number
   /** Runtimes with a prompt in flight. */
   activeTurns: number
+  /** Provider-level helper processes alive right now (Codex's service
+   * process). Never a session: not in `liveProcesses`, not under the session
+   * cap, and no evidence that a session works. */
+  serviceProcesses?: number
 }
 
 export type ProviderHealthMonitorDeps = {
@@ -72,6 +77,12 @@ export type ProviderHealthMonitorDeps = {
   now?: () => number
   /** Injected in tests to avoid a real interval timer. */
   schedule?: (run: () => void, ms: number) => { cancel: () => void }
+  /** Providers whose probe may run beside others instead of waiting for the
+   * one-slot queue, asked at the moment of each refresh. The queue exists so
+   * two CLIs never spawn at once; a probe that asks a process already running
+   * (Codex's service process, while it is up) costs no such spawn, so it
+   * need not wait behind one. */
+  probeInParallel?: (providerId: ProviderId) => boolean
 }
 
 /** Handle for a probe the monitor did not run itself. Exactly one of the two
@@ -96,6 +107,7 @@ type ProviderRecord = {
    * session is worth a probe of its own. */
   catalogAskedAt: number | null
   lastProbe: ProviderProbe | null
+  update: ProviderUpdateAdvisory
   /** Sequence number of the newest observation saying this provider works: a
    * successful probe, or a session runtime that reached `ready`. Deliberately
    * a counter and not a timestamp — `Date.now()` has millisecond resolution,
@@ -117,6 +129,7 @@ function emptyRecord(): ProviderRecord {
     models: { models: [], refreshedAt: null },
     catalogAskedAt: null,
     lastProbe: null,
+    update: { state: 'unknown' },
     healthySeq: 0,
     unhealthySeq: 0,
     lastUnexpectedExit: undefined,
@@ -144,7 +157,10 @@ function emptyRecord(): ProviderRecord {
  *
  * Probes are serialised globally by a one-slot queue: two providers never
  * spawn CLIs at the same time, and a second request for a provider already
- * being probed joins the in-flight probe instead of stacking another. */
+ * being probed joins the in-flight probe instead of stacking another. A
+ * provider whose probe asks a process that is already running
+ * (`probeInParallel`) runs beside the queue, so it neither waits behind a
+ * slow CLI nor holds one up. */
 export class ProviderHealthMonitor {
   private readonly records = new Map<ProviderId, ProviderRecord>()
   private readonly inFlight = new Map<ProviderId, Promise<ProviderHealth>>()
@@ -172,9 +188,12 @@ export class ProviderHealthMonitor {
   /** Strictly increasing, so two observations are always ordered. */
   private sequence = 0
   private stopped = false
-  /** The probe process this monitor is holding right now, if any. The queue
-   * has one slot, so there is never more than one. */
-  private active: ProbeRuntime | undefined
+  /** The probes this monitor is holding right now. The queue has one slot,
+   * so there is at most one queued probe here, beside any that run in
+   * parallel (`probeInParallel`). */
+  private readonly active = new Set<ProbeRuntime>()
+  /** Probes running outside the queue, so `drain()` can wait for them. */
+  private readonly unqueued = new Set<Promise<unknown>>()
   /** Providers whose last refresh was declined for want of a directory. A
    * host that learns its first workspace after boot would otherwise leave
    * them unprobed until the next interval, and a host that never feeds the
@@ -209,10 +228,10 @@ export class ProviderHealthMonitor {
       runtime: this.runtimeHealth(providerId, record),
       models: record.models,
       lastProbe: record.lastProbe,
-      // No version registry is consulted anywhere in this app, so there is
-      // nothing to compare an installed version against. `'unknown'` is the
-      // only honest value; inventing `'current'` would be a guess.
-      update: { state: 'unknown' },
+      // Only a probe that can read its CLI's version against what this app
+      // supports fills this in (Codex). For the rest no version registry is
+      // consulted, so `'unknown'` is the only honest value.
+      update: record.update,
     }
   }
 
@@ -240,6 +259,7 @@ export class ProviderHealthMonitor {
       state: runtimeState(census, record),
       liveProcesses: census.liveProcesses,
       activeTurns: census.activeTurns,
+      ...(census.serviceProcesses ? { serviceProcesses: census.serviceProcesses } : {}),
       ...(record.lastUnexpectedExit ? { lastUnexpectedExit: record.lastUnexpectedExit } : {}),
       ...(record.runtimeMessage ? { message: record.runtimeMessage } : {}),
     }
@@ -259,6 +279,7 @@ export class ProviderHealthMonitor {
       record.auth = health.auth
       record.models = health.models
       record.lastProbe = health.lastProbe
+      record.update = health.update
       // A restored probe does not count as a live observation: it cannot
       // clear an exit this process has not seen, and it must not suppress the
       // boot refresh. Staleness is judged from `lastProbe.at` alone.
@@ -278,10 +299,18 @@ export class ProviderHealthMonitor {
     this.publish(providerId)
   }
 
-  observeAuthenticated(providerId: ProviderId, methodId: string | undefined): void {
+  observeAuthenticated(
+    providerId: ProviderId,
+    methodId: string | undefined,
+    accountLabel?: string,
+  ): void {
     const record = this.records.get(providerId)
     if (!record) return
-    record.auth = { state: 'authenticated', ...(methodId ? { methodId } : {}) }
+    record.auth = {
+      state: 'authenticated',
+      ...(methodId ? { methodId } : {}),
+      ...(accountLabel ? { accountLabel } : {}),
+    }
     this.publish(providerId)
   }
 
@@ -422,14 +451,14 @@ export class ProviderHealthMonitor {
     this.timer = undefined
     this.listeners.clear()
     this.awaitingCwd.clear()
-    void this.active?.dispose().catch(() => undefined)
+    for (const probe of this.active) void probe.dispose().catch(() => undefined)
   }
 
   /** Resolves once no probe is running or queued. After `stop()` that is the
    * moment every CLI this monitor spawned is gone: a probe leaves the queue
    * only after its own `dispose()` has resolved. */
-  drain(): Promise<void> {
-    return this.queue
+  async drain(): Promise<void> {
+    await Promise.all([this.queue, ...this.unqueued])
   }
 
   /** Bring one provider's snapshot up to date.
@@ -483,7 +512,8 @@ export class ProviderHealthMonitor {
     }
 
     this.awaitingCwd.delete(providerId)
-    const run = this.enqueue(() => this.probe(providerId, record, cwd)).finally(() => {
+    const work = () => this.probe(providerId, record, cwd)
+    const run = (this.deps.probeInParallel?.(providerId) ? this.unqueuedRun(work) : this.enqueue(work)).finally(() => {
       if (this.inFlight.get(providerId) === run) this.inFlight.delete(providerId)
       this.publish(providerId)
     })
@@ -513,6 +543,18 @@ export class ProviderHealthMonitor {
     return record.install.state === 'installed' && record.auth.state === 'authenticated'
   }
 
+  /** Beside the queue, tracked so `drain()` still waits for it. */
+  private unqueuedRun<T>(work: () => Promise<T>): Promise<T> {
+    const run = work()
+    const settled = run.then(
+      () => undefined,
+      () => undefined,
+    )
+    this.unqueued.add(settled)
+    void settled.then(() => this.unqueued.delete(settled))
+    return run
+  }
+
   /** One slot, so two providers never hold CLI processes at the same time. */
   private enqueue<T>(work: () => Promise<T>): Promise<T> {
     const run = this.queue.then(work, work)
@@ -540,7 +582,7 @@ export class ProviderHealthMonitor {
       return this.health(providerId)
     }
 
-    this.active = runtime
+    this.active.add(runtime)
     try {
       const result = await withTimeout(
         runtime.probe(),
@@ -554,7 +596,7 @@ export class ProviderHealthMonitor {
     } catch (error) {
       this.applyProbeFailure(record, error, startedAt)
     } finally {
-      this.active = undefined
+      this.active.delete(runtime)
       await runtime.dispose().catch((error: unknown) => {
         this.deps.host.log({
           scope: 'agent-runtime',
@@ -637,8 +679,9 @@ export class ProviderHealthMonitor {
     startedAt: number,
   ): void {
     record.install = { state: 'installed', ...versionFields(result.agentInfo?.version) }
+    if (result.update) record.update = result.update
     record.auth = result.authenticated
-      ? { state: 'authenticated' }
+      ? { state: 'authenticated', ...(result.accountLabel ? { accountLabel: result.accountLabel } : {}) }
       : {
           state: 'unauthenticated',
           ...(result.authError ? { message: result.authError } : {}),
@@ -674,8 +717,23 @@ export class ProviderHealthMonitor {
       this.settleProbe(record, 'degraded', startedAt, error.message)
       return
     }
+    if (error instanceof ProviderVersionUnsupportedError) {
+      // It runs, and answered its handshake, but too old to be trusted with
+      // a session: unusable, with the version and the way out.
+      record.install = { state: 'unusable', version: error.version, message: error.message }
+      record.auth = { state: 'unknown' }
+      record.update = {
+        state: 'unsupported',
+        minimumVersion: error.minimumVersion,
+        message: error.message,
+      }
+      this.settleProbe(record, 'failed', startedAt, error.message)
+      return
+    }
     if (isSpawnFailure(error)) {
       record.install = { state: 'missing', message: message(error) }
+      // Nothing is installed to be current, behind or unsupported.
+      record.update = { state: 'unknown' }
       record.auth = { state: 'unknown' }
       this.settleProbe(record, 'failed', startedAt, message(error))
       return

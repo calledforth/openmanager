@@ -83,6 +83,10 @@ type ActiveTurn = {
   markIdentified: () => void
 }
 
+/** How many finished turn ids a runtime remembers, newest kept: only a
+ * recent turn can still have Codex talking about it. */
+const FINISHED_TURNS_MAX = 64
+
 /** One Codex thread in its own `codex app-server` process
  * (docs/decisions/codex-app-server.md, "One app-server per session").
  *
@@ -452,6 +456,24 @@ export class CodexSessionRuntime implements ManagedSessionRuntime {
     client.handle('item/fileChange/requestApproval', () => ({ decision: 'decline' }), {
       immediate: true,
     })
+    // Answered, never left to `-32601`, whose effect on a turn is unprobed:
+    // asked for more access, it is granted none (CAL-258); asked a question,
+    // nobody answers (CAL-259); asked for MCP input, it is declined (CAL-259).
+    client.handle(
+      'item/permissions/requestApproval',
+      (): v2.PermissionsRequestApprovalResponse => ({ permissions: {}, scope: 'turn' }),
+      { immediate: true },
+    )
+    client.handle(
+      'item/tool/requestUserInput',
+      (): v2.ToolRequestUserInputResponse => ({ answers: {} }),
+      { immediate: true },
+    )
+    client.handle(
+      'mcpServer/elicitation/request',
+      (): v2.McpServerElicitationRequestResponse => ({ action: 'decline', content: null, _meta: null }),
+      { immediate: true },
+    )
   }
 
   // ---------------------------------------------------------------------------
@@ -471,6 +493,8 @@ export class CodexSessionRuntime implements ManagedSessionRuntime {
     const threadId = this.sessionIdValue!
     const userMessageId = args.userMessageId ?? `agent_usr_${randomUUID()}`
     this.stopGeneration++
+    // An echo still owed by now (no set in flight) is never coming.
+    if (this.nameSetsInFlight === 0) this.nameEchoes.clear()
 
     this.emit(
       routeEvent(this.route(), threadId, 'lifecycle', 'prompt_started', {
@@ -497,11 +521,30 @@ export class CodexSessionRuntime implements ManagedSessionRuntime {
         },
         { timeoutMs: this.timeouts.controlRequestMs },
       )
-      // `turn/started` may have named it already.
-      this.identifyTurn(active, response.turn.id)
-      if (active.turn.interruptRequested) void this.sendInterrupt(active)
+      // `turn/started` may have named it already. Named only now, after this
+      // runtime closed it, it is an orphan Codex is still running: this
+      // answer names exactly that turn, so blocking it can never catch
+      // another.
+      if (active.settled && !active.turn.turnId) this.orphanTurn(response.turn.id)
+      else {
+        this.identifyTurn(active, response.turn.id)
+        if (active.turn.interruptRequested) void this.sendInterrupt(active)
+      }
     } catch (error) {
       this.failTurn(active, error)
+      // An answer that refuses means no turn exists. Anything else (a
+      // timeout) leaves Codex perhaps running a turn nobody will ever name
+      // to us: the process is replaced, so that turn dies with it and the
+      // next prompt never lands on a busy thread or mistakes it for its own.
+      if (!(error instanceof CodexRpcError) && !this.exitValue && this.phaseValue === 'ready') {
+        this.deps.host.log({
+          scope: 'codex',
+          level: 'warn',
+          message: 'Replacing the Codex process after a turn/start it never answered',
+          data: { error: errorMessage(error) },
+        })
+        void this.stop({ reason: 'restart' })
+      }
     }
     // The RPC only says the turn began; the turn ends on `turn/completed`.
     return active.done
@@ -577,7 +620,21 @@ export class CodexSessionRuntime implements ManagedSessionRuntime {
           message: 'Closing a turn with steers Codex has not answered; counting them as delivered',
           data: { turnId: active.turn.turnId, steerIds: placed },
         })
+      // Codex may still be running that turn, and the next `turn/start` would
+      // land on a busy thread. The process is replaced instead (as
+      // `interruptGraceMs` says, and as Claude's watchdog does): the session
+      // resumes on its next prompt, and the turn dies with the process. The
+      // stop is begun before the turn is closed, so anything reacting to the
+      // close already sees the runtime stopping.
+      this.deps.host.log({
+        scope: 'codex',
+        level: 'warn',
+        message: 'Replacing the Codex process after an interrupt it did not finish',
+        data: { turnId: active.turn.turnId },
+      })
+      const stopping = this.stop({ reason: 'restart' })
       this.completeTurn(active, 'cancelled')
+      await stopping
     }
   }
 
@@ -685,8 +742,10 @@ export class CodexSessionRuntime implements ManagedSessionRuntime {
    * run it again. It stays pending and resolves like an accepted one; its
    * echo places it, or the turn's end gives it back. */
   async steer(args: { prompt: PromptInput; steerId: string }): Promise<void> {
-    // Never starts a process: a steer is for a turn that is running.
-    this.assertUsable()
+    // Never starts a process: a steer is for a turn that is running, and a
+    // runtime stopped or being replaced (after a grace close) has none.
+    if (this.exitValue || this.phaseValue === 'stopping' || this.phaseValue === 'exited')
+      throw new CodexSteerRefusedError('no_turn', `Codex has no turn to steer on thread ${this.threadIdValue}`)
     const active = this.active
     if (!active || active.settled || active.turn.interruptRequested)
       throw new CodexSteerRefusedError(
@@ -821,8 +880,26 @@ export class CodexSessionRuntime implements ManagedSessionRuntime {
         : typeof record.turn?.id === 'string'
           ? record.turn.id
           : undefined
-    if (namedTurn !== undefined && this.finishedTurnIds.has(namedTurn)) return
+    const finished = namedTurn !== undefined && this.finishedTurnIds.has(namedTurn)
     const active = this.active
+    // Subagent items are the subagents' to track whenever they come, a
+    // finished turn's included: a child spawned by a turn this runtime
+    // closed still runs, and must get its card, count as busy and be
+    // stopped. Only the turn in flight's own may show as tool rows.
+    if (method === 'item/started' || method === 'item/completed') {
+      const { item } = params as v2.ItemStartedNotification
+      if (isCodexCollabItem(item)) {
+        const turnId = (params as { turnId?: unknown }).turnId
+        const owned =
+          !finished &&
+          active !== undefined &&
+          (typeof turnId !== 'string' || this.ownsTurn(active, turnId))
+        const phase = method === 'item/started' ? 'started' : 'completed'
+        this.subagents.item(this.sessionIdValue!, item, phase, owned)
+        return
+      }
+    }
+    if (finished) return
     switch (method) {
       case 'thread/name/updated':
         this.nameUpdated((params as v2.ThreadNameUpdatedNotification).threadName)
@@ -863,16 +940,6 @@ export class CodexSessionRuntime implements ManagedSessionRuntime {
     // already finished is dropped.
     const turnId = (params as { turnId?: unknown }).turnId
     const owned = active !== undefined && (typeof turnId !== 'string' || this.ownsTurn(active, turnId))
-    // Subagent items are the subagents' to track whenever they come: a
-    // child that outlives the turn that started it still reports here.
-    if (method === 'item/started' || method === 'item/completed') {
-      const { item } = params as v2.ItemStartedNotification
-      if (isCodexCollabItem(item)) {
-        const phase = method === 'item/started' ? 'started' : 'completed'
-        this.subagents.item(this.sessionIdValue!, item, phase, owned)
-        return
-      }
-    }
     if (!active || !owned) return
     switch (method) {
       case 'item/started':
@@ -981,9 +1048,42 @@ export class CodexSessionRuntime implements ManagedSessionRuntime {
   }
 
   private rememberFinished(active: ActiveTurn): void {
-    if (active.turn.turnId) this.finishedTurnIds.add(active.turn.turnId)
+    if (active.turn.turnId) this.rememberFinishedId(active.turn.turnId)
     const totals = active.turn.threadTotals
     if (totals) this.tokenBaseline = totals
+  }
+
+  /** Bounded: only the last few turns can still be talked about. */
+  private rememberFinishedId(turnId: string): void {
+    this.finishedTurnIds.delete(turnId)
+    this.finishedTurnIds.add(turnId)
+    if (this.finishedTurnIds.size > FINISHED_TURNS_MAX)
+      this.finishedTurnIds.delete(this.finishedTurnIds.values().next().value!)
+  }
+
+  /** A turn Codex names after this runtime already closed it: nothing it
+   * says about it may reach a later turn, and it is told to stop. */
+  private orphanTurn(turnId: string): void {
+    if (this.finishedTurnIds.has(turnId)) return
+    this.rememberFinishedId(turnId)
+    this.deps.host.log({
+      scope: 'codex',
+      level: 'warn',
+      message: 'Codex named a turn this session already closed; interrupting it',
+      data: { turnId },
+    })
+    const client = this.client
+    if (!client || !this.sessionIdValue) return
+    void client
+      .request('turn/interrupt', { threadId: this.sessionIdValue, turnId }, { timeoutMs: this.timeouts.controlRequestMs })
+      .catch((error: unknown) =>
+        this.deps.host.log({
+          scope: 'codex',
+          level: 'info',
+          message: 'Codex refused to interrupt a closed turn',
+          data: { turnId, error: errorMessage(error) },
+        }),
+      )
   }
 
   private emitTurnOutput(output: CodexTurnOutput): void {

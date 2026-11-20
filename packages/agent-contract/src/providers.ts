@@ -48,6 +48,38 @@ export type ModelOption = {
    * only stand in until then. Absent means the catalog could not say, not that
    * the model has no settings. */
   configOptions?: SessionConfigOption[]
+  /** The provider recommends moving off this model: what to, why, and when
+   * it stops being served. Absent when the catalog says nothing. */
+  upgrade?: ModelUpgrade
+}
+
+export type ModelUpgrade = {
+  /** The model to move to. */
+  modelId: string
+  /** The provider's own words for the move. */
+  message?: string
+  /** Where to read more. */
+  link?: string
+  /** When this model is scheduled to stop being served, ISO 8601. */
+  retiresAt?: string
+}
+
+/** Choices a provider's own configuration rules out before any session
+ * exists: a policy an administrator manages, or a feature that is switched
+ * off. Each entry says why, so a composer can disable the choice with the
+ * reason or hide it. An empty policy is a real answer ("nothing is ruled
+ * out"); an absent one is "could not say". */
+export type ProviderPolicy = {
+  /** Mode ids that may not be chosen. */
+  blockedModes?: ProviderPolicyBlock[]
+  /** Values of a setting (by config option id) that may not be chosen. */
+  blockedConfigValues?: Array<ProviderPolicyBlock & { configId: string }>
+}
+
+export type ProviderPolicyBlock = {
+  /** The mode id, or the config value. */
+  id: string
+  reason: string
 }
 
 export type ModelListing = {

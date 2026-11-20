@@ -71,6 +71,10 @@ export interface ProviderRuntimeHealth {
   liveProcesses: number
   /** Runtimes with a prompt in flight; the idle reaper must skip these. */
   activeTurns: number
+  /** Provider-level helper processes alive right now, such as Codex's
+   * service process. Never a session: not in `liveProcesses`, and no
+   * evidence that a session can start. Absent when there are none. */
+  serviceProcesses?: number
   lastUnexpectedExit?: ProviderExitInfo
   message?: string
 }

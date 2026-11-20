@@ -159,6 +159,7 @@ class FakeRuntime implements ManagedSessionRuntime {
 function build(
   options: {
     limit?: number
+    providerLimits?: Partial<Record<ProviderId, number>>
     startGate?: (spec: SessionRuntimeSpec, index: number) => Promise<void> | undefined
   } = {},
 ) {
@@ -176,6 +177,7 @@ function build(
     onEvent: (providerId, event) => events.push({ providerId, threadId: event.threadId }),
     log: vi.fn(),
     ...(options.limit !== undefined ? { limit: options.limit } : {}),
+    ...(options.providerLimits ? { providerLimits: options.providerLimits } : {}),
   })
   return { registry, created, events }
 }
@@ -433,6 +435,60 @@ describe('SessionRuntimeRegistry', () => {
 
     expect(created.map((runtime) => runtime.stopped)).toEqual([undefined, undefined])
     expect(registry.entries()).toHaveLength(2)
+  })
+
+  // Review: the decided cap of 8 Codex runtimes was not implemented.
+  it("evicts a provider's least recently used runtime at its own cap, and only its own", async () => {
+    const { registry, created } = build({ providerLimits: { codex: 2 } })
+    await registry.ensure(spec({ threadId: 'cursor-1' }))
+    await registry.ensure(spec({ threadId: 'codex-1', providerId: 'codex' }))
+    await registry.ensure(spec({ threadId: 'codex-2', providerId: 'codex' }))
+    registry.touch('codex-1', Date.now() + 1_000)
+    // The Cursor runtime is the oldest of all, and still not the one to go.
+    registry.touch('cursor-1', 0)
+
+    await registry.ensure(spec({ threadId: 'codex-3', providerId: 'codex' }))
+
+    expect(created.find((runtime) => runtime.threadId === 'codex-2')?.stopped).toEqual({
+      reason: 'evicted',
+    })
+    expect(registry.entries().map((entry) => entry.threadId).sort()).toEqual([
+      'codex-1',
+      'codex-3',
+      'cursor-1',
+    ])
+    // Other providers are not capped by it.
+    await registry.ensure(spec({ threadId: 'cursor-2' }))
+    await registry.ensure(spec({ threadId: 'cursor-3' }))
+    expect(registry.forProvider('cursor')).toHaveLength(3)
+  })
+
+  it("goes over a provider's cap, and logs it, when every one of its runtimes is busy", async () => {
+    const log = vi.fn()
+    const created: FakeRuntime[] = []
+    const registry = new SessionRuntimeRegistryImpl({
+      runtimes: {
+        create(runtimeSpec) {
+          const runtime = new FakeRuntime(runtimeSpec)
+          created.push(runtime)
+          return runtime
+        },
+      },
+      onEvent: () => undefined,
+      log,
+      providerLimits: { codex: 1 },
+    })
+    await registry.ensure(spec({ threadId: 'codex-1', providerId: 'codex' }))
+    registry.beginTurn('codex-1', { userMessageId: 'user-1', startedAt: 0 })
+    await registry.ensure(spec({ threadId: 'codex-2', providerId: 'codex' }))
+    created[1]!.busy = true
+    await registry.ensure(spec({ threadId: 'codex-3', providerId: 'codex' }))
+
+    expect(created.map((runtime) => runtime.stopped)).toEqual([undefined, undefined, undefined])
+    expect(registry.forProvider('codex')).toHaveLength(3)
+    expect(log).toHaveBeenCalledWith(
+      expect.objectContaining({ message: expect.stringMatching(/going over its cap/) }),
+    )
   })
 
   it('waits for every child to be gone on shutdown, including mid-turn ones', async () => {

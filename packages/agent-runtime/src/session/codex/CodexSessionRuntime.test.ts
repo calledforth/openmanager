@@ -974,30 +974,67 @@ describe('CodexSessionRuntime review regressions', () => {
 
   // After a cancel closed a turn itself, that turn's late completion must not
   // be taken for the next prompt's turn.
-  it('ignores a late completion of a turn it already closed', async () => {
+  // Review: after a grace close Codex may still run the turn, so the next
+  // `turn/start` would land on a busy thread; the process is replaced.
+  it('replaces the process after closing a turn Codex did not finish', async () => {
     const turns: FakeCodexTurn[] = []
     const { server, runtime, events } = build({ onTurn: (t) => turns.push(t), interruptGraceMs: 10 })
-    server.respond('turn/interrupt', {} as never)
+    server.respond('turn/interrupt', () => new Promise(() => undefined) as never)
     await runtime.start()
     const first = runtime.prompt({ prompt: PROMPT })
     await vi.waitFor(() => expect(turns).toHaveLength(1))
     await runtime.cancel()
     await first
-    let secondDone = false
-    const second = runtime.prompt({ prompt: PROMPT }).then(() => (secondDone = true))
-    await vi.waitFor(() => expect(turns).toHaveLength(2))
-    turns[0]!.interrupted() // the old turn's real completion, late
-    await new Promise((resolve) => setTimeout(resolve, 10))
-    expect(secondDone).toBe(false)
-    turns[1]!.agentMessage('second answer')
-    turns[1]!.completed()
-    await second
-    expect(texts(events)).toContain('second answer')
-    const identified = events.filter((e) => e.event === 'turn_identified')
-    expect(identified.map((e) => (e.data as { providerTurnId: string }).providerTurnId)).toEqual([
-      turns[0]!.id,
-      turns[1]!.id,
-    ])
+    expect(events.find((e) => e.event === 'prompt_completed')).toMatchObject({
+      data: { stopReason: 'cancelled' },
+    })
+    await runtime.exited
+    expect(runtime.exit).toMatchObject({ expected: true, reason: 'restart' })
+    expect(server.exited).toBe(true)
+    // A steer for it is refused as having no turn, not as an error.
+    await expect(runtime.steer({ prompt: PROMPT, steerId: 's' })).rejects.toMatchObject({
+      reason: 'no_turn',
+    })
+  })
+
+  // Review: a `turn/start` that times out may leave Codex running a turn it
+  // never names to us. Guessing which later turn is that one hijacked the
+  // next prompt; the process is replaced instead, so that turn dies with it.
+  it('replaces the process when a turn/start never answers', async () => {
+    const { server, runtime, exits } = build({ controlRequestMs: 50 })
+    await runtime.start()
+    server.respond('turn/start', () => new Promise(() => undefined) as never, { times: 1 })
+    await expect(runtime.prompt({ prompt: PROMPT })).rejects.toThrow(/did not answer/)
+    await runtime.exited
+    expect(exits).toMatchObject([{ reason: 'restart', expected: true }])
+    expect(server.requests('turn/interrupt')).toHaveLength(0)
+  })
+
+  // A `turn/start` Codex refuses started nothing: the process stays.
+  it('keeps the process when Codex refuses a turn/start', async () => {
+    const { server, runtime } = build()
+    await runtime.start()
+    server.fail('turn/start', -32600, 'nope', { times: 1 })
+    await expect(runtime.prompt({ prompt: PROMPT })).rejects.toThrow(/nope/)
+    expect(runtime.phase).toBe('ready')
+  })
+
+  it('blocks and interrupts a turn Codex names only after a grace close', async () => {
+    const { server, runtime } = build({ interruptGraceMs: 10 })
+    await runtime.start()
+    const thread = server.thread({ id: runtime.sessionId! } as never)
+    const orphan = thread.turn()
+    let answer: (value: unknown) => void = () => undefined
+    server.respond('turn/start', () => new Promise((resolve) => (answer = resolve)) as never, { times: 1 })
+    const first = runtime.prompt({ prompt: PROMPT })
+    await vi.waitFor(() => expect(server.requests('turn/start')).toHaveLength(1))
+    // Closed while still unnamed; the runtime is replaced, so the late answer
+    // finds no process to run on. Nothing of it reaches anyone.
+    await runtime.cancel()
+    await first
+    answer(orphan.startResponse())
+    await runtime.exited
+    expect(runtime.exit).toMatchObject({ reason: 'restart' })
   })
 
   // Codex answers `turn/interrupt` only once the turn has stopped; cancel
@@ -1060,5 +1097,63 @@ describe('CodexSessionRuntime review regressions', () => {
     expect(events.find((e) => e.event === 'prompt_completed')).toMatchObject({
       data: { usage: { totalTokens: 160, inputTokens: 140, outputTokens: 20 } },
     })
+  })
+})
+
+describe('CodexSessionRuntime, final review', () => {
+  // Review: these got -32601, whose effect on a turn is unprobed.
+  it('declines permission, question and elicitation requests outright', async () => {
+    const { server, runtime } = build()
+    const { sessionId } = await runtime.start()
+    const context = { threadId: sessionId, turnId: 'turn-1', itemId: 'item-1' }
+    const permissions = server.request(
+      'item/permissions/requestApproval',
+      codexBuilders.permissionsApprovalParams(context),
+    )
+    const question = server.request('item/tool/requestUserInput', codexBuilders.userInputParams(context))
+    const elicitation = server.request(
+      'mcpServer/elicitation/request',
+      codexBuilders.elicitationParams(context as never),
+    )
+    await expect(permissions.answered).resolves.toMatchObject({
+      result: { permissions: {}, scope: 'turn' },
+    })
+    await expect(question.answered).resolves.toMatchObject({ result: { answers: {} } })
+    await expect(elicitation.answered).resolves.toMatchObject({
+      result: { action: 'decline', content: null },
+    })
+  })
+
+  // Review: the finished-turn ids grew for the runtime's whole life.
+  it('remembers only the last finished turns', async () => {
+    const turns: FakeCodexTurn[] = []
+    const { runtime } = build({ onTurn: (t) => turns.push(t) })
+    await runtime.start()
+    for (let index = 0; index < 70; index++) {
+      const prompt = runtime.prompt({ prompt: PROMPT })
+      await vi.waitFor(() => expect(turns).toHaveLength(index + 1))
+      turns[index]!.completed()
+      await prompt
+    }
+    const finished = (runtime as unknown as { finishedTurnIds: Set<string> }).finishedTurnIds
+    expect(finished.size).toBe(64)
+    expect(finished.has(turns[69]!.id)).toBe(true)
+    expect(finished.has(turns[0]!.id)).toBe(false)
+  })
+
+  // Review: an echo that never came was waited for forever.
+  it('forgets name echoes still owed when the next turn starts', async () => {
+    const turns: FakeCodexTurn[] = []
+    const { server, runtime } = build({ onTurn: (t) => turns.push(t) })
+    server.respond('thread/name/set', {}) // answered, never echoed
+    await runtime.start()
+    await runtime.setTitle('A title')
+    const echoes = (runtime as unknown as { nameEchoes: Map<string, number> }).nameEchoes
+    expect(echoes.size).toBe(1)
+    const prompt = runtime.prompt({ prompt: PROMPT })
+    await vi.waitFor(() => expect(turns).toHaveLength(1))
+    expect(echoes.size).toBe(0)
+    turns[0]!.completed()
+    await prompt
   })
 })

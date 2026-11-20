@@ -7,6 +7,7 @@ import type {
   ServerRequest,
   v2,
 } from '@openmanager/codex-app-server-protocol'
+import { ProviderVersionUnsupportedError } from '../../core/errors.js'
 import type { HostDeps } from '../../host.js'
 import {
   ChildProcessLifecycle,
@@ -50,7 +51,11 @@ export interface CodexResponses {
   'turn/steer': v2.TurnSteerResponse
   'turn/interrupt': v2.TurnInterruptResponse
   'account/read': v2.GetAccountResponse
+  'account/rateLimits/read': v2.GetAccountRateLimitsResponse
   'model/list': v2.ModelListResponse
+  'permissionProfile/list': v2.PermissionProfileListResponse
+  'configRequirements/read': v2.ConfigRequirementsReadResponse
+  'experimentalFeature/list': v2.ExperimentalFeatureListResponse
 }
 export type ClientResult<M extends ClientMethod> = M extends keyof CodexResponses
   ? CodexResponses[M]
@@ -87,9 +92,13 @@ export class CodexProcessExitedError extends CodexConnectionClosedError {
 }
 
 /** The CLI answered the handshake but is older than openmanager runs. */
-export class CodexVersionUnsupportedError extends Error {
-  constructor(readonly version: string) {
-    super(`Codex ${version} is too old. Update Codex to ${CODEX_MIN_VERSION} or later.`)
+export class CodexVersionUnsupportedError extends ProviderVersionUnsupportedError {
+  constructor(version: string) {
+    super(
+      `Codex ${version} is too old. Update Codex to ${CODEX_MIN_VERSION} or later.`,
+      version,
+      CODEX_MIN_VERSION,
+    )
     this.name = 'CodexVersionUnsupportedError'
   }
 }

@@ -1,3 +1,4 @@
+import { homedir } from 'node:os'
 import { describe, expect, it, vi } from 'vitest'
 import { InteractionBroker } from '../../core/InteractionBroker.js'
 import { PermissionBroker } from '../../core/PermissionBroker.js'
@@ -14,7 +15,7 @@ const unusedTransport = () => {
 }
 
 describe('Codex arms of the runtime factories', () => {
-  it('builds a Codex probe that starts through the injected seam', async () => {
+  it('builds a Codex probe served by a service process started through the injected seam', async () => {
     const start = vi.fn(async () => {
       throw Object.assign(new Error('not installed'), { code: 'ENOENT' })
     })
@@ -27,8 +28,12 @@ describe('Codex arms of the runtime factories', () => {
     const probe = factory.create('codex', '/work')
     expect(probe).toBeInstanceOf(CodexProbeRuntime)
     await expect(probe.probe()).rejects.toMatchObject({ code: 'ENOENT' })
-    expect(start).toHaveBeenCalledWith(expect.objectContaining({ cwd: '/work' }))
+    // The service process serves the environment, not one workspace.
+    expect(start).toHaveBeenCalledWith(expect.objectContaining({ cwd: homedir() }))
     await probe.dispose()
+    // Probes of one provider share one service process.
+    expect(factory.codexService('codex')).toBe(factory.codexService('codex'))
+    await factory.shutdown()
   })
 
   it('builds a Codex session runtime that starts through the injected seam', async () => {

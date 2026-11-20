@@ -279,6 +279,71 @@ describe('composer service commands', () => {
       expect(store.getProfile('cursor')?.defaultModelId).toBeUndefined()
     })
 
+    it("keeps a provider's policy and each model's upgrade, replacing both with a newer answer", async () => {
+      const { service, store } = await harness()
+      const policy = {
+        blockedModes: [{ id: 'full-access', reason: 'Not allowed by a managed policy.' }],
+        blockedConfigValues: [{ configId: 'web_search', id: 'live', reason: 'Not allowed.' }],
+      }
+      const upgrade = {
+        modelId: 'gpt-6.2-sol',
+        message: 'Try the new one.',
+        retiresAt: '2027-01-01T00:00:00.000Z',
+      }
+      service.observeCatalog('cursor', {
+        models: { availableModels: [{ id: 'gpt-6-sol', displayName: 'GPT-6 Sol', upgrade }] },
+        policy,
+      })
+      // Read back through the row, so the column round-trips.
+      expect(store.getProfile('cursor')).toMatchObject({
+        policy,
+        availableModels: [{ modelId: 'gpt-6-sol', name: 'GPT-6 Sol', upgrade }],
+      })
+
+      // A probe that could not read the policy keeps it; one that read none clears it.
+      service.observeCatalog('cursor', {
+        models: { availableModels: [{ id: 'gpt-6-sol', displayName: 'GPT-6 Sol' }] },
+      })
+      expect(store.getProfile('cursor')?.policy).toEqual(policy)
+      // A newer catalog that names no upgrade has withdrawn it.
+      expect(store.getProfile('cursor')?.availableModels?.[0]?.upgrade).toBeUndefined()
+      service.observeCatalog('cursor', { policy: {} })
+      expect(store.getProfile('cursor')?.policy).toEqual({})
+    })
+
+    // Review: Fast stayed offered after Codex stopped offering it, because the
+    // held row won and the field was only ever sent as `true`.
+    it('takes Fast from the newer catalog, including a "no"', async () => {
+      const { service, store } = await harness()
+      service.observeCatalog('cursor', {
+        models: { availableModels: [{ id: 'm', displayName: 'M', supportsFastMode: true }] },
+      })
+      expect(store.getProfile('cursor')?.availableModels?.[0]?.supportsFastMode).toBe(true)
+      service.observeCatalog('cursor', {
+        models: { availableModels: [{ id: 'm', displayName: 'M', supportsFastMode: false }] },
+      })
+      expect(store.getProfile('cursor')?.availableModels?.[0]?.supportsFastMode).toBe(false)
+      // A catalog that says nothing about Fast leaves the answer it had.
+      service.observeCatalog('cursor', {
+        models: { availableModels: [{ id: 'm', displayName: 'M' }] },
+      })
+      expect(store.getProfile('cursor')?.availableModels?.[0]?.supportsFastMode).toBe(false)
+    })
+
+    it('drops a policy or an upgrade the wire cannot state rather than the catalog', async () => {
+      const { service, store } = await harness()
+      service.observeCatalog('cursor', {
+        models: {
+          availableModels: [
+            { id: 'm', displayName: 'M', upgrade: { modelId: 'n', retiresAt: 'soon' } as never },
+          ],
+        },
+        policy: { blockedModes: [{ id: 'x' }] } as never,
+      })
+      expect(store.getProfile('cursor')?.availableModels).toEqual([{ modelId: 'm', name: 'M' }])
+      expect(store.getProfile('cursor')?.policy).toBeUndefined()
+    })
+
     it('adds what is new and drops what is gone, without rewording or reordering the rest', async () => {
       const { service, store } = await harness()
       sessionListed(service, [
