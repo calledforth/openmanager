@@ -31,6 +31,13 @@ import type { SessionRuntimeSpec } from '../SessionRuntime.js'
 import { routeEvent } from '../wire.js'
 import { codexAccess, defaultCodexAccessPreset, type CodexAccess } from './codex-access.js'
 import { codexModelListing, readCodexModels } from './codex-catalog.js'
+import {
+  codexNotificationScope,
+  CodexSubagents,
+  isCodexCollabItem,
+  isCodexSubagentThread,
+  type CodexSubagentOutput,
+} from './codex-subagents.js'
 import { CodexTurn, type CodexTurnOutput } from './codex-turn.js'
 import type { CodexAppServerClient } from './CodexAppServerClient.js'
 import { CodexConnectionClosedError, CodexRpcError } from './CodexRpcPeer.js'
@@ -44,6 +51,12 @@ export const CODEX_PROMPT_CAPABILITIES: PromptCapabilities = { image: true }
  * own notifications. */
 const THREAD_CONFIG = { notify: [] as string[] }
 
+/** How long a stop keeps interrupting subagents. Interrupting the parent's
+ * turn leaves its children running (probed on 0.170), and a child spawned
+ * just before the stop announces itself after it, so the stop looks again
+ * until none is running or this runs out. */
+export const CODEX_SUBAGENT_STOP_MS = 10_000
+
 export type CodexSessionRuntimeDeps = {
   config: CodexProviderConfig
   host: Pick<HostDeps, 'log'>
@@ -54,6 +67,8 @@ export type CodexSessionRuntimeDeps = {
   timeouts?: Partial<RuntimeTimeouts>
   env?: NodeJS.ProcessEnv
   platform?: NodeJS.Platform
+  /** `CODEX_SUBAGENT_STOP_MS` when absent. */
+  subagentStopMs?: number
 }
 
 type ActiveTurn = {
@@ -72,7 +87,8 @@ type ActiveTurn = {
  *
  * Covered here: start and resume, prompts that resolve on the turn's own
  * `turn/completed`, assistant text and reasoning summaries, usage, interrupt,
- * and exit. Tool items, approvals and questions are later changes; until
+ * subagents (child threads on this connection, kept apart by
+ * `CodexSubagents` and stopped with the parent), and exit. Tool items, approvals and questions are later changes; until
  * approvals exist, every approval Codex asks for is declined, so nothing runs
  * outside the sandbox without a person having said yes. */
 export class CodexSessionRuntime implements ManagedSessionRuntime {
@@ -101,9 +117,6 @@ export class CodexSessionRuntime implements ManagedSessionRuntime {
   /** The model the next turn runs on: what the user picked, else Codex's. */
   private modelId: string | undefined
   private appliedAt: string | undefined
-  /** Notifications for threads that are not ours (a subagent's), counted and
-   * never applied to this one. Full handling is CAL-257. */
-  private quarantined = 0
   /** Turns this runtime already finished, including one it closed itself
    * after an interrupt timed out. Anything Codex later says about them (its
    * own late `turn/completed`) must never be taken for the next turn's. */
@@ -111,6 +124,19 @@ export class CodexSessionRuntime implements ManagedSessionRuntime {
   /** The thread's cumulative token counts before the turn in flight, so a
    * turn reports its own usage rather than the last model request's. */
   private tokenBaseline: v2.TokenUsageBreakdown | undefined
+  /** The session's subagents: child threads whose stream arrives on this
+   * connection and is kept out of this thread's. */
+  private readonly subagents = new CodexSubagents(
+    () => this.sessionIdValue,
+    (output) => this.emitSubagentOutput(output),
+  )
+  /** Bumped by every prompt and stop, so a stop still sweeping subagents
+   * leaves alone the children of a turn that started after it. */
+  private stopGeneration = 0
+  /** Notifications that are nobody's: for a thread that is neither ours nor
+   * a known child, or thread-scoped and naming no thread. Counted, logged
+   * once, and never applied to this thread. */
+  private dropped = 0
 
   constructor(
     private readonly spec: SessionRuntimeSpec,
@@ -146,8 +172,10 @@ export class CodexSessionRuntime implements ManagedSessionRuntime {
   get resumeCursor(): string | undefined {
     return undefined
   }
+  /** Running subagents live in this process: reaping or evicting it would
+   * kill them (docs/decisions/codex-app-server.md, "Children count"). */
   get busy(): boolean {
-    return false
+    return this.subagents.running
   }
 
   /** What was last written, never a guess: undefined until a model has been
@@ -297,9 +325,12 @@ export class CodexSessionRuntime implements ManagedSessionRuntime {
           { ...settings, threadId: existing, excludeTurns: true },
           { timeoutMs: this.timeouts.loadSessionMs },
         )
+        // A subagent's thread is its parent's, never a session of its own:
+        // treated as one this session does not have.
+        if (isCodexSubagentThread(resumed.thread)) throw new CodexSubagentThreadError(existing)
         return { threadId: resumed.thread.id, model: resumed.model, state: 'loaded' }
       } catch (error) {
-        if (!isMissingThread(error)) throw error
+        if (!isMissingThread(error) && !(error instanceof CodexSubagentThreadError)) throw error
         if (this.spec.load === 'require') throw new SessionUnknownError(this.providerId, existing)
         this.deps.host.log({
           scope: 'codex',
@@ -350,6 +381,7 @@ export class CodexSessionRuntime implements ManagedSessionRuntime {
     const client = this.client!
     const threadId = this.sessionIdValue!
     const userMessageId = args.userMessageId ?? `agent_usr_${randomUUID()}`
+    this.stopGeneration++
 
     this.emit(
       routeEvent(this.route(), threadId, 'lifecycle', 'prompt_started', {
@@ -406,12 +438,18 @@ export class CodexSessionRuntime implements ManagedSessionRuntime {
     return active
   }
 
-  /** Interrupt the turn in flight. Never starts a process to do it: with no
-   * live runtime or no turn there is nothing to stop. */
+  /** Stop: the turn in flight and every subagent turn, children included,
+   * since interrupting a parent's turn leaves its children running. Never
+   * starts a process to do it: with no live runtime there is nothing to stop. */
   async cancel(): Promise<void> {
     if (this.exitValue || this.phaseValue !== 'ready') return
     this.deps.permissions.cancelThread(this.providerId, this.threadIdValue)
     this.deps.interactions.cancelThread(this.providerId, this.threadIdValue)
+    const generation = ++this.stopGeneration
+    await Promise.all([this.cancelTurn(), this.stopSubagents(generation)])
+  }
+
+  private async cancelTurn(): Promise<void> {
     const active = this.active
     if (!active) return
     active.turn.interruptRequested = true
@@ -433,6 +471,74 @@ export class CodexSessionRuntime implements ManagedSessionRuntime {
       })
       this.completeTurn(active, 'cancelled')
     }
+  }
+
+  /** Interrupt every running subagent turn, and keep looking for children
+   * that start a turn late until none runs, the bound runs out or a new
+   * prompt begins. A spawn the parent made just before the stop announces
+   * its child after it, and only the parent's turn ending says no more can
+   * come, so the parent's turn in flight keeps the stop looking too. `under`
+   * limits it to one child and its own children. */
+  private async stopSubagents(generation: number, under?: string): Promise<void> {
+    const deadline = Date.now() + (this.deps.subagentStopMs ?? CODEX_SUBAGENT_STOP_MS)
+    const sent = new Set<string>()
+    const running = () =>
+      under === undefined
+        ? this.subagents.running || this.active !== undefined
+        : this.subagents.runningWithin(under)
+    while (!this.exitValue && generation === this.stopGeneration) {
+      // The change this waits for may come while interrupts are being sent.
+      const changed = this.subagents.changed()
+      for (const { threadId, turnId } of this.subagents.activeTurns(under)) {
+        const key = `${threadId}\n${turnId}`
+        if (sent.has(key)) continue
+        sent.add(key)
+        void this.interruptThread(threadId, turnId)
+      }
+      if (!running()) return
+      const left = deadline - Date.now()
+      if (left <= 0) {
+        this.deps.host.log({
+          scope: 'codex',
+          level: 'warn',
+          message: 'Codex subagents were still running when the stop gave up on them',
+          data: { boundMs: this.deps.subagentStopMs ?? CODEX_SUBAGENT_STOP_MS },
+        })
+        return
+      }
+      let timer: NodeJS.Timeout | undefined
+      await Promise.race([
+        changed,
+        ...(under === undefined && this.active ? [this.active.done.catch(() => undefined)] : []),
+        new Promise<void>((resolve) => {
+          timer = setTimeout(resolve, left)
+          timer.unref?.()
+        }),
+      ])
+      clearTimeout(timer)
+    }
+  }
+
+  /** A child's turn may end on its own before this lands; Codex then
+   * refuses, which is not worth showing. */
+  private async interruptThread(threadId: string, turnId: string): Promise<void> {
+    if (!this.client) return
+    try {
+      await this.client.request('turn/interrupt', { threadId, turnId }, { timeoutMs: this.timeouts.controlRequestMs })
+    } catch (error) {
+      this.deps.host.log({
+        scope: 'codex',
+        level: 'info',
+        message: 'Codex refused to interrupt a subagent turn',
+        data: { threadId, turnId, error: errorMessage(error) },
+      })
+    }
+  }
+
+  /** Stop one subagent from its card, with the subagents it started. */
+  async stopSubtask(taskId: string): Promise<void> {
+    if (this.exitValue || !this.subagents.has(taskId)) return
+    await this.stopSubagents(this.stopGeneration, taskId)
   }
 
   private async sendInterrupt(active: ActiveTurn): Promise<void> {
@@ -461,22 +567,35 @@ export class CodexSessionRuntime implements ManagedSessionRuntime {
   // ---------------------------------------------------------------------------
   // Notifications
 
+  /** Every notification goes to exactly one place: this thread, one of its
+   * subagents, the connection (nothing acts on those yet), or nowhere. A
+   * thread-scoped one never falls through to this thread. */
   private onNotification(method: string, params: unknown): void {
-    const record = (params ?? {}) as { threadId?: unknown; turnId?: unknown; turn?: { id?: unknown } }
+    const scope = codexNotificationScope(method, params)
+    if (scope.kind === 'global') return
+    if (scope.kind === 'unscoped') return this.drop(method, undefined)
     // Before Codex has named this session's thread there is nothing to apply
-    // a thread-scoped notification to, ours or not.
-    if (typeof record.threadId === 'string' && this.sessionIdValue === undefined) return
-    if (typeof record.threadId === 'string' && record.threadId !== this.sessionIdValue) {
-      // Another thread on this connection (a subagent). Never applied here.
-      if (++this.quarantined === 1)
-        this.deps.host.log({
-          scope: 'codex',
-          level: 'info',
-          message: 'Ignoring notifications for a thread this session does not own',
-          data: { method, threadId: record.threadId },
-        })
+    // a thread-scoped notification to, ours or a child's.
+    if (this.sessionIdValue === undefined) return
+    if (scope.threadId !== this.sessionIdValue) {
+      if (!this.subagents.notification(method, scope.threadId, params)) this.drop(method, scope.threadId)
       return
     }
+    this.onOwnNotification(method, params)
+  }
+
+  private drop(method: string, threadId: string | undefined): void {
+    if (++this.dropped > 1) return
+    this.deps.host.log({
+      scope: 'codex',
+      level: 'info',
+      message: 'Ignoring notifications for no thread this session owns',
+      data: { method, ...(threadId ? { threadId } : {}) },
+    })
+  }
+
+  private onOwnNotification(method: string, params: unknown): void {
+    const record = (params ?? {}) as { turnId?: unknown; turn?: { id?: unknown } }
     const namedTurn =
       typeof record.turnId === 'string'
         ? record.turnId
@@ -521,7 +640,18 @@ export class CodexSessionRuntime implements ManagedSessionRuntime {
     // Everything below belongs to the turn in flight; a late one for a turn
     // already finished is dropped.
     const turnId = (params as { turnId?: unknown }).turnId
-    if (!active || (typeof turnId === 'string' && !this.ownsTurn(active, turnId))) return
+    const owned = active !== undefined && (typeof turnId !== 'string' || this.ownsTurn(active, turnId))
+    // Subagent items are the subagents' to track whenever they come: a
+    // child that outlives the turn that started it still reports here.
+    if (method === 'item/started' || method === 'item/completed') {
+      const { item } = params as v2.ItemStartedNotification
+      if (isCodexCollabItem(item)) {
+        const phase = method === 'item/started' ? 'started' : 'completed'
+        this.subagents.item(this.sessionIdValue!, item, phase, owned)
+        return
+      }
+    }
+    if (!active || !owned) return
     switch (method) {
       case 'item/started':
         active.turn.itemStarted((params as v2.ItemStartedNotification).item)
@@ -589,6 +719,9 @@ export class CodexSessionRuntime implements ManagedSessionRuntime {
     this.rememberFinished(active)
     active.turn.finish()
     if (this.active === active) this.active = undefined
+    // Children that run on past a turn that ended normally are in the
+    // background; a stopped turn's are being interrupted.
+    if (stopReason === 'end_turn') this.subagents.parentTurnEnded()
     const usage = active.turn.usage
     this.emit(
       routeEvent(this.route(), this.sessionIdValue, 'lifecycle', 'prompt_completed', {
@@ -627,6 +760,11 @@ export class CodexSessionRuntime implements ManagedSessionRuntime {
 
   private emitTurnOutput(output: CodexTurnOutput): void {
     this.emit(routeEvent(this.route(), this.sessionIdValue, 'stream', output.event, output.data))
+  }
+
+  private emitSubagentOutput(output: CodexSubagentOutput): void {
+    const category = output.event === 'subtask_update' ? 'session' : 'tool'
+    this.emit(routeEvent(this.route(), this.sessionIdValue, category, output.event, output.data))
   }
 
   // ---------------------------------------------------------------------------
@@ -728,6 +866,7 @@ export class CodexSessionRuntime implements ManagedSessionRuntime {
     this.phaseValue = 'exited'
     const active = this.active
     if (active) this.failTurn(active, new Error('codex app-server exited during the turn'))
+    this.subagents.clear()
     this.deps.permissions.settleThread(this.providerId, this.threadIdValue)
     this.deps.interactions.settleThread(this.providerId, this.threadIdValue)
     const expected = this.stopRequest !== undefined
@@ -769,6 +908,14 @@ export class CodexSessionRuntime implements ManagedSessionRuntime {
 
   private emit(event: BackendEvent): void {
     for (const listener of this.listeners) listener(event)
+  }
+}
+
+/** `thread/resume` found a subagent's thread where a session's was stored. */
+class CodexSubagentThreadError extends Error {
+  constructor(threadId: string) {
+    super(`Codex thread ${threadId} belongs to a subagent, not a session`)
+    this.name = 'CodexSubagentThreadError'
   }
 }
 

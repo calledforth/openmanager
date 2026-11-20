@@ -122,6 +122,17 @@ Openmanager's SQLite stays the transcript of record, as for every provider. For 
 - **Malformed id.** Also `-32600` (`invalid session id: …`, _probed_), and treated as missing.
 - Matching is on the message text as well as the code, because `-32600` is the generic invalid-request code. The matcher lives in one place with a test per known message.
 
+### Subagents
+
+A subagent is a child thread on its parent's connection ([CAL-257](https://linear.app/calledforth/issue/CAL-257/keep-codex-subagent-threads-out-of-the-parent-and-stop-them-with-it)), tracked by `CodexSubagents` (`session/codex/codex-subagents.ts`). What 0.170 does (_probed_, recorded in the `subagent` and `interrupt-with-child` fixtures): the child's whole stream (status, turns, items, deltas, usage, MCP startup) arrives on the parent's connection under the child's `threadId`; the child gets **no** `thread/started` and is known only from the parent's `subAgentActivity` item; interrupting the parent's turn does **not** stop a running child; ephemeral threads cannot spawn subagents.
+
+- **Dispatch.** Every notification goes to exactly one place. One that names a thread goes to that thread: ours, a known child, or nobody. Without a thread id, only an allowlist (account, skills, apps, MCP, Windows, config warnings, standalone `command/exec`) is global; any other is dropped. A thread-scoped notification never falls through to the parent.
+- **Registration.** A child is registered from `subAgentActivity` (`started`), from an older Codex's `collabAgentToolCall` `spawnAgent`, from a `thread/started` naming a known parent, and from any later activity or collab call that reaches a child we have not seen (one spawned before a restart). A child's `turn/started` that arrives before it is registered is buffered (at most 32 threads) and applied when it is. A child's own subagents are children one level down.
+- **What the parent shows.** Until child pages exist ([CAL-279](https://linear.app/calledforth/issue/CAL-279)), each child is a subagent card (`subtask_update`, `taskId` = the child's thread id, anchored on the item that started it): running while its turn runs, then completed, interrupted or failed with its last answer, token total and tool-call count. The parent's other collab calls (`wait`, send, resume, close, interrupt, list) are tool rows, so its waiting shows. A child running on after the parent's turn ended normally is reported `background`. Nothing of the child's own stream reaches the parent's turn, messages or usage.
+- **Stop.** Cancel interrupts the parent's turn and every child turn, and keeps looking (for children that start a turn late, and while the parent's turn is still ending) until none runs, bounded at 10 s. A card's stop (`stopSubtask`) interrupts that child and its own children.
+- **Busy.** A runtime with a running child is `busy`, so the idle reaper and LRU eviction leave it alone.
+- **Never a session.** A child's id never becomes a session id, and `thread/resume` of a subagent's thread is treated as a missing thread. Listing (not used yet) must keep `thread/list`'s default interactive `sourceKinds`, which exclude subagent threads.
+
 ### Notifications
 
 `initialize` sends `optOutNotificationMethods`:
