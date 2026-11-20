@@ -41,9 +41,12 @@ export type UsageLimitObservation = {
 export const MIN_REFRESH_INTERVAL_MS = 60_000
 /** What a refresh that names no age accepts. */
 export const DEFAULT_REFRESH_MAX_AGE_MS = 5 * 60_000
-/** How long "this account has no plan limits" stands, whatever a client
- * asks. An account changes kind rarely, and a change is followed by a read of
- * its own (`observeHealth`), so asking sooner only costs a CLI per hover. */
+/** How long "this account has no plan limits" stands for a passive ask (a
+ * page or the sidebar, `maxAgeMs > 0`). An account changes kind rarely, and a
+ * change is followed by a read of its own (`observeHealth`), so asking sooner
+ * only costs a CLI per hover. A deliberate refresh (`maxAgeMs: 0`) is held
+ * only to `MIN_REFRESH_INTERVAL_MS`: the provider may have said so for a
+ * moment. */
 export const UNAVAILABLE_REFRESH_MS = 30 * 60_000
 /** A window whose reset moves by more than this has rolled over: its old
  * percent belongs to the previous window. */
@@ -105,30 +108,44 @@ export function createProviderLimits(deps: ProviderLimitsDeps) {
   const generation = new Map<string, number>()
   /** Providers whose probe turned out to have no route to limits. */
   const noRoute = new Set<string>()
-  const install = new Map<string, LimitsHealth['install']['state']>()
-  /** Providers read before (a row survives from an earlier run). */
+  /** Providers a read has answered (numbers, or "no plan limits"), in this
+   * run or one before: their CLI has worked. */
   const readBefore = new Set<string>()
   const accounts = new Map<string, { signedIn: boolean; label: string | undefined }>()
   let stopped = false
 
-  /** A provider shows limits when it has a way to report them and its CLI is
-   * there. Before health has looked, only one read before is shown: a
-   * provider that was never installed must not show a card that can only
-   * fail, while one with a reading keeps showing it from boot. */
-  const supportedNow = (providerId: string): boolean => {
+  /** Whether a provider shows limits once health says `install`. Only a
+   * confirmed `missing` hides a card: nothing can be read. `unknown` (not
+   * probed yet, a probe that ran out of time, no project to probe in) says
+   * nothing, so the card stays as it was. `unusable` is often passing (a
+   * handshake that timed out, a CLI mid-update): a provider that has had a
+   * reading keeps its card; one never read hides it, as its reads can only
+   * fail. */
+  const supportedWhen = (
+    providerId: string,
+    current: boolean,
+    install: LimitsHealth['install']['state'],
+  ): boolean => {
     if (!deps.supports(providerId) || noRoute.has(providerId)) return false
-    const installState = install.get(providerId) ?? 'unknown'
-    if (installState === 'installed') return true
-    if (installState === 'unknown') return readBefore.has(providerId)
-    return false
+    switch (install) {
+      case 'installed':
+        return true
+      case 'missing':
+        return false
+      case 'unusable':
+        return readBefore.has(providerId) ? current : false
+      case 'unknown':
+        return current
+    }
   }
 
   const persisted = deps.store.load()
   for (const providerId of deps.providerIds) {
     const saved = deps.supports(providerId) ? persisted.get(providerId) : undefined
-    if (saved && (saved.reading || saved.lastRefresh)) readBefore.add(providerId)
+    if (saved?.reading || (saved?.lastRefresh && saved.lastRefresh.outcome !== 'failed'))
+      readBefore.add(providerId)
     state.set(providerId, {
-      supported: supportedNow(providerId),
+      supported: deps.supports(providerId),
       reading: saved?.reading ?? null,
       refreshing: false,
       lastRefresh: saved?.lastRefresh ?? null,
@@ -175,7 +192,10 @@ export function createProviderLimits(deps: ProviderLimitsDeps) {
     // limits starts a CLI each time a client asks; "no limits" holds longer.
     const last = current.lastRefresh
     if (last) {
-      const hold = last.outcome === 'unavailable' ? Math.max(floor, UNAVAILABLE_REFRESH_MS) : floor
+      const hold =
+        last.outcome === 'unavailable' && maxAgeMs > 0
+          ? Math.max(floor, UNAVAILABLE_REFRESH_MS)
+          : floor
       if (ageMs(last.at) < hold) return current
     }
 
@@ -218,6 +238,7 @@ export function createProviderLimits(deps: ProviderLimitsDeps) {
             result?.outcome === 'unavailable'
             ? null
             : before.reading
+      if (lastRefresh.outcome !== 'failed') readBefore.add(providerId)
       set(providerId, { ...before, reading, refreshing: false, lastRefresh }, true)
     })().finally(() => inFlight.delete(providerId))
     inFlight.set(providerId, run)
@@ -250,16 +271,16 @@ export function createProviderLimits(deps: ProviderLimitsDeps) {
       await Promise.all([...inFlight.values()])
     },
 
-    /** Provider health moved. A CLI that is missing or unusable shows no
-     * limits (nothing to read, so no card that can only fail); a sign-in,
+    /** Provider health moved. A CLI confirmed missing shows no limits
+     * (`supportedWhen`: nothing to read, so no card that can only fail); a
+     * sign-in,
      * sign-out or another account drops the reading, which was the previous
      * login's, and reads again. The first word on the account after a start
      * changes nothing: the kept reading stands, with its age. */
     observeHealth(providerId: string, health: LimitsHealth): void {
       const current = state.get(providerId)
       if (!current || stopped) return
-      install.set(providerId, health.install.state)
-      const supported = supportedNow(providerId)
+      const supported = supportedWhen(providerId, current.supported, health.install.state)
       if (supported !== current.supported) set(providerId, { ...current, supported }, false)
       if (!supported) return
 

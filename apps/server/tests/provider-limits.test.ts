@@ -33,11 +33,32 @@ const OK: UsageLimitsResult = {
   reading: { windows: [FIVE_HOUR], extraUsage: { enabled: false, usedPercent: null } },
 }
 
-const INSTALLED: LimitsHealth = { install: { state: 'installed' }, auth: { state: 'unknown' } }
-const signedIn = (accountLabel?: string): LimitsHealth => ({
-  install: { state: 'installed' },
-  auth: { state: 'authenticated', ...(accountLabel ? { accountLabel } : {}) },
-})
+/** Provider health as the runtime reports it (`ProviderHealth`), cut to what
+ * limits read; the extra fields are there to keep the shape honest. */
+function health(
+  options: {
+    install?: LimitsHealth['install']['state']
+    auth?: LimitsHealth['auth']['state']
+    accountLabel?: string
+    methodId?: string
+  } = {},
+): LimitsHealth {
+  const install = options.install ?? 'installed'
+  const auth =
+    options.auth ?? (options.accountLabel || options.methodId ? 'authenticated' : 'unknown')
+  return {
+    install: {
+      state: install,
+      ...(install === 'installed' ? { command: 'claude', version: '2.1.309' } : {}),
+    },
+    auth: {
+      state: auth,
+      ...(options.methodId ? { methodId: options.methodId } : {}),
+      ...(options.accountLabel ? { accountLabel: options.accountLabel } : {}),
+    },
+  } as LimitsHealth
+}
+const INSTALLED = health()
 
 function memoryStore(): ProviderLimitsStore & { saved: unknown[] } {
   const saved: unknown[] = []
@@ -256,7 +277,7 @@ describe('provider limits', () => {
   })
 
   // Review: a missing CLI showed a card that could only fail, retried on every ask.
-  it('shows no limits for a CLI that is not installed, and reads none', async () => {
+  it('shows no limits for a CLI confirmed missing, and reads none', async () => {
     const reads: string[] = []
     const service = createProviderLimits({
       providerIds: ['codex'],
@@ -268,20 +289,54 @@ describe('provider limits', () => {
       store: memoryStore(),
       clock: () => START,
     })
-    // Never read, and health has not looked yet: nothing to show.
+    // Health has not looked (or has no project to look in): shown, as before.
+    expect(service.get('codex').supported).toBe(true)
+    service.observeHealth('codex', health({ install: 'unknown' }))
+    expect(service.get('codex').supported).toBe(true)
+
+    service.observeHealth('codex', health({ install: 'missing' }))
     expect(service.get('codex').supported).toBe(false)
-    service.observeHealth('codex', { install: { state: 'missing' }, auth: { state: 'unknown' } })
     service.refresh('codex', 0)
-    expect(service.get('codex').supported).toBe(false)
-    service.observeHealth('codex', { install: { state: 'unusable' }, auth: { state: 'unknown' } })
+    // A probe that ran out of time says nothing: still hidden.
+    service.observeHealth('codex', health({ install: 'unknown' }))
     expect(service.get('codex').supported).toBe(false)
     expect(reads).toEqual([])
 
-    service.observeHealth('codex', INSTALLED)
+    service.observeHealth('codex', health({ install: 'installed' }))
     expect(service.get('codex').supported).toBe(true)
     service.refresh('codex', 0)
     await service.idle()
     expect(reads).toEqual(['codex'])
+  })
+
+  it('hides a never-read provider whose CLI is unusable', () => {
+    const service = createProviderLimits({
+      providerIds: ['codex'],
+      supports: () => true,
+      read: async () => OK,
+      store: memoryStore(),
+      clock: () => START,
+    })
+    service.observeHealth('codex', health({ install: 'unusable' }))
+    expect(service.get('codex').supported).toBe(false)
+  })
+
+  // Review: a handshake timeout, a slow probe or a CLI mid-update hid Claude's card.
+  it('keeps the card of a provider that has been read through passing trouble', async () => {
+    const { service, reads, advance } = harness(async () => OK)
+    service.refresh('claude-code', 0)
+    await service.idle()
+    for (const install of ['unusable', 'unknown'] as const) {
+      service.observeHealth('claude-code', health({ install }))
+      expect(service.get('claude-code').supported).toBe(true)
+    }
+    advance(2 * 60_000)
+    service.refresh('claude-code', 0)
+    await service.idle()
+    expect(reads).toHaveLength(2)
+    // Gone for real: hidden.
+    service.observeHealth('claude-code', health({ install: 'missing' }))
+    expect(service.get('claude-code').supported).toBe(false)
   })
 
   it('drops the reading and reads again when the account changes', async () => {
@@ -289,10 +344,11 @@ describe('provider limits', () => {
     const { service, reads, advance } = harness(async () => result)
     service.refresh('claude-code', 0)
     await service.idle()
-    // The first word on the account after a start keeps what was read.
-    service.observeHealth('claude-code', signedIn('a@example.com'))
-    // A sign-in announced before it is named is the same account.
-    service.observeHealth('claude-code', signedIn())
+    // What a Claude probe reports: the handshake's email as the account.
+    service.observeHealth('claude-code', health({ accountLabel: 'ada@example.com' }))
+    // A live session's sign-in names no account: the known one stands.
+    service.observeHealth('claude-code', health({ methodId: 'claude-ai' }))
+    service.observeHealth('claude-code', health({ accountLabel: 'ada@example.com' }))
     expect(reads).toHaveLength(1)
     expect(service.get('claude-code').reading).not.toBeNull()
 
@@ -302,7 +358,7 @@ describe('provider limits', () => {
       outcome: 'ok',
       reading: { ...OK.reading, windows: [{ ...FIVE_HOUR, usedPercent: 3 }] },
     }
-    service.observeHealth('claude-code', signedIn('b@example.com'))
+    service.observeHealth('claude-code', health({ accountLabel: 'grace@example.com' }))
     expect(service.get('claude-code')).toMatchObject({ reading: null, refreshing: true })
     await service.idle()
     expect(reads).toHaveLength(2)
@@ -311,10 +367,7 @@ describe('provider limits', () => {
     // Signed out: the old account's numbers go, and the read says why.
     advance(5_000)
     result = { outcome: 'unavailable' }
-    service.observeHealth('claude-code', {
-      install: { state: 'installed' },
-      auth: { state: 'unauthenticated' },
-    })
+    service.observeHealth('claude-code', health({ auth: 'unauthenticated' }))
     await service.idle()
     expect(reads).toHaveLength(3)
     expect(service.get('claude-code')).toMatchObject({
@@ -325,14 +378,13 @@ describe('provider limits', () => {
 
   it('throws away a read the account changed under, and reads again', async () => {
     let release: (value: UsageLimitsResult) => void = () => undefined
-    const { service, reads } = harness(() => {
-      const next = new Promise<UsageLimitsResult>((resolve) => (release = resolve))
-      return next
-    })
-    service.observeHealth('claude-code', signedIn('a@example.com'))
+    const { service, reads } = harness(
+      () => new Promise<UsageLimitsResult>((resolve) => (release = resolve)),
+    )
+    service.observeHealth('claude-code', health({ accountLabel: 'ada@example.com' }))
     service.refresh('claude-code', 0)
     const first = release
-    service.observeHealth('claude-code', signedIn('b@example.com'))
+    service.observeHealth('claude-code', health({ accountLabel: 'grace@example.com' }))
     first(OK)
     await vi.waitFor(() => expect(reads).toHaveLength(2))
     // Still the old account's read until the new one answers.
@@ -345,19 +397,26 @@ describe('provider limits', () => {
     expect(service.get('claude-code').reading?.windows[0]?.usedPercent).toBe(9)
   })
 
-  // Review: an API-key account started a CLI on every ask more than a minute apart.
-  it('holds every outcome to the client’s age, and "no limits" for longer', async () => {
+  // Review: an API-key account started a CLI on every ask more than a minute
+  // apart; then, the hold that fixed it blocked the Refresh button.
+  it('holds passive asks to their age, "no limits" for longer, and a deliberate refresh to a minute', async () => {
     const { service, reads, advance } = harness(async () => ({ outcome: 'unavailable' }))
     service.refresh('claude-code', 0)
     await service.idle()
     advance(2 * 60_000)
-    service.refresh('claude-code', 0)
+    // The sidebar and the Usage page: "no limits" stands for half an hour.
     service.refresh('claude-code', 10 * 60_000)
+    service.refresh('claude-code', 60_000)
+    service.refresh('claude-code')
     expect(reads).toHaveLength(1)
+    // The Refresh button: once the minute is up, it reads.
+    service.refresh('claude-code', 0)
+    await service.idle()
+    expect(reads).toHaveLength(2)
     advance(UNAVAILABLE_REFRESH_MS)
     service.refresh('claude-code', 10 * 60_000)
     await service.idle()
-    expect(reads).toHaveLength(2)
+    expect(reads).toHaveLength(3)
 
     const failing = harness(async () => {
       throw new Error('no answer')

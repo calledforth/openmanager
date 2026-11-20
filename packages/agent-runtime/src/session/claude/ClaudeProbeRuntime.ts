@@ -133,6 +133,9 @@ export class ClaudeProbeRuntime implements ProbeRuntime {
       agentInfo,
       authMethods: [],
       authenticated: true,
+      // Who is signed in, so health (and limits, which follow it) can tell
+      // when someone else is.
+      ...(account?.email ? { accountLabel: account.email } : {}),
       sessionListAdvertised: false,
       loadSessionAdvertised: this.deps.config.capabilities.canLoadSession,
       promptCapabilities: CLAUDE_PROMPT_CAPABILITIES,

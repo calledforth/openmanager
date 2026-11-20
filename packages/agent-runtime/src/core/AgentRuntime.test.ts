@@ -8,7 +8,7 @@ import type { ProviderConfig } from '../providers/index.js'
 import type { AcpConnectionSpec } from '../session/AcpConnection.js'
 import { FakeClaudeSdk } from '../session/claude/test-sdk.js'
 import { CodexAppServerClient } from '../session/codex/CodexAppServerClient.js'
-import type { CodexStarter } from '../session/codex/start.js'
+import { CodexNotInstalledError, type CodexStarter } from '../session/codex/start.js'
 import {
   codexBuilders,
   FakeCodexAppServer,
@@ -1550,6 +1550,22 @@ describe('AgentRuntime Codex titles and deletion', () => {
     expect(runtime.codexService('codex')!.status.state).toBe('running')
     await runtime.shutdown()
     expect(servers[0]!.exited).toBe(true)
+  })
+
+  // With no project, health never probes: a limits read may be the first to
+  // find the CLI missing, and the limits card hides on what health then says.
+  it('tells health a CLI is missing when a limits read finds it so', async () => {
+    const runtime = new AgentRuntime({ emitEvent: vi.fn(), log: vi.fn() }, configs, {
+      codexStart: async () => {
+        throw new CodexNotInstalledError(['codex'])
+      },
+    })
+    expect(runtime.health.report('codex').health.install.state).toBe('unknown')
+    await expect(
+      runtime.readUsageLimits({ providerId: 'codex', threadId: 'usage-limits:codex', cwd: '/home/u' }),
+    ).rejects.toBeInstanceOf(CodexNotInstalledError)
+    expect(runtime.health.report('codex').health.install.state).toBe('missing')
+    await runtime.shutdown()
   })
 
   it('logs an archive the service process cannot do, and retires the thread anyway', async () => {

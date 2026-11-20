@@ -154,6 +154,14 @@ describe('Codex usage limits: a full read', () => {
     expect(fakes.last.requests('account/rateLimits/read')).toHaveLength(0)
   })
 
+  // Review: a sign-in after "no sign-in needed" went unseen by limits.
+  it('names a Codex that needs no sign-in, so signing in reads as another account', async () => {
+    const { probe } = onFakes((server) =>
+      server.respond('account/read', buildAccountResponse({ account: null, requiresOpenaiAuth: false })),
+    )
+    expect((await probe.probe()).accountLabel).toBe('No sign-in')
+  })
+
   it('has no limits when no sign-in is needed', async () => {
     const { fakes, probe } = onFakes((server) =>
       server.respond('account/read', buildAccountResponse({ account: null, requiresOpenaiAuth: false })),
@@ -307,6 +315,29 @@ describe('Codex usage limits: a session’s updates', () => {
     expect(limits().map((observation) => (observation as { windowId: string }).windowId)).toEqual([
       'five_hour',
       'five_hour:secondary',
+    ])
+    await runtime.stop({ reason: 'disposed' })
+  })
+
+  // Review: with credits, a used-up window must clear an earlier `limited`.
+  it('says a used-up window is still usable while credits pay for turns', async () => {
+    const { service } = onFakes()
+    const { fakes, runtime, limits } = await session(service)
+    const usedUp = { usedPercent: 100, windowDurationMins: 300, resetsAt: null }
+    fakes.last.notify('account/rateLimits/updated', {
+      rateLimits: buildRateLimits({ primary: usedUp, secondary: null, credits: null }),
+    })
+    fakes.last.notify('account/rateLimits/updated', {
+      rateLimits: buildRateLimits({
+        primary: usedUp,
+        secondary: null,
+        credits: { hasCredits: true, unlimited: false, balance: '25' },
+      }),
+    })
+    await vi.waitFor(() => expect(limits()).toHaveLength(2))
+    expect(limits().map((observation) => (observation as { status?: string }).status)).toEqual([
+      'limited',
+      'ok',
     ])
     await runtime.stop({ reason: 'disposed' })
   })

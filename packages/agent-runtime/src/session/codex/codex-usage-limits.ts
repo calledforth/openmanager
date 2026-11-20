@@ -78,13 +78,16 @@ export function codexUsageObservations(
       names[slot],
       merged.credits,
     )
+    // Used up with credits to spend is said outright: an earlier `limited`
+    // must not stick.
+    const verdict = status ?? (usedPercent !== null && usedPercent >= 100 ? 'ok' : undefined)
     observations.push({
       windowId: id,
       label,
       group,
       ...(usedPercent !== null ? { usedPercent } : {}),
       ...(resetsAt ? { resetsAt } : {}),
-      ...(status ? { status } : {}),
+      ...(verdict ? { status: verdict } : {}),
     })
   }
   return observations

@@ -22,6 +22,8 @@ export const CODEX_SIGNED_OUT_MESSAGE = 'Codex is signed out. Run `codex login` 
 /** How provider health names the account: the email of a ChatGPT login, else
  * what kind of credential it is. */
 export function codexAccountLabel(state: CodexAccountState): string | undefined {
+  // Named too, so a sign-in after it reads as another account.
+  if (state.state === 'not_required') return 'No sign-in'
   if (state.state !== 'signed_in') return undefined
   const account = state.account
   switch (account.type) {

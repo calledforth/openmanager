@@ -791,7 +791,7 @@ function message(error: unknown): string {
 /** A spawn that never produced a process, as opposed to one that produced a
  * process which then misbehaved. `ChildProcessConnectionFactory` rejects with
  * Node's own spawn error, so the code is the evidence. */
-function isSpawnFailure(error: unknown): boolean {
+export function isSpawnFailure(error: unknown): boolean {
   if (!(error instanceof Error)) return false
   const code: unknown = Reflect.get(error, 'code')
   if (code === 'ENOENT' || code === 'EACCES' || code === 'EPERM') return true
