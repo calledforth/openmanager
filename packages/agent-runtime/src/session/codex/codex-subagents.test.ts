@@ -80,13 +80,14 @@ function build(
 
 /** A runtime with a parent turn in flight. */
 async function running(options: Parameters<typeof build>[0] = {}) {
-  let turn: FakeCodexTurn | undefined
-  const built = build({ ...options, onTurn: (t) => (turn = t) })
+  /** Every parent turn, in order; the first is the one in flight. */
+  const turns: FakeCodexTurn[] = []
+  const built = build({ ...options, onTurn: (t) => turns.push(t) })
   await built.runtime.start()
   const prompt = built.runtime.prompt({ prompt: PROMPT })
   prompt.catch(() => undefined)
-  await vi.waitFor(() => expect(turn).toBeDefined())
-  return { ...built, turn: turn!, prompt }
+  await vi.waitFor(() => expect(turns).toHaveLength(1))
+  return { ...built, turn: turns[0]!, turns, prompt }
 }
 
 /** Interrupting a turn on the fake ends it, as Codex does, a moment later. */
@@ -497,7 +498,12 @@ describe('CodexSessionRuntime subagents', () => {
       { threadId: 'child' },
     ])
 
-    const strict = build({ server, spec: { sessionId: 'child', load: 'require' } })
+    // A fresh fake: each one is a process, initialized once.
+    const again = new FakeCodexAppServer()
+    again.respond('model/list', MODELS as never).serveThreads()
+    again.respond('thread/resume', child.startResponse() as never)
+    again.respond('thread/unsubscribe', { status: 'unsubscribed' } as never)
+    const strict = build({ server: again, spec: { sessionId: 'child', load: 'require' } })
     await expect(strict.runtime.start()).rejects.toBeInstanceOf(SessionUnknownError)
     runtime.dispose()
   })
@@ -591,7 +597,7 @@ describe('CodexSessionRuntime subagents, review regressions', () => {
   })
 
   it('resolves a stop without waiting for children that will not stop', async () => {
-    const { server, runtime, turn, prompt } = await running()
+    const { server, runtime, turn, turns, prompt } = await running()
     const stubborn = turn.thread.child()
     turn.spawnSubagent(stubborn)
     stubborn.turn().started()
@@ -608,16 +614,15 @@ describe('CodexSessionRuntime subagents, review regressions', () => {
     expect(runtime.busy).toBe(true)
 
     // A new prompt ends the look: its own children are left alone.
-    let next: FakeCodexTurn | undefined
-    server.serveThreads((t) => (next = t))
     const second = runtime.prompt({ prompt: PROMPT })
-    await vi.waitFor(() => expect(next).toBeDefined())
-    const fresh = next!.thread.child()
-    next!.spawnSubagent(fresh)
+    await vi.waitFor(() => expect(turns).toHaveLength(2))
+    const next = turns[1]!
+    const fresh = next.thread.child()
+    next.spawnSubagent(fresh)
     fresh.turn().started()
     await tick()
     expect(server.requests('turn/interrupt')).toHaveLength(2)
-    next!.completed()
+    next.completed()
     await second
     runtime.dispose()
   })
