@@ -374,6 +374,50 @@ describe('CodexService provider-level state', () => {
   })
 })
 
+describe('CodexService archives', () => {
+  // Review: a project's worth of archives went out together; one hung answer
+  // replaced the process and failed every other archive on it.
+  it('archives one thread at a time, so a hung one fails alone', async () => {
+    const { service, fakes } = build(
+      (server, index) => {
+        if (index === 0)
+          server.respond('thread/archive', (params) =>
+            params.threadId === 'a' ? (new Promise(() => undefined) as never) : {},
+          )
+        else server.respond('thread/archive', {})
+      },
+      { requestTimeoutMs: 30 },
+    )
+    const archives = ['a', 'b', 'c'].map((id) =>
+      service.archiveThread(id).then(
+        () => 'ok',
+        () => 'failed',
+      ),
+    )
+    await vi.waitFor(() => expect(fakes.servers[0]?.requests('thread/archive')).toHaveLength(1))
+    // Only the first is out while it waits.
+    expect(fakes.servers[0]!.requests('thread/archive')).toHaveLength(1)
+    expect(await Promise.all(archives)).toEqual(['failed', 'ok', 'ok'])
+    expect(fakes.servers[1]!.requests('thread/archive').map((r) => r.params.threadId)).toEqual(['b', 'c'])
+    await service.shutdown()
+  })
+
+  it('tries an archive once more when the process dies under it', async () => {
+    const { service, fakes } = build((server, index) => {
+      if (index === 0)
+        server.respond('thread/archive', () => {
+          setTimeout(() => server.crash(), 1)
+          return new Promise(() => undefined) as never
+        })
+      else server.respond('thread/archive', {})
+    })
+    await expect(service.archiveThread('a')).resolves.toBeUndefined()
+    expect(fakes.servers).toHaveLength(2)
+    expect(fakes.servers[1]!.requests('thread/archive')[0]!.params).toEqual({ threadId: 'a' })
+    await service.shutdown()
+  })
+})
+
 describe('CodexService discovery', () => {
   it('reads account, catalog, profiles, policy and flags without a thread or plan mode', async () => {
     const { service, fakes } = build((server) =>

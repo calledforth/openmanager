@@ -148,6 +148,13 @@ const BUFFERED_TURNS_MAX = 32
 
 const RUNNING: ReadonlySet<SubtaskStatus> = new Set(['pending', 'running'])
 
+/** Settled children kept known, oldest forgotten first. A settled child is
+ * kept so a late notification of its own still goes to it rather than being
+ * dropped, and so a revival finds its name; past this many, the oldest that
+ * no known child descends from is forgotten (a revival makes it known
+ * again). Bounds what a long session accumulates. */
+export const SETTLED_CHILDREN_MAX = 32
+
 /** A Codex session's subagents: child threads on the parent's connection
  * (docs/decisions/codex-app-server.md, "Subagents").
  *
@@ -306,6 +313,7 @@ export class CodexSubagents {
         const ended = endedTurn(turn, child.error)
         if (ended) this.setStatus(child, ended.status, reasonOf(ended), true)
         this.notify()
+        this.prune()
         break
       }
       case 'item/started':
@@ -626,6 +634,27 @@ export class CodexSubagents {
         event: 'tool_call_update',
         data: { ...call, rawOutput: { agentsStates: item.agentsStates } },
       })
+  }
+
+  /** Forget the oldest settled children past `SETTLED_CHILDREN_MAX`, never
+   * one still running or one a known child descends from. */
+  private prune(): void {
+    const settled = [...this.children.values()].filter((child) => !this.isRunning(child))
+    let excess = settled.length - SETTLED_CHILDREN_MAX
+    for (const child of settled) {
+      if (excess <= 0) return
+      const referenced = [...this.children.values()].some(
+        (other) => other.parentThreadId === child.threadId,
+      )
+      if (referenced) continue
+      this.children.delete(child.threadId)
+      excess--
+    }
+  }
+
+  /** How many children are known, settled ones included. */
+  get size(): number {
+    return this.children.size
   }
 
   private isRunning(child: Child): boolean {

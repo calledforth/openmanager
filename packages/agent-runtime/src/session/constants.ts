@@ -102,6 +102,19 @@ export const SESSION_REAP_INTERVAL_MS = 5 * 60 * 1000
  * ceiling is 4; a ~2 GB ceiling is 8. */
 export const MAX_SESSION_RUNTIMES = 100
 
+/** Soft ceiling on live Codex session runtimes, separate from
+ * `MAX_SESSION_RUNTIMES` (docs/decisions/codex-app-server.md, "One
+ * app-server per session, under a Codex budget"). Each session is its own
+ * `codex app-server`: ~100 MB idle, ~200 MB once its first thread is warm
+ * (_probed_, 0.170), before any MCP servers. Eight is ~1.6 GB, the ~2 GB line
+ * above. Same rules as the global cap: the least recently used Codex runtime
+ * that has no turn in flight, is not starting and is not `busy` (background
+ * terminals, running children) is evicted; if every one is busy the cap is
+ * exceeded and logged. An evicted session resumes on its next prompt
+ * (`thread/resume`), so eviction loses no history. The environment's service
+ * process is not a session and is not counted. */
+export const MAX_CODEX_SESSION_RUNTIMES = 8
+
 /** Whole-shutdown budget for terminating every runtime on app quit. One
  * runtime needs SIGTERM + `terminateGraceMs` + the SIGKILL to land, so this is
  * generous for the normal case and exists only so a CLI the OS refuses to kill

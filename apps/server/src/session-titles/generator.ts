@@ -197,6 +197,11 @@ async function runCodex({ model, prompt, cwd, env, run, timeoutMs, signal }: Run
       model,
       '--config',
       'model_reasoning_effort=low',
+      // The user's `notify` program would fire for every title, as it would
+      // for every turn (docs/decisions/codex-app-server.md, "The user's Codex
+      // home"). TOML: an empty array, which `codex` parses as one.
+      '--config',
+      'notify=[]',
       '--output-schema',
       schemaPath,
       '--output-last-message',

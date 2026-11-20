@@ -45,6 +45,10 @@ export type SessionRuntimeRegistryDeps = {
   /** Soft LRU ceiling on live runtimes. Defaults to `MAX_SESSION_RUNTIMES`;
    * `0` disables eviction entirely. */
   limit?: number
+  /** Soft LRU ceilings per provider, under the same rules as `limit` and
+   * counted on their own: reaching one evicts only that provider's runtimes.
+   * A provider not named has none (Codex: `MAX_CODEX_SESSION_RUNTIMES`). */
+  providerLimits?: Partial<Record<ProviderId, number>>
 }
 
 /** Sole owner of live session runtimes, keyed by thread.
@@ -69,6 +73,8 @@ export class SessionRuntimeRegistryImpl implements SessionRuntimeRegistry {
    * yet. Without counting them, N concurrent creates all measure a map that
    * contains none of the others and all conclude there is room. */
   private reserved = 0
+  /** `reserved`, per provider, for the per-provider ceilings. */
+  private readonly reservedBy = new Map<ProviderId, number>()
   /** Set by `shutdown`/`disposeAll`. A registry that has been told the app is
    * going away must never spawn again: a job that resumes after the shutdown
    * snapshot was taken would otherwise create a child nothing is left to kill. */
@@ -178,7 +184,7 @@ export class SessionRuntimeRegistryImpl implements SessionRuntimeRegistry {
       })
     }
 
-    await this.reserveCapacity(spec.threadId)
+    await this.reserveCapacity(spec.threadId, spec.providerId)
     let entry: MutableEntry
     let runtime: ManagedSessionRuntime
     try {
@@ -205,6 +211,7 @@ export class SessionRuntimeRegistryImpl implements SessionRuntimeRegistry {
       // and being countable in `byThread`; once the entry is in the map (or
       // creation has failed) it is over.
       this.reserved -= 1
+      this.reservedBy.set(spec.providerId, (this.reservedBy.get(spec.providerId) ?? 1) - 1)
     }
     const unsubscribe = runtime.events((event) => {
       this.noteActivity(entry)
@@ -295,10 +302,12 @@ export class SessionRuntimeRegistryImpl implements SessionRuntimeRegistry {
    * ends up over the cap. Deciding one at a time, against a count that
    * includes creates still in flight, is what makes the cap mean something
    * under concurrency. */
-  private async reserveCapacity(exempt: ThreadId): Promise<void> {
+  private async reserveCapacity(exempt: ThreadId, providerId: ProviderId): Promise<void> {
     const admit = async (): Promise<void> => {
       await this.evictForCapacity(exempt)
+      await this.evictForProviderCapacity(exempt, providerId)
       this.reserved += 1
+      this.reservedBy.set(providerId, (this.reservedBy.get(providerId) ?? 0) + 1)
     }
     const run = this.capacityGate.then(admit, admit)
     this.capacityGate = run.then(noop, noop)
@@ -336,9 +345,46 @@ export class SessionRuntimeRegistryImpl implements SessionRuntimeRegistry {
     }
   }
 
-  private evictionCandidate(exempt: ThreadId): MutableEntry | undefined {
+  /** The same, against one provider's own ceiling, choosing only among that
+   * provider's runtimes. Over the cap with every one of them busy, it goes
+   * over and says so: nothing can be stopped safely. */
+  private async evictForProviderCapacity(exempt: ThreadId, providerId: ProviderId): Promise<void> {
+    const limit = this.deps.providerLimits?.[providerId]
+    if (limit === undefined || limit <= 0) return
+    const count = () =>
+      this.forProvider(providerId).length + (this.reservedBy.get(providerId) ?? 0)
+    while (count() >= limit) {
+      const victim = this.evictionCandidate(exempt, providerId)
+      if (!victim) {
+        this.deps.log({
+          scope: 'agent-runtime',
+          level: 'warn',
+          message: 'Every session runtime of this provider is busy; going over its cap',
+          data: { providerId, limit, live: count() },
+        })
+        return
+      }
+      const size = this.byThread.size
+      this.deps.log({
+        scope: 'agent-runtime',
+        level: 'info',
+        message: "Evicting the provider's least recently used session runtime to stay under its cap",
+        data: {
+          providerId,
+          threadId: victim.threadId,
+          idleMs: Date.now() - victim.lastActivityAt,
+          limit,
+        },
+      })
+      await this.remove(victim.threadId, { reason: 'evicted' })
+      if (this.byThread.size >= size) return
+    }
+  }
+
+  private evictionCandidate(exempt: ThreadId, providerId?: ProviderId): MutableEntry | undefined {
     let oldest: MutableEntry | undefined
     for (const entry of this.byThread.values()) {
+      if (providerId !== undefined && entry.providerId !== providerId) continue
       if (entry.threadId === exempt || isWorking(entry)) continue
       // A runtime mid-`start()` looks maximally idle — `lastActivityAt` only
       // advances on events, and the authenticate step is a silent multi-second

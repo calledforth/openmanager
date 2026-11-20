@@ -36,6 +36,7 @@ import {
   codexSignInState,
   type CodexProviderState,
 } from '../session/codex/codex-account.js'
+import { CodexConnectionClosedError } from '../session/codex/CodexRpcPeer.js'
 import { CodexService, type CodexServiceDeps } from '../session/codex/CodexService.js'
 import type { CodexStarter } from '../session/codex/start.js'
 import type { ProbeResult, ProbeRuntime, ProbeRuntimeFactory } from '../session/ProbeRuntime.js'
@@ -44,7 +45,11 @@ import {
   ProviderSessionRuntimeFactory,
 } from '../session/ProviderRuntimeFactory.js'
 import { ChildProcessConnectionFactory } from '../session/ChildProcessConnection.js'
-import { SHUTDOWN_BUDGET_MS, type RuntimeTimeouts } from '../session/constants.js'
+import {
+  MAX_CODEX_SESSION_RUNTIMES,
+  SHUTDOWN_BUDGET_MS,
+  type RuntimeTimeouts,
+} from '../session/constants.js'
 import type { DesiredSessionConfig, SessionResumeRecord } from '../session/lifecycle.js'
 import { withTimeout } from '../session/timeout.js'
 import { SessionRuntimeRegistryImpl } from '../session/SessionRuntimeRegistryImpl.js'
@@ -175,6 +180,18 @@ function mergeDesired(
   }
 }
 
+/** Each Codex provider is capped at `MAX_CODEX_SESSION_RUNTIMES`; the
+ * caller's overrides win. */
+function providerRuntimeLimits(
+  configs: Readonly<Record<ProviderId, ProviderConfig>>,
+  overrides: Partial<Record<ProviderId, number>> | undefined,
+): Partial<Record<ProviderId, number>> {
+  const limits: Partial<Record<ProviderId, number>> = {}
+  for (const [providerId, config] of Object.entries(configs) as Array<[ProviderId, ProviderConfig]>)
+    if (config.kind === 'codex') limits[providerId] = MAX_CODEX_SESSION_RUNTIMES
+  return { ...limits, ...overrides }
+}
+
 export type AgentRuntimeOptions = {
   /** Transport seam. Defaults to spawning the provider's CLI; tests inject a
    * fake so runtimes can be exercised without one. */
@@ -216,6 +233,9 @@ export type AgentRuntimeOptions = {
   /** Soft LRU ceiling on live session runtimes. Defaults to
    * `MAX_SESSION_RUNTIMES`; `0` disables eviction. */
   maxRuntimes?: number
+  /** Soft LRU ceilings per provider, laid over the defaults: Codex runtimes
+   * are capped at `MAX_CODEX_SESSION_RUNTIMES`, other providers not at all. */
+  maxRuntimesByProvider?: Partial<Record<ProviderId, number>>
 }
 
 /** Owns the registry of per-thread session runtimes, the two app-wide brokers,
@@ -337,6 +357,7 @@ export class AgentRuntime {
       onEvent: (providerId, event) => this.forward(providerId, event),
       log: host.log,
       ...(options.maxRuntimes !== undefined ? { limit: options.maxRuntimes } : {}),
+      providerLimits: providerRuntimeLimits(configs, options.maxRuntimesByProvider),
     })
     this.reaper = new SessionReaper({
       registry: this.registry,
@@ -1365,9 +1386,22 @@ export class AgentRuntime {
       entry && entry.providerId === args.providerId && isRuntimeAlive(entry.runtime.phase)
         ? entry.runtime
         : undefined
+    const viaService = (sessionId: string | undefined) =>
+      sessionId ? this.codexService(args.providerId)?.archiveThread(sessionId) : undefined
     try {
-      if (live) await live.archive?.()
-      else if (args.sessionId) await this.codexService(args.providerId)?.archiveThread(args.sessionId)
+      if (live) {
+        try {
+          await live.archive?.()
+        } catch (error) {
+          // The runtime went away between the look and the archive (it was
+          // replaced after an interrupt, or its process died). Once it is
+          // gone no process holds the thread, so the service process can.
+          if (live.phase === 'stopping' || error instanceof CodexConnectionClosedError)
+            await live.exited
+          if (isRuntimeAlive(live.phase)) throw error
+          await viaService(live.sessionId ?? args.sessionId)
+        }
+      } else await viaService(args.sessionId)
     } catch (error) {
       this.host.log({
         scope: 'agent-runtime',

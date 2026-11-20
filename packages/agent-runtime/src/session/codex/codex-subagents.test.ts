@@ -12,6 +12,7 @@ import { CodexSessionRuntime } from './CodexSessionRuntime.js'
 import {
   codexNotificationScope,
   CodexSubagents,
+  SETTLED_CHILDREN_MAX,
   isCodexSubagentThread,
   type CodexSubagentOutput,
 } from './codex-subagents.js'
@@ -724,6 +725,73 @@ describe('CodexSubagents', () => {
     expect(subagents.has('c')).toBe(false)
     expect(subagents.activeTurns()).toEqual([])
     expect(subagents.running).toBe(false)
+  })
+})
+
+describe('CodexSessionRuntime subagents, final review', () => {
+  // Review: a finished turn's subagent items were dropped before the
+  // subagents saw them, so its child had no card, was not busy and was
+  // never stopped.
+  it('tracks a child spawned by a turn that has already finished', async () => {
+    const { runtime, events, turn, prompt } = await running()
+    turn.completed()
+    await prompt
+    const child = turn.thread.child()
+    turn.spawnSubagent(child) // the finished turn's own item, late
+    child.turn().started()
+    await vi.waitFor(() => expect(runtime.busy).toBe(true))
+    expect(subtasks(events).find((update) => update.taskId === child.id)).toMatchObject({
+      status: 'running',
+    })
+    // Not a tool row of any turn.
+    expect(events.filter((e) => e.event === 'tool_call')).toHaveLength(0)
+  })
+})
+
+describe('CodexSubagents, bounded', () => {
+  // Review: settled children were kept for the runtime's whole life.
+  it('forgets the oldest settled children past the bound, never a running one or a parent', () => {
+    const outputs: CodexSubagentOutput[] = []
+    const subagents = new CodexSubagents(() => 'root', () => true, (output) => outputs.push(output))
+    const spawn = (threadId: string, sender = 'root') =>
+      subagents.item(
+        sender,
+        {
+          type: 'subAgentActivity',
+          id: `call_${threadId}`,
+          kind: 'started',
+          agentThreadId: threadId,
+          agentPath: `/root/${threadId}`,
+          model: null,
+          reasoningEffort: null,
+        },
+        'started',
+        true,
+      )
+    const runTurn = (threadId: string, end = true) => {
+      subagents.notification('turn/started', threadId, { threadId, turn: { id: `t-${threadId}` } })
+      if (end)
+        subagents.notification('turn/completed', threadId, {
+          threadId,
+          turn: { id: `t-${threadId}`, status: 'completed' },
+        })
+    }
+    spawn('parent')
+    runTurn('parent')
+    spawn('grandchild', 'parent')
+    runTurn('grandchild', false) // still running, under a settled parent
+    spawn('runner')
+    runTurn('runner', false)
+    for (let index = 0; index < SETTLED_CHILDREN_MAX + 5; index++) {
+      spawn(`c${index}`)
+      runTurn(`c${index}`)
+    }
+    expect(subagents.has('parent')).toBe(true)
+    expect(subagents.has('grandchild')).toBe(true)
+    expect(subagents.has('runner')).toBe(true)
+    expect(subagents.has('c0')).toBe(false)
+    expect(subagents.has(`c${SETTLED_CHILDREN_MAX + 4}`)).toBe(true)
+    expect(subagents.size).toBeLessThanOrEqual(SETTLED_CHILDREN_MAX + 2)
   })
 })
 

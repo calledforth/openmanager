@@ -25,7 +25,7 @@ import type {
   CodexAppServerClient,
   CodexHandshake,
 } from './CodexAppServerClient.js'
-import { CodexRpcTimeoutError } from './CodexRpcPeer.js'
+import { CodexConnectionClosedError, CodexRpcTimeoutError } from './CodexRpcPeer.js'
 import { isMissingThread } from './CodexSessionRuntime.js'
 import { startRealCodex, type CodexStarter } from './start.js'
 
@@ -149,6 +149,8 @@ export class CodexService {
   private readonly hungAfterMs: number
   /** Terminations under way, so shutdown can wait for every process. */
   private readonly exiting = new Set<Promise<unknown>>()
+  /** Archives, one after another (`archiveThread`). */
+  private archiveQueue: Promise<void> = Promise.resolve()
   /** An account re-read under way after `account/updated`. */
   private refreshingAccount: Promise<unknown> | undefined
   private readonly setTimer: NonNullable<CodexServiceDeps['setTimer']>
@@ -228,6 +230,12 @@ export class CodexService {
           ...(options.signal ? { signal: options.signal } : {}),
         })
       } catch (error) {
+        // The process is gone (its exit is still being drained): the next
+        // request must start another, not be refused by this one's corpse.
+        if (error instanceof CodexConnectionClosedError && this.client === client) {
+          this.client = undefined
+          this.setStatus(this.currentStatus())
+        }
         const hung =
           error instanceof CodexRpcTimeoutError ||
           (options.signal?.aborted === true && this.now() - sentAt >= this.hungAfterMs)
@@ -274,15 +282,39 @@ export class CodexService {
 
   /** `thread/archive` for a session the user deleted while no session
    * runtime held its thread: work outside sessions, so it goes to this
-   * process, which serves every such request in turn on one connection. A
-   * thread Codex no longer has is already out of the way; one another Codex
-   * process holds is refused ("already has an active writer") and the
-   * refusal is thrown. Needs neither the account nor the catalog. */
-  async archiveThread(threadId: string): Promise<void> {
+   * process. A thread Codex no longer has is already out of the way; one
+   * another Codex process holds is refused ("already has an active writer")
+   * and the refusal is thrown. Needs neither the account nor the catalog.
+   *
+   * One at a time, in order: removing a project archives many threads, and
+   * fired together one slow answer would hold them all past their budget,
+   * and one replaced process would fail every archive on it. One the
+   * process exits under (crashed, or replaced as hung) is tried once more
+   * on the next. */
+  archiveThread(threadId: string): Promise<void> {
+    const run = this.archiveQueue.then(() => this.archiveOnce(threadId))
+    this.archiveQueue = run.then(
+      () => undefined,
+      () => undefined,
+    )
+    return run
+  }
+
+  private async archiveOnce(threadId: string, retried = false): Promise<void> {
     try {
       await this.request('thread/archive', { threadId })
     } catch (error) {
-      if (!isMissingThread(error)) throw error
+      if (isMissingThread(error)) return
+      if (!retried && error instanceof CodexConnectionClosedError && !this.disposed) {
+        this.deps.host.log({
+          scope: 'codex',
+          level: 'info',
+          message: 'The Codex service process went away during an archive; trying it once more',
+          data: { threadId },
+        })
+        return this.archiveOnce(threadId, true)
+      }
+      throw error
     }
   }
 

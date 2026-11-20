@@ -1628,6 +1628,44 @@ describe('AgentRuntime Codex titles and deletion', () => {
     expect(servers.every((server) => server.exited)).toBe(true)
   })
 
+  // Review: a runtime that went away between the look and the archive left
+  // the thread unarchived.
+  it('archives on the service process when the live runtime dies under the archive', async () => {
+    const fakes = fakeCodexStarter((server, index) => {
+      server.respond('model/list', { data: [], nextCursor: null }).serveThreads()
+      if (index === 0)
+        server.respond('thread/archive', () => {
+          setTimeout(() => server.crash(), 1)
+          return new Promise(() => undefined) as never
+        })
+      else server.respond('thread/archive', {})
+    })
+    const runtime = new AgentRuntime({ emitEvent: vi.fn(), log: vi.fn() }, configs, {
+      codexStart: fakes.start,
+      codexService: { setTimer: () => ({ cancel: () => undefined }) },
+    })
+    const { sessionId } = await runtime.ensureSession({ ...CODEX, threadId: 't1' })
+    await runtime.retireSession({ ...CODEX, threadId: 't1', sessionId })
+    expect(fakes.servers).toHaveLength(2)
+    expect(fakes.servers[1]!.requests('thread/archive')[0]!.params).toEqual({ threadId: sessionId })
+    await runtime.shutdown()
+  })
+
+  // Review: the decided cap of 8 live Codex runtimes.
+  it('caps live Codex runtimes on their own, evicting the least recently used', async () => {
+    const fakes = fakeCodexStarter((server) =>
+      server.respond('model/list', { data: [], nextCursor: null }).serveThreads(),
+    )
+    const runtime = new AgentRuntime({ emitEvent: vi.fn(), log: vi.fn() }, configs, {
+      codexStart: fakes.start,
+      maxRuntimesByProvider: { codex: 2 },
+    })
+    for (const threadId of ['t1', 't2', 't3']) await runtime.ensureSession({ ...CODEX, threadId })
+    expect(fakes.servers[0]!.exited).toBe(true)
+    expect(fakes.servers.filter((server) => !server.exited)).toHaveLength(2)
+    await runtime.shutdown()
+  })
+
   it('starts nothing for a thread with no runtime and no provider session, or no archive', async () => {
     const codex = buildCodex()
     await codex.runtime.retireSession({ ...CODEX, threadId: 't1' })
