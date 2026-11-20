@@ -11,6 +11,7 @@ import {
 } from 'react'
 import {
   ArrowUpIcon,
+  ArrowsLeftRightIcon,
   ArrowsOutIcon,
   PlusIcon,
   CaretDownIcon,
@@ -104,7 +105,7 @@ function PillSelect<T extends string>({
   describeOnHover,
 }: {
   value: T
-  options: Array<{ id: T; name: string; description?: string }>
+  options: Array<{ id: T; name: string; description?: string; disabledReason?: string }>
   onChange: (id: T) => void
   disabled?: boolean
   variant?: 'filled' | 'ghost'
@@ -127,6 +128,13 @@ function PillSelect<T extends string>({
             ? describeOnHover
               ? { title: option.description }
               : { description: option.description }
+            : {}),
+          // Listed, not pickable, and saying why: a policy or a switched-off
+          // feature rules it out.
+          ...(option.disabledReason
+            ? describeOnHover
+              ? { disabled: true, title: option.disabledReason }
+              : { disabled: true, description: option.disabledReason }
             : {}),
         })),
       },
@@ -347,7 +355,7 @@ export interface MessageInputViewProps {
   providerModelGroups: ProviderModelGroup[]
   currentModelId: string
   configOptions: SessionConfigOption[]
-  modeOptions: Array<{ id: string; name: string; description?: string }>
+  modeOptions: Array<{ id: string; name: string; description?: string; disabledReason?: string }>
   /** Reasoning-effort levels the selected model accepts, cheapest first. Empty
    * hides the pill entirely — a model with no effort control must not show
    * one, and which levels exist is per-model, not per-provider. */
@@ -385,6 +393,9 @@ export interface MessageInputViewProps {
   imageSupportMessage: string | null
   /** Last failure from changing the model, mode or a setting. */
   settingsError?: string | null
+  /** The newest turn ran on another model than the one picked (the
+   * provider rerouted it): shown beside the picker, which keeps the pick. */
+  modelReroute?: { to: string; detail?: string } | null
   /** Why this draft cannot be sent as it stands (its provider or project is
    * unavailable). Send is held, and the reason shown, until it clears. */
   sendBlockedReason?: string | null
@@ -1115,6 +1126,7 @@ export function MessageInputView(props: MessageInputViewProps) {
     settingsError,
     sendBlockedReason,
     usage,
+    modelReroute,
     onModeChange,
     onProviderModelChange,
     onConfigOptionChange,
@@ -1295,6 +1307,24 @@ export function MessageInputView(props: MessageInputViewProps) {
                 shortcut="mod+shift+m"
                 onDone={focusTextarea}
               />
+            )}
+
+            {modelReroute && (
+              <Tooltip
+                content={
+                  modelReroute.detail
+                    ? `The last turn ran on ${modelReroute.to}. ${modelReroute.detail}`
+                    : `The last turn ran on ${modelReroute.to}.`
+                }
+              >
+                <span
+                  data-testid="model-reroute"
+                  className={cn(composerChip, 'max-w-[180px] gap-1 text-[var(--basis-text-muted)]')}
+                >
+                  <ArrowsLeftRightIcon size={11} className="shrink-0" aria-hidden />
+                  <span className="truncate">Ran on {modelReroute.to}</span>
+                </span>
+              </Tooltip>
             )}
 
             <ModelSettingsControl

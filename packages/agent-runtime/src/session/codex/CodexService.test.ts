@@ -497,11 +497,14 @@ describe('CodexService discovery', () => {
     ])
     expect(discovery.requirements).toEqual({ supportsIndependentSpeedModes: true, requirements: null })
     expect(discovery.features).toEqual({ fast_mode: true, guardian_approval: true })
+    expect(discovery.webSearch).toBeNull()
+    expect(fakes.last.requests('config/read')[0]!.params).toEqual({ cwd: '/work' })
 
     const methods = fakes.last.requests().map((request) => request.method)
     expect(methods.filter((method) => method !== 'initialize').sort()).toEqual(
       [
         'account/read',
+        'config/read',
         'configRequirements/read',
         'experimentalFeature/list',
         'model/list',

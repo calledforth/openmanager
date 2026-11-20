@@ -335,7 +335,7 @@ export function useLiveComposerModel(sessionId: string | null): {
     canChangeProvider: controls.canChangeProvider,
     modeChoices: modes.choices,
     effortChoices: effortChoicesOf(controls),
-    settings: configurableSessionOptions(controls.runtimeState?.configOptions),
+    settings: configurableSessionOptions(controls.configOptions),
     slashCommands: controls.slashCommands,
     favorites,
     text: draft.text,

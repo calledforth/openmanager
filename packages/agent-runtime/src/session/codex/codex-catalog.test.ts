@@ -1,5 +1,11 @@
 import { describe, expect, it } from 'vitest'
-import { codexModelListing, codexModelUpgrade, codexPolicy } from './codex-catalog.js'
+import {
+  codexEffortLabel,
+  codexModelConfigOptions,
+  codexModelListing,
+  codexModelUpgrade,
+  codexPolicy,
+} from './codex-catalog.js'
 import { codexBuilders } from './testing/index.js'
 
 const { buildModel, buildPermissionProfiles, buildRequirements } = codexBuilders
@@ -19,6 +25,7 @@ describe('codexModelListing', () => {
       displayName: 'GPT-6.2-SOL',
       effortLevels: ['low', 'high'],
       supportsFastMode: true,
+      supportsAutoMode: true,
       supportsImageInput: true,
     })
     expect(sol!.configOptions).toEqual([
@@ -30,8 +37,8 @@ describe('codexModelListing', () => {
         description: 'How much Codex reasons before it answers.',
         currentValue: 'high',
         options: [
-          { value: 'low', name: 'low', description: 'Fast responses with lighter reasoning' },
-          { value: 'high', name: 'high', description: 'Greater reasoning depth for complex problems' },
+          { value: 'low', name: 'Low', description: 'Fast responses with lighter reasoning' },
+          { value: 'high', name: 'High', description: 'Greater reasoning depth for complex problems' },
         ],
       },
       {
@@ -46,11 +53,25 @@ describe('codexModelListing', () => {
           { value: 'priority', name: 'Fast', description: '2x speed, increased usage' },
         ],
       },
+      {
+        type: 'select',
+        id: 'web_search',
+        name: 'Web search',
+        category: 'web_search',
+        description: 'Whether and how Codex searches the web. Kept per chat.',
+        currentValue: 'cached',
+        options: [
+          { value: 'disabled', name: 'Off', description: 'Codex does not search the web.' },
+          { value: 'cached', name: 'Cached', description: 'Searches a cached copy of the web.' },
+          { value: 'indexed', name: 'Indexed', description: 'Searches an index of the web.' },
+          { value: 'live', name: 'Live', description: 'Searches the live web.' },
+        ],
+      },
     ])
     // Text-only is a real "no"; no tiers means no speed setting and no Fast.
     expect(luna!.supportsImageInput).toBe(false)
     expect(luna!.supportsFastMode).toBe(false)
-    expect(luna!.configOptions?.map((option) => option.id)).toEqual(['effort'])
+    expect(luna!.configOptions?.map((option) => option.id)).toEqual(['effort', 'web_search'])
   })
 
   // Review: Standard vanished when the catalog defaulted to another tier.
@@ -65,18 +86,71 @@ describe('codexModelListing', () => {
     })
   })
 
-  it('carries unknown efforts and tiers through as Codex names them', () => {
+  it('carries unknown efforts and tiers through as Codex names them, labelled apart from their ids', () => {
     const [model] = codexModelListing([
       buildModel('m', {
-        supportedReasoningEfforts: [{ reasoningEffort: 'ultra', description: 'Delegates on its own' }],
+        supportedReasoningEfforts: [
+          { reasoningEffort: 'xhigh', description: 'Extra high reasoning depth for complex problems' },
+          { reasoningEffort: 'ultra', description: 'Maximum reasoning with automatic task delegation' },
+          { reasoningEffort: 'hyper_focus', description: '' },
+        ],
         defaultReasoningEffort: 'ultra',
-        serviceTiers: [{ id: 'flex', name: 'Flex', description: 'Cheaper, slower' }],
+        serviceTiers: [{ id: 'flex', name: '', description: 'Cheaper, slower' }],
       }),
     ]).availableModels!
-    expect(model!.effortLevels).toEqual(['ultra'])
+    expect(model!.effortLevels).toEqual(['xhigh', 'ultra', 'hyper_focus'])
     expect(model!.supportsFastMode).toBe(false)
+    expect(model!.configOptions?.[0]).toMatchObject({
+      currentValue: 'ultra',
+      options: [
+        { value: 'xhigh', name: 'Extra high' },
+        {
+          value: 'ultra',
+          name: 'Ultra',
+          description: 'Maximum reasoning with automatic task delegation. May start subagents on its own.',
+        },
+        // A level this version has never heard of: kept, with a readable label.
+        { value: 'hyper_focus', name: 'Hyper focus' },
+      ],
+    })
     expect(model!.configOptions?.[1]).toMatchObject({
       options: [{ value: 'default' }, { value: 'flex', name: 'Flex' }],
+    })
+  })
+
+  it('labels the efforts Codex knows today', () => {
+    expect(['none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra'].map(codexEffortLabel)).toEqual([
+      'None',
+      'Minimal',
+      'Low',
+      'Medium',
+      'High',
+      'Extra high',
+      'Max',
+      'Ultra',
+    ])
+  })
+
+  it('shows a thread’s read-back settings over the defaults, standard speed included', () => {
+    const options = codexModelConfigOptions(
+      buildModel('m'),
+      { webSearch: 'live' },
+      { effort: 'high', serviceTier: 'default', webSearch: null },
+    )
+    expect(options.map((option) => option.currentValue)).toEqual(['high', 'default', 'live'])
+    const chosen = codexModelConfigOptions(buildModel('m'), { webSearch: 'live' }, { webSearch: 'disabled' })
+    expect(chosen.map((option) => option.currentValue)).toEqual(['low', 'default', 'disabled'])
+  })
+
+  it('offers only the web search modes a policy allows', () => {
+    const [model] = codexModelListing([buildModel('m')], {
+      requirements: buildRequirements({ allowedWebSearchModes: ['disabled', 'live'] }),
+      webSearch: 'cached',
+    }).availableModels!
+    expect(model!.configOptions?.find((option) => option.id === 'web_search')).toMatchObject({
+      // The user's `cached` is not allowed: the first mode that is shows.
+      currentValue: 'disabled',
+      options: [{ value: 'disabled' }, { value: 'live' }],
     })
   })
 
@@ -88,7 +162,7 @@ describe('codexModelListing', () => {
       const [model] = codexModelListing([buildModel('m')], context).availableModels!
       // Said outright, so it replaces an earlier `true` downstream.
       expect(model!.supportsFastMode).toBe(false)
-      expect(model!.configOptions?.map((option) => option.id)).toEqual(['effort'])
+      expect(model!.configOptions?.map((option) => option.id)).toEqual(['effort', 'web_search'])
     }
   })
 
@@ -103,7 +177,7 @@ describe('codexModelListing', () => {
     )
     expect(listing.currentModelId).toBe('b')
     const b = listing.availableModels![1]!
-    expect(b.configOptions?.map((option) => option.currentValue)).toEqual(['high', 'priority'])
+    expect(b.configOptions?.map((option) => option.currentValue)).toEqual(['high', 'priority', 'cached'])
   })
 
   // Review: the managed default names a model by its slug as often as its id.
@@ -182,7 +256,7 @@ describe('codexPolicy', () => {
     ])
   })
 
-  it('blocks Fast that a policy rules out, and names no setting no catalog offers', () => {
+  it('blocks Fast and the web search modes a policy rules out', () => {
     const policy = codexPolicy({
       requirements: buildRequirements({
         allowedWebSearchModes: ['disabled', 'cached'],
@@ -191,6 +265,8 @@ describe('codexPolicy', () => {
     })
     expect(policy.blockedConfigValues).toEqual([
       { configId: 'service_tier', id: 'priority', reason: expect.stringMatching(/administrator/) },
+      { configId: 'web_search', id: 'indexed', reason: expect.stringMatching(/administrator/) },
+      { configId: 'web_search', id: 'live', reason: expect.stringMatching(/administrator/) },
     ])
   })
 

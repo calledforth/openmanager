@@ -397,6 +397,8 @@ describe('the composer over the environment client', () => {
     expect(launch).toEqual({
       providerId: 'opencode',
       preference: { modelId: 'opus' },
+      // The mode the draft shows goes too, picked or not.
+      modeId: 'build',
       workspaceId: WORKSPACE.workspaceId,
       draft: { draftId, sessionId: expect.any(String) },
     })
@@ -467,6 +469,7 @@ describe('the composer over the environment client', () => {
       providerId: 'opencode',
       firstMessage: 'hello',
       preference: { modelId: 'opus', configValues: { effort: 'low' } },
+      modeId: 'build',
       draftId: draft!.draftId,
       sessionId: launchId,
     })
@@ -571,6 +574,67 @@ describe('the composer over the environment client', () => {
     expect(commandsOf(client)).not.toContain('sendTurn')
     const sessionId = client.getState().activeSessionId!
     expect(client.getState().sessions[sessionId]?.composer?.modeId).toBe('plan')
+  })
+
+  // Review: a stale profile default (Plan) made a picked Plan launch with no
+  // mode, so it ran in the provider's real default.
+  // Review: a stale default (Plan) with a remembered Plan launched with no
+  // mode, so Claude started in its own settings' default.
+  it('launches in the mode the draft shows, picked or remembered, whatever the profile default', async () => {
+    const client = createMockEnvironmentClient({
+      seed: {
+        ...SEED,
+        providers: [
+          { ...OPENCODE, profile: { ...OPENCODE.profile!, defaultModeId: 'plan' } },
+          CURSOR,
+          BROKEN_CLAUDE,
+        ],
+        composerPreferences: { [WORKSPACE.workspaceId]: { opencode: { modeId: 'plan' } } },
+      },
+    })
+    await mount(client)
+    await openDraft(client)
+    expect(probe.composer.draftSessionState?.modes?.currentModeId).toBe('plan')
+    await act(() => probe.thread.sendMessage('hello'))
+    await settle(client)
+    expect(inputOf(client, 'createSession')).toMatchObject({ firstMessage: 'hello', modeId: 'plan' })
+  })
+
+  it('sends no mode for a provider that cannot set one', async () => {
+    const client = createMockEnvironmentClient({
+      seed: {
+        ...SEED,
+        providers: [
+          { ...OPENCODE, capabilities: { ...CAPABILITIES, canSetMode: false } },
+          CURSOR,
+          BROKEN_CLAUDE,
+        ],
+      },
+    })
+    await mount(client)
+    await openDraft(client)
+    await act(() => probe.thread.sendMessage('hello'))
+    await settle(client)
+    expect(inputOf(client, 'createSession')).not.toHaveProperty('modeId')
+  })
+
+  it('launches in a picked mode even when the profile names it as the default', async () => {
+    const client = createMockEnvironmentClient({
+      seed: {
+        ...SEED,
+        providers: [
+          { ...OPENCODE, profile: { ...OPENCODE.profile!, defaultModeId: 'plan' } },
+          CURSOR,
+          BROKEN_CLAUDE,
+        ],
+      },
+    })
+    await mount(client)
+    await openDraft(client)
+    await act(() => probe.composer.setDraftMode('plan'))
+    await act(() => probe.thread.sendMessage('plan this'))
+    await settle(client)
+    expect(inputOf(client, 'createSession')).toMatchObject({ firstMessage: 'plan this', modeId: 'plan' })
   })
 
   it('keeps the draft open with what was typed when the environment refuses the launch', async () => {

@@ -38,7 +38,14 @@ export interface AcpSessionRuntimeState {
   /** Context-window occupancy, where the host reads it off the session rather
    * than off `agentEvents`. */
   usage?: SessionUsage
+  /** The newest turn ran on another model than the one chosen (Codex's
+   * `model/rerouted`, Claude's refusal fallback). The selection stays; the
+   * composer says so beside it. */
+  modelReroute?: ModelReroute
 }
+
+/** A turn moved to another model, as its `model_fallback` notice says. */
+export type ModelReroute = { to: string; from?: string; detail?: string }
 
 export type DraftComposerSelection = {
   providerId?: ProviderId

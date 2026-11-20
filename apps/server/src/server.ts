@@ -551,7 +551,7 @@ export async function startServer(config: ServerConfig) {
   }
   let seedSessionComposer: (
     sessionId: string,
-    selection: Pick<WorkspaceComposerPreference, 'modelId' | 'configValues'>,
+    selection: Pick<WorkspaceComposerPreference, 'modelId' | 'modeId' | 'configValues'>,
   ) => void = () => undefined
   const artifacts = createArtifactStore(eventDatabase, config.dataDir)
   const drafts = createDraftService({
