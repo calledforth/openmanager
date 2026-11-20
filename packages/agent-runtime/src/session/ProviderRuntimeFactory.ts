@@ -12,6 +12,8 @@ import {
   type ManagedSessionRuntimeFactory,
 } from './AcpSessionRuntimeImpl.js'
 import { ClaudeProbeRuntime } from './claude/ClaudeProbeRuntime.js'
+import { CodexProbeRuntime } from './codex/CodexProbeRuntime.js'
+import type { CodexStarter } from './codex/start.js'
 import { ClaudeSessionRuntime } from './claude/ClaudeSessionRuntime.js'
 import type { ClaudeSdk } from './claude/sdk.js'
 import type { RuntimeTimeouts } from './constants.js'
@@ -46,6 +48,9 @@ export type ProviderSessionRuntimeFactoryDeps = {
    * inject `FakeClaudeSdk` so a Claude runtime can be driven end to end
    * without one. */
   claudeSdk?: ClaudeSdk
+  /** The Codex arm's transport seam: starts one app-server. Defaults to
+   * spawning the real binary; tests inject a starter wired to a fake. */
+  codexStart?: CodexStarter
   timeouts?: Partial<RuntimeTimeouts>
 }
 
@@ -57,6 +62,8 @@ export type ProviderProbeRuntimeFactoryDeps = {
   execFile?: ExecFile
   /** The SDK a Claude probe drives; the real module when absent. */
   claudeSdk?: ClaudeSdk
+  /** How a Codex probe starts its app-server; the real binary when absent. */
+  codexStart?: CodexStarter
 }
 
 export class ProviderSessionRuntimeFactory implements ManagedSessionRuntimeFactory {
@@ -83,6 +90,11 @@ export class ProviderSessionRuntimeFactory implements ManagedSessionRuntimeFacto
           ...(this.deps.claudeSdk ? { sdk: this.deps.claudeSdk } : {}),
           ...(this.deps.timeouts ? { timeouts: this.deps.timeouts } : {}),
         })
+      case 'codex':
+        // Turns arrive with CAL-253. Until then Codex is listed (its catalog
+        // and health come from the probe) but a session cannot start, and
+        // says so plainly rather than failing somewhere deeper.
+        throw new Error('Codex sessions are not available in this build yet.')
     }
   }
 
@@ -123,6 +135,22 @@ export class ProviderProbeRuntimeFactory implements ProbeRuntimeFactory {
             host: this.deps.host,
             ...(this.deps.timeouts ? { timeouts: this.deps.timeouts } : {}),
             ...(this.deps.claudeSdk ? { sdk: this.deps.claudeSdk } : {}),
+            ...(options?.onEvent ? { onEvent: options.onEvent } : {}),
+          },
+        )
+      case 'codex':
+        return new CodexProbeRuntime(
+          {
+            providerId,
+            cwd,
+            ...(options?.threadId ? { threadId: options.threadId } : {}),
+            ...(options?.workspaceId ? { workspaceId: options.workspaceId } : {}),
+          },
+          {
+            config,
+            host: this.deps.host,
+            ...(this.deps.timeouts ? { timeouts: this.deps.timeouts } : {}),
+            ...(this.deps.codexStart ? { start: this.deps.codexStart } : {}),
             ...(options?.onEvent ? { onEvent: options.onEvent } : {}),
           },
         )

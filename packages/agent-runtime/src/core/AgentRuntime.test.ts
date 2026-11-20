@@ -1,6 +1,7 @@
 import type { AgentEvent, PromptInput, SessionConfigOption } from '@agentpack/contract'
 import { describe, expect, it, vi } from 'vitest'
 import { claude } from '../providers/claude.js'
+import { codex } from '../providers/codex.js'
 import { cursor } from '../providers/cursor.js'
 import { opencode } from '../providers/opencode.js'
 import type { ProviderConfig } from '../providers/index.js'
@@ -9,7 +10,7 @@ import { FakeClaudeSdk } from '../session/claude/test-sdk.js'
 import { FakeConnectionFactory, type FakeWire } from '../session/test-connection.js'
 import { AgentRuntime } from './AgentRuntime.js'
 
-const configs = { cursor, opencode, claude }
+const configs = { cursor, opencode, claude, codex }
 const ROUTE = {
   providerId: 'cursor' as const,
   workspaceId: 'C:/workspace',
@@ -567,6 +568,7 @@ describe('AgentRuntime desired config', () => {
         cursor: { ...cursor, capabilities: { ...cursor.capabilities, canSetModel: false } },
         opencode,
         claude,
+        codex,
       },
       { connections: new FakeConnectionFactory(wire) },
     )
@@ -1214,7 +1216,7 @@ describe('AgentRuntime provider dispatch', () => {
     })
     const runtime = new AgentRuntime(
       { emitEvent: () => undefined, log: vi.fn() },
-      { cursor: config, opencode, claude },
+      { cursor: config, opencode, claude, codex },
       { connections },
     )
     return { runtime, connections }

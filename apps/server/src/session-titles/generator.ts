@@ -8,6 +8,7 @@ import {
   providers,
   resolveClaudeExecutable,
   jsonObjects,
+  resolveCodexExecutable,
   type ClaudeProviderConfig,
 } from '@agentpack/runtime/node'
 import {
@@ -183,7 +184,7 @@ async function runCodex({ model, prompt, cwd, env, run, timeoutMs, signal }: Run
   const answerPath = join(cwd, 'answer.json')
   await writeFile(schemaPath, JSON.stringify(TITLE_OUTPUT_SCHEMA))
   await run({
-    command: env.CODEX_BIN?.trim() || 'codex',
+    command: codexCommand(env),
     args: [
       'exec',
       '--ephemeral',
@@ -303,4 +304,16 @@ async function runOpencode({ model, prompt, cwd, env, run, timeoutMs, signal }: 
       timeoutMs: OPENCODE_CLEANUP_TIMEOUT_MS,
     }).catch(() => undefined)
   }
+}
+
+/** The same Codex a session would run: `CODEX_BIN`, then `PATH` (an npm shim
+ * unwrapped to its native binary), then the desktop app's standalone CLI.
+ * Falls back to the configured or bare name, so a missing install fails the
+ * way it always has, with the spawn error. */
+function codexCommand(env: NodeJS.ProcessEnv): string {
+  const resolution = resolveCodexExecutable({ env })
+  if (resolution.found) return resolution.executable.command
+  // A `CODEX_BIN` that names nothing still wins: the spawn error should name
+  // the path the user configured, not a `codex` they never asked for.
+  return resolution.envOverride ?? 'codex'
 }
