@@ -6,6 +6,8 @@ import type {
   PromptCapabilities,
   PromptInput,
   ProviderId,
+  ProviderNotice,
+  ProviderProblem,
   ProviderSessionInfo,
   QuestionOutcome,
 } from '@agentpack/contract'
@@ -31,6 +33,15 @@ import type { SessionRuntimeSpec } from '../SessionRuntime.js'
 import { routeEvent } from '../wire.js'
 import { codexAccess, defaultCodexAccessPreset, type CodexAccess } from './codex-access.js'
 import { codexModelListing, readCodexModels } from './codex-catalog.js'
+import {
+  codexFreshThreadNotice,
+  codexNotice,
+  codexProblem,
+  codexRetryProblem,
+  codexRpcProblem,
+  codexThreadChangeNotice,
+  type CodexThreadChange,
+} from './codex-problems.js'
 import {
   codexNotificationScope,
   CodexSubagents,
@@ -59,7 +70,7 @@ export const CODEX_SUBAGENT_STOP_MS = 10_000
 
 export type CodexSessionRuntimeDeps = {
   config: CodexProviderConfig
-  host: Pick<HostDeps, 'log' | 'onSessionTitle'>
+  host: Pick<HostDeps, 'log' | 'onSessionTitle' | 'sessionHistory'>
   permissions: PermissionBroker
   interactions: InteractionBroker
   /** Starts the app-server. The real binary when absent. */
@@ -73,6 +84,9 @@ export type CodexSessionRuntimeDeps = {
 
 type ActiveTurn = {
   turn: CodexTurn
+  /** A turn Codex began by itself (goal continuation, automatic
+   * compaction): nobody's prompt waits on it. */
+  background: boolean
   resolve: () => void
   reject: (error: unknown) => void
   done: Promise<void>
@@ -87,6 +101,17 @@ type ActiveTurn = {
  * recent turn can still have Codex talking about it. */
 const FINISHED_TURNS_MAX = 64
 
+/** How many notices said while no turn ran are kept for the next one. */
+const PENDING_NOTICES_MAX = 16
+
+/** How long a stop lets a running turn end on its own interrupt before the
+ * process goes, so Codex records the turn as interrupted. */
+const STOP_INTERRUPT_MAX_MS = 2_000
+
+/** What a fresh thread is handed of the conversation a lost one held. */
+const HANDOVER_MESSAGE_MAX_CHARS = 8_000
+const HANDOVER_TOTAL_MAX_CHARS = 60_000
+
 /** One Codex thread in its own `codex app-server` process
  * (docs/decisions/codex-app-server.md, "One app-server per session").
  *
@@ -98,7 +123,10 @@ const FINISHED_TURNS_MAX = 64
  * interrupt, subagents (child threads on this connection, kept apart by
  * `CodexSubagents` and stopped with the parent), exit, and the thread's name
  * and archive (docs/decisions/codex-app-server.md, "Threads: archive on
- * delete, no import"). Tool items, approvals and questions are later changes;
+ * delete, no import"). So are a thread that changed outside openmanager
+ * (closed, archived, deleted, rewound, a system error), turns Codex begins by
+ * itself, Codex's typed errors and its notices (`codex-problems.ts`; the
+ * decisions doc's "Errors and notices"). Tool items, approvals and questions are later changes;
  * until approvals exist, every approval Codex asks for is declined, so nothing
  * runs outside the sandbox without a person having said yes. */
 export class CodexSessionRuntime implements ManagedSessionRuntime {
@@ -165,6 +193,26 @@ export class CodexSessionRuntime implements ManagedSessionRuntime {
   private nameSetsInFlight = 0
   /** The last `thread/name/set` failed: tried again after the next turn. */
   private nameRetry = false
+  /** Notices said while no turn ran (MCP startup, config warnings, a change
+   * made to the thread outside openmanager), shown at the next turn's start:
+   * the host files a notice under a turn. */
+  private readonly pendingNotices: ProviderNotice[] = []
+  /** The thread must be opened again before the next turn: Codex closed,
+   * archived or deleted it outside openmanager, or hit a system error on it. */
+  private reopen: Exclude<CodexThreadChange, 'unarchived' | 'reverted'> | undefined
+  /** Set while this runtime reopens the thread, whose unarchive is its own. */
+  private reopening = false
+  /** Set once this runtime archives its own thread (the session was deleted):
+   * that archive, and the close it brings, are not outside changes. */
+  private ownArchive = false
+  /** The thread Codex had for the session was gone and a fresh one took its
+   * place: the next turn hands the earlier conversation over first. */
+  private handover: { from: string } | undefined
+  /** Codex's last word on the thread's status. */
+  private threadStatus: v2.ThreadStatus['type'] | undefined
+  /** A `turn/start` is out: a `turn/started` with no turn open is then that
+   * one's (closed early), never a turn Codex began by itself. */
+  private turnStarting = false
 
   constructor(
     private readonly spec: SessionRuntimeSpec,
@@ -340,8 +388,13 @@ export class CodexSessionRuntime implements ManagedSessionRuntime {
 
   /** `thread/resume` for a stored thread, `thread/start` otherwise. A thread
    * Codex no longer has falls back to a fresh one, unless the caller requires
-   * the old one (`load: 'require'`). */
-  private async openThread(client: CodexAppServerClient): Promise<{
+   * the old one (`load: 'require'`); the next turn then hands the earlier
+   * conversation over (`handOver`). `existing` is the thread to resume: the
+   * stored one at start, the session's own when it is reopened. */
+  private async openThread(
+    client: CodexAppServerClient,
+    existing: string | undefined = this.spec.sessionId,
+  ): Promise<{
     threadId: string
     model: string | undefined
     name: string | undefined
@@ -355,7 +408,6 @@ export class CodexSessionRuntime implements ManagedSessionRuntime {
       config: THREAD_CONFIG,
       ...(this.spec.desiredConfig?.modelId ? { model: this.spec.desiredConfig.modelId } : {}),
     }
-    const existing = this.spec.sessionId
     if (existing) {
       try {
         const resumed = await this.resumeThread(client, { ...settings, threadId: existing })
@@ -381,6 +433,7 @@ export class CodexSessionRuntime implements ManagedSessionRuntime {
           message: 'Codex no longer has this thread; starting a fresh one',
           data: { threadId: existing, error: String(error) },
         })
+        this.handover = { from: existing }
       }
     } else if (this.spec.load === 'require') {
       throw new SessionUnknownError(this.providerId, undefined)
@@ -485,10 +538,17 @@ export class CodexSessionRuntime implements ManagedSessionRuntime {
     desiredConfig?: DesiredSessionConfig
   }): Promise<void> {
     await this.ready()
+    // A turn Codex began by itself owns the thread until it ends; the host
+    // files what it says under this prompt's turn meanwhile.
+    while (this.active?.background) await this.active.done.catch(() => undefined)
     if (this.active) throw new Error('A Codex turn is already running in this session')
     if (args.desiredConfig) await this.applyDesiredConfig(args.desiredConfig)
     const input = codexInput(args.prompt)
     this.assertUsable()
+    if (this.reopen) {
+      await this.reopenThread()
+      if (this.active) throw new Error('A Codex turn is already running in this session')
+    }
     const client = this.client!
     const threadId = this.sessionIdValue!
     const userMessageId = args.userMessageId ?? `agent_usr_${randomUUID()}`
@@ -503,8 +563,11 @@ export class CodexSessionRuntime implements ManagedSessionRuntime {
         ...(args.prompt.attachments?.length ? { attachments: args.prompt.attachments } : {}),
       }),
     )
-    const active = this.openTurn()
+    const active = this.openTurn(false)
+    this.flushNotices()
+    this.turnStarting = true
     try {
+      await this.handOver(client, threadId, userMessageId)
       // Every setting, every turn: overrides are sticky, so one left out is
       // whatever the last turn set, not the default.
       const response = await client.request(
@@ -545,12 +608,14 @@ export class CodexSessionRuntime implements ManagedSessionRuntime {
         })
         void this.stop({ reason: 'restart' })
       }
+    } finally {
+      this.turnStarting = false
     }
     // The RPC only says the turn began; the turn ends on `turn/completed`.
     return active.done
   }
 
-  private openTurn(): ActiveTurn {
+  private openTurn(background: boolean): ActiveTurn {
     let resolve!: () => void
     let reject!: (error: unknown) => void
     const done = new Promise<void>((res, rej) => {
@@ -563,6 +628,7 @@ export class CodexSessionRuntime implements ManagedSessionRuntime {
     })
     const active: ActiveTurn = {
       turn: new CodexTurn((output) => this.emitTurnOutput(output), this.tokenBaseline),
+      background,
       resolve,
       reject,
       done,
@@ -574,6 +640,172 @@ export class CodexSessionRuntime implements ManagedSessionRuntime {
     done.catch(() => undefined)
     this.active = active
     return active
+  }
+
+  /** Open the turn Codex began by itself: a goal continuing, or an automatic
+   * compaction. It is announced so the host has a turn to file its output
+   * under, and it ends like any other, on its `turn/completed`. */
+  private openBackgroundTurn(turnId: string): void {
+    const active = this.openTurn(true)
+    this.emit(routeEvent(this.route(), this.sessionIdValue, 'lifecycle', 'background_turn_started', {}))
+    this.identifyTurn(active, turnId)
+    this.flushNotices()
+  }
+
+  /** Open the thread again before a turn, after Codex closed, archived or
+   * deleted it outside openmanager, or hit a system error on it. It goes
+   * through the resume fallback: an archived thread is unarchived, a missing
+   * one replaced by a fresh one (stamped through `session_created`, its
+   * conversation handed over at this turn). One that fails to reopen fails
+   * this prompt and is tried again with the next; after a system error, which
+   * may have left the thread loaded and well, the turn is tried anyway. */
+  private async reopenThread(): Promise<void> {
+    const why = this.reopen
+    const client = this.client
+    const previous = this.sessionIdValue
+    if (!why || !client || !previous) return
+    this.reopening = true
+    let opened: Awaited<ReturnType<CodexSessionRuntime['openThread']>>
+    try {
+      opened = await this.openThread(client, previous)
+    } catch (error) {
+      if (why !== 'systemError') throw error
+      this.reopen = undefined
+      this.deps.host.log({
+        scope: 'codex',
+        level: 'warn',
+        message: 'Codex did not resume the thread after its system error; trying the turn anyway',
+        data: { threadId: previous, error: errorMessage(error) },
+      })
+      return
+    } finally {
+      this.reopening = false
+    }
+    this.reopen = undefined
+    this.assertUsable()
+    this.sessionIdValue = opened.threadId
+    this.codexName = opened.name
+    this.deps.host.log({
+      scope: 'codex',
+      level: 'info',
+      message: 'Reopened the Codex thread',
+      data: { why, from: previous, threadId: opened.threadId, state: opened.state },
+    })
+    if (opened.threadId === previous) return
+    // A new identity: the host stamps it before this turn is sent.
+    this.emit(
+      routeEvent(this.route(), opened.threadId, 'lifecycle', 'session_created', {
+        models: { ...this.models, ...(this.modelId ? { currentModelId: this.modelId } : {}) },
+      }),
+    )
+    if (this.title) void this.giveName()
+  }
+
+  /** Hand a fresh thread the conversation the lost one held
+   * (docs/decisions/codex-app-server.md, "Resume fallback"): the host's copy,
+   * less the prompt about to run, goes in as model-visible history with
+   * `thread/inject_items`, bounded to the newest messages. Either way the
+   * turn shows a note saying what happened. Never fails the turn. */
+  private async handOver(
+    client: CodexAppServerClient,
+    threadId: string,
+    userMessageId: string,
+  ): Promise<void> {
+    const handover = this.handover
+    if (!handover) return
+    this.handover = undefined
+    let handedOver = false
+    try {
+      const history = (
+        this.deps.host.sessionHistory?.({ providerId: this.providerId, threadId: this.threadIdValue }) ?? []
+      ).filter((message) => message.messageId !== userMessageId && message.text.trim())
+      const items = handoverItems(history)
+      if (items.length > 0) {
+        await client.request(
+          'thread/inject_items',
+          { threadId, items },
+          { timeoutMs: this.timeouts.controlRequestMs },
+        )
+        handedOver = true
+      }
+    } catch (error) {
+      this.deps.host.log({
+        scope: 'codex',
+        level: 'warn',
+        message: 'Could not hand the earlier conversation to the fresh Codex thread',
+        data: { from: handover.from, threadId, error: errorMessage(error) },
+      })
+    }
+    this.notice(codexFreshThreadNotice(handedOver))
+  }
+
+  /** Show a notice: now, inside the turn in flight, or at the next turn's
+   * start when none runs. Kept notices are bounded and never repeated. */
+  private notice(notice: ProviderNotice): void {
+    const active = this.active
+    if (active && !active.settled) {
+      this.emit(routeEvent(this.route(), this.sessionIdValue, 'session', 'provider_notice', notice))
+      return
+    }
+    if (this.pendingNotices.some((kept) => kept.kind === notice.kind && kept.message === notice.message))
+      return
+    if (this.pendingNotices.length >= PENDING_NOTICES_MAX) this.pendingNotices.shift()
+    this.pendingNotices.push(notice)
+  }
+
+  private flushNotices(): void {
+    for (const notice of this.pendingNotices.splice(0))
+      this.emit(routeEvent(this.route(), this.sessionIdValue, 'session', 'provider_notice', notice))
+  }
+
+  /** The thread was closed, archived or deleted outside openmanager. It is
+   * shown, and the thread is reopened before the next turn. A turn in flight
+   * is over: Codex no longer runs the thread for this connection, so it
+   * fails, and can be sent again. */
+  private threadGone(change: 'closed' | 'archived' | 'deleted'): void {
+    // Our own archive closes the thread too, and a reopen is ours.
+    if (this.ownArchive || this.reopening) return
+    // Deleted outranks archived outranks closed: the reopen must expect the worst.
+    if (this.reopen !== 'deleted' && !(this.reopen === 'archived' && change === 'closed'))
+      this.reopen = change
+    this.deps.host.log({
+      scope: 'codex',
+      level: 'warn',
+      message: `Codex thread ${change} outside OpenManager`,
+      data: { threadId: this.sessionIdValue },
+    })
+    this.notice(codexThreadChangeNotice(change))
+    const active = this.active
+    if (active) this.failTurn(active, new CodexThreadGoneError(change))
+  }
+
+  /** `thread/status/changed`: Codex's own word on the thread. A system error
+   * is shown and the thread reopened before the next turn, unless Codex says
+   * it is well again first; `notLoaded` means it was let go. */
+  private statusChanged(status: v2.ThreadStatus): void {
+    const previous = this.threadStatus
+    this.threadStatus = status.type
+    switch (status.type) {
+      case 'systemError':
+        if (previous === 'systemError') return
+        this.deps.host.log({
+          scope: 'codex',
+          level: 'warn',
+          message: 'Codex reported a system error on the thread',
+          data: { threadId: this.sessionIdValue },
+        })
+        this.notice(codexThreadChangeNotice('systemError'))
+        this.reopen ??= 'systemError'
+        return
+      case 'notLoaded':
+        if (this.ownArchive || this.reopening) return
+        if (this.reopen === undefined || this.reopen === 'systemError') this.reopen = 'closed'
+        return
+      case 'idle':
+      case 'active':
+        if (this.reopen === 'systemError') this.reopen = undefined
+        return
+    }
   }
 
   /** Stop: the turn in flight and every subagent turn, children included,
@@ -850,7 +1082,14 @@ export class CodexSessionRuntime implements ManagedSessionRuntime {
    * thread-scoped one never falls through to this thread. */
   private onNotification(method: string, params: unknown): void {
     const scope = codexNotificationScope(method, params)
-    if (scope.kind === 'global') return
+    // The connection's own: this process serves this one session, so what
+    // it warns about (config, deprecations, an MCP server that did not
+    // start) is this session's to see.
+    if (scope.kind === 'global') {
+      const notice = codexNotice(method, params)
+      if (notice) this.notice(notice)
+      return
+    }
     if (scope.kind === 'unscoped') return this.drop(method, undefined)
     // Before Codex has named this session's thread there is nothing to apply
     // a thread-scoped notification to, ours or a child's.
@@ -899,17 +1138,84 @@ export class CodexSessionRuntime implements ManagedSessionRuntime {
         return
       }
     }
+    if (method === 'thread/tokenUsage/updated') {
+      const { tokenUsage } = params as v2.ThreadTokenUsageUpdatedNotification
+      if (!finished && active && (namedTurn === undefined || this.ownsTurn(active, namedTurn)))
+        active.turn.tokenUsageUpdated(tokenUsage)
+      // Spent outside the turn in flight (a late reading for a finished
+      // one): the next turn counts from after it, never including it.
+      else if (!active) this.tokenBaseline = tokenUsage.total
+      return
+    }
     if (finished) return
     switch (method) {
       case 'thread/name/updated':
         this.nameUpdated((params as v2.ThreadNameUpdatedNotification).threadName)
         return
+      case 'thread/status/changed':
+        this.statusChanged((params as v2.ThreadStatusChangedNotification).status)
+        return
+      case 'thread/closed':
+        this.threadGone('closed')
+        return
+      case 'thread/archived':
+        this.threadGone('archived')
+        return
+      case 'thread/deleted':
+        this.threadGone('deleted')
+        return
+      case 'thread/unarchived':
+        // Our own unarchive, to resume, is no news.
+        if (this.reopening) return
+        if (this.reopen === 'archived') this.reopen = undefined
+        this.notice(codexThreadChangeNotice('unarchived'))
+        return
+      case 'thread/reverted':
+        // Reconciling the stored history with Codex's is not built yet
+        // (CAL-234): the rewind is shown, and the transcript stays as it was.
+        this.deps.host.log({
+          scope: 'codex',
+          level: 'warn',
+          message: 'Codex thread rewound outside OpenManager; the stored history is not reconciled',
+          data: { threadId: this.sessionIdValue },
+        })
+        this.notice(codexThreadChangeNotice('reverted'))
+        return
+      case 'warning':
+      case 'guardianWarning':
+      case 'configWarning':
+      case 'deprecationNotice':
+      case 'mcpServer/startupStatus/updated': {
+        // The thread's, not one turn's: shown now or at the next turn.
+        const notice = codexNotice(method, params)
+        if (notice) this.notice(notice)
+        return
+      }
+      case 'modelProvider/authRecoveryStarted':
+      case 'modelProvider/authRecoveryCompleted':
+      case 'model/safetyBuffering/updated':
+      case 'turn/moderationMetadata':
+        // Logged, not shown: auth recovery resolves itself or ends in an
+        // `unauthorized` failure that is shown; safety buffering only slows a
+        // turn; moderation metadata is for OpenAI's own clients.
+        this.deps.host.log({
+          scope: 'codex',
+          level: 'info',
+          message: `Codex ${method}`,
+          data: params,
+        })
+        return
       case 'turn/started': {
         const { turn } = params as v2.TurnStartedNotification
-        if (active && !active.turn.turnId) {
-          this.identifyTurn(active, turn.id)
-          if (active.turn.interruptRequested) void this.sendInterrupt(active)
+        if (active) {
+          if (!active.turn.turnId) {
+            this.identifyTurn(active, turn.id)
+            if (active.turn.interruptRequested) void this.sendInterrupt(active)
+          }
+          return
         }
+        // No turn open and none being started: Codex began this one itself.
+        if (!this.turnStarting && this.phaseValue === 'ready') this.openBackgroundTurn(turn.id)
         return
       }
       case 'turn/completed': {
@@ -923,11 +1229,13 @@ export class CodexSessionRuntime implements ManagedSessionRuntime {
       case 'error': {
         const notice = params as v2.ErrorNotification
         if (notice.willRetry) {
+          // "Reconnecting... 2/5": the turn lives on.
           this.emit(
             routeEvent(this.route(), this.sessionIdValue, 'error', 'rpc_error', {
               source: 'codex',
               message: notice.error.message,
               recoverable: true,
+              problem: codexRetryProblem(notice),
             }),
           )
         } else if (active && this.ownsTurn(active, notice.turnId)) {
@@ -957,11 +1265,12 @@ export class CodexSessionRuntime implements ManagedSessionRuntime {
       case 'item/reasoning/summaryTextDelta':
         active.turn.reasoningSummaryDelta(params as v2.ReasoningSummaryTextDeltaNotification)
         return
-      case 'thread/tokenUsage/updated':
-        active.turn.tokenUsageUpdated((params as v2.ThreadTokenUsageUpdatedNotification).tokenUsage)
+      default: {
+        // The turn's own notices: a model switch, a verification, warnings.
+        const notice = codexNotice(method, params)
+        if (notice) this.notice(notice)
         return
-      default:
-        return
+      }
     }
   }
 
@@ -992,12 +1301,11 @@ export class CodexSessionRuntime implements ManagedSessionRuntime {
       case 'interrupted':
         this.completeTurn(active, 'cancelled')
         return
-      case 'failed':
-        this.failTurn(
-          active,
-          new CodexTurnFailedError(turn.error?.message ?? active.turn.error?.message ?? 'Codex turn failed'),
-        )
+      case 'failed': {
+        const error = turn.error ?? active.turn.error
+        this.failTurn(active, new CodexTurnFailedError(error?.message ?? 'Codex turn failed', error ?? undefined))
         return
+      }
       case 'inProgress':
         return
     }
@@ -1038,10 +1346,15 @@ export class CodexSessionRuntime implements ManagedSessionRuntime {
     // Children run on past a failed turn too; not past the process.
     if (this.phaseValue !== 'exited') this.subagents.parentTurnEnded()
     const message = errorMessage(error)
+    const problem = problemOf(error)
     this.emit(
       routeEvent(this.route(), this.sessionIdValue, 'error', 'runtime_error', {
-        kind: error instanceof CodexTurnFailedError ? 'provider' : 'transport',
+        kind:
+          error instanceof CodexTurnFailedError || error instanceof CodexThreadGoneError
+            ? 'provider'
+            : 'transport',
         message,
+        ...(problem ? { problem } : {}),
       }),
     )
     active.reject(error)
@@ -1194,6 +1507,8 @@ export class CodexSessionRuntime implements ManagedSessionRuntime {
     if (this.active) await this.cancel()
     this.assertUsable()
     const threadId = this.sessionIdValue!
+    // Codex tells this connection about the archive (and the close) too.
+    this.ownArchive = true
     try {
       await this.client!.request(
         'thread/archive',
@@ -1285,10 +1600,17 @@ export class CodexSessionRuntime implements ManagedSessionRuntime {
     return () => this.exitListeners.delete(listener)
   }
 
+  /** End the process. A turn still running is interrupted first and given a
+   * moment to end, so Codex records it as interrupted rather than cut off,
+   * and the session resumes cleanly with its next prompt (after a restart,
+   * an update or an eviction). Interactions still waiting settle as the
+   * process goes (`settleExit`). */
   async stop(request: TerminationRequest): Promise<SessionRuntimeExit> {
     if (this.exitValue) return this.exitValue
+    const first = this.stopRequest === undefined
     this.stopRequest ??= request
     if (this.phaseValue !== 'exited') this.phaseValue = 'stopping'
+    if (first) await this.interruptForStop()
     const client = this.client
     if (client) await client.terminate(request).catch(() => undefined)
     else this.settleExit({ exitCode: null, signal: null, forced: false, at: new Date().toISOString() })
@@ -1297,6 +1619,26 @@ export class CodexSessionRuntime implements ManagedSessionRuntime {
 
   dispose(): void {
     void this.stop({ reason: 'disposed' })
+  }
+
+  /** Bounded: a stop never waits long on a process it is about to end. One
+   * already being interrupted (a stop after the interrupt grace ran out) is
+   * not waited on again. */
+  private async interruptForStop(): Promise<void> {
+    const active = this.active
+    if (!active || active.settled || !active.turn.turnId || active.turn.interruptRequested) return
+    if (!this.client || this.exitValue) return
+    active.turn.interruptRequested = true
+    void this.sendInterrupt(active)
+    let timer: NodeJS.Timeout | undefined
+    await Promise.race([
+      active.done.catch(() => undefined),
+      new Promise<void>((resolve) => {
+        timer = setTimeout(resolve, Math.min(this.timeouts.interruptGraceMs, STOP_INTERRUPT_MAX_MS))
+        timer.unref?.()
+      }),
+    ])
+    clearTimeout(timer)
   }
 
   private settleExit(processExit: ProcessExit): void {
@@ -1357,12 +1699,58 @@ class CodexSubagentThreadError extends Error {
   }
 }
 
-/** A turn Codex itself reported as failed. */
+/** A turn Codex itself reported as failed, with Codex's typed error. */
 export class CodexTurnFailedError extends Error {
-  constructor(message: string) {
+  constructor(
+    message: string,
+    readonly turnError?: v2.TurnError,
+  ) {
     super(message)
     this.name = 'CodexTurnFailedError'
   }
+}
+
+/** The thread was closed, archived or deleted outside openmanager while a
+ * turn ran: Codex will not finish that turn for this connection. */
+export class CodexThreadGoneError extends Error {
+  constructor(readonly change: 'closed' | 'archived' | 'deleted') {
+    super(`Codex thread was ${change} outside OpenManager during the turn`)
+    this.name = 'CodexThreadGoneError'
+  }
+}
+
+/** What went wrong, typed, for the turn's terminal error. */
+function problemOf(error: unknown): ProviderProblem | undefined {
+  if (error instanceof CodexTurnFailedError)
+    return error.turnError ? codexProblem(error.turnError) : undefined
+  // Reopened with the next message, so sending it again is what helps.
+  if (error instanceof CodexThreadGoneError) return { code: 'unknown', action: 'retry', detail: error.message }
+  if (error instanceof CodexRpcError) return codexRpcProblem(error.data, error.message)
+  return undefined
+}
+
+/** The host's messages as Responses API items for `thread/inject_items`,
+ * newest kept within the bound, each one cut to its own. */
+export function handoverItems(
+  history: readonly { role: 'user' | 'assistant'; text: string }[],
+): v2.ThreadInjectItemsParams['items'] {
+  const items: v2.ThreadInjectItemsParams['items'] = []
+  let total = 0
+  for (let index = history.length - 1; index >= 0; index--) {
+    const message = history[index]!
+    const text =
+      message.text.length > HANDOVER_MESSAGE_MAX_CHARS
+        ? `${message.text.slice(0, HANDOVER_MESSAGE_MAX_CHARS)}…`
+        : message.text
+    if (total + text.length > HANDOVER_TOTAL_MAX_CHARS) break
+    total += text.length
+    items.unshift({
+      type: 'message',
+      role: message.role,
+      content: [{ type: message.role === 'user' ? 'input_text' : 'output_text', text }],
+    })
+  }
+  return items
 }
 
 /** Why a steer was refused, for the log the host writes when it queues the
