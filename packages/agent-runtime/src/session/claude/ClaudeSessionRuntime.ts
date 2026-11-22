@@ -528,7 +528,9 @@ export class ClaudeSessionRuntime implements ManagedSessionRuntime {
     // and not two spreads.
     const sessionId = resumeId ?? crypto.randomUUID()
     const desiredModel = this.spec.desiredConfig?.modelId
-    const desiredMode = claudePermissionMode(this.spec.desiredConfig?.modeId)
+    // Always a mode, and always sent: left out, the CLI starts in its own
+    // `default`, which OpenManager does not offer (see `CLAUDE_PERMISSION_MODES`).
+    const desiredMode = claudePermissionMode(this.spec.desiredConfig?.modeId) ?? CLAUDE_DEFAULT_MODE
     const desiredValues = this.spec.desiredConfig?.values ?? {}
     const rawEffort = desiredValues[CLAUDE_CONFIG.effort]
     const desiredEffort = typeof rawEffort === 'string' ? (rawEffort as EffortLevel) : undefined
@@ -567,7 +569,7 @@ export class ClaudeSessionRuntime implements ManagedSessionRuntime {
       // post-hoc `setModel` would have landed, and it would run on the wrong
       // model.
       ...(desiredModel ? { model: desiredModel } : {}),
-      ...(desiredMode ? { permissionMode: desiredMode } : {}),
+      permissionMode: desiredMode,
       // Effort is the one setting with a launch option, so it travels with the
       // rest of the selection instead of as a write after `initialize` — the
       // first turn would otherwise run at the CLI's default depth. It is not
@@ -635,11 +637,10 @@ export class ClaudeSessionRuntime implements ManagedSessionRuntime {
     this.appliedOutputStyle = init.output_style
     // Applied by the launch itself, so the memo starts warm and
     // `applyDesiredConfig` does not immediately re-send what is already set.
-    if (desiredModel || desiredMode)
-      this.noteApplied({
-        ...(desiredModel ? { modelId: desiredModel } : {}),
-        ...(desiredMode ? { modeId: desiredMode } : {}),
-      })
+    this.noteApplied({
+      ...(desiredModel ? { modelId: desiredModel } : {}),
+      modeId: desiredMode,
+    })
     // After `noteApplied`, so the model is known and can gate what applies.
     await this.applyLaunchSettings(desiredValues)
     await this.readContextWindow()
@@ -842,9 +843,39 @@ export class ClaudeSessionRuntime implements ManagedSessionRuntime {
   private noteReportedMode(message: SDKMessage): void {
     if (!this.leavingPlan || message.type !== 'system') return
     if (message.subtype !== 'status' && message.subtype !== 'init') return
-    const reported = claudePermissionMode((message as { permissionMode?: string }).permissionMode)
-    if (!reported || reported === 'plan') return
+    const raw = (message as { permissionMode?: string }).permissionMode
+    if (!raw || raw === 'plan') return
     this.leavingPlan = false
+    const reported = claudePermissionMode(raw)
+    if (!reported) {
+      // The CLI leaves plan for its own `default`, which OpenManager does not
+      // offer: the approved plan is built in `CLAUDE_DEFAULT_MODE` instead.
+      // Noted before the switch lands, so a tool the CLI asks about in the
+      // meantime is already answered from the new mode, not prompted for.
+      this.noteApplied({ modeId: CLAUDE_DEFAULT_MODE })
+      this.setMode(CLAUDE_DEFAULT_MODE).catch((error: unknown) => {
+        this.host.log({
+          scope: 'claude',
+          level: 'warn',
+          message: 'Claude Code did not take the mode after a plan',
+          data: { mode: CLAUDE_DEFAULT_MODE, error: errorMessage(error) },
+        })
+        // Still announced: `canUseTool` answers from the noted mode, so the
+        // session already behaves as bypass, and the composer and a restart
+        // must not keep believing it is in plan.
+        if (this.appliedModeId !== CLAUDE_DEFAULT_MODE) return
+        this.emit(
+          routeEvent(
+            this.route(),
+            message.session_id,
+            'session',
+            'current_mode_update',
+            claudeModeListing(CLAUDE_DEFAULT_MODE, this.currentModel()),
+          ),
+        )
+      })
+      return
+    }
     if (reported === this.appliedModeId) return
     this.noteApplied({ modeId: reported })
     this.emit(
@@ -1799,13 +1830,15 @@ export class ClaudeSessionRuntime implements ManagedSessionRuntime {
   }
 
   async setMode(modeId: string): Promise<void> {
+    // The user's own switch settles where the session is; a plan exit the CLI
+    // has not reported yet must not override it when it does. Cleared before
+    // the write rather than after: a report landing while the write is in
+    // flight would otherwise switch the session again, over the user's pick.
+    this.leavingPlan = false
     const sessionId = await this.ready()
     const mode = claudePermissionMode(modeId)
     if (!mode) throw new Error(`${this.providerId} has no permission mode "${modeId}"`)
     await this.queryOrThrow().setPermissionMode(mode)
-    // The user's own switch settles where the session is; a plan exit the CLI
-    // has not reported yet must not override it when it does.
-    this.leavingPlan = false
     this.noteApplied({ modeId: mode })
     this.emit(
       // The catalog rides along with every update. Consumers replace their
