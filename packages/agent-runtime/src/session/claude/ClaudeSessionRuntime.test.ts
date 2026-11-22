@@ -22,6 +22,9 @@ const SPEC = {
 /** Mirrors how `AgentRuntime` wires the two app-wide brokers, so settlement
  * events land in the same stream the runtime's own events do — the same shape
  * `AcpSessionRuntime.test.ts` builds for the ACP transport. */
+/** A mode that still asks: sessions start in bypass, which never does. */
+const ASKING: Partial<SessionRuntimeSpec> = { desiredConfig: { modeId: 'acceptEdits' } }
+
 function build(spec: Partial<SessionRuntimeSpec> = {}, timeouts?: Partial<RuntimeTimeouts>) {
   const events: BackendEvent[] = []
   const permissions = new PermissionBroker((settlement) =>
@@ -686,7 +689,7 @@ const requestIdOf = (events: BackendEvent[], name: string): string => {
 
 describe('ClaudeSessionRuntime permissions', () => {
   it('asks with the SDK-supplied prompt text and allows once', async () => {
-    const { runtime, events, sdk } = build()
+    const { runtime, events, sdk } = build(ASKING)
     await runtime.start()
 
     const { result } = sdk.last.useTool(
@@ -731,7 +734,7 @@ describe('ClaudeSessionRuntime permissions', () => {
         destination: 'session',
       },
     ]
-    const { runtime, events, sdk } = build()
+    const { runtime, events, sdk } = build(ASKING)
     await runtime.start()
 
     const withSuggestions = sdk.last.useTool('Bash', { command: 'ls' }, { suggestions })
@@ -759,7 +762,7 @@ describe('ClaudeSessionRuntime permissions', () => {
   })
 
   it('denies on rejection and on cancellation alike', async () => {
-    const { runtime, events, sdk } = build()
+    const { runtime, events, sdk } = build(ASKING)
     await runtime.start()
 
     const rejected = sdk.last.useTool('Bash', { command: 'ls' })
@@ -785,7 +788,7 @@ describe('ClaudeSessionRuntime permissions', () => {
   })
 
   it('settles a parked request when the callback aborts', async () => {
-    const { runtime, events, sdk } = build()
+    const { runtime, events, sdk } = build(ASKING)
     await runtime.start()
 
     const { result, controller } = sdk.last.useTool('Bash', { command: 'ls' })
@@ -805,7 +808,7 @@ describe('ClaudeSessionRuntime permissions', () => {
   })
 
   it('settles everything parked when the runtime goes away', async () => {
-    const { runtime, events, sdk } = build()
+    const { runtime, events, sdk } = build(ASKING)
     await runtime.start()
 
     const permission = sdk.last.useTool('Bash', { command: 'ls' })
@@ -1070,15 +1073,27 @@ describe('ClaudeSessionRuntime mode reported by the CLI', () => {
     return built
   }
 
-  it('follows the CLI out of plan after an approved plan', async () => {
+  it('builds an approved plan in bypass, not the CLI default it reports', async () => {
     const { runtime, events, sdk } = await approvedPlan()
     sdk.last.emitSystem('status', runtime.sessionId!, { status: null, permissionMode: 'default' })
 
-    await vi.waitFor(() => expect(modeUpdates(events)).toEqual(['default']))
+    await vi.waitFor(() => expect(modeUpdates(events)).toEqual(['bypassPermissions']))
+    expect(sdk.last.modes).toEqual(['bypassPermissions'])
     // Applied state moved too, so the next reconcile compares against the
     // truth instead of skipping a write because it still thinks "plan".
     await runtime.applyDesiredConfig({ modeId: 'plan' })
-    expect(sdk.last.modes).toEqual(['plan'])
+    expect(sdk.last.modes).toEqual(['bypassPermissions', 'plan'])
+  })
+
+  it('follows the CLI out of plan into a mode OpenManager offers', async () => {
+    const { runtime, events, sdk } = await approvedPlan()
+    sdk.last.emitSystem('status', runtime.sessionId!, {
+      status: null,
+      permissionMode: 'acceptEdits',
+    })
+
+    await vi.waitFor(() => expect(modeUpdates(events)).toEqual(['acceptEdits']))
+    expect(sdk.last.modes).toEqual([])
   })
 
   it('ignores a stale plan frame and adopts the next real report', async () => {
@@ -1149,7 +1164,7 @@ describe('ClaudeSessionRuntime interaction atomicity', () => {
   }
 
   it('registers and announces nothing for an already-aborted callback', async () => {
-    const { runtime, events, sdk } = build()
+    const { runtime, events, sdk } = build(ASKING)
     await runtime.start()
     const signal = AbortSignal.abort()
 
@@ -1176,7 +1191,7 @@ describe('ClaudeSessionRuntime interaction atomicity', () => {
   })
 
   it('cancels the permission record when announcing it throws', async () => {
-    const { runtime, sdk } = build()
+    const { runtime, sdk } = build(ASKING)
     await runtime.start()
     let requestId: string | undefined
     runtime.events((event) => {
@@ -1607,7 +1622,7 @@ describe('ClaudeSessionRuntime subagents', () => {
   })
 
   it('files a permission a subagent asks for, and its answer, in its session', async () => {
-    const { runtime, events, sdk } = build()
+    const { runtime, events, sdk } = build(ASKING)
     await runtime.start()
     sdk.last.emitAgentStarted(AGENT, 'toolu_agent')
     await vi.waitFor(() => expect(names(events)).toContain('subtask_update'))
@@ -1628,7 +1643,7 @@ describe('ClaudeSessionRuntime subagents', () => {
   })
 
   it("leaves the main agent's own permissions untagged", async () => {
-    const { runtime, events, sdk } = build()
+    const { runtime, events, sdk } = build(ASKING)
     await runtime.start()
     // An agentID nobody has reported is not a reason to guess.
     sdk.last.useTool('Bash', { command: 'npm test' }, { agentID: 'unknown-agent' })
@@ -1810,7 +1825,7 @@ describe('ClaudeSessionRuntime catalogs', () => {
     [...events].reverse().find((candidate) => candidate.event === event)?.data as any
 
   it('publishes both catalogs on session_created, anchored to the launch model', async () => {
-    const { runtime, events } = withModels()
+    const { runtime, events, sdk } = withModels()
 
     await runtime.start()
 
@@ -1827,9 +1842,19 @@ describe('ClaudeSessionRuntime catalogs', () => {
     // Nothing was asked for, so the CLI chose — which is exactly what its
     // `default` row means. Reporting it is honest, not a placeholder.
     expect(created.models.currentModelId).toBe('default')
-    expect(created.modes.currentModeId).toBe('default')
-    // The `default` row supports the classifier, so nothing is filtered.
-    expect(created.modes.availableModes).toHaveLength(6)
+    // The mode is never left to the CLI: its `default` asks before every
+    // tool, so a session nobody picked a mode for starts in bypass.
+    expect(created.modes.currentModeId).toBe('bypassPermissions')
+    expect(sdk.last.options.permissionMode).toBe('bypassPermissions')
+    // The `default` row supports the classifier, so nothing is filtered; the
+    // CLI's `default` mode is not offered at all.
+    expect(created.modes.availableModes.map((m: { id: string }) => m.id)).toEqual([
+      'bypassPermissions',
+      'acceptEdits',
+      'plan',
+      'auto',
+      'dontAsk',
+    ])
   })
 
   it('reports the launch selection rather than the CLI default', async () => {
@@ -1876,7 +1901,7 @@ describe('ClaudeSessionRuntime catalogs', () => {
     expect(created.models.currentModelId).toBeUndefined()
     // Modes are static, so they survive a CLI that reports no models at all —
     // and with no model to gate on, nothing is filtered out.
-    expect(created.modes.availableModes).toHaveLength(6)
+    expect(created.modes.availableModes).toHaveLength(5)
   })
 })
 
@@ -1993,7 +2018,7 @@ describe('ClaudeSessionRuntime settings', () => {
     const created = [...events].reverse().find((e) => e.event === 'session_created')?.data as any
     expect(created.modes.availableModes.map((m: { id: string }) => m.id)).not.toContain('auto')
     // Everything else is model-independent and must survive.
-    expect(created.modes.availableModes).toHaveLength(5)
+    expect(created.modes.availableModes).toHaveLength(4)
   })
 
   it('steps off auto mode when the new model cannot serve it', async () => {
@@ -2004,7 +2029,7 @@ describe('ClaudeSessionRuntime settings', () => {
 
     await runtime.setModel('haiku')
 
-    expect(sdk.last.modes).toContain('default')
+    expect(sdk.last.modes).toContain('bypassPermissions')
   })
 })
 

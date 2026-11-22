@@ -19,6 +19,7 @@ import { routeEvent } from '../wire.js'
 import {
   claudeContextWindow,
   claudeContextWindowOf,
+  CLAUDE_DEFAULT_MODE,
   claudeModeListing,
   claudeModelCatalog,
   type ClaudeContextWindow,
@@ -162,7 +163,8 @@ export class ClaudeProbeRuntime implements ProbeRuntime {
       // provider nobody has selected yet. Without this the control never
       // appears, because it is gated on a non-empty list and the only other
       // source is a live session's own state.
-      modes: claudeModeListing(),
+      // With the mode a new session starts in, so a draft opens on it.
+      modes: claudeModeListing(CLAUDE_DEFAULT_MODE),
     }
     this.emit(
       routeEvent(this.route(), undefined, 'lifecycle', 'initialized', {

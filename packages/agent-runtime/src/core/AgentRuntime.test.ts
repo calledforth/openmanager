@@ -1452,7 +1452,8 @@ describe('AgentRuntime subagent messages', () => {
 
   it('tags the resolution of a subagent permission like its request', async () => {
     const { runtime, events, claudeSdk } = buildClaude()
-    await runtime.ensureSession(CLAUDE_ROUTE)
+    // A mode that still asks: a session started with none runs in bypass.
+    await runtime.ensureSession({ ...CLAUDE_ROUTE, desiredConfig: { modeId: 'acceptEdits' } })
     const query = claudeSdk.last
     query.emitAgentStarted(AGENT, 'toolu_agent')
     await vi.waitFor(() =>

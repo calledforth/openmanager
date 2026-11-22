@@ -46,17 +46,23 @@ const MODE_DETAIL: Record<PermissionMode, { displayName: string; description: st
   },
 }
 
-/** Ordered least- to most-privileged. `default` leads deliberately: the
- * composer falls back to the first entry whenever it has no better answer, so
- * the first entry had better be the safe one. `bypassPermissions` is last for
- * the same reason. */
+/** The modes OpenManager offers. `bypassPermissions` leads: it is what every
+ * session starts in, and the composer falls back to the first entry whenever
+ * it has no better answer.
+ *
+ * The CLI's own `default` is left out on purpose. A session that stops to ask
+ * before each tool stalls every agent nobody is watching — a `spawn_agent`
+ * child, a scheduled prompt — and the user never wants it. Leaving it out of
+ * this list is what refuses it everywhere: a remembered or stale `default`
+ * fails `claudePermissionMode` and the session starts in
+ * `CLAUDE_DEFAULT_MODE` instead. `MODE_DETAIL` keeps its entry only because
+ * the SDK's type requires one per mode. */
 export const CLAUDE_PERMISSION_MODES: readonly PermissionMode[] = [
-  'default',
+  'bypassPermissions',
   'acceptEdits',
   'plan',
   'auto',
   'dontAsk',
-  'bypassPermissions',
 ]
 
 /** The composer-facing catalog. Static, so the probe answers it without a
@@ -66,9 +72,12 @@ export const CLAUDE_MODE_OPTIONS: readonly ModeOption[] = CLAUDE_PERMISSION_MODE
   (mode): ModeOption => ({ id: mode, ...MODE_DETAIL[mode] }),
 )
 
-/** What a session runs in when the composer asked for nothing. Matches the
- * SDK's own default for `Options.permissionMode`. */
-export const CLAUDE_DEFAULT_MODE: PermissionMode = 'default'
+/** What a session runs in when nothing asked for another mode: a new chat in
+ * a workspace with no remembered pick, a `spawn_agent` child, a session whose
+ * remembered mode is no longer offered, and a plan the user approved (the CLI
+ * leaves plan for its own `default`). Always sent at launch, so the CLI's
+ * `default` is never in force. */
+export const CLAUDE_DEFAULT_MODE: PermissionMode = 'bypassPermissions'
 
 /** Narrow an opaque composer string to a mode the CLI accepts.
  *

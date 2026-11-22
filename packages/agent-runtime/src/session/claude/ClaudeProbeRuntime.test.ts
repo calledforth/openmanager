@@ -153,21 +153,21 @@ describe('ClaudeProbeRuntime modes', () => {
 
     const result = await probe.probe()
 
+    // The CLI's `default` is not offered: it asks before every tool.
     expect(result.modes?.availableModes?.map((mode) => mode.id)).toEqual([
-      'default',
+      'bypassPermissions',
       'acceptEdits',
       'plan',
       'auto',
       'dontAsk',
-      'bypassPermissions',
     ])
-    // Safe-first ordering is load-bearing: the composer falls back to the head
-    // of this list whenever it has no better answer.
+    // Bypass leads: the composer falls back to the head of this list whenever
+    // it has no better answer, and it is the mode a new session starts in.
     expect(result.modes?.availableModes?.[0]).toMatchObject({
-      id: 'default',
-      displayName: 'Default',
+      id: 'bypassPermissions',
+      displayName: 'Bypass permissions',
     })
-    expect(result.modes?.currentModeId).toBeUndefined()
+    expect(result.modes?.currentModeId).toBe('bypassPermissions')
     await probe.dispose()
   })
 
