@@ -1096,6 +1096,38 @@ describe('ClaudeSessionRuntime mode reported by the CLI', () => {
     expect(sdk.last.modes).toEqual([])
   })
 
+  it('still runs the plan in bypass when the CLI refuses the switch', async () => {
+    const { runtime, events, sdk } = await approvedPlan()
+    vi.spyOn(sdk.last, 'setPermissionMode').mockRejectedValueOnce(new Error('refused'))
+    sdk.last.emitSystem('status', runtime.sessionId!, { status: null, permissionMode: 'default' })
+
+    // The composer and a restart learn the mode the session really behaves in.
+    await vi.waitFor(() => expect(modeUpdates(events)).toEqual(['bypassPermissions']))
+    const { result } = sdk.last.useTool('Bash', { command: 'ls' })
+    expect(await result).toMatchObject({ behavior: 'allow' })
+    expect(names(events)).not.toContain('permission_request')
+  })
+
+  it('keeps a switch the user made while the plan exit was being reported', async () => {
+    const { runtime, events, sdk } = await approvedPlan()
+    let land!: () => void
+    const written: string[] = []
+    vi.spyOn(sdk.last, 'setPermissionMode').mockImplementation(async (mode) => {
+      written.push(mode)
+      if (written.length === 1) await new Promise<void>((resolve) => (land = resolve))
+    })
+    const switching = runtime.setMode('acceptEdits')
+    await vi.waitFor(() => expect(written).toEqual(['acceptEdits']))
+    sdk.last.emitSystem('status', runtime.sessionId!, { status: null, permissionMode: 'default' })
+    sdk.last.emitText('flush')
+    await vi.waitFor(() => expect(names(events)).toContain('agent_message_chunk'))
+    land()
+    await switching
+
+    expect(written).toEqual(['acceptEdits'])
+    expect(modeUpdates(events)).toEqual(['acceptEdits'])
+  })
+
   it('ignores a stale plan frame and adopts the next real report', async () => {
     const { runtime, events, sdk } = await approvedPlan()
     sdk.last.emitSystem('status', runtime.sessionId!, { status: null, permissionMode: 'plan' })
