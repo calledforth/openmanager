@@ -19,11 +19,18 @@ import {
   type ThreadProjection,
   type UIMessage,
 } from '@openmanager/app-core/logic'
-import type { ThreadState } from '@openmanager/environment-client'
+import type { Subagent } from '@openmanager/protocol'
+import type { BackgroundTask, ThreadState } from '@openmanager/environment-client'
 
+import { FIXTURE_WORKSPACES } from '../home/fixture'
+import type { HomeSession } from '../home/rows'
 import {
   backgroundThread,
+  CODEX_THREAD_SESSION_ID,
+  codexThread,
+  delegatedThread,
   doneThread,
+  FIXTURE_TASKS,
   failedThread,
   imagesThread,
   longThread,
@@ -43,6 +50,25 @@ const FIXTURE_THREADS: Record<string, (now: number) => ThreadState> = {
   's-mcp-server': backgroundThread,
   's-soul-id': imagesThread,
   [LONG_THREAD_SESSION_ID]: (now) => longThread(now),
+  [CODEX_THREAD_SESSION_ID]: codexThread,
+  's-tool-payloads-tests': delegatedThread,
+}
+
+/**
+ * The listing of a fixture session the sample home has no row for: the Codex
+ * session, opened by its address (`/session/s-codex-settings`).
+ */
+export function fixtureSessionSummary(sessionId: string): HomeSession | undefined {
+  if (sessionId !== CODEX_THREAD_SESSION_ID) return undefined
+  return {
+    externalId: sessionId,
+    title: 'Settings cards flash on load',
+    status: 'running',
+    providerId: 'codex' as HomeSession['providerId'],
+    isDriven: false,
+    workspacePath: FIXTURE_WORKSPACES[0]!.path,
+    updatedAt: new Date().toISOString(),
+  }
 }
 
 /**
@@ -56,6 +82,10 @@ export interface FixtureFollowUps {
   remove: (queueItemId: string) => Promise<void>
   resume: () => Promise<void>
   sendNow: (queueItemId: string) => Promise<void>
+  /** A subagent's Stop: it reads as stopped a beat later, as the environment would say. */
+  stopSubagent: (subagent: Subagent) => Promise<void>
+  /** The background work's Stop: the tasks named, or all of them, leave the list. */
+  stopTasks: (taskIds?: string[]) => Promise<void>
 }
 
 /** Streams a turn into a fixture thread as the environment's events would. */
@@ -73,14 +103,22 @@ export interface FixtureThread {
   subscribe: (listener: () => void) => () => void
   getThread: () => ThreadState | null
   getMessages: () => UIMessage[]
+  /** The work the session left running, as the environment lists it. */
+  getTasks: () => readonly BackgroundTask[]
   driver: FixtureDriver
   followUps: FixtureFollowUps
 }
 
 const iso = () => new Date().toISOString()
 
-export function createFixtureThread(initial: ThreadState | null): FixtureThread {
+const NO_TASKS: readonly BackgroundTask[] = []
+
+export function createFixtureThread(
+  initial: ThreadState | null,
+  initialTasks: readonly BackgroundTask[] = NO_TASKS,
+): FixtureThread {
   let thread = initial
+  let tasks = initialTasks
   let projection: ThreadProjection = projectThread(thread, EMPTY_THREAD_PROJECTION)
   const listeners = new Set<() => void>()
   const subscribe = (listener: () => void) => {
@@ -189,7 +227,28 @@ export function createFixtureThread(initial: ThreadState | null): FixtureThread 
         : {}),
     })
   }
+  const notify = () => {
+    for (const listener of [...listeners]) listener()
+  }
   const followUps: FixtureFollowUps = {
+    stopSubagent: async (subagent) => {
+      await new Promise((resolve) => setTimeout(resolve, 600))
+      if (!thread?.subagents) return
+      const at = iso()
+      commit({
+        ...thread,
+        subagents: thread.subagents.map((entry) =>
+          entry.subagentId === subagent.subagentId
+            ? { ...entry, status: 'cancelled' as const, finishedAt: at, updatedAt: at }
+            : entry,
+        ),
+      })
+    },
+    stopTasks: async (taskIds) => {
+      await new Promise((resolve) => setTimeout(resolve, 600))
+      tasks = taskIds ? tasks.filter((task) => !taskIds.includes(task.taskId)) : NO_TASKS
+      notify()
+    },
     queue: (text) => enqueue(text, 'queued'),
     steer: (text) => enqueue(text, 'steering'),
     remove: async (queueItemId) => {
@@ -272,6 +331,7 @@ export function createFixtureThread(initial: ThreadState | null): FixtureThread 
     subscribe,
     getThread: () => thread,
     getMessages: () => projection.messages,
+    getTasks: () => tasks,
     stores: {
       streamingStore: {
         subscribe: (_id, listener) => subscribe(listener),
@@ -292,7 +352,11 @@ const probing = process.env.EXPO_PUBLIC_RENDER_PROBE === '1'
 /** The fixture thread for a session (empty for a session without one), one per page. */
 export function useFixtureThread(sessionId: string): FixtureThread {
   const fixture = useMemo(
-    () => createFixtureThread(FIXTURE_THREADS[sessionId]?.(Date.now()) ?? null),
+    () =>
+      createFixtureThread(
+        FIXTURE_THREADS[sessionId]?.(Date.now()) ?? null,
+        FIXTURE_TASKS[sessionId] ?? NO_TASKS,
+      ),
     [sessionId],
   )
   // The render probe drives the page in front; nothing else ever does.

@@ -21,10 +21,11 @@ import { createComposerUi, fixtureComposerUi } from '../composer/ui-state'
 import type { HomeSession } from '../home/rows'
 import { useHomeSource, usePageSessions } from '../home/source'
 import { EnvironmentPage, useEnvironmentStatus } from '../environment/PhoneEnvironmentProvider'
-import { OpenChildSessionContext } from '../components/parts/SubagentCard'
+import { OpenChildSessionContext, StopSubagentContext } from '../components/parts/SubagentCard'
+import { DelegatingAgentContext, type DelegatingAgent } from '../components/chat/TurnOriginRows'
 import { sessionHref, sessionRowHref } from '../environment/landing-route'
 import { childSessionsOf, childSessionsWithoutCards } from './child-sessions'
-import { FixtureThreadStores, useFixtureThread } from './fixture-thread'
+import { fixtureSessionSummary, FixtureThreadStores, useFixtureThread } from './fixture-thread'
 import { SessionThread } from './SessionThread'
 import { useReadOnlySession } from './useReadOnlySession'
 import { unavailableSessionActions, useSessionActions } from './useSessionActions'
@@ -66,6 +67,30 @@ function useOpenChildSession(environmentId: string | undefined) {
   )
 }
 
+/**
+ * Who handed the session on the page its work, when it is a child session:
+ * its parent's agent and title, from the listed sessions, and how to open
+ * the parent. Null while the parent is not listed (the brief then says
+ * "the parent agent").
+ */
+function useDelegatingAgent(
+  sessions: readonly HomeSession[],
+  session: HomeSession | undefined,
+  open: (sessionId: string) => void,
+): DelegatingAgent | null {
+  const parentId = session?.parentExternalId
+  const parent = parentId ? sessions.find((row) => row.externalId === parentId) : undefined
+  const providerId = parent?.providerId
+  const title = parent?.title?.trim()
+  return useMemo(
+    () =>
+      parentId && providerId
+        ? { providerId, ...(title ? { sessionTitle: title } : {}), onOpen: () => open(parentId) }
+        : null,
+    [open, parentId, providerId, title],
+  )
+}
+
 /** A session of its page's environment, opened read-only for as long as the page is up. */
 function LiveSession({ environmentId, sessionId }: { environmentId: string; sessionId: string }) {
   // The page in front owns the client's active session; one left under
@@ -88,6 +113,17 @@ function LiveSession({ environmentId, sessionId }: { environmentId: string; sess
   const getSubagents = useCallback(() => getThread()?.subagents ?? NO_SUBAGENTS, [getThread])
   const subagents = useSyncExternalStore(subscribe, getSubagents)
   const openChild = useOpenChildSession(environmentId)
+  const delegating = useDelegatingAgent(sessions, session, openChild)
+  // A live subagent's Stop, where the environment can stop one.
+  const canStopSubagents = client.supports('stopSubagent')
+  const stopSubagent = useCallback(
+    (subagent: Subagent) =>
+      client.commands.stopSubagent({
+        sessionId: subagent.parentSessionId,
+        subagentId: subagent.subagentId,
+      }),
+    [client],
+  )
   // Work the agent left running: above the status line, with its Stop.
   const tasks = useBackgroundTasks(client, sessionId)
   const stopTasks = useCallback(
@@ -136,20 +172,24 @@ function LiveSession({ environmentId, sessionId }: { environmentId: string; sess
   return (
     <SteerNowContext.Provider value={sendSteerNow}>
       <OpenChildSessionContext.Provider value={openChild}>
-        <SessionThread
-          title={untitled(session?.title ?? title)}
-          project={workspace?.name}
-          projectId={workspace?.path ?? null}
-          above={above}
-          status={status}
-          messages={messages}
-          phase={phase}
-          failure={failure}
-          onRetry={retry}
-          childSessions={childSessions}
-          actions={actions}
-          composer={composer}
-        />
+        <StopSubagentContext.Provider value={canStopSubagents ? stopSubagent : null}>
+          <DelegatingAgentContext.Provider value={delegating}>
+            <SessionThread
+              title={untitled(session?.title ?? title)}
+              project={workspace?.name}
+              projectId={workspace?.path ?? null}
+              above={above}
+              status={status}
+              messages={messages}
+              phase={phase}
+              failure={failure}
+              onRetry={retry}
+              childSessions={childSessions}
+              actions={actions}
+              composer={composer}
+            />
+          </DelegatingAgentContext.Provider>
+        </StopSubagentContext.Provider>
       </OpenChildSessionContext.Provider>
     </SteerNowContext.Provider>
   )
@@ -169,23 +209,31 @@ export function FixtureSession({ sessionId, opened }: { sessionId: string; opene
     return lastQueue.current
   }, [fixture])
   const queue = useSyncExternalStore(fixture.subscribe, getQueue)
+  const tasks = useSyncExternalStore(fixture.subscribe, fixture.getTasks)
   const above = useMemo(
     () => (
-      <QueuedMessagesRow
-        queue={queue}
-        onRemove={fixture.followUps.remove}
-        onResume={fixture.followUps.resume}
-      />
+      <>
+        <QueuedMessagesRow
+          queue={queue}
+          onRemove={fixture.followUps.remove}
+          onResume={fixture.followUps.resume}
+        />
+        {tasks.length > 0 ? (
+          <BackgroundTasksRow tasks={tasks} onStop={fixture.followUps.stopTasks} />
+        ) : null}
+      </>
     ),
-    [fixture, queue],
+    [fixture, queue, tasks],
   )
-  const session = sessions.find((row) => row.externalId === sessionId)
+  const session =
+    sessions.find((row) => row.externalId === sessionId) ?? fixtureSessionSummary(sessionId)
   const workspace = workspaces.find((entry) => entry.path === session?.workspacePath)
   const status = useStatusLine(session, fixture.subscribe, fixture.getThread)
   const getSubagents = useCallback(() => fixture.getThread()?.subagents ?? NO_SUBAGENTS, [fixture])
   const subagents = useSyncExternalStore(fixture.subscribe, getSubagents)
   const childSessions = useChildSessions(sessions, sessionId, subagents)
   const openChild = useOpenChildSession(session?.environment?.environmentId)
+  const delegating = useDelegatingAgent(sessions, session, openChild)
   const actions = useMemo(
     () => unavailableSessionActions(session, 'A sample session: pair an environment to change it'),
     [session],
@@ -203,18 +251,22 @@ export function FixtureSession({ sessionId, opened }: { sessionId: string; opene
     <FixtureThreadStores stores={fixture.stores}>
       <SteerNowContext.Provider value={fixture.followUps.sendNow}>
         <OpenChildSessionContext.Provider value={openChild}>
-          <SessionThread
-            title={untitled(session?.title)}
-            project={workspace?.name}
-            projectId={workspace?.path ?? null}
-            above={above}
-            status={status}
-            messages={messages}
-            phase="ready"
-            childSessions={childSessions}
-            actions={actions}
-            composer={composer}
-          />
+          <StopSubagentContext.Provider value={fixture.followUps.stopSubagent}>
+            <DelegatingAgentContext.Provider value={delegating}>
+              <SessionThread
+                title={untitled(session?.title)}
+                project={workspace?.name}
+                projectId={workspace?.path ?? null}
+                above={above}
+                status={status}
+                messages={messages}
+                phase="ready"
+                childSessions={childSessions}
+                actions={actions}
+                composer={composer}
+              />
+            </DelegatingAgentContext.Provider>
+          </StopSubagentContext.Provider>
         </OpenChildSessionContext.Provider>
       </SteerNowContext.Provider>
     </FixtureThreadStores>

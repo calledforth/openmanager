@@ -1,6 +1,6 @@
 import { CaretRightIcon, StopIcon } from 'phosphor-react-native'
 import { createContext, memo, useContext, useEffect, useRef, useState } from 'react'
-import { View } from 'react-native'
+import { ActivityIndicator, View } from 'react-native'
 import Animated from 'react-native-reanimated'
 import type { Subagent } from '@openmanager/protocol'
 import {
@@ -8,6 +8,7 @@ import {
   providerName,
   subagentElapsedMs,
   subagentGroupSummary,
+  subagentModelLabel,
   subagentName,
   subagentStatusLabel,
   subagentTone,
@@ -27,6 +28,15 @@ import { DisclosureChevron, revealBody } from './Disclosure'
  * there is nowhere to go (a sample session), and then a card is not a button.
  */
 export const OpenChildSessionContext = createContext<((childSessionId: string) => void) | null>(
+  null,
+)
+
+/**
+ * How the page stops a subagent (`subagent.stop`, through the shared
+ * client). Absent where the environment cannot (or a sample session), and
+ * then a live card offers no Stop.
+ */
+export const StopSubagentContext = createContext<((subagent: Subagent) => Promise<void>) | null>(
   null,
 )
 
@@ -70,46 +80,128 @@ function SubagentGlyph({ subagent }: { subagent: Pick<Subagent, 'status' | 'wait
   }
 }
 
-/** A status worth saying in words: waiting, failed or stopped. Running and done say it with the glyph. */
+/**
+ * A status worth flagging in words: a subagent waiting on someone, or one
+ * that failed, on a soft wash of its colour; one stopped, in faint words.
+ * Running and done say it with the glyph alone.
+ */
 function StatusFlag({ subagent }: { subagent: Subagent }) {
   const theme = usePhoneTheme()
   const tone = subagentTone(subagent.status)
   if (tone === 'running' || tone === 'done') return null
+  const label = subagentStatusLabel(subagent)
+  if (tone === 'stopped') {
+    return (
+      <AppText variant="text-12-regular" numberOfLines={1} style={{ color: theme.faint }}>
+        {label}
+      </AppText>
+    )
+  }
   const color =
     tone === 'failed'
       ? theme.status.error
-      : tone === 'waiting'
-        ? subagent.waitingOn === 'question'
-          ? theme.status.question
-          : theme.status.needs
-        : theme.faint
+      : subagent.waitingOn === 'question'
+        ? theme.status.question
+        : theme.status.needs
   return (
-    <AppText variant="text-12-regular" numberOfLines={1} style={{ color }}>
-      {subagentStatusLabel(subagent)}
-    </AppText>
+    <View
+      style={{
+        height: 20,
+        justifyContent: 'center',
+        borderRadius: 6,
+        paddingHorizontal: 6,
+        backgroundColor: theme.wash(color),
+      }}
+    >
+      <AppText variant="text-11-medium" numberOfLines={1} style={{ color }}>
+        {label}
+      </AppText>
+    </View>
+  )
+}
+
+/**
+ * Stop, at the end of a live card the environment can stop: a small pill,
+ * always there (a phone has no hover). It says "Stopping" until the card's
+ * status moves, and offers to try again if the environment refuses.
+ */
+function StopPill({ name, onStop }: { name: string; onStop: () => Promise<void> }) {
+  const theme = usePhoneTheme()
+  const [stopping, setStopping] = useState(false)
+  const [failure, setFailure] = useState<string | null>(null)
+  return (
+    <Press
+      accessibilityRole="button"
+      accessibilityLabel={failure ? `Couldn’t stop ${name}: ${failure}` : `Stop ${name}`}
+      accessibilityState={{ busy: stopping, disabled: stopping }}
+      disabled={stopping}
+      hitSlop={8}
+      onPress={() => {
+        tap()
+        setFailure(null)
+        setStopping(true)
+        onStop().catch((error: unknown) => {
+          setFailure(error instanceof Error && error.message ? error.message : 'Couldn’t stop it')
+          setStopping(false)
+        })
+      }}
+      style={({ pressed }) => ({
+        flexDirection: 'row',
+        alignItems: 'center',
+        gap: 4,
+        height: 26,
+        paddingHorizontal: 9,
+        borderRadius: 13,
+        backgroundColor: pressed ? theme.active : theme.surface2,
+      })}
+      testID="subagent-stop"
+    >
+      {stopping ? (
+        <ActivityIndicator
+          size="small"
+          color={theme.muted}
+          style={{ transform: [{ scale: 0.55 }], width: 10, height: 10 }}
+        />
+      ) : (
+        <StopIcon size={9} color={failure ? theme.status.error : theme.muted} weight="fill" />
+      )}
+      <AppText
+        variant="text-12-regular"
+        style={{ color: failure ? theme.status.error : theme.muted }}
+      >
+        {stopping ? 'Stopping' : failure ? 'Try again' : 'Stop'}
+      </AppText>
+    </Press>
   )
 }
 
 /**
  * One subagent the agent started, in place of the tool call that started it
- * (web's `SubagentCard`): how it stands, its name and kind, and how long it
- * has run. A tap opens its child session, where its work and answer are.
+ * (web's `SubagentCard`): how it stands, its name and kind, what it runs on
+ * (its provider's mark), and how long it has run. A tap opens its child
+ * session, where its work and answer are; one with no session of its own (a
+ * Codex subagent's thread) is not a button. A live one the environment can
+ * stop offers Stop at its end.
  */
 export const SubagentCard = memo(function SubagentCard({ part }: { part: SubagentPart }) {
   const theme = usePhoneTheme()
   const subagent = part.subagent
-  const now = useTick(isLive(subagent))
+  const live = isLive(subagent)
+  const now = useTick(live)
   const openChild = useContext(OpenChildSessionContext)
+  const stopSubagent = useContext(StopSubagentContext)
   const childId = subagent.childSessionId
   const open = childId && openChild ? () => openChild(childId) : undefined
+  const stop = live && subagent.stoppable && stopSubagent ? () => stopSubagent(subagent) : undefined
   const name = subagentName(subagent)
   const elapsed = subagentElapsedMs(subagent, now)
   const stopped = subagentTone(subagent.status) === 'stopped'
   const kind = subagent.agentType && subagent.agentType !== name ? subagent.agentType : undefined
+  const model = subagentModelLabel(subagent.modelId) ?? providerName(subagent.providerId)
   return (
     <Press
       accessibilityRole={open ? 'button' : undefined}
-      accessibilityLabel={`${open ? 'Open subagent' : 'Subagent'} ${name}, ${subagentStatusLabel(subagent)}`}
+      accessibilityLabel={`${open ? 'Open subagent' : 'Subagent'} ${name}, ${subagentStatusLabel(subagent)}, ${model}`}
       disabled={!open}
       onPress={
         open
@@ -124,8 +216,9 @@ export const SubagentCard = memo(function SubagentCard({ part }: { part: Subagen
         alignItems: 'center',
         gap: 10,
         minHeight: 40,
-        paddingHorizontal: 12,
-        paddingVertical: 8,
+        paddingLeft: 12,
+        paddingRight: stop ? 7 : 12,
+        paddingVertical: 7,
         borderRadius: 12,
         backgroundColor: pressed && open ? theme.active : theme.hover,
       })}
@@ -152,6 +245,7 @@ export const SubagentCard = memo(function SubagentCard({ part }: { part: Subagen
         ) : null}
       </View>
       <StatusFlag subagent={subagent} />
+      <ProviderMark providerId={subagent.providerId} size={12} />
       {elapsed !== undefined ? (
         <AppText
           variant="text-12-regular"
@@ -160,7 +254,11 @@ export const SubagentCard = memo(function SubagentCard({ part }: { part: Subagen
           {formatElapsed(elapsed)}
         </AppText>
       ) : null}
-      {open ? <CaretRightIcon size={12} color={theme.faint} weight="bold" /> : null}
+      {stop ? (
+        <StopPill name={name} onStop={stop} />
+      ) : open ? (
+        <CaretRightIcon size={12} color={theme.faint} weight="bold" />
+      ) : null}
     </Press>
   )
 })
