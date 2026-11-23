@@ -13,6 +13,7 @@ import { usePortaledMenu } from '../ui/usePortaledMenu'
 import { composerChip, composerPopover } from './chatComposerStyles'
 import {
   configurableSessionOptions,
+  effortDisplayName,
   isBooleanSelect,
   sessionConfigSummary,
   type SessionConfigValue,
@@ -66,12 +67,7 @@ export function fastModeOn(options: readonly SessionConfigOption[] | undefined):
   return configurableSessionOptions(options).some((option) => isFastOption(option) && isOn(option))
 }
 
-/** Claude's levels arrive as bare ids ("xhigh"); providers that name their
- *  levels ("Extra-high") keep their own names. */
-export function effortDisplayName(name: string): string {
-  if (name === 'xhigh') return 'X-High'
-  return /^[a-z]+$/.test(name) ? name.charAt(0).toUpperCase() + name.slice(1) : name
-}
+export { effortDisplayName }
 
 function effortIndex(effort: EffortControl): number {
   return effort.choices.findIndex((choice) => choice.id === effort.current)

@@ -30,14 +30,17 @@ export interface EnvironmentChoice {
 export function EnvironmentSheet({
   environments,
   current,
-  hasText,
+  carry,
   onPick,
   onClose,
 }: {
   environments: readonly EnvironmentChoice[]
   current: string
-  /** The page holds text that would be copied along. */
-  hasText: boolean
+  /**
+   * What happens to what is written: `text` goes along as a new draft there,
+   * `stays` here (this environment keeps no drafts to copy), `nothing` is written.
+   */
+  carry: 'text' | 'stays' | 'nothing'
   onPick: (environmentId: string) => void
   onClose: () => void
 }) {
@@ -50,9 +53,11 @@ export function EnvironmentSheet({
             Run it on
           </AppText>
           <AppText variant="text-12-regular" style={{ color: theme.muted }}>
-            {hasText
+            {carry === 'text'
               ? 'What you wrote moves along, into the project you last used there.'
-              : 'Opens in the project you last used there.'}
+              : carry === 'stays'
+                ? 'What you wrote stays here: this environment keeps no drafts to move.'
+                : 'Opens in the project you last used there.'}
           </AppText>
         </View>
         {environments.map((environment) => {

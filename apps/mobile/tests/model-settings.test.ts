@@ -1,9 +1,8 @@
 import { describe, expect, it } from 'vitest'
-import type { ComposerControls } from '@openmanager/app-core/logic'
+import { effortDisplayName, type ComposerControls } from '@openmanager/app-core/logic'
 
 import {
   effortChoicesOf,
-  effortDisplayName,
   fastOn,
   isSpeedSetting,
   modeChoicesOf,

@@ -1,5 +1,6 @@
 import {
   configurableSessionOptions,
+  effortDisplayName,
   isBooleanSelect,
   type ComposerChoice,
   type ComposerControls,
@@ -43,12 +44,6 @@ export function modeChoicesOf(controls: ComposerControls): {
     }
   }
   return { choices: modeOptions, current: currentModeId }
-}
-
-/** Claude's levels arrive as bare ids ("xhigh"); providers that name their levels keep their own names. */
-export function effortDisplayName(name: string): string {
-  if (name === 'xhigh') return 'X-High'
-  return /^[a-z]+$/.test(name) ? name.charAt(0).toUpperCase() + name.slice(1) : name
 }
 
 /** The effort levels, cheapest first: the provider's own setting, else the model row's bare levels. */

@@ -1,6 +1,7 @@
 import { useMemo, useState } from 'react'
 import {
   configurableSessionOptions,
+  effortDisplayName,
   favoriteModelKey,
   toggleFavoriteModel,
   useEnterWhileRunning,
@@ -15,7 +16,7 @@ import {
 import type { HomeSession } from '../home/rows'
 import type { FixtureFollowUps } from '../session/fixture-thread'
 import { ComposerSurface } from './ComposerSurface'
-import { effortDisplayName, fastOn } from './controls-view'
+import { fastOn } from './controls-view'
 import {
   choiceLabel,
   currentModelLabel,
@@ -434,6 +435,7 @@ export function useFixtureComposerModel({
         ? 'Describe what should change in the plan…'
         : 'Ask anything…',
     images: [],
+    uploading: false,
     attach: { enabled: false, reason: SAMPLE_REASON },
     primary,
     stop:

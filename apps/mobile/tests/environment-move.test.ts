@@ -6,7 +6,11 @@ import {
   type MockSeed,
 } from '@openmanager/environment-client'
 
-import { createDraftMover, DRAFT_HANDOVER_WINDOW_MS } from '../src/draft/environment-move'
+import {
+  createDraftMover,
+  DRAFT_HANDOVER_WINDOW_MS,
+  type MoveClient,
+} from '../src/draft/environment-move'
 
 const project = (name: string) => ({
   workspaceId: `C:/${name}`,
@@ -32,8 +36,9 @@ async function setup() {
   const desk = createMockEnvironmentClient({ seed: DESK, draftSaveDebounceMs: 0 })
   const laptop = createMockEnvironmentClient({ seed: LAPTOP, draftSaveDebounceMs: 0 })
   await settle(desk, laptop)
-  const clients: Record<string, MockEnvironmentClient> = { desk, laptop }
+  const clients: Record<string, MoveClient> = { desk, laptop }
   const onScreen = new Set<string>()
+  const returns: string[] = []
   let now = 1_000
   let ids = 0
   const mover = createDraftMover({
@@ -43,6 +48,7 @@ async function setup() {
     // The project last picked there: the second of its list, to tell it from the first.
     landingWorkspaceOf: (state) => state.workspaceOrder[1] ?? state.workspaceOrder[0] ?? null,
     onScreen: (id, draftId) => onScreen.has(`${id}/${draftId}`),
+    returnTo: (id, draftId) => returns.push(`${id}/${draftId}`),
     mintId: () => `copy-${++ids}`,
     now: () => now,
   })
@@ -58,8 +64,10 @@ async function setup() {
   return {
     desk,
     laptop,
+    clients,
     mover,
     onScreen,
+    returns,
     write,
     later: (ms: number) => {
       now += ms
@@ -159,5 +167,29 @@ describe('moving a new session to another environment', () => {
       draftId: null,
     })
     expect(mover.notice()).toBeNull()
+  })
+
+  it('goes back to the original when the copy never reaches the other environment', async () => {
+    const { clients, desk, mover, onScreen, returns, write } = await setup()
+    await write('d1', 'Fix the login page')
+    // An environment that takes the copy and then never has it: refused, say.
+    const laptop = clients.laptop!
+    const state = laptop.getState()
+    clients.laptop = {
+      getState: () => state,
+      subscribe: () => () => undefined,
+      supports: () => true,
+      drafts: { ...laptop.drafts!, edit: () => undefined, flush: async () => undefined },
+    } as MoveClient
+    const result = mover.choose('laptop', { environmentId: 'desk', draftId: 'd1' })
+    expect(result).toMatchObject({ kind: 'moved', draftId: 'copy-1' })
+    onScreen.add('laptop/copy-1')
+    mover.check()
+    expect(returns).toEqual(['desk/d1'])
+    expect(mover.notice()?.message).toBe(
+      "The copy on Laptop wasn't saved. The draft is still on Desk",
+    )
+    expect(desk.getState().drafts.d1).toBeTruthy()
+    mover.dispose()
   })
 })

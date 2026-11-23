@@ -341,6 +341,7 @@ export function useLiveComposerModel(sessionId: string | null): {
     text: draft.text,
     placeholder,
     images: draft.images,
+    uploading: draft.uploading,
     attach: {
       enabled: imageUploadEnabled && !planReview && !unavailable && !attachBlocked,
       reason:

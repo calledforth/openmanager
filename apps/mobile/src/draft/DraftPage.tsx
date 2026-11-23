@@ -100,12 +100,15 @@ function useEnvironmentChoice({
   ui,
   draftId,
   hasText,
+  uploading,
   starting,
 }: {
   ui: ComposerUi
-  /** The page's draft, saved or not. */
+  /** The page's draft, saved or not; null where the environment keeps no drafts. */
   draftId: string | null
   hasText: boolean
+  /** A photo is still on its way into the draft: it would be lost to a move now. */
+  uploading: boolean
   starting: boolean
 }) {
   const environmentId = usePageEnvironmentId()
@@ -128,6 +131,11 @@ function useEnvironmentChoice({
     (next: string) => {
       ui.close()
       if (!environmentId || !mover) return
+      // Moving now would end the photo's upload with this page: it finishes first.
+      if (uploading) {
+        mover.tell('A photo is still uploading. Move the draft once it is done')
+        return
+      }
       const result = mover.choose(next, draftId ? { draftId, environmentId } : null)
       if (result.kind === 'refused') {
         if (result.reason) mover.tell(result.reason)
@@ -136,7 +144,7 @@ function useEnvironmentChoice({
       controller.selectEnvironment(next)
       router.setParams({ environmentId: next, draftId: result.draftId ?? BLANK_DRAFT })
     },
-    [controller, draftId, environmentId, mover, ui],
+    [controller, draftId, environmentId, mover, ui, uploading],
   )
   const offered = environments.length > 1 && environmentId !== null && !!mover && !starting
   const open = useCallback(() => ui.open({ kind: 'environment' }), [ui])
@@ -147,7 +155,7 @@ function useEnvironmentChoice({
         <EnvironmentSheet
           environments={choices}
           current={environmentId}
-          hasText={hasText}
+          carry={!hasText ? 'nothing' : draftId ? 'text' : 'stays'}
           onPick={pick}
           onClose={ui.close}
         />
@@ -194,6 +202,7 @@ export function DraftPage() {
     ui,
     draftId,
     hasText: model.text.trim().length > 0,
+    uploading: model.uploading,
     starting: pendingDraftSessionStart,
   })
   const moveNotice = useDraftMoveNotice()

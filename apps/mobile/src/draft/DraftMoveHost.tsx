@@ -1,4 +1,4 @@
-import { usePathname } from 'expo-router'
+import { router, usePathname } from 'expo-router'
 import {
   createContext,
   useContext,
@@ -15,6 +15,7 @@ import { environmentIsDown } from '@openmanager/environment-client/connection'
 
 import { phoneConnectionView } from '../environment/connection-ui'
 import { linkOf, type PhoneConnectionController } from '../environment/controller'
+import { draftHref } from '../environment/landing-route'
 import type { ScopeRegistry } from '../environment/scopes'
 import { phoneStorage } from '../storage'
 import { createDraftMover, type DraftMover, type MoveNotice } from './environment-move'
@@ -81,6 +82,10 @@ export function DraftMoveHost({
         const drafts = scope ? readScope(scope, SidebarDraftsContext) : undefined
         return drafts?.openDraftId === draftId
       },
+      returnTo: (environmentId, draftId) => {
+        controller.selectEnvironment(environmentId)
+        router.replace(draftHref(environmentId, draftId) as never)
+      },
       mintId: () => globalThis.crypto.randomUUID(),
       now: () => Date.now(),
     }),
@@ -91,5 +96,6 @@ export function DraftMoveHost({
   useEffect(() => mover.check(), [mover, pathname])
   useEffect(() => controller.subscribe(() => mover.check()), [controller, mover])
   useEffect(() => scopes.subscribeAll(() => mover.check()), [mover, scopes])
+  useEffect(() => () => mover.dispose(), [mover])
   return <DraftMoverContext.Provider value={mover}>{children}</DraftMoverContext.Provider>
 }

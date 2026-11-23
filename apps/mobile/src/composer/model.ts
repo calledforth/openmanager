@@ -497,6 +497,8 @@ export interface ComposerModel {
   text: string
   placeholder: string
   images: ComposerImage[]
+  /** A photo is still being read off the phone or uploaded. */
+  uploading: boolean
   attach: { enabled: boolean; reason: string | null }
   primary: PrimaryAction
   /** Stop beside the button while a turn runs and the button queues or steers; null otherwise. */

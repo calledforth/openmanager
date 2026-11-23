@@ -67,6 +67,8 @@ export interface DraftMoverDeps {
   landingWorkspaceOf(state: EnvironmentState): string | null
   /** Whether that environment still has this draft open on a page. */
   onScreen(environmentId: string, draftId: string): boolean
+  /** Put the original's page in place of the copy's, which has nothing to show. */
+  returnTo(environmentId: string, draftId: string): void
   mintId(): string
   now(): number
 }
@@ -186,6 +188,10 @@ export function createDraftMover(deps: DraftMoverDeps) {
       // original is all there is, and it stays.
       if (state.draftTombstones[copy.draftId] !== undefined) return true
       if (selectDraftContent(source.getState(), left.draftId) === undefined) return true
+      // Its page went with it, as web's does: back to the draft it was copied from.
+      if (deps.onScreen(handover.environmentId, copy.draftId)) {
+        deps.returnTo(left.environmentId, left.draftId)
+      }
       tell(`The copy on ${there} wasn't saved. The draft is still on ${here}`)
       return true
     }
@@ -335,6 +341,12 @@ export function createDraftMover(deps: DraftMoverDeps) {
       return () => {
         listeners.delete(listener)
       }
+    },
+    /** Stop listening to every client: the host is gone. What waits stays as it is. */
+    dispose() {
+      for (const stop of watching.values()) stop()
+      watching.clear()
+      listeners.clear()
     },
     /** What is still waiting, for the tests. */
     pending: () => ({ handovers, leftovers }),

@@ -194,7 +194,7 @@ export function FixtureDraftPage({
               <EnvironmentSheet
                 environments={choices}
                 current={known}
-                hasText={model.text.trim().length > 0}
+                carry={model.text.trim() ? 'text' : 'nothing'}
                 onPick={moveTo}
                 onClose={ui.close}
               />
