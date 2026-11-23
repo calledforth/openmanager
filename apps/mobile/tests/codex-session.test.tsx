@@ -3,7 +3,9 @@ import { act, type ReactNode } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { Subagent } from '@openmanager/protocol'
+import { createMockEnvironmentClient, MOCK_CODEX_PROVIDER } from '@openmanager/environment-client'
 import {
+  EnvironmentClientProvider,
   operationPromptView,
   projectThread,
   subagentPart,
@@ -31,6 +33,7 @@ vi.mock('react-native', async () => {
   return (await import('react-native-web')) as Record<string, unknown>
 })
 vi.mock('react-native-svg', () => ({ default: () => <i data-svg />, Path: () => null }))
+vi.mock('expo-linear-gradient', () => ({ LinearGradient: () => null }))
 vi.mock('expo-haptics', () => ({ selectionAsync: async () => undefined }))
 vi.mock('../src/theme/ThemeProvider', () => {
   const ink: Record<string, unknown> = new Proxy({}, { get: () => '#888888' })
@@ -57,6 +60,8 @@ vi.mock('react-native-reanimated', async () => {
   return {
     default: { View: web.View, Text: web.Text },
     FadeIn: chain,
+    FadeOut: chain,
+    LinearTransition: chain,
     Easing: {
       out: (curve: unknown) => curve,
       inOut: (curve: unknown) => curve,
@@ -91,6 +96,7 @@ vi.mock('phosphor-react-native', () => {
     'GaugeIcon',
     'GearIcon',
     'GlobeIcon',
+    'ImageIcon',
     'ImageBrokenIcon',
     'InfoIcon',
     'ListChecksIcon',
@@ -127,6 +133,7 @@ const { DelegatedPrompt, DelegatingAgentContext, OperationPrompt, SubagentsFinis
 const { FindingsCard } = await import('../src/components/parts/FindingsCard')
 const { TurnNoticeRow } = await import('../src/components/parts/TurnNoticeRow')
 const { MessageParts } = await import('../src/components/parts/MessageParts')
+const { UsageSection } = await import('../src/settings/UsageSection')
 
 let container: HTMLDivElement
 let root: Root
@@ -221,7 +228,9 @@ describe('turn origin words', () => {
 
   it('heads a subagents notice with its first line, without the tag', () => {
     expect(
-      subagentsNoticeLine('<subagents-finished>\nSubagents finished:\n- a: done\n</subagents-finished>'),
+      subagentsNoticeLine(
+        '<subagents-finished>\nSubagents finished:\n- a: done\n</subagents-finished>',
+      ),
     ).toEqual({ title: 'Subagents finished', more: true })
   })
 })
@@ -238,7 +247,9 @@ describe('turn origin rows', () => {
   it('opens a subagents notice to what the agent was told', async () => {
     await render(
       <SubagentsFinishedNotice
-        content={'<subagents-finished>\nSubagents finished:\n- explorer: done\n</subagents-finished>'}
+        content={
+          '<subagents-finished>\nSubagents finished:\n- explorer: done\n</subagents-finished>'
+        }
       />,
     )
     expect(text()).toBe('Subagents finished')
@@ -292,6 +303,8 @@ describe('review rows', () => {
     await render(
       <TurnNoticeRow
         notice={{
+          noticeId: 'n-1',
+          turnId: 'turn-1',
           kind: 'info',
           message: 'Review started',
           review: { phase: 'started', target: 'changes against main' },
@@ -303,7 +316,13 @@ describe('review rows', () => {
     expect(icons()).toContain('MagnifyingGlassIcon')
     await render(
       <TurnNoticeRow
-        notice={{ kind: 'info', message: 'Review finished', review: { phase: 'finished' } }}
+        notice={{
+          noticeId: 'n-2',
+          turnId: 'turn-1',
+          kind: 'info',
+          message: 'Review finished',
+          review: { phase: 'finished' },
+        }}
       />,
     )
     expect(icons()).toContain('SealCheckIcon')
@@ -407,5 +426,65 @@ describe('subagent cards', () => {
     )
     expect(icons()).toContain('OpenAiLogoIcon')
     expect(text()).toContain('Needs permission')
+  })
+})
+
+describe('usage limits in settings', () => {
+  it('shows a provider plan, its windows and its credits, and asks for a fresh reading', async () => {
+    const at = new Date(Date.now() - 2 * 60_000).toISOString()
+    const client = createMockEnvironmentClient({
+      seed: {
+        providers: [
+          {
+            ...MOCK_CODEX_PROVIDER,
+            limits: {
+              supported: true,
+              refreshing: false,
+              lastRefresh: { outcome: 'ok', at },
+              reading: {
+                windows: [
+                  {
+                    id: 'five_hour',
+                    label: '5-hour limit',
+                    group: 'session',
+                    usedPercent: 42,
+                    resetsAt: new Date(Date.now() + 90 * 60_000).toISOString(),
+                    status: null,
+                  },
+                  {
+                    id: 'seven_day',
+                    label: 'Weekly limit',
+                    group: 'weekly',
+                    usedPercent: 93,
+                    resetsAt: null,
+                    status: null,
+                  },
+                ],
+                extraUsage: null,
+                plan: 'Plus',
+                credits: { hasCredits: true, unlimited: false, balance: '120' },
+                at,
+              },
+            },
+          },
+        ],
+      },
+    })
+    await act(() => client.connect())
+    const refresh = vi.spyOn(client.commands, 'refreshProviderLimits')
+    await render(
+      <EnvironmentClientProvider client={client}>
+        <UsageSection />
+      </EnvironmentClientProvider>,
+    )
+    expect(text()).toContain('Plus plan')
+    expect(text()).toContain('Updated 2m ago')
+    expect(text()).toContain('5-hour limit')
+    expect(text()).toContain('42%')
+    expect(text()).toContain('Almost out')
+    expect(text()).toContain('Credits')
+    expect(text()).toContain('120 left')
+    expect(icons()).toContain('OpenAiLogoIcon')
+    expect(refresh).toHaveBeenCalledWith({ providerId: 'codex', maxAgeMs: 60_000 })
   })
 })

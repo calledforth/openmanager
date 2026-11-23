@@ -5,6 +5,7 @@ import {
   FilePlusIcon,
   FolderOpenIcon,
   GlobeIcon,
+  ImageIcon,
   ListChecksIcon,
   MagnifyingGlassIcon,
   NotePencilIcon,
@@ -44,6 +45,8 @@ const TOOL_ICONS: Record<string, Icon> = {
   TodoWrite: ListChecksIcon,
   Task: RobotIcon,
   AskUserQuestion: ChatIcon,
+  // Web draws a generation on a row of its own with no glyph; a wrench says nothing here.
+  GenerateImage: ImageIcon,
 }
 
 /** The glyph for a call; `uiKind` is the shared presenter's, which knows an MCP call. */
