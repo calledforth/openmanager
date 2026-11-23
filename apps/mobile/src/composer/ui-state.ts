@@ -6,6 +6,8 @@ export type ComposerOverlay =
   /** The project picker; `browse` opens it on the folder browser. */
   | { kind: 'project'; browse?: boolean }
   | { kind: 'settings' }
+  /** Where a new session runs, on a page with more than one environment saved. */
+  | { kind: 'environment' }
   | { kind: 'plan' }
   | { kind: 'camera' }
   /** The system's photo picker, open over the app: what it hands back is attached. */

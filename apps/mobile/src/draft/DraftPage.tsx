@@ -18,7 +18,7 @@ import type { EnvironmentState } from '@openmanager/environment-client'
 import { ComposerPage } from '../composer/ComposerPage'
 import { ComposerSurface } from '../composer/ComposerSurface'
 import { ThreadBridge } from '../composer/thread-port'
-import { createComposerUi } from '../composer/ui-state'
+import { createComposerUi, useComposerUiState, type ComposerUi } from '../composer/ui-state'
 import { draftSendBlocked, useLiveComposerModel } from '../composer/useLiveComposerModel'
 import { BLANK_DRAFT } from '../environment/landing-route'
 import {
@@ -29,7 +29,8 @@ import { useHomeSource } from '../home/source'
 import { SessionThread, type HeaderAction } from '../session/SessionThread'
 import { useGoBack } from '../ui/goBack'
 import { discardHandoff, draftDiscardable } from './discard-handoff'
-import { EnvironmentSheet } from './EnvironmentSheet'
+import { environmentReachable, useDraftMover, useDraftMoveNotice } from './DraftMoveHost'
+import { EnvironmentSheet, type EnvironmentChoice } from './EnvironmentSheet'
 import { NewSessionHead, StartWithProject } from './NewSessionLanding'
 import { useProjectSource } from './useProjectSource'
 
@@ -88,36 +89,67 @@ function useDiscardAction(draftId: string | null, discardable: boolean): HeaderA
 }
 
 /**
- * The environment a new session runs on, picked on its page when several
- * are saved. Only a blank page offers it (`blank`): the pick opens that
- * environment's blank page in place (its last picked project with it), and
- * becomes where the next new session goes. A page with something written
- * keeps its environment, so nothing written is left behind or copied.
+ * The environment a new session runs on, picked on its page when several are
+ * saved, as web's new-session page picks it. Picking another moves the page
+ * there (`environment-move.ts`): what is written starts a new draft in that
+ * environment's last picked project, the original goes once the copy is
+ * saved, and its images stay where they were uploaded. The pick also becomes
+ * where the next new session goes. Not while the draft is being sent.
  */
-function useEnvironmentChoice(blank: boolean) {
+function useEnvironmentChoice({
+  ui,
+  draftId,
+  hasText,
+  starting,
+}: {
+  ui: ComposerUi
+  /** The page's draft, saved or not. */
+  draftId: string | null
+  hasText: boolean
+  starting: boolean
+}) {
   const environmentId = usePageEnvironmentId()
   const controller = usePhoneConnectionController()
+  const mover = useDraftMover()
   const { environments } = useHomeSource()
-  const [open, setOpen] = useState(false)
-  const close = useCallback(() => setOpen(false), [])
+  const { overlay } = useComposerUiState(ui)
+  const choices = useMemo<EnvironmentChoice[]>(
+    () =>
+      environments.map((environment) => ({
+        environmentId: environment.environmentId,
+        label: environment.label,
+        tone: environment.tone,
+        reachable: environmentReachable(controller, environment.environmentId),
+        words: environment.words,
+      })),
+    [controller, environments],
+  )
   const pick = useCallback(
     (next: string) => {
-      setOpen(false)
+      ui.close()
+      if (!environmentId || !mover) return
+      const result = mover.choose(next, draftId ? { draftId, environmentId } : null)
+      if (result.kind === 'refused') {
+        if (result.reason) mover.tell(result.reason)
+        return
+      }
       controller.selectEnvironment(next)
-      router.setParams({ environmentId: next, draftId: BLANK_DRAFT })
+      router.setParams({ environmentId: next, draftId: result.draftId ?? BLANK_DRAFT })
     },
-    [controller],
+    [controller, draftId, environmentId, mover, ui],
   )
-  const offered = blank && environments.length > 1 && environmentId !== null
+  const offered = environments.length > 1 && environmentId !== null && !!mover && !starting
+  const open = useCallback(() => ui.open({ kind: 'environment' }), [ui])
   return {
-    open: offered ? () => setOpen(true) : undefined,
+    open: offered ? open : undefined,
     sheet:
-      offered && open ? (
+      offered && overlay?.kind === 'environment' ? (
         <EnvironmentSheet
-          environments={environments}
+          environments={choices}
           current={environmentId}
+          hasText={hasText}
           onPick={pick}
-          onClose={close}
+          onClose={ui.close}
         />
       ) : null,
   }
@@ -142,7 +174,7 @@ export function DraftPage() {
   // first message for the moment before its page takes this one's place.
   const { messages } = useActiveThreadState()
   const { model, port } = useLiveComposerModel(null)
-  const projects = useProjectSource()
+  const source = useProjectSource()
   const input = useRef<TextInput>(null)
   const [trayHeight, setTrayHeight] = useState(0)
   const arrived = useScreenArrived()
@@ -158,8 +190,19 @@ export function DraftPage() {
   const headerActions = useDiscardAction(draftId, discardable)
 
   const environmentLabel = sidebar?.environment?.label ?? null
-  const choice = useEnvironmentChoice(
-    draftId === null && model.text.length === 0 && model.images.length === 0,
+  const choice = useEnvironmentChoice({
+    ui,
+    draftId,
+    hasText: model.text.trim().length > 0,
+    starting: pendingDraftSessionStart,
+  })
+  const moveNotice = useDraftMoveNotice()
+  const mover = useDraftMover()
+  const dismissNotice = moveNotice ? () => mover?.dismiss(moveNotice.key) : undefined
+  // The project sheet names the environment, and offers another where there is one.
+  const projects = useMemo(
+    () => (choice.open ? { ...source, pickEnvironment: choice.open } : source),
+    [choice.open, source],
   )
   const loading = !!sidebar?.isWorkspacesLoading || !!isDraftLoading
   // "No project" is offered beside the user's projects, never counted as one:
@@ -181,8 +224,12 @@ export function DraftPage() {
             note={
               pendingDraftSessionStart ? 'Starting session…' : draftSendBlocked(session, workspace)
             }
+            recents={source.recents}
             onPick={openPicker}
+            onPickRecent={source.pick}
             onPickEnvironment={choice.open}
+            notice={moveNotice?.message ?? null}
+            onDismissNotice={dismissNotice}
           />
         }
       />
@@ -192,6 +239,8 @@ export function DraftPage() {
         {...(projects.add && projects.browse ? { onAdd: openAdd } : {})}
         {...(noProject ? { onStartWithoutProject: () => projects.pick(noProject.path) } : {})}
         onPickEnvironment={choice.open}
+        notice={moveNotice?.message ?? null}
+        onDismissNotice={dismissNotice}
       />
     )
   // Once the first message shows, the page is a session's: the dock takes over.

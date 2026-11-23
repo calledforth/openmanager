@@ -1,9 +1,11 @@
 import {
+  CaretDownIcon,
   CaretLeftIcon,
   CaretRightIcon,
   CheckIcon,
   DesktopIcon,
   FolderIcon,
+  FolderPlusIcon,
   MagnifyingGlassIcon,
 } from 'phosphor-react-native'
 import { useEffect, useMemo, useRef, useState } from 'react'
@@ -12,8 +14,6 @@ import {
   folderName,
   isNoProject,
   NO_PROJECT_NAME,
-  noProjectOf,
-  userProjects,
   visibleFolders,
   type FolderEntry,
   type WorkspaceEntry,
@@ -25,6 +25,7 @@ import { tap } from '../ui/haptics'
 import { Press } from '../ui/Press'
 import { ProjectMark } from '../ui/ProjectMark'
 import { Sheet } from '../ui/Sheet'
+import { projectSheetSections, projectUnavailable } from './project-sections'
 
 /** A folder as `filesystem.browse` lists it. */
 export interface FolderListing {
@@ -55,6 +56,8 @@ export interface ProjectSource {
   browse?: (path?: string, prefix?: string) => Promise<FolderListing>
   /** Add the browsed folder as a project and pick it; absent when it cannot. */
   add?: (path: string) => Promise<void>
+  /** Open the environment picker; absent with one environment saved. */
+  pickEnvironment?: () => void
 }
 
 function Option({
@@ -357,11 +360,69 @@ function FolderBrowser({
   )
 }
 
+/** A row's second line: where it is, and its branch when it is a worktree. */
+function projectDetail(entry: WorkspaceEntry): string {
+  if (isNoProject(entry)) return 'A folder of its own, outside any project'
+  const branch = entry.git?.worktree && entry.git.branch ? `${entry.git.branch} · ` : ''
+  return `${branch}${entry.path}`
+}
+
+/** The environment the sheet's projects are on: a pill that opens its picker where there is a choice. */
+function EnvironmentTag({ label, onPress }: { label: string; onPress?: () => void }) {
+  const theme = usePhoneTheme()
+  const content = (
+    <>
+      <DesktopIcon size={12} color={onPress ? theme.muted : theme.faint} />
+      <AppText
+        variant="text-12-regular"
+        numberOfLines={1}
+        style={{ color: onPress ? theme.muted : theme.faint, flexShrink: 1 }}
+      >
+        {label}
+      </AppText>
+      {onPress ? <CaretDownIcon size={10} color={theme.faint} weight="bold" /> : null}
+    </>
+  )
+  if (!onPress) {
+    return (
+      <View className="flex-row items-center" style={{ gap: 5, maxWidth: 200 }}>
+        {content}
+      </View>
+    )
+  }
+  return (
+    <Press
+      accessibilityRole="button"
+      accessibilityLabel={`Environment: ${label}`}
+      accessibilityHint="Pick another environment"
+      hitSlop={6}
+      onPress={() => {
+        tap()
+        onPress()
+      }}
+      style={({ pressed }) => ({
+        flexDirection: 'row',
+        alignItems: 'center',
+        gap: 5,
+        maxWidth: 200,
+        paddingVertical: 4,
+        paddingLeft: 8,
+        paddingRight: 7,
+        borderRadius: 999,
+        backgroundColor: pressed ? theme.active : theme.hover,
+      })}
+    >
+      {content}
+    </Press>
+  )
+}
+
 /**
- * The project picker for a new session: search, "No project" where the
- * environment offers it, recents, then the environment's projects under its
- * name, and Browse a folder… at the end,
- * which opens the folder browser as a second page of the same sheet.
+ * The project picker for a new session, scoped to the page's environment:
+ * its name on top (a pill that opens the environment picker where there is a
+ * choice), search, "No project" where the environment offers it, its recent
+ * projects, then the rest, and Add project… at the end, which opens the
+ * folder browser as a second page of the same sheet.
  */
 export function ProjectSheet({
   source,
@@ -377,95 +438,106 @@ export function ProjectSheet({
   const { height } = useWindowDimensions()
   const [query, setQuery] = useState('')
   const [browsing, setBrowsing] = useState(browse && !!source.browse)
-  const needle = query.trim().toLowerCase()
-  const matches = (entry: WorkspaceEntry) =>
-    !needle ||
-    entry.name.toLowerCase().includes(needle) ||
-    entry.path.toLowerCase().includes(needle)
-  const recents = useMemo(() => userProjects(source.recents).slice(0, 3), [source.recents])
-  const noProject = noProjectOf(source.workspaces)
-  const projects = useMemo(() => userProjects(source.workspaces), [source.workspaces])
+  const sections = useMemo(() => projectSheetSections(source, query), [query, source])
   const pick = (entry: WorkspaceEntry) => {
     source.pick(entry.path)
     onClose()
   }
-  const unavailable = (entry: WorkspaceEntry) =>
-    entry.availability && entry.availability !== 'available'
-      ? 'Not on disk on the environment right now'
-      : entry.missing
-        ? 'Not on disk on the environment right now'
-        : null
   const row = (entry: WorkspaceEntry) => (
     <Option
       key={entry.path}
       title={isNoProject(entry) ? NO_PROJECT_NAME : entry.name}
-      detail={isNoProject(entry) ? 'A folder of its own, outside any project' : entry.path}
+      detail={projectDetail(entry)}
       on={entry.path === source.current}
-      icon={<ProjectMark workspaceId={entry.path} size={16} />}
-      disabledReason={unavailable(entry)}
+      icon={<ProjectMark workspaceId={entry.path} size={16} scratch={isNoProject(entry)} />}
+      disabledReason={projectUnavailable(entry)}
       onPress={() => pick(entry)}
     />
   )
   return (
     <Sheet onDismiss={onClose} onBack={browsing ? () => setBrowsing(false) : onClose}>
-      <ScrollView style={{ maxHeight: height * 0.62 }} keyboardShouldPersistTaps="handled">
-        {browsing && source.browse ? (
+      {browsing && source.browse ? (
+        <ScrollView style={{ maxHeight: height * 0.62 }} keyboardShouldPersistTaps="handled">
           <FolderBrowser source={source} onBack={() => setBrowsing(false)} onDone={onClose} />
-        ) : (
-          <View>
-            <View
-              style={{
-                flexDirection: 'row',
-                alignItems: 'center',
-                gap: 8,
-                marginHorizontal: 4,
-                marginBottom: 6,
-                paddingHorizontal: 12,
-                borderRadius: 14,
-                backgroundColor: theme.hover,
-              }}
+        </ScrollView>
+      ) : (
+        <View>
+          <View
+            style={{
+              flexDirection: 'row',
+              alignItems: 'center',
+              gap: 8,
+              paddingHorizontal: 12,
+              paddingBottom: 8,
+            }}
+          >
+            <AppText
+              accessibilityRole="header"
+              variant="text-14-medium"
+              style={{ color: theme.fg, flex: 1 }}
             >
-              <MagnifyingGlassIcon size={16} color={theme.faint} />
-              <TextInput
-                accessibilityLabel="Search projects"
-                value={query}
-                onChangeText={setQuery}
-                placeholder="Search projects"
-                placeholderTextColor={theme.faint}
-                autoCorrect={false}
-                autoCapitalize="none"
-                style={{
-                  flex: 1,
-                  paddingVertical: 10,
-                  color: theme.fg,
-                  fontFamily: 'Geist-Regular',
-                  fontSize: 14,
-                }}
-              />
-            </View>
-            {noProject && (!needle || NO_PROJECT_NAME.toLowerCase().includes(needle))
-              ? row(noProject)
-              : null}
-            {!needle && recents.length > 0 ? (
-              <>
-                <Heading>Recent</Heading>
-                {recents.map(row)}
-              </>
+              Project
+            </AppText>
+            <EnvironmentTag label={source.environmentLabel} onPress={source.pickEnvironment} />
+          </View>
+          <View
+            style={{
+              flexDirection: 'row',
+              alignItems: 'center',
+              gap: 8,
+              marginHorizontal: 4,
+              marginBottom: 6,
+              paddingHorizontal: 12,
+              borderRadius: 14,
+              backgroundColor: theme.hover,
+            }}
+          >
+            <MagnifyingGlassIcon size={16} color={theme.faint} />
+            <TextInput
+              accessibilityLabel="Search projects"
+              value={query}
+              onChangeText={setQuery}
+              placeholder="Search projects"
+              placeholderTextColor={theme.faint}
+              autoCorrect={false}
+              autoCapitalize="none"
+              style={{
+                flex: 1,
+                paddingVertical: 10,
+                color: theme.fg,
+                fontFamily: 'Geist-Regular',
+                fontSize: 14,
+              }}
+            />
+          </View>
+          <ScrollView style={{ maxHeight: height * 0.55 }} keyboardShouldPersistTaps="handled">
+            {sections.length === 0 ? (
+              <AppText
+                variant="text-13-regular"
+                style={{ color: theme.muted, paddingVertical: 14, textAlign: 'center' }}
+              >
+                {query.trim() ? 'No project matches that.' : 'No projects here yet.'}
+              </AppText>
             ) : null}
-            <Heading icon={<DesktopIcon size={13} color={theme.faint} />}>
-              {source.environmentLabel}
-            </Heading>
-            {projects.filter(matches).map(row)}
+            {sections.map((section) => (
+              <View key={section.id}>
+                {section.id === 'recent' ? <Heading>Recent</Heading> : null}
+                {section.id === 'all' ? <Heading>All projects</Heading> : null}
+                {section.rows.map(row)}
+              </View>
+            ))}
+            <View style={{ height: 4 }} />
             <Option
-              title="Browse a folder…"
-              icon={<FolderIcon size={16} color={theme.muted} />}
+              title="Add project…"
+              detail={source.browse ? `A folder on ${source.environmentLabel}` : undefined}
+              icon={<FolderPlusIcon size={16} color={theme.muted} />}
               trailing={<CaretRightIcon size={14} color={theme.faint} />}
               disabledReason={source.browse ? null : 'This environment cannot browse its folders'}
               onPress={() => setBrowsing(true)}
             />
-          </View>
-        )}
-      </ScrollView>
+          </ScrollView>
+        </View>
+      )}
     </Sheet>
   )
 }
