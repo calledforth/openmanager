@@ -121,30 +121,52 @@ function StatusFlag({ subagent }: { subagent: Subagent }) {
 }
 
 /**
- * Stop, at the end of a live card the environment can stop: a small pill,
- * always there (a phone has no hover). It says "Stopping" until the card's
- * status moves, and offers to try again if the environment refuses.
+ * Stopping a subagent from its card: whether a stop is under way, and the
+ * environment's reason when it refused one. Held by the card, so the pill,
+ * the screen reader's action and the reason line say the same thing.
  */
-function StopPill({ name, onStop }: { name: string; onStop: () => Promise<void> }) {
-  const theme = usePhoneTheme()
+function useStop(onStop: (() => Promise<void>) | undefined) {
   const [stopping, setStopping] = useState(false)
   const [failure, setFailure] = useState<string | null>(null)
+  const run = () => {
+    if (!onStop || stopping) return
+    tap()
+    setFailure(null)
+    setStopping(true)
+    onStop().catch((error: unknown) => {
+      setFailure(error instanceof Error ? error.message : '')
+      setStopping(false)
+    })
+  }
+  return { stopping, failure, run }
+}
+
+/**
+ * Stop, at the end of a live card the environment can stop: a small pill,
+ * always there (a phone has no hover). It says "Stopping" until the card's
+ * status moves, and "Try again" if the environment refused, with its reason
+ * on a line under the card.
+ */
+function StopPill({
+  name,
+  stopping,
+  failed,
+  onPress,
+}: {
+  name: string
+  stopping: boolean
+  failed: boolean
+  onPress: () => void
+}) {
+  const theme = usePhoneTheme()
   return (
     <Press
       accessibilityRole="button"
-      accessibilityLabel={failure ? `Couldn’t stop ${name}: ${failure}` : `Stop ${name}`}
+      accessibilityLabel={failed ? `Try again to stop ${name}` : `Stop ${name}`}
       accessibilityState={{ busy: stopping, disabled: stopping }}
       disabled={stopping}
       hitSlop={8}
-      onPress={() => {
-        tap()
-        setFailure(null)
-        setStopping(true)
-        onStop().catch((error: unknown) => {
-          setFailure(error instanceof Error && error.message ? error.message : 'Couldn’t stop it')
-          setStopping(false)
-        })
-      }}
+      onPress={onPress}
       style={({ pressed }) => ({
         flexDirection: 'row',
         alignItems: 'center',
@@ -163,13 +185,13 @@ function StopPill({ name, onStop }: { name: string; onStop: () => Promise<void> 
           style={{ transform: [{ scale: 0.55 }], width: 10, height: 10 }}
         />
       ) : (
-        <StopIcon size={9} color={failure ? theme.status.error : theme.muted} weight="fill" />
+        <StopIcon size={9} color={failed ? theme.status.error : theme.muted} weight="fill" />
       )}
       <AppText
         variant="text-12-regular"
-        style={{ color: failure ? theme.status.error : theme.muted }}
+        style={{ color: failed ? theme.status.error : theme.muted }}
       >
-        {stopping ? 'Stopping' : failure ? 'Try again' : 'Stop'}
+        {stopping ? 'Stopping' : failed ? 'Try again' : 'Stop'}
       </AppText>
     </Press>
   )
@@ -198,10 +220,22 @@ export const SubagentCard = memo(function SubagentCard({ part }: { part: Subagen
   const stopped = subagentTone(subagent.status) === 'stopped'
   const kind = subagent.agentType && subagent.agentType !== name ? subagent.agentType : undefined
   const model = subagentModelLabel(subagent.modelId) ?? providerName(subagent.providerId)
-  return (
+  const { stopping, failure, run } = useStop(stop)
+  // The pill sits inside the card, where VoiceOver cannot reach it on its
+  // own: the card carries Stop as an action of its own as well.
+  const canStop = !!stop && !stopping
+  const card = (
     <Press
       accessibilityRole={open ? 'button' : undefined}
       accessibilityLabel={`${open ? 'Open subagent' : 'Subagent'} ${name}, ${subagentStatusLabel(subagent)}, ${model}`}
+      accessibilityActions={canStop ? [{ name: 'stop', label: `Stop ${name}` }] : undefined}
+      onAccessibilityAction={
+        canStop
+          ? (event) => {
+              if (event.nativeEvent.actionName === 'stop') run()
+            }
+          : undefined
+      }
       disabled={!open}
       onPress={
         open
@@ -255,11 +289,31 @@ export const SubagentCard = memo(function SubagentCard({ part }: { part: Subagen
         </AppText>
       ) : null}
       {stop ? (
-        <StopPill name={name} onStop={stop} />
+        <StopPill name={name} stopping={stopping} failed={failure !== null} onPress={run} />
       ) : open ? (
         <CaretRightIcon size={12} color={theme.faint} weight="bold" />
       ) : null}
     </Press>
+  )
+  if (!stop) return card
+  // Why the environment refused, under the card: web says it in the Stop
+  // button's tooltip, and a phone has no hover. The card keeps its place in
+  // the same wrapper either way, so a refusal does not remount it.
+  return (
+    <View style={{ gap: 4 }}>
+      {card}
+      {failure !== null ? (
+        <AppText
+          variant="text-12-regular"
+          numberOfLines={2}
+          accessibilityLiveRegion="polite"
+          style={{ color: theme.muted, paddingHorizontal: 12 }}
+          testID="subagent-stop-failure"
+        >
+          {failure ? `Couldn’t stop it: ${failure}` : 'Couldn’t stop it'}
+        </AppText>
+      ) : null}
+    </View>
   )
 })
 

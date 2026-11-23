@@ -122,6 +122,31 @@ vi.mock('../src/components/parts/ImageGroup', () => ({
   useTranscriptWidth: () => 360,
 }))
 vi.mock('../src/components/parts/VideoPart', () => ({ VideoPart: () => <i data-video /> }))
+// What each pressable offers a screen reader, by test id: react-native-web
+// leaves accessibility actions out of the DOM.
+const accessible = new Map<
+  string,
+  { actions?: unknown; onAction?: (event: { nativeEvent: { actionName: string } }) => void }
+>()
+vi.mock('../src/ui/Press', async () => {
+  const actual = await vi.importActual<typeof import('../src/ui/Press')>('../src/ui/Press')
+  return {
+    ...actual,
+    Press: ({
+      accessibilityActions,
+      onAccessibilityAction,
+      ...props
+    }: Parameters<typeof actual.Press>[0]) => {
+      if (props.testID) {
+        accessible.set(props.testID, {
+          actions: accessibilityActions,
+          onAction: onAccessibilityAction as never,
+        })
+      }
+      return <actual.Press {...props} />
+    },
+  }
+})
 // The markdown renderer is the text part's own business; here it is the words.
 vi.mock('../src/components/parts/TextPart', () => ({
   TextPart: ({ text }: { text: string }) => <p>{text}</p>,
@@ -404,7 +429,30 @@ describe('subagent cards', () => {
     const button = container.querySelector<HTMLElement>('[data-testid="subagent-stop"]')!
     await act(async () => button.click())
     expect(button.textContent).toBe('Try again')
-    expect(button.getAttribute('aria-label')).toContain('It already finished')
+    // The reason is on screen, under the card, not only in the label.
+    const reason = container.querySelector<HTMLElement>('[data-testid="subagent-stop-failure"]')
+    expect(reason?.textContent).toBe('Couldn’t stop it: It already finished')
+    // Trying again clears it while the stop runs.
+    await act(async () =>
+      container.querySelector<HTMLElement>('[data-testid="subagent-stop"]')!.click(),
+    )
+    expect(stop).toHaveBeenCalledTimes(2)
+  })
+
+  it('offers Stop to a screen reader as an action of the card', async () => {
+    const stop = vi.fn(() => new Promise<void>(() => undefined))
+    const subagent = codexSubagent({ subagentId: 'sub-a11y' })
+    await render(
+      <StopSubagentContext.Provider value={stop}>
+        <SubagentCard part={subagentPart(subagent)} />
+      </StopSubagentContext.Provider>,
+    )
+    const card = accessible.get('subagent:sub-a11y')!
+    expect(card.actions).toEqual([{ name: 'stop', label: 'Stop theme-checker' }])
+    await act(async () => card.onAction!({ nativeEvent: { actionName: 'stop' } }))
+    expect(stop).toHaveBeenCalledWith(subagent)
+    // While it stops, there is nothing more to offer.
+    expect(accessible.get('subagent:sub-a11y')!.actions).toBeUndefined()
   })
 
   it('offers no Stop on a settled one, or where the page cannot stop it', async () => {
