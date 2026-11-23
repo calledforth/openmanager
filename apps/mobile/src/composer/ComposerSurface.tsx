@@ -195,16 +195,6 @@ export function ComposerSurface({
             onClose={ui.close}
           />
         ) : null}
-        {overlay?.kind === 'effort' && model.picks.effort ? (
-          <ChoicePopover
-            anchor={overlay.anchor}
-            label="Effort"
-            choices={model.effortChoices}
-            current={model.picks.effort.id}
-            onPick={model.pickEffort}
-            onClose={ui.close}
-          />
-        ) : null}
         {overlay?.kind === 'attach' ? (
           <ChoicePopover
             anchor={overlay.anchor}

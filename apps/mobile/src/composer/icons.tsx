@@ -43,7 +43,12 @@ export function BypassGlyph({ size = 13, color }: GlyphProps) {
 /** Which glyph a mode takes: plan, the ones that run without asking, the rest. */
 export function ModeIcon({ modeId, size, color }: GlyphProps & { modeId: string }) {
   if (modeId === 'plan') return <PlanGlyph size={size} color={color} />
-  if (modeId === 'bypassPermissions' || modeId === 'dontAsk' || modeId === 'yolo')
+  if (
+    modeId === 'bypassPermissions' ||
+    modeId === 'dontAsk' ||
+    modeId === 'yolo' ||
+    modeId === 'full-access'
+  )
     return <BypassGlyph size={size} color={color} />
   return <ModeGlyph size={size} color={color} />
 }

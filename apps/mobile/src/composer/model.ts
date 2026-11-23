@@ -200,6 +200,8 @@ export interface ComposerPicks {
   effort: { id: string; label: string } | null
   /** How full the context window is, 0–100; null when the session has not said. */
   usagePercent: number | null
+  /** Fast mode, or a faster service tier, is on: the settings pick shows the bolt. */
+  fast: boolean
   /** Why the picks cannot be changed from here; null when they can. */
   lockedReason: string | null
 }
@@ -235,38 +237,65 @@ export interface ModelRow {
   modelId: string
   label: string
   hint?: string
+  /** The window it reads, short ("200k", "1M"), when its catalog says. */
+  context?: string
+  /** Its catalog says it has a fast mode. */
+  fast?: boolean
   /** Why it cannot be picked (its provider is down); the row stays listed and says so. */
   unavailableReason?: string
   favorite: boolean
+  /** A model id typed in the search, for a provider that takes ids of its own. */
+  typed?: boolean
 }
 
-export interface ModelSection {
-  /** `favorites`, or the provider the rows belong to (shown by its mark only). */
+/** One tab of the model sheet: Favourites, or a provider (shown by its mark only). */
+export interface ModelTab {
   id: 'favorites' | ProviderId
-  /** What a screen reader says for the header (the screen shows a provider's mark only). */
+  /** What a screen reader says for it. */
   label: string
+}
+
+export interface ModelSheetView {
+  /** Favourites and one per provider; empty when there is only one place to look. */
+  tabs: ModelTab[]
+  /** The tab on screen; null with no tabs. */
+  tab: ModelTab['id'] | null
   rows: ModelRow[]
+  /** A search across every provider is on screen, not one tab. */
+  searching: boolean
+}
+
+/** "1M", "200k": short enough to sit at a row's edge, as web's card says it. */
+export function contextShort(tokens: number): string {
+  if (tokens >= 1_000_000) return `${+(tokens / 1_000_000).toFixed(1)}M`
+  if (tokens >= 1_000) return `${Math.round(tokens / 1_000)}k`
+  return String(tokens)
 }
 
 /**
- * The model sheet's sections: favourites first, then one per provider in
- * web's order. A session can only change model within its provider, so the
- * other providers are left out of a session's sheet, as web's picker does. A
- * query narrows every section by name, id or hint.
+ * The model sheet, as web's picker lays it out: Favourites and one tab per
+ * provider in web's order, opening on the current model's provider. A
+ * session can only change model within its provider, so other providers are
+ * left out of a session's sheet. A query looks across every provider at once
+ * (a phone's keyboard is too slow to search tab by tab); a provider that
+ * takes typed ids offers what is typed as a model of its own, as web's does.
  */
-export function modelSheetSections({
+export function modelSheetView({
   groups,
   currentProviderId,
   canChangeProvider,
   favorites,
   query,
+  tab,
 }: {
   groups: readonly ProviderModelGroup[]
   currentProviderId: ProviderId
   canChangeProvider: boolean
   favorites: readonly FavoriteModelKey[]
   query: string
-}): ModelSection[] {
+  /** The tab picked; null opens on the current provider's. */
+  tab: ModelTab['id'] | null
+}): ModelSheetView {
   const rank = new Map(PROVIDER_ORDER.map((id, index) => [id, index]))
   const visible = groups
     .filter(
@@ -274,13 +303,11 @@ export function modelSheetSections({
         group.models.length > 0 && (canChangeProvider || group.providerId === currentProviderId),
     )
     .sort((a, b) => (rank.get(a.providerId) ?? 99) - (rank.get(b.providerId) ?? 99))
-  const needle = query.trim().toLowerCase()
   const favoriteSet = new Set(favorites)
   const byKey = new Map<FavoriteModelKey, ModelRow>()
-  const sections: ModelSection[] = visible.map((group) => ({
-    id: group.providerId,
-    label: group.providerName,
-    rows: group.models.flatMap((model) => {
+  const rowsOf = new Map<ProviderId, ModelRow[]>()
+  for (const group of visible) {
+    const rows = group.models.map((model): ModelRow => {
       const label = modelLabel(model.name, model.description)
       const hint = modelHint(model.name, model.description)
       const key = favoriteModelKey(group.providerId, model.id)
@@ -290,33 +317,77 @@ export function modelSheetSections({
         modelId: model.id,
         label,
         ...(hint ? { hint } : {}),
+        ...(model.contextWindowTokens ? { context: contextShort(model.contextWindowTokens) } : {}),
+        ...(model.supportsFastMode ? { fast: true } : {}),
         ...(group.unavailableReason ? { unavailableReason: group.unavailableReason } : {}),
         favorite: favoriteSet.has(key),
       }
       byKey.set(key, row)
-      const matches =
-        !needle ||
-        label.toLowerCase().includes(needle) ||
-        model.id.toLowerCase().includes(needle) ||
-        (hint?.toLowerCase().includes(needle) ?? false)
-      return matches ? [row] : []
-    }),
-  }))
-  const favoriteRows = favorites.flatMap((key) => {
-    const row = byKey.get(key)
-    if (!row) return []
-    const matches =
-      !needle ||
-      row.label.toLowerCase().includes(needle) ||
-      row.modelId.toLowerCase().includes(needle)
-    return matches ? [row] : []
-  })
-  return [
-    ...(favoriteRows.length > 0
-      ? [{ id: 'favorites' as const, label: 'Favourites', rows: favoriteRows }]
-      : []),
-    ...sections.filter((section) => section.rows.length > 0),
-  ]
+      return row
+    })
+    rowsOf.set(group.providerId, rows)
+  }
+  const favoriteRows = favorites.flatMap((key) => byKey.get(key) ?? [])
+  const tabs: ModelTab[] =
+    visible.length < 2
+      ? []
+      : [
+          { id: 'favorites', label: 'Favourites' },
+          ...visible.map((group) => ({ id: group.providerId, label: group.providerName })),
+        ]
+  // A tab that is gone (its provider went) falls back to the current provider's.
+  const active: ModelTab['id'] | null =
+    tabs.length === 0
+      ? null
+      : tabs.some((item) => item.id === tab)
+        ? tab
+        : tabs.some((item) => item.id === currentProviderId)
+          ? currentProviderId
+          : (tabs[1]?.id ?? 'favorites')
+
+  const needle = query.trim().toLowerCase()
+  if (needle) {
+    const matches = [...rowsOf.values()]
+      .flat()
+      .filter(
+        (row) =>
+          row.label.toLowerCase().includes(needle) ||
+          row.modelId.toLowerCase().includes(needle) ||
+          (row.hint?.toLowerCase().includes(needle) ?? false),
+      )
+    // What is typed, as a model id of the provider on screen (or the only one).
+    const typedGroup =
+      active === null || active === 'favorites'
+        ? visible.length === 1
+          ? visible[0]
+          : undefined
+        : visible.find((group) => group.providerId === active)
+    const typedId = query.trim()
+    const typed: ModelRow[] =
+      typedGroup?.acceptsTypedIds &&
+      !typedGroup.unavailableReason &&
+      !typedGroup.models.some((model) => model.id === typedId)
+        ? [
+            {
+              key: favoriteModelKey(typedGroup.providerId, typedId),
+              providerId: typedGroup.providerId,
+              modelId: typedId,
+              label: `Use “${typedId}”`,
+              hint: `A ${typedGroup.providerName} model id`,
+              favorite: false,
+              typed: true,
+            },
+          ]
+        : []
+    return { tabs, tab: active, rows: [...matches, ...typed], searching: true }
+  }
+  const rows =
+    active === null
+      ? [...rowsOf.values()].flat()
+      : active === 'favorites'
+        ? favoriteRows
+        : (rowsOf.get(active) ?? [])
+  return { tabs, tab: active, rows, searching: false }
 }
 
 /** How a permission choice is filled: the first allow, the lasting allow, the rest quiet. */
