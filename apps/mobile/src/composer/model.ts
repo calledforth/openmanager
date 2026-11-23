@@ -228,6 +228,9 @@ export function choiceLabel(choices: readonly ComposerChoice[], id: string): str
   return choices.find((choice) => choice.id === id)?.name ?? id.split('/').pop() ?? id
 }
 
+/** Fast mode's one colour, as web's settings use it. */
+export const FAST_COLOR = '#4d7cff'
+
 /** Tab order after Favourites: web's picker order. */
 const PROVIDER_ORDER: readonly string[] = ['claude', 'cursor', 'opencode', 'codex']
 

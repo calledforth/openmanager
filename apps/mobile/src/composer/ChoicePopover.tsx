@@ -40,7 +40,7 @@ const entering = popoverIn as unknown as (
 
 /** Wide enough for the hints when the provider gives any; the mockup's 164 when not. */
 const widthFor = (choices: readonly ComposerChoice[]) =>
-  choices.some((choice) => choice.description || choice.disabledReason) ? 244 : 172
+  choices.some((choice) => choice.description || choice.disabledReason) ? 280 : 172
 
 /**
  * A popover of choices standing on the pick that opened it (mode, effort):

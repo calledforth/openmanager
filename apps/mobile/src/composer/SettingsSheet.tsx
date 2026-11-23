@@ -9,8 +9,7 @@ import { Press } from '../ui/Press'
 import { ProviderMark } from '../ui/ProviderMark'
 import { Sheet } from '../ui/Sheet'
 import { isSpeedSetting, isToggleSetting, settingOn } from './controls-view'
-import type { ComposerModel, SessionConfigOption } from './model'
-import { FAST_COLOR } from './ModelSheet'
+import { FAST_COLOR, type ComposerModel, type SessionConfigOption } from './model'
 
 /** A select with more choices than this wraps as chips rather than one segmented row. */
 const SEGMENT_LIMIT = 4
@@ -88,11 +87,11 @@ function EffortControl({
               }}
               style={{ flex: 1, alignItems: 'stretch', gap: 6 }}
             >
-              <View style={{ height: 34, justifyContent: 'flex-end' }}>
+              <View style={{ height: 26, justifyContent: 'flex-end' }}>
                 <View
                   style={{
-                    height: 12 + 22 * share,
-                    borderRadius: 5,
+                    height: 8 + 18 * share,
+                    borderRadius: 4,
                     backgroundColor: lit ? theme.fg : theme.active,
                     opacity: lit ? 0.45 + 0.5 * share : 1,
                   }}

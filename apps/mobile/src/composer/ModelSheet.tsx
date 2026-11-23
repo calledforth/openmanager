@@ -16,9 +16,6 @@ import { ProviderMark } from '../ui/ProviderMark'
 import { Sheet } from '../ui/Sheet'
 import { modelSheetView, type ComposerModel, type ModelRow, type ModelTab } from './model'
 
-/** Fast mode's one colour, as web's settings use it. */
-export const FAST_COLOR = '#4d7cff'
-
 function Row({
   row,
   current,

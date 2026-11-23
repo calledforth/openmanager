@@ -111,7 +111,12 @@ function Option({
           {title}
         </AppText>
         {disabledReason || detail ? (
-          <AppText variant="text-12-regular" numberOfLines={1} style={{ color: theme.faint }}>
+          <AppText
+            variant="text-12-regular"
+            numberOfLines={1}
+            ellipsizeMode="middle"
+            style={{ color: theme.faint }}
+          >
             {disabledReason ?? detail}
           </AppText>
         ) : null}
