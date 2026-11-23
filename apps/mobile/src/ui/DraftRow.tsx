@@ -15,6 +15,7 @@ import { AppText } from '../components/ui/AppText'
 import type { HomeDraftRow } from '../home/rows'
 import { usePhoneTheme } from '../theme/ThemeProvider'
 import { EnvironmentTag, LineDot } from './EnvironmentTag'
+import { ISLAND_RADIUS, islandStyle } from './island'
 import { ProjectChip } from './ProjectChip'
 import { ProviderMark } from './ProviderMark'
 import { shortAge } from './SessionRow'
@@ -52,24 +53,30 @@ export function DraftRow({
   const swipeable = useRef<SwipeableMethods>(null)
   const { draft } = row
   const discard = draft.sending ? undefined : onDiscard
+  // The island under the draft's fill: opaque, so its shadow never shows
+  // through the fill, nor the Discard behind it through the card.
   const body = (
-    <DraftRowBody
-      row={row}
-      showEnvironment={showEnvironment}
-      onPress={onPress}
-      onDiscard={discard}
-    />
+    <View style={islandStyle(theme)}>
+      <DraftRowBody
+        row={row}
+        showEnvironment={showEnvironment}
+        onPress={onPress}
+        onDiscard={discard}
+      />
+    </View>
   )
-  if (!discard) return body
+  if (!discard) return <View style={{ marginVertical: 5 }}>{body}</View>
   return (
     <ReanimatedSwipeable
       ref={swipeable}
+      // Room for the card's shadow, which the swipe would otherwise clip.
+      containerStyle={{ overflow: 'visible', marginVertical: 5 }}
       friction={1.6}
       rightThreshold={DISCARD_WIDTH / 2}
       overshootRight={false}
       dragOffsetFromRightEdge={12}
       renderRightActions={() => (
-        <View style={{ width: DISCARD_WIDTH, paddingLeft: 6, paddingVertical: 2 }}>
+        <View style={{ width: DISCARD_WIDTH, paddingLeft: 8 }}>
           <Press
             accessibilityRole="button"
             accessibilityLabel="Discard draft"
@@ -80,7 +87,7 @@ export function DraftRow({
             }}
             style={({ pressed }) => ({
               flex: 1,
-              borderRadius: 12,
+              borderRadius: ISLAND_RADIUS,
               alignItems: 'center',
               justifyContent: 'center',
               gap: 3,
@@ -96,8 +103,7 @@ export function DraftRow({
         </View>
       )}
     >
-      {/* Opaque, so the Discard behind never shows through the row. */}
-      <View style={{ backgroundColor: theme.bg, borderRadius: 14 }}>{body}</View>
+      {body}
     </ReanimatedSwipeable>
   )
 }
@@ -142,10 +148,9 @@ function DraftRowBody({
         flexDirection: 'row',
         alignItems: 'center',
         gap: 12,
-        paddingVertical: 10,
-        paddingHorizontal: 12,
-        borderRadius: 14,
-        marginVertical: 1,
+        paddingVertical: 13,
+        paddingHorizontal: 16,
+        borderRadius: ISLAND_RADIUS,
         // A draft card is filled with the accent at rest and deepens when
         // pressed, as web's `draftFillClass`.
         backgroundColor: pressed ? theme.draft.hover : theme.draft.fill,
@@ -166,12 +171,12 @@ function DraftRowBody({
         {/* A draft of images alone has no first line; its images stand in. */}
         <AppText
           variant="text-14-regular"
-          numberOfLines={1}
+          numberOfLines={2}
           style={{ color: draft.preview ? theme.fg : theme.muted }}
         >
           {draft.preview || images(draft.imageCount)}
         </AppText>
-        <View className="mt-0.5 flex-row items-center gap-1.5">
+        <View className="mt-1 flex-row items-center gap-1.5">
           {workspace ? (
             <ProjectChip
               name={workspace.name}

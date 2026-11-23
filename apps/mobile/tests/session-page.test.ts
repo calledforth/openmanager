@@ -29,7 +29,13 @@ import {
   flingsUp,
   FOLLOW_SLOP_PX,
 } from '../src/session/scroll-anchor'
-import { sessionMenuItems, type SessionMenuInput } from '../src/session/session-menu'
+import {
+  conciseMenu,
+  holdWhilePending,
+  isPlaceItem,
+  sessionMenuItems,
+  type SessionMenuInput,
+} from '../src/session/session-menu'
 import {
   clockFromKey,
   clockKey,
@@ -746,12 +752,13 @@ describe('session menu', () => {
     Object.fromEntries(items.map((item) => [item.id, item.disabledReason]))
 
   it('offers rename, naming, pinning and settling for a finished session', () => {
+    // Done since anyone looked: it already needs the reader, so it does not cook.
     const items = sessionMenuItems(input({}))
     expect(items.map((item) => item.id)).toEqual([
-      'rename',
-      'regenerate-title',
       'pin',
       'settle',
+      'rename',
+      'regenerate-title',
       'session-settings',
     ])
     expect(byId(items)).toMatchObject({
@@ -796,6 +803,45 @@ describe('session menu', () => {
   it('says why an environment without pins cannot pin', () => {
     const items = byId(sessionMenuItems(input({ supports: (command) => command !== 'pinSession' })))
     expect(items.pin).toBe('This environment cannot pin sessions')
+  })
+
+  it('sends anything cooking except what already needs the reader, and brings it back', () => {
+    const ids = (patch: Partial<SessionMenuInput>) =>
+      sessionMenuItems(input(patch)).map((item) => item.id)
+    expect(ids({ mark: 'working' })).toContain('cook')
+    expect(ids({ mark: 'idle' })).toContain('cook')
+    for (const mark of ['needs', 'question', 'done', 'error'] as const) {
+      expect(ids({ mark })).not.toContain('cook')
+    }
+    // Cooking: brought back by hand, and not pinned while it is away.
+    const cooking = ids({ mark: 'working', cooking: true })
+    expect(cooking).toContain('uncook')
+    expect(cooking).not.toContain('cook')
+    expect(cooking).not.toContain('pin')
+    // As web's shelf row: brought back first, then settled from the active list.
+    expect(cooking).not.toContain('settle')
+    // Settled wins: neither is offered.
+    expect(ids({ settled: true, cooking: true })).not.toContain('uncook')
+    expect(ids({ settled: true })).not.toContain('cook')
+    expect(
+      byId(
+        sessionMenuItems(input({ mark: 'idle', supports: (command) => command !== 'cookSession' })),
+      ).cook,
+    ).toBe('This environment cannot keep sessions cooking')
+  })
+
+  it('draws only what can be done, and keeps what merely waits', () => {
+    const live = conciseMenu(sessionMenuItems(input({ mark: 'working' })), null)
+    // Live work cannot be settled, and there is no composer here for settings.
+    expect(live.map((item) => item.id)).toEqual(['cook', 'pin', 'rename', 'regenerate-title'])
+    const offline = 'Not connected to its environment'
+    const waiting = conciseMenu(sessionMenuItems(input({ unavailable: offline })), offline)
+    expect(waiting.map((item) => item.id)).toContain('settle')
+    expect(waiting.every((item) => item.disabledReason === offline)).toBe(true)
+    const held = conciseMenu(holdWhilePending(sessionMenuItems(input({})), true), null)
+    expect(held.map((item) => item.id)).toContain('rename')
+    expect(isPlaceItem({ id: 'cook' })).toBe(true)
+    expect(isPlaceItem({ id: 'rename' })).toBe(false)
   })
 
   it('moves a settled session back to active', () => {

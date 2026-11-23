@@ -16,6 +16,8 @@ type Command = SessionMenuItemId | 'rename'
 const BUSY_WORDS: Partial<Record<Command, string>> = {
   rename: 'Renaming…',
   'regenerate-title': 'Naming the session…',
+  cook: 'Sending to Cooking…',
+  uncook: 'Bringing back…',
   pin: 'Pinning…',
   unpin: 'Unpinning…',
   settle: 'Settling…',
@@ -25,6 +27,8 @@ const BUSY_WORDS: Partial<Record<Command, string>> = {
 const FAILED_WORDS: Partial<Record<Command, string>> = {
   rename: 'Could not rename',
   'regenerate-title': 'Could not name it',
+  cook: 'Could not send it cooking',
+  uncook: 'Could not bring it back',
   pin: 'Could not pin it',
   unpin: 'Could not unpin it',
   settle: 'Could not settle',
@@ -34,6 +38,13 @@ const FAILED_WORDS: Partial<Record<Command, string>> = {
 
 const reasonOf = (error: unknown) =>
   error instanceof Error && error.message ? error.message : 'the environment refused'
+
+/** What is said while a command is out. */
+export const commandBusy = (id: Command) => BUSY_WORDS[id] ?? 'Working…'
+
+/** A refused command in words: what could not be done, and the environment's reason. */
+export const commandFailure = (id: Command, error: unknown) =>
+  `${FAILED_WORDS[id] ?? 'Failed'}: ${reasonOf(error)}`
 
 /**
  * The header's state: the ⋯ menu, the title being edited, and the note for
@@ -76,8 +87,7 @@ export function useSessionChrome(actions: SessionActions | null, title: string) 
     }
     command().then(
       () => settle(null),
-      (error: unknown) =>
-        settle({ kind: 'failed', text: `${FAILED_WORDS[id] ?? 'Failed'}: ${reasonOf(error)}` }),
+      (error: unknown) => settle({ kind: 'failed', text: commandFailure(id, error) }),
     )
   }, [])
 

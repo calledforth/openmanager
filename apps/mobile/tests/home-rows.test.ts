@@ -3,21 +3,30 @@ import { sessionBusyTone } from '@openmanager/app-core/components/sidebar/sessio
 
 import { FIXTURE_DRAFTS, FIXTURE_SESSIONS, FIXTURE_WORKSPACES } from '../src/home/fixture'
 import {
+  ACTIVE_GROUP,
+  canCook,
+  canSettle,
+  COOKING_GROUP,
   countEnvironments,
   DRAFTS_GROUP,
+  homeSummary,
+  isPinnedSession,
   listShapeOf,
-  PINNED_GROUP,
+  placeOf,
   selectDraftRows,
-  selectHomeRows,
-  selectTabRows,
+  selectHomeBoard,
+  selectHomeSections,
   SETTLED_GROUP,
+  SETTLED_PAGE_SIZE,
   statusCountOf,
   statusLineOf,
   statusMarkOf,
-  tabCounts,
+  type HomeCard,
+  type HomeDraft,
   type HomeListRow,
   type HomeSession,
 } from '../src/home/rows'
+import { DEFAULT_SHELVES_OPEN, readShelvesOpen } from '../src/home/shelves'
 
 const NOW = new Date(2026, 9, 21, 12, 0, 0)
 const local = (y: number, m: number, d: number, h = 10) => new Date(y, m - 1, d, h).toISOString()
@@ -31,8 +40,18 @@ const session = (overrides: Partial<HomeSession>): HomeSession => ({
   ...overrides,
 })
 
-const idOf = (row: HomeListRow) =>
-  row.kind === 'session' ? row.session.externalId : row.draft.draftId
+const idOf = (row: HomeListRow) => {
+  switch (row.kind) {
+    case 'draft':
+      return row.draft.draftId
+    case 'card':
+      return row.root.session.externalId
+    case 'shelf':
+      return row.row.session.externalId
+    default:
+      return 'more'
+  }
+}
 
 describe('status marks', () => {
   it("reads the server's lifecycle and what it waits on as one glyph", () => {
@@ -90,289 +109,166 @@ describe('status marks', () => {
   })
 })
 
-describe('the two views', () => {
-  it('keeps settled sessions out of All and in Settled, every session in one of them', () => {
-    const all = selectHomeRows({
-      sessions: FIXTURE_SESSIONS,
-      workspaces: FIXTURE_WORKSPACES,
-      tab: 'all',
-    })
-    const settled = selectHomeRows({
-      sessions: FIXTURE_SESSIONS,
-      workspaces: FIXTURE_WORKSPACES,
-      tab: 'settled',
-    })
-    const ids = (groups: typeof all) =>
-      groups.flatMap((g) => g.rows.map((r) => r.session.externalId))
-    expect(ids(all)).not.toContain('s-grouped-themes')
-    expect(ids(settled)).toContain('s-grouped-themes')
-    expect(ids(settled)).not.toContain('s-tool-payloads')
-    expect([...ids(all), ...ids(settled)].sort()).toEqual(
-      FIXTURE_SESSIONS.map((s) => s.externalId).sort(),
+const board = (sessions: HomeSession[]) =>
+  selectHomeBoard({ sessions, workspaces: FIXTURE_WORKSPACES })
+const rootIds = (cards: HomeCard[]) => cards.map((card) => card.root.session.externalId)
+const OPEN = { cooking: true, settled: true }
+const FOLDED = { cooking: false, settled: false }
+
+describe('the board', () => {
+  it('puts every top-level session in one place: active, cooking or settled', () => {
+    const { active, cooking, settled } = board(FIXTURE_SESSIONS)
+    expect(rootIds(active)).toContain('s-tool-payloads')
+    expect(rootIds(cooking)).toContain('s-mcp-server')
+    expect(rootIds(settled)).toContain('s-grouped-themes')
+    const everyone = [...active, ...cooking, ...settled].flatMap((card) =>
+      [card.root, ...card.children].map((row) => row.session.externalId),
     )
+    expect([...everyone].sort()).toEqual(FIXTURE_SESSIONS.map((s) => s.externalId).sort())
   })
 
-  it('lists Settled flat, newest first, under no heading', () => {
-    const settled = selectHomeRows({
-      sessions: FIXTURE_SESSIONS,
-      workspaces: FIXTURE_WORKSPACES,
-      tab: 'settled',
+  it('lets settled win over cooking, as the server does', () => {
+    const both = session({
+      externalId: 'both',
+      cookingAt: local(2026, 10, 20),
+      settledAt: local(2026, 10, 21),
     })
-    expect(settled).toHaveLength(1)
-    expect(settled[0]!.key).toBe(SETTLED_GROUP)
-    expect(settled[0]!.label).toBeNull()
-    const times = settled[0]!.rows.map((r) => Date.parse(r.session.updatedAt!))
-    expect([...times].sort((a, b) => b - a)).toEqual(times)
+    expect(placeOf(both)).toBe('settled')
+    expect(rootIds(board([both]).settled)).toEqual(['both'])
   })
 
-  it('has no Settled group at all with nothing settled', () => {
-    expect(
-      selectHomeRows({
-        sessions: [session({ externalId: 'a', status: 'running' })],
-        workspaces: FIXTURE_WORKSPACES,
-        tab: 'settled',
+  it('lists active by last activity under no urgency groups, whatever each is doing', () => {
+    const { active } = board([
+      session({ externalId: 'old-ask', status: 'waiting', updatedAt: local(2026, 10, 1) }),
+      session({ externalId: 'idle', updatedAt: local(2026, 10, 21) }),
+      session({ externalId: 'working', status: 'running', updatedAt: local(2026, 10, 10) }),
+    ])
+    expect(rootIds(active)).toEqual(['idle', 'working', 'old-ask'])
+  })
+
+  it('keeps pinned sessions on top, most recently pinned first', () => {
+    const { active } = board([
+      session({ externalId: 'new', status: 'running', updatedAt: local(2026, 10, 21) }),
+      session({
+        externalId: 'pin-old',
+        updatedAt: local(2026, 10, 2),
+        pinnedAt: local(2026, 10, 3),
       }),
-    ).toEqual([])
-  })
-
-  it('counts the views by sessions alone', () => {
-    expect(tabCounts(FIXTURE_SESSIONS)).toEqual({
-      all: FIXTURE_SESSIONS.filter((s) => !s.settledAt).length,
-      settled: FIXTURE_SESSIONS.filter((s) => s.settledAt).length,
-    })
-  })
-})
-
-describe('All', () => {
-  it('groups by what each session asks: needs you, working, failed, done, the rest', () => {
-    const at = NOW.toISOString()
-    const all = selectHomeRows({
-      sessions: [
-        session({ externalId: 'idle', updatedAt: at }),
-        session({ externalId: 'done', status: 'done', updatedAt: at }),
-        session({ externalId: 'failed', status: 'error', updatedAt: at }),
-        session({ externalId: 'bg', status: 'running', inBackground: true, updatedAt: at }),
-        session({ externalId: 'busy', status: 'running', updatedAt: at }),
-        session({ externalId: 'asks', status: 'waiting', waitingOn: 'question', updatedAt: at }),
-        session({ externalId: 'needs', status: 'waiting', waitingOn: 'permission', updatedAt: at }),
-      ],
-      workspaces: FIXTURE_WORKSPACES,
-      tab: 'all',
-    })
-    expect(all.map((g) => [g.label, g.rows.map((r) => r.session.externalId)])).toEqual([
-      ['Needs you', ['asks', 'needs']],
-      ['Working', ['busy', 'bg']],
-      ['Failed', ['failed']],
-      ['Done', ['done']],
-      ['Recent', ['idle']],
+      session({
+        externalId: 'pin-new',
+        updatedAt: local(2026, 10, 1),
+        pinnedAt: local(2026, 10, 9),
+      }),
     ])
+    expect(rootIds(active)).toEqual(['pin-new', 'pin-old', 'new'])
   })
 
-  it('orders each group newest first', () => {
-    const all = selectHomeRows({
-      sessions: [
-        session({ externalId: 'older', status: 'running', updatedAt: local(2026, 10, 20) }),
-        session({ externalId: 'newer', status: 'running', updatedAt: local(2026, 10, 21) }),
-      ],
-      workspaces: FIXTURE_WORKSPACES,
-      tab: 'all',
-    })
-    expect(all[0]!.rows.map((r) => r.session.externalId)).toEqual(['newer', 'older'])
-  })
-
-  it('leaves an empty group out', () => {
-    const at = NOW.toISOString()
-    const all = selectHomeRows({
-      sessions: [
-        session({ externalId: 'w', status: 'running', updatedAt: at }),
-        session({ externalId: 'r', status: 'ready', updatedAt: at }),
-      ],
-      workspaces: FIXTURE_WORKSPACES,
-      tab: 'all',
-    })
-    expect(all.map((g) => g.label)).toEqual(['Working', 'Recent'])
-  })
-
-  it('keeps pinned sessions above every group, most recently pinned first', () => {
-    const at = NOW.toISOString()
-    const all = selectHomeRows({
-      sessions: [
-        session({ externalId: 'needs', status: 'waiting', waitingOn: 'permission', updatedAt: at }),
-        session({
-          externalId: 'old-pin',
-          updatedAt: local(2026, 10, 1),
-          pinnedAt: local(2026, 10, 2),
-        }),
-        session({
-          externalId: 'new-pin',
-          status: 'running',
-          updatedAt: at,
-          pinnedAt: local(2026, 10, 3),
-        }),
-        session({ externalId: 'recent', updatedAt: at }),
-        // Settled while pinned: in the long tail, as web keeps pins to Active.
-        session({
-          externalId: 'settled-pin',
-          updatedAt: at,
-          pinnedAt: local(2026, 10, 4),
-          settledAt: local(2026, 10, 20),
-        }),
-      ],
-      workspaces: FIXTURE_WORKSPACES,
-      tab: 'all',
-    })
-    expect(all.map((g) => [g.key, g.rows.map((r) => r.session.externalId)])).toEqual([
-      [PINNED_GROUP, ['new-pin', 'old-pin']],
-      ['needs', ['needs']],
-      ['recent', ['recent']],
+  it('orders cooking by when it was sent and settled by when it was put away', () => {
+    const { cooking, settled } = board([
+      session({ externalId: 'c1', cookingAt: local(2026, 10, 1), updatedAt: local(2026, 10, 21) }),
+      session({ externalId: 'c2', cookingAt: local(2026, 10, 5), updatedAt: local(2026, 10, 2) }),
+      session({ externalId: 's1', settledAt: local(2026, 10, 1), updatedAt: local(2026, 10, 21) }),
+      session({ externalId: 's2', settledAt: local(2026, 10, 5), updatedAt: local(2026, 10, 2) }),
     ])
+    expect(rootIds(cooking)).toEqual(['c2', 'c1'])
+    expect(rootIds(settled)).toEqual(['s2', 's1'])
   })
 
-  it('ranks a tree by its most urgent member, at any depth', () => {
-    const all = selectHomeRows({
-      sessions: [
-        session({ externalId: 'busy', status: 'running', updatedAt: local(2026, 10, 21, 11) }),
-        session({ externalId: 'quiet-parent', status: 'ready', updatedAt: local(2026, 10, 19) }),
-        session({
-          externalId: 'child',
-          parentExternalId: 'quiet-parent',
-          status: 'ready',
-          updatedAt: local(2026, 10, 19),
-        }),
-        session({
-          externalId: 'asking-grandchild',
-          parentExternalId: 'child',
-          status: 'waiting',
-          waitingOn: 'permission',
-          updatedAt: local(2026, 10, 20),
-        }),
-      ],
-      workspaces: FIXTURE_WORKSPACES,
-      tab: 'all',
-    })
-    expect(all[0]!.label).toBe('Needs you')
-    expect(all[0]!.rows.map((r) => [r.session.externalId, r.depth, r.mark])).toEqual([
-      ['quiet-parent', 0, 'idle'],
-      ['child', 1, 'idle'],
-      ['asking-grandchild', 2, 'needs'],
+  it('carries children inside their parent, wherever the parent was put', () => {
+    const { active, cooking } = board([
+      session({ externalId: 'parent', updatedAt: local(2026, 10, 21) }),
+      session({ externalId: 'child', parentExternalId: 'parent', status: 'running' }),
+      session({ externalId: 'grandchild', parentExternalId: 'child' }),
+      session({ externalId: 'pot', cookingAt: local(2026, 10, 20) }),
+      // Its own place is its parent's: a child rides along.
+      session({ externalId: 'pot-child', parentExternalId: 'pot' }),
     ])
-    expect(all[1]!.label).toBe('Working')
-  })
-
-  it('dates a tree by its newest member', () => {
-    const all = selectHomeRows({
-      sessions: [
-        session({ externalId: 'yesterday', status: 'ready', updatedAt: local(2026, 10, 20) }),
-        session({ externalId: 'old-parent', status: 'ready', updatedAt: local(2026, 10, 12) }),
-        session({
-          externalId: 'fresh-child',
-          parentExternalId: 'old-parent',
-          status: 'ready',
-          updatedAt: local(2026, 10, 21, 11),
-        }),
-      ],
-      workspaces: FIXTURE_WORKSPACES,
-      tab: 'all',
-    })
-    expect(all.map((g) => [g.label, g.rows.map((r) => r.session.externalId)])).toEqual([
-      ['Recent', ['old-parent', 'fresh-child', 'yesterday']],
-    ])
-  })
-
-  it('nests a child under its parent and never starts a group with one', () => {
-    const all = selectHomeRows({
-      sessions: FIXTURE_SESSIONS,
-      workspaces: FIXTURE_WORKSPACES,
-      tab: 'all',
-    })
-    const rows = all.find((g) => g.key === 'working')!.rows
-    const parent = rows.findIndex((r) => r.session.externalId === 's-tool-payloads')
-    expect(rows[parent + 1]!.session.externalId).toBe('s-tool-payloads-tests')
-    expect(rows[parent + 1]!.depth).toBe(1)
-    expect(rows[0]!.depth).toBe(0)
-  })
-
-  it('keeps every generation: a grandchild sits one level under its parent', () => {
-    const at = NOW.toISOString()
-    const rows = selectHomeRows({
-      sessions: [
-        session({ externalId: 'root', status: 'running', updatedAt: at }),
-        session({
-          externalId: 'child',
-          parentExternalId: 'root',
-          status: 'running',
-          updatedAt: at,
-        }),
-        session({
-          externalId: 'grandchild',
-          parentExternalId: 'child',
-          status: 'running',
-          updatedAt: at,
-        }),
-      ],
-      workspaces: FIXTURE_WORKSPACES,
-      tab: 'all',
-    })
-    expect(rows[0]!.rows.map((r) => [r.session.externalId, r.depth])).toEqual([
-      ['root', 0],
+    expect(active).toHaveLength(1)
+    expect(active[0]!.children.map((row) => [row.session.externalId, row.depth])).toEqual([
       ['child', 1],
       ['grandchild', 2],
     ])
+    expect(cooking[0]!.children.map((row) => row.session.externalId)).toEqual(['pot-child'])
   })
 
-  it('keeps a parent cycle visible instead of losing both sessions', () => {
-    const at = NOW.toISOString()
-    const rows = selectHomeRows({
-      sessions: [
-        session({ externalId: 'a', parentExternalId: 'b', updatedAt: at }),
-        session({ externalId: 'b', parentExternalId: 'a', updatedAt: at }),
-      ],
-      workspaces: FIXTURE_WORKSPACES,
-      tab: 'all',
-    })
-    const ids = rows.flatMap((g) => g.rows.map((r) => r.session.externalId)).sort()
-    expect(ids).toEqual(['a', 'b'])
-    expect(rows.flatMap((g) => g.rows).filter((r) => r.depth === 0)).toHaveLength(1)
-  })
-
-  it('shows an orphaned child as a top-level row rather than dropping it', () => {
-    const orphan = session({
-      externalId: 'child',
-      parentExternalId: 'gone',
-      status: 'running',
-      updatedAt: NOW.toISOString(),
-    })
-    const rows = selectHomeRows({ sessions: [orphan], workspaces: FIXTURE_WORKSPACES, tab: 'all' })
-    expect(rows[0]!.rows[0]).toMatchObject({ depth: 0, session: { externalId: 'child' } })
-  })
-
-  it('makes a child whose parent is settled top-level in All', () => {
-    const rows = selectHomeRows({
-      sessions: [
-        session({ externalId: 'parent', settledAt: local(2026, 10, 20) }),
-        session({ externalId: 'child', parentExternalId: 'parent', status: 'running' }),
-      ],
-      workspaces: FIXTURE_WORKSPACES,
-      tab: 'all',
-    })
-    expect(rows.flatMap((g) => g.rows.map((r) => [r.session.externalId, r.depth]))).toEqual([
-      ['child', 0],
+  it('keeps an orphan and a parent cycle visible as top-level cards', () => {
+    const { active } = board([
+      session({ externalId: 'orphan', parentExternalId: 'gone' }),
+      session({ externalId: 'a', parentExternalId: 'b' }),
+      session({ externalId: 'b', parentExternalId: 'a' }),
     ])
+    const seen = active.flatMap((card) =>
+      [card.root, ...card.children].map((row) => row.session.externalId),
+    )
+    expect([...seen].sort()).toEqual(['a', 'b', 'orphan'])
+    expect(rootIds(active)).toContain('orphan')
   })
 
-  it('attaches the workspace so a row can show its project', () => {
-    const settled = selectHomeRows({
-      sessions: FIXTURE_SESSIONS,
-      workspaces: FIXTURE_WORKSPACES,
-      tab: 'settled',
-    })
-    const row = settled.flatMap((g) => g.rows).find((r) => r.session.externalId === 's-t3code')!
-    expect(row.workspace?.name).toBe('t3code')
-    expect(row.session.workspaceUnavailable).toBe(true)
+  it('looks a parent up in its own environment only', () => {
+    const a = { environmentId: 'env-a', label: 'a' }
+    const b = { environmentId: 'env-b', label: 'b' }
+    const { active } = board([
+      session({ externalId: 'p', environment: a }),
+      session({ externalId: 'c', parentExternalId: 'p', environment: b }),
+    ])
+    expect(active.map((card) => card.children.length)).toEqual([0, 0])
+  })
+
+  it('attaches the workspace so a card can show its project', () => {
+    const { active } = board(FIXTURE_SESSIONS)
+    const card = active.find((c) => c.root.session.externalId === 's-pricing')
+    expect(card?.root.workspace?.name).toBe('salesmaxai')
   })
 })
 
-describe('drafts', () => {
+describe('cooking and settling', () => {
+  it('offers cooking to anything that does not already need the reader', () => {
+    expect((['idle', 'working', 'background'] as const).every(canCook)).toBe(true)
+    expect((['needs', 'question', 'done', 'error'] as const).some(canCook)).toBe(false)
+  })
+
+  it('will not settle live work, background work included', () => {
+    expect(canSettle('idle', false)).toBe(true)
+    expect(canSettle('done', false)).toBe(true)
+    expect(canSettle('done', true)).toBe(false)
+    expect(
+      (['working', 'background', 'needs', 'question'] as const).some((m) => canSettle(m, false)),
+    ).toBe(false)
+  })
+
+  it('pins only what is active', () => {
+    const pinnedAt = local(2026, 10, 1)
+    expect(isPinnedSession({ pinnedAt })).toBe(true)
+    expect(isPinnedSession({ pinnedAt, cookingAt: pinnedAt })).toBe(false)
+    expect(isPinnedSession({ pinnedAt, settledAt: pinnedAt })).toBe(false)
+  })
+
+  it('counts top-level sessions that wait or work, cooking included, settled not', () => {
+    expect(
+      homeSummary(
+        board([
+          session({ externalId: 'q', status: 'waiting', waitingOn: 'question' }),
+          session({ externalId: 'w', status: 'waiting' }),
+          session({ externalId: 'r', status: 'running' }),
+          // A child rides in its parent's card: counted once, as its parent.
+          session({ externalId: 'r-child', parentExternalId: 'r', status: 'running' }),
+          session({
+            externalId: 'pot',
+            status: 'running',
+            inBackground: true,
+            cookingAt: local(2026, 10, 1),
+          }),
+          session({ externalId: 'away', status: 'running', settledAt: local(2026, 10, 1) }),
+          // Put away with its parent, whatever it is doing.
+          session({ externalId: 'away-child', parentExternalId: 'away', status: 'waiting' }),
+          session({ externalId: 'done', status: 'done' }),
+        ]),
+      ),
+    ).toEqual({ needs: 2, working: 2 })
+  })
+})
+
+describe('the list', () => {
   const draft = (overrides: Partial<(typeof FIXTURE_DRAFTS)[number]>) => ({
     ...FIXTURE_DRAFTS[0]!,
     draftId: 'd1',
@@ -380,46 +276,85 @@ describe('drafts', () => {
     workspaceId: FIXTURE_WORKSPACES[0]!.path,
     ...overrides,
   })
+  const sections = (
+    sessions: HomeSession[],
+    drafts: HomeDraft[] = [],
+    open = OPEN,
+    settledShown?: number,
+  ) =>
+    selectHomeSections({
+      board: board(sessions),
+      drafts: selectDraftRows({ drafts, workspaces: FIXTURE_WORKSPACES }),
+      open,
+      ...(settledShown ? { settledShown } : {}),
+    })
 
-  it('opens All with the draft cards, newest edit first, above Pinned', () => {
-    const rows = selectTabRows({
-      sessions: [
-        session({
-          externalId: 'pin',
-          updatedAt: local(2026, 10, 21),
-          pinnedAt: local(2026, 10, 21),
-        }),
+  it('is drafts, then active under no heading, then Cooking, then Settled', () => {
+    const list = sections(
+      [
+        session({ externalId: 'settled', settledAt: local(2026, 10, 20) }),
+        session({ externalId: 'pot', status: 'running', cookingAt: local(2026, 10, 20) }),
         session({ externalId: 'a', status: 'running', updatedAt: local(2026, 10, 21) }),
       ],
-      drafts: [
+      [
         draft({ draftId: 'older', editedAt: new Date(local(2026, 10, 1)).getTime() }),
         draft({ draftId: 'newer', editedAt: new Date(local(2026, 10, 21)).getTime() }),
       ],
-      workspaces: FIXTURE_WORKSPACES,
-      tab: 'all',
-    })
-    expect(rows.map((g) => [g.key, g.label, g.rows.map(idOf)])).toEqual([
+    )
+    expect(list.map((s) => [s.key, s.label, s.rows.map(idOf)])).toEqual([
       [DRAFTS_GROUP, 'Drafts', ['newer', 'older']],
-      [PINNED_GROUP, 'Pinned', ['pin']],
-      ['working', 'Working', ['a']],
+      [ACTIVE_GROUP, null, ['a']],
+      [COOKING_GROUP, 'Cooking', ['pot']],
+      [SETTLED_GROUP, 'Settled', ['settled']],
     ])
   })
 
-  it('leaves the Drafts group out when there are none, and out of Settled always', () => {
-    const none = selectTabRows({
-      sessions: [session({ externalId: 'a', status: 'running' })],
-      drafts: [],
-      workspaces: FIXTURE_WORKSPACES,
-      tab: 'all',
-    })
-    expect(none.map((g) => g.key)).toEqual(['working'])
-    const settled = selectTabRows({
-      sessions: [session({ externalId: 'a', settledAt: local(2026, 10, 20) })],
-      drafts: [draft({})],
-      workspaces: FIXTURE_WORKSPACES,
-      tab: 'settled',
-    })
-    expect(settled.flatMap((g) => g.rows.map((r) => r.kind))).toEqual(['session'])
+  it('leaves out a group with nothing in it', () => {
+    expect(sections([session({ externalId: 'a' })]).map((s) => s.key)).toEqual([ACTIVE_GROUP])
+    expect(sections([])).toEqual([])
+  })
+
+  it('keeps a folded shelf as its heading alone, still saying work goes on', () => {
+    const list = sections(
+      [
+        session({ externalId: 'pot', status: 'running', cookingAt: local(2026, 10, 20) }),
+        session({ externalId: 'idle-pot', cookingAt: local(2026, 10, 19) }),
+        session({ externalId: 'settled', settledAt: local(2026, 10, 20) }),
+      ],
+      [],
+      FOLDED,
+    )
+    expect(list.map((s) => [s.key, s.rows.length, s.shelf])).toEqual([
+      [COOKING_GROUP, 0, { shelf: 'cooking', count: 2, open: false, live: 'working' }],
+      [SETTLED_GROUP, 0, { shelf: 'settled', count: 1, open: false, live: null }],
+    ])
+  })
+
+  it('lists a shelf as one-line rows, children under their parent', () => {
+    const [cooking] = sections([
+      session({ externalId: 'pot', cookingAt: local(2026, 10, 20) }),
+      session({ externalId: 'pot-child', parentExternalId: 'pot' }),
+    ])
+    expect(
+      cooking!.rows.map(
+        (row) => row.kind === 'shelf' && [row.row.session.externalId, row.row.depth],
+      ),
+    ).toEqual([
+      ['pot', 0],
+      ['pot-child', 1],
+    ])
+  })
+
+  it('shows Settled a page at a time', () => {
+    const many = Array.from({ length: SETTLED_PAGE_SIZE + 3 }, (_, index) =>
+      session({ externalId: `s${index}`, settledAt: local(2026, 9, 1 + (index % 28)) }),
+    )
+    const [first] = sections(many)
+    expect(first!.rows).toHaveLength(SETTLED_PAGE_SIZE + 1)
+    expect(first!.rows.at(-1)).toEqual({ kind: 'more', hidden: 3 })
+    const [all] = sections(many, [], OPEN, SETTLED_PAGE_SIZE * 2)
+    expect(all!.rows).toHaveLength(SETTLED_PAGE_SIZE + 3)
+    expect(all!.shelf?.count).toBe(SETTLED_PAGE_SIZE + 3)
   })
 
   it('places a draft in its project by id, and in none once that project is gone', () => {
@@ -430,6 +365,22 @@ describe('drafts', () => {
     })
     expect(rows.find((r) => r.draft.draftId === first.draftId)!.workspace?.name).toBe('openmanager')
     expect(rows.find((r) => r.draft.draftId === 'orphan')!.workspace).toBeUndefined()
+  })
+
+  it('changes shape when rows come, go, move or fold, never with what a row shows', () => {
+    const shape = (sessions: HomeSession[], open = OPEN) =>
+      listShapeOf(
+        sections(sessions, [], open).map((s) => ({ key: s.key, data: s.rows })),
+        idOf,
+      )
+    const at = NOW.toISOString()
+    const a = session({ externalId: 'a', status: 'running', updatedAt: at, title: 'one' })
+    const b = session({ externalId: 'b', updatedAt: at, settledAt: at })
+    const before = shape([a, b])
+    expect(shape([{ ...a, title: 'two', status: 'ready' }, b])).toBe(before)
+    expect(shape([{ ...a, cookingAt: at }, b])).not.toBe(before)
+    expect(shape([a])).not.toBe(before)
+    expect(shape([a, b], FOLDED)).not.toBe(before)
   })
 })
 
@@ -453,15 +404,13 @@ describe('environments', () => {
   })
 
   it('carries each row its environment, untouched', () => {
-    const rows = selectTabRows({
-      sessions: [session({ externalId: 'a', status: 'running', environment: wsl })],
+    const { active } = board([session({ externalId: 'a', status: 'running', environment: wsl })])
+    expect(active[0]!.root.session.environment).toBe(wsl)
+    const [draftRow] = selectDraftRows({
       drafts: [{ ...FIXTURE_DRAFTS[0]!, environment: desktop }],
       workspaces: FIXTURE_WORKSPACES,
-      tab: 'all',
     })
-    const [draftRow, sessionRow] = rows.flatMap((g) => g.rows)
-    expect(draftRow!.kind === 'draft' && draftRow!.draft.environment).toBe(desktop)
-    expect(sessionRow!.kind === 'session' && sessionRow!.session.environment).toBe(wsl)
+    expect(draftRow!.draft.environment).toBe(desktop)
   })
 
   it('spans two environments in the fixture, so the labels can be seen', () => {
@@ -469,19 +418,14 @@ describe('environments', () => {
   })
 })
 
-describe('list shape', () => {
-  it('changes when rows come, go or move, never with what a row shows', () => {
-    const keyOf = (row: HomeListRow) => idOf(row)
-    const sections = (sessions: HomeSession[]) =>
-      selectTabRows({ sessions, drafts: [], workspaces: FIXTURE_WORKSPACES, tab: 'all' }).map(
-        (g) => ({ key: g.key, data: g.rows }),
-      )
-    const at = NOW.toISOString()
-    const a = session({ externalId: 'a', status: 'running', updatedAt: at, title: 'one' })
-    const b = session({ externalId: 'b', status: 'ready', updatedAt: at })
-    const before = listShapeOf(sections([a, b]), keyOf)
-    expect(listShapeOf(sections([{ ...a, title: 'two' }, b]), keyOf)).toBe(before)
-    expect(listShapeOf(sections([{ ...a, status: 'ready' }, b]), keyOf)).not.toBe(before)
-    expect(listShapeOf(sections([a]), keyOf)).not.toBe(before)
+describe('shelf folds', () => {
+  it('reads what was saved, and falls back to Cooking open, Settled folded', () => {
+    expect(readShelvesOpen(null)).toEqual(DEFAULT_SHELVES_OPEN)
+    expect(readShelvesOpen('not json')).toEqual(DEFAULT_SHELVES_OPEN)
+    expect(readShelvesOpen('{"cooking":false,"settled":true}')).toEqual({
+      cooking: false,
+      settled: true,
+    })
+    expect(readShelvesOpen('{"settled":"yes"}')).toEqual(DEFAULT_SHELVES_OPEN)
   })
 })

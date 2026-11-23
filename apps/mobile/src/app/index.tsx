@@ -1,23 +1,29 @@
 import { useRouter } from 'expo-router'
 import { DesktopIcon, PlusIcon, QrCodeIcon } from 'phosphor-react-native'
-import { useCallback, useMemo, useRef, useState } from 'react'
+import { useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react'
 import { LayoutAnimation, SectionList, View, type SectionListRenderItem } from 'react-native'
+import Animated, { Easing, FadeIn, FadeOut as FadeAway } from 'react-native-reanimated'
 import { useSafeAreaInsets } from 'react-native-safe-area-context'
+import { DraftDiscardsContext } from '@openmanager/app-core/providers/environment-sidebar-drafts'
 
 import { AppText } from '../components/ui/AppText'
-import { DraftDiscardToast } from '../draft/DraftDiscard'
+import { DraftDiscardToast, homeDockClearance } from '../draft/DraftDiscard'
 import {
   countEnvironments,
   homeSessionKey,
+  homeSummary,
   listShapeOf,
-  selectTabRows,
-  statusMarkOf,
-  tabCounts,
+  selectDraftRows,
+  selectHomeBoard,
+  selectHomeSections,
+  SETTLED_PAGE_SIZE,
   type HomeListRow,
   type HomeRow,
+  type HomeSection,
   type HomeSession,
-  type HomeTab,
+  type HomeShelf,
 } from '../home/rows'
+import { setShelfOpen, useShelvesOpen } from '../home/shelves'
 import { SessionActionsSheet } from '../session/SessionActionsSheet'
 import { phoneConnectionView } from '../environment/connection-ui'
 import { draftRowHref, sessionRowHref } from '../environment/landing-route'
@@ -27,33 +33,17 @@ import { ActionButton } from '../pairing/ActionButton'
 import { ConnectionPanel } from '../settings/ConnectionPanel'
 import { usePhoneTheme } from '../theme/ThemeProvider'
 import { UpdateNotice } from '../updates/UpdateRow'
+import { coveredBySheet } from '../ui/a11y-focus'
 import { FadeOut, PageTitle, SectionLabel } from '../ui/chrome'
 import { DraftRow } from '../ui/DraftRow'
-import { GlassContent } from '../ui/Glass'
+import { Glass, GlassContent } from '../ui/Glass'
 import { HomeDock } from '../ui/HomeDock'
 import { Screen } from '../ui/Screen'
-import { SegmentedTabs } from '../ui/SegmentedTabs'
-import { SessionRow } from '../ui/SessionRow'
+import { SessionCard, ShelfHeader, ShelfMore, ShelfRow } from '../ui/SessionCard'
+import { StatusMark } from '../ui/StatusMark'
 
 type ListRow = HomeListRow
-type ListSection = { key: string; label: string | null; data: ListRow[] }
-
-/** The words for an empty view: nothing at all, nothing active, nothing settled. */
-function emptyCopy(tab: HomeTab, sessionCount: number): { title: string; body: string } {
-  if (tab === 'settled') {
-    return { title: 'Nothing settled', body: 'Sessions you settle wait here.' }
-  }
-  if (sessionCount === 0) {
-    return {
-      title: 'No sessions yet',
-      body: 'Start one with New chat, or on your computer; it shows up here.',
-    }
-  }
-  return {
-    title: 'Nothing active',
-    body: 'Every session is settled. New work and anything that needs you shows up here.',
-  }
-}
+type ListSection = Omit<HomeSection, 'rows'> & { data: ListRow[] }
 
 /**
  * The home with nothing paired: the one thing to do is pair with the
@@ -98,39 +88,156 @@ function PairFirst({ again, onPair }: { again: string | null; onPair: () => void
   )
 }
 
-/** Ids are only unique within one environment: a row's key names its environment too. */
-const keyOf = (row: ListRow) =>
-  row.kind === 'draft'
-    ? `draft:${row.draft.environment?.environmentId ?? ''}:${row.draft.draftId}`
-    : `session:${sessionKeyOf(row.session)}`
-
 const sessionKeyOf = (session: HomeSession) => homeSessionKey(session)
 
-/**
- * Rows coming, going or changing places (a sent draft's card leaving and
- * its session arriving under Working, a discard, a session moving to Needs
- * you, a settle) ease into place: one native layout animation for that
- * commit, on the UI thread. Never for a view switch, and never for what a
- * row shows: a streamed token or a preview typed elsewhere changes no row's
- * place.
- */
-const ROWS_MOVE = LayoutAnimation.create(200, 'easeInEaseOut', 'opacity')
-
-function useRowsMove(tab: HomeTab, shape: string) {
-  const last = useRef({ tab, shape })
-  if (last.current.shape !== shape) {
-    if (last.current.tab === tab) LayoutAnimation.configureNext(ROWS_MOVE)
-    last.current = { tab, shape }
+/** Ids are only unique within one environment: a row's key names its environment too. */
+const keyOf = (row: ListRow) => {
+  switch (row.kind) {
+    case 'draft':
+      return `draft:${row.draft.environment?.environmentId ?? ''}:${row.draft.draftId}`
+    case 'card':
+      return `session:${sessionKeyOf(row.root.session)}`
+    case 'shelf':
+      return `shelf:${sessionKeyOf(row.row.session)}`
+    default:
+      return 'more'
   }
 }
 
 /**
- * The sessions home: one title row with the two views (All, what is
- * unsettled; Settled, the long tail), then the rows. All opens with the
- * draft cards, then Pinned, Needs you, Working, Failed, Done and Recent,
- * which is what the inbox listed, in the one place. Where the rows span
- * more than one environment each says where it runs. The dock (Settings,
- * New chat, Search) floats over the end of the list.
+ * Rows coming, going or changing places (a sent draft's card leaving and
+ * its session arriving, a discard, a session sent cooking or settled, a
+ * shelf folding) ease into place: one native layout animation for that
+ * commit, on the UI thread. Never for what a row shows: a streamed token or
+ * a preview typed elsewhere changes no row's place.
+ */
+const ROWS_MOVE = LayoutAnimation.create(200, 'easeInEaseOut', 'opacity')
+
+function useRowsMove(shape: string) {
+  const last = useRef(shape)
+  if (last.current !== shape) {
+    LayoutAnimation.configureNext(ROWS_MOVE)
+    last.current = shape
+  }
+}
+
+/**
+ * What the title says beside it: how many sessions wait on you, and how
+ * many are at work. Two glyphs and two numbers, nothing when there is
+ * neither; the list under it is in the order things happened, so this is
+ * where what needs you is counted.
+ */
+function HomeSummary({ needs, working }: { needs: number; working: number }) {
+  const theme = usePhoneTheme()
+  if (!needs && !working) return null
+  const said = [
+    needs ? `${needs} ${needs === 1 ? 'needs' : 'need'} you` : null,
+    working ? `${working} working` : null,
+  ]
+    .filter(Boolean)
+    .join(', ')
+  return (
+    <View
+      accessible
+      accessibilityLabel={said}
+      style={{ flexDirection: 'row', alignItems: 'center', gap: 14 }}
+    >
+      {needs ? (
+        <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+          <StatusMark mark="needs" size={13} />
+          <AppText
+            variant="text-13-medium"
+            style={{ color: theme.muted, fontVariant: ['tabular-nums'] }}
+          >
+            {needs}
+          </AppText>
+        </View>
+      ) : null}
+      {working ? (
+        <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+          <StatusMark mark="working" size={13} />
+          <AppText
+            variant="text-13-medium"
+            style={{ color: theme.muted, fontVariant: ['tabular-nums'] }}
+          >
+            {working}
+          </AppText>
+        </View>
+      ) : null}
+    </View>
+  )
+}
+
+const NOTICE_IN = FadeIn.duration(180).easing(Easing.out(Easing.quad))
+const NOTICE_OUT = FadeAway.duration(160).easing(Easing.in(Easing.quad))
+/** How long a refusal stays said. */
+const NOTICE_MS = 5000
+/** The longest a command is said to be out: past this, its answer is not coming soon. */
+const PENDING_MS = 12_000
+/** The room the draft-discard notice takes over the dock, with its gap. */
+const DISCARD_NOTICE_ROOM = 58
+
+/** What the home says about a command sent from a row's actions. */
+interface CommandNotice {
+  id: number
+  kind: 'pending' | 'failed'
+  text: string
+}
+
+/**
+ * A command sent from a row's actions, said over the dock: that it is out,
+ * while its answer would show nowhere else (naming a session again, stopping
+ * its background work), or why the environment refused it. It sits above the
+ * draft-discard notice when that is up (`raised`), never over it.
+ */
+function ActionNotice({ notice, raised }: { notice: CommandNotice; raised: boolean }) {
+  const theme = usePhoneTheme()
+  const insets = useSafeAreaInsets()
+  const { text } = notice
+  return (
+    <Animated.View
+      pointerEvents="none"
+      entering={NOTICE_IN}
+      exiting={NOTICE_OUT}
+      style={{
+        position: 'absolute',
+        left: 20,
+        right: 20,
+        bottom: homeDockClearance(insets.bottom) + (raised ? DISCARD_NOTICE_ROOM : 0),
+        alignItems: 'center',
+      }}
+    >
+      <Glass
+        strength="strong"
+        shadow="float"
+        radius={18}
+        contentStyle={{ paddingHorizontal: 16, paddingVertical: 10 }}
+      >
+        <AppText
+          accessibilityLiveRegion="polite"
+          {...(notice.kind === 'failed' ? { accessibilityRole: 'alert' as const } : {})}
+          variant="text-13-regular"
+          numberOfLines={3}
+          style={{
+            color: notice.kind === 'failed' ? theme.fg : theme.muted,
+            textAlign: 'center',
+          }}
+        >
+          {text}
+        </AppText>
+      </Glass>
+    </Animated.View>
+  )
+}
+
+/**
+ * The sessions home, as the web sidebar's board: one list. The draft cards
+ * come first, under "Drafts"; then every active session as an island, under
+ * no heading, pinned ones on top and the rest by their last activity; then
+ * the two shelves, Cooking (sent off to work out of sight) and Settled (put
+ * away), each folding under its heading. Where the rows span more than one
+ * environment each card says where it runs. The dock (Settings, New chat,
+ * Search) floats over the end of the list.
  */
 export default function SessionsHome() {
   const router = useRouter()
@@ -143,113 +250,170 @@ export default function SessionsHome() {
   // Not connected and nothing to show yet: the connection's own state, with
   // its next step, says why the list is empty.
   const showConnection = source.kind === 'environment' && view.ui.kind !== 'ready'
-  const [tab, setTab] = useState<HomeTab>('all')
-  // A view opens at its top: the list is the same element for both views,
-  // and would otherwise keep the place the other was scrolled to.
-  const list = useRef<SectionList<ListRow, ListSection>>(null)
-  const changeTab = useCallback((next: HomeTab) => {
-    list.current?.getScrollResponder()?.scrollTo({ y: 0, animated: false })
-    setTab(next)
-  }, [])
   // Through each card's own environment; absent in the sample home.
   const discardDraft = source.kind === 'environment' ? source.discardDraft : undefined
 
-  const counts = useMemo(() => tabCounts(sessions), [sessions])
+  const open = useShelvesOpen()
+  const [settledShown, setSettledShown] = useState(SETTLED_PAGE_SIZE)
   const showEnvironment = useMemo(
     () => countEnvironments([...sessions, ...drafts]) > 1,
     [sessions, drafts],
   )
+  const board = useMemo(
+    () => selectHomeBoard({ sessions, workspaces, environments }),
+    [sessions, workspaces, environments],
+  )
+  const summary = useMemo(() => homeSummary(board), [board])
+  const draftRows = useMemo(
+    () => selectDraftRows({ drafts, workspaces, environments }),
+    [drafts, workspaces, environments],
+  )
   const sections = useMemo<ListSection[]>(
     () =>
-      selectTabRows({ sessions, drafts, workspaces, environments, tab }).map((group) => ({
-        key: group.key,
-        label: group.label,
-        data: group.rows,
-      })),
-    [sessions, drafts, workspaces, environments, tab],
+      selectHomeSections({ board, drafts: draftRows, open, settledShown }).map(
+        ({ rows, ...section }) => ({ ...section, data: rows }),
+      ),
+    [board, draftRows, open, settledShown],
   )
-  useRowsMove(tab, listShapeOf(sections, keyOf))
+  useRowsMove(listShapeOf(sections, keyOf))
+  // Nothing active, but something put away: the shelves say so under a quiet line.
+  const caughtUp = sections.length > 0 && board.active.length === 0 && draftRows.length === 0
 
   // The session a long press opened the actions for, read fresh from the
-  // listing while the sheet is up, so a rename shows in it as it lands.
+  // board while the sheet is up: it names the session as it is, and knows
+  // whether it is a child under its parent (which is offered no place).
   const [actionsId, setActionsId] = useState<string | null>(null)
   const actionsRow = useMemo<HomeRow | null>(() => {
-    const session = actionsId ? sessions.find((s) => sessionKeyOf(s) === actionsId) : undefined
-    if (!session) return null
-    // Its project from its own environment's list: two can hold the same path.
-    const projects =
-      environments.find((item) => item.environmentId === session.environment?.environmentId)
-        ?.workspaces ?? workspaces
-    return {
-      kind: 'session',
-      session,
-      workspace: projects.find((w) => w.path === session.workspacePath),
-      mark: statusMarkOf(session),
-      depth: 0,
+    if (!actionsId) return null
+    for (const card of [...board.active, ...board.cooking, ...board.settled]) {
+      for (const row of [card.root, ...card.children]) {
+        if (sessionKeyOf(row.session) === actionsId) return row
+      }
     }
-  }, [actionsId, environments, sessions, workspaces])
+    return null
+  }, [actionsId, board])
   const closeActions = useCallback(() => setActionsId(null), [])
 
-  const renderItem = useCallback<SectionListRenderItem<ListRow, ListSection>>(
-    ({ item }) =>
-      item.kind === 'draft' ? (
-        <DraftRow
-          row={item}
-          showEnvironment={showEnvironment}
-          onPress={() => router.push(draftRowHref(item.draft) as never)}
-          {...(discardDraft ? { onDiscard: () => discardDraft(item.draft) } : {})}
-        />
-      ) : (
-        <SessionRow
-          row={item}
-          showEnvironment={showEnvironment}
-          onPress={() => router.push(sessionRowHref(item.session) as never)}
-          onLongPress={() => setActionsId(sessionKeyOf(item.session))}
-        />
-      ),
-    [discardDraft, router, showEnvironment],
-  )
+  // What is said of a command sent from the sheet: that it is out, or why
+  // it was refused. One at a time; a newer one replaces it.
+  const [notice, setNotice] = useState<CommandNotice | null>(null)
+  const noticeId = useRef(0)
+  const sayPending = useCallback((text: string) => {
+    const id = ++noticeId.current
+    setNotice({ id, kind: 'pending', text })
+    return id
+  }, [])
+  const saySettled = useCallback((token: number | null, failure: string | null) => {
+    if (failure !== null) {
+      setNotice({ id: ++noticeId.current, kind: 'failed', text: failure })
+    } else if (token !== null) {
+      // It landed: the list shows it now. Only its own notice goes.
+      setNotice((current) => (current?.id === token ? null : current))
+    }
+  }, [])
+  useEffect(() => {
+    if (!notice) return
+    const timer = setTimeout(
+      () => setNotice((current) => (current?.id === notice.id ? null : current)),
+      notice.kind === 'failed' ? NOTICE_MS : PENDING_MS,
+    )
+    return () => clearTimeout(timer)
+  }, [notice])
+  // The draft-discard notice has the spot over the dock while it is up.
+  const discardShown = Boolean(useContext(DraftDiscardsContext)?.pending)
 
-  const empty = emptyCopy(tab, sessions.length)
+  const openRow = useCallback(
+    (row: HomeRow) => router.push(sessionRowHref(row.session) as never),
+    [router],
+  )
+  const openActions = useCallback((row: HomeRow) => setActionsId(sessionKeyOf(row.session)), [])
+  const toggleShelf = useCallback((shelf: HomeShelf, wasOpen: boolean) => {
+    // Folded and opened again, Settled starts from its first page.
+    if (shelf === 'settled' && wasOpen) setSettledShown(SETTLED_PAGE_SIZE)
+    setShelfOpen(shelf, !wasOpen)
+  }, [])
+  const showMore = useCallback(() => setSettledShown((shown) => shown + SETTLED_PAGE_SIZE), [])
+
+  const renderItem = useCallback<SectionListRenderItem<ListRow, ListSection>>(
+    ({ item }) => {
+      switch (item.kind) {
+        case 'draft':
+          return (
+            <DraftRow
+              row={item}
+              showEnvironment={showEnvironment}
+              onPress={() => router.push(draftRowHref(item.draft) as never)}
+              {...(discardDraft ? { onDiscard: () => discardDraft(item.draft) } : {})}
+            />
+          )
+        case 'card':
+          return (
+            <SessionCard
+              card={item}
+              showEnvironment={showEnvironment}
+              onOpen={openRow}
+              onActions={openActions}
+            />
+          )
+        case 'shelf':
+          return <ShelfRow item={item} onOpen={openRow} onActions={openActions} />
+        default:
+          return <ShelfMore hidden={item.hidden} onPress={showMore} />
+      }
+    },
+    [discardDraft, openActions, openRow, router, showEnvironment, showMore],
+  )
 
   return (
     <Screen>
-      <GlassContent style={{ paddingTop: insets.top + 6 }}>
+      <GlassContent style={{ paddingTop: insets.top + 8 }} {...coveredBySheet(actionsRow !== null)}>
         <View
           style={{
-            height: 44,
-            paddingHorizontal: 20,
+            height: 48,
+            paddingLeft: 24,
+            paddingRight: 24,
             flexDirection: 'row',
             alignItems: 'center',
             justifyContent: 'space-between',
           }}
         >
-          <PageTitle>Sessions</PageTitle>
-          <SegmentedTabs
-            className="flex-row gap-1"
-            tabs={[
-              { key: 'all', label: 'All', count: counts.all || undefined },
-              { key: 'settled', label: 'Settled', count: counts.settled || undefined },
-            ]}
-            value={tab}
-            onChange={changeTab}
-          />
+          <PageTitle style={{ fontSize: 26, letterSpacing: -0.5 }}>Sessions</PageTitle>
+          <HomeSummary needs={summary.needs} working={summary.working} />
         </View>
         <View className="flex-1">
           <SectionList
-            ref={list}
             className="flex-1"
             sections={sections}
             keyExtractor={keyOf}
             renderItem={renderItem}
-            ListHeaderComponent={<UpdateNotice />}
+            ListHeaderComponent={
+              <>
+                <UpdateNotice />
+                {caughtUp ? (
+                  <AppText
+                    variant="text-13-regular"
+                    style={{ color: theme.faint, paddingHorizontal: 10, paddingVertical: 14 }}
+                  >
+                    All caught up.
+                  </AppText>
+                ) : null}
+              </>
+            }
             renderSectionHeader={({ section }) =>
-              section.label ? <SectionLabel>{section.label}</SectionLabel> : null
+              section.shelf ? (
+                <ShelfHeader
+                  label={section.label ?? ''}
+                  head={section.shelf}
+                  onToggle={() => toggleShelf(section.shelf!.shelf, section.shelf!.open)}
+                />
+              ) : section.label ? (
+                <SectionLabel>{section.label}</SectionLabel>
+              ) : null
             }
             stickySectionHeadersEnabled={false}
             contentContainerStyle={{
-              paddingHorizontal: 8,
-              paddingTop: tab === 'settled' ? 6 : 0,
+              paddingHorizontal: 12,
+              paddingTop: 2,
               paddingBottom: insets.bottom + 140,
             }}
             showsVerticalScrollIndicator={false}
@@ -285,13 +449,13 @@ export default function SessionsHome() {
                     <PlusIcon size={26} color={theme.muted} />
                   </View>
                   <AppText variant="text-16-medium" style={{ color: theme.fg }}>
-                    {empty.title}
+                    No sessions yet
                   </AppText>
                   <AppText
                     variant="text-13-regular"
                     style={{ color: theme.muted, textAlign: 'center', marginTop: 4 }}
                   >
-                    {empty.body}
+                    Start one with New chat, or on your computer; it shows up here.
                   </AppText>
                 </View>
               )
@@ -302,7 +466,16 @@ export default function SessionsHome() {
       </GlassContent>
       <HomeDock />
       <DraftDiscardToast />
-      {actionsRow ? <SessionActionsSheet row={actionsRow} onClose={closeActions} /> : null}
+      {notice ? <ActionNotice key={notice.id} notice={notice} raised={discardShown} /> : null}
+      {actionsRow ? (
+        <SessionActionsSheet
+          row={actionsRow}
+          showEnvironment={showEnvironment}
+          onClose={closeActions}
+          onPending={sayPending}
+          onSettled={saySettled}
+        />
+      ) : null}
     </Screen>
   )
 }
