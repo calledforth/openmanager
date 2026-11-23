@@ -420,17 +420,20 @@ export function selectHomeSections({
 
 /**
  * What the home's title says beside it: how many sessions wait on the
- * reader and how many are at work, wherever they sit (a cooking session
- * still works). Settled ones are put away and count for neither.
+ * reader and how many are at work. Top-level sessions only, as the board
+ * places them: a child rides in its parent's card and is not counted again,
+ * a cooking session still works, and what is settled (with everything under
+ * it) is put away and counts for neither.
  */
-export function homeSummary(sessions: readonly HomeSession[]): { needs: number; working: number } {
+export function homeSummary(board: Pick<HomeBoard, 'active' | 'cooking'>): {
+  needs: number
+  working: number
+} {
   let needs = 0
   let working = 0
-  for (const session of sessions) {
-    if (session.settledAt) continue
-    const mark = statusMarkOf(session)
-    if (mark === 'needs' || mark === 'question') needs += 1
-    else if (mark === 'working' || mark === 'background') working += 1
+  for (const { root } of [...board.active, ...board.cooking]) {
+    if (root.mark === 'needs' || root.mark === 'question') needs += 1
+    else if (root.mark === 'working' || root.mark === 'background') working += 1
   }
   return { needs, working }
 }

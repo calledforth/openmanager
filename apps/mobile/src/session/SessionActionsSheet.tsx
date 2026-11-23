@@ -24,16 +24,27 @@ import {
   useSessionActions,
   type SessionActions,
 } from './useSessionActions'
-import { commandFailure, TITLE_MAX } from './useSessionChrome'
+import { commandBusy, commandFailure, TITLE_MAX } from './useSessionChrome'
 
 const untitled = (title: string | undefined) => title?.trim() || 'Untitled session'
 
 /**
- * How long after it opens the sheet takes no touch. It rises under the
- * finger that long-pressed its row, and lifting that finger must neither
- * close it (the scrim) nor choose whatever came up beneath it.
+ * The sheet's exit (`SHEET_OUT`), and a frame or two more. A command is
+ * sent once the sheet has left: the row it moves eases to its new place by
+ * the list's own layout animation, and that never shares a commit with the
+ * sheet's exit.
  */
-const SETTLE_MS = 280
+const SHEET_EXIT_MS = 220
+
+/**
+ * The commands whose answer shows nowhere until it lands (a new title, the
+ * background work stopping): the home says they are out. The others show in
+ * the list the moment they are asked for.
+ */
+const SAID_WHILE_OUT: ReadonlySet<string> = new Set<SessionMenuItemId>([
+  'regenerate-title',
+  'stop-background',
+])
 
 /**
  * A session's actions from its row, on a long press: the session named at
@@ -42,27 +53,35 @@ const SETTLE_MS = 280
  * work). The same items as the page's title menu, less its settings, which
  * live with the composer. Only what can be done is listed.
  *
- * Choosing closes the sheet at once: every one of these shows in the list
- * the moment it is asked for (the shared client holds the ask until the
- * environment answers, and takes it back if it refuses), so there is
- * nothing to wait on here. A refusal is said by the home (`onFailed`).
+ * A child session, listed under its parent, goes where its parent goes: it
+ * is offered the rows alone.
+ *
+ * Choosing closes the sheet at once, and the command goes once it has left.
+ * A place, or a new title typed here, shows in the list the moment it is
+ * asked for (the shared client holds the ask until the environment answers,
+ * and takes it back if it refuses). Naming it again and stopping background
+ * work show only when they land, so the home says they are out
+ * (`onPending`) until they are (`onSettled`), and says any refusal.
  */
 export function SessionActionsSheet({
   row,
   showEnvironment = false,
   onClose,
-  onFailed,
+  onPending,
+  onSettled,
 }: {
   row: HomeRow
   /** The home spans more than one environment: say which this one is on. */
   showEnvironment?: boolean
   onClose: () => void
-  /** A command the environment refused, in words. */
-  onFailed?: (text: string) => void
+  /** A command is out whose answer shows only when it lands; returns its token. */
+  onPending?: (text: string) => number
+  /** A command was answered: its token if it was said, and why it was refused, if it was. */
+  onSettled?: (token: number | null, failure: string | null) => void
 }) {
   const { kind } = useHomeSource()
   const environmentId = row.session.environment?.environmentId
-  const shared = { row, showEnvironment, onClose, onFailed }
+  const shared = { row, showEnvironment, onClose, onPending, onSettled }
   const unavailable = <UnavailableActions {...shared} />
   if (kind !== 'environment' || !environmentId) return unavailable
   // Through the row's own environment, whatever else is connected.
@@ -77,7 +96,8 @@ interface BodyProps {
   row: HomeRow
   showEnvironment: boolean
   onClose: () => void
-  onFailed?: (text: string) => void
+  onPending?: (text: string) => number
+  onSettled?: (token: number | null, failure: string | null) => void
 }
 
 function LiveActions(props: BodyProps) {
@@ -106,19 +126,24 @@ function ActionsSheetBody({
   showEnvironment,
   actions,
   onClose,
-  onFailed,
+  onPending,
+  onSettled,
 }: BodyProps & { actions: SessionActions }) {
   const theme = usePhoneTheme()
   const title = untitled(row.session.title)
   const [editing, setEditing] = useState(false)
-  // The page's settings live in its composer: not reachable from a row.
+  const child = row.depth > 0
+  // The page's settings live in its composer: not reachable from a row. A
+  // child rides with its parent, so it is offered no place of its own.
   const items = useMemo(
     () =>
       conciseMenu(
-        actions.menu.filter((item) => item.id !== 'session-settings'),
+        actions.menu.filter(
+          (item) => item.id !== 'session-settings' && !(child && isPlaceItem(item)),
+        ),
         actions.unavailable,
       ),
-    [actions.menu, actions.unavailable],
+    [actions.menu, actions.unavailable, child],
   )
   const places = items.filter(isPlaceItem)
   const rest = items.filter((item) => !isPlaceItem(item))
@@ -126,10 +151,15 @@ function ActionsSheetBody({
   const tone = row.mark === 'idle' ? theme.muted : theme.status[row.mark]
   const environment = showEnvironment ? row.session.environment : undefined
 
-  const openedAt = useRef(Date.now())
-  const settled = () => Date.now() - openedAt.current >= SETTLE_MS
+  // The sheet rises under the finger that long-pressed its row, and lifting
+  // that finger must neither close it (the scrim) nor choose what came up
+  // beneath it: nothing here answers until a touch has begun on the sheet.
+  const touched = useRef(false)
+  const arm = () => {
+    touched.current = true
+  }
   const dismiss = () => {
-    if (settled()) onClose()
+    if (touched.current) onClose()
   }
   // One answer per opening: a second tap while the sheet leaves does nothing.
   const chosen = useRef(false)
@@ -138,12 +168,18 @@ function ActionsSheetBody({
       if (chosen.current) return
       chosen.current = true
       onClose()
-      command().catch((error: unknown) => onFailed?.(commandFailure(id, error)))
+      setTimeout(() => {
+        const token = SAID_WHILE_OUT.has(id) ? (onPending?.(commandBusy(id)) ?? null) : null
+        command().then(
+          () => onSettled?.(token, null),
+          (error: unknown) => onSettled?.(token, commandFailure(id, error)),
+        )
+      }, SHEET_EXIT_MS)
     },
-    [onClose, onFailed],
+    [onClose, onPending, onSettled],
   )
   const choose = (item: SessionMenuItem) => {
-    if (item.disabledReason !== null || !settled()) return
+    if (item.disabledReason !== null || !touched.current) return
     if (item.id === 'rename') setEditing(true)
     else send(item.id, () => actions.run(item.id))
   }
@@ -160,6 +196,11 @@ function ActionsSheetBody({
       behavior="padding"
       style={StyleSheet.absoluteFill}
       pointerEvents="box-none"
+      onTouchStart={arm}
+      onStartShouldSetResponderCapture={() => {
+        arm()
+        return false
+      }}
     >
       <Sheet onDismiss={dismiss} onBack={editing ? () => setEditing(false) : onClose}>
         {editing ? (

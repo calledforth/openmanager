@@ -63,6 +63,33 @@ function shownMark(row: HomeRow): Mark {
   return row.mark === 'background' && row.session.inBackgroundForSubagents ? 'idle' : row.mark
 }
 
+/** The same row to look at: the session and project it was made from, at the same depth. */
+const sameRow = (a: HomeRow, b: HomeRow) =>
+  a.session === b.session && a.workspace === b.workspace && a.depth === b.depth && a.mark === b.mark
+
+/**
+ * A row's actions for a screen reader, which has no long press: the same
+ * sheet, as one of the row's actions.
+ */
+function actionsFor(onActions: (() => void) | undefined) {
+  return onActions
+    ? {
+        accessibilityActions: [{ name: 'actions', label: 'Session actions' }],
+        onAccessibilityAction: (event: { nativeEvent: { actionName: string } }) => {
+          if (event.nativeEvent.actionName === 'actions') onActions()
+        },
+      }
+    : {}
+}
+
+/** What a row is doing, or how long ago it last did anything, in words. */
+function spokenState(row: HomeRow, at: string | number | null | undefined = row.session.updatedAt) {
+  const line = shownMark(row) === 'idle' ? null : statusLineOf(row.session)
+  if (line) return line
+  const age = shortAge(at ?? undefined)
+  return age ? (age === 'now' ? 'just now' : `${age} ago`) : null
+}
+
 function longPress(onLongPress: (() => void) | undefined) {
   return onLongPress
     ? () => {
@@ -104,6 +131,7 @@ export const SessionCard = memo(function SessionCard({
   const git = workspace?.git
   const subagents = session.subagentCount ?? 0
   const subagentsLive = session.subagentsLive ?? 0
+  const openActions = onActions && (() => onActions(card.root))
   return (
     <View
       style={[
@@ -133,7 +161,8 @@ export const SessionCard = memo(function SessionCard({
           tap()
           onOpen(card.root)
         }}
-        onLongPress={longPress(onActions && (() => onActions(card.root)))}
+        onLongPress={longPress(openActions)}
+        {...actionsFor(openActions)}
         delayLongPress={320}
         style={({ pressed }) => ({
           gap: 5,
@@ -251,7 +280,27 @@ export const SessionCard = memo(function SessionCard({
       ) : null}
     </View>
   )
-})
+}, sameCard)
+
+/**
+ * The home builds its cards anew with every listing; a card is the same to
+ * look at while its sessions and their projects are the same objects (each
+ * environment's provider keeps an entry the same object while nothing it
+ * shows changed) and its handlers are.
+ */
+function sameCard(
+  a: { card: HomeCard; showEnvironment?: boolean; onOpen: unknown; onActions?: unknown },
+  b: { card: HomeCard; showEnvironment?: boolean; onOpen: unknown; onActions?: unknown },
+) {
+  return (
+    a.showEnvironment === b.showEnvironment &&
+    a.onOpen === b.onOpen &&
+    a.onActions === b.onActions &&
+    sameRow(a.card.root, b.card.root) &&
+    a.card.children.length === b.card.children.length &&
+    a.card.children.every((child, index) => sameRow(child, b.card.children[index]!))
+  )
+}
 
 /** A child session inside its parent's card: its state, its title, its age. */
 function ChildRow({
@@ -274,6 +323,7 @@ function ChildRow({
         onPress()
       }}
       onLongPress={longPress(onLongPress)}
+      {...actionsFor(onLongPress)}
       delayLongPress={320}
       style={({ pressed }) => ({
         flexDirection: 'row',
@@ -327,7 +377,7 @@ export function ShelfHeader({
   return (
     <Press
       accessibilityRole="button"
-      accessibilityLabel={`${label}, ${head.count}`}
+      accessibilityLabel={`${label}, ${head.count}${head.live && !head.open ? `, ${head.live === 'working' ? 'working' : 'working in the background'}` : ''}`}
       accessibilityState={{ expanded: head.open }}
       onPress={() => {
         tap()
@@ -367,80 +417,93 @@ export function ShelfHeader({
  * away does not float. A long press opens its actions, where it is brought
  * back.
  */
-export const ShelfRow = memo(function ShelfRow({
-  item,
-  onPress,
-  onLongPress,
-}: {
-  item: HomeShelfRow
-  onPress: () => void
-  onLongPress?: () => void
-}) {
-  const theme = usePhoneTheme()
-  const { row, shelf } = item
-  const { session, workspace, depth } = row
-  const mark = shownMark(row)
-  const unsent = Boolean(session.hasUnsentDraft)
-  return (
-    <Press
-      accessibilityRole="button"
-      accessibilityLabel={`${untitled(session.title)}${workspace ? ` in ${workspace.name}` : ''}${session.environment ? ` on ${session.environment.label}` : ''}`}
-      accessibilityHint={onLongPress ? 'Long press for actions' : undefined}
-      onPress={() => {
-        tap()
-        onPress()
-      }}
-      onLongPress={longPress(onLongPress)}
-      delayLongPress={320}
-      style={({ pressed }) => ({
-        flexDirection: 'row',
-        alignItems: 'center',
-        gap: 10,
-        minHeight: 42,
-        paddingVertical: 8,
-        paddingRight: 10,
-        paddingLeft: 10 + 16 * Math.min(depth, 3),
-        borderRadius: 12,
-        backgroundColor: pressed ? theme.hover : 'transparent',
-        opacity: session.workspaceUnavailable ? 0.6 : 1,
-      })}
-    >
-      <View style={{ width: 16, alignItems: 'center' }}>
-        {depth > 0 ? (
-          <View style={{ width: 5, height: 5, borderRadius: 3, backgroundColor: theme.faint }} />
-        ) : (
-          <ProjectMark
-            workspaceId={workspace?.path ?? null}
-            size={14}
-            color={theme.muted}
-            scratch={workspace?.scratch === true}
-          />
-        )}
-      </View>
-      <AppText
-        variant="text-14-regular"
-        numberOfLines={1}
-        style={{ color: theme.muted, flexShrink: 1, minWidth: 0 }}
+export const ShelfRow = memo(
+  function ShelfRow({
+    item,
+    onOpen,
+    onActions,
+  }: {
+    item: HomeShelfRow
+    onOpen: (row: HomeRow) => void
+    onActions?: (row: HomeRow) => void
+  }) {
+    const theme = usePhoneTheme()
+    const { row, shelf } = item
+    const { session, workspace, depth } = row
+    const mark = shownMark(row)
+    const unsent = Boolean(session.hasUnsentDraft)
+    const putAwayAt =
+      shelf === 'settled' ? (session.settledAt ?? session.updatedAt) : session.updatedAt
+    const state = spokenState(row, putAwayAt)
+    const onPress = () => onOpen(row)
+    const onLongPress = onActions && (() => onActions(row))
+    return (
+      <Press
+        accessibilityRole="button"
+        accessibilityLabel={`${untitled(session.title)}${workspace ? ` in ${workspace.name}` : ''}${session.environment ? ` on ${session.environment.label}` : ''}${state ? `, ${state}` : ''}${unsent ? ', has an unsent draft' : ''}`}
+        accessibilityHint={onLongPress ? 'Long press for actions' : undefined}
+        {...actionsFor(onLongPress)}
+        onPress={() => {
+          tap()
+          onPress()
+        }}
+        onLongPress={longPress(onLongPress)}
+        delayLongPress={320}
+        style={({ pressed }) => ({
+          flexDirection: 'row',
+          alignItems: 'center',
+          gap: 10,
+          minHeight: 42,
+          paddingVertical: 8,
+          paddingRight: 10,
+          paddingLeft: 10 + 16 * Math.min(depth, 3),
+          borderRadius: 12,
+          backgroundColor: pressed ? theme.hover : 'transparent',
+          opacity: session.workspaceUnavailable ? 0.6 : 1,
+        })}
       >
-        {untitled(session.title)}
-      </AppText>
-      {unsent ? <PencilSimpleLineIcon size={12} color={theme.draft.accent} weight="bold" /> : null}
-      <View style={{ flex: 1 }} />
-      {mark !== 'idle' ? (
-        <StatusMark mark={mark} size={12} />
-      ) : (
-        <AppText
-          variant="text-12-regular"
-          style={{ color: theme.faint, fontVariant: ['tabular-nums'] }}
-        >
-          {shortAge(
-            shelf === 'settled' ? (session.settledAt ?? session.updatedAt) : session.updatedAt,
+        <View style={{ width: 16, alignItems: 'center' }}>
+          {depth > 0 ? (
+            <View style={{ width: 5, height: 5, borderRadius: 3, backgroundColor: theme.faint }} />
+          ) : (
+            <ProjectMark
+              workspaceId={workspace?.path ?? null}
+              size={14}
+              color={theme.muted}
+              scratch={workspace?.scratch === true}
+            />
           )}
+        </View>
+        <AppText
+          variant="text-14-regular"
+          numberOfLines={1}
+          style={{ color: theme.muted, flexShrink: 1, minWidth: 0 }}
+        >
+          {untitled(session.title)}
         </AppText>
-      )}
-    </Press>
-  )
-})
+        {unsent ? (
+          <PencilSimpleLineIcon size={12} color={theme.draft.accent} weight="bold" />
+        ) : null}
+        <View style={{ flex: 1 }} />
+        {mark !== 'idle' ? (
+          <StatusMark mark={mark} size={12} />
+        ) : (
+          <AppText
+            variant="text-12-regular"
+            style={{ color: theme.faint, fontVariant: ['tabular-nums'] }}
+          >
+            {shortAge(putAwayAt)}
+          </AppText>
+        )}
+      </Press>
+    )
+  },
+  (a, b) =>
+    a.onOpen === b.onOpen &&
+    a.onActions === b.onActions &&
+    a.item.shelf === b.item.shelf &&
+    sameRow(a.item.row, b.item.row),
+)
 
 /** The end of a long Settled shelf: shows the next page. */
 export function ShelfMore({ hidden, onPress }: { hidden: number; onPress: () => void }) {

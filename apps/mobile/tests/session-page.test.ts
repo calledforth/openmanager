@@ -818,6 +818,8 @@ describe('session menu', () => {
     expect(cooking).toContain('uncook')
     expect(cooking).not.toContain('cook')
     expect(cooking).not.toContain('pin')
+    // As web's shelf row: brought back first, then settled from the active list.
+    expect(cooking).not.toContain('settle')
     // Settled wins: neither is offered.
     expect(ids({ settled: true, cooking: true })).not.toContain('uncook')
     expect(ids({ settled: true })).not.toContain('cook')

@@ -106,7 +106,8 @@ export function sessionMenuItems(input: SessionMenuInput): SessionMenuItem[] {
       short: 'Move back',
       disabledReason: gate(input, 'settleSession', 'This environment cannot settle sessions'),
     })
-  } else {
+  } else if (!input.cooking) {
+    // A cooking session is brought back first, as web's shelf row offers.
     items.push({
       id: 'settle',
       label: 'Settle',

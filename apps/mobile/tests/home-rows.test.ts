@@ -243,16 +243,27 @@ describe('cooking and settling', () => {
     expect(isPinnedSession({ pinnedAt, settledAt: pinnedAt })).toBe(false)
   })
 
-  it('counts what waits on the reader and what works, cooking included, settled not', () => {
+  it('counts top-level sessions that wait or work, cooking included, settled not', () => {
     expect(
-      homeSummary([
-        session({ status: 'waiting', waitingOn: 'question' }),
-        session({ status: 'waiting' }),
-        session({ status: 'running' }),
-        session({ status: 'running', inBackground: true, cookingAt: local(2026, 10, 1) }),
-        session({ status: 'running', settledAt: local(2026, 10, 1) }),
-        session({ status: 'done' }),
-      ]),
+      homeSummary(
+        board([
+          session({ externalId: 'q', status: 'waiting', waitingOn: 'question' }),
+          session({ externalId: 'w', status: 'waiting' }),
+          session({ externalId: 'r', status: 'running' }),
+          // A child rides in its parent's card: counted once, as its parent.
+          session({ externalId: 'r-child', parentExternalId: 'r', status: 'running' }),
+          session({
+            externalId: 'pot',
+            status: 'running',
+            inBackground: true,
+            cookingAt: local(2026, 10, 1),
+          }),
+          session({ externalId: 'away', status: 'running', settledAt: local(2026, 10, 1) }),
+          // Put away with its parent, whatever it is doing.
+          session({ externalId: 'away-child', parentExternalId: 'away', status: 'waiting' }),
+          session({ externalId: 'done', status: 'done' }),
+        ]),
+      ),
     ).toEqual({ needs: 2, working: 2 })
   })
 })

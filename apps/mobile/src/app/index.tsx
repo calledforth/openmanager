@@ -1,9 +1,10 @@
 import { useRouter } from 'expo-router'
 import { DesktopIcon, PlusIcon, QrCodeIcon } from 'phosphor-react-native'
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react'
 import { LayoutAnimation, SectionList, View, type SectionListRenderItem } from 'react-native'
 import Animated, { Easing, FadeIn, FadeOut as FadeAway } from 'react-native-reanimated'
 import { useSafeAreaInsets } from 'react-native-safe-area-context'
+import { DraftDiscardsContext } from '@openmanager/app-core/providers/environment-sidebar-drafts'
 
 import { AppText } from '../components/ui/AppText'
 import { DraftDiscardToast, homeDockClearance } from '../draft/DraftDiscard'
@@ -16,7 +17,6 @@ import {
   selectHomeBoard,
   selectHomeSections,
   SETTLED_PAGE_SIZE,
-  statusMarkOf,
   type HomeListRow,
   type HomeRow,
   type HomeSection,
@@ -33,6 +33,7 @@ import { ActionButton } from '../pairing/ActionButton'
 import { ConnectionPanel } from '../settings/ConnectionPanel'
 import { usePhoneTheme } from '../theme/ThemeProvider'
 import { UpdateNotice } from '../updates/UpdateRow'
+import { coveredBySheet } from '../ui/a11y-focus'
 import { FadeOut, PageTitle, SectionLabel } from '../ui/chrome'
 import { DraftRow } from '../ui/DraftRow'
 import { Glass, GlassContent } from '../ui/Glass'
@@ -171,14 +172,28 @@ const NOTICE_IN = FadeIn.duration(180).easing(Easing.out(Easing.quad))
 const NOTICE_OUT = FadeAway.duration(160).easing(Easing.in(Easing.quad))
 /** How long a refusal stays said. */
 const NOTICE_MS = 5000
+/** The longest a command is said to be out: past this, its answer is not coming soon. */
+const PENDING_MS = 12_000
+/** The room the draft-discard notice takes over the dock, with its gap. */
+const DISCARD_NOTICE_ROOM = 58
+
+/** What the home says about a command sent from a row's actions. */
+interface CommandNotice {
+  id: number
+  kind: 'pending' | 'failed'
+  text: string
+}
 
 /**
- * A command the environment refused, said over the dock for a moment: the
- * row is already back where the environment keeps it, and this is why.
+ * A command sent from a row's actions, said over the dock: that it is out,
+ * while its answer would show nowhere else (naming a session again, stopping
+ * its background work), or why the environment refused it. It sits above the
+ * draft-discard notice when that is up (`raised`), never over it.
  */
-function ActionNotice({ text }: { text: string }) {
+function ActionNotice({ notice, raised }: { notice: CommandNotice; raised: boolean }) {
   const theme = usePhoneTheme()
   const insets = useSafeAreaInsets()
+  const { text } = notice
   return (
     <Animated.View
       pointerEvents="none"
@@ -188,7 +203,7 @@ function ActionNotice({ text }: { text: string }) {
         position: 'absolute',
         left: 20,
         right: 20,
-        bottom: homeDockClearance(insets.bottom),
+        bottom: homeDockClearance(insets.bottom) + (raised ? DISCARD_NOTICE_ROOM : 0),
         alignItems: 'center',
       }}
     >
@@ -200,10 +215,13 @@ function ActionNotice({ text }: { text: string }) {
       >
         <AppText
           accessibilityLiveRegion="polite"
-          accessibilityRole="alert"
+          {...(notice.kind === 'failed' ? { accessibilityRole: 'alert' as const } : {})}
           variant="text-13-regular"
           numberOfLines={3}
-          style={{ color: theme.fg, textAlign: 'center' }}
+          style={{
+            color: notice.kind === 'failed' ? theme.fg : theme.muted,
+            textAlign: 'center',
+          }}
         >
           {text}
         </AppText>
@@ -237,7 +255,6 @@ export default function SessionsHome() {
 
   const open = useShelvesOpen()
   const [settledShown, setSettledShown] = useState(SETTLED_PAGE_SIZE)
-  const summary = useMemo(() => homeSummary(sessions), [sessions])
   const showEnvironment = useMemo(
     () => countEnvironments([...sessions, ...drafts]) > 1,
     [sessions, drafts],
@@ -246,6 +263,7 @@ export default function SessionsHome() {
     () => selectHomeBoard({ sessions, workspaces, environments }),
     [sessions, workspaces, environments],
   )
+  const summary = useMemo(() => homeSummary(board), [board])
   const draftRows = useMemo(
     () => selectDraftRows({ drafts, workspaces, environments }),
     [drafts, workspaces, environments],
@@ -262,37 +280,47 @@ export default function SessionsHome() {
   const caughtUp = sections.length > 0 && board.active.length === 0 && draftRows.length === 0
 
   // The session a long press opened the actions for, read fresh from the
-  // listing while the sheet is up, so it names the session as it is.
+  // board while the sheet is up: it names the session as it is, and knows
+  // whether it is a child under its parent (which is offered no place).
   const [actionsId, setActionsId] = useState<string | null>(null)
   const actionsRow = useMemo<HomeRow | null>(() => {
-    const session = actionsId ? sessions.find((s) => sessionKeyOf(s) === actionsId) : undefined
-    if (!session) return null
-    // Its project from its own environment's list: two can hold the same path.
-    const projects =
-      environments.find((item) => item.environmentId === session.environment?.environmentId)
-        ?.workspaces ?? workspaces
-    return {
-      kind: 'session',
-      session,
-      workspace: projects.find((w) => w.path === session.workspacePath),
-      mark: statusMarkOf(session),
-      depth: 0,
+    if (!actionsId) return null
+    for (const card of [...board.active, ...board.cooking, ...board.settled]) {
+      for (const row of [card.root, ...card.children]) {
+        if (sessionKeyOf(row.session) === actionsId) return row
+      }
     }
-  }, [actionsId, environments, sessions, workspaces])
+    return null
+  }, [actionsId, board])
   const closeActions = useCallback(() => setActionsId(null), [])
 
-  // A refused command, said for a moment; a newer one replaces it.
-  const [notice, setNotice] = useState<{ id: number; text: string } | null>(null)
+  // What is said of a command sent from the sheet: that it is out, or why
+  // it was refused. One at a time; a newer one replaces it.
+  const [notice, setNotice] = useState<CommandNotice | null>(null)
   const noticeId = useRef(0)
-  const sayFailed = useCallback((text: string) => {
-    noticeId.current += 1
-    setNotice({ id: noticeId.current, text })
+  const sayPending = useCallback((text: string) => {
+    const id = ++noticeId.current
+    setNotice({ id, kind: 'pending', text })
+    return id
+  }, [])
+  const saySettled = useCallback((token: number | null, failure: string | null) => {
+    if (failure !== null) {
+      setNotice({ id: ++noticeId.current, kind: 'failed', text: failure })
+    } else if (token !== null) {
+      // It landed: the list shows it now. Only its own notice goes.
+      setNotice((current) => (current?.id === token ? null : current))
+    }
   }, [])
   useEffect(() => {
     if (!notice) return
-    const timer = setTimeout(() => setNotice(null), NOTICE_MS)
+    const timer = setTimeout(
+      () => setNotice((current) => (current?.id === notice.id ? null : current)),
+      notice.kind === 'failed' ? NOTICE_MS : PENDING_MS,
+    )
     return () => clearTimeout(timer)
   }, [notice])
+  // The draft-discard notice has the spot over the dock while it is up.
+  const discardShown = Boolean(useContext(DraftDiscardsContext)?.pending)
 
   const openRow = useCallback(
     (row: HomeRow) => router.push(sessionRowHref(row.session) as never),
@@ -328,13 +356,7 @@ export default function SessionsHome() {
             />
           )
         case 'shelf':
-          return (
-            <ShelfRow
-              item={item}
-              onPress={() => openRow(item.row)}
-              onLongPress={() => openActions(item.row)}
-            />
-          )
+          return <ShelfRow item={item} onOpen={openRow} onActions={openActions} />
         default:
           return <ShelfMore hidden={item.hidden} onPress={showMore} />
       }
@@ -344,7 +366,7 @@ export default function SessionsHome() {
 
   return (
     <Screen>
-      <GlassContent style={{ paddingTop: insets.top + 8 }}>
+      <GlassContent style={{ paddingTop: insets.top + 8 }} {...coveredBySheet(actionsRow !== null)}>
         <View
           style={{
             height: 48,
@@ -444,13 +466,14 @@ export default function SessionsHome() {
       </GlassContent>
       <HomeDock />
       <DraftDiscardToast />
-      {notice ? <ActionNotice key={notice.id} text={notice.text} /> : null}
+      {notice ? <ActionNotice key={notice.id} notice={notice} raised={discardShown} /> : null}
       {actionsRow ? (
         <SessionActionsSheet
           row={actionsRow}
           showEnvironment={showEnvironment}
           onClose={closeActions}
-          onFailed={sayFailed}
+          onPending={sayPending}
+          onSettled={saySettled}
         />
       ) : null}
     </Screen>

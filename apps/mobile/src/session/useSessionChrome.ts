@@ -39,6 +39,9 @@ const FAILED_WORDS: Partial<Record<Command, string>> = {
 const reasonOf = (error: unknown) =>
   error instanceof Error && error.message ? error.message : 'the environment refused'
 
+/** What is said while a command is out. */
+export const commandBusy = (id: Command) => BUSY_WORDS[id] ?? 'Working…'
+
 /** A refused command in words: what could not be done, and the environment's reason. */
 export const commandFailure = (id: Command, error: unknown) =>
   `${FAILED_WORDS[id] ?? 'Failed'}: ${reasonOf(error)}`
