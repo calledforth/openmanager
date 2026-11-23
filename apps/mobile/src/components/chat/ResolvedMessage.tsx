@@ -5,6 +5,7 @@ import { useMessageContent, useStreamingMessage, type UIMessage } from '@openman
 import { countRender } from '../../session/render-probe'
 import { readsPersistedContent, resolveThreadRow } from '../../session/thread-rows'
 import { AssistantMessage } from './AssistantMessage'
+import { DelegatedPrompt, OperationPrompt, SubagentsFinishedNotice } from './TurnOriginRows'
 import { UserMessage } from './UserMessage'
 
 /**
@@ -20,6 +21,21 @@ export const ResolvedMessage = memo(function ResolvedMessage({ message }: { mess
   const row = resolveThreadRow(message, content, streaming)
 
   if (!row) return null
+  // A prompt nobody here typed: the parent agent's brief, the environment's
+  // word that subagents finished, or a command that ran an operation.
+  if (row.role === 'user' && row.origin) {
+    return (
+      <View style={{ paddingVertical: 7 }}>
+        {row.origin === 'delegated' ? (
+          <DelegatedPrompt content={row.content} />
+        ) : row.origin === 'subagents' ? (
+          <SubagentsFinishedNotice content={row.content} />
+        ) : (
+          <OperationPrompt content={row.content} origin={row.origin} />
+        )}
+      </View>
+    )
+  }
   return (
     <View style={{ paddingVertical: 7 }}>
       {row.role === 'user' ? (

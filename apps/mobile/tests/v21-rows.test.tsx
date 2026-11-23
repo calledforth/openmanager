@@ -63,6 +63,7 @@ vi.mock('phosphor-react-native', () => {
     'FolderOpenIcon',
     'GaugeIcon',
     'GlobeIcon',
+    'ImageIcon',
     'InfoIcon',
     'ListChecksIcon',
     'MagnifyingGlassIcon',

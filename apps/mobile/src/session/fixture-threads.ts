@@ -10,7 +10,7 @@
  * fixture; nothing here reaches a server.
  */
 import type { ContentBlock, Subagent, Turn } from '@openmanager/protocol'
-import type { ThreadState } from '@openmanager/environment-client'
+import type { BackgroundTask, ThreadState } from '@openmanager/environment-client'
 
 import { fixturePng } from './fixture-images'
 import { RECORDED_THREAD } from './recorded-thread'
@@ -50,23 +50,33 @@ class ThreadBuilder {
     return this.state.thread.threadId
   }
 
-  turn(turnId: string, state: Turn['state'], startedAt: number, finishedAt?: number) {
+  /** `origin`: who began a turn nobody prompted (delegated, subagents) or the operation it ran. */
+  turn(
+    turnId: string,
+    state: Turn['state'],
+    startedAt: number,
+    finishedAt?: number,
+    origin?: Turn['origin'],
+  ) {
     this.state.turns.push({
       turnId,
       threadId: this.threadId,
       state,
       startedAt: iso(startedAt),
       ...(finishedAt !== undefined ? { finishedAt: iso(finishedAt) } : {}),
+      ...(origin ? { origin } : {}),
     })
     return this
   }
 
+  /** `phase`: what an assistant message is, as Codex marks every one. */
   message(
     turnId: string,
     messageId: string,
     role: Message['role'],
     body: string,
     pictures: readonly ContentBlock[] = [],
+    phase?: Message['phase'],
   ) {
     this.state.messages.push({
       messageId,
@@ -74,6 +84,7 @@ class ThreadBuilder {
       turnId,
       role,
       content: [...(body ? text(body) : []), ...pictures],
+      ...(phase ? { phase } : {}),
     })
     this.place({ kind: 'message', id: messageId, turnId })
     return this
@@ -524,5 +535,284 @@ export function imagesThread(now: number): ThreadState {
   b.turn(t3, 'completed', now - 900_000, now - 780_000)
     .message(t3, 'i-user-3', 'user', 'Both of these, then give me the full set.', pictures(9, 2))
     .message(t3, 'i-a3', 'assistant', 'All ten variants from the two picks.', pictures(11, 10))
+  return b.state
+}
+
+/** The fixture's Codex session: no row on the sample home, opened at `/session/s-codex-settings`. */
+export const CODEX_THREAD_SESSION_ID = 's-codex-settings'
+
+const CODEX_ANSWER = `The cards flashed because \`SettingsPage\` rendered once with empty stores, then again when \`useSettingsStores\` resolved. It now waits on the stores' first read and keeps the old height while it does.
+
+- \`apps/web/src/routes/settings.tsx\`: one render after the first read
+- \`EnvironmentCard\`: a fixed min-height, so nothing below it jumps
+
+The new empty-state illustration is above; it uses the theme's own fills.`
+
+const REVIEW_FINDINGS = `**1. The skeleton hides a failed read** — \`settings.tsx:48\`
+If the first read fails, the page waits forever. Show the error the store already holds.
+
+**2. Min-height on every card** — \`EnvironmentCard.tsx:31\`
+Only the first card needs it; the rest only shift once.
+
+No other issues in the diff.`
+
+/**
+ * A Codex session, each thing Codex sends that the phone must draw: a turn
+ * with commentary between its tool items (commands Codex read as reads and
+ * searches, a patch, a web search, an image it looked at, one it generated),
+ * two subagents with a collab wait, and a final answer; the environment's
+ * word that subagents finished; a `/compact` operation turn; a `/review` with
+ * its markers and findings; and a live turn with a running subagent the
+ * phone can stop beside a command left running in a terminal.
+ */
+export function codexThread(now: number): ThreadState {
+  const b = new ThreadBuilder(CODEX_THREAD_SESSION_ID)
+  const t1 = 'turn-c1'
+  const s1 = now - 3_600_000
+  b.turn(t1, 'completed', s1, s1 + 124_000)
+    .message(
+      t1,
+      'c-user-1',
+      'user',
+      'The settings cards flash on load. Find why, fix it, and draw a new empty-state illustration for the environments list.',
+    )
+    .thought(t1, 'c-r1', '**Reading the settings route**')
+    .message(
+      t1,
+      'c-a1',
+      'assistant',
+      "I'll read the settings route and look for what renders twice.",
+      [],
+      'commentary',
+    )
+    .tool(t1, 'c-t1', 'commandExecution', 'read', 'completed', {
+      toolName: 'commandExecution',
+      input: {
+        command: 'sed -n 1,140p apps/web/src/routes/settings.tsx',
+        commandActions: [
+          { type: 'read', path: 'apps/web/src/routes/settings.tsx', name: 'settings.tsx' },
+        ],
+      },
+      locations: [{ path: 'apps/web/src/routes/settings.tsx' }],
+    })
+    .tool(t1, 'c-t2', 'commandExecution', 'search', 'completed', {
+      toolName: 'commandExecution',
+      input: {
+        command: 'rg -n useSettingsStores apps/web/src',
+        commandActions: [{ type: 'search', query: 'useSettingsStores', path: 'apps/web/src' }],
+      },
+    })
+    .subagent(t1, 'c-sub1', {
+      title: 'explorer',
+      agentType: undefined,
+      providerId: 'codex',
+      modelId: 'gpt-5.5',
+      status: 'completed',
+      stoppable: true,
+      startedAt: iso(s1 + 20_000),
+      finishedAt: iso(s1 + 58_000),
+    })
+    .subagent(t1, 'c-sub2', {
+      title: 'layout-auditor',
+      agentType: undefined,
+      providerId: 'codex',
+      modelId: 'gpt-5.5',
+      status: 'completed',
+      stoppable: true,
+      startedAt: iso(s1 + 21_000),
+      finishedAt: iso(s1 + 64_000),
+    })
+    .tool(t1, 'c-t3', 'Waiting for explorer, layout-auditor', 'other', 'completed', {
+      toolName: 'wait',
+      input: { receiverThreadIds: ['c-sub1', 'c-sub2'] },
+    })
+    .message(
+      t1,
+      'c-a2',
+      'assistant',
+      'Both agree: the page renders before the stores resolve. The screenshot shows the jump.',
+      [picture(20)],
+      'commentary',
+    )
+    .tool(t1, 'c-t4', 'imageView', 'read', 'completed', {
+      toolName: 'imageView',
+      input: { path: '/tmp/settings-flash.png' },
+      locations: [{ path: '/tmp/settings-flash.png' }],
+    })
+    .tool(t1, 'c-t5', 'fileChange', 'edit', 'completed', {
+      toolName: 'fileChange',
+      input: {
+        changes: [
+          { path: 'apps/web/src/routes/settings.tsx', kind: 'update' },
+          { path: 'apps/web/src/settings/EnvironmentCard.tsx', kind: 'update' },
+        ],
+      },
+      locations: [
+        { path: 'apps/web/src/routes/settings.tsx' },
+        { path: 'apps/web/src/settings/EnvironmentCard.tsx' },
+      ],
+      lineChanges: { added: 18, removed: 6 },
+    })
+    .tool(t1, 'c-t6', 'commandExecution', 'execute', 'completed', {
+      toolName: 'commandExecution',
+      input: {
+        command: 'pnpm --filter @openmanager/web test settings',
+        commandActions: [{ type: 'unknown', command: 'pnpm --filter @openmanager/web test' }],
+      },
+      outputBytes: 2_410,
+      startedAt: iso(s1 + 80_000),
+      finishedAt: iso(s1 + 92_500),
+    })
+    .tool(t1, 'c-t7', 'webSearch', 'fetch', 'completed', {
+      toolName: 'webSearch',
+      input: { action: 'search', query: 'empty state illustration soft fills' },
+    })
+    .tool(t1, 'c-t8', 'imageGeneration', 'other', 'completed', {
+      toolName: 'imageGeneration',
+      input: {
+        revisedPrompt:
+          'A quiet illustration of three stacked rounded cards on a soft fill, no outlines.',
+      },
+      startedAt: iso(s1 + 96_000),
+      finishedAt: iso(s1 + 118_000),
+    })
+    .message(t1, 'c-a3', 'assistant', CODEX_ANSWER, [picture(21)], 'final_answer')
+
+  // The environment telling the agent the subagents it started finished.
+  const t2 = 'turn-c2'
+  const s2 = now - 3_300_000
+  b.turn(t2, 'completed', s2, s2 + 6_000, 'subagents')
+    .message(
+      t2,
+      'c-user-2',
+      'user',
+      '<subagents-finished>\nSubagents you started have finished:\n- explorer: completed\n- layout-auditor: completed\n</subagents-finished>',
+    )
+    .message(
+      t2,
+      'c-a4',
+      'assistant',
+      'Both reports are in; nothing changes the fix.',
+      [],
+      'final_answer',
+    )
+
+  // `/compact`: an operation turn, its marker and how much it saved.
+  const t3 = 'turn-c3'
+  const s3 = now - 1_800_000
+  b.turn(t3, 'completed', s3, s3 + 21_000, 'compact')
+    .message(t3, 'c-user-3', 'user', '/compact')
+    .notice(t3, 'c-n1', {
+      kind: 'compacted',
+      message: 'Conversation compacted',
+      compaction: { trigger: 'manual', tokensBefore: 148_200, tokensAfter: 18_900 },
+    })
+
+  // `/review base main`: its markers, a read between them, and the findings.
+  const t4 = 'turn-c4'
+  const s4 = now - 1_200_000
+  b.turn(t4, 'completed', s4, s4 + 74_000, 'review')
+    .message(t4, 'c-user-4', 'user', '/review base main')
+    .notice(t4, 'c-n2', {
+      kind: 'info',
+      message: 'Review started',
+      review: { phase: 'started', target: 'changes against main' },
+    })
+    .tool(t4, 'c-t9', 'commandExecution', 'execute', 'completed', {
+      toolName: 'commandExecution',
+      input: {
+        command: 'git diff main...HEAD',
+        commandActions: [{ type: 'unknown', command: 'git diff main...HEAD' }],
+      },
+      outputBytes: 6_802,
+    })
+    .notice(t4, 'c-n3', {
+      kind: 'info',
+      message: 'Review finished',
+      review: { phase: 'finished' },
+    })
+    .message(t4, 'c-a5', 'assistant', REVIEW_FINDINGS)
+
+  // Live: a command left running in a terminal, a subagent the phone can stop.
+  const t5 = 'turn-c5'
+  const s5 = now - 95_000
+  b.turn(t5, 'running', s5)
+    .message(
+      t5,
+      'c-user-5',
+      'user',
+      'Fix the first finding, keep the dev server up, and check both themes.',
+    )
+    .message(
+      t5,
+      'c-a6',
+      'assistant',
+      'Starting the dev server, then a subagent checks both themes while I fix the read.',
+      [],
+      'commentary',
+    )
+    .tool(t5, 'c-t10', 'commandExecution', 'execute', 'in_progress', {
+      toolName: 'commandExecution',
+      input: {
+        command: 'pnpm --filter @openmanager/web dev',
+        commandActions: [{ type: 'unknown', command: 'pnpm --filter @openmanager/web dev' }],
+      },
+      output: '  VITE v7.1.4  ready in 812 ms\n\n  ➜  Local:   http://localhost:5174/\n',
+      startedAt: iso(s5 + 4_000),
+    })
+    .subagent(t5, 'c-sub3', {
+      title: 'theme-checker',
+      agentType: undefined,
+      providerId: 'codex',
+      modelId: 'gpt-5.5',
+      status: 'running',
+      stoppable: true,
+      startedAt: iso(s5 + 9_000),
+    })
+    .tool(t5, 'c-t11', 'Waiting for theme-checker', 'other', 'in_progress', {
+      toolName: 'wait',
+      input: { receiverThreadIds: ['c-sub3'] },
+    })
+  return b.state
+}
+
+/** The background work the fixture's sessions left running, by session. */
+export const FIXTURE_TASKS: Record<string, BackgroundTask[]> = {
+  [CODEX_THREAD_SESSION_ID]: [
+    { taskId: 'c-t10', kind: 'shell', description: 'pnpm --filter @openmanager/web dev' },
+  ],
+}
+
+const DELEGATED_BRIEF = `You are writing contract tests for \`turn_activity\`.
+
+Context: the runtime forwards \`rawInput\` and \`rawOutput\` for every tool call, and \`projectAgentEvent\` now carries them through to the protocol as \`input\` and \`output\`. Nothing checks that end to end yet.
+
+1. Add a test per provider fixture (Claude, Cursor, OpenCode, Codex) that projects the recorded events and asserts every settled tool has \`input\`.
+2. Assert no settled tool carries \`output\` text: settled text never travels in events.
+3. Assert \`lineChanges\` survives for edits, and that a diff never does.
+
+Keep the tests in \`packages/agent-runtime/src/protocol\`. Run the protocol suite when done and report what failed, if anything.`
+
+/** A subagent's own session: the brief its parent gave it, and its work so far. */
+export function delegatedThread(now: number): ThreadState {
+  const b = new ThreadBuilder('s-tool-payloads-tests')
+  const turn = 'turn-dl1'
+  b.turn(turn, 'running', now - 48_000, undefined, 'delegated')
+    .message(turn, 'dl-user', 'user', DELEGATED_BRIEF)
+    .message(
+      turn,
+      'dl-a1',
+      'assistant',
+      'Reading the recorded fixtures first, then one test per provider.',
+    )
+    .tool(turn, 'dl-t1', 'Glob', 'search', 'completed', {
+      toolName: 'Glob',
+      input: { pattern: 'packages/agent-runtime/src/**/fixtures/*.jsonl' },
+    })
+    .tool(turn, 'dl-t2', 'Write', 'edit', 'in_progress', {
+      toolName: 'Write',
+      input: { file_path: 'packages/agent-runtime/src/protocol/turn-activity.contract.test.ts' },
+      locations: [{ path: 'packages/agent-runtime/src/protocol/turn-activity.contract.test.ts' }],
+    })
   return b.state
 }

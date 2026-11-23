@@ -43,6 +43,7 @@ import { DevicesSection } from './DevicesSection'
 import { sinceWords } from './EnvironmentCard'
 import { PairSheet } from './PairSheet'
 import { ProvidersSection } from './ProvidersSection'
+import { UsageSection } from './UsageSection'
 import { TitlesSection, TitlesSheet } from './TitlesSheet'
 import { usePageSheet, type PageSheet } from './page-sheet'
 import { useDeviceAdmin, useTitleSetting } from './useSettingsStores'
@@ -236,6 +237,7 @@ export function EnvironmentScreen({ environmentId }: { environmentId: string }) 
         />
       ) : null}
       {client ? <ProvidersSection /> : null}
+      {client ? <UsageSection /> : null}
       {titlesState ? (
         <TitlesSection
           state={titlesState}

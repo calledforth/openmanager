@@ -36,6 +36,13 @@ export interface ThreadRowView {
   attachments: NonNullable<UIMessage['optimisticAttachments']>
   /** When a settled turn ran, from the environment's stamps, for "Worked for 14s". */
   runtime?: MessageContentSnapshot['runtime']
+  /**
+   * A user row nobody typed as a prompt: the parent agent's brief
+   * (`delegated`), the environment's word that subagents finished
+   * (`subagents`), or a command that ran a provider operation (`review`,
+   * `compact`). Absent on what a person sent.
+   */
+  origin?: NonNullable<MessageContentSnapshot['origin']>
 }
 
 const NO_PARTS: MessagePart[] = []
@@ -67,6 +74,7 @@ export function resolveThreadRow(
         : {}),
       ...(message.sendError ? { sendError: message.sendError } : {}),
       attachments: message.optimisticAttachments ?? NO_ATTACHMENTS,
+      ...(content?.origin ? { origin: content.origin } : {}),
     }
   }
   const settled = message.isFinal === true

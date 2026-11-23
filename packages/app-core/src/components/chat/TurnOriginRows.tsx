@@ -6,8 +6,9 @@ import {
   FlowArrowIcon,
   MagnifyingGlassIcon,
 } from '@phosphor-icons/react'
-import { describeTurnOperation, parseTurnOperation, type ProviderId } from '@agentpack/contract'
+import type { ProviderId } from '@agentpack/contract'
 import type { EnvironmentState } from '@openmanager/environment-client'
+import { operationPromptView, subagentsNoticeLine } from '../../lib/turn-origin-view'
 import { cn } from '../../lib/utils'
 import {
   useEnvironmentClientOptional,
@@ -96,16 +97,7 @@ export function DelegatedPrompt({ content, from }: { content: string; from?: Del
   )
 }
 
-/** The summary line of a "subagents finished" notice: its first line, without a trailing colon. */
-export function subagentsNoticeLine(content: string): { title: string; more: boolean } {
-  // The environment wraps the notice in a tag the agent reads; it says nothing to a person.
-  const lines = content
-    .split('\n')
-    .map((line) => line.trim())
-    .filter((line) => line && !/^<\/?[a-z-]+>$/.test(line))
-  const first = (lines[0] ?? 'Subagents finished').replace(/[:.]\s*$/, '')
-  return { title: first, more: lines.length > 1 }
-}
+export { subagentsNoticeLine }
 
 /**
  * The environment telling the agent its subagents finished. Nobody typed it,
@@ -197,10 +189,7 @@ export function OperationPrompt({
   content: string
   origin: 'review' | 'compact'
 }) {
-  const operation = parseTurnOperation(content)
-  const { label, detail } = operation
-    ? describeTurnOperation(operation)
-    : { label: origin === 'review' ? 'Code review' : 'Compact the conversation', detail: undefined }
+  const { label, detail, command } = operationPromptView(content, origin)
   const Glyph = origin === 'review' ? MagnifyingGlassIcon : ArrowsInLineVerticalIcon
   return (
     <div
@@ -217,7 +206,7 @@ export function OperationPrompt({
         <span className="min-w-0 truncate text-[var(--basis-text-muted)]">{detail}</span>
       ) : null}
       <code className="ml-auto shrink-0 rounded bg-[var(--basis-surface)] px-1.5 py-0.5 font-mono text-ui-xs text-[var(--basis-text-faint)]">
-        {content.trim().split(/\s+/)[0]}
+        {command}
       </code>
     </div>
   )

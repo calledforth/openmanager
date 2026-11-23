@@ -24,7 +24,11 @@ vi.mock('../src/theme/ThemeProvider', () => {
     {},
     {
       get: (_target, key) =>
-        key === 'status' || key === 'statusInk' || key === 'statusWash' ? ink : '#888888',
+        key === 'status' || key === 'statusInk' || key === 'statusWash'
+          ? ink
+          : key === 'wash'
+            ? () => '#88888822'
+            : '#888888',
     },
   )
   return { usePhoneTheme: () => theme }
