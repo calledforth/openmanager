@@ -5,17 +5,21 @@ import {
   type ActivityNode,
   type ActivitySummary,
 } from '@openmanager/shared/lib/activity-groups'
-import type {
-  ArtifactSource,
-  FailurePart,
-  MessagePart,
-  NoticePart,
-  SubagentPart,
+import {
+  readAskedQuestions,
+  type ArtifactSource,
+  type FailurePart,
+  type MessagePart,
+  type NoticePart,
+  type SubagentPart,
 } from '@openmanager/app-core/logic'
+import { resolveTool } from '@openmanager/shared/lib/tool-presenter'
 
 import { countRender } from '../../session/render-probe'
 import { usePhoneTheme } from '../../theme/ThemeProvider'
 import { AppText } from '../ui/AppText'
+import { AskedQuestionPart } from './AskedQuestionPart'
+import { FindingsCard } from './FindingsCard'
 import { ImageGroup, useTranscriptWidth, type GalleryImage } from './ImageGroup'
 import { TextPart } from './TextPart'
 import { VideoPart, type TranscriptVideo } from './VideoPart'
@@ -118,10 +122,20 @@ function renderPart(
   switch (part.type) {
     case 'text': {
       if (part.synthetic || part.ignored) return null
+      // What a review found, after its "finished" marker: its own card.
+      if (part.findings === true) {
+        return <FindingsCard text={(part.text as string) ?? ''} live={!!isStreaming} />
+      }
       return <TextPart text={(part.text as string) ?? ''} live={!!isStreaming} />
     }
-    case 'tool':
-      return <ToolRow part={part as unknown as ToolPartData} />
+    case 'tool': {
+      const tool = part as unknown as ToolPartData
+      // An answered question reads as the exchange it was, as web shows it.
+      const asked =
+        resolveTool(tool).canonical === 'AskUserQuestion' ? readAskedQuestions(part.state) : null
+      if (asked?.length) return <AskedQuestionPart questions={asked} />
+      return <ToolRow part={tool} />
+    }
     case 'image':
       // A run of images is gathered into one gallery before it gets here; one
       // on its own is a gallery of one.

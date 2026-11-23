@@ -4,7 +4,9 @@ import {
   ArrowsLeftRightIcon,
   GaugeIcon,
   InfoIcon,
+  MagnifyingGlassIcon,
   ProhibitIcon,
+  SealCheckIcon,
   WarningCircleIcon,
   WarningIcon,
   type Icon,
@@ -58,7 +60,13 @@ export const TurnNoticeRow = memo(function TurnNoticeRow({
   const copy = describeNotice(notice)
   const [open, setOpen] = useState(false)
   const revealedRef = useRef(false)
-  const Glyph = NOTICE_ICONS[notice.kind] ?? InfoIcon
+  // A review's markers: it began looking, and it has finished.
+  const Glyph =
+    notice.kind === 'info' && notice.review
+      ? notice.review.phase === 'started'
+        ? MagnifyingGlassIcon
+        : SealCheckIcon
+      : (NOTICE_ICONS[notice.kind] ?? InfoIcon)
   const warning = copy.tone === 'warning'
   const said = copy.detail ? `${copy.label} · ${copy.detail}` : copy.label
 
