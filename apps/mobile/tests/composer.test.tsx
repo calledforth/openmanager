@@ -33,7 +33,7 @@ const { useLiveComposerModel } = await import('../src/composer/useLiveComposerMo
 const { ThreadBridge } = await import('../src/composer/thread-port')
 const {
   composerFold,
-  modelSheetSections,
+  modelSheetView,
   permissionChoices,
   pressPrimary,
   primaryAction,
@@ -289,39 +289,75 @@ describe('the composer picks', () => {
     expect(current().picks.mode).toMatchObject({ id: 'plan' })
   })
 
-  it('lists only the session provider in the model sheet, favourites first', () => {
+  it('lists only the session provider in the model sheet, with no tabs', () => {
     const groups = [
       {
         providerId: 'claude' as const,
         providerName: 'Claude Code',
         models: [
-          { id: 'opus', name: 'Opus', description: 'Opus 5.5 · Best' },
+          { id: 'opus', name: 'Opus', description: 'Opus 5.5 · Best', contextWindowTokens: 1e6 },
           { id: 'sonnet', name: 'Sonnet' },
         ],
       },
       { providerId: 'cursor' as const, providerName: 'Cursor', models: [{ id: 'c', name: 'C' }] },
     ]
-    const sections = modelSheetSections({
+    const session = modelSheetView({
       groups,
       currentProviderId: 'claude',
       canChangeProvider: false,
       favorites: ['claude:sonnet'],
       query: '',
+      tab: null,
     })
-    expect(sections.map((section) => section.id)).toEqual(['favorites', 'claude'])
-    expect(sections[0]!.rows.map((row) => row.label)).toEqual(['Sonnet'])
-    expect(sections[1]!.rows.map((row) => [row.label, row.hint])).toEqual([
-      ['Opus 5.5', 'Best'],
-      ['Sonnet', undefined],
+    expect(session.tabs).toEqual([])
+    expect(session.rows.map((row) => [row.label, row.hint, row.context])).toEqual([
+      ['Opus 5.5', 'Best', '1M'],
+      ['Sonnet', undefined, undefined],
     ])
-    const draft = modelSheetSections({
+    expect(session.rows.map((row) => row.favorite)).toEqual([false, true])
+  })
+
+  it('opens a draft on the current provider tab, and searches every provider at once', () => {
+    const groups = [
+      {
+        providerId: 'codex' as const,
+        providerName: 'Codex',
+        models: [{ id: 'gpt-6.1-sol', name: 'gpt-6.1-sol', supportsFastMode: true }],
+      },
+      {
+        providerId: 'claude' as const,
+        providerName: 'Claude Code',
+        models: [{ id: 'opus', name: 'Opus' }],
+      },
+      {
+        providerId: 'opencode' as const,
+        providerName: 'OpenCode',
+        models: [{ id: 'big-pickle', name: 'Big Pickle' }],
+        acceptsTypedIds: true,
+      },
+    ]
+    const base = {
       groups,
-      currentProviderId: 'claude',
+      currentProviderId: 'codex' as const,
       canChangeProvider: true,
-      favorites: [],
-      query: 'c',
-    })
-    expect(draft.map((section) => section.id)).toEqual(['cursor'])
+      favorites: ['claude:opus' as const],
+      query: '',
+      tab: null,
+    }
+    const draft = modelSheetView(base)
+    // Web's order, Favourites first; the current provider's tab is on screen.
+    expect(draft.tabs.map((tab) => tab.id)).toEqual(['favorites', 'claude', 'opencode', 'codex'])
+    expect(draft.tab).toBe('codex')
+    expect(draft.rows.map((row) => [row.modelId, row.fast])).toEqual([['gpt-6.1-sol', true]])
+    expect(modelSheetView({ ...base, tab: 'favorites' }).rows.map((row) => row.key)).toEqual([
+      'claude:opus',
+    ])
+    const search = modelSheetView({ ...base, query: 'o' })
+    expect(search.searching).toBe(true)
+    expect(search.rows.map((row) => row.key)).toEqual(['claude:opus', 'codex:gpt-6.1-sol'])
+    // A provider that takes typed ids offers what is typed, on its own tab.
+    const typed = modelSheetView({ ...base, tab: 'opencode', query: 'kimi-k3' })
+    expect(typed.rows.map((row) => [row.modelId, row.typed])).toEqual([['kimi-k3', true]])
   })
 })
 
@@ -942,15 +978,19 @@ describe('the picks row', () => {
     expect(roomFor({ row: 200, fixed: 180, meter: false }).model).toBe(MODEL_MIN_WIDTH)
   })
 
-  it('names each provider group for a screen reader', () => {
-    const sections = modelSheetSections({
-      groups: [{ providerId: 'cursor', providerName: 'Cursor', models: [{ id: 'c', name: 'C' }] }],
+  it('names each provider tab for a screen reader', () => {
+    const view = modelSheetView({
+      groups: [
+        { providerId: 'cursor', providerName: 'Cursor', models: [{ id: 'c', name: 'C' }] },
+        { providerId: 'codex', providerName: 'Codex', models: [{ id: 'g', name: 'G' }] },
+      ],
       currentProviderId: 'cursor',
-      canChangeProvider: false,
-      favorites: ['cursor:c'],
+      canChangeProvider: true,
+      favorites: [],
       query: '',
+      tab: null,
     })
-    expect(sections.map((section) => section.label)).toEqual(['Favourites', 'Cursor'])
+    expect(view.tabs.map((tab) => tab.label)).toEqual(['Favourites', 'Cursor', 'Codex'])
   })
 })
 

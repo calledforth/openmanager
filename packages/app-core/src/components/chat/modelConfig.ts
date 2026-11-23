@@ -9,6 +9,13 @@ type SelectOption = Extract<SessionConfigOption, { type: 'select' }>
  * `reasoning` or `reasoning_effort` depending on the model. */
 const EFFORT_IDS = ['effort', 'reasoning_effort', 'reasoning']
 
+/** Claude's levels arrive as bare ids ("xhigh"); providers that name their
+ *  levels ("Extra-high") keep their own names. */
+export function effortDisplayName(name: string): string {
+  if (name === 'xhigh') return 'X-High'
+  return /^[a-z]+$/.test(name) ? name.charAt(0).toUpperCase() + name.slice(1) : name
+}
+
 /** The option that sets how hard the model thinks, whatever the provider
  * calls it. ACP's category for it is `thought_level`, but Cursor also files a
  * `thinking` on/off switch there, so a true/false select never qualifies. */

@@ -1,29 +1,46 @@
-import { CheckIcon } from 'phosphor-react-native'
+import { CheckIcon, DesktopIcon } from 'phosphor-react-native'
 import { View } from 'react-native'
 
 import { AppText } from '../components/ui/AppText'
-import type { HomeEnvironmentState } from '../home/source'
 import { Dot, toneColor } from '../settings/SettingsRow'
+import type { PhoneConnectionTone } from '../environment/connection-ui'
 import { usePhoneTheme } from '../theme/ThemeProvider'
 import { tap } from '../ui/haptics'
 import { Press } from '../ui/Press'
 import { Sheet } from '../ui/Sheet'
 
+/** One saved environment, as the new-session page offers it. */
+export interface EnvironmentChoice {
+  environmentId: string
+  label: string
+  tone: PhoneConnectionTone
+  /** Connected now, and not down: a draft can go there. */
+  reachable: boolean
+  /** Its state in a few words while it is not reachable. */
+  words: string | null
+}
+
 /**
- * Where a new session runs: every saved environment, each with its own
- * state, the page's own checked. Picking another opens that environment's
- * new-session page in place, with the project last picked there. Offered
- * only while the page holds nothing, so nothing written is left behind or
- * copied (`environmentChoice` in `DraftPage`).
+ * Where a new session runs: every saved environment, the page's own filled.
+ * One that cannot be reached stays listed, saying why, and cannot be picked,
+ * as web's picker keeps it. Picking another moves the page there: what is
+ * written goes along as a new draft in that environment's last picked
+ * project (`environment-move.ts`), its images stay where they were uploaded.
  */
 export function EnvironmentSheet({
   environments,
   current,
+  carry,
   onPick,
   onClose,
 }: {
-  environments: readonly HomeEnvironmentState[]
+  environments: readonly EnvironmentChoice[]
   current: string
+  /**
+   * What happens to what is written: `text` goes along as a new draft there,
+   * `stays` here (this environment keeps no drafts to copy), `nothing` is written.
+   */
+  carry: 'text' | 'stays' | 'nothing'
   onPick: (environmentId: string) => void
   onClose: () => void
 }) {
@@ -31,22 +48,30 @@ export function EnvironmentSheet({
   return (
     <Sheet onDismiss={onClose} onBack={onClose}>
       <View accessibilityRole="menu" style={{ paddingHorizontal: 6, paddingBottom: 2, gap: 2 }}>
-        <AppText
-          accessibilityRole="header"
-          variant="text-13-medium"
-          style={{ color: theme.muted, paddingHorizontal: 12, paddingBottom: 6 }}
-        >
-          Run it on
-        </AppText>
+        <View style={{ paddingHorizontal: 12, paddingBottom: 8, gap: 2 }}>
+          <AppText accessibilityRole="header" variant="text-14-medium" style={{ color: theme.fg }}>
+            Run it on
+          </AppText>
+          <AppText variant="text-12-regular" style={{ color: theme.muted }}>
+            {carry === 'text'
+              ? 'What you wrote moves along, into the project you last used there.'
+              : carry === 'stays'
+                ? 'What you wrote stays here: this environment keeps no drafts to move.'
+                : 'Opens in the project you last used there.'}
+          </AppText>
+        </View>
         {environments.map((environment) => {
           const on = environment.environmentId === current
+          const usable = on || environment.reachable
+          const detail = usable ? null : (environment.words ?? 'Not connected')
           return (
             <Press
               key={environment.environmentId}
               accessibilityRole="menuitem"
               accessibilityLabel={environment.label}
-              accessibilityHint={environment.words ?? undefined}
-              accessibilityState={{ selected: on }}
+              accessibilityHint={detail ?? undefined}
+              accessibilityState={{ selected: on, disabled: !usable }}
+              disabled={!usable}
               onPress={() => {
                 tap()
                 if (on) onClose()
@@ -58,22 +83,37 @@ export function EnvironmentSheet({
                 gap: 12,
                 minHeight: 52,
                 paddingHorizontal: 12,
-                borderRadius: 12,
-                backgroundColor: on || pressed ? theme.active : 'transparent',
+                borderRadius: 14,
+                backgroundColor: on ? theme.active : pressed ? theme.hover : 'transparent',
               })}
             >
-              <Dot color={toneColor(theme, environment.tone)} />
-              <View style={{ flex: 1, minWidth: 0 }}>
+              <View
+                style={{
+                  width: 32,
+                  height: 32,
+                  borderRadius: 10,
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  backgroundColor: on ? theme.hover : theme.active,
+                  opacity: usable ? 1 : 0.5,
+                }}
+              >
+                <DesktopIcon size={16} color={theme.fg} />
+                <View style={{ position: 'absolute', right: -1, bottom: -1 }}>
+                  <Dot color={toneColor(theme, environment.tone)} size={8} />
+                </View>
+              </View>
+              <View style={{ flex: 1, minWidth: 0, opacity: usable ? 1 : 0.5 }}>
                 <AppText variant="text-14-medium" numberOfLines={1} style={{ color: theme.fg }}>
                   {environment.label}
                 </AppText>
-                {environment.words ? (
+                {detail ? (
                   <AppText
                     variant="text-12-regular"
                     numberOfLines={1}
                     style={{ color: theme.muted }}
                   >
-                    {environment.words}
+                    {detail}
                   </AppText>
                 ) : null}
               </View>

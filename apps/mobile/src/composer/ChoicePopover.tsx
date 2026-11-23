@@ -40,7 +40,7 @@ const entering = popoverIn as unknown as (
 
 /** Wide enough for the hints when the provider gives any; the mockup's 164 when not. */
 const widthFor = (choices: readonly ComposerChoice[]) =>
-  choices.some((choice) => choice.description) ? 244 : 172
+  choices.some((choice) => choice.description || choice.disabledReason) ? 280 : 172
 
 /**
  * A popover of choices standing on the pick that opened it (mode, effort):
@@ -120,13 +120,17 @@ export function ChoicePopover({
             <View accessibilityRole="menu" accessibilityLabel={label}>
               {choices.map((choice) => {
                 const on = choice.id === current
+                // Ruled out by the provider's own configuration: listed, saying why.
+                const blocked = choice.disabledReason ?? null
+                const detail = blocked ?? choice.description
                 return (
                   <Press
                     key={choice.id}
                     accessibilityRole="menuitem"
                     accessibilityLabel={choice.name}
-                    accessibilityHint={choice.description}
-                    accessibilityState={{ selected: on }}
+                    accessibilityHint={detail}
+                    accessibilityState={{ selected: on, disabled: !!blocked }}
+                    disabled={!!blocked && !on}
                     onPress={() => {
                       tap()
                       onPick(choice.id)
@@ -140,6 +144,7 @@ export function ChoicePopover({
                       paddingHorizontal: 10,
                       borderRadius: 10,
                       backgroundColor: on ? theme.active : pressed ? theme.hover : 'transparent',
+                      opacity: blocked && !on ? 0.5 : 1,
                     })}
                   >
                     {icon ? icon(choice) : null}
@@ -151,13 +156,13 @@ export function ChoicePopover({
                       >
                         {choice.name}
                       </AppText>
-                      {choice.description ? (
+                      {detail ? (
                         <AppText
                           variant="text-12-regular"
                           numberOfLines={2}
                           style={{ color: theme.faint }}
                         >
-                          {choice.description}
+                          {detail}
                         </AppText>
                       ) : null}
                     </View>

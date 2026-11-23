@@ -41,6 +41,7 @@ import {
   type PhoneConnectionStatus,
 } from './controller'
 import { DraftDiscardHost } from '../draft/DraftDiscardHost'
+import { DraftMoveHost } from '../draft/DraftMoveHost'
 import { sessionWatch } from '../notifications'
 import { phoneStorage, subscribePhonePageExit } from '../storage'
 import { landingFor, landingOf } from './landing-route'
@@ -304,7 +305,9 @@ const EnvironmentHost = memo(function EnvironmentHost({
  *
  * One discard window serves every environment's draft cards
  * (`DraftDiscardsContext`), so the undo on the home is one, whichever
- * environment the draft is on.
+ * environment the draft is on. One mover (`DraftMoveHost`) carries a new
+ * session's page to another environment, and finishes the move wherever the
+ * reader goes next.
  */
 export function PhoneEnvironmentProvider({ children }: { children: ReactNode }) {
   const value = phoneConnectionValue()
@@ -340,20 +343,22 @@ export function PhoneEnvironmentProvider({ children }: { children: ReactNode }) 
   return (
     <PhoneConnectionContext.Provider value={value}>
       <DraftDiscardsContext.Provider value={discards}>
-        {state.environments.map(({ environmentId }) => {
-          const client = state.links[environmentId]?.client
-          const own = landingFor(landing, environmentId)
-          return client ? (
-            <EnvironmentHost
-              key={environmentId}
-              environmentId={environmentId}
-              client={client}
-              onLanding={own.onLanding}
-              landingDraftId={own.draftId}
-            />
-          ) : null
-        })}
-        {children}
+        <DraftMoveHost controller={value.controller} scopes={environmentScopes}>
+          {state.environments.map(({ environmentId }) => {
+            const client = state.links[environmentId]?.client
+            const own = landingFor(landing, environmentId)
+            return client ? (
+              <EnvironmentHost
+                key={environmentId}
+                environmentId={environmentId}
+                client={client}
+                onLanding={own.onLanding}
+                landingDraftId={own.draftId}
+              />
+            ) : null
+          })}
+          {children}
+        </DraftMoveHost>
       </DraftDiscardsContext.Provider>
     </PhoneConnectionContext.Provider>
   )

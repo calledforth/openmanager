@@ -6,6 +6,8 @@ export type ComposerOverlay =
   /** The project picker; `browse` opens it on the folder browser. */
   | { kind: 'project'; browse?: boolean }
   | { kind: 'settings' }
+  /** Where a new session runs, on a page with more than one environment saved. */
+  | { kind: 'environment' }
   | { kind: 'plan' }
   | { kind: 'camera' }
   /** The system's photo picker, open over the app: what it hands back is attached. */
@@ -13,7 +15,7 @@ export type ComposerOverlay =
   /** Where a photo comes from (the camera or the photo library), standing on the attach button. */
   | { kind: 'attach'; anchor: PickAnchor }
   /** A popover, standing on the pick that opened it (its place in the window). */
-  | { kind: 'mode' | 'effort'; anchor: PickAnchor }
+  | { kind: 'mode'; anchor: PickAnchor }
   /** Queue or steer what is typed, standing on the send button (its long press). */
   | { kind: 'followUp'; anchor: PickAnchor }
 
@@ -92,9 +94,9 @@ export function useComposerUiState(ui: ComposerUi): ComposerUiState {
 
 /**
  * A sample session's composer opened in a given state, from the address
- * (`?composer=model|mode|effort|settings|plan`): how the fixture
- * build is shot for review without a finger. Mode and effort stand where
- * their picks sit in the dock on a 390-wide screen.
+ * (`?composer=model|mode|settings|plan|project|environment`): how the fixture
+ * build is shot for review without a finger. Mode stands where its pick
+ * sits in the dock on a 390-wide screen.
  */
 export function fixtureComposerUi(
   param: string | undefined,
@@ -106,11 +108,12 @@ export function fixtureComposerUi(
     case 'settings':
     case 'plan':
     case 'project':
+    case 'environment':
       return { overlay: { kind: param } }
-    case 'mode':
-      return { overlay: { kind: 'mode', anchor: pickAt(118) } }
     case 'effort':
-      return { overlay: { kind: 'effort', anchor: pickAt(196) } }
+      return { overlay: { kind: 'settings' } }
+    case 'mode':
+      return { overlay: { kind: 'mode', anchor: pickAt(214) } }
     default:
       return {}
   }
