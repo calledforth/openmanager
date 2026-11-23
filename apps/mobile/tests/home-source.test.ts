@@ -15,7 +15,7 @@ import type {
   PhoneLinkStatus,
 } from '../src/environment/controller'
 import { FIXTURE_SESSIONS } from '../src/home/fixture'
-import { selectDraftRows, selectHomeRows, statusMarkOf, tabCounts } from '../src/home/rows'
+import { selectDraftRows, selectHomeBoard, statusMarkOf } from '../src/home/rows'
 import type { HomeSlice, HomeSourceInputs } from '../src/home/source'
 
 // The hook reads the controller through the provider, which needs React
@@ -219,19 +219,13 @@ describe('the home source over the shared sidebar providers', () => {
       [OTHER]: [entry({ externalId: 'orphan', parentExternalId: 'unlisted' })],
     }
     const { sessions, workspaces } = homeSourceOf(inputs(byWorkspace))
-    const active = selectHomeRows({ sessions, workspaces, tab: 'all' })
-    // The waiting child ranks its whole tree under Needs you.
-    expect(active[0]!.label).toBe('Needs you')
-    expect(active[0]!.rows.map((row) => [row.session.externalId, row.depth])).toEqual([
-      ['parent', 0],
-      ['child', 1],
-    ])
+    const { active } = selectHomeBoard({ sessions, workspaces })
+    // The child rides inside its parent's card.
+    const card = active.find((item) => item.root.session.externalId === 'parent')
+    expect(card?.children.map((row) => [row.session.externalId, row.depth])).toEqual([['child', 1]])
     // A child whose parent is not listed stands on its own.
-    const all = selectHomeRows({ sessions, workspaces, tab: 'all' })
-    const orphan = all
-      .flatMap((group) => group.rows)
-      .find((row) => row.session.externalId === 'orphan')
-    expect(orphan?.depth).toBe(0)
+    const orphan = active.find((item) => item.root.session.externalId === 'orphan')
+    expect(orphan?.root.depth).toBe(0)
   })
 
   it('keeps an unavailable workspace and its sessions, as the provider marks them', () => {
@@ -240,8 +234,8 @@ describe('the home source over the shared sidebar providers', () => {
     }
     const { sessions, workspaces } = homeSourceOf(inputs(byWorkspace))
     expect(sessions[0]).toMatchObject({ workspaceUnavailable: true, workspacePath: GONE })
-    const [group] = selectHomeRows({ sessions, workspaces, tab: 'all' })
-    expect(group!.rows[0]!.workspace).toMatchObject({ name: 'gone', availability: 'missing' })
+    const [card] = selectHomeBoard({ sessions, workspaces }).active
+    expect(card!.root.workspace).toMatchObject({ name: 'gone', availability: 'missing' })
   })
 
   it('leaves a missing title and a missing time missing', () => {
@@ -249,8 +243,8 @@ describe('the home source over the shared sidebar providers', () => {
     const { sessions, workspaces } = homeSourceOf(inputs(byWorkspace))
     expect(sessions[0]!.title).toBeUndefined()
     expect(sessions[0]!.updatedAt).toBeUndefined()
-    const groups = selectHomeRows({ sessions, workspaces, tab: 'all' })
-    expect(groups.map((group) => group.label)).toEqual(['Recent'])
+    const { active } = selectHomeBoard({ sessions, workspaces })
+    expect(active.map((card) => card.root.session.externalId)).toEqual(['bare'])
   })
 
   it('serves the shared draft cards as they are, each saying which environment it is on', () => {
@@ -279,7 +273,7 @@ describe('the home source over the shared sidebar providers', () => {
     expect(source.drafts).toEqual(drafts.map((draft) => ({ ...draft, environment: ON_DESK })))
     // The same card while its draft is the same object.
     expect(homeDraftsOf(drafts, ON_DESK)[0]).toBe(source.drafts[0])
-    expect(tabCounts(source.sessions)).toEqual({ all: 0, settled: 0 })
+    expect(source.sessions).toEqual([])
     const rows = selectDraftRows({ drafts: source.drafts, workspaces: source.workspaces })
     expect(rows.map((row) => row.workspace?.name ?? null)).toEqual(['repo', null])
   })

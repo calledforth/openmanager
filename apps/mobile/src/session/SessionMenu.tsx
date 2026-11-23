@@ -1,6 +1,7 @@
 import {
   ArrowUUpLeftIcon,
   CheckCircleIcon,
+  CookingPotIcon,
   DotsThreeIcon,
   GearSixIcon,
   PencilSimpleIcon,
@@ -19,7 +20,7 @@ import { usePhoneTheme } from '../theme/ThemeProvider'
 import { Glass } from '../ui/Glass'
 import { tap } from '../ui/haptics'
 import { Press } from '../ui/Press'
-import type { SessionMenuItem, SessionMenuItemId } from './session-menu'
+import { conciseMenu, type SessionMenuItem, type SessionMenuItemId } from './session-menu'
 
 /**
  * A row of the menu: a session's item (`session-menu.ts`, drawn with the
@@ -37,6 +38,8 @@ export interface MenuItem {
 }
 
 const ICONS: Record<SessionMenuItemId, ComponentType<IconProps>> = {
+  cook: CookingPotIcon,
+  uncook: ArrowUUpLeftIcon,
   rename: PencilSimpleIcon,
   'regenerate-title': SparkleIcon,
   pin: PushPinIcon,
@@ -47,7 +50,9 @@ const ICONS: Record<SessionMenuItemId, ComponentType<IconProps>> = {
   'session-settings': GearSixIcon,
 }
 
-const iconOf = (item: MenuItem) => item.icon ?? ICONS[item.id as SessionMenuItemId] ?? DotsThreeIcon
+/** The glyph an item is drawn with: its own, else the one its id names. */
+export const menuIconOf = (item: MenuItem) =>
+  item.icon ?? ICONS[item.id as SessionMenuItemId] ?? DotsThreeIcon
 
 /** The popover fades in and out: short, eased, on the UI thread. */
 const MENU_IN = FadeIn.duration(160).easing(Easing.out(Easing.quad))
@@ -56,18 +61,20 @@ const MENU_OUT = FadeOut.duration(120).easing(Easing.in(Easing.quad))
 /** Where the popover's left edge sits: under the title capsule, past Back. */
 const MENU_LEFT = 20 + 36 + 8
 
+/**
+ * One line: the glyph and the word. An item that only waits (nothing can be
+ * sent, or another command is out) is dimmed; why is said once above the
+ * items, and to a screen reader on the row.
+ */
 export function MenuRow({
   item,
-  said,
   onChoose,
 }: {
   item: MenuItem | SessionMenuItem
-  /** The reason the menu already says at its top: not repeated on the row. */
-  said: string | null
   onChoose: () => void
 }) {
   const theme = usePhoneTheme()
-  const Icon = iconOf(item)
+  const Icon = menuIconOf(item)
   const disabled = item.disabledReason !== null
   const tone = item.destructive ? theme.status.error : theme.fg
   return (
@@ -87,24 +94,19 @@ export function MenuRow({
         gap: 12,
         minHeight: 44,
         paddingHorizontal: 12,
-        paddingVertical: 8,
-        borderRadius: 10,
+        borderRadius: 12,
         backgroundColor: pressed && !disabled ? theme.hover : 'transparent',
+        opacity: disabled ? 0.45 : 1,
       })}
     >
-      <View style={{ opacity: disabled ? 0.45 : 1 }}>
-        <Icon size={18} color={tone} />
-      </View>
-      <View style={{ flex: 1, minWidth: 0, opacity: disabled ? 0.45 : 1 }}>
-        <AppText variant="text-14-regular" numberOfLines={1} style={{ color: tone }}>
-          {item.label}
-        </AppText>
-        {item.disabledReason && item.disabledReason !== said ? (
-          <AppText variant="text-12-regular" numberOfLines={2} style={{ color: theme.muted }}>
-            {item.disabledReason}
-          </AppText>
-        ) : null}
-      </View>
+      <Icon size={18} color={tone} />
+      <AppText
+        variant="text-14-regular"
+        numberOfLines={1}
+        style={{ color: tone, flex: 1, minWidth: 0 }}
+      >
+        {item.label}
+      </AppText>
     </Press>
   )
 }
@@ -124,8 +126,8 @@ function MenuNote({ text }: { text: string }) {
 /**
  * The page's actions, opened from the title: a glass popover under the
  * header's capsule, over the page. A tap outside, or Android's Back, closes
- * it. Items it cannot do from here stay listed, dimmed, with why, and do not
- * respond.
+ * it. Only what can be done is listed (`conciseMenu`), as in a row's actions
+ * sheet; while nothing can be sent the items stay, dimmed, under why.
  */
 export function SessionMenu({
   items,
@@ -152,6 +154,7 @@ export function SessionMenu({
     })
     return () => subscription.remove()
   }, [])
+  const shown = conciseMenu(items, note)
   return (
     <Animated.View
       entering={MENU_IN}
@@ -165,12 +168,12 @@ export function SessionMenu({
         onPress={onClose}
         style={StyleSheet.absoluteFill}
       />
-      <View style={{ position: 'absolute', top, left: MENU_LEFT, width: 256 }}>
+      <View style={{ position: 'absolute', top, left: MENU_LEFT, width: 248 }}>
         <Glass strength="sheet" shadow="float" radius={16} contentStyle={{ padding: 6 }}>
           {note ? <MenuNote text={note} /> : null}
           <View accessibilityRole="menu">
-            {items.map((item) => (
-              <MenuRow key={item.id} item={item} said={note} onChoose={() => onChoose(item.id)} />
+            {shown.map((item) => (
+              <MenuRow key={item.id} item={item} onChoose={() => onChoose(item.id)} />
             ))}
           </View>
         </Glass>

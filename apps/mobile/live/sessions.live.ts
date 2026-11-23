@@ -169,7 +169,7 @@ describe('sessions list and read-only thread, live', () => {
     } = await import('@openmanager/app-core/logic')
     const { createPhoneConnectionController } = await import('../src/environment/controller')
     const { useHomeSource } = await import('../src/home/source')
-    const { selectHomeRows } = await import('../src/home/rows')
+    const { selectHomeBoard } = await import('../src/home/rows')
     const { useReadOnlySession } = await import('../src/session/useReadOnlySession')
     const { threadRowsOf } = await import('../src/session/thread-rows')
 
@@ -309,10 +309,9 @@ describe('sessions list and read-only thread, live', () => {
       workspaceId: session.workspaceId,
     }))
     const homeView = home as HomeView | null
-    const rows = selectHomeRows({
+    const board = selectHomeBoard({
       sessions: homeView!.sessions,
       workspaces: homeView!.workspaces,
-      tab: 'all',
     })
     note('home', {
       kind: homeView!.kind,
@@ -325,9 +324,9 @@ describe('sessions list and read-only thread, live', () => {
         status: session.status,
         workspacePath: session.workspacePath,
       })),
-      groups: rows.map((group) => ({
-        label: group.label,
-        rows: group.rows.map((row) => row.session.externalId),
+      groups: (['active', 'cooking', 'settled'] as const).map((place) => ({
+        label: place,
+        rows: board[place].map((card) => card.root.session.externalId),
       })),
       serverSessions,
       drafts: homeView!.drafts,

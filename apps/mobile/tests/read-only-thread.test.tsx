@@ -662,7 +662,7 @@ describe('the session page header on a live session', () => {
     await mountActions(client)
     await flush()
     const ids = actions!.menu.filter((item) => !item.disabledReason).map((item) => item.id)
-    expect(ids).toEqual(['rename', 'regenerate-title', 'pin', 'settle'])
+    expect(ids).toEqual(['cook', 'pin', 'settle', 'rename', 'regenerate-title'])
     expect(actions!.unavailable).toBeNull()
 
     await act(() => actions!.rename('Renamed'))
