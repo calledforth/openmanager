@@ -111,9 +111,10 @@ export function sessionMenuItems(input: SessionMenuInput): SessionMenuItem[] {
       id: 'settle',
       label: 'Settle',
       short: 'Settle',
-      disabledReason:
-        gate(input, 'settleSession', 'This environment cannot settle sessions') ??
-        (canSettle(input.mark, !!input.inBackground) ? null : 'Live work cannot be settled'),
+      // Live work first: it cannot be settled from anywhere, connected or not.
+      disabledReason: canSettle(input.mark, !!input.inBackground)
+        ? gate(input, 'settleSession', 'This environment cannot settle sessions')
+        : 'Live work cannot be settled',
     })
   }
   items.push(

@@ -1,5 +1,5 @@
 import { useCallback, useMemo, useRef, useState } from 'react'
-import { KeyboardAvoidingView, StyleSheet, TextInput, View } from 'react-native'
+import { KeyboardAvoidingView, Platform, StyleSheet, TextInput, View } from 'react-native'
 
 import { AppText } from '../components/ui/AppText'
 import { statusLineOf, type HomeRow } from '../home/rows'
@@ -323,16 +323,18 @@ function TitleEditor({
           underlineColorAndroid="transparent"
           cursorColor={theme.fg}
           selectionColor={theme.active}
-          style={{
-            fontFamily: 'Geist-Medium',
-            fontSize: 16,
-            lineHeight: 22,
-            color: theme.fg,
-            padding: 0,
-            margin: 0,
+          style={[
+            {
+              fontFamily: 'Geist-Medium',
+              fontSize: 16,
+              lineHeight: 22,
+              color: theme.fg,
+              padding: 0,
+              margin: 0,
+            },
             // The browser's own focus ring, on the web build: the fill is the field.
-            outlineWidth: 0,
-          }}
+            Platform.OS === 'web' ? ({ outlineStyle: 'none' } as object) : null,
+          ]}
         />
       </View>
       <View style={{ flexDirection: 'row', justifyContent: 'flex-end', gap: 8 }}>
