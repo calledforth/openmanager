@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react'
+import { useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { AnimatePresence, motion, useReducedMotion } from 'motion/react'
 import { CaretDownIcon } from '@phosphor-icons/react'
 import type { Subagent } from '@openmanager/protocol'
@@ -39,8 +39,8 @@ export {
 
 /**
  * The open chat's subagents while any of them works, wherever the chat pane
- * has room for them: on a wide pane (80rem and up) a frameless list in the
- * gutter at its right; on a narrower one a strip above the composer, beside
+ * has room for them: on a wide pane (64rem and up) a frameless list at its
+ * right, the conversation moving left to make room for it; on a narrower one a strip above the composer, beside
  * the background-tasks strip and built like it. Both draw the same list: a
  * subagent per row, nested ones indented under the one that started them.
  *
@@ -248,13 +248,15 @@ export function SubagentRail({ lineage }: { lineage: Lineage }) {
   const [hovered, setHovered] = useState(false)
   const [showSettled, setShowSettled] = useState(false)
   const phase = useLineagePhase(lineage, hovered)
+  const paneRef = useRef<HTMLDivElement>(null)
+  useRailRoom(paneRef, phase.kind !== 'idle')
   const now = useTick(lineage.live.length > 0)
   const reduceMotion = useReducedMotion()
   const rows = lineagePhaseRows(lineage, phase, showSettled)
   const settledShown = phase.kind === 'live' ? lineage.settled : 0
   const waiting = lineage.live.some((node) => node.tone === 'waiting')
   return (
-    <div className="pointer-events-none absolute inset-0 z-10 @container/pane">
+    <div ref={paneRef} className="pointer-events-none absolute inset-0 z-10 @container/pane">
       <AnimatePresence>
         {phase.kind === 'idle' ? null : (
           <motion.aside
@@ -267,7 +269,7 @@ export function SubagentRail({ lineage }: { lineage: Lineage }) {
             transition={{ duration: reduceMotion ? 0 : 0.2, ease: [0.22, 1, 0.36, 1] }}
             onPointerEnter={() => setHovered(true)}
             onPointerLeave={() => setHovered(false)}
-            className="custom-scrollbar pointer-events-auto absolute top-11 right-3 hidden max-h-[calc(100%-var(--chat-composer-height,8rem)-4rem)] w-60 flex-col overflow-x-hidden overflow-y-auto @min-[80rem]/pane:flex"
+            className="custom-scrollbar pointer-events-auto absolute top-11 right-3 hidden max-h-[calc(100%-var(--chat-composer-height,8rem)-4rem)] w-60 flex-col overflow-x-hidden overflow-y-auto @min-[64rem]/pane:flex"
           >
             <div className="flex items-baseline justify-between gap-3 px-2 pb-1 text-ui-xs whitespace-nowrap">
               <span className="text-[var(--basis-text-muted)]">Subagents</span>
@@ -301,6 +303,39 @@ export function SubagentRail({ lineage }: { lineage: Lineage }) {
   )
 }
 
+/** The pane width the rail shows from: its `@min-[64rem]/pane` query, in rems. */
+const RAIL_FROM_REM = 64
+/** The room the rail takes at the pane's right: its 15rem, its inset, and a gap. */
+export const RAIL_ROOM = '16rem'
+/** Where the rail says how much room it takes, for the chat column (`.chat-column`). */
+export const RAIL_ROOM_VAR = '--chat-rail-room'
+
+/**
+ * While the rail shows, and the pane is wide enough for it, say on the pane
+ * how much room it takes, so the conversation and the composer move out of
+ * its way rather than run under it.
+ */
+function useRailRoom(paneRef: React.RefObject<HTMLDivElement | null>, shown: boolean) {
+  useLayoutEffect(() => {
+    const pane = paneRef.current
+    const host = pane?.parentElement
+    if (!shown || !pane || !host) return
+    const rem = () => parseFloat(getComputedStyle(document.documentElement).fontSize) || 16
+    const publish = () => {
+      if (pane.clientWidth >= RAIL_FROM_REM * rem())
+        host.style.setProperty(RAIL_ROOM_VAR, RAIL_ROOM)
+      else host.style.removeProperty(RAIL_ROOM_VAR)
+    }
+    publish()
+    const observer = typeof ResizeObserver === 'undefined' ? null : new ResizeObserver(publish)
+    observer?.observe(pane)
+    return () => {
+      observer?.disconnect()
+      host.style.removeProperty(RAIL_ROOM_VAR)
+    }
+  }, [paneRef, shown])
+}
+
 // ─── Narrower panes: the strip above the composer ───────────────────────────
 
 /** The strip above the composer, for panes too narrow for the rail. */
@@ -314,7 +349,7 @@ function EnvironmentSubagentDock() {
   if (!sessionId) return null
   return (
     // Where the pane is wide enough, the rail says this instead.
-    <div className="@min-[80rem]/pane:hidden">
+    <div className="@min-[64rem]/pane:hidden">
       <SubagentDock key={sessionId} lineage={lineage} />
     </div>
   )
