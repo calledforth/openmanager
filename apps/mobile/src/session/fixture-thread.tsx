@@ -16,6 +16,8 @@ import {
   EMPTY_THREAD_PROJECTION,
   projectThread,
   type ActiveThreadStores,
+  type Lineage,
+  type LineageSession,
   type ThreadProjection,
   type UIMessage,
 } from '@openmanager/app-core/logic'
@@ -23,6 +25,7 @@ import type { Subagent } from '@openmanager/protocol'
 import type { BackgroundTask, ThreadState } from '@openmanager/environment-client'
 
 import { FIXTURE_WORKSPACES } from '../home/fixture'
+import { lineageReader } from './subagent-lineage'
 import type { HomeSession } from '../home/rows'
 import {
   backgroundThread,
@@ -30,6 +33,7 @@ import {
   codexThread,
   delegatedThread,
   doneThread,
+  FIXTURE_LINEAGE,
   FIXTURE_TASKS,
   failedThread,
   imagesThread,
@@ -105,6 +109,8 @@ export interface FixtureThread {
   getMessages: () => UIMessage[]
   /** The work the session left running, as the environment lists it. */
   getTasks: () => readonly BackgroundTask[]
+  /** Its subagents, at any depth, as the environment's sessions would list them. */
+  getLineage: () => Lineage
   driver: FixtureDriver
   followUps: FixtureFollowUps
 }
@@ -116,6 +122,8 @@ const NO_TASKS: readonly BackgroundTask[] = []
 export function createFixtureThread(
   initial: ThreadState | null,
   initialTasks: readonly BackgroundTask[] = NO_TASKS,
+  /** The child sessions under it, as summaries name them (its own is added). */
+  lineageSessions: readonly LineageSession[] = [],
 ): FixtureThread {
   let thread = initial
   let tasks = initialTasks
@@ -326,12 +334,31 @@ export function createFixtureThread(
     },
   }
 
+  // The page's own session, holding the thread, then the children it lists.
+  const root = initial?.thread.sessionId
+  const sessions: Record<string, LineageSession> = {}
+  if (initial && root) {
+    sessions[root] = {
+      sessionId: root,
+      title: '',
+      status: 'running',
+      providerId: 'claude',
+      threadIds: [initial.thread.threadId],
+    }
+    for (const child of lineageSessions) sessions[child.sessionId] = child
+  }
+  const getLineage = lineageReader(
+    () => ({ sessions, threads: thread ? { [thread.thread.threadId]: thread } : {} }),
+    root ?? '',
+  )
+
   return {
     followUps,
     subscribe,
     getThread: () => thread,
     getMessages: () => projection.messages,
     getTasks: () => tasks,
+    getLineage,
     stores: {
       streamingStore: {
         subscribe: (_id, listener) => subscribe(listener),
@@ -356,6 +383,7 @@ export function useFixtureThread(sessionId: string): FixtureThread {
       createFixtureThread(
         FIXTURE_THREADS[sessionId]?.(Date.now()) ?? null,
         FIXTURE_TASKS[sessionId] ?? NO_TASKS,
+        FIXTURE_LINEAGE[sessionId],
       ),
     [sessionId],
   )

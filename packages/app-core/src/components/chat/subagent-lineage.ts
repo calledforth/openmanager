@@ -1,5 +1,11 @@
+import { useEffect, useRef, useState } from 'react'
 import type { SessionSummary, Subagent } from '@openmanager/protocol'
-import { subagentTone, type SubagentTone } from '../parts/subagent-card'
+import {
+  subagentDetail,
+  subagentTone,
+  subagentWaitReason,
+  type SubagentTone,
+} from '../parts/subagent-card'
 
 /**
  * The family tree of the subagents under one session: who started whom, at
@@ -184,4 +190,95 @@ export function lineageRows(
   }
   walk(lineage.roots, [])
   return rows
+}
+
+// ─── What the list shows, and when ──────────────────────────────────────────
+//
+// Shared by every surface that draws the open chat's subagents (web's rail
+// and strip, the phone's strip), so they show and fade alike.
+
+/** How long "All N done" stays before the list fades. */
+export const ALL_DONE_LINGER_MS = 6_000
+
+export type LineagePhase =
+  | { kind: 'idle' }
+  | { kind: 'live' }
+  | { kind: 'done'; keys: ReadonlySet<string> }
+
+/**
+ * Whether the list shows, and for which subagents: while any is live, and
+ * for `ALL_DONE_LINGER_MS` after the last of a burst settles (longer while
+ * `held`). The burst is every subagent seen live since the list last hid.
+ */
+export function useLineagePhase(lineage: Lineage, held: boolean): LineagePhase {
+  const burst = useRef(new Set<string>())
+  const [phase, setPhase] = useState<LineagePhase>({ kind: 'idle' })
+  const live = lineage.live.length > 0
+  useEffect(() => {
+    if (live) {
+      for (const node of lineage.live) burst.current.add(node.key)
+      setPhase((current) => (current.kind === 'live' ? current : { kind: 'live' }))
+      return
+    }
+    setPhase((current) =>
+      current.kind === 'live' && burst.current.size > 0
+        ? { kind: 'done', keys: new Set(burst.current) }
+        : current,
+    )
+  }, [live, lineage])
+  useEffect(() => {
+    if (phase.kind !== 'done' || held) return
+    const timer = setTimeout(() => {
+      burst.current.clear()
+      setPhase({ kind: 'idle' })
+    }, ALL_DONE_LINGER_MS)
+    return () => clearTimeout(timer)
+  }, [phase, held])
+  return phase
+}
+
+/** The rows a phase shows: live ones and their way up, or the burst that just ended. */
+export function lineagePhaseRows(lineage: Lineage, phase: LineagePhase, showSettled: boolean) {
+  if (phase.kind === 'done') {
+    return lineageRows(lineage, true).filter(({ node }) => phase.keys.has(node.key))
+  }
+  return lineageRows(lineage, showSettled)
+}
+
+/** "2 working · 1 needs you", or "All 3 done" once a burst has ended. */
+export function lineageHeadline(lineage: Lineage, phase: LineagePhase): string {
+  if (phase.kind === 'done') {
+    const failed = lineage.all.filter(
+      (node) => phase.keys.has(node.key) && node.tone === 'failed',
+    ).length
+    const count = phase.keys.size
+    if (failed === 0) return count === 1 ? 'Subagent done' : `All ${count} done`
+    return `${count - failed} done · ${failed} failed`
+  }
+  const waiting = lineage.live.filter((node) => node.tone === 'waiting').length
+  const working = lineage.live.length - waiting
+  return [
+    working ? `${working} working` : '',
+    waiting ? `${waiting} ${waiting === 1 ? 'needs' : 'need'} you` : '',
+  ]
+    .filter(Boolean)
+    .join(' · ')
+}
+
+/**
+ * The line under a row: what a working one is doing, what a waiting one
+ * waits on, why a failed one failed. Nothing for one that is done or stopped.
+ */
+export function lineageNodeDetail(node: LineageNode): string | undefined {
+  const record = node.subagent
+  switch (node.tone) {
+    case 'waiting':
+      return subagentWaitReason(node.waitingOn)
+    case 'running':
+      return record ? subagentDetail(record) : undefined
+    case 'failed':
+      return record?.statusReason?.trim() || 'Failed'
+    default:
+      return undefined
+  }
 }

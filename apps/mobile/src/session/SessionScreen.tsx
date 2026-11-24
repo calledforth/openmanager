@@ -13,6 +13,8 @@ import {
   type WaitingQueue,
 } from './QueuedMessages'
 import { SteerNowContext } from './steer-now'
+import { SubagentStrip } from './SubagentStrip'
+import { lineageReader } from './subagent-lineage'
 
 import { LiveComposer } from '../composer/LiveComposer'
 import { FixtureComposer } from '../composer/FixtureComposer'
@@ -136,32 +138,53 @@ function LiveSession({ environmentId, sessionId }: { environmentId: string; sess
   const waiting = useWaitingQueue(client, sessionId)
   const queues = client.supports('queueMessage')
   const sendSteerNow = client.supports('sendSteerNow') ? waiting.sendSteerNow : null
+  // The chat's subagents while any works: above the background work, as on web.
+  const getLineage = useMemo(
+    () => lineageReader(() => client.getState(), sessionId),
+    [client, sessionId],
+  )
   // One element while the tasks and the queue are the same, so the page's memo holds.
   const canStop = client.supports('stopBackgroundTasks')
   const above = useMemo(
-    () =>
-      tasks.length > 0 || (queues && (waiting.queue.items.length > 0 || waiting.queue.pausedBy)) ? (
-        <>
-          {queues ? (
-            <QueuedMessagesRow
-              // Per session: a remove pending in one must not show as pending in the next.
-              key={`queue:${sessionId}`}
-              queue={waiting.queue}
-              onRemove={waiting.remove}
-              onResume={waiting.resume}
-            />
-          ) : null}
-          {tasks.length > 0 ? (
-            <BackgroundTasksRow
-              // Per session: a stop pending in one must not show as pending in the next.
-              key={sessionId}
-              tasks={tasks}
-              onStop={canStop ? stopTasks : undefined}
-            />
-          ) : null}
-        </>
-      ) : null,
-    [canStop, queues, sessionId, stopTasks, tasks, waiting.queue, waiting.remove, waiting.resume],
+    () => (
+      <>
+        {queues ? (
+          <QueuedMessagesRow
+            // Per session: a remove pending in one must not show as pending in the next.
+            key={`queue:${sessionId}`}
+            queue={waiting.queue}
+            onRemove={waiting.remove}
+            onResume={waiting.resume}
+          />
+        ) : null}
+        {/* Per session, like the rows beside it: an open list or a pending stop stays with its chat. */}
+        <SubagentStrip
+          key={`subagents:${sessionId}`}
+          subscribe={subscribe}
+          getLineage={getLineage}
+        />
+        {tasks.length > 0 ? (
+          <BackgroundTasksRow
+            // Per session: a stop pending in one must not show as pending in the next.
+            key={sessionId}
+            tasks={tasks}
+            onStop={canStop ? stopTasks : undefined}
+          />
+        ) : null}
+      </>
+    ),
+    [
+      canStop,
+      getLineage,
+      queues,
+      sessionId,
+      stopTasks,
+      subscribe,
+      tasks,
+      waiting.queue,
+      waiting.remove,
+      waiting.resume,
+    ],
   )
   const childSessions = useChildSessions(sessions, sessionId, subagents)
   const [ui] = useState(() => createComposerUi())
@@ -218,6 +241,7 @@ export function FixtureSession({ sessionId, opened }: { sessionId: string; opene
           onRemove={fixture.followUps.remove}
           onResume={fixture.followUps.resume}
         />
+        <SubagentStrip subscribe={fixture.subscribe} getLineage={fixture.getLineage} />
         {tasks.length > 0 ? (
           <BackgroundTasksRow tasks={tasks} onStop={fixture.followUps.stopTasks} />
         ) : null}

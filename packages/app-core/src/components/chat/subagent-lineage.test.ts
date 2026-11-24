@@ -1,6 +1,13 @@
 import { describe, expect, it } from 'vitest'
 import type { Subagent } from '@openmanager/protocol'
-import { buildLineage, lineageRows, type LineageSession } from './subagent-lineage'
+import {
+  buildLineage,
+  lineageHeadline,
+  lineageNodeDetail,
+  lineagePhaseRows,
+  lineageRows,
+  type LineageSession,
+} from './subagent-lineage'
 
 const record = (patch: Partial<Subagent> & Pick<Subagent, 'subagentId'>): Subagent => ({
   parentSessionId: 'root',
@@ -140,5 +147,66 @@ describe('subagent lineage', () => {
       () => undefined,
     )
     expect(looped.all.map((node) => node.sessionId)).toEqual(['x', 'y'])
+  })
+})
+
+describe('what the subagent list says', () => {
+  const live = buildLineage(
+    'root',
+    {
+      root: session('root'),
+      a: child('a', 'root', { status: 'running' }),
+      b: child('b', 'root', { status: 'waiting', waitingOn: 'question' }),
+      c: child('c', 'root'),
+    },
+    (threadId) =>
+      threadId !== 'root-thread'
+        ? undefined
+        : [
+            record({ subagentId: 'sa-a', childSessionId: 'a', activity: 'Reading **auth.ts**' }),
+            record({
+              subagentId: 'sa-b',
+              childSessionId: 'b',
+              status: 'waiting',
+              waitingOn: 'question',
+            }),
+            record({
+              subagentId: 'sa-c',
+              childSessionId: 'c',
+              status: 'failed',
+              statusReason: 'Rate limited',
+            }),
+          ],
+  )
+
+  it('heads a live list with how many work and how many need you', () => {
+    expect(lineageHeadline(live, { kind: 'live' })).toBe('1 working · 1 needs you')
+  })
+
+  it('says a burst ended, and how many failed in it', () => {
+    expect(lineageHeadline(live, { kind: 'done', keys: new Set(['sa-a', 'sa-b']) })).toBe(
+      'All 2 done',
+    )
+    expect(lineageHeadline(live, { kind: 'done', keys: new Set(['sa-a']) })).toBe('Subagent done')
+    expect(lineageHeadline(live, { kind: 'done', keys: new Set(['sa-a', 'sa-c']) })).toBe(
+      '1 done · 1 failed',
+    )
+  })
+
+  it('shows the burst that ended, not the settled ones from before it', () => {
+    const rows = lineagePhaseRows(live, { kind: 'done', keys: new Set(['sa-a']) }, false)
+    expect(rows.map(({ node }) => node.key)).toEqual(['sa-a'])
+    expect(lineagePhaseRows(live, { kind: 'live' }, false).map(({ node }) => node.key)).toEqual([
+      'sa-a',
+      'sa-b',
+    ])
+  })
+
+  it('says under a row what it does, waits on, or why it failed', () => {
+    const [a, b, c] = live.roots
+    expect(lineageNodeDetail(a!)).toBe('Reading auth.ts')
+    expect(lineageNodeDetail(b!)).toBe('Asked you a question')
+    expect(lineageNodeDetail(c!)).toBe('Rate limited')
+    expect(lineageNodeDetail({ ...a!, tone: 'done' })).toBeUndefined()
   })
 })
