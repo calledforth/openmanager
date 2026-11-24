@@ -9,6 +9,7 @@ import { InteractionBroker } from '../../core/InteractionBroker.js'
 import { PermissionBroker } from '../../core/PermissionBroker.js'
 import { codex } from '../../providers/codex.js'
 import type { HostDeps } from '../../host.js'
+import type { AgentToolContext, AgentToolsHost } from '../../tools/agent-tools.js'
 import type { SessionRuntimeSpec } from '../SessionRuntime.js'
 import type { DesiredSessionConfig } from '../lifecycle.js'
 import { CodexAppServerClient } from './CodexAppServerClient.js'
@@ -58,6 +59,7 @@ function build(
     interruptGraceMs?: number
     controlRequestMs?: number
     sessionHistory?: HostDeps['sessionHistory']
+    agentTools?: HostDeps['agentTools']
   } = {},
 ) {
   const server = options.server ?? new FakeCodexAppServer()
@@ -86,6 +88,7 @@ function build(
         log,
         onSessionTitle,
         ...(options.sessionHistory ? { sessionHistory: options.sessionHistory } : {}),
+        ...(options.agentTools ? { agentTools: options.agentTools } : {}),
       },
       permissions: new PermissionBroker(),
       interactions: new InteractionBroker(),
@@ -230,6 +233,133 @@ describe('CodexSessionRuntime start', () => {
     const { runtime } = build({ server, spec: { sessionId: 'stored' } })
     await expect(runtime.start()).rejects.toThrow(/database is locked/)
     expect(server.requests('thread/start')).toHaveLength(0)
+  })
+})
+
+/** A host serving its tools over HTTP, recording every grant it opens. */
+function agentToolsHost(options: { remote?: boolean; tools?: number } = {}) {
+  const grants: Array<{ context: AgentToolContext; close: ReturnType<typeof vi.fn> }> = []
+  const tool = {
+    name: 'spawn_agent',
+    description: 'Start a subagent.',
+    inputSchema: {},
+    call: async () => ({ text: 'ok' }),
+  }
+  const host: AgentToolsHost = {
+    serverName: 'openmanager',
+    tools: Array.from({ length: options.tools ?? 1 }, () => tool),
+    ...(options.remote === false
+      ? {}
+      : {
+          openRemote: (context: AgentToolContext) => {
+            const close = vi.fn()
+            grants.push({ context, close })
+            return {
+              http: {
+                url: 'http://127.0.0.1:4100/mcp',
+                headers: { Authorization: `Bearer token-${grants.length}` },
+              },
+              stdio: { command: 'node', args: ['mcp-bridge'], env: {} },
+              close,
+            }
+          },
+        }),
+  }
+  return { host, grants }
+}
+
+const HOST_MCP_SERVER = {
+  url: 'http://127.0.0.1:4100/mcp',
+  http_headers: { Authorization: 'Bearer token-1' },
+  default_tools_approval_mode: 'approve',
+}
+
+describe('CodexSessionRuntime host tools', () => {
+  const configOf = (params: unknown) => (params as { config: Record<string, unknown> }).config
+
+  it('gives a new thread the host tools as an HTTP MCP server bound to this thread', async () => {
+    const { host, grants } = agentToolsHost()
+    const { server, runtime } = build({ agentTools: host })
+    await runtime.start()
+
+    const [request] = server.requests('thread/start')
+    expect(configOf(request!.params)).toEqual({
+      notify: [],
+      'tools.update_plan.enabled': true,
+      'mcp_servers.openmanager': HOST_MCP_SERVER,
+    })
+    expect(grants).toHaveLength(1)
+    expect(grants[0]!.context).toMatchObject({ threadId: 'thread-1', providerId: 'codex' })
+    // Read at call time: a rebind's new thread is who calls.
+    runtime.rebindThread('thread-2', undefined)
+    expect(grants[0]!.context.threadId).toBe('thread-2')
+    runtime.dispose()
+  })
+
+  it('gives a resumed thread the same server', async () => {
+    const server = new FakeCodexAppServer()
+    server.respond('model/list', MODELS as never)
+    const thread = server.thread({ id: 'stored' })
+    server.respond('thread/resume', thread.startResponse() as never)
+    const { host, grants } = agentToolsHost()
+    const { runtime } = build({ server, spec: { sessionId: 'stored' }, agentTools: host })
+
+    await expect(runtime.start()).resolves.toMatchObject({ state: 'loaded' })
+    const [request] = server.requests('thread/resume')
+    expect(request!.params).toMatchObject({ threadId: 'stored', excludeTurns: true })
+    expect(configOf(request!.params)['mcp_servers.openmanager']).toEqual(HOST_MCP_SERVER)
+    expect(grants).toHaveLength(1)
+    runtime.dispose()
+  })
+
+  it('keeps one grant when a lost thread falls back to a fresh one', async () => {
+    const server = new FakeCodexAppServer()
+    server.respond('model/list', MODELS as never).serveThreads()
+    server.fail('thread/resume', -32600, 'no rollout found for thread id gone')
+    const { host, grants } = agentToolsHost()
+    const { runtime } = build({ server, spec: { sessionId: 'gone' }, agentTools: host })
+
+    await expect(runtime.start()).resolves.toMatchObject({ state: 'created' })
+    expect(configOf(server.requests('thread/resume')[0]!.params)['mcp_servers.openmanager']).toEqual(
+      HOST_MCP_SERVER,
+    )
+    expect(configOf(server.requests('thread/start')[0]!.params)['mcp_servers.openmanager']).toEqual(
+      HOST_MCP_SERVER,
+    )
+    expect(grants).toHaveLength(1)
+    runtime.dispose()
+  })
+
+  it('revokes the grant when the process goes', async () => {
+    const { host, grants } = agentToolsHost()
+    const { runtime } = build({ agentTools: host })
+    await runtime.start()
+    expect(grants[0]!.close).not.toHaveBeenCalled()
+
+    await runtime.stop({ reason: 'disposed' })
+    expect(grants[0]!.close).toHaveBeenCalledTimes(1)
+  })
+
+  it.each([
+    ['no host tools', undefined],
+    ['a host with no endpoint', agentToolsHost({ remote: false }).host],
+    ['a host with no tools', agentToolsHost({ tools: 0 }).host],
+  ])('adds no server for %s, on start or resume', async (_label, agentTools) => {
+    const fresh = build(agentTools ? { agentTools } : {})
+    await fresh.runtime.start()
+    const started = configOf(fresh.server.requests('thread/start')[0]!.params)
+    expect(started).toEqual({ notify: [], 'tools.update_plan.enabled': true })
+
+    const server = new FakeCodexAppServer()
+    server.respond('model/list', MODELS as never)
+    const thread = server.thread({ id: 'stored' })
+    server.respond('thread/resume', thread.startResponse() as never)
+    const resumed = build({ server, spec: { sessionId: 'stored' }, ...(agentTools ? { agentTools } : {}) })
+    await resumed.runtime.start()
+    const config = configOf(server.requests('thread/resume')[0]!.params)
+    expect(Object.keys(config).filter((key) => key.startsWith('mcp_servers'))).toEqual([])
+    fresh.runtime.dispose()
+    resumed.runtime.dispose()
   })
 })
 

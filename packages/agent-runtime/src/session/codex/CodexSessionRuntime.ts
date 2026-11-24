@@ -21,6 +21,7 @@ import { CapabilityMissingError, SessionUnknownError } from '../../core/errors.j
 import type { InteractionBroker } from '../../core/InteractionBroker.js'
 import type { PermissionBroker } from '../../core/PermissionBroker.js'
 import type { HostDeps } from '../../host.js'
+import type { RemoteAgentTools } from '../../tools/agent-tools.js'
 import type { CodexProviderConfig } from '../../providers/index.js'
 import type { AppliedSessionState } from '../AppliedConfigCache.js'
 import type { ManagedSessionRuntime } from '../AcpSessionRuntimeImpl.js'
@@ -91,15 +92,38 @@ export const CODEX_PROMPT_CAPABILITIES: PromptCapabilities = { image: true }
  * `notify` program would fire for every turn we run, doubling openmanager's
  * own notifications; and the `update_plan` tool, off unless a client turns it
  * on (probed on 0.170), is what keeps the todo checklist. The session's web
- * search mode joins them when one was chosen: it is per-thread `config`, so
- * it is given each time the thread is opened. */
+ * search mode joins them when one was chosen, and the host's own tools when
+ * it serves them (`codexHostMcpServer`): both are per-thread `config`, so
+ * they are given each time the thread is opened. */
 function threadConfig(
   webSearch: WebSearchMode | undefined,
-): Record<string, string | string[] | boolean> {
+  hostTools?: { serverName: string; http: RemoteAgentTools['http'] },
+): CodexThreadConfig {
   return {
     notify: [],
     'tools.update_plan.enabled': true,
     ...(webSearch ? { web_search: webSearch } : {}),
+    ...(hostTools ? { [`mcp_servers.${hostTools.serverName}`]: codexHostMcpServer(hostTools.http) } : {}),
+  }
+}
+
+/** `config` on `thread/start` and `thread/resume`: an untyped map of
+ * dotted-path overrides, applied over the user's `~/.codex` as the
+ * `sessionFlags` layer. */
+type CodexThreadConfig = NonNullable<v2.ThreadStartParams['config']>
+
+/** The host's own tools (`HostDeps.agentTools`) as one Streamable HTTP MCP
+ * server, in the shape `config.toml` gives `[mcp_servers.<name>]`: the URL
+ * and the headers of this session's grant, which name the thread every call
+ * acts for. Codex asks before any MCP call whose tool is not annotated
+ * read-only (`default_tools_approval_mode` defaults to `auto`), and this
+ * runtime declines every such ask until approvals have a UI (CAL-258), so the
+ * host's tools are pre-approved, as `allowHostTools` does for ACP agents. */
+function codexHostMcpServer(http: RemoteAgentTools['http']): CodexThreadConfig[string] {
+  return {
+    url: http.url,
+    http_headers: { ...http.headers },
+    default_tools_approval_mode: 'approve',
   }
 }
 
@@ -134,7 +158,7 @@ export const CODEX_SUBAGENT_STOP_MS = 10_000
 
 export type CodexSessionRuntimeDeps = {
   config: CodexProviderConfig
-  host: Pick<HostDeps, 'log' | 'onSessionTitle' | 'sessionHistory'>
+  host: Pick<HostDeps, 'log' | 'onSessionTitle' | 'sessionHistory' | 'agentTools'>
   permissions: PermissionBroker
   interactions: InteractionBroker
   /** Starts the app-server. The real binary when absent. */
@@ -224,6 +248,9 @@ export class CodexSessionRuntime implements ManagedSessionRuntime {
   private resolveExited!: (exit: SessionRuntimeExit) => void
   private stopRequest: TerminationRequest | undefined
   private spawned = false
+  /** This session's grant to the host's tools, opened with its first thread
+   * and revoked when the process goes (`settleExit`). */
+  private remoteTools: RemoteAgentTools | undefined
   private readonly listeners = new Set<BackendEventListener>()
   private readonly exitListeners = new Set<(exit: SessionRuntimeExit) => void>()
   private readonly timeouts: RuntimeTimeouts
@@ -662,9 +689,31 @@ export class CodexSessionRuntime implements ManagedSessionRuntime {
       approvalPolicy: this.access.approvalPolicy,
       approvalsReviewer: this.access.approvalsReviewer,
       sandbox: this.access.sandbox,
-      config: threadConfig(webSearch),
+      config: threadConfig(webSearch, this.hostTools()),
       ...(model ? { model } : {}),
     }
+  }
+
+  /** The host's tools for this session, or nothing when the host serves
+   * none to agents out of process. One grant for the runtime's life: a
+   * thread reopened on the same process (`reopenThread`) gets the same one,
+   * and it names whatever thread the runtime is bound to at call time, so a
+   * rebind's new thread is who calls. */
+  private hostTools(): { serverName: string; http: RemoteAgentTools['http'] } | undefined {
+    const host = this.deps.host.agentTools
+    if (!host?.openRemote || host.tools.length === 0) return undefined
+    // Gone already: a grant opened now would never be revoked.
+    if (this.exitValue) return undefined
+    if (!this.remoteTools) {
+      const runtime = this
+      this.remoteTools = host.openRemote({
+        get threadId() {
+          return runtime.threadIdValue
+        },
+        providerId: this.providerId,
+      })
+    }
+    return { serverName: host.serverName, http: this.remoteTools.http }
   }
 
   /** The policy, flags and the user's web search mode, which say what this
@@ -2772,6 +2821,9 @@ export class CodexSessionRuntime implements ManagedSessionRuntime {
     this.phaseValue = 'exited'
     // Background terminals are children of this process and went with it.
     this.terminals.close()
+    // Nothing can call the host's tools for this session any more.
+    this.remoteTools?.close()
+    this.remoteTools = undefined
     const active = this.active
     if (active)
       this.failTurn(
