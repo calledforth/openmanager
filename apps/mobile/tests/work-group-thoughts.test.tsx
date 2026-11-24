@@ -224,7 +224,56 @@ describe('subagent cards', () => {
       </>,
     )
     expect(text()).toContain('Stopped')
-    expect(text()).toContain('Has a question')
+    // What it waits on is its second line, not a flag beside its name.
+    expect(text()).toContain('Asked you a question')
+    expect(text()).not.toContain('Has a question')
+  })
+
+  it('says on a second line what it does, waits on, or why it failed, and only then', async () => {
+    const details = () =>
+      [...container.querySelectorAll('[data-testid="subagent-detail"]')].map(
+        (line) => line.textContent,
+      )
+    await render(
+      <>
+        <SubagentCard
+          part={subagentPart(
+            subagent('s1', { status: 'running', activity: 'Reading **auth.ts**', stats: {} }),
+          )}
+        />
+        <SubagentCard
+          part={subagentPart(
+            subagent('s2', {
+              status: 'waiting',
+              waitingOn: 'permission',
+              activity: 'Run pnpm test',
+            }),
+          )}
+        />
+        <SubagentCard
+          part={subagentPart(subagent('s3', { status: 'failed', statusReason: 'Rate limited' }))}
+        />
+        <SubagentCard part={subagentPart(subagent('s4', { result: 'Found three callers.' }))} />
+      </>,
+    )
+    expect(details()).toEqual([
+      'Reading auth.ts',
+      'Waiting for your permission · Run pnpm test',
+      'Rate limited',
+    ])
+    // A finished one stays one line; a failure with its reason needs no flag.
+    expect(text()).not.toContain('Found three callers.')
+    expect(text()).not.toContain('Failed')
+  })
+
+  it('flags a failure in words when nothing says why, and leaves a plain kind unsaid', async () => {
+    await render(
+      <SubagentCard
+        part={subagentPart(subagent('s1', { status: 'failed', agentType: 'general-purpose' }))}
+      />,
+    )
+    expect(text()).toContain('Failed')
+    expect(text()).not.toContain('general-purpose')
   })
 
   it('folds subagents started back to back into one group, a card each when opened', async () => {

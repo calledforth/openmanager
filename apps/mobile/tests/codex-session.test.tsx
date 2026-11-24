@@ -473,7 +473,7 @@ describe('subagent cards', () => {
       />,
     )
     expect(icons()).toContain('OpenAiLogoIcon')
-    expect(text()).toContain('Needs permission')
+    expect(text()).toContain('Waiting for your permission')
   })
 })
 

@@ -237,7 +237,7 @@ function ConversationTimeline({
 
   if (messages.length === 0) {
     return (
-      <div className="mx-auto max-w-[48rem] px-4 pt-2 pb-44">
+      <div className="chat-column px-4 pt-2 pb-44">
         {header}
         {isHydrating ? (
           <ChatLoadingSkeleton />
@@ -254,7 +254,7 @@ function ConversationTimeline({
   return (
     <>
       {isHydrating && (
-        <div className="mx-auto max-w-[48rem] px-4 pt-2">
+        <div className="chat-column px-4 pt-2">
           {header}
           <ChatLoadingSkeleton />
           {footer}
@@ -669,7 +669,7 @@ function MessageTimeline({
   return (
     <div
       className={cn(
-        'mx-auto max-w-[48rem] px-4',
+        'chat-column px-4',
         hidden && 'pointer-events-none invisible h-0 overflow-hidden',
       )}
     >

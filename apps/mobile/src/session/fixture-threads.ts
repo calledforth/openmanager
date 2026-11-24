@@ -11,6 +11,7 @@
  */
 import type { ContentBlock, Subagent, Turn } from '@openmanager/protocol'
 import type { BackgroundTask, ThreadState } from '@openmanager/environment-client'
+import type { LineageSession } from '@openmanager/app-core/logic'
 
 import { fixturePng } from './fixture-images'
 import { RECORDED_THREAD } from './recorded-thread'
@@ -205,6 +206,8 @@ export function workingThread(now: number): ThreadState {
       status: 'running',
       startedAt: iso(now - 48_000),
       childSessionId: 's-tool-payloads-tests',
+      activity: 'Running the agent-runtime protocol tests',
+      stoppable: true,
     })
     .tool(turn, 'live-t4', 'Bash', 'execute', 'in_progress', {
       toolName: 'Bash',
@@ -774,6 +777,36 @@ export function codexThread(now: number): ThreadState {
       input: { receiverThreadIds: ['c-sub3'] },
     })
   return b.state
+}
+
+/**
+ * The child sessions under the fixture's sessions, by parent, as the
+ * environment's summaries list them: the recorded run's subagent writing
+ * contract tests, and one it started in turn, waiting on a permission. The
+ * subagent strip draws them nested; the nested one's record is on its
+ * parent's thread, which the phone does not hold, so it is drawn from its
+ * summary alone, as a live one would be.
+ */
+export const FIXTURE_LINEAGE: Record<string, LineageSession[]> = {
+  's-tool-payloads': [
+    {
+      sessionId: 's-tool-payloads-tests',
+      title: 'Contract tests for turn_activity',
+      status: 'running',
+      providerId: 'claude',
+      parentSessionId: 's-tool-payloads',
+      subagent: { subagentId: 'live-sub', origin: 'native', promptable: false },
+    },
+    {
+      sessionId: 's-tool-payloads-cursor',
+      title: 'Record Cursor fixtures',
+      status: 'waiting',
+      waitingOn: 'permission',
+      providerId: 'codex',
+      parentSessionId: 's-tool-payloads-tests',
+      subagent: { subagentId: 'nested-cursor', origin: 'openmanager', promptable: true },
+    },
+  ],
 }
 
 /** The background work the fixture's sessions left running, by session. */

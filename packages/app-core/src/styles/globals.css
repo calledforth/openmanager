@@ -847,8 +847,27 @@ textarea,
   .md .shiki span {
     color: var(--shiki-dark);
   }
-  html:is([data-theme='light'], [data-theme='neutral-light'], [data-theme='lovable-light'], [data-theme='paper-light'], [data-theme='claude-light'], [data-theme='carbon-light']) .md .shiki,
-  html:is([data-theme='light'], [data-theme='neutral-light'], [data-theme='lovable-light'], [data-theme='paper-light'], [data-theme='claude-light'], [data-theme='carbon-light']) .md .shiki span {
+  html:is(
+      [data-theme='light'],
+      [data-theme='neutral-light'],
+      [data-theme='lovable-light'],
+      [data-theme='paper-light'],
+      [data-theme='claude-light'],
+      [data-theme='carbon-light']
+    )
+    .md
+    .shiki,
+  html:is(
+      [data-theme='light'],
+      [data-theme='neutral-light'],
+      [data-theme='lovable-light'],
+      [data-theme='paper-light'],
+      [data-theme='claude-light'],
+      [data-theme='carbon-light']
+    )
+    .md
+    .shiki
+    span {
     color: var(--shiki-light);
   }
 
@@ -882,7 +901,9 @@ textarea,
   }
   .md td {
     color: var(--basis-text-muted);
-    transition: background-color 80ms, color 80ms;
+    transition:
+      background-color 80ms,
+      color 80ms;
   }
   .md tbody tr:hover td {
     background: color-mix(in srgb, var(--basis-text) 5%, transparent);
@@ -1659,5 +1680,30 @@ textarea,
 @media (prefers-reduced-motion: reduce) {
   .subagent-pulse {
     animation: none;
+  }
+}
+
+/* The conversation's column: 48rem, centred in the chat pane. While the
+   subagent rail shows at the pane's right it publishes how much room it
+   needs (`--chat-rail-room`, on the pane), and the column gives way just as
+   far as it must: it stays centred while the gutter already fits the rail,
+   moves left when not, and narrows only once it reaches the pane's left
+   edge. The transcript and the composer use it, so they move together. */
+.chat-column {
+  width: 100%;
+  max-width: min(48rem, calc(100% - var(--chat-rail-room, 0px)));
+  margin-left: max(
+    0px,
+    min(calc((100% - 48rem) / 2), calc(100% - 48rem - var(--chat-rail-room, 0px)))
+  );
+  margin-right: auto;
+  transition:
+    margin-left 240ms cubic-bezier(0.22, 1, 0.36, 1),
+    max-width 240ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .chat-column {
+    transition: none;
   }
 }
