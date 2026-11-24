@@ -47,28 +47,36 @@ export function subagentTone(status: Subagent['status']): SubagentTone {
   }
 }
 
-/** The status in a word or two, as the card and the child page's header say it. */
+/**
+ * The status in a word or two. One vocabulary everywhere a subagent is
+ * shown: working, needs you, done, failed, stopped. What a waiting one
+ * waits on is said beside it (`subagentWaitReason`), not in its status.
+ */
 export function subagentStatusLabel(subagent: Pick<Subagent, 'status' | 'waitingOn'>): string {
   switch (subagent.status) {
     case 'pending':
       return 'Starting'
     case 'running':
-      return 'Running'
+      return 'Working'
     case 'waiting':
-      return subagent.waitingOn === 'question'
-        ? 'Has a question'
-        : subagent.waitingOn === 'plan'
-          ? 'Plan to review'
-          : 'Needs permission'
+      return 'Needs you'
     case 'completed':
       return 'Done'
     case 'failed':
       return 'Failed'
     case 'cancelled':
-      return 'Stopped'
     case 'interrupted':
-      return 'Interrupted'
+      return 'Stopped'
   }
+}
+
+/** What a waiting subagent waits on, as the line under its title says it. */
+export function subagentWaitReason(waitingOn: Subagent['waitingOn']): string {
+  return waitingOn === 'question'
+    ? 'Asked you a question'
+    : waitingOn === 'plan'
+      ? 'Has a plan for you to review'
+      : 'Waiting for your permission'
 }
 
 /** One line of free text: the first line that says something, whitespace folded. */
@@ -106,12 +114,12 @@ export function subagentDetail(
         firstLine(subagent.activity) ??
         (subagent.status === 'pending' ? 'Starting…' : firstLine(subagent.prompt))
       )
-    case 'waiting':
-      return subagent.waitingOn === 'question'
-        ? 'Asked you something. Open it to answer.'
-        : subagent.waitingOn === 'plan'
-          ? 'Has a plan for you to review. Open it to answer.'
-          : 'Waiting for your permission. Open it to answer.'
+    case 'waiting': {
+      // What it wants to do, when the runtime said, after what it waits on.
+      const doing = firstLine(subagent.activity)
+      const reason = subagentWaitReason(subagent.waitingOn)
+      return doing ? `${reason} · ${doing}` : reason
+    }
     case 'done':
       return firstLine(subagent.result) ?? firstLine(subagent.prompt)
     case 'failed':
@@ -200,7 +208,7 @@ export function subagentModelLabel(
 
 /**
  * The line under a group's header: how many there are, and how they stand.
- * "3 subagents · 2 running, 1 done".
+ * "3 subagents · 2 working, 1 done".
  */
 export function subagentGroupSummary(subagents: readonly Pick<Subagent, 'status'>[]): {
   title: string
@@ -215,15 +223,18 @@ export function subagentGroupSummary(subagents: readonly Pick<Subagent, 'status'
     counts.set(tone, (counts.get(tone) ?? 0) + 1)
   }
   const order: Array<[SubagentTone, string]> = [
-    ['waiting', 'waiting'],
-    ['running', 'running'],
+    ['waiting', 'need you'],
+    ['running', 'working'],
     ['done', 'done'],
     ['failed', 'failed'],
     ['stopped', 'stopped'],
   ]
   const detail = order
     .filter(([tone]) => counts.get(tone))
-    .map(([tone, word]) => `${counts.get(tone)} ${word}`)
+    .map(([tone, word]) => {
+      const count = counts.get(tone)!
+      return `${count} ${tone === 'waiting' && count === 1 ? 'needs you' : word}`
+    })
     .join(', ')
   const running = (counts.get('running') ?? 0) + (counts.get('waiting') ?? 0) > 0
   return {

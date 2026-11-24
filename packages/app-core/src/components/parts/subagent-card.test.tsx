@@ -62,11 +62,11 @@ describe('subagent card logic', () => {
   })
 
   it('names the status, what a waiting one waits on, and the subagent itself', () => {
-    expect(subagentStatusLabel({ status: 'waiting', waitingOn: 'question' })).toBe('Has a question')
-    expect(subagentStatusLabel({ status: 'waiting', waitingOn: 'permission' })).toBe(
-      'Needs permission',
-    )
+    // One vocabulary: what it waits on is said beside the status, not in it.
+    expect(subagentStatusLabel({ status: 'waiting', waitingOn: 'question' })).toBe('Needs you')
+    expect(subagentStatusLabel({ status: 'running' })).toBe('Working')
     expect(subagentStatusLabel({ status: 'cancelled' })).toBe('Stopped')
+    expect(subagentStatusLabel({ status: 'interrupted' })).toBe('Stopped')
     expect(subagentName({ title: '  ', agentType: 'Explore' })).toBe('Explore')
     expect(subagentName({ title: '' })).toBe('Subagent')
   })
@@ -87,7 +87,7 @@ describe('subagent card logic', () => {
       ]),
     ).toEqual({
       title: '4 subagents',
-      detail: '1 waiting, 1 running, 2 done',
+      detail: '1 needs you, 1 working, 2 done',
       running: true,
       segments: [
         { tone: 'waiting', count: 1 },
@@ -133,7 +133,8 @@ describe('subagent cards in a turn', () => {
     expect(html).toContain('3 tools')
     // What it is doing now, on the second line; no Background pill.
     expect(html).toContain('Reading auth.ts')
-    expect(html).toContain('>Running<')
+    // Working is said by the glyph alone: no status word for it.
+    expect(html).not.toContain('>Working<')
     expect(html).not.toContain('Background')
     expect(html).not.toContain('tokens')
     expect(html).not.toContain('role="group"')
@@ -143,16 +144,16 @@ describe('subagent cards in a turn', () => {
 
   it('flags a waiting subagent with what it waits on', () => {
     const question = render([subagentPart(subagent({ status: 'waiting', waitingOn: 'question' }))])
-    expect(question).toContain('Has a question')
-    expect(question).toContain('Asked you something. Open it to answer.')
+    expect(question).toContain('Needs you')
+    expect(question).toContain('Asked you a question')
     expect(question).toContain('data-subagent-status="waiting"')
     const permission = render([
       subagentPart(subagent({ status: 'waiting', waitingOn: 'permission' })),
     ])
-    expect(permission).toContain('Needs permission')
+    expect(permission).toContain('Waiting for your permission')
   })
 
-  it('says how it ended: the answer’s first line, or why it failed', () => {
+  it('keeps a finished one to one line, and says why a failed one failed', () => {
     const done = render([
       subagentPart(
         subagent({
@@ -161,9 +162,9 @@ describe('subagent cards in a turn', () => {
         }),
       ),
     ])
-    // One plain line: no heading marks, no emphasis, nothing past it.
-    expect(done).toContain('Found 7 callers in auth.')
-    expect(done).not.toContain('More.')
+    // Done is one line: the answer is on its page.
+    expect(done).not.toContain('callers in')
+    expect(done).not.toContain('pl-6')
     const failed = render([
       subagentPart(subagent({ status: 'failed', statusReason: 'Postgres is down' })),
     ])
@@ -178,12 +179,13 @@ describe('subagent cards in a turn', () => {
     const grouped = render([a, b, c])
     expect(grouped.match(/role="group"/g)).toHaveLength(1)
     expect(grouped).toContain('3 subagents')
-    expect(grouped).toContain('2 running, 1 done')
+    expect(grouped).toContain('2 working, 1 done')
     // Folded: the header and a line of what each runs on, no cards yet.
     expect(grouped).toContain('data-subagent-group="folded"')
     expect(grouped).toContain('aria-expanded="false"')
     expect(grouped).not.toContain('data-subagent="')
-    expect(grouped).toContain('title="Second · Claude · Done"')
+    // The providers they run on, each once.
+    expect(grouped).toContain('title="Claude"')
 
     const split = render([a, { type: 'text', id: 'between', text: 'meanwhile' }, b])
     expect(split).not.toContain('role="group"')

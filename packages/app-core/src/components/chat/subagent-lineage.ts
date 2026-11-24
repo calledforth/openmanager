@@ -185,17 +185,3 @@ export function lineageRows(
   walk(lineage.roots, [])
   return rows
 }
-
-/** "2 working · 1 needs you": what the folded dock says. */
-export function lineageSummary(lineage: Lineage): { title: string; detail: string } {
-  const waiting = lineage.live.filter((item) => item.tone === 'waiting').length
-  const working = lineage.live.length - waiting
-  const title =
-    working > 0
-      ? `${working} ${working === 1 ? 'subagent' : 'subagents'} working`
-      : `${waiting} ${waiting === 1 ? 'subagent needs' : 'subagents need'} you`
-  const parts: string[] = []
-  if (working > 0 && waiting > 0) parts.push(`${waiting} ${waiting === 1 ? 'needs' : 'need'} you`)
-  if (lineage.settled > 0) parts.push(`${lineage.settled} finished`)
-  return { title, detail: parts.join(' · ') }
-}

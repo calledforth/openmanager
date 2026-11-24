@@ -30,13 +30,13 @@ describe('groupSidebarSessions', () => {
       subagent('a', 'parent', 'running'),
       subagent('b', 'parent', 'waiting'),
       subagent('c', 'parent'),
-      // A subagent's own subagent is its parent's to count, not the session's.
+      // A subagent's own subagent at work counts too, as the chat's list counts it.
       subagent('d', 'a', 'running'),
       // A child that is not a subagent keeps its row under its parent.
       summary({ sessionId: 'fork', parentSessionId: 'parent' }),
     ])
     expect(shown.map((row) => row.externalId)).toEqual(['parent', 'fork'])
-    expect(shown[0]).toMatchObject({ subagentCount: 3, subagentsLive: 2 })
+    expect(shown[0]).toMatchObject({ subagentCount: 3, subagentsLive: 3 })
     expect(shown[1]).not.toHaveProperty('subagentCount')
   })
 

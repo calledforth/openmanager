@@ -97,6 +97,6 @@ describe('the read-only footer', () => {
         record('running'),
       ),
     )
-    expect(html).toContain('Needs permission')
+    expect(html).toContain('Waiting for your permission')
   })
 })

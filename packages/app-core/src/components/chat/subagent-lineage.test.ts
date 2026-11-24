@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import type { Subagent } from '@openmanager/protocol'
-import { buildLineage, lineageRows, lineageSummary, type LineageSession } from './subagent-lineage'
+import { buildLineage, lineageRows, type LineageSession } from './subagent-lineage'
 
 const record = (patch: Partial<Subagent> & Pick<Subagent, 'subagentId'>): Subagent => ({
   parentSessionId: 'root',
@@ -115,19 +115,6 @@ describe('subagent lineage', () => {
       'sa-c',
       'sa-c1',
     ])
-  })
-
-  it('sums the dock up: working, then who needs you, then what finished', () => {
-    expect(lineageSummary(lineage)).toEqual({
-      title: '2 subagents working',
-      detail: '1 needs you · 2 finished',
-    })
-    const waitingOnly = buildLineage(
-      'root',
-      { root: session('root'), x: child('x', 'root', { status: 'waiting' }) },
-      () => undefined,
-    )
-    expect(lineageSummary(waitingOnly)).toEqual({ title: '1 subagent needs you', detail: '' })
   })
 
   it('keeps a record whose child session has not arrived yet', () => {
