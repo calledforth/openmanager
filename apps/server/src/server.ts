@@ -417,6 +417,8 @@ export async function startServer(config: ServerConfig) {
     providers: () => spawnInto?.providers() ?? [],
     spawn: (args) => (spawnInto ? spawnInto.spawn(args) : Promise.reject(notYet())),
     list: (parentSessionId) => spawnInto?.list(parentSessionId) ?? [],
+    subagentsOf: (sessionId) => spawnInto?.subagentsOf(sessionId) ?? [],
+    activeAgents: () => spawnInto?.activeAgents() ?? [],
     get: (parentSessionId, subagentId) => spawnInto?.get(parentSessionId, subagentId),
     waitSettled: (parentSessionId, subagentId, timeoutMs) =>
       spawnInto

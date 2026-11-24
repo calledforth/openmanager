@@ -1,5 +1,9 @@
 import type { AgentTool, AgentToolResult } from '@agentpack/runtime/node'
-import { isSettledSubagentStatus, type Subagent } from '@openmanager/protocol/node'
+import {
+  isSettledSubagentStatus,
+  type InteractionKind,
+  type Subagent,
+} from '@openmanager/protocol/node'
 import { z } from 'zod'
 
 /**
@@ -19,6 +23,7 @@ export const WAIT_AGENT_TOOL = 'wait_agent'
 export const SEND_AGENT_TOOL = 'send_agent'
 export const LIST_AGENTS_TOOL = 'list_agents'
 export const STOP_AGENT_TOOL = 'stop_agent'
+export const LIST_ACTIVE_AGENTS_TOOL = 'list_active_agents'
 
 /** Under the ~60 s some MCP clients allow a tool call, with room to answer. */
 export const WAIT_MAX_MS = 45_000
@@ -30,6 +35,12 @@ export const SPAWN_RUNNING_MAX = 4
 export const SPAWN_PER_TURN_MAX = 8
 /** How much of a child's answer a tool result carries before pointing at the rest. */
 export const RESULT_INLINE_MAX = 12_000
+/** Agents one listing shows before saying how many more there are. */
+export const LIST_AGENTS_MAX = 60
+/** How deep `list_agents` follows a lineage. */
+const LINEAGE_DEPTH_MAX = 6
+/** How much of what an agent was asked a listing quotes. */
+const PROMPT_PREVIEW_MAX = 160
 
 /** A provider a child can run on, as the environment knows it now. */
 export interface SpawnProvider {
@@ -49,6 +60,48 @@ export interface SpawnCaller {
   turnId?: string
   /** 0 for a top-level session, 1 for a child of ours, and so on. */
   depth: number
+  /** Its project, for `list_active_agents` with `scope: 'project'`. */
+  workspaceId?: string
+  /** The session it is filed under, when it is a subagent's. */
+  parentSessionId?: string
+}
+
+/**
+ * One agent `list_active_agents` shows: a session (top-level or a subagent's
+ * child session), or a subagent whose child session is gone. Live ones, and
+ * the agents above them for context.
+ */
+export interface ActiveAgent {
+  /** The id to refer to it by: its session's, or the subagent's when it has no session. */
+  id: string
+  sessionId?: string
+  /** The session of the agent that started it; absent for a top-level session. */
+  parentSessionId?: string
+  /** Set when it is a subagent. */
+  subagentId?: string
+  origin?: Subagent['origin']
+  /** Its kind as its provider names it (`Explore`), for a native subagent. */
+  agentType?: string
+  workspaceId: string
+  /** The project's name, as the user sees it. */
+  projectName: string
+  title: string
+  providerId: string
+  modelId?: string
+  /** Running, waiting on the user, or (for an ancestor shown for context) neither. */
+  live: boolean
+  /** Its session's status, or a settled subagent's. */
+  status: string
+  waitingOn?: InteractionKind
+  /** Running only through work its provider keeps going between turns. */
+  inBackground?: boolean
+  /** When what it is doing now started, when known. */
+  startedAt?: string
+  /** What it was asked, for a subagent: the start of its prompt. */
+  prompt?: string
+  /** What it is doing now, one line. */
+  activity?: string
+  toolCalls?: number
 }
 
 export interface SpawnHost {
@@ -66,6 +119,14 @@ export interface SpawnHost {
   }): Promise<Subagent>
   /** Every subagent of ours the session started, oldest first. */
   list(parentSessionId: string): readonly Subagent[]
+  /**
+   * Every subagent filed under the session, of any origin (its own
+   * provider's and ours), live or stored, oldest first. A nested one is
+   * filed under its parent subagent's child session.
+   */
+  subagentsOf(sessionId: string): readonly Subagent[]
+  /** Every agent live in the environment now, with the agents above each. */
+  activeAgents(): readonly ActiveAgent[]
   get(parentSessionId: string, subagentId: string): Subagent | undefined
   /** Resolve once the child settles or the time runs out, with its record then. */
   waitSettled(parentSessionId: string, subagentId: string, timeoutMs: number): Promise<Subagent>
@@ -80,7 +141,11 @@ export interface SpawnHost {
 
 const fail = (text: string): AgentToolResult => ({ text, isError: true })
 
-const idSchema = z.string().min(1).max(256).describe('The subagent id `spawn_agent` returned.')
+const idSchema = z
+  .string()
+  .min(1)
+  .max(256)
+  .describe('The subagent id `spawn_agent` returned, or its session id as `list_agents` shows it.')
 
 function line(subagent: Subagent): string {
   const parts = [
@@ -111,6 +176,62 @@ export function describeSubagent(subagent: Subagent, fullResult: string | undefi
   return `${head}${reason}\nAnswer:\n${cut}`
 }
 
+/** Text on one line, cut to `max` characters. */
+export function oneLine(text: string, max: number): string {
+  const flat = text.replace(/\s+/g, ' ').trim()
+  return flat.length > max ? `${flat.slice(0, max - 1).trimEnd()}…` : flat
+}
+
+/** A span of time the way a person says it: `45s`, `2m 05s`, `1h 03m`. */
+export function formatElapsed(ms: number): string {
+  const seconds = Math.max(0, Math.round(ms / 1000))
+  if (seconds < 60) return `${seconds}s`
+  const minutes = Math.floor(seconds / 60)
+  if (minutes < 60) return `${minutes}m ${String(seconds % 60).padStart(2, '0')}s`
+  return `${Math.floor(minutes / 60)}h ${String(minutes % 60).padStart(2, '0')}m`
+}
+
+const waitingText = (waitingOn: InteractionKind | undefined) =>
+  waitingOn ? `waiting on ${waitingOn}` : 'waiting on the user'
+
+function subagentState(subagent: Subagent, now: number): string {
+  const status =
+    subagent.status === 'waiting'
+      ? waitingText(subagent.waitingOn)
+      : subagent.status === 'pending'
+        ? 'starting'
+        : subagent.status
+  const started = Date.parse(subagent.startedAt)
+  const took = isSettledSubagentStatus(subagent.status)
+    ? (subagent.stats.durationMs ??
+      (subagent.finishedAt ? Date.parse(subagent.finishedAt) - started : undefined))
+    : now - started
+  const parts = [status]
+  if (took !== undefined && Number.isFinite(took)) parts.push(formatElapsed(took))
+  if (subagent.stats.toolCalls !== undefined) {
+    parts.push(`${subagent.stats.toolCalls} tool call${subagent.stats.toolCalls === 1 ? '' : 's'}`)
+  }
+  return parts.join(', ')
+}
+
+const providerModel = (providerId: string, modelId: string | undefined) =>
+  `${providerId}${modelId ? `/${modelId}` : ''}`
+
+const howStarted = (subagent: Pick<Subagent, 'origin' | 'agentType'>) =>
+  subagent.origin === 'openmanager'
+    ? 'spawn_agent'
+    : `its provider's own subagent${subagent.agentType ? ` (${subagent.agentType})` : ''}`
+
+/** Live first, then oldest first. */
+const liveFirst = <T>(
+  items: readonly T[],
+  live: (item: T) => boolean,
+  started: (item: T) => string,
+) =>
+  [...items].sort((left, right) =>
+    live(left) === live(right) ? started(left).localeCompare(started(right)) : live(left) ? -1 : 1,
+  )
+
 const RUNNING_NEXT =
   'It runs in the background. When it finishes you are told in a new message; do not poll it. Carry on with other work, and end your turn when there is none.'
 
@@ -119,6 +240,15 @@ export function createSpawnAgentTools(host: SpawnHost): readonly AgentTool[] {
     host.callerOf(threadId) ?? fail('This session is not known to OpenManager any more.')
   const isResult = (value: SpawnCaller | AgentToolResult): value is AgentToolResult =>
     'text' in value
+
+  /** One of the caller's own children, by its subagent id or its session id. */
+  const ownChild = (caller: SpawnCaller, id: string): Subagent | undefined =>
+    host.get(caller.sessionId, id) ??
+    host.list(caller.sessionId).find((child) => child.childSessionId === id)
+  const noSuchChild = (id: string) =>
+    fail(
+      `This session has no subagent "${id}" of its own. list_agents shows the ones it can act on.`,
+    )
 
   const providerList = () =>
     host
@@ -140,7 +270,7 @@ export function createSpawnAgentTools(host: SpawnHost): readonly AgentTool[] {
   const spawn: AgentTool = {
     name: SPAWN_AGENT_TOOL,
     description:
-      'Start a subagent on any provider OpenManager runs (Claude, Cursor, OpenCode, ...) to do one task. It starts with only `prompt`, none of your history, in your working directory. The user sees it as a card in this chat and can open it and talk to it. Runs in the background by default and you are told when it finishes. For work on your own provider, your own subagent tool is usually better; use this for another provider, or a child the user may want to talk to. `list_agents` lists providers and models.',
+      'Start a subagent on any provider OpenManager runs (Claude, Codex, Cursor, OpenCode) to do one task. It starts with only `prompt`, none of your history, in your working directory. The user sees it as a card in this chat and can open it and talk to it. Runs in the background by default and you are told when it finishes. For work on your own provider, your own subagent tool is usually better; use this for another provider, or a child the user may want to talk to. `list_agents` lists providers and models; `send_agent`, `wait_agent` and `stop_agent` work on a child on any of them.',
     inputSchema: {
       provider: z
         .string()
@@ -238,7 +368,7 @@ export function createSpawnAgentTools(host: SpawnHost): readonly AgentTool[] {
   const wait: AgentTool = {
     name: WAIT_AGENT_TOOL,
     description:
-      "Wait up to 45 s for one of your subagents to finish and read its answer. Only when this turn can't go on without it: you are told anyway when it finishes. A timeout does not stop it.",
+      "Wait up to 45 s for one of your spawn_agent subagents (on any provider) to finish and read its answer. Only when this turn can't go on without it: you are told anyway when it finishes. A timeout does not stop it.",
     inputSchema: {
       id: idSchema,
       timeoutSeconds: z.number().int().min(0).max(45).optional().describe('Default and most: 45.'),
@@ -246,8 +376,9 @@ export function createSpawnAgentTools(host: SpawnHost): readonly AgentTool[] {
     async call(input, context) {
       const caller = callerOr(context.threadId)
       if (isResult(caller)) return caller
-      const id = String(input.id)
-      if (!host.get(caller.sessionId, id)) return fail(`This session has no subagent "${id}".`)
+      const found = ownChild(caller, String(input.id))
+      if (!found) return noSuchChild(String(input.id))
+      const id = found.subagentId
       const seconds = typeof input.timeoutSeconds === 'number' ? input.timeoutSeconds : 45
       const settled = await host.waitSettled(
         caller.sessionId,
@@ -265,7 +396,7 @@ export function createSpawnAgentTools(host: SpawnHost): readonly AgentTool[] {
   const send: AgentTool = {
     name: SEND_AGENT_TOOL,
     description:
-      'Send one of your subagents a follow-up message. It keeps its own history. It runs now if the subagent is idle, or after its current turn. You are told when it finishes.',
+      'Send one of your spawn_agent subagents (on any provider) a follow-up message. It keeps its own history. It runs now if the subagent is idle, or after its current turn. You are told when it finishes.',
     inputSchema: {
       id: idSchema,
       message: z.string().min(1).max(100_000),
@@ -273,9 +404,9 @@ export function createSpawnAgentTools(host: SpawnHost): readonly AgentTool[] {
     async call(input, context) {
       const caller = callerOr(context.threadId)
       if (isResult(caller)) return caller
-      const id = String(input.id)
-      const child = host.get(caller.sessionId, id)
-      if (!child) return fail(`This session has no subagent "${id}".`)
+      const child = ownChild(caller, String(input.id))
+      if (!child) return noSuchChild(String(input.id))
+      const id = child.subagentId
       try {
         const how = await host.send(caller.sessionId, id, String(input.message))
         return {
@@ -293,27 +424,81 @@ export function createSpawnAgentTools(host: SpawnHost): readonly AgentTool[] {
   const list: AgentTool = {
     name: LIST_AGENTS_TOOL,
     description:
-      'List the subagents this session started with spawn_agent and their state, and the providers and models a new one can use.',
+      "List this session's subagents as a tree: the ones it started with spawn_agent on any provider (Claude, Codex, Cursor, OpenCode) and its provider's own (Claude's Agent tool and the like), with any they started nested under them. Each shows its id and session id, status, provider/model, title, what it was asked, what it is doing now, how long it ran, and whether you can act on it with send_agent, wait_agent and stop_agent. Also lists the providers and models spawn_agent can use. Prefer this over your own task or agent listing tool: it shows the titles, providers and states the user sees in OpenManager. For agents outside this session, use list_active_agents.",
     inputSchema: {},
     async call(_input, context) {
       const caller = callerOr(context.threadId)
       if (isResult(caller)) return caller
-      const mine = host.list(caller.sessionId)
-      const children = mine.length ? mine.map(line).join('\n') : 'None yet.'
-      return { text: `Subagents:\n${children}\n\nProviders:\n${providerList()}` }
+      const now = Date.now()
+      const lines: string[] = []
+      let shown = 0
+      let hidden = 0
+      let live = 0
+      let settled = 0
+      const seen = new Set<string>()
+      const walk = (sessionId: string, depth: number) => {
+        const children = host.subagentsOf(sessionId).filter((child) => !seen.has(child.subagentId))
+        const ordered = liveFirst(
+          children,
+          (child) => !isSettledSubagentStatus(child.status),
+          (child) => child.startedAt,
+        )
+        for (const child of ordered) {
+          seen.add(child.subagentId)
+          if (isSettledSubagentStatus(child.status)) settled += 1
+          else live += 1
+          if (shown >= LIST_AGENTS_MAX) {
+            hidden += 1
+          } else {
+            shown += 1
+            lines.push(...lineageEntry(child, caller, depth, now))
+          }
+          if (child.childSessionId && depth + 1 < LINEAGE_DEPTH_MAX) {
+            walk(child.childSessionId, depth + 1)
+          }
+        }
+      }
+      walk(caller.sessionId, 0)
+      if (hidden > 0) lines.push(`+${hidden} more not shown.`)
+      const head =
+        live + settled === 0
+          ? 'Subagents: none yet.'
+          : `Subagents of this session, live first (${live} live, ${settled} finished):`
+      return {
+        text: `${[head, ...lines].join('\n')}\n\nProviders for spawn_agent:\n${providerList()}`,
+      }
+    },
+  }
+
+  const listActive: AgentTool = {
+    name: LIST_ACTIVE_AGENTS_TOOL,
+    description:
+      'List every agent running right now in this OpenManager environment: top-level sessions and subagents of every provider (Claude, Codex, Cursor, OpenCode) and origin, as trees by project. Each shows the id to refer to it by, title, provider/model, status (running, waiting on the user, in background), how long it has run, what it is for, what it is doing now, and how it relates to you (you, your subagent, your parent, sibling). An idle agent above a live one is shown for context. Use it to see what else is at work, e.g. in the same folder before you change files. Read-only: you can only message or stop your own subagents (list_agents).',
+    inputSchema: {
+      scope: z
+        .enum(['project', 'all'])
+        .optional()
+        .describe("Default 'all': every project. 'project': only this session's project."),
+    },
+    async call(input, context) {
+      const caller = callerOr(context.threadId)
+      if (isResult(caller)) return caller
+      const scope = input.scope === 'project' ? 'project' : 'all'
+      return { text: describeActiveAgents(host.activeAgents(), caller, scope, Date.now()) }
     },
   }
 
   const stop: AgentTool = {
     name: STOP_AGENT_TOOL,
-    description: 'Stop one of your subagents. Its work so far stays on its page.',
+    description:
+      'Stop one of your spawn_agent subagents (on any provider). Its work so far stays on its page.',
     inputSchema: { id: idSchema },
     async call(input, context) {
       const caller = callerOr(context.threadId)
       if (isResult(caller)) return caller
-      const id = String(input.id)
-      const child = host.get(caller.sessionId, id)
-      if (!child) return fail(`This session has no subagent "${id}".`)
+      const child = ownChild(caller, String(input.id))
+      if (!child) return noSuchChild(String(input.id))
+      const id = child.subagentId
       if (isSettledSubagentStatus(child.status))
         return { text: `${line(child)} had already finished.` }
       try {
@@ -326,5 +511,183 @@ export function createSpawnAgentTools(host: SpawnHost): readonly AgentTool[] {
     },
   }
 
-  return [spawn, wait, send, list, stop]
+  return [spawn, wait, send, list, listActive, stop]
+}
+
+/** One subagent in `list_agents`: a head line, then what it is and what you can do with it. */
+function lineageEntry(
+  subagent: Subagent,
+  caller: SpawnCaller,
+  depth: number,
+  now: number,
+): string[] {
+  const pad = '  '.repeat(depth)
+  const head = `${pad}- ${subagent.title} [${subagentState(subagent, now)}] ${providerModel(subagent.providerId, subagent.modelId)} · ${howStarted(subagent)}`
+  const ids = `id: ${subagent.subagentId}${subagent.childSessionId ? ` (session ${subagent.childSessionId})` : ''}`
+  const reach =
+    subagent.origin === 'openmanager' && subagent.parentSessionId === caller.sessionId
+      ? 'yours: send_agent, wait_agent, stop_agent'
+      : subagent.parentSessionId === caller.sessionId
+        ? 'reach it with your own subagent tool, not send_agent'
+        : 'started by a subagent of yours: only that subagent can act on it'
+  const lines = [head, `${pad}  ${ids} · ${reach}`]
+  if (subagent.prompt?.trim()) {
+    lines.push(`${pad}  asked: ${oneLine(subagent.prompt, PROMPT_PREVIEW_MAX)}`)
+  }
+  if (!isSettledSubagentStatus(subagent.status) && subagent.activity?.trim()) {
+    lines.push(`${pad}  now: ${oneLine(subagent.activity, PROMPT_PREVIEW_MAX)}`)
+  }
+  if (isSettledSubagentStatus(subagent.status) && subagent.statusReason?.trim()) {
+    lines.push(`${pad}  reason: ${oneLine(subagent.statusReason, PROMPT_PREVIEW_MAX)}`)
+  }
+  return lines
+}
+
+/** How an agent stands to the caller, or undefined when it is unrelated. */
+function relationTo(
+  agent: ActiveAgent,
+  caller: SpawnCaller,
+  byId: ReadonlyMap<string, ActiveAgent>,
+): string | undefined {
+  if (agent.sessionId === caller.sessionId) return 'you'
+  if (caller.parentSessionId && agent.sessionId === caller.parentSessionId) return 'your parent'
+  // Further up than the caller's parent.
+  let above = caller.parentSessionId ? byId.get(caller.parentSessionId) : undefined
+  for (let hops = 0; above?.parentSessionId && hops < 16; hops += 1) {
+    if (agent.sessionId === above.parentSessionId) return 'your ancestor'
+    above = byId.get(above.parentSessionId)
+  }
+  for (let item: ActiveAgent | undefined = agent, hops = 0; item && hops < 16; hops += 1) {
+    if (item.parentSessionId === caller.sessionId) {
+      if (item !== agent) return "your subagent's subagent"
+      return agent.origin === 'openmanager' ? 'your subagent (yours to act on)' : 'your subagent'
+    }
+    item = item.parentSessionId ? byId.get(item.parentSessionId) : undefined
+  }
+  if (caller.parentSessionId && agent.parentSessionId === caller.parentSessionId) return 'sibling'
+  return undefined
+}
+
+function activeState(agent: ActiveAgent, now: number): string {
+  if (!agent.live) return `${agent.status}, shown for the agents under it`
+  const status =
+    agent.status === 'waiting'
+      ? waitingText(agent.waitingOn)
+      : agent.inBackground
+        ? 'running in background'
+        : agent.status === 'pending'
+          ? 'starting'
+          : agent.status
+  const parts = [status]
+  const started = agent.startedAt ? Date.parse(agent.startedAt) : Number.NaN
+  if (Number.isFinite(started)) parts.push(formatElapsed(now - started))
+  if (agent.toolCalls !== undefined) {
+    parts.push(`${agent.toolCalls} tool call${agent.toolCalls === 1 ? '' : 's'}`)
+  }
+  return parts.join(', ')
+}
+
+/** What `list_active_agents` answers: live agents as lineage trees, by project. */
+export function describeActiveAgents(
+  agents: readonly ActiveAgent[],
+  caller: SpawnCaller,
+  scope: 'project' | 'all',
+  now: number,
+): string {
+  const byId = new Map<string, ActiveAgent>()
+  for (const agent of agents) byId.set(agent.id, agent)
+  const inScope = agents.filter(
+    (agent) => scope === 'all' || !caller.workspaceId || agent.workspaceId === caller.workspaceId,
+  )
+  const others = inScope.filter((agent) => agent.live && agent.sessionId !== caller.sessionId)
+  const where = scope === 'project' ? 'in this project' : 'in this environment'
+  if (others.length === 0) {
+    return `Nothing else is running ${where} right now: no other session and no subagent.`
+  }
+  const childrenOf = new Map<string, ActiveAgent[]>()
+  const roots: ActiveAgent[] = []
+  for (const agent of inScope) {
+    const parent = agent.parentSessionId ? byId.get(agent.parentSessionId) : undefined
+    if (parent && inScope.includes(parent)) {
+      const list = childrenOf.get(parent.id) ?? []
+      list.push(agent)
+      childrenOf.set(parent.id, list)
+    } else {
+      roots.push(agent)
+    }
+  }
+  const startedOf = (agent: ActiveAgent) => agent.startedAt ?? ''
+  // The caller's own tree leads, then the caller's project, then the rest by name.
+  const rootOf = (agent: ActiveAgent) => {
+    let item = agent
+    for (let hops = 0; item.parentSessionId && hops < 16; hops += 1) {
+      const parent = byId.get(item.parentSessionId)
+      if (!parent) break
+      item = parent
+    }
+    return item
+  }
+  const callerRoot = byId.get(caller.sessionId) ? rootOf(byId.get(caller.sessionId)!) : undefined
+  const projects = new Map<string, { name: string; roots: ActiveAgent[] }>()
+  for (const root of roots) {
+    const project = projects.get(root.workspaceId) ?? { name: root.projectName, roots: [] }
+    project.roots.push(root)
+    projects.set(root.workspaceId, project)
+  }
+  const projectOrder = [...projects.entries()].sort(([leftId, left], [rightId, right]) => {
+    const leftMine = leftId === caller.workspaceId ? 0 : 1
+    const rightMine = rightId === caller.workspaceId ? 0 : 1
+    return leftMine - rightMine || left.name.localeCompare(right.name)
+  })
+  const lines: string[] = []
+  let shown = 0
+  let hidden = 0
+  const render = (agent: ActiveAgent, depth: number) => {
+    if (shown >= LIST_AGENTS_MAX) {
+      hidden += 1
+    } else {
+      shown += 1
+      const pad = '  '.repeat(depth)
+      const relation = relationTo(agent, caller, byId)
+      lines.push(
+        `${pad}- ${agent.title} [${activeState(agent, now)}] ${providerModel(agent.providerId, agent.modelId)}${relation ? ` · ${relation}` : ''}`,
+      )
+      const kind =
+        agent.subagentId === undefined
+          ? ''
+          : agent.origin === 'openmanager'
+            ? `, subagent ${agent.subagentId} started with spawn_agent`
+            : `, ${agent.agentType ? `${agent.agentType} ` : ''}subagent ${agent.subagentId} of its provider's own`
+      lines.push(`${pad}  id: ${agent.id}${agent.id === agent.subagentId ? '' : kind}`)
+      const purpose = agent.prompt?.trim() ? oneLine(agent.prompt, PROMPT_PREVIEW_MAX) : undefined
+      if (purpose && purpose !== agent.title) lines.push(`${pad}  for: ${purpose}`)
+      if (agent.live && agent.activity?.trim()) {
+        lines.push(`${pad}  now: ${oneLine(agent.activity, PROMPT_PREVIEW_MAX)}`)
+      }
+    }
+    const children = liveFirst(childrenOf.get(agent.id) ?? [], (item) => item.live, startedOf)
+    for (const child of children) render(child, depth + 1)
+  }
+  for (const [, project] of projectOrder) {
+    if (shown >= LIST_AGENTS_MAX) {
+      const count = (agent: ActiveAgent): number =>
+        1 + (childrenOf.get(agent.id) ?? []).reduce((sum, child) => sum + count(child), 0)
+      hidden += project.roots.reduce((sum, root) => sum + count(root), 0)
+      continue
+    }
+    lines.push('', `Project ${project.name}:`)
+    const ordered = [...project.roots].sort((left, right) =>
+      left === callerRoot
+        ? -1
+        : right === callerRoot
+          ? 1
+          : startedOf(left).localeCompare(startedOf(right)),
+    )
+    for (const root of ordered) render(root, 0)
+  }
+  if (hidden > 0) lines.push('', `+${hidden} more not shown.`)
+  const live = inScope.filter((agent) => agent.live).length
+  const context = inScope.length - live
+  const head = `Agents running now ${where}: ${live} live${context ? `, ${context} idle shown for context` : ''}. Only your own spawn_agent subagents take send_agent, wait_agent and stop_agent.`
+  return [head, ...lines].join('\n')
 }
