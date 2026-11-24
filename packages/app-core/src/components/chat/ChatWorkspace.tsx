@@ -4,7 +4,7 @@ import { ChatView } from './ChatView'
 import { FloatingChatComposer } from './FloatingChatComposer'
 import { MessageInput } from './MessageInput'
 import { SessionBackgroundTasks } from './BackgroundTasksPill'
-import { SessionSubagentDock } from './SubagentDock'
+import { SessionSubagentDock, SessionSubagentRail } from './SubagentDock'
 import { SessionQueuedMessages } from './QueuedMessages'
 import { SessionLaunchPill } from './SessionLaunchPill'
 import { SyncingPill } from './SyncingPill'
@@ -223,6 +223,7 @@ function ChatWorkspaceBody({
   return (
     <>
       <ChatView />
+      <SessionSubagentRail />
       {readOnly && child ? (
         <FloatingChatComposer>
           <SessionSubagentDock />

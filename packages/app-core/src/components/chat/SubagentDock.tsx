@@ -48,7 +48,8 @@ const selectSessions = (state: EnvironmentState) => state.sessions
 const selectThreads = (state: EnvironmentState) => state.threads
 const selectActive = (state: EnvironmentState) => state.activeSessionId
 
-function EnvironmentSubagentDock() {
+/** The open session's subagent tree, and the session it grows from. */
+function useSessionLineage() {
   const sessionId = useEnvironmentState(selectActive)
   const sessions = useEnvironmentState(selectSessions)
   const threads = useEnvironmentState(selectThreads)
@@ -56,17 +57,43 @@ function EnvironmentSubagentDock() {
     () => buildLineage(sessionId, sessions, (threadId) => threads[threadId]?.subagents),
     [sessionId, sessions, threads],
   )
-  if (!sessionId || lineage.live.length === 0) return null
-  const root = sessions[sessionId]!
+  const root = sessionId ? sessions[sessionId] : undefined
+  return { sessionId, root, lineage }
+}
+
+function EnvironmentSubagentDock() {
+  const { sessionId, root, lineage } = useSessionLineage()
+  if (!sessionId || !root || lineage.live.length === 0) return null
   return (
-    <SubagentDock
-      // Per session: one chat's open tree must not open the next one's.
-      key={sessionId}
-      lineage={lineage}
-      rootTitle={root.title?.trim() || 'This chat'}
-      rootProviderId={root.providerId}
-    />
+    // Where the chat pane is wide enough, the rail at its right edge says
+    // this instead (SessionSubagentRail); the pill is for narrow panes.
+    <div className="@min-[54rem]/pane:hidden">
+      <SubagentDock
+        // Per session: one chat's open tree must not open the next one's.
+        key={sessionId}
+        lineage={lineage}
+        rootTitle={root.title?.trim() || 'This chat'}
+        rootProviderId={root.providerId}
+      />
+    </div>
   )
+}
+
+/**
+ * The open session's subagents at the right edge of the chat pane while any
+ * works. On a wide pane the list sits in the gutter beside the conversation;
+ * on a medium one it folds to a column of status dots that opens on hover or
+ * focus. Narrow panes use the pill above the composer instead.
+ */
+export function SessionSubagentRail() {
+  const client = useEnvironmentClientOptional()
+  return client ? <EnvironmentSubagentRail /> : null
+}
+
+function EnvironmentSubagentRail() {
+  const { sessionId, lineage } = useSessionLineage()
+  if (!sessionId || lineage.live.length === 0) return null
+  return <SubagentRail key={sessionId} lineage={lineage} />
 }
 
 /** The dock itself, given its tree: for hosts and stories that build one. */
@@ -376,5 +403,207 @@ function RowStop({ onStop, name }: { onStop: () => Promise<void>; name: string }
         )}
       </button>
     </Tooltip>
+  )
+}
+
+/**
+ * The rail: no frame, no badges, only words, dots and hairlines. Each row is
+ * a status dot, the title and a clock; a live one adds what it is doing on a
+ * second line. Nesting reads as indentation hung off a hairline. Hover shows
+ * Stop in place of the clock.
+ */
+export function SubagentRail({
+  lineage,
+  defaultShowSettled = false,
+}: {
+  lineage: Lineage
+  defaultShowSettled?: boolean
+}) {
+  const [showSettled, setShowSettled] = useState(defaultShowSettled)
+  const now = useTick(lineage.live.length > 0)
+  const rows = lineageRows(lineage, showSettled)
+  const waiting = lineage.live.filter((node) => node.tone === 'waiting').length
+  return (
+    <div className="pointer-events-none absolute inset-0 z-10 @container/pane">
+      <aside
+        aria-label="Subagents"
+        data-subagent-rail
+        className={cn(
+          'group/rail pointer-events-auto absolute top-3 right-3 hidden overflow-x-hidden max-h-[calc(100%-var(--chat-composer-height,8rem)-2rem)] flex-col overflow-y-auto rounded-xl py-2 custom-scrollbar',
+          // Medium: a column of dots that opens over the chat on hover or focus.
+          '@min-[54rem]/pane:flex w-8 transition-[width,background-color,box-shadow] duration-200 ease-out',
+          'hover:w-64 focus-within:w-64 hover:bg-float focus-within:bg-float hover:shadow-float-rest focus-within:shadow-float-rest',
+          // Wide: the gutter holds the whole list, frameless.
+          '@min-[80rem]/pane:w-60 @min-[80rem]/pane:bg-transparent @min-[80rem]/pane:shadow-none @min-[80rem]/pane:hover:bg-transparent @min-[80rem]/pane:hover:shadow-none',
+        )}
+      >
+        <div className="rail-text flex items-baseline justify-between gap-3 px-3 pb-1.5 text-ui-xs whitespace-nowrap text-[var(--basis-text-faint)]">
+          <span>Subagents</span>
+          <span className="tabular-nums">
+            {lineage.live.length - waiting > 0 ? `${lineage.live.length - waiting} working` : ''}
+            {waiting > 0 ? (
+              <span className="text-[var(--basis-status-needs)]">
+                {lineage.live.length - waiting > 0 ? ' · ' : ''}
+                {waiting} {waiting === 1 ? 'needs' : 'need'} you
+              </span>
+            ) : null}
+          </span>
+        </div>
+        <div role="tree" aria-label="Subagents of this chat" className="flex flex-col">
+          {rows.map(({ node }) => (
+            <RailRow key={node.key} node={node} now={now} />
+          ))}
+        </div>
+        {lineage.settled > 0 ? (
+          <button
+            type="button"
+            onClick={() => setShowSettled((value) => !value)}
+            className="rail-text mt-1 cursor-pointer self-start px-3 py-1 text-left text-ui-xs whitespace-nowrap text-[var(--basis-text-faint)] transition-colors hover:text-[var(--basis-text)] focus-visible:outline focus-visible:outline-2 focus-visible:outline-ring"
+          >
+            {showSettled ? 'Hide finished' : `${lineage.settled} finished`}
+          </button>
+        ) : null}
+      </aside>
+    </div>
+  )
+}
+
+function RailRow({ node, now }: { node: LineageNode; now: number }) {
+  const { openChildSession } = useViewActions()
+  const client = useEnvironmentClientOptional()
+  const record = node.subagent
+  const self = node.tone === 'running' || node.tone === 'waiting'
+  const open =
+    node.sessionId && openChildSession
+      ? () => void openChildSession(node.sessionId!, node.parentSessionId).catch(() => undefined)
+      : undefined
+  const stop =
+    self && record?.stoppable && client?.supports('stopSubagent')
+      ? () =>
+          client.commands.stopSubagent({
+            sessionId: record.parentSessionId,
+            subagentId: record.subagentId,
+          })
+      : undefined
+  const elapsed = record ? subagentElapsedMs(record, now) : undefined
+  const detail =
+    node.tone === 'waiting'
+      ? node.waitingOn === 'question'
+        ? 'Has a question'
+        : node.waitingOn === 'plan'
+          ? 'Plan to review'
+          : 'Needs permission'
+      : self && record
+        ? subagentDetail(record)
+        : undefined
+  const color = subagentToneColor(node)
+  return (
+    <div
+      role="treeitem"
+      aria-selected={false}
+      aria-level={node.depth}
+      data-lineage-node={node.key}
+      data-lineage-status={node.status}
+      className="group/row relative flex min-w-0 items-start py-1 pr-3"
+      style={{ paddingLeft: `${12 + (node.depth - 1) * 14}px` }}
+    >
+      {/* The hairline a nested row hangs off: its parent's dot column. */}
+      {node.depth > 1 ? (
+        <span
+          aria-hidden
+          className="rail-text absolute inset-y-0 w-px bg-[color-mix(in_srgb,var(--basis-text)_12%,transparent)]"
+          style={{ left: `${15 + (node.depth - 2) * 14}px` }}
+        />
+      ) : null}
+      <span
+        aria-hidden
+        className={cn(
+          'mt-[5px] size-[7px] shrink-0 rounded-full',
+          self && 'subagent-pulse',
+          !self && 'opacity-60',
+        )}
+        style={{ background: color }}
+        title={node.title}
+      />
+      <span className="rail-text flex min-w-0 flex-1 flex-col pl-2.5">
+        <span className="flex min-w-0 items-baseline gap-2">
+          {open ? (
+            <button
+              type="button"
+              onClick={open}
+              className={cn(
+                'min-w-0 flex-1 cursor-pointer truncate text-left text-ui-sm leading-[18px] outline-none transition-colors after:absolute after:inset-0 after:content-[""] hover:text-[var(--basis-text-strong)] focus-visible:underline',
+                self ? 'text-[var(--basis-text)]' : 'text-[var(--basis-text-faint)]',
+              )}
+              title={node.title}
+            >
+              {node.title}
+            </button>
+          ) : (
+            <span
+              className={cn(
+                'min-w-0 flex-1 truncate text-ui-sm leading-[18px]',
+                self ? 'text-[var(--basis-text)]' : 'text-[var(--basis-text-faint)]',
+              )}
+            >
+              {node.title}
+            </span>
+          )}
+          <span className="relative z-10 shrink-0 text-ui-xs tabular-nums text-[var(--basis-text-faint)]">
+            {stop ? (
+              <>
+                <span className="group-hover/row:hidden group-focus-within/row:hidden">
+                  {elapsed !== undefined ? formatElapsed(elapsed) : ''}
+                </span>
+                <RailStop onStop={stop} name={node.title} />
+              </>
+            ) : elapsed !== undefined ? (
+              formatElapsed(elapsed)
+            ) : null}
+          </span>
+        </span>
+        {detail ? (
+          <span
+            className="min-w-0 truncate text-ui-xs leading-4"
+            style={{
+              color:
+                node.tone === 'waiting'
+                  ? `color-mix(in srgb, ${color} 80%, var(--basis-text-muted))`
+                  : 'var(--basis-text-faint)',
+            }}
+          >
+            {detail}
+          </span>
+        ) : null}
+      </span>
+    </div>
+  )
+}
+
+function RailStop({ onStop, name }: { onStop: () => Promise<void>; name: string }) {
+  const [stopping, setStopping] = useState(false)
+  const [failed, setFailed] = useState(false)
+  return (
+    <button
+      type="button"
+      aria-label={`Stop ${name}`}
+      disabled={stopping}
+      onClick={(event) => {
+        event.stopPropagation()
+        setFailed(false)
+        setStopping(true)
+        onStop().catch(() => {
+          setFailed(true)
+          setStopping(false)
+        })
+      }}
+      className={cn(
+        'hidden cursor-pointer text-ui-xs text-[var(--basis-text-muted)] transition-colors hover:text-[var(--basis-status-error)] focus-visible:inline focus-visible:outline-none focus-visible:underline group-hover/row:inline group-focus-within/row:inline',
+        (stopping || failed) && 'inline',
+        failed && 'text-[var(--basis-status-error)]',
+      )}
+    >
+      {stopping ? 'Stopping' : failed ? 'Retry stop' : 'Stop'}
+    </button>
   )
 }
