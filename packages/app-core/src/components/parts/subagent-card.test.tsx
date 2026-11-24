@@ -8,6 +8,7 @@ import { SubagentGroup } from './SubagentCard'
 import { partitionSettledTurnParts } from './turn-work-group'
 import {
   formatElapsed,
+  subagentDetail,
   subagentElapsedMs,
   subagentGroupSummary,
   subagentModelLabel,
@@ -69,6 +70,18 @@ describe('subagent card logic', () => {
     expect(subagentStatusLabel({ status: 'interrupted' })).toBe('Stopped')
     expect(subagentName({ title: '  ', agentType: 'Explore' })).toBe('Explore')
     expect(subagentName({ title: '' })).toBe('Subagent')
+  })
+
+  it('keeps tool names whole in the activity line, and names MCP tools plainly', () => {
+    expect(subagentDetail({ status: 'running', activity: 'mcp__openmanager__wait_agent' })).toBe(
+      'wait_agent',
+    )
+    expect(subagentDetail({ status: 'running', activity: 'Reading src/__init__.py' })).toBe(
+      'Reading src/__init__.py',
+    )
+    expect(subagentDetail({ status: 'running', activity: 'Found **7** in `auth`' })).toBe(
+      'Found 7 in auth',
+    )
   })
 
   it('shortens a model id, preferring the catalog’s name', () => {

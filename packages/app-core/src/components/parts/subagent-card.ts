@@ -90,7 +90,10 @@ function firstLine(text: string | undefined): string | undefined {
       .replace(/^[#>*\-\s]+/, '')
       // Inline marks read as noise in one plain line: keep the words.
       .replace(/\[([^\]]*)\]\([^)]*\)/g, '$1')
-      .replace(/(\*\*|__|`)/g, '')
+      // An MCP tool reads by its own name: mcp__openmanager__wait_agent → wait_agent.
+      .replace(/\bmcp__[\w-]+?__([\w-]+)/g, '$1')
+      .replace(/(\*\*|`)/g, '')
+      .replace(/(^|\s)__(\S(?:.*?\S)?)__(?=\s|$)/g, '$1$2')
       .replace(/\s+/g, ' ')
       .trim()
     if (line) return line
