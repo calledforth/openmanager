@@ -129,7 +129,7 @@ export const SessionCard = memo(function SessionCard({
   const tint = cardTint(theme, mark, { unsent })
   const environment = showEnvironment ? session.environment : undefined
   const git = workspace?.git
-  const subagents = session.subagentCount ?? 0
+  // Only subagents at work count: finished ones stay in the chat, not on the card.
   const subagentsLive = session.subagentsLive ?? 0
   const openActions = onActions && (() => onActions(card.root))
   return (
@@ -150,8 +150,8 @@ export const SessionCard = memo(function SessionCard({
         accessibilityHint={[
           pinned ? 'Pinned.' : null,
           unsent ? 'Has an unsent draft.' : null,
-          subagents
-            ? `${subagents} ${subagents === 1 ? 'subagent' : 'subagents'}${subagentsLive ? `, ${subagentsLive} running` : ''}.`
+          subagentsLive
+            ? `${subagentsLive} ${subagentsLive === 1 ? 'subagent' : 'subagents'} running.`
             : null,
           onActions ? 'Long press for actions' : null,
         ]
@@ -220,17 +220,14 @@ export const SessionCard = memo(function SessionCard({
         </AppText>
         <View style={{ flexDirection: 'row', alignItems: 'center', gap: 9, minHeight: 16 }}>
           <ProviderMark providerId={session.providerId} size={12} />
-          {subagents ? (
+          {subagentsLive ? (
             <View style={{ flexDirection: 'row', alignItems: 'center', gap: 3 }}>
-              <RobotIcon size={12} color={subagentsLive ? theme.status.working : theme.faint} />
+              <RobotIcon size={12} color={theme.status.working} />
               <AppText
                 variant="text-12-regular"
-                style={{
-                  color: subagentsLive ? theme.status.working : theme.faint,
-                  fontVariant: ['tabular-nums'],
-                }}
+                style={{ color: theme.status.working, fontVariant: ['tabular-nums'] }}
               >
-                {subagents}
+                {subagentsLive}
               </AppText>
             </View>
           ) : null}

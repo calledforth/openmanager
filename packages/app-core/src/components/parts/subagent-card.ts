@@ -71,6 +71,56 @@ export function subagentStatusLabel(subagent: Pick<Subagent, 'status' | 'waiting
   }
 }
 
+/** One line of free text: the first line that says something, whitespace folded. */
+function firstLine(text: string | undefined): string | undefined {
+  if (!text) return undefined
+  const lines = text.split('\n')
+  // A heading ("## Summary") names what follows; the line after says it.
+  const prose = lines.filter((raw) => !/^\s*#/.test(raw))
+  for (const raw of prose.some((raw) => raw.trim()) ? prose : lines) {
+    const line = raw
+      .replace(/^[#>*\-\s]+/, '')
+      // Inline marks read as noise in one plain line: keep the words.
+      .replace(/\[([^\]]*)\]\([^)]*\)/g, '$1')
+      .replace(/(\*\*|__|`)/g, '')
+      .replace(/\s+/g, ' ')
+      .trim()
+    if (line) return line
+  }
+  return undefined
+}
+
+/**
+ * The card's second line: what it is doing while it works, what it needs
+ * while it waits, and how it ended once settled. Undefined when nothing says.
+ */
+export function subagentDetail(
+  subagent: Pick<
+    Subagent,
+    'status' | 'waitingOn' | 'activity' | 'result' | 'statusReason' | 'prompt'
+  >,
+): string | undefined {
+  switch (subagentTone(subagent.status)) {
+    case 'running':
+      return (
+        firstLine(subagent.activity) ??
+        (subagent.status === 'pending' ? 'Starting…' : firstLine(subagent.prompt))
+      )
+    case 'waiting':
+      return subagent.waitingOn === 'question'
+        ? 'Asked you something. Open it to answer.'
+        : subagent.waitingOn === 'plan'
+          ? 'Has a plan for you to review. Open it to answer.'
+          : 'Waiting for your permission. Open it to answer.'
+    case 'done':
+      return firstLine(subagent.result) ?? firstLine(subagent.prompt)
+    case 'failed':
+      return firstLine(subagent.statusReason) ?? firstLine(subagent.result)
+    case 'stopped':
+      return firstLine(subagent.statusReason) ?? firstLine(subagent.result)
+  }
+}
+
 /** What the card's name is: its title, else its kind, else a plain word. */
 export function subagentName(subagent: Pick<Subagent, 'title' | 'agentType'>): string {
   return subagent.title.trim() || subagent.agentType?.trim() || 'Subagent'
@@ -156,6 +206,8 @@ export function subagentGroupSummary(subagents: readonly Pick<Subagent, 'status'
   title: string
   detail: string
   running: boolean
+  /** How many stand in each tone, in the order the detail reads them. */
+  segments: Array<{ tone: SubagentTone; count: number }>
 } {
   const counts = new Map<SubagentTone, number>()
   for (const subagent of subagents) {
@@ -178,5 +230,8 @@ export function subagentGroupSummary(subagents: readonly Pick<Subagent, 'status'
     title: `${subagents.length} subagents`,
     detail,
     running,
+    segments: order
+      .filter(([tone]) => counts.get(tone))
+      .map(([tone]) => ({ tone, count: counts.get(tone)! })),
   }
 }

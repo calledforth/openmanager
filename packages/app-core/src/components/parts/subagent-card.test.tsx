@@ -85,7 +85,16 @@ describe('subagent card logic', () => {
         { status: 'waiting' },
         { status: 'completed' },
       ]),
-    ).toEqual({ title: '4 subagents', detail: '1 waiting, 1 running, 2 done', running: true })
+    ).toEqual({
+      title: '4 subagents',
+      detail: '1 waiting, 1 running, 2 done',
+      running: true,
+      segments: [
+        { tone: 'waiting', count: 1 },
+        { tone: 'running', count: 1 },
+        { tone: 'done', count: 2 },
+      ],
+    })
     expect(subagentGroupSummary([{ status: 'completed' }, { status: 'failed' }]).running).toBe(
       false,
     )
@@ -106,7 +115,7 @@ const render = (parts: Parameters<typeof MessageParts>[0]['parts'], isStreaming 
   )
 
 describe('subagent cards in a turn', () => {
-  it('shows a lone subagent as one row: who, what it runs on, how far along', () => {
+  it('shows a lone subagent as a card: who, what it is doing, what it runs on, how far along', () => {
     const html = render([
       subagentPart(
         subagent({
@@ -122,8 +131,9 @@ describe('subagent cards in a turn', () => {
     expect(html).toContain('Explore')
     expect(html).toContain('claude-haiku-4-5')
     expect(html).toContain('3 tools')
-    // No preview line, no Background pill: the child page has the rest.
-    expect(html).not.toContain('Reading auth.ts')
+    // What it is doing now, on the second line; no Background pill.
+    expect(html).toContain('Reading auth.ts')
+    expect(html).toContain('>Running<')
     expect(html).not.toContain('Background')
     expect(html).not.toContain('tokens')
     expect(html).not.toContain('role="group"')
@@ -134,6 +144,7 @@ describe('subagent cards in a turn', () => {
   it('flags a waiting subagent with what it waits on', () => {
     const question = render([subagentPart(subagent({ status: 'waiting', waitingOn: 'question' }))])
     expect(question).toContain('Has a question')
+    expect(question).toContain('Asked you something. Open it to answer.')
     expect(question).toContain('data-subagent-status="waiting"')
     const permission = render([
       subagentPart(subagent({ status: 'waiting', waitingOn: 'permission' })),
@@ -141,15 +152,22 @@ describe('subagent cards in a turn', () => {
     expect(permission).toContain('Needs permission')
   })
 
-  it('says a failed one failed, with why on hover, and leaves a result to its page', () => {
+  it('says how it ended: the answer’s first line, or why it failed', () => {
     const done = render([
-      subagentPart(subagent({ status: 'completed', result: 'Found **7** callers.' })),
+      subagentPart(
+        subagent({
+          status: 'completed',
+          result: '## Summary\nFound **7** callers in `auth`.\n\nMore.',
+        }),
+      ),
     ])
-    expect(done).not.toContain('callers.')
+    // One plain line: no heading marks, no emphasis, nothing past it.
+    expect(done).toContain('Found 7 callers in auth.')
+    expect(done).not.toContain('More.')
     const failed = render([
       subagentPart(subagent({ status: 'failed', statusReason: 'Postgres is down' })),
     ])
-    expect(failed).toContain('>Failed<')
+    expect(failed).toContain('Failed')
     expect(failed).toContain('title="Postgres is down"')
   })
 

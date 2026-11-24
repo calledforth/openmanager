@@ -1482,22 +1482,20 @@ function UnsentMark() {
 }
 
 /**
- * The subagents a session's agent started, as a count beside its provider:
- * their sessions have no rows of their own. Tinted while any still runs.
+ * The subagents a session's agent has working right now, as a count beside
+ * its provider: their sessions have no rows of their own. Only live ones
+ * count; finished subagents stay in the chat as cards, not on the row.
  */
-function SubagentCount({ count, live }: { count: number; live: number }) {
-  const label = `${count} ${count === 1 ? 'subagent' : 'subagents'}${live ? `, ${live} running` : ''}`
+function SubagentCount({ live }: { live: number }) {
+  const label = `${live} ${live === 1 ? 'subagent' : 'subagents'} running`
   return (
     <span
-      className={cn(
-        'flex shrink-0 items-center gap-0.5 tabular-nums',
-        live > 0 && 'text-[color:var(--basis-status-working)]',
-      )}
+      className="flex shrink-0 items-center gap-0.5 tabular-nums text-[color:var(--basis-status-working)]"
       title={label}
-      data-subagent-count={count}
+      data-subagent-count={live}
     >
       <RobotIcon className="h-3 w-3" aria-hidden />
-      <span aria-hidden>{count}</span>
+      <span aria-hidden>{live}</span>
       <span className="sr-only">{label}</span>
     </span>
   )
@@ -1677,9 +1675,7 @@ function SessionCardBody({
         <ProviderIcon providerId={providerId} className="h-3 w-3 opacity-80" />
         <span className="sr-only">{providerName}</span>
       </span>
-      {session.subagentCount ? (
-        <SubagentCount count={session.subagentCount} live={session.subagentsLive ?? 0} />
-      ) : null}
+      {session.subagentsLive ? <SubagentCount live={session.subagentsLive} /> : null}
       {unsent ? <UnsentMark /> : null}
       {git ? (
         <span
