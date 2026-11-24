@@ -11,6 +11,7 @@ import {
   subagentModelLabel,
   subagentName,
   subagentStatusLabel,
+  subagentWaitShort,
   subagentTone,
   type SubagentPart,
 } from '@openmanager/app-core/logic'
@@ -89,7 +90,11 @@ function StatusFlag({ subagent }: { subagent: Subagent }) {
   const theme = usePhoneTheme()
   const tone = subagentTone(subagent.status)
   if (tone === 'running' || tone === 'done') return null
-  const label = subagentStatusLabel(subagent)
+  // No second line here to say what it waits on, so the flag says it.
+  const label =
+    subagent.status === 'waiting'
+      ? subagentWaitShort(subagent.waitingOn)
+      : subagentStatusLabel(subagent)
   if (tone === 'stopped') {
     return (
       <AppText variant="text-12-regular" numberOfLines={1} style={{ color: theme.faint }}>

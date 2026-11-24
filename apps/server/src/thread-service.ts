@@ -91,7 +91,12 @@ import {
   type SubtaskUpdate,
 } from './subagent-records.ts'
 import { createSubagentWake } from './subagents/subagent-wake.ts'
-import type { SpawnCaller, SpawnHost, SpawnProvider } from './subagents/spawn-tools.ts'
+import type {
+  ActiveAgent,
+  SpawnCaller,
+  SpawnHost,
+  SpawnProvider,
+} from './subagents/spawn-tools.ts'
 import type { ArtifactMetadata, ArtifactStore } from './artifacts.ts'
 import { withSettledText } from './db/tool-output.ts'
 import { waitingKind } from './db/session-activity.ts'
@@ -219,6 +224,8 @@ type ActiveTurn = {
   toolIds: Map<string, string>
   /** Host ids of this turn's `spawn_agent` calls, in order: a card takes the place of each. */
   spawnCalls?: string[]
+  /** The turn's latest tool call, one line: what `list_active_agents` says it is doing. */
+  activity?: string
   interactionIds: Map<string, string>
   /** Each open request's kind and when it was raised, by host id. */
   pendingInteractions: Map<string, { kind: InteractionKind; createdAt: number }>
@@ -369,6 +376,8 @@ type ThreadRecord = {
   givenBackSteers?: Set<string>
   status: SessionStatus
   updatedAt: number
+  /** The model its provider last said it runs on, for `list_active_agents`. */
+  modelId?: string
   /** In-memory mode only; with SQLite the row is the single source. */
   settledAt?: number
   /** In-memory mode only; with SQLite the row is the single source. */
@@ -3358,6 +3367,10 @@ export function createThreadService(
       providerId: record.providerId,
       ...(record.activeTurn ? { turnId: record.activeTurn.turn.turnId } : {}),
       depth,
+      workspaceId: record.session.workspaceId,
+      ...(record.session.parentSessionId
+        ? { parentSessionId: record.session.parentSessionId }
+        : {}),
     }
   }
 
@@ -3495,6 +3508,156 @@ export function createThreadService(
       : undefined
   }
 
+  /**
+   * Every subagent filed under a session, of any origin: the rows hold the
+   * settled ones from earlier processes, memory the live ones as they are now.
+   */
+  const subagentsOf = (sessionId: string): Subagent[] => {
+    const records = new Map<string, Subagent>()
+    if (options.database) {
+      options.flush?.()
+      const rows = options.database
+        .prepare(
+          `SELECT record_json FROM subagents
+           WHERE thread_id IN (SELECT thread_id FROM threads WHERE session_id = ?)`,
+        )
+        .all(sessionId) as { record_json: string }[]
+      for (const row of rows) {
+        const parsed = SubagentSchema.safeParse(JSON.parse(row.record_json))
+        if (parsed.success) records.set(parsed.data.subagentId, parsed.data)
+      }
+    }
+    for (const entry of subagentsById.values()) {
+      if (entry.record.parentSessionId === sessionId) {
+        records.set(entry.record.subagentId, entry.record)
+      }
+    }
+    return [...records.values()].sort((left, right) => left.startedAt.localeCompare(right.startedAt))
+  }
+
+  /** A project's name as the user sees it, else its folder's. */
+  const projectNameOf = (record: ThreadRecord, names: Map<string, string>): string => {
+    const workspaceId = record.session.workspaceId
+    let name = names.get(workspaceId)
+    if (name !== undefined) return name
+    if (options.database) {
+      try {
+        const row = options.database
+          .prepare('SELECT name FROM workspaces WHERE workspace_id = ?')
+          .get(workspaceId) as { name: string | null } | undefined
+        name = row?.name?.trim() || undefined
+      } catch {
+        name = undefined
+      }
+    }
+    name ??= basename(record.cwd) || workspaceId
+    names.set(workspaceId, name)
+    return name
+  }
+
+  /**
+   * Every agent live now: sessions with a turn or background work running or
+   * waiting on the user, and subagents not yet settled, each with the agents
+   * above it. Running sessions are always in memory, and so is every
+   * subagent reported since this process started; one reported before it
+   * was settled by the restart.
+   */
+  const activeAgents = (): ActiveAgent[] => {
+    const names = new Map<string, string>()
+    const views = new Map<string, ActiveAgent>()
+    const entryOf = (record: ThreadRecord) =>
+      record.subagent ? subagentsById.get(record.subagent.subagentId) : undefined
+    const isLive = (record: ThreadRecord) => {
+      if (record.status === 'running' || record.status === 'waiting') return true
+      const entry = entryOf(record)
+      return !!entry && !isSettledSubagentStatus(entry.record.status)
+    }
+    const viewOf = (record: ThreadRecord): ActiveAgent => {
+      const entry = entryOf(record)
+      const subagent = entry?.record
+      const live = isLive(record)
+      const activity = activityOf(record, record.status)
+      const waitingOn =
+        activity.waitingOn ?? (subagent?.status === 'waiting' ? subagent.waitingOn : undefined)
+      // An idle child says how its subagent stands: still starting, or how it ended.
+      const status = record.status === 'idle' && subagent ? subagent.status : record.status
+      const doing =
+        record.activeTurn?.activity ??
+        subagent?.activity ??
+        (activity.inBackground
+          ? record.backgroundTasks?.map((task) => task.description).join('; ')
+          : undefined)
+      const startedAt = record.activeTurn?.turn.startedAt ?? (live ? subagent?.startedAt : undefined)
+      const modelId = subagent?.modelId ?? record.modelId
+      return {
+        id: record.session.sessionId,
+        sessionId: record.session.sessionId,
+        ...(record.session.parentSessionId
+          ? { parentSessionId: record.session.parentSessionId }
+          : {}),
+        ...(subagent
+          ? {
+              subagentId: subagent.subagentId,
+              origin: subagent.origin,
+              ...(subagent.agentType ? { agentType: subagent.agentType } : {}),
+              ...(subagent.prompt ? { prompt: subagent.prompt } : {}),
+              ...(subagent.stats.toolCalls !== undefined
+                ? { toolCalls: subagent.stats.toolCalls }
+                : {}),
+            }
+          : {}),
+        workspaceId: record.session.workspaceId,
+        projectName: projectNameOf(record, names),
+        title: record.session.title?.trim() || subagent?.title || 'Untitled session',
+        providerId: record.providerId,
+        ...(modelId ? { modelId } : {}),
+        live,
+        status,
+        ...(waitingOn ? { waitingOn } : {}),
+        ...(activity.inBackground ? { inBackground: true } : {}),
+        ...(startedAt ? { startedAt } : {}),
+        ...(doing?.trim() ? { activity: doing } : {}),
+      }
+    }
+    /** Add a session and the sessions above it. */
+    const include = (record: ThreadRecord) => {
+      let item: ThreadRecord | undefined = record
+      for (let hops = 0; item && hops < 16; hops += 1) {
+        if (views.has(item.session.sessionId)) return
+        views.set(item.session.sessionId, viewOf(item))
+        const parentId: string | undefined = item.session.parentSessionId
+        item = parentId ? sessions.get(parentId) : undefined
+      }
+    }
+    for (const record of sessions.values()) if (isLive(record)) include(record)
+    // A live subagent whose child the user deleted: only its record is left.
+    for (const entry of subagentsById.values()) {
+      const record = entry.record
+      if (entry.child || isSettledSubagentStatus(record.status)) continue
+      views.set(record.subagentId, {
+        id: record.subagentId,
+        parentSessionId: record.parentSessionId,
+        subagentId: record.subagentId,
+        origin: record.origin,
+        ...(record.agentType ? { agentType: record.agentType } : {}),
+        workspaceId: entry.holder.session.workspaceId,
+        projectName: projectNameOf(entry.holder, names),
+        title: record.title,
+        providerId: record.providerId,
+        ...(record.modelId ? { modelId: record.modelId } : {}),
+        live: true,
+        status: record.status,
+        ...(record.waitingOn ? { waitingOn: record.waitingOn } : {}),
+        startedAt: record.startedAt,
+        ...(record.prompt ? { prompt: record.prompt } : {}),
+        ...(record.activity ? { activity: record.activity } : {}),
+        ...(record.stats.toolCalls !== undefined ? { toolCalls: record.stats.toolCalls } : {}),
+      })
+      include(entry.holder)
+    }
+    return [...views.values()]
+  }
+
   const spawnHost: SpawnHost = {
     callerOf: (threadId) => {
       const record = threads.get(threadId)
@@ -3503,6 +3666,8 @@ export function createThreadService(
     providers: () => options.spawnProviders?.() ?? [],
     spawn: spawnChild,
     list: spawnedOf,
+    subagentsOf,
+    activeAgents,
     get: (parentSessionId, subagentId) => ownSpawned(parentSessionId, subagentId)?.record,
     waitSettled: (parentSessionId, subagentId, timeoutMs) => {
       const entry = ownSpawned(parentSessionId, subagentId)
@@ -6160,6 +6325,20 @@ export function createThreadService(
         const hostId = stableId(record.activeTurn.toolIds, event.data.toolCallId)
         const calls = (record.activeTurn.spawnCalls ??= [])
         if (hostId && !calls.includes(hostId)) calls.push(hostId)
+      }
+      // What it is doing and on which model, for `list_active_agents`.
+      if (event.subtaskId === undefined) {
+        if (event.event === 'tool_call' && record.activeTurn) {
+          const title = event.data.title?.trim()
+          if (title) record.activeTurn.activity = title
+        }
+        const model =
+          event.event === 'session_created' || event.event === 'session_loaded'
+            ? event.data.models?.currentModelId
+            : event.event === 'current_model_update'
+              ? event.data.currentModelId
+              : undefined
+        if (model) record.modelId = model
       }
 
       // A runtime that created a session where it meant to load one (no

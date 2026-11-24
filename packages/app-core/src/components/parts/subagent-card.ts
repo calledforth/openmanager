@@ -47,27 +47,100 @@ export function subagentTone(status: Subagent['status']): SubagentTone {
   }
 }
 
-/** The status in a word or two, as the card and the child page's header say it. */
+/**
+ * The status in a word or two. One vocabulary everywhere a subagent is
+ * shown: working, needs you, done, failed, stopped. What a waiting one
+ * waits on is said beside it (`subagentWaitReason`), not in its status.
+ */
 export function subagentStatusLabel(subagent: Pick<Subagent, 'status' | 'waitingOn'>): string {
   switch (subagent.status) {
     case 'pending':
       return 'Starting'
     case 'running':
-      return 'Running'
+      return 'Working'
     case 'waiting':
-      return subagent.waitingOn === 'question'
-        ? 'Has a question'
-        : subagent.waitingOn === 'plan'
-          ? 'Plan to review'
-          : 'Needs permission'
+      return 'Needs you'
     case 'completed':
       return 'Done'
     case 'failed':
       return 'Failed'
     case 'cancelled':
-      return 'Stopped'
     case 'interrupted':
-      return 'Interrupted'
+      return 'Stopped'
+  }
+}
+
+/**
+ * What a waiting subagent waits on, in two words: for a surface with no line
+ * to spell it out (the phone's card flag).
+ */
+export function subagentWaitShort(waitingOn: Subagent['waitingOn']): string {
+  return waitingOn === 'question'
+    ? 'Has a question'
+    : waitingOn === 'plan'
+      ? 'Plan to review'
+      : 'Needs permission'
+}
+
+/** What a waiting subagent waits on, as the line under its title says it. */
+export function subagentWaitReason(waitingOn: Subagent['waitingOn']): string {
+  return waitingOn === 'question'
+    ? 'Asked you a question'
+    : waitingOn === 'plan'
+      ? 'Has a plan for you to review'
+      : 'Waiting for your permission'
+}
+
+/** One line of free text: the first line that says something, whitespace folded. */
+function firstLine(text: string | undefined): string | undefined {
+  if (!text) return undefined
+  const lines = text.split('\n')
+  // A heading ("## Summary") names what follows; the line after says it.
+  const prose = lines.filter((raw) => !/^\s*#/.test(raw))
+  for (const raw of prose.some((raw) => raw.trim()) ? prose : lines) {
+    const line = raw
+      .replace(/^[#>*\-\s]+/, '')
+      // Inline marks read as noise in one plain line: keep the words.
+      .replace(/\[([^\]]*)\]\([^)]*\)/g, '$1')
+      // An MCP tool reads by its own name: mcp__openmanager__wait_agent → wait_agent.
+      .replace(/\bmcp__[\w-]+?__([\w-]+)/g, '$1')
+      .replace(/(\*\*|`)/g, '')
+      .replace(/(^|\s)__(\S(?:.*?\S)?)__(?=\s|$)/g, '$1$2')
+      .replace(/\s+/g, ' ')
+      .trim()
+    if (line) return line
+  }
+  return undefined
+}
+
+/**
+ * The card's second line: what it is doing while it works, what it needs
+ * while it waits, and how it ended once settled. Undefined when nothing says.
+ */
+export function subagentDetail(
+  subagent: Pick<
+    Subagent,
+    'status' | 'waitingOn' | 'activity' | 'result' | 'statusReason' | 'prompt'
+  >,
+): string | undefined {
+  switch (subagentTone(subagent.status)) {
+    case 'running':
+      return (
+        firstLine(subagent.activity) ??
+        (subagent.status === 'pending' ? 'Starting…' : firstLine(subagent.prompt))
+      )
+    case 'waiting': {
+      // What it wants to do, when the runtime said, after what it waits on.
+      const doing = firstLine(subagent.activity)
+      const reason = subagentWaitReason(subagent.waitingOn)
+      return doing ? `${reason} · ${doing}` : reason
+    }
+    case 'done':
+      return firstLine(subagent.result) ?? firstLine(subagent.prompt)
+    case 'failed':
+      return firstLine(subagent.statusReason) ?? firstLine(subagent.result)
+    case 'stopped':
+      return firstLine(subagent.statusReason) ?? firstLine(subagent.result)
   }
 }
 
@@ -150,12 +223,14 @@ export function subagentModelLabel(
 
 /**
  * The line under a group's header: how many there are, and how they stand.
- * "3 subagents · 2 running, 1 done".
+ * "3 subagents · 2 working, 1 done".
  */
 export function subagentGroupSummary(subagents: readonly Pick<Subagent, 'status'>[]): {
   title: string
   detail: string
   running: boolean
+  /** How many stand in each tone, in the order the detail reads them. */
+  segments: Array<{ tone: SubagentTone; count: number }>
 } {
   const counts = new Map<SubagentTone, number>()
   for (const subagent of subagents) {
@@ -163,20 +238,26 @@ export function subagentGroupSummary(subagents: readonly Pick<Subagent, 'status'
     counts.set(tone, (counts.get(tone) ?? 0) + 1)
   }
   const order: Array<[SubagentTone, string]> = [
-    ['waiting', 'waiting'],
-    ['running', 'running'],
+    ['waiting', 'need you'],
+    ['running', 'working'],
     ['done', 'done'],
     ['failed', 'failed'],
     ['stopped', 'stopped'],
   ]
   const detail = order
     .filter(([tone]) => counts.get(tone))
-    .map(([tone, word]) => `${counts.get(tone)} ${word}`)
+    .map(([tone, word]) => {
+      const count = counts.get(tone)!
+      return `${count} ${tone === 'waiting' && count === 1 ? 'needs you' : word}`
+    })
     .join(', ')
   const running = (counts.get('running') ?? 0) + (counts.get('waiting') ?? 0) > 0
   return {
     title: `${subagents.length} subagents`,
     detail,
     running,
+    segments: order
+      .filter(([tone]) => counts.get(tone))
+      .map(([tone]) => ({ tone, count: counts.get(tone)! })),
   }
 }

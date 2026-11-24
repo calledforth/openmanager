@@ -86,6 +86,9 @@ export function groupSidebarSessions({
     const live = direct.filter(
       (child) => isLive(child) || descendants(child.sessionId).some(isLive),
     ).length
+    // What the row shows: every subagent at work under it, at any depth, as
+    // the chat's subagent list counts them.
+    const working = nested.filter(isLive).length
     // A subagent running in the background is shown by its card and counted
     // here, so only as many agent tasks as there are live subagents are left
     // out of the background work; any more have no card and stay named.
@@ -118,7 +121,7 @@ export function groupSidebarSessions({
       providerId: summary.providerId as ProviderId,
       ...(summary.parentSessionId ? { parentExternalId: summary.parentSessionId } : {}),
       ...(direct.length ? { subagentCount: direct.length } : {}),
-      ...(live ? { subagentsLive: live } : {}),
+      ...(working ? { subagentsLive: working } : {}),
       // Its subagents' pages are where it is on screen, for the card to show
       // it selected. Joined, so an unchanged set keeps the row as it was.
       ...(nested.length

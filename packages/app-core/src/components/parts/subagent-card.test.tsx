@@ -8,6 +8,7 @@ import { SubagentGroup } from './SubagentCard'
 import { partitionSettledTurnParts } from './turn-work-group'
 import {
   formatElapsed,
+  subagentDetail,
   subagentElapsedMs,
   subagentGroupSummary,
   subagentModelLabel,
@@ -62,13 +63,25 @@ describe('subagent card logic', () => {
   })
 
   it('names the status, what a waiting one waits on, and the subagent itself', () => {
-    expect(subagentStatusLabel({ status: 'waiting', waitingOn: 'question' })).toBe('Has a question')
-    expect(subagentStatusLabel({ status: 'waiting', waitingOn: 'permission' })).toBe(
-      'Needs permission',
-    )
+    // One vocabulary: what it waits on is said beside the status, not in it.
+    expect(subagentStatusLabel({ status: 'waiting', waitingOn: 'question' })).toBe('Needs you')
+    expect(subagentStatusLabel({ status: 'running' })).toBe('Working')
     expect(subagentStatusLabel({ status: 'cancelled' })).toBe('Stopped')
+    expect(subagentStatusLabel({ status: 'interrupted' })).toBe('Stopped')
     expect(subagentName({ title: '  ', agentType: 'Explore' })).toBe('Explore')
     expect(subagentName({ title: '' })).toBe('Subagent')
+  })
+
+  it('keeps tool names whole in the activity line, and names MCP tools plainly', () => {
+    expect(subagentDetail({ status: 'running', activity: 'mcp__openmanager__wait_agent' })).toBe(
+      'wait_agent',
+    )
+    expect(subagentDetail({ status: 'running', activity: 'Reading src/__init__.py' })).toBe(
+      'Reading src/__init__.py',
+    )
+    expect(subagentDetail({ status: 'running', activity: 'Found **7** in `auth`' })).toBe(
+      'Found 7 in auth',
+    )
   })
 
   it('shortens a model id, preferring the catalog’s name', () => {
@@ -85,7 +98,16 @@ describe('subagent card logic', () => {
         { status: 'waiting' },
         { status: 'completed' },
       ]),
-    ).toEqual({ title: '4 subagents', detail: '1 waiting, 1 running, 2 done', running: true })
+    ).toEqual({
+      title: '4 subagents',
+      detail: '1 needs you, 1 working, 2 done',
+      running: true,
+      segments: [
+        { tone: 'waiting', count: 1 },
+        { tone: 'running', count: 1 },
+        { tone: 'done', count: 2 },
+      ],
+    })
     expect(subagentGroupSummary([{ status: 'completed' }, { status: 'failed' }]).running).toBe(
       false,
     )
@@ -106,7 +128,7 @@ const render = (parts: Parameters<typeof MessageParts>[0]['parts'], isStreaming 
   )
 
 describe('subagent cards in a turn', () => {
-  it('shows a lone subagent as one row: who, what it runs on, how far along', () => {
+  it('shows a lone subagent as a card: who, what it is doing, what it runs on, how far along', () => {
     const html = render([
       subagentPart(
         subagent({
@@ -122,8 +144,10 @@ describe('subagent cards in a turn', () => {
     expect(html).toContain('Explore')
     expect(html).toContain('claude-haiku-4-5')
     expect(html).toContain('3 tools')
-    // No preview line, no Background pill: the child page has the rest.
-    expect(html).not.toContain('Reading auth.ts')
+    // What it is doing now, on the second line; no Background pill.
+    expect(html).toContain('Reading auth.ts')
+    // Working is said by the glyph alone: no status word for it.
+    expect(html).not.toContain('>Working<')
     expect(html).not.toContain('Background')
     expect(html).not.toContain('tokens')
     expect(html).not.toContain('role="group"')
@@ -133,23 +157,31 @@ describe('subagent cards in a turn', () => {
 
   it('flags a waiting subagent with what it waits on', () => {
     const question = render([subagentPart(subagent({ status: 'waiting', waitingOn: 'question' }))])
-    expect(question).toContain('Has a question')
+    expect(question).toContain('Needs you')
+    expect(question).toContain('Asked you a question')
     expect(question).toContain('data-subagent-status="waiting"')
     const permission = render([
       subagentPart(subagent({ status: 'waiting', waitingOn: 'permission' })),
     ])
-    expect(permission).toContain('Needs permission')
+    expect(permission).toContain('Waiting for your permission')
   })
 
-  it('says a failed one failed, with why on hover, and leaves a result to its page', () => {
+  it('keeps a finished one to one line, and says why a failed one failed', () => {
     const done = render([
-      subagentPart(subagent({ status: 'completed', result: 'Found **7** callers.' })),
+      subagentPart(
+        subagent({
+          status: 'completed',
+          result: '## Summary\nFound **7** callers in `auth`.\n\nMore.',
+        }),
+      ),
     ])
-    expect(done).not.toContain('callers.')
+    // Done is one line: the answer is on its page.
+    expect(done).not.toContain('callers in')
+    expect(done).not.toContain('pl-6')
     const failed = render([
       subagentPart(subagent({ status: 'failed', statusReason: 'Postgres is down' })),
     ])
-    expect(failed).toContain('>Failed<')
+    expect(failed).toContain('Failed')
     expect(failed).toContain('title="Postgres is down"')
   })
 
@@ -160,12 +192,13 @@ describe('subagent cards in a turn', () => {
     const grouped = render([a, b, c])
     expect(grouped.match(/role="group"/g)).toHaveLength(1)
     expect(grouped).toContain('3 subagents')
-    expect(grouped).toContain('2 running, 1 done')
+    expect(grouped).toContain('2 working, 1 done')
     // Folded: the header and a line of what each runs on, no cards yet.
     expect(grouped).toContain('data-subagent-group="folded"')
     expect(grouped).toContain('aria-expanded="false"')
     expect(grouped).not.toContain('data-subagent="')
-    expect(grouped).toContain('title="Second · Claude · Done"')
+    // The providers they run on, each once.
+    expect(grouped).toContain('title="Claude"')
 
     const split = render([a, { type: 'text', id: 'between', text: 'meanwhile' }, b])
     expect(split).not.toContain('role="group"')

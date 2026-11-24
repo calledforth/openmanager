@@ -1,5 +1,5 @@
 import { useEffect, useId, useState } from 'react'
-import { CaretRightIcon, CheckIcon, CircleNotchIcon, StopIcon, XIcon } from '@phosphor-icons/react'
+import { CaretRightIcon, CheckIcon, StopIcon, XIcon } from '@phosphor-icons/react'
 import type { ProviderId } from '@agentpack/contract'
 import type { Subagent } from '@openmanager/protocol'
 import { cn } from '../../lib/utils'
@@ -7,13 +7,13 @@ import { useEnvironmentClientOptional } from '../../providers/environment-client
 import { useViewActions } from '../../providers/view-actions'
 import { ProviderIcon } from '../providers/ProviderIcon'
 import { SessionBusyLoader } from '../sidebar/SessionBusyLoader'
-import { Tooltip } from '../ui/Tooltip'
 import {
   formatElapsed,
   providerName,
   subagentElapsedMs,
   subagentGroupSummary,
   subagentModelLabel,
+  subagentDetail,
   subagentName,
   subagentStatusLabel,
   subagentTone,
@@ -109,88 +109,120 @@ function useSubagentActions(subagent: Subagent) {
   return { open, stop }
 }
 
+/** The colour a tone is drawn in where every tone needs one (the rail's dots). */
+export function subagentToneColor(subagent: Pick<Subagent, 'status' | 'waitingOn'>): string {
+  return subagentTone(subagent.status) === 'running'
+    ? 'var(--basis-status-working)'
+    : (subagentStatusColor(subagent) ?? 'var(--basis-text-faint)')
+}
+
 /**
- * Stop, over the end of the row while it is hovered or focused, so it takes
- * no room the rest of the time.
+ * A status said in words, in its colour pulled toward the text colour so
+ * small type keeps its contrast on either theme.
  */
-function StopButton({ onStop, name }: { onStop: () => Promise<void>; name: string }) {
+export function subagentStatusTextColor(subagent: Pick<Subagent, 'status' | 'waitingOn'>): string {
+  return `color-mix(in srgb, ${subagentToneColor(subagent)} 72%, var(--basis-text))`
+}
+
+/**
+ * Stop, as a word. It sits over the clock and shows while the row is
+ * hovered or the button focused, so it takes no room the rest of the time.
+ */
+export function SubagentStopText({
+  onStop,
+  name,
+  className,
+}: {
+  onStop: () => Promise<void>
+  name: string
+  className?: string
+}) {
   const [stopping, setStopping] = useState(false)
-  const [failure, setFailure] = useState<string | null>(null)
+  const [failed, setFailed] = useState(false)
+  // A global `button { font: inherit }` outranks size utilities on a
+  // button, so the size is set on its wrapper and inherited.
   return (
-    <Tooltip content={failure ?? 'Stop this subagent'}>
+    <span className={cn('relative z-10 text-ui-xs leading-none', className)}>
       <button
         type="button"
         aria-label={`Stop ${name}`}
+        title={failed ? 'Couldn’t stop it. Try again.' : undefined}
         disabled={stopping}
         onClick={(event) => {
           event.stopPropagation()
-          setFailure(null)
+          setFailed(false)
           setStopping(true)
-          onStop().catch((error: unknown) => {
-            setFailure(
-              error instanceof Error && error.message ? error.message : 'Couldn’t stop it.',
-            )
+          onStop().catch(() => {
+            setFailed(true)
             setStopping(false)
           })
         }}
         className={cn(
-          'absolute inset-y-0 right-1.5 z-10 my-auto flex h-5 cursor-pointer items-center gap-1 rounded-full px-2 text-ui-xs leading-none',
-          'bg-[var(--basis-canvas-bg)] text-[var(--basis-text-muted)] shadow-[0_0_0_1px_color-mix(in_srgb,var(--basis-text)_8%,transparent)]',
-          'transition-[opacity,color] duration-100 hover:text-[var(--basis-text)] focus-visible:outline focus-visible:outline-2 focus-visible:outline-ring',
-          'opacity-0 group-hover/subagent:opacity-100 focus-visible:opacity-100 disabled:cursor-default',
-          (stopping || failure) && 'opacity-100',
-          failure && 'text-[var(--basis-status-error)]',
+          'cursor-pointer text-[var(--basis-text-muted)] transition-colors duration-100 hover:text-[var(--basis-status-error)] focus-visible:underline focus-visible:outline-none disabled:cursor-default',
+          failed && 'text-[var(--basis-status-error)]',
         )}
       >
-        {stopping ? (
-          <CircleNotchIcon className="size-2.5 animate-spin" aria-hidden />
-        ) : (
-          <StopIcon className="size-2.5" weight="fill" aria-hidden />
-        )}
-        Stop
+        {stopping ? 'Stopping' : failed ? 'Retry' : 'Stop'}
       </button>
-    </Tooltip>
+    </span>
   )
 }
 
-/**
- * A status worth flagging in the row: a subagent waiting on someone, one
- * that failed or was stopped. Running and done say it with the glyph alone.
- */
-function StatusFlag({ subagent }: { subagent: Subagent }) {
-  const tone = subagentTone(subagent.status)
-  if (tone === 'running' || tone === 'done') return null
-  const label = subagentStatusLabel(subagent)
-  const reason = subagent.statusReason?.trim()
-  if (tone === 'stopped') {
-    return (
-      <span className="shrink-0 text-[var(--basis-text-faint)]" title={reason || undefined}>
-        {label}
-      </span>
-    )
-  }
-  const color = subagentStatusColor(subagent)!
+/** A clock with Stop laid over it, shown on hover. */
+function ClockAndStop({
+  elapsed,
+  stop,
+  name,
+}: {
+  elapsed: number | undefined
+  stop: (() => Promise<void>) | undefined
+  name: string
+}) {
+  const reveal = 'opacity-0 group-hover/subagent:opacity-100 focus-visible:opacity-100'
+  const hide = 'group-hover/subagent:opacity-0'
   return (
-    <span
-      className="inline-flex h-[18px] shrink-0 items-center rounded-[5px] px-1.5 text-ui-xs font-medium leading-none"
-      style={{ color, background: `color-mix(in srgb, ${color} 14%, transparent)` }}
-      title={reason || undefined}
-    >
-      {label}
+    <span className="relative flex min-w-[3.5ch] shrink-0 items-center justify-end">
+      {elapsed !== undefined ? (
+        <span
+          className={cn(
+            'text-ui-xs tabular-nums text-[var(--basis-text-muted)] transition-opacity duration-100',
+            stop && hide,
+          )}
+        >
+          {formatElapsed(elapsed)}
+        </span>
+      ) : null}
+      {stop ? (
+        <SubagentStopText onStop={stop} name={name} className={cn('absolute right-0', reveal)} />
+      ) : null}
     </span>
   )
 }
 
 const SURFACE =
-  'rounded-[10px] bg-[var(--basis-surface)] shadow-[inset_0_0_0_1px_color-mix(in_srgb,var(--basis-text)_4%,transparent)]'
+  'rounded-[10px] bg-[var(--basis-surface)] shadow-[inset_0_0_0_1px_color-mix(in_srgb,var(--basis-text)_5%,transparent)]'
+
+/** Agent types too generic to be worth a word. */
+const PLAIN_TYPES = new Set(['general-purpose', 'general', 'default'])
 
 /**
- * One subagent the agent started, in place of the tool call that started it:
- * one row saying who it is, what it runs on and how it stands. The whole row
- * opens its child session, where its work and answer are; a live one offers
- * Stop on hover.
+ * One subagent the agent started, in place of the tool call that started
+ * it: a row like a tool row. Its status is the glyph at its head, said in a
+ * word only when it needs someone or failed. While it works (or waits, or
+ * after it failed) a second line says what it is doing, waits on, or why it
+ * failed; a finished one stays one line. The whole row opens its child
+ * session; a live one shows Stop over its clock on hover.
  */
-export function SubagentCard({ part, className }: { part: SubagentPart; className?: string }) {
+export function SubagentCard({
+  part,
+  className,
+  bare = false,
+}: {
+  part: SubagentPart
+  className?: string
+  /** Inside a group's surface: no surface of its own. */
+  bare?: boolean
+}) {
   const subagent = part.subagent
   const tone = subagentTone(subagent.status)
   const live = tone === 'running' || tone === 'waiting'
@@ -200,9 +232,30 @@ export function SubagentCard({ part, className }: { part: SubagentPart; classNam
   const elapsed = subagentElapsedMs(subagent, now)
   const model = subagentModelLabel(subagent.modelId) ?? providerName(subagent.providerId)
   const tools = subagentToolCount(subagent.stats)
+  const detail = tone === 'done' || tone === 'stopped' ? undefined : subagentDetail(subagent)
+  const kind =
+    subagent.agentType && subagent.agentType !== name && !PLAIN_TYPES.has(subagent.agentType)
+      ? subagent.agentType
+      : undefined
+  const flagged = tone === 'waiting' || tone === 'failed'
   const titleClass = cn(
     'min-w-0 truncate text-left text-ui-md leading-5',
     tone === 'stopped' ? 'text-[var(--basis-text-muted)]' : 'text-[var(--basis-text)]',
+  )
+  const meta = (
+    <span className="flex min-w-0 shrink items-center gap-1.5 text-ui-xs leading-none text-[var(--basis-text-muted)] @max-[30rem]/card:hidden">
+      <ProviderIcon
+        providerId={subagent.providerId as ProviderId}
+        className="size-3 shrink-0 opacity-80"
+      />
+      <span className="max-w-[12rem] truncate">{model}</span>
+      {tools ? (
+        <>
+          <span aria-hidden>·</span>
+          <span className="shrink-0 tabular-nums">{tools}</span>
+        </>
+      ) : null}
+    </span>
   )
 
   return (
@@ -210,15 +263,16 @@ export function SubagentCard({ part, className }: { part: SubagentPart; classNam
       data-subagent={subagent.subagentId}
       data-subagent-status={subagent.status}
       className={cn(
-        'group/subagent relative flex h-8 min-w-0 items-center gap-2 pl-2.5 pr-3 transition-colors duration-100',
-        SURFACE,
+        'group/subagent @container/card relative flex min-w-0 flex-col justify-center px-2.5 transition-colors duration-100',
+        detail ? 'gap-0.5 py-[7px]' : 'h-8',
+        !bare && SURFACE,
         open &&
           'hover:bg-[var(--basis-surface-hover)] has-[[data-open]:focus-visible]:bg-[var(--basis-surface-hover)]',
         className,
       )}
     >
-      <SubagentStatusGlyph subagent={subagent} />
-      <span className="flex min-w-0 items-baseline gap-2">
+      <span className="flex min-w-0 items-center gap-2 text-ui-md">
+        <SubagentStatusGlyph subagent={subagent} className="size-4" />
         {open ? (
           <button
             type="button"
@@ -237,96 +291,76 @@ export function SubagentCard({ part, className }: { part: SubagentPart; classNam
             {name}
           </span>
         )}
-        {subagent.agentType && subagent.agentType !== name ? (
-          <span className="shrink-0 text-ui-sm text-[var(--basis-text-faint)]">
-            {subagent.agentType}
-          </span>
+        {kind ? (
+          <span className="shrink-0 text-ui-sm text-[var(--basis-text-faint)]">{kind}</span>
         ) : null}
-      </span>
-      <span className="relative ml-auto flex shrink-0 items-center gap-2 pl-2 text-ui-sm leading-none tabular-nums text-[var(--basis-text-faint)]">
-        <StatusFlag subagent={subagent} />
-        <span className="flex max-w-[11rem] min-w-0 items-center gap-1.5 max-sm:hidden">
-          <ProviderIcon
-            providerId={subagent.providerId as ProviderId}
-            className="size-3 shrink-0 opacity-90"
-          />
-          <span className="truncate">{model}</span>
+        <span className="ml-auto flex shrink-0 items-center gap-3 pl-3">
+          {flagged ? (
+            <span
+              className="shrink-0 text-ui-xs font-medium leading-none"
+              style={{ color: subagentStatusTextColor(subagent) }}
+              title={subagent.statusReason?.trim() || undefined}
+            >
+              {subagentStatusLabel(subagent)}
+            </span>
+          ) : null}
+          {detail ? null : meta}
+          <ClockAndStop elapsed={elapsed} stop={stop} name={name} />
         </span>
-        {tools ? <span className="max-sm:hidden">{tools}</span> : null}
-        {elapsed !== undefined ? (
-          <span className="min-w-[2ch] text-right">{formatElapsed(elapsed)}</span>
-        ) : null}
       </span>
-      {stop ? <StopButton onStop={stop} name={name} /> : null}
+      {detail ? (
+        <span className="flex min-w-0 items-center gap-3 pl-6">
+          <span
+            className={cn(
+              'min-w-0 flex-1 truncate text-ui-sm leading-4',
+              tone === 'failed'
+                ? 'text-[color-mix(in_srgb,var(--basis-status-error)_42%,var(--basis-text-muted))]'
+                : 'text-[var(--basis-text-muted)]',
+            )}
+            title={detail}
+          >
+            {detail}
+          </span>
+          {meta}
+        </span>
+      ) : null}
     </div>
   )
 }
 
-/** How many chips a folded group shows before the rest become "+N". */
-const STACK_MAX = 4
-
-/**
- * What a folded group runs on: a chip per subagent, each tucked a little
- * under the next, the way avatars stack. Hovering one names it.
- */
-function ProviderStack({ subagents }: { subagents: readonly Subagent[] }) {
-  const shown = subagents.slice(0, STACK_MAX)
-  const rest = subagents.length - shown.length
-  const chip =
-    'relative flex size-[22px] shrink-0 items-center justify-center rounded-full bg-[color-mix(in_srgb,var(--basis-text)_9%,var(--basis-surface))] ring-2 ring-[var(--basis-surface)] transition-[box-shadow] duration-100 group-hover/header:ring-[var(--basis-surface-hover)]'
+/** The providers a group runs on, each once, as small marks. */
+function ProviderMarks({ subagents }: { subagents: readonly Subagent[] }) {
+  const seen = [...new Set(subagents.map((subagent) => subagent.providerId))]
   return (
-    <span aria-hidden className="flex shrink-0 items-center -space-x-1">
-      {shown.map((subagent) => (
-        <span
-          key={subagent.subagentId}
-          className={chip}
-          title={`${subagentName(subagent)} · ${providerName(subagent.providerId)} · ${subagentStatusLabel(subagent)}`}
-        >
-          <ProviderIcon providerId={subagent.providerId as ProviderId} className="size-[11px]" />
-        </span>
+    <span
+      className="flex shrink-0 items-center gap-1.5 text-[var(--basis-text-muted)]"
+      title={seen.map(providerName).join(', ')}
+    >
+      {seen.map((providerId) => (
+        <ProviderIcon
+          key={providerId}
+          providerId={providerId as ProviderId}
+          className="size-3 opacity-80"
+        />
       ))}
-      {rest > 0 ? (
-        <span
-          className={cn(
-            chip,
-            'text-[10px] font-medium tabular-nums text-[var(--basis-text-muted)]',
-          )}
-          title={subagents
-            .slice(STACK_MAX)
-            .map((subagent) => subagentName(subagent))
-            .join(', ')}
-        >
-          +{rest}
-        </span>
-      ) : null}
     </span>
   )
 }
 
-/** A folded group's live mark: working while any runs, the ask while any waits. */
-function GroupActivity({ subagents }: { subagents: readonly Subagent[] }) {
+/** A group's head glyph: the loader while any works or waits, else how they ended. */
+function GroupGlyph({ subagents }: { subagents: readonly Subagent[] }) {
   const waiting = subagents.find((subagent) => subagent.status === 'waiting')
-  if (waiting) {
-    return (
-      <span className="flex size-3.5 shrink-0 items-center justify-center">
-        <SessionBusyLoader tone={waiting.waitingOn === 'question' ? 'question' : 'needs'} />
-      </span>
-    )
-  }
-  if (subagents.some((subagent) => subagentTone(subagent.status) === 'running')) {
-    return (
-      <span className="flex size-3.5 shrink-0 items-center justify-center">
-        <SessionBusyLoader tone="working" />
-      </span>
-    )
-  }
-  return null
+  const running = subagents.find((subagent) => subagentTone(subagent.status) === 'running')
+  const failed = subagents.find((subagent) => subagent.status === 'failed')
+  const lead =
+    waiting ?? running ?? failed ?? subagents.find((s) => s.status === 'completed') ?? subagents[0]
+  return lead ? <SubagentStatusGlyph subagent={lead} className="size-4" /> : null
 }
 
 /**
- * Subagents the agent started back to back. Folded, one row: what they run
- * on as a stack of provider chips, how many, and how they stand. Unfolded, a
- * card each, stacked under that header.
+ * Subagents the agent started back to back, as one surface. Folded, its
+ * header says how many and how they stand, once, with the providers they run
+ * on. Opened, a row each under it, inside the same surface.
  */
 export function SubagentGroup({
   parts,
@@ -340,52 +374,49 @@ export function SubagentGroup({
   const listId = useId()
   const subagents = parts.map((part) => part.subagent)
   const summary = subagentGroupSummary(subagents)
-  const toggle = () => setOpen((value) => !value)
   return (
     <div
       role="group"
       aria-label={summary.title}
       data-subagent-group={open ? 'open' : 'folded'}
-      className="my-1.5 flex flex-col gap-1"
+      className={cn('my-1.5 flex flex-col overflow-hidden', SURFACE)}
     >
-      <div
-        className={cn(
-          'group/header relative flex transition-colors duration-100 hover:bg-[var(--basis-surface-hover)] has-[button:focus-visible]:bg-[var(--basis-surface-hover)]',
-          SURFACE,
-        )}
+      <button
+        type="button"
+        aria-expanded={open}
+        aria-controls={listId}
+        onClick={() => setOpen((value) => !value)}
+        className="group/header flex h-9 w-full min-w-0 cursor-pointer items-center gap-2 px-2.5 text-left outline-none transition-colors duration-100 hover:bg-[var(--basis-surface-hover)] focus-visible:bg-[var(--basis-surface-hover)]"
       >
-        <button
-          type="button"
-          aria-expanded={open}
-          aria-controls={listId}
-          onClick={toggle}
-          className="flex h-9 w-full min-w-0 cursor-pointer items-center gap-2 pl-2 pr-3 text-left outline-none after:absolute after:inset-0 after:rounded-[10px] after:content-['']"
-        >
-          <ProviderStack subagents={subagents} />
-          <span className="ml-0.5 shrink-0 text-ui-md leading-5 text-[var(--basis-text)]">
-            {summary.title}
-          </span>
-          <span aria-hidden className="text-ui-sm text-[var(--basis-text-faint)]">
-            ·
-          </span>
-          <GroupActivity subagents={subagents} />
-          <span className="min-w-0 truncate text-ui-sm text-[var(--basis-text-muted)]">
-            {summary.detail}
-          </span>
+        <GroupGlyph subagents={subagents} />
+        <span className="shrink-0 text-ui-md leading-5 text-[var(--basis-text)]">
+          {summary.title}
+        </span>
+        <span aria-hidden className="text-ui-sm text-[var(--basis-text-faint)]">
+          ·
+        </span>
+        <span className="min-w-0 truncate text-ui-sm text-[var(--basis-text-muted)]">
+          {summary.detail}
+        </span>
+        <span className="ml-auto flex shrink-0 items-center gap-3 pl-3">
+          <ProviderMarks subagents={subagents} />
           <CaretRightIcon
             size={11}
             aria-hidden
             className={cn(
-              'ml-auto shrink-0 text-[var(--basis-text-faint)] transition-transform duration-150 group-hover/header:text-[var(--basis-text-muted)]',
+              'shrink-0 text-[var(--basis-text-faint)] transition-transform duration-150 group-hover/header:text-[var(--basis-text-muted)]',
               open && 'rotate-90',
             )}
           />
-        </button>
-      </div>
+        </span>
+      </button>
       {open ? (
-        <div id={listId} className="flex flex-col gap-1">
+        <div
+          id={listId}
+          className="flex flex-col divide-y divide-[color-mix(in_srgb,var(--basis-text)_6%,transparent)] border-t border-[color-mix(in_srgb,var(--basis-text)_6%,transparent)]"
+        >
           {parts.map((part) => (
-            <SubagentCard key={part.id} part={part} />
+            <SubagentCard key={part.id} part={part} bare className="rounded-none" />
           ))}
         </div>
       ) : null}

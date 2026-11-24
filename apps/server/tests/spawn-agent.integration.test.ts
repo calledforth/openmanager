@@ -25,7 +25,7 @@ const WORKSPACE = '/workspace/project'
 const ENVIRONMENT = 'environment-1'
 const resolver: WorkspaceRuntimeResolver = (workspaceId) =>
   workspaceId === WORKSPACE
-    ? { providerId: 'claude', providers: ['claude', 'opencode'], cwd: WORKSPACE }
+    ? { providerId: 'claude', providers: ['claude', 'opencode', 'codex'], cwd: WORKSPACE }
     : undefined
 
 type PromptArgs = {
@@ -81,6 +81,13 @@ function setup() {
       finalizeNow: events.finalizeNow,
       spawnProviders: () => [
         { providerId: 'opencode', name: 'OpenCode', available: true, models: [] },
+        {
+          providerId: 'codex',
+          name: 'Codex',
+          available: true,
+          models: [{ modelId: 'gpt-5.5', name: 'GPT-5.5' }],
+          defaultModelId: 'gpt-5.5',
+        },
       ],
     },
   )
@@ -510,7 +517,8 @@ describe('spawn_agent, as the review found it', () => {
     t.restart()
     t.dispatch('session.open', { sessionId: t.parent.sessionId })
     const listed = await t.call('list_agents', {})
-    expect(listed.text).toContain(`${card.subagentId} [completed]`)
+    expect(listed.text).toContain('- Review [completed')
+    expect(listed.text).toContain(`id: ${card.subagentId} (session ${card.childSessionId})`)
     const sent = await t.call('send_agent', { id: card.subagentId, message: 'One more check' })
     expect(sent.isError).toBeUndefined()
     const again = await t.promptOn(childThreadOf(t, card), 1)
@@ -542,5 +550,153 @@ describe('spawn_agent, as the review found it', () => {
     }) as { type: string; error?: { message: string } }
     expect(removed.type).toBe('error')
     expect(removed.error?.message).toContain('only it can take it back')
+  })
+})
+
+describe('the agent listings and other providers, on the thread service', () => {
+  const childThreadOf = (t: ReturnType<typeof setup>, card: Subagent) =>
+    (
+      t.database
+        .prepare('SELECT thread_id FROM threads WHERE session_id = ?')
+        .get(card.childSessionId!) as { thread_id: string }
+    ).thread_id
+
+  it('list_active_agents shows a spawned child under its parent, and a native subagent beside it', async () => {
+    const t = setup()
+    const args = await t.parentTurn()
+    await t.call('spawn_agent', {
+      provider: 'opencode',
+      prompt: 'Review src/parser.ts and report bugs',
+      title: 'Review the parser',
+    })
+    const card = t.latest(t.parent.threadId)
+    const child = await t.promptOn(childThreadOf(t, card))
+    t.promptStarted(child)
+    t.emit(
+      childThreadOf(t, card),
+      'opencode',
+      {
+        category: 'tool',
+        event: 'tool_call',
+        data: { toolCallId: 'read-1', title: 'Read src/parser.ts', status: 'in_progress' },
+      },
+      `run-${child.userMessageId}`,
+    )
+    await vi.waitFor(() => expect(t.latest(t.parent.threadId).stats.toolCalls).toBe(1))
+    // Claude's own Agent tool starts a subagent of the parent's.
+    t.emit(
+      t.parent.threadId,
+      'claude',
+      {
+        category: 'tool',
+        event: 'subtask_update',
+        data: {
+          taskId: 'toolu_agent',
+          status: 'running',
+          title: 'Find the callers',
+          prompt: 'Find every caller of parse()',
+          subagentType: 'Explore',
+        },
+      },
+      `run-${args.userMessageId}`,
+    )
+    const native = t.records(t.parent.threadId).find((item) => item.origin === 'native')!
+    expect(native).toBeDefined()
+
+    const active = await t.call('list_active_agents', {})
+    expect(active.isError).toBeUndefined()
+    // How long each has run depends on the machine; the rest is exact.
+    const timeless = (text: string) => text.replace(/running, \d+s/g, 'running, Ns')
+    const text = timeless(active.text)
+    expect(text).toContain('Agents running now in this environment: 3 live.')
+    expect(text).toContain(
+      'Project Project:\n' +
+        `- Parent [running, Ns] claude · you\n  id: ${t.parent.sessionId}\n  now: spawn_agent\n`,
+    )
+    expect(text).toContain(
+      `  - Review the parser [running, Ns, 1 tool call] opencode · your subagent (yours to act on)\n` +
+        `    id: ${card.childSessionId}, subagent ${card.subagentId} started with spawn_agent\n` +
+        '    for: Review src/parser.ts and report bugs\n' +
+        '    now: Read src/parser.ts',
+    )
+    expect(text).toContain(
+      `  - Find the callers [running, Ns] claude · your subagent\n` +
+        `    id: ${native.childSessionId}, Explore subagent ${native.subagentId} of its provider's own\n` +
+        '    for: Find every caller of parse()',
+    )
+
+    const lineage = await t.call('list_agents', {})
+    expect(lineage.text).toContain('(2 live, 0 finished)')
+    expect(lineage.text).toContain(
+      `id: ${card.subagentId} (session ${card.childSessionId}) · yours: send_agent, wait_agent, stop_agent`,
+    )
+    expect(lineage.text).toContain(
+      `id: ${native.subagentId} (session ${native.childSessionId}) · reach it with your own subagent tool`,
+    )
+
+    // The child sees its parent and its sibling, and itself.
+    const fromChild = await createSpawnAgentTools(t.service.spawnHost)
+      .find((tool) => tool.name === 'list_active_agents')!
+      .call({ scope: 'project' }, { threadId: childThreadOf(t, card), providerId: 'opencode' })
+    expect(timeless(fromChild.text)).toContain('- Parent [running, Ns] claude · your parent')
+    expect(timeless(fromChild.text)).toContain('- Review the parser [running, Ns, 1 tool call] opencode · you')
+    expect(timeless(fromChild.text)).toContain('- Find the callers [running, Ns] claude · sibling')
+  })
+
+  it('says nothing else is running when the caller is alone', async () => {
+    const t = setup()
+    await t.parentTurn()
+    const active = await t.call('list_active_agents', {})
+    expect(active.text).toContain('Nothing else is running in this environment right now')
+  })
+
+  it('spawns, messages, waits on and stops a child on Codex, by either id', async () => {
+    const t = setup()
+    await t.parentTurn()
+    const started = await t.call('spawn_agent', {
+      provider: 'codex',
+      model: 'gpt-5.5',
+      prompt: 'Summarise the README',
+      title: 'Summarise README',
+    })
+    expect(started.isError).toBeUndefined()
+    const card = t.latest(t.parent.threadId)
+    expect(card).toMatchObject({ providerId: 'codex', modelId: 'gpt-5.5', origin: 'openmanager' })
+    const childThread = childThreadOf(t, card)
+    const first = await t.promptOn(childThread)
+    expect(first.providerId).toBe('codex')
+    expect(first.prompt.text).toBe('Summarise the README')
+    t.promptStarted(first)
+    t.emit(
+      childThread,
+      'codex',
+      {
+        category: 'stream',
+        event: 'agent_message_chunk',
+        data: { content: { type: 'text', text: 'It is a monorepo.' } },
+      },
+      `run-${first.userMessageId}`,
+    )
+    t.finish(first)
+    // Waited on by its session id, as the listings show it.
+    const waited = await t.call('wait_agent', { id: card.childSessionId })
+    expect(waited.text).toContain('[completed]')
+    expect(waited.text).toContain('It is a monorepo.')
+
+    // A follow-up reaches the Codex child as a new delegated turn of its own.
+    const sent = await t.call('send_agent', { id: card.subagentId, message: 'Now list the apps' })
+    expect(sent.isError).toBeUndefined()
+    expect(sent.text).toContain('Sent to')
+    const second = await t.promptOn(childThread, 1)
+    expect(second.providerId).toBe('codex')
+    expect(second.prompt.text).toBe('Now list the apps')
+    t.promptStarted(second)
+    await vi.waitFor(() => expect(t.latest(t.parent.threadId).status).toBe('running'))
+
+    // Stopped by its session id: the Codex turn is cancelled and the card says so.
+    const stopped = await t.call('stop_agent', { id: card.childSessionId })
+    expect(stopped.isError).toBeUndefined()
+    expect(t.runtime.cancel).toHaveBeenCalledWith(expect.objectContaining({ providerId: 'codex' }))
+    await vi.waitFor(() => expect(t.latest(t.parent.threadId).status).toBe('cancelled'))
   })
 })

@@ -237,7 +237,7 @@ describe('subagent cards', () => {
       />,
     )
     expect(text()).toContain('2 subagents')
-    expect(text()).toContain('1 running, 1 done')
+    expect(text()).toContain('1 working, 1 done')
     expect(text()).not.toContain('Explore s1')
     await press(buttons()[0]!)
     expect(text()).toContain('Explore s1')

@@ -18,6 +18,7 @@ import {
   subagentElapsedMs,
   subagentModelLabel,
   subagentStatusLabel,
+  subagentWaitReason,
   subagentTone,
 } from '../parts/subagent-card'
 
@@ -131,7 +132,10 @@ export function SubagentStatusLine({
         className={cn('shrink-0', tone === 'running' && 'text-[var(--basis-text-muted)]')}
         style={color ? { color } : undefined}
       >
-        {subagentStatusLabel(identity)}
+        {/* On its own page, what it waits on says more than "Needs you". */}
+        {identity.status === 'waiting'
+          ? subagentWaitReason(identity.waitingOn)
+          : subagentStatusLabel(identity)}
         {elapsed !== undefined ? ` ${formatElapsed(elapsed)}` : ''}
       </span>
     </span>

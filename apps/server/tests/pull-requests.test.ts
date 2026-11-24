@@ -740,6 +740,7 @@ describe('the MCP endpoint', () => {
         'wait_agent',
         'send_agent',
         'list_agents',
+        'list_active_agents',
         'stop_agent',
       ])
       const called = await post({
