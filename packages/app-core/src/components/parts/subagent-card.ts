@@ -70,6 +70,18 @@ export function subagentStatusLabel(subagent: Pick<Subagent, 'status' | 'waiting
   }
 }
 
+/**
+ * What a waiting subagent waits on, in two words: for a surface with no line
+ * to spell it out (the phone's card flag).
+ */
+export function subagentWaitShort(waitingOn: Subagent['waitingOn']): string {
+  return waitingOn === 'question'
+    ? 'Has a question'
+    : waitingOn === 'plan'
+      ? 'Plan to review'
+      : 'Needs permission'
+}
+
 /** What a waiting subagent waits on, as the line under its title says it. */
 export function subagentWaitReason(waitingOn: Subagent['waitingOn']): string {
   return waitingOn === 'question'
