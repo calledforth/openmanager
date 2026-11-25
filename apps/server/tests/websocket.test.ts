@@ -1225,7 +1225,11 @@ describe('handshake and scoped subscriptions', () => {
     expect(await client.next()).toMatchObject({
       type: 'error',
       requestId: unhealthyId,
-      error: { code: 'unavailable' },
+      error: {
+        code: 'unavailable',
+        // Why, not just that: the state lasts until something clears it.
+        message: expect.stringContaining('A session failed to start just now: provider crashed'),
+      },
     })
     expect(ensure).not.toHaveBeenCalled()
   })

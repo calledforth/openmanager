@@ -183,6 +183,20 @@ export function treeKiller(graceMs: number): (pid: number) => Promise<boolean> {
     })
 }
 
+/** The OS did not report the child running in time. On a machine under load
+ * (swapping, thermally throttled) this is slowness, not a broken CLI, so it is
+ * kept apart from a spawn that failed outright. The message is unchanged:
+ * probes still read it as a spawn failure. */
+export class SpawnTimeoutError extends Error {
+  readonly name = 'SpawnTimeoutError'
+  constructor(
+    readonly label: string,
+    readonly timeoutMs: number,
+  ) {
+    super(`${label} did not start within ${timeoutMs}ms`)
+  }
+}
+
 /** Resolve once Node reports the child running, reject if it could not be
  * started at all. Without this a missing binary surfaces much later, as a
  * handshake that never answers. */
@@ -206,7 +220,7 @@ export function spawned(
     child.once('error', onError)
     timer = setTimeout(() => {
       child.kill()
-      finish(new Error(`${spec.label} did not start within ${spec.spawnTimeoutMs}ms`))
+      finish(new SpawnTimeoutError(spec.label, spec.spawnTimeoutMs))
     }, spec.spawnTimeoutMs)
     timer.unref?.()
   })

@@ -9,7 +9,12 @@ import {
   type ProviderHealth,
   type ProviderLimits,
 } from '@openmanager/protocol/node'
-import { providers, type AgentRuntime, type ProviderConfig } from '@agentpack/runtime/node'
+import {
+  describeProviderFailure,
+  providers,
+  type AgentRuntime,
+  type ProviderConfig,
+} from '@agentpack/runtime/node'
 import type { CommandContext } from './command-context.ts'
 import type { WorkspaceRuntimeResolver } from './thread-service.ts'
 
@@ -41,6 +46,14 @@ const errorResult = (requestId: string, code: ErrorCode, message: string) => ({
   requestId,
   error: { code, message },
 })
+
+/** "Provider is unhealthy", with why and how it clears. The state lasts until
+ * a newer observation says the provider works, so the reason is the only way
+ * to tell a crash (the machine ran out of memory, say) from a stale verdict. */
+function unhealthyMessage(failure: RuntimeHealthReport['health']['runtime']['failure']): string {
+  const reason = failure ? ` ${describeProviderFailure(failure)}` : ''
+  return `Provider is unhealthy.${reason} It clears on the next successful health check (every 5 minutes), or press Retry for this provider in Settings.`
+}
 
 /** Server-owned provider catalog, health snapshot and probe command boundary. */
 export function createProviderService(
@@ -124,7 +137,7 @@ export function createProviderService(
         return { code: 'unavailable', message: 'Provider executable is unavailable.' }
       }
       if (health.runtime.state === 'failed' || health.runtime.state === 'degraded') {
-        return { code: 'unavailable', message: 'Provider is unhealthy.' }
+        return { code: 'unavailable', message: unhealthyMessage(health.runtime.failure) }
       }
       return undefined
     },

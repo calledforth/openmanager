@@ -25,6 +25,7 @@ export {
   ProbeTimeoutError,
   ProviderHealthMonitor,
 } from './core/ProviderHealthMonitor.js'
+export { describeProviderFailure } from './core/provider-failure.js'
 export type {
   ProviderHealthMonitorDeps,
   ProviderHealthRefreshReason,

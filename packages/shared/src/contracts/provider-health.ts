@@ -65,6 +65,32 @@ export interface ProviderExitInfo {
   threadId?: string
 }
 
+/** What the newest bad observation was. Only these kinds can make a provider
+ * `'failed'` or `'degraded'`; a session start that merely ran out of time, or
+ * a thread whose stored session the agent forgot, is not one of them. */
+export type ProviderFailureKind =
+  /** A session process exited without being asked to. */
+  | 'crash'
+  /** A session could not start, for a reason that is not slowness. */
+  | 'start_failed'
+  /** A health probe ran and failed. */
+  | 'probe_failed'
+  /** A health probe did not answer within its budget. */
+  | 'probe_timeout'
+  /** The CLI refused its credentials. */
+  | 'auth'
+
+export interface ProviderFailureInfo {
+  kind: ProviderFailureKind
+  /** ISO timestamp. */
+  at: string
+  message: string
+  /** Set for a `'crash'`. */
+  exitCode?: number | null
+  signal?: string | null
+  threadId?: string
+}
+
 export interface ProviderRuntimeHealth {
   state: ProviderRuntimeState
   /** Child processes alive right now. One per session, not per provider. */
@@ -77,6 +103,10 @@ export interface ProviderRuntimeHealth {
   serviceProcesses?: number
   lastUnexpectedExit?: ProviderExitInfo
   message?: string
+  /** The newest observation that the provider does not work, while nothing
+   * newer says it does. It is what makes `state` read `'failed'` or
+   * `'degraded'`; a later success clears it. */
+  failure?: ProviderFailureInfo
 }
 
 export interface ProviderModelSummary {

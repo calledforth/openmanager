@@ -1100,10 +1100,9 @@ export class AgentRuntime {
       this.health.observeRuntimeStarted(args.providerId)
       return started.result
     } catch (error) {
-      this.health.observeRuntimeStartFailed(
-        args.providerId,
-        error instanceof Error ? error.message : String(error),
-      )
+      // The monitor decides whether this says anything about the provider:
+      // a start that ran out of time does not.
+      this.health.observeRuntimeStartFailed(args.providerId, error)
       throw error
     }
   }
