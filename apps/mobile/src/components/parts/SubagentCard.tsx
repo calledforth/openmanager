@@ -376,14 +376,14 @@ function ProviderStack({ subagents }: { subagents: readonly Subagent[] }) {
   const shown = subagents.slice(0, STACK_MAX)
   const rest = subagents.length - shown.length
   const chip = {
-    width: 22,
-    height: 22,
-    borderRadius: 11,
+    width: 20,
+    height: 20,
+    borderRadius: 10,
     alignItems: 'center',
     justifyContent: 'center',
     backgroundColor: theme.surface2,
     borderWidth: 2,
-    borderColor: theme.hover,
+    borderColor: theme.bg,
   } as const
   return (
     <View
@@ -434,19 +434,19 @@ export const SubagentGroup = memo(
             revealedRef.current = true
             setOpen((value) => !value)
           }}
+          // Flat on the page, as a work group's line is: no card around it.
           style={({ pressed }) => ({
             flexDirection: 'row',
             alignItems: 'center',
-            gap: 8,
-            minHeight: 42,
-            paddingLeft: 8,
-            paddingRight: 12,
-            borderRadius: 12,
-            backgroundColor: pressed ? theme.active : theme.hover,
+            alignSelf: 'flex-start',
+            maxWidth: '100%',
+            gap: 6,
+            minHeight: 30,
+            opacity: pressed ? 0.6 : 1,
           })}
         >
           <ProviderStack subagents={subagents} />
-          <AppText variant="text-14-medium" style={{ color: theme.fg }}>
+          <AppText variant="text-14-regular" style={{ color: theme.muted }}>
             {summary.title}
           </AppText>
           {waiting ? (
@@ -454,14 +454,17 @@ export const SubagentGroup = memo(
           ) : running ? (
             <StatusMark mark="working" size={12} />
           ) : null}
+          <AppText variant="text-13-regular" style={{ color: theme.faint }}>
+            ·
+          </AppText>
           <AppText
-            variant="text-12-regular"
+            variant="text-13-regular"
             numberOfLines={1}
-            style={{ color: theme.muted, flex: 1, minWidth: 0 }}
+            style={{ color: theme.faint, flexShrink: 1, minWidth: 0 }}
           >
             {summary.detail}
           </AppText>
-          <DisclosureChevron open={open} color={theme.faint} />
+          <DisclosureChevron open={open} color={theme.faint} size={11} />
         </Press>
         {open ? (
           <Animated.View entering={revealedRef.current ? revealBody : undefined} style={{ gap: 6 }}>

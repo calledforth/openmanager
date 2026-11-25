@@ -172,7 +172,7 @@ export function ComposerDock({
   const fold = composerFold(model, focused)
   const prompt = model.prompt
   const replaced = prompt && prompt.kind !== 'plan'
-  const radius = replaced ? 22 : 26
+  const radius = replaced ? 20 : 24
   const { onContentLayout, heightStyle } = useFoldHeight(foldKey(fold, prompt?.requestId ?? null))
   return (
     // The box's height eases only through a fold; the content inside it never animates its layout.

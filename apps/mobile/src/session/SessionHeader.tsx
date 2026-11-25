@@ -4,38 +4,36 @@ import { Text, TextInput, View, type TextStyle } from 'react-native'
 
 import { ShimmerText } from '../components/chat/ShimmerText'
 import { usePhoneTheme } from '../theme/ThemeProvider'
-import { Glass } from '../ui/Glass'
 import { useGoBack } from '../ui/goBack'
 import { tap } from '../ui/haptics'
-import { IconButton } from '../ui/IconButton'
 import { Press } from '../ui/Press'
 import { ProjectMark } from '../ui/ProjectMark'
 import { ScreenBar } from '../ui/Screen'
 import { TITLE_MAX, type HeaderNote } from './useSessionChrome'
 
-/** The header's one row: as tall as its glass, over which the content leaves room. */
-export const HEADER_ROW = 48
+/** The header's one row, over which the content leaves room. */
+export const HEADER_ROW = 44
 /** Above the row, under the status bar. */
-const HEADER_TOP = 6
+export const HEADER_TOP = 2
 /** Under the row, before the content. */
-const HEADER_BOTTOM = 6
-/** The capsule's height at rest: a title line and the project's. */
-const CAPSULE = 40
-/** Between Back and the capsule. */
-const GAP = 8
+const HEADER_BOTTOM = 2
+/** Back's tap target: the glyph sits flat on the page, no glass around it. */
+const BACK = 40
+/** From the screen's sides: Back's glyph lines up with the transcript's text. */
+const SIDE = 4
 
-/** The title's type: one line, in the capsule. */
+/** The title's type: one line, flat on the page. */
 const TITLE_STYLE: TextStyle = {
   fontFamily: 'Geist-SemiBold',
-  fontSize: 15,
-  lineHeight: 18,
+  fontSize: 16,
+  lineHeight: 20,
   letterSpacing: -0.2,
 }
 /** The project's, under it. */
 const LINE_STYLE: TextStyle = {
   fontFamily: 'Geist-Regular',
-  fontSize: 11.5,
-  lineHeight: 14,
+  fontSize: 12,
+  lineHeight: 15,
   letterSpacing: 0.1,
 }
 
@@ -111,13 +109,14 @@ function SecondLine({
 }
 
 /**
- * The session page's chrome, one row of glass beside the content, over it
- * (see `ScreenBar`): Back, then the title in a capsule with the project
- * under it. The capsule is the page's one control: a tap opens its actions
- * (the menu, with rename in it), said by the caret after the title; a page
- * with no actions (a blank new session) shows the capsule as a label. While
- * a rename is on, the field takes the capsule; while a command is out, or
- * just failed, its line takes the project's place.
+ * The session page's chrome, one flat row over the page (see `ScreenBar`):
+ * Back, then the title with the project under it, as plain text rather than
+ * glass, so the header takes as little of the screen as it can. The title is
+ * the page's one control: a tap opens its actions (the menu, with rename in
+ * it), said by the caret after the title; a page with no actions (a blank
+ * new session) shows the title as a label. While a rename is on, the field
+ * takes the title's place; while a command is out, or just failed, its line
+ * takes the project's place.
  */
 export const SessionHeaderBar = memo(function SessionHeaderBar({
   topInset,
@@ -145,16 +144,16 @@ export const SessionHeaderBar = memo(function SessionHeaderBar({
   const goBack = useGoBack()
   const theme = usePhoneTheme()
   const face = {
-    minHeight: CAPSULE,
+    minHeight: HEADER_ROW - 4,
     justifyContent: 'center',
-    paddingVertical: 4,
-    paddingLeft: 14,
-    paddingRight: onOpen ? 11 : 14,
+    paddingVertical: 2,
+    paddingHorizontal: 6,
+    borderRadius: 10,
   } as const
-  const capsule = editing ? (
-    <Glass radius={CAPSULE / 2} style={{ flex: 1, minWidth: 0 }} contentStyle={face}>
+  const titleBlock = editing ? (
+    <View style={[face, { flex: 1, minWidth: 0, backgroundColor: theme.hover }]}>
       <TitleField title={title} onCommit={(next) => onCommitTitle?.(next)} />
-    </Glass>
+    </View>
   ) : (
     <Press
       accessibilityRole={onOpen ? 'button' : 'header'}
@@ -165,36 +164,47 @@ export const SessionHeaderBar = memo(function SessionHeaderBar({
         tap()
         onOpen?.()
       }}
-      style={{ flexShrink: 1, minWidth: 0 }}
+      style={({ pressed }) => [
+        face,
+        { flexShrink: 1, minWidth: 0, backgroundColor: pressed ? theme.hover : 'transparent' },
+      ]}
     >
-      {({ pressed }) => (
-        <Glass
-          radius={CAPSULE / 2}
-          style={{ flexShrink: 1, minWidth: 0 }}
-          contentStyle={[face, { backgroundColor: pressed ? theme.active : 'transparent' }]}
-        >
-          <View style={{ flexDirection: 'row', alignItems: 'center', gap: 5 }}>
-            <Text numberOfLines={1} style={[TITLE_STYLE, { color: theme.fg, flexShrink: 1 }]}>
-              {title}
-            </Text>
-            {onOpen ? <CaretDownIcon size={10} color={theme.faint} weight="bold" /> : null}
-          </View>
-          <SecondLine note={note} project={project} projectId={projectId} />
-        </Glass>
-      )}
+      <View style={{ flexDirection: 'row', alignItems: 'center', gap: 5 }}>
+        <Text numberOfLines={1} style={[TITLE_STYLE, { color: theme.fg, flexShrink: 1 }]}>
+          {title}
+        </Text>
+        {onOpen ? <CaretDownIcon size={10} color={theme.faint} weight="bold" /> : null}
+      </View>
+      <SecondLine note={note} project={project} projectId={projectId} />
     </Press>
   )
   return (
     <ScreenBar
       top={topInset + HEADER_TOP}
       height={HEADER_ROW}
+      inset={SIDE}
       left={
         <>
-          <IconButton label="Back" onPress={goBack}>
-            <CaretLeftIcon size={18} color={theme.fg} weight="bold" />
-          </IconButton>
-          <View style={{ width: GAP }} />
-          {capsule}
+          <Press
+            accessibilityRole="button"
+            accessibilityLabel="Back"
+            hitSlop={4}
+            onPress={() => {
+              tap()
+              goBack()
+            }}
+            style={({ pressed }) => ({
+              width: BACK,
+              height: BACK,
+              borderRadius: BACK / 2,
+              alignItems: 'center',
+              justifyContent: 'center',
+              backgroundColor: pressed ? theme.hover : 'transparent',
+            })}
+          >
+            <CaretLeftIcon size={20} color={theme.fg} weight="bold" />
+          </Press>
+          {titleBlock}
         </>
       }
     />
