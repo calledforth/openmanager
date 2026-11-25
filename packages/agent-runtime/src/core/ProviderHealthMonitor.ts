@@ -3,6 +3,7 @@ import {
   UNPROBED_PROVIDER_HEALTH,
   type ProviderAuthHealth,
   type ProviderExitInfo,
+  type ProviderFailureInfo,
   type ProviderHealth,
   type ProviderHealthReport,
   type ProviderInstallHealth,
@@ -16,6 +17,7 @@ import type { ProbeResult, ProbeRuntime, ProbeRuntimeFactory } from '../session/
 import type { SessionRuntimeExit } from '../session/lifecycle.js'
 import { withTimeout } from '../session/timeout.js'
 import { AuthRequiredError, ProviderVersionUnsupportedError } from './errors.js'
+import { startFailureIsProviderWide } from './start-failure.js'
 import type { HostDeps } from '../host.js'
 
 /** Re-probe cadence. Matches the reference architecture's 5 minutes: long
@@ -118,6 +120,9 @@ type ProviderRecord = {
    * unexpected process exit, a start failure, or a failed probe. */
   unhealthySeq: number
   lastUnexpectedExit: ProviderExitInfo | undefined
+  /** The observation behind the newest `unhealthySeq`: what to tell somebody
+   * who was refused because of it. */
+  lastFailure: ProviderFailureInfo | undefined
   runtimeMessage: string | undefined
   startedEver: boolean
 }
@@ -133,6 +138,7 @@ function emptyRecord(): ProviderRecord {
     healthySeq: 0,
     unhealthySeq: 0,
     lastUnexpectedExit: undefined,
+    lastFailure: undefined,
     runtimeMessage: undefined,
     startedEver: false,
   }
@@ -262,6 +268,7 @@ export class ProviderHealthMonitor {
       ...(census.serviceProcesses ? { serviceProcesses: census.serviceProcesses } : {}),
       ...(record.lastUnexpectedExit ? { lastUnexpectedExit: record.lastUnexpectedExit } : {}),
       ...(record.runtimeMessage ? { message: record.runtimeMessage } : {}),
+      ...(failing(record) && record.lastFailure ? { failure: record.lastFailure } : {}),
     }
   }
 
@@ -322,7 +329,7 @@ export class ProviderHealthMonitor {
       message,
       ...(loginHint ? { loginHint } : {}),
     }
-    record.unhealthySeq = this.tick()
+    this.markFailing(providerId, record, { kind: 'auth', message })
     this.publish(providerId)
   }
 
@@ -357,12 +364,31 @@ export class ProviderHealthMonitor {
     this.publish(providerId)
   }
 
-  observeRuntimeStartFailed(providerId: ProviderId, message: string): void {
+  /** A session runtime's `start()` threw.
+   *
+   * Only a failure that says something about the provider counts against it.
+   * A start that ran out of time (a machine swapping or throttled under many
+   * worktrees takes longer than the budget to spawn a CLI) and a thread whose
+   * stored session the agent no longer knows are both about *this* start, not
+   * the provider: counting them refused every other thread's create, open and
+   * send until the next probe, up to five minutes later. Those are logged, and
+   * left out of health. */
+  observeRuntimeStartFailed(providerId: ProviderId, error: unknown): void {
     const record = this.records.get(providerId)
     if (!record) return
+    const detail = message(error)
+    if (!startFailureIsProviderWide(error)) {
+      this.deps.host.log({
+        scope: 'agent-runtime',
+        level: 'warn',
+        message: 'Session start failed; not counted against provider health',
+        data: { providerId, error: detail },
+      })
+      return
+    }
     record.startedEver = true
-    record.unhealthySeq = this.tick()
-    record.runtimeMessage = message
+    record.runtimeMessage = detail
+    this.markFailing(providerId, record, { kind: 'start_failed', message: detail })
     this.publish(providerId)
   }
 
@@ -378,7 +404,6 @@ export class ProviderHealthMonitor {
       this.publish(providerId)
       return
     }
-    record.unhealthySeq = this.tick()
     record.lastUnexpectedExit = {
       at: exit.at,
       exitCode: exit.exitCode,
@@ -386,6 +411,18 @@ export class ProviderHealthMonitor {
       threadId,
     }
     record.runtimeMessage = `Session process exited unexpectedly (code ${exit.exitCode ?? 'null'}, signal ${exit.signal ?? 'none'})`
+    this.markFailing(
+      providerId,
+      record,
+      {
+        kind: 'crash',
+        message: record.runtimeMessage,
+        exitCode: exit.exitCode,
+        signal: exit.signal,
+        threadId,
+      },
+      exit.at,
+    )
     this.publish(providerId)
   }
 
@@ -422,8 +459,9 @@ export class ProviderHealthMonitor {
       this.publish(providerId)
     }
     return {
-      ok: (result) => settle(() => this.applyProbeResult(record, result, startedAt)),
-      failed: (error) => settle(() => this.applyProbeFailure(record, error, startedAt)),
+      ok: (result) => settle(() => this.applyProbeResult(providerId, record, result, startedAt)),
+      failed: (error) =>
+        settle(() => this.applyProbeFailure(providerId, record, error, startedAt)),
     }
   }
 
@@ -589,12 +627,12 @@ export class ProviderHealthMonitor {
         this.probeTimeoutMs,
         () => new ProbeTimeoutError(providerId, this.probeTimeoutMs),
       )
-      this.applyProbeResult(record, result, startedAt)
+      this.applyProbeResult(providerId, record, result, startedAt)
       // Health is answered; say so before spending more time on the catalog.
       this.publish(providerId)
       await this.refreshCatalog(providerId, record, runtime, cwd, result)
     } catch (error) {
-      this.applyProbeFailure(record, error, startedAt)
+      this.applyProbeFailure(providerId, record, error, startedAt)
     } finally {
       this.active.delete(runtime)
       await runtime.dispose().catch((error: unknown) => {
@@ -674,6 +712,7 @@ export class ProviderHealthMonitor {
    * ("the CLI works, the credentials do not"), so it is `'degraded'`, not a
    * probe failure. */
   private applyProbeResult(
+    providerId: ProviderId,
     record: ProviderRecord,
     result: ProbeResult,
     startedAt: number,
@@ -691,15 +730,31 @@ export class ProviderHealthMonitor {
       this.settleProbe(record, 'ok', startedAt)
       return
     }
-    record.unhealthySeq = this.tick()
+    this.markFailing(providerId, record, {
+      kind: 'auth',
+      message: result.authError ?? 'The CLI is not signed in.',
+    })
     this.settleProbe(record, 'degraded', startedAt, result.authError)
   }
 
   /** Every failure lands on exactly one of these, and an axis the failure does
    * not speak to stays `'unknown'`. A timeout says nothing about auth; a
    * missing binary says nothing about auth either. */
-  private applyProbeFailure(record: ProviderRecord, error: unknown, startedAt: number): void {
-    record.unhealthySeq = this.tick()
+  private applyProbeFailure(
+    providerId: ProviderId,
+    record: ProviderRecord,
+    error: unknown,
+    startedAt: number,
+  ): void {
+    this.markFailing(providerId, record, {
+      kind:
+        error instanceof ProbeTimeoutError
+          ? 'probe_timeout'
+          : error instanceof AuthRequiredError
+            ? 'auth'
+            : 'probe_failed',
+      message: message(error),
+    })
     if (error instanceof ProbeTimeoutError) {
       record.install = { state: 'unknown', message: error.message }
       record.auth = { state: 'unknown' }
@@ -763,6 +818,25 @@ export class ProviderHealthMonitor {
     return ++this.sequence
   }
 
+  /** Record an observation that this provider does not work, and why. Logged
+   * at `warn`: each one is what makes the server refuse new work with
+   * "Provider is unhealthy" until something newer says otherwise. */
+  private markFailing(
+    providerId: ProviderId,
+    record: ProviderRecord,
+    failure: Omit<ProviderFailureInfo, 'at'>,
+    at: string = new Date(this.now()).toISOString(),
+  ): void {
+    record.unhealthySeq = this.tick()
+    record.lastFailure = { ...failure, at }
+    this.deps.host.log({
+      scope: 'agent-runtime',
+      level: 'warn',
+      message: 'Provider marked unhealthy',
+      data: { providerId, ...record.lastFailure },
+    })
+  }
+
   private publish(providerId: ProviderId): void {
     if (this.listeners.size === 0) return
     const report = this.report(providerId)
@@ -770,14 +844,17 @@ export class ProviderHealthMonitor {
   }
 }
 
+function failing(record: ProviderRecord): boolean {
+  return record.unhealthySeq > record.healthySeq
+}
+
 function runtimeState(census: ProviderRuntimeCensus, record: ProviderRecord): ProviderRuntimeState {
-  const failing = record.unhealthySeq > record.healthySeq
   if (census.liveProcesses > 0) {
-    if (failing) return 'degraded'
+    if (failing(record)) return 'degraded'
     return census.readyProcesses > 0 ? 'running' : 'starting'
   }
   if (!record.startedEver) return 'never_started'
-  return failing ? 'failed' : 'stopped'
+  return failing(record) ? 'failed' : 'stopped'
 }
 
 function versionFields(version: string | undefined): { version?: string } {

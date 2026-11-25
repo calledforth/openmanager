@@ -7,7 +7,14 @@ import {
 import { describe, expect, it, vi } from 'vitest'
 import type { ProbeResult, ProbeRuntime, ProbeRuntimeFactory } from '../session/ProbeRuntime.js'
 import type { SessionRuntimeExit } from '../session/lifecycle.js'
-import { AuthRequiredError, ProviderVersionUnsupportedError } from './errors.js'
+import { SpawnTimeoutError } from '../session/ChildProcessLifecycle.js'
+import { CodexRpcTimeoutError } from '../session/codex/CodexRpcPeer.js'
+import { RpcTimeoutError } from '../session/timeout.js'
+import {
+  AuthRequiredError,
+  ProviderVersionUnsupportedError,
+  SessionUnknownError,
+} from './errors.js'
 import { ProviderHealthMonitor, type ProviderRuntimeCensus } from './ProviderHealthMonitor.js'
 
 const HEALTHY: ProbeResult = {
@@ -334,6 +341,82 @@ describe('ProviderHealthMonitor runtime rollup', () => {
     expect(monitor.health('cursor').runtime.state).toBe('never_started')
     monitor.observeRuntimeStartFailed('cursor', 'spawn cursor-agent ENOENT')
     expect(monitor.health('cursor').runtime.state).toBe('failed')
+  })
+
+  it.each([
+    ['a spawn that ran out of time', new SpawnTimeoutError('cursor', 15_000)],
+    ['an initialize that ran out of time', new RpcTimeoutError('cursor', 'initialize', 20_000)],
+    ['a Codex request that ran out of time', new CodexRpcTimeoutError('thread/start', 30_000)],
+    ['a thread whose stored session is gone', new SessionUnknownError('cursor', 'session-1')],
+  ])('does not count %s against the provider', async (_label, error) => {
+    const { monitor, census, log } = build()
+    census.cursor = { liveProcesses: 1, readyProcesses: 1, activeTurns: 0 }
+    await monitor.refresh('cursor', 'user')
+    monitor.observeRuntimeStarted('cursor')
+
+    monitor.observeRuntimeStartFailed('cursor', error)
+
+    const health = monitor.health('cursor')
+    expect(health.runtime.state).toBe('running')
+    expect(health.runtime.failure).toBeUndefined()
+    expect(log).toHaveBeenCalledWith(
+      expect.objectContaining({
+        level: 'warn',
+        message: 'Session start failed; not counted against provider health',
+      }),
+    )
+  })
+
+  it('still counts a start that failed for a reason other than time', () => {
+    const { monitor } = build()
+    monitor.observeRuntimeStartFailed('cursor', new Error('cursor exited during startup (code 1, signal none)'))
+    const health = monitor.health('cursor')
+    expect(health.runtime.state).toBe('failed')
+    expect(health.runtime.failure).toMatchObject({
+      kind: 'start_failed',
+      message: 'cursor exited during startup (code 1, signal none)',
+    })
+  })
+
+  it('says why it is failing, and stops saying so once it is not', () => {
+    const { monitor, census, log } = build()
+    monitor.observeRuntimeStarted('cursor')
+    monitor.observeRuntimeExit('cursor', 'thread-1', {
+      ...unexpectedExit(),
+      exitCode: null,
+      signal: 'SIGKILL',
+    })
+
+    expect(monitor.health('cursor').runtime.failure).toMatchObject({
+      kind: 'crash',
+      exitCode: null,
+      signal: 'SIGKILL',
+      threadId: 'thread-1',
+    })
+    expect(log).toHaveBeenCalledWith(
+      expect.objectContaining({
+        level: 'warn',
+        message: 'Provider marked unhealthy',
+        data: expect.objectContaining({ providerId: 'cursor', kind: 'crash', signal: 'SIGKILL' }),
+      }),
+    )
+
+    census.cursor = { liveProcesses: 1, readyProcesses: 1, activeTurns: 0 }
+    monitor.observeRuntimeStarted('cursor')
+    expect(monitor.health('cursor').runtime.failure).toBeUndefined()
+  })
+
+  it('names a probe that timed out, and reports the newest failure', async () => {
+    const { monitor, probes } = build({ probeTimeoutMs: 5 })
+    probes.answers.set('cursor', () => new Promise<ProbeResult>(() => undefined))
+    await monitor.refresh('cursor', 'user')
+    expect(monitor.health('cursor').runtime.failure).toMatchObject({ kind: 'probe_timeout' })
+
+    monitor.observeRuntimeStartFailed('cursor', new Error('boom'))
+    expect(monitor.health('cursor').runtime.failure).toMatchObject({
+      kind: 'start_failed',
+      message: 'boom',
+    })
   })
 
   it('treats an exit somebody asked for as stopped, not failed', () => {
