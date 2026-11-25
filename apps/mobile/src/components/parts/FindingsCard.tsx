@@ -33,8 +33,7 @@ export const FindingsCard = memo(function FindingsCard({
           alignItems: 'center',
           gap: 6,
           paddingHorizontal: 12,
-          paddingVertical: 7,
-          backgroundColor: theme.active,
+          paddingTop: 9,
         }}
       >
         <ListChecksIcon size={13} color={theme.muted} />
@@ -42,7 +41,7 @@ export const FindingsCard = memo(function FindingsCard({
           Findings
         </AppText>
       </View>
-      <View style={{ paddingHorizontal: 14, paddingVertical: 10 }}>
+      <View style={{ paddingHorizontal: 12, paddingTop: 6, paddingBottom: 2 }}>
         <TextPart text={text} live={live} />
       </View>
     </View>

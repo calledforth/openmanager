@@ -17,7 +17,7 @@ const GAP = 6
 const CARD_MAX_WIDTH = 320
 const CARD_MAX_HEIGHT = 300
 /** The transcript's inset from the screen's sides (`SessionThread`'s content padding). */
-const TRANSCRIPT_INSET = 20
+const TRANSCRIPT_INSET = 16
 
 /** The width a reply's row has: the window less the transcript's insets. */
 export function useTranscriptWidth(): number {

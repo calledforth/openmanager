@@ -33,7 +33,6 @@ import { ShimmerText } from '../components/chat/ShimmerText'
 import { AppText } from '../components/ui/AppText'
 import type { HomeSession } from '../home/rows'
 import { usePhoneTheme } from '../theme/ThemeProvider'
-import { FadeOut as BottomFade } from '../ui/chrome'
 import { coveredBySheet } from '../ui/a11y-focus'
 import { GlassContent } from '../ui/Glass'
 import { IconButton } from '../ui/IconButton'
@@ -42,7 +41,7 @@ import { ChildSessionCards } from './ChildSessionCards'
 import { countRender } from './render-probe'
 import { createScrollFollower, flingsDown, flingsUp, MAINTAIN_POSITION } from './scroll-anchor'
 import { DockSlotContext, ReadOnlyBar, SessionDock, type DockSlot } from './SessionDock'
-import { HEADER_ROW, HeaderSpace, SessionHeaderBar } from './SessionHeader'
+import { HEADER_ROW, HEADER_TOP, HeaderSpace, SessionHeaderBar } from './SessionHeader'
 import { SessionMenu, type MenuItem } from './SessionMenu'
 import type { SessionMenuItemId } from './session-menu'
 import type { StatusLineView } from './status-line'
@@ -54,11 +53,9 @@ import { useSessionChrome } from './useSessionChrome'
 
 /** The dock's height before it has measured itself: the status line and a one-line slot. */
 const DOCK_ESTIMATE = 96
-const ROW_GAP_BOTTOM = 18
+const ROW_GAP_BOTTOM = 14
 /** A page shows by this long after its first rows even if it never reported its end. */
 const LANDING_LIMIT_MS = 400
-/** Above the row, under the status bar: the header's own gap (`SessionHeaderBar`). */
-const HEADER_TOP = 6
 
 /** An action a page adds to the title's menu, after the session's own: a draft's Discard. */
 export interface HeaderAction {
@@ -149,7 +146,7 @@ function ScrollToLatest({
       entering={BUTTON_IN}
       exiting={BUTTON_OUT}
       pointerEvents="box-none"
-      style={{ position: 'absolute', right: 20, bottom }}
+      style={{ position: 'absolute', right: 16, bottom }}
     >
       <IconButton label="Scroll to latest" onPress={onPress}>
         <ArrowDownIcon size={16} color={theme.fg} weight="bold" />
@@ -327,7 +324,7 @@ export const SessionThread = memo(function SessionThread({
 
   // Top-aligned, as the mockup's transcript is; the end clears the dock.
   const contentStyle = useMemo(
-    () => ({ paddingHorizontal: 20, paddingTop: 8, paddingBottom: dockHeight + ROW_GAP_BOTTOM }),
+    () => ({ paddingHorizontal: 16, paddingTop: 4, paddingBottom: dockHeight + ROW_GAP_BOTTOM }),
     [dockHeight],
   )
   const footer = useMemo(
@@ -432,7 +429,24 @@ export const SessionThread = memo(function SessionThread({
                     colors={[theme.bg, withAlpha(theme.bg, 0)]}
                     style={{ position: 'absolute', left: 0, right: 0, top: 0, height: 22 }}
                   />
-                  <BottomFade height={dockHeight + 48} />
+                  {/* Rows under the dock fade almost out: the status line reads clean over them. */}
+                  <LinearGradient
+                    pointerEvents="none"
+                    colors={[
+                      withAlpha(theme.bg, 0),
+                      withAlpha(theme.bg, 0.9),
+                      withAlpha(theme.bg, 0.97),
+                    ]}
+                    locations={[0, 0.14, 1]}
+                    style={{
+                      position: 'absolute',
+                      left: 0,
+                      right: 0,
+                      bottom: 0,
+                      // From the dock's top: the newest row, resting just above it, stays clear.
+                      height: dockHeight + ROW_GAP_BOTTOM,
+                    }}
+                  />
                 </>
               ) : null}
 

@@ -10,7 +10,7 @@ import type { StatusLineView } from './status-line'
 
 /** The gap between the dock's parts, and around it. */
 export const DOCK_GAP = 8
-export const DOCK_SIDE = 12
+export const DOCK_SIDE = 10
 
 /**
  * The bottom of the session page: the status line, then whatever answers

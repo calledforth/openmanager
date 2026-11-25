@@ -37,11 +37,11 @@ export function TreeBranch({ children }: { children: ReactNode }) {
 }
 
 /**
- * A fold of work on a fill (no outline): a chevron, what the work was, and
- * on the right how much of it or how long. A live run of tools shows its
- * rows; a settled turn's work stays folded under "Worked for 14s" until the
- * reader opens it. The reader's tap is the only thing that folds or unfolds
- * it, and only then does the body fade in.
+ * A fold of work, flat on the page (no card): what the work was, how much of
+ * it or how long, and a chevron at the end of the line. A live run of tools
+ * shows its rows; a settled turn's work stays folded under "Worked for 14s"
+ * until the reader opens it. The reader's tap is the only thing that folds
+ * or unfolds it, and only then does the body fade in.
  *
  * A thought the agent is having right now (`live`) hangs under the folded
  * header on its own branch, its words streaming beneath it, and only it
@@ -72,7 +72,7 @@ export function WorkGroup({
   // scroll brings the row back), it is simply there.
   const revealedRef = useRef(false)
   return (
-    <View style={{ borderRadius: 12, backgroundColor: theme.hover, paddingHorizontal: 12 }}>
+    <View>
       <Press
         accessibilityRole="button"
         accessibilityState={{ expanded: open }}
@@ -85,39 +85,41 @@ export function WorkGroup({
         style={({ pressed }) => ({
           flexDirection: 'row',
           alignItems: 'center',
-          gap: 8,
-          paddingVertical: 8,
-          opacity: pressed ? 0.7 : 1,
+          gap: 6,
+          paddingVertical: 4,
+          opacity: pressed ? 0.6 : 1,
         })}
       >
-        <DisclosureChevron open={open} color={theme.faint} />
-        <View style={{ flex: 1, minWidth: 0 }}>
+        <View style={{ flexShrink: 1, minWidth: 0 }}>
           {running ? (
-            <ShimmerText variant="text-13-regular" numberOfLines={1}>
+            <ShimmerText variant="text-14-regular" numberOfLines={1}>
               {label}
             </ShimmerText>
           ) : (
-            <AppText variant="text-13-regular" numberOfLines={1} style={{ color: theme.muted }}>
+            <AppText variant="text-14-regular" numberOfLines={1} style={{ color: theme.muted }}>
               {label}
             </AppText>
           )}
         </View>
         {meta ? (
           <AppText
-            variant="text-12-regular"
-            style={{ color: theme.faint, fontVariant: ['tabular-nums'] }}
+            variant="text-14-regular"
+            numberOfLines={1}
+            style={{ color: theme.faint, fontVariant: ['tabular-nums'], flexShrink: 0 }}
           >
-            {meta}
+            {`· ${meta}`}
           </AppText>
         ) : null}
+        <DisclosureChevron open={open} color={theme.faint} size={11} />
       </Press>
       {open ? (
         <Animated.View
           entering={revealedRef.current ? revealBody : undefined}
           // The group's spine, which the live thought's branch hangs from.
           style={{
-            marginBottom: 8,
-            marginLeft: 5,
+            marginTop: 2,
+            marginBottom: 6,
+            marginLeft: 4,
             paddingLeft: 12,
             borderLeftWidth: 1,
             borderColor: theme.border,
@@ -127,7 +129,7 @@ export function WorkGroup({
           {children}
         </Animated.View>
       ) : live ? (
-        <View style={{ paddingBottom: 8 }}>
+        <View style={{ paddingBottom: 4 }}>
           <TreeBranch>{live}</TreeBranch>
         </View>
       ) : null}

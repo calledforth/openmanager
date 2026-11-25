@@ -135,18 +135,24 @@ export const ThinkingPart = memo(function ThinkingPart({
         style={({ pressed }) => ({
           flexDirection: 'row',
           alignItems: 'center',
-          gap: 8,
+          gap: 6,
           alignSelf: 'flex-start',
-          opacity: pressed ? 0.7 : 1,
+          opacity: pressed ? 0.6 : 1,
         })}
       >
-        <DisclosureChevron open={open} color={theme.faint} />
         {labelView}
+        <DisclosureChevron open={open} color={theme.faint} size={11} />
       </Press>
       {open ? (
         <Animated.View
           entering={revealedRef.current ? revealBody : undefined}
-          style={{ marginTop: 6, paddingLeft: 20 }}
+          style={{
+            marginTop: 6,
+            marginLeft: 4,
+            paddingLeft: 12,
+            borderLeftWidth: 1,
+            borderColor: theme.border,
+          }}
         >
           <AppText
             variant="text-13-regular"
