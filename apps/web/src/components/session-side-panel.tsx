@@ -15,6 +15,7 @@ import {
   scratchpadSummary,
 } from '@openmanager/app-core/components/scratchpad/ScratchpadPanel'
 import {
+  useOpenPullRequestRequests,
   usePullRequestDetail,
   useSessionPullRequests,
 } from '@openmanager/app-core/lib/pull-requests'
@@ -67,6 +68,15 @@ export function SessionSidePanel() {
   const pullRequests = useSessionPullRequests(null, sessionId)
   // Which view the deck shows; null is its overview.
   const [view, setView] = useState<string | null>(null)
+  // A pull request the chat's right column asked to open; `at` makes a
+  // second ask for the same one count.
+  const [requested, setRequested] = useState<{ key: string; at: number } | null>(null)
+  const { setOpen } = useSidePanel()
+  useOpenPullRequestRequests((key) => {
+    setView(PULL_REQUESTS)
+    setRequested({ key, at: Date.now() })
+    setOpen(true)
+  })
   const scratchpad = scratchpadSupported && project !== null
   if (!sessionId || (!scratchpad && pullRequests.length === 0)) return null
   return (
@@ -86,6 +96,7 @@ export function SessionSidePanel() {
         project={scratchpad ? project : null}
         view={view}
         onView={setView}
+        requested={requested}
       />
     </SidePanel>
   )
@@ -128,6 +139,7 @@ function Content({
   project,
   view,
   onView,
+  requested,
 }: {
   sessionId: string
   pullRequests: readonly PullRequestSummary[]
@@ -135,6 +147,8 @@ function Content({
   project: { workspaceId: string; name: string } | null
   view: string | null
   onView: (view: string | null) => void
+  /** A pull request to open, asked for from outside the panel. */
+  requested: { key: string; at: number } | null
 }) {
   // The collapsed rail stays mounted on desktop: only an open panel is viewing.
   const { open } = useSidePanel()
@@ -142,7 +156,7 @@ function Content({
   useEffect(() => {
     if (!open) onView(null)
   }, [open, onView])
-  const pullRequestsView = usePullRequestsView(sessionId, pullRequests, open)
+  const pullRequestsView = usePullRequestsView(sessionId, pullRequests, open, requested)
   const scratchpadView = useScratchpadView(project)
   const views = scratchpadView ? [pullRequestsView, scratchpadView] : [pullRequestsView]
   // A view that is not in the deck (the project lost its scratchpad) reads as the overview.
@@ -162,11 +176,15 @@ function usePullRequestsView(
   sessionId: string,
   pullRequests: readonly PullRequestSummary[],
   open: boolean,
+  requested: { key: string; at: number } | null,
 ): PanelView {
   const environmentName = useEnvironmentState(selectEnvironmentName)
   // Several open on the list; the one opened from it is shown in full. With
   // a single pull request there is no list, and that one is the page.
   const [openKey, setOpenKey] = useState<string | null>(null)
+  useEffect(() => {
+    if (requested) setOpenKey(requested.key)
+  }, [requested])
   const opened =
     pullRequests.find((pr) => pullRequestKey(pr) === openKey) ??
     (pullRequests.length === 1 ? pullRequests[0] : undefined) ??

@@ -185,3 +185,5 @@ export function usePullRequestDetail(
 
   return { detail, loading, error }
 }
+
+export { requestOpenPullRequest, useOpenPullRequestRequests } from './open-request'
