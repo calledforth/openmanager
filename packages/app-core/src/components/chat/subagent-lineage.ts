@@ -201,9 +201,7 @@ export function lineageRows(
 export const ALL_DONE_LINGER_MS = 6_000
 
 export type LineagePhase =
-  | { kind: 'idle' }
-  | { kind: 'live' }
-  | { kind: 'done'; keys: ReadonlySet<string> }
+  { kind: 'idle' } | { kind: 'live' } | { kind: 'done'; keys: ReadonlySet<string> }
 
 /**
  * Whether the list shows, and for which subagents: while any is live, and
@@ -281,4 +279,28 @@ export function lineageNodeDetail(node: LineageNode): string | undefined {
     default:
       return undefined
   }
+}
+
+/**
+ * The column's count, short enough for its header: how many run and wait
+ * while any is live ("2 running · 1 waiting"), how they ended once none is
+ * ("4 done · 1 failed"), leaving out what is zero. The rows say the rest.
+ */
+export function lineageCounts(lineage: Lineage): string {
+  const counts: Record<LineageNode['tone'], number> = {
+    running: 0,
+    waiting: 0,
+    done: 0,
+    failed: 0,
+    stopped: 0,
+  }
+  for (const node of lineage.all) counts[node.tone] += 1
+  const tones =
+    counts.running + counts.waiting > 0
+      ? (['running', 'waiting'] as const)
+      : (['done', 'failed', 'stopped'] as const)
+  return tones
+    .filter((tone) => counts[tone] > 0)
+    .map((tone) => `${counts[tone]} ${tone}`)
+    .join(' · ')
 }

@@ -1,7 +1,9 @@
 import { useEffect, useRef, useState, type ReactNode } from 'react'
 import type { Meta, StoryObj } from '@storybook/react-vite'
 import type { MockEnvironmentClient } from '@openmanager/environment-client'
-import type { Subagent } from '@openmanager/protocol'
+import type { PullRequestSummary, Subagent } from '@openmanager/protocol'
+import { SubagentRail } from '../../components/chat/SubagentDock'
+import { buildLineage } from '../../components/chat/subagent-lineage'
 import { MockEnvironmentApp } from '../../testing/mock-environment-app'
 import { ChatViewPanel, AssistantMessage } from '../../components/chat/ChatViewPrimitives'
 import { DelegatedPrompt, SubagentsFinishedNotice } from '../../components/chat/TurnOriginRows'
@@ -240,4 +242,88 @@ export const OriginRows: Story = {
       </div>
     </Frame>
   ),
+}
+
+// ─── The chat pane's right column ───────────────────────────────────────────
+
+const RAIL_PULL_REQUESTS: PullRequestSummary[] = [
+  {
+    url: 'https://github.com/acme/server/pull/418',
+    repository: 'acme/server',
+    number: 418,
+    linkedAt: new Date(Date.now() - 900_000).toISOString(),
+    title: 'Sessions: rotate tokens on privilege change',
+    state: 'open',
+    labels: [],
+    checks: 'failing',
+    reviewDecision: null,
+    additions: 120,
+    deletions: 14,
+    updatedAt: null,
+    syncedAt: null,
+    problem: null,
+  },
+  {
+    url: 'https://github.com/acme/server/pull/411',
+    repository: 'acme/server',
+    number: 411,
+    linkedAt: new Date(Date.now() - 1_800_000).toISOString(),
+    title: 'Scrub tokens from request logs',
+    state: 'merged',
+    labels: [],
+    checks: 'passing',
+    reviewDecision: 'approved',
+    additions: 40,
+    deletions: 6,
+    updatedAt: null,
+    syncedAt: null,
+    problem: null,
+  },
+]
+
+/**
+ * The column at the right of a wide chat pane: the chat's pull requests, then
+ * every subagent it started, in the order they started. Running ones show the
+ * sidebar's loader, one waiting on you knocks, finished ones a tick, failed
+ * ones a cross. It never folds or fades, so the chat beside it never moves.
+ */
+export const RightColumn: Story = {
+  name: 'Right column',
+  render: ({ scheme }) => {
+    const lineage = buildLineage(
+      PARENT,
+      {
+        [PARENT]: {
+          sessionId: PARENT,
+          title: 'Parent',
+          status: 'running',
+          providerId: 'claude',
+          threadIds: ['t'],
+        },
+      },
+      () => PARENT_SUBAGENTS,
+    )
+    return (
+      <RailFrame scheme={scheme}>
+        <SubagentRail
+          lineage={lineage}
+          pullRequests={RAIL_PULL_REQUESTS}
+          onOpenPullRequest={() => undefined}
+        />
+      </RailFrame>
+    )
+  },
+}
+
+function RailFrame({ scheme, children }: { scheme: Scheme; children: ReactNode }) {
+  useScheme(scheme)
+  return (
+    <ThemeProvider>
+      <TooltipProvider>
+        <div className="relative h-screen w-[70rem] bg-[var(--basis-canvas-bg)] text-[var(--basis-text)]">
+          {children}
+        </div>
+      </TooltipProvider>
+    </ThemeProvider>
+  )
 }

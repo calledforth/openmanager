@@ -1,7 +1,8 @@
-import { useLayoutEffect, useMemo, useRef, useState } from 'react'
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { AnimatePresence, motion, useReducedMotion } from 'motion/react'
-import { CaretDownIcon } from '@phosphor-icons/react'
-import type { Subagent } from '@openmanager/protocol'
+import { CaretDownIcon, CheckIcon, MinusIcon, XIcon } from '@phosphor-icons/react'
+import type { ProviderId } from '@agentpack/contract'
+import type { PullRequestSummary, Subagent } from '@openmanager/protocol'
 import type { EnvironmentState } from '@openmanager/environment-client'
 import { cn } from '../../lib/utils'
 import {
@@ -10,16 +11,22 @@ import {
 } from '../../providers/environment-client'
 import { useViewActions } from '../../providers/view-actions'
 import { SessionBusyLoader } from '../sidebar/SessionBusyLoader'
+import { ProviderIcon } from '../providers/ProviderIcon'
+import { pullRequestKey, stateMeta } from '../pull-requests/pull-request-status'
+import {
+  requestOpenPullRequest,
+  useSessionPullRequests,
+} from '../../lib/pull-requests/use-pull-requests'
 import {
   SubagentStatusGlyph,
   SubagentStopText,
   subagentStatusTextColor,
-  subagentToneColor,
   useTick,
 } from '../parts/SubagentCard'
-import { formatElapsed, subagentElapsedMs } from '../parts/subagent-card'
+import { formatElapsed, subagentElapsedMs, type SubagentTone } from '../parts/subagent-card'
 import {
   buildLineage,
+  lineageCounts,
   lineageHeadline,
   lineageNodeDetail,
   lineagePhaseRows,
@@ -38,18 +45,16 @@ export {
 } from './subagent-lineage'
 
 /**
- * The open chat's subagents while any of them works, wherever the chat pane
- * has room for them: on a wide pane (64rem and up) a frameless list at its
- * right, the conversation moving left to make room for it; on a narrower one a strip above the composer, beside
- * the background-tasks strip and built like it. Both draw the same list: a
- * subagent per row, nested ones indented under the one that started them.
+ * The open chat's subagents, wherever the chat pane has room for them: on a
+ * wide pane (64rem and up) a column at its right that also lists the chat's
+ * pull requests and keeps every subagent once it has started, the
+ * conversation moving left once to make room for it; on a narrower one a
+ * strip above the composer, beside the background-tasks strip and built like
+ * it, shown while any works. Both draw the same rows: a subagent per row,
+ * nested ones indented under the one that started them.
  *
  * A subagent started turns ago, whose card has scrolled away, is the reason
  * this exists: without it nothing on screen said it still ran.
- *
- * When the last one finishes the list says "All N done" for a few seconds
- * and then fades, rather than vanishing under the reader; it never closes
- * while it is open or under the pointer.
  */
 
 const selectSessions = (state: EnvironmentState) => state.sessions
@@ -94,7 +99,53 @@ export function SubagentList({
   )
 }
 
-const INDENT = 14
+const INDENT = 12
+
+/**
+ * A subagent's state as the sidebar draws a session's: the same loader while
+ * it works (iris) or waits on you (amber), a tick once done, a cross if it
+ * failed, a dash if it was stopped.
+ */
+function SubagentStateMark({ tone }: { tone: SubagentTone }) {
+  switch (tone) {
+    case 'running':
+      return <SessionBusyLoader tone="working" />
+    case 'waiting':
+      return <SessionBusyLoader tone="needs" />
+    case 'done':
+      return (
+        <span role="img" aria-label="Done" className="flex">
+          <CheckIcon
+            weight="bold"
+            aria-hidden
+            className="size-[11px]"
+            style={{ color: 'var(--basis-status-done)' }}
+          />
+        </span>
+      )
+    case 'failed':
+      return (
+        <span role="img" aria-label="Failed" className="flex">
+          <XIcon
+            weight="bold"
+            aria-hidden
+            className="size-[10px]"
+            style={{ color: 'var(--basis-status-error)' }}
+          />
+        </span>
+      )
+    case 'stopped':
+      return (
+        <span role="img" aria-label="Stopped" className="flex">
+          <MinusIcon
+            weight="bold"
+            aria-hidden
+            className="size-[10px] text-[var(--basis-text-faint)]"
+          />
+        </span>
+      )
+  }
+}
 
 function SubagentListRow({
   node,
@@ -126,13 +177,17 @@ function SubagentListRow({
     status: node.status,
     ...(node.waitingOn ? { waitingOn: node.waitingOn } : {}),
   }
+  // Only a live one says more than its name: what it is doing or waits on.
+  // A failed one's reason is on hover, so the finished keep to one line.
   const detail = lineageNodeDetail(node)
-  const pad = 8 + (node.depth - 1) * INDENT
+  const line = self ? detail : undefined
+  const pad = 6 + (node.depth - 1) * INDENT
   const titleClass = cn(
     'min-w-0 flex-1 truncate text-left',
     compact ? 'text-11-regular leading-4' : 'text-ui-sm leading-[18px]',
     self ? 'text-[var(--basis-text)]' : 'text-[var(--basis-text-muted)]',
   )
+  const hover = node.tone === 'failed' && detail ? `${node.title}: ${detail}` : node.title
   return (
     <div
       role="treeitem"
@@ -141,7 +196,7 @@ function SubagentListRow({
       data-lineage-node={node.key}
       data-lineage-status={node.status}
       className={cn(
-        'group/row relative flex min-w-0 items-start rounded-md py-[5px] pr-2 transition-colors duration-100',
+        'group/row relative flex min-w-0 items-start rounded-md py-[3px] pr-2 transition-colors duration-100',
         open && 'hover:bg-[var(--basis-surface-hover)]',
       )}
       style={{ paddingLeft: `${pad}px` }}
@@ -150,20 +205,27 @@ function SubagentListRow({
         <span
           aria-hidden
           className="absolute inset-y-0 w-px bg-[color-mix(in_srgb,var(--basis-text)_12%,transparent)]"
-          style={{ left: `${pad - INDENT + 3}px` }}
+          style={{ left: `${pad - INDENT + 5}px` }}
         />
       ) : null}
       <span
-        aria-hidden
         className={cn(
-          'shrink-0 rounded-full',
-          compact ? 'mt-[5px] size-1.5' : 'mt-[6px] size-[7px]',
-          node.tone === 'waiting' && 'subagent-pulse',
-          !self && 'opacity-55',
+          'flex w-3 shrink-0 items-center justify-center',
+          compact ? 'h-4' : 'h-[18px]',
         )}
-        style={{ background: subagentToneColor(status) }}
-      />
-      <span className="flex min-w-0 flex-1 flex-col pl-2">
+      >
+        <SubagentStateMark tone={node.tone} />
+      </span>
+      <span
+        className={cn('ml-1.5 flex shrink-0 items-center', compact ? 'h-4' : 'h-[18px]')}
+        title={node.providerId}
+      >
+        <ProviderIcon
+          providerId={node.providerId as ProviderId}
+          className={cn('size-3', self ? 'opacity-90' : 'opacity-60')}
+        />
+      </span>
+      <span className="flex min-w-0 flex-1 flex-col pl-1.5">
         <span
           className={cn(
             'flex min-w-0 items-baseline gap-2',
@@ -174,7 +236,7 @@ function SubagentListRow({
             <button
               type="button"
               onClick={open}
-              title={node.title}
+              title={hover}
               className={cn(
                 titleClass,
                 'cursor-pointer outline-none after:absolute after:inset-0 after:rounded-md after:content-[""] focus-visible:underline',
@@ -183,7 +245,9 @@ function SubagentListRow({
               {node.title}
             </button>
           ) : (
-            <span className={titleClass}>{node.title}</span>
+            <span className={titleClass} title={hover}>
+              {node.title}
+            </span>
           )}
           <span className="relative flex min-w-[3.5ch] shrink-0 items-center justify-end">
             {elapsed !== undefined ? (
@@ -205,18 +269,18 @@ function SubagentListRow({
             ) : null}
           </span>
         </span>
-        {detail ? (
+        {line ? (
           <span
-            className="min-w-0 truncate text-ui-xs leading-4"
+            className="min-w-0 truncate text-ui-xs leading-[15px]"
             style={{
               color:
-                node.tone === 'waiting' || node.tone === 'failed'
+                node.tone === 'waiting'
                   ? subagentStatusTextColor(status)
                   : 'var(--basis-text-muted)',
             }}
-            title={detail}
+            title={line}
           >
-            {detail}
+            {line}
           </span>
         ) : null}
       </span>
@@ -226,87 +290,196 @@ function SubagentListRow({
 
 // ─── Wide panes: the rail ───────────────────────────────────────────────────
 
+/**
+ * Pull requests live on the root session (a subagent's belongs to the chat
+ * that started it), so a child session's column shows its root's.
+ */
+const selectRootSessionId = (state: EnvironmentState): string | null => {
+  let id = state.activeSessionId
+  const seen = new Set<string>()
+  while (id && !seen.has(id)) {
+    seen.add(id)
+    const parent = state.sessions[id]?.parentSessionId
+    if (!parent || !state.sessions[parent]) return id
+    id = parent
+  }
+  return id ?? null
+}
+
 /** The rail, at the right of a wide chat pane. Hosts place it beside `ChatView`. */
 export function SessionSubagentRail() {
   const client = useEnvironmentClientOptional()
   return client ? <EnvironmentSubagentRail /> : null
 }
 
+/** Open it in the side panel, or on GitHub where no panel listens. */
+function openPullRequest(pr: PullRequestSummary) {
+  if (requestOpenPullRequest(pullRequestKey(pr))) return
+  window.open(pr.url, '_blank', 'noopener,noreferrer')
+}
+
 function EnvironmentSubagentRail() {
   const { sessionId, lineage } = useSessionLineage()
+  const rootSessionId = useEnvironmentState(selectRootSessionId)
+  const pullRequests = useSessionPullRequests(null, rootSessionId)
   if (!sessionId) return null
-  return <SubagentRail key={sessionId} lineage={lineage} />
+  return (
+    <SubagentRail
+      key={sessionId}
+      lineage={lineage}
+      pullRequests={pullRequests}
+      onOpenPullRequest={openPullRequest}
+    />
+  )
 }
 
 /**
- * The rail: no frame, no badges, only words, dots and hairlines, in the
- * gutter the centred conversation leaves. Shown only where the pane is wide
- * enough for it (a container query on the pane); below that the strip says
- * the same above the composer.
+ * The chat's right column: its pull requests, then every subagent it
+ * started, in the order they started, nested under whoever started them.
+ * It appears the first time the chat links a pull request or starts a
+ * subagent and stays from then on at one width: nothing in it goes away
+ * (finished subagents keep their row, merged pull requests theirs), so the
+ * conversation beside it never moves again. Shown only where the pane is
+ * wide enough (a container query on the pane); below that the strip above
+ * the composer says how the subagents stand.
  */
-export function SubagentRail({ lineage }: { lineage: Lineage }) {
-  const [hovered, setHovered] = useState(false)
-  const [showSettled, setShowSettled] = useState(false)
-  const phase = useLineagePhase(lineage, hovered)
+export function SubagentRail({
+  lineage,
+  pullRequests = NO_PULL_REQUESTS,
+  onOpenPullRequest,
+}: {
+  lineage: Lineage
+  pullRequests?: readonly PullRequestSummary[]
+  onOpenPullRequest?: (pr: PullRequestSummary) => void
+}) {
+  const hasContent = lineage.all.length > 0 || pullRequests.length > 0
+  // Once shown, the column keeps its room even if what it listed is gone
+  // for a moment (a reload, an unlinked pull request): no jump back.
+  const [stuck, setStuck] = useState(hasContent)
+  useEffect(() => {
+    if (hasContent) setStuck(true)
+  }, [hasContent])
+  const shown = hasContent || stuck
   const paneRef = useRef<HTMLDivElement>(null)
-  useRailRoom(paneRef, phase.kind !== 'idle')
+  useRailRoom(paneRef, shown)
   const now = useTick(lineage.live.length > 0)
   const reduceMotion = useReducedMotion()
-  const rows = lineagePhaseRows(lineage, phase, showSettled)
-  const settledShown = phase.kind === 'live' ? lineage.settled : 0
+  const rows = lineageRows(lineage, true)
   const waiting = lineage.live.some((node) => node.tone === 'waiting')
   return (
     <div ref={paneRef} className="pointer-events-none absolute inset-0 z-10 @container/pane">
-      <AnimatePresence>
-        {phase.kind === 'idle' ? null : (
-          <motion.aside
-            key="rail"
-            aria-label="Subagents"
-            data-subagent-rail={phase.kind}
-            initial={reduceMotion ? false : { opacity: 0, x: 6 }}
-            animate={{ opacity: 1, x: 0 }}
-            exit={{ opacity: 0, transition: { duration: reduceMotion ? 0 : 0.4 } }}
-            transition={{ duration: reduceMotion ? 0 : 0.2, ease: [0.22, 1, 0.36, 1] }}
-            onPointerEnter={() => setHovered(true)}
-            onPointerLeave={() => setHovered(false)}
-            className="custom-scrollbar pointer-events-auto absolute top-11 right-3 hidden max-h-[calc(100%-var(--chat-composer-height,8rem)-4rem)] w-60 flex-col overflow-x-hidden overflow-y-auto @min-[64rem]/pane:flex"
-          >
-            <div className="flex items-baseline justify-between gap-3 px-2 pb-1 text-ui-xs whitespace-nowrap">
-              <span className="text-[var(--basis-text-muted)]">Subagents</span>
-              <span
-                className="truncate tabular-nums"
-                style={{
-                  color: waiting
-                    ? subagentStatusTextColor({ status: 'waiting' })
-                    : 'var(--basis-text-faint)',
-                }}
-              >
-                {lineageHeadline(lineage, phase)}
-              </span>
-            </div>
-            <SubagentList rows={rows} now={now} />
-            {settledShown > 0 ? (
-              <span className="mt-0.5 self-start text-ui-xs">
-                <button
-                  type="button"
-                  onClick={() => setShowSettled((value) => !value)}
-                  className="cursor-pointer rounded-md px-2 py-1 text-left text-[var(--basis-text-faint)] transition-colors hover:text-[var(--basis-text-muted)] focus-visible:outline focus-visible:outline-2 focus-visible:outline-ring"
+      {shown ? (
+        <motion.aside
+          key="rail"
+          aria-label="Pull requests and subagents"
+          data-subagent-rail={lineage.live.length > 0 ? 'live' : 'settled'}
+          initial={reduceMotion ? false : { opacity: 0, x: 6 }}
+          animate={{ opacity: 1, x: 0 }}
+          transition={{ duration: reduceMotion ? 0 : 0.2, ease: [0.22, 1, 0.36, 1] }}
+          className="custom-scrollbar pointer-events-auto absolute top-11 right-3 hidden max-h-[calc(100%-var(--chat-composer-height,8rem)-4rem)] w-64 flex-col overflow-x-hidden overflow-y-auto @min-[64rem]/pane:flex"
+        >
+          {pullRequests.length > 0 ? (
+            <section aria-label="Pull requests" className="flex flex-col">
+              <div className="px-2 pb-0.5 text-ui-xs text-[var(--basis-text-muted)]">
+                Pull requests
+              </div>
+              {pullRequests.map((pr) => (
+                <PullRequestRow key={pullRequestKey(pr)} pr={pr} onOpen={onOpenPullRequest} />
+              ))}
+            </section>
+          ) : null}
+          {rows.length > 0 ? (
+            <section
+              aria-label="Subagents"
+              className={cn('flex flex-col', pullRequests.length > 0 && 'mt-2.5')}
+            >
+              <div className="flex items-baseline justify-between gap-3 px-2 pb-0.5 text-ui-xs whitespace-nowrap">
+                <span className="text-[var(--basis-text-muted)]">Subagents</span>
+                <span
+                  className="truncate tabular-nums"
+                  style={{
+                    color: waiting
+                      ? subagentStatusTextColor({ status: 'waiting' })
+                      : 'var(--basis-text-faint)',
+                  }}
                 >
-                  {showSettled ? 'Hide done' : `${settledShown} done`}
-                </button>
-              </span>
-            ) : null}
-          </motion.aside>
-        )}
-      </AnimatePresence>
+                  {lineageCounts(lineage)}
+                </span>
+              </div>
+              <SubagentList rows={rows} now={now} />
+            </section>
+          ) : null}
+        </motion.aside>
+      ) : null}
+    </div>
+  )
+}
+
+const NO_PULL_REQUESTS: readonly PullRequestSummary[] = []
+
+/** One linked pull request: its state's glyph, number and title; a cross if checks fail. */
+function PullRequestRow({
+  pr,
+  onOpen,
+}: {
+  pr: PullRequestSummary
+  onOpen?: (pr: PullRequestSummary) => void
+}) {
+  const meta = stateMeta(pr.state)
+  const failing = pr.checks === 'failing'
+  const title = pr.title?.trim() || pr.repository
+  const label = `Pull request #${pr.number}, ${meta.label.toLowerCase()}${failing ? ', checks failing' : ''}: ${title}`
+  const body = (
+    <>
+      <meta.Icon
+        size={13}
+        weight="bold"
+        aria-hidden
+        className="shrink-0"
+        style={{ color: meta.color }}
+      />
+      <span className="shrink-0 text-ui-xs font-medium tabular-nums text-[var(--basis-text-muted)]">
+        #{pr.number}
+      </span>
+      <span className="min-w-0 flex-1 truncate text-ui-sm leading-[18px] text-[var(--basis-text)]">
+        {title}
+      </span>
+      {failing ? (
+        <XIcon
+          weight="bold"
+          aria-hidden
+          className="size-[10px] shrink-0"
+          style={{ color: 'var(--basis-status-error)' }}
+        />
+      ) : null}
+    </>
+  )
+  const className =
+    'flex w-full min-w-0 items-center gap-1.5 rounded-md py-[3px] pr-2 pl-1.5 text-left'
+  return onOpen ? (
+    <button
+      type="button"
+      onClick={() => onOpen(pr)}
+      aria-label={label}
+      title={`${pr.repository}#${pr.number} · ${title}`}
+      className={cn(
+        className,
+        'cursor-pointer outline-none transition-colors duration-100 hover:bg-[var(--basis-surface-hover)] focus-visible:outline-2 focus-visible:outline-ring',
+      )}
+    >
+      {body}
+    </button>
+  ) : (
+    <div aria-label={label} className={className}>
+      {body}
     </div>
   )
 }
 
 /** The pane width the rail shows from: its `@min-[64rem]/pane` query, in rems. */
 const RAIL_FROM_REM = 64
-/** The room the rail takes at the pane's right: its 15rem, its inset, and a gap. */
-export const RAIL_ROOM = '16rem'
+/** The room the rail takes at the pane's right: its 16rem, its inset, and a gap. */
+export const RAIL_ROOM = '17rem'
 /** Where the rail says how much room it takes, for the chat column (`.chat-column`). */
 export const RAIL_ROOM_VAR = '--chat-rail-room'
 
