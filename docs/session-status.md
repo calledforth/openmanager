@@ -115,7 +115,8 @@ Nothing else moves it: background work starting or ending, a turn the agent
 began by itself (`background`), a parent's or subagent's own turn
 (`delegated`, `subagents`), requests opening or closing, a provider exiting
 while idle, titles, settling, cooking, pins or pull requests. Their status
-still goes out, restating the row's own `updatedAt`. A session's workspace
+still goes out: with SQLite it restates the row's own `updatedAt`, and in
+memory it leaves `updatedAt` out, so clients keep the time they hold. A session's workspace
 recency follows the same rule, since it is the newest `updated_at` of its
 sessions. `movesInList` (`db/session-activity.ts`) holds the rule for the
 projection and the in-memory path alike.
