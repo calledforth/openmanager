@@ -99,7 +99,7 @@ import type {
 } from './subagents/spawn-tools.ts'
 import type { ArtifactMetadata, ArtifactStore } from './artifacts.ts'
 import { withSettledText } from './db/tool-output.ts'
-import { waitingKind } from './db/session-activity.ts'
+import { movesInList, waitingKind } from './db/session-activity.ts'
 import type { WriteOptions } from './db/event-repository.ts'
 import { sessionDeletionEvents } from './db/deletions.ts'
 import { backgroundTasksWakeAgent } from './background-wake.ts'
@@ -2067,7 +2067,6 @@ export function createThreadService(
           ? {
               status,
               ...(status === 'running' ? { inBackground: true } : {}),
-              ...(status !== record.status ? { updatedAt: timestamp } : {}),
             }
           : {}),
       },
@@ -2085,10 +2084,8 @@ export function createThreadService(
     record.backgroundTasks = tasks
     record.backgroundTaskIds = ids
     if (status) record.announced = { waitingOn: null, inBackground: status === 'running' }
-    if (status && status !== record.status) {
-      record.status = status
-      record.updatedAt = Date.parse(timestamp)
-    }
+    // Background work is not something the user did: the session keeps its place.
+    if (status) record.status = status
   }
 
   /**
@@ -2150,9 +2147,13 @@ export function createThreadService(
     touch(record, 'running')
   }
 
-  const touch = (record: ThreadRecord, requested?: SessionStatus) => {
-    record.updatedAt = Date.now()
-    if (!requested) return
+  /**
+   * Set the status a session's work leaves it in. `moved` when the user did
+   * something (sent a message, or a turn they began ended): only that moves
+   * the session in the list (`movesInList`).
+   */
+  const touch = (record: ThreadRecord, requested: SessionStatus, moved = false) => {
+    if (moved) record.updatedAt = Date.now()
     // Its provider is blocked on a native subagent's request, so the session
     // waits with it, as the rows say (event-projection.ts).
     const status =
@@ -2169,10 +2170,11 @@ export function createThreadService(
     const activity = activityOf(record, status)
     if (
       changed ||
+      moved ||
       activity.waitingOn !== record.announced?.waitingOn ||
       activity.inBackground !== record.announced?.inBackground
     ) {
-      emitStatus(record, status)
+      emitStatus(record, status, moved)
     }
   }
 
@@ -2426,7 +2428,7 @@ export function createThreadService(
     }).catch(reportTitleFailure(sessionId))
   }
 
-  const emitStatus = (record: ThreadRecord, status: SessionStatus) => {
+  const emitStatus = (record: ThreadRecord, status: SessionStatus, moved = false) => {
     // Mirrors the SQLite projection: running or asking brings a settled session back.
     const unsettle =
       record.settledAt !== undefined && (status === 'running' || status === 'waiting')
@@ -2446,9 +2448,9 @@ export function createThreadService(
     if (uncook) record.cookingAt = undefined
     const activity = activityOf(record, status)
     record.announced = activity
-    // A status moves the session's place in the list, and says so.
-    record.updatedAt = Date.now()
-    const timestamp = new Date(record.updatedAt).toISOString()
+    // A status alone keeps the session's place in the list; what the user did
+    // moves it (`touch`), and the event says so.
+    const timestamp = new Date().toISOString()
     appendRuntimeEvent(
       ProofEventSchemas['session.updated'].parse({
         type: 'event',
@@ -2459,7 +2461,7 @@ export function createThreadService(
         payload: {
           sessionId: record.session.sessionId,
           status,
-          updatedAt: timestamp,
+          ...(moved ? { updatedAt: new Date(record.updatedAt).toISOString() } : {}),
           ...summaryActivity(activity),
           ...(unsettle ? { settledAt: null } : {}),
           ...(uncook ? { cookingAt: null } : {}),
@@ -4048,7 +4050,7 @@ export function createThreadService(
     }
     record.activeTurn = active
     // After the turn is open, so the session does not read as background only.
-    touch(record, 'running')
+    touch(record, 'running', movesInList(turn.origin))
     active.completion = record.runtimeSession
       .then((sessionId) => {
         // Deleting the session or closing the workspace drops the record while
@@ -4096,7 +4098,7 @@ export function createThreadService(
           else emitCompleted(record, turn.turnId)
           turn.state = active.interruptRequested ? 'interrupted' : 'completed'
           record.activeTurn = undefined
-          touch(record, resting(record))
+          touch(record, resting(record), movesInList(turn.origin))
         }
       })
       .catch(() => {
@@ -4107,7 +4109,11 @@ export function createThreadService(
           else emitFailed(record, turn.turnId)
           turn.state = active.interruptRequested ? 'interrupted' : 'failed'
           record.activeTurn = undefined
-          touch(record, active.interruptRequested ? resting(record) : 'error')
+          touch(
+            record,
+            active.interruptRequested ? resting(record) : 'error',
+            movesInList(turn.origin),
+          )
         }
       })
     return started
@@ -4630,6 +4636,8 @@ export function createThreadService(
     )
     if (!writeQueue(record, withoutItem(record.queue, steerId), deltas)) return
     record.messages.push(message)
+    // The user sent it: the session moves up, as the projection moves its row.
+    touch(record, record.status, true)
     // What the agent says next answers the steered message: a new run.
     active.textRunId = undefined
     active.reasoningRunId = undefined
@@ -4692,7 +4700,8 @@ export function createThreadService(
       interactionIds: new Map(),
       pendingInteractions: new Map(),
     }
-    touch(record, 'running')
+    // The user's steered message, now a turn of its own.
+    touch(record, 'running', true)
     // It took over from the turn it was sent into, and with it any move that asked for.
     steerResolved(record, steerId, { turnId: turn.turnId })
   }
@@ -4711,7 +4720,7 @@ export function createThreadService(
         if (record.activeTurn?.turn.turnId !== active.turn.turnId) return
         active.turn.state = 'interrupted'
         record.activeTurn = undefined
-        touch(record, resting(record))
+        touch(record, resting(record), movesInList(active.turn.origin))
         emitInterrupted(record, active.turn.turnId)
       })
       .catch(() => {
@@ -4721,7 +4730,7 @@ export function createThreadService(
           emitInterrupted(record, active.turn.turnId)
           active.turn.state = 'interrupted'
           record.activeTurn = undefined
-          touch(record, resting(record))
+          touch(record, resting(record), movesInList(active.turn.origin))
           return
         }
         // A running prompt remains active so cancellation can be retried.
@@ -6502,7 +6511,7 @@ export function createThreadService(
         projectRuntimeEvent(record, event, active, interrupted ? 'interrupted' : 'completed')
         active.turn.state = interrupted ? 'interrupted' : 'completed'
         record.activeTurn = undefined
-        touch(record, resting(record))
+        touch(record, resting(record), movesInList(active.turn.origin))
         return
       }
 
@@ -6515,7 +6524,7 @@ export function createThreadService(
         projectRuntimeEvent(record, event, active, interrupted ? 'interrupted' : 'failed', reason)
         active.turn.state = interrupted ? 'interrupted' : 'failed'
         record.activeTurn = undefined
-        touch(record, interrupted ? resting(record) : 'error')
+        touch(record, interrupted ? resting(record) : 'error', movesInList(active.turn.origin))
         return
       }
 
@@ -6530,7 +6539,7 @@ export function createThreadService(
         else projectRuntimeEvent(record, event, active, 'failed')
         active.turn.state = interrupted ? 'interrupted' : 'failed'
         record.activeTurn = undefined
-        touch(record, interrupted ? resting(record) : 'error')
+        touch(record, interrupted ? resting(record) : 'error', movesInList(active.turn.origin))
         return
       }
 

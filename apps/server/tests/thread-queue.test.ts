@@ -393,10 +393,21 @@ describe('steering', () => {
       error: { code: 'conflict' },
     })
 
+    chat.state()
+    const placed = getSessionSummary(chat.database, chat.thread.sessionId)!.updatedAt
     chat.emit(
       { category: 'lifecycle', event: 'steer_delivered', data: { steerId: 's-1' } },
       'assistant-0',
     )
+    chat.state()
+    // The user sent it, so the session moves up in the list.
+    const steeredAt = getSessionSummary(chat.database, chat.thread.sessionId)!.updatedAt
+    expect(Date.parse(steeredAt)).toBeGreaterThan(Date.parse(placed))
+    // And says so, its project's recency with it.
+    expect(chat.published.slice(-2)).toMatchObject([
+      { name: 'session.updated', payload: { updatedAt: steeredAt } },
+      { name: 'workspace.updated', payload: { workspace: { lastActivityAt: steeredAt } } },
+    ])
     chat.text('assistant-0', 'Skipping the docs.')
     await chat.completed('assistant-0')
 

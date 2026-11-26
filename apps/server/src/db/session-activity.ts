@@ -1,5 +1,5 @@
 import type { DatabaseSync, StatementSync } from 'node:sqlite'
-import type { InteractionKind } from '@openmanager/protocol/node'
+import type { InteractionKind, TurnOrigin } from '@openmanager/protocol/node'
 import {
   OPEN_TURN_FOR_SESSION_SQL,
   PENDING_INTERACTIONS_FOR_NATIVE_SUBAGENTS_SQL,
@@ -40,6 +40,17 @@ export function waitingKind(
     if (!oldest || request.createdAt < oldest.createdAt) oldest = request
   }
   return oldest?.kind
+}
+
+/**
+ * Whether a turn's start and end move its session in the list
+ * (`sessions.updated_at`): only a turn the user began does, a prompt or an
+ * operation they asked for (`review`, `compact`). A turn nobody sent
+ * (`background`, `delegated`, `subagents`) leaves the session's place be,
+ * as do requests, background work and every other status change.
+ */
+export function movesInList(origin: TurnOrigin | string | null | undefined): boolean {
+  return origin == null || origin === 'review' || origin === 'compact'
 }
 
 type PendingRow = { kind: InteractionKind; created_at: number }
