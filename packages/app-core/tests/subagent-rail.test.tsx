@@ -118,7 +118,7 @@ describe('the chat pane right column', () => {
     expect(view.textContent).not.toMatch(/Hide done|\d done$/)
     expect(view.querySelector('[aria-label="Done"]')).not.toBeNull()
     expect(view.querySelector('[aria-label="Failed"]')).not.toBeNull()
-    expect(view.querySelector('[aria-label="Session in progress"]')).not.toBeNull()
+    expect(view.querySelector('[aria-label="Subagent working"]')).not.toBeNull()
     // A finished one keeps to one line; its reason is on hover.
     expect(view.textContent).not.toContain('No browser')
   })

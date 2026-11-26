@@ -15,6 +15,7 @@ import { ProviderIcon } from '../providers/ProviderIcon'
 import { pullRequestKey, stateMeta } from '../pull-requests/pull-request-status'
 import {
   requestOpenPullRequest,
+  selectRootSessionId,
   useSessionPullRequests,
 } from '../../lib/pull-requests/use-pull-requests'
 import {
@@ -106,12 +107,24 @@ const INDENT = 12
  * it works (iris) or waits on you (amber), a tick once done, a cross if it
  * failed, a dash if it was stopped.
  */
-function SubagentStateMark({ tone }: { tone: SubagentTone }) {
+function SubagentStateMark({
+  tone,
+  waitingOn,
+}: {
+  tone: SubagentTone
+  waitingOn?: Subagent['waitingOn']
+}) {
   switch (tone) {
     case 'running':
-      return <SessionBusyLoader tone="working" />
+      return <SessionBusyLoader tone="working" label="Subagent working" />
     case 'waiting':
-      return <SessionBusyLoader tone="needs" />
+      // As the sidebar draws a session: a question bobs (pink), a permission
+      // or a plan knocks (amber).
+      return waitingOn === 'question' ? (
+        <SessionBusyLoader tone="question" label="Subagent has a question for you" />
+      ) : (
+        <SessionBusyLoader tone="needs" label="Subagent needs your attention" />
+      )
     case 'done':
       return (
         <span role="img" aria-label="Done" className="flex">
@@ -214,11 +227,11 @@ function SubagentListRow({
           compact ? 'h-4' : 'h-[18px]',
         )}
       >
-        <SubagentStateMark tone={node.tone} />
+        <SubagentStateMark tone={node.tone} waitingOn={node.waitingOn} />
       </span>
       <span
         className={cn('ml-1.5 flex shrink-0 items-center', compact ? 'h-4' : 'h-[18px]')}
-        title={node.providerId}
+        title={node.providerId === 'agent' ? undefined : node.providerId}
       >
         <ProviderIcon
           providerId={node.providerId as ProviderId}
@@ -289,22 +302,6 @@ function SubagentListRow({
 }
 
 // ─── Wide panes: the rail ───────────────────────────────────────────────────
-
-/**
- * Pull requests live on the root session (a subagent's belongs to the chat
- * that started it), so a child session's column shows its root's.
- */
-const selectRootSessionId = (state: EnvironmentState): string | null => {
-  let id = state.activeSessionId
-  const seen = new Set<string>()
-  while (id && !seen.has(id)) {
-    seen.add(id)
-    const parent = state.sessions[id]?.parentSessionId
-    if (!parent || !state.sessions[parent]) return id
-    id = parent
-  }
-  return id ?? null
-}
 
 /** The rail, at the right of a wide chat pane. Hosts place it beside `ChatView`. */
 export function SessionSubagentRail() {

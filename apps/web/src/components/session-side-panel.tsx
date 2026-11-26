@@ -15,6 +15,7 @@ import {
   scratchpadSummary,
 } from '@openmanager/app-core/components/scratchpad/ScratchpadPanel'
 import {
+  selectRootSessionId,
   useOpenPullRequestRequests,
   usePullRequestDetail,
   useSessionPullRequests,
@@ -22,22 +23,6 @@ import {
 import { scratchpadShows, useScratchpad } from '@openmanager/app-core/lib/scratchpad'
 import { useNow } from '@openmanager/app-core/lib/relative-time'
 import { SCRATCHPAD_PATH, type PullRequestSummary } from '@openmanager/protocol'
-
-/**
- * Links are kept on the root session (a sub-agent's pull request belongs to
- * the chat that started it), so a child session shows its root's list.
- */
-const selectRootSessionId = (state: EnvironmentState): string | null => {
-  let id = state.activeSessionId
-  const seen = new Set<string>()
-  while (id && !seen.has(id)) {
-    seen.add(id)
-    const parent = state.sessions[id]?.parentSessionId
-    if (!parent || !state.sessions[parent]) return id
-    id = parent
-  }
-  return id ?? null
-}
 
 const selectEnvironmentName = (state: EnvironmentState) => state.environment?.name ?? null
 
@@ -77,6 +62,10 @@ export function SessionSidePanel() {
     setRequested({ key, at: Date.now() })
     setOpen(true)
   })
+  // Once the open view has taken it (while rendering), the ask is spent.
+  useEffect(() => {
+    if (requested) setRequested(null)
+  }, [requested])
   const scratchpad = scratchpadSupported && project !== null
   if (!sessionId || (!scratchpad && pullRequests.length === 0)) return null
   return (
@@ -182,9 +171,14 @@ function usePullRequestsView(
   // Several open on the list; the one opened from it is shown in full. With
   // a single pull request there is no list, and that one is the page.
   const [openKey, setOpenKey] = useState<string | null>(null)
-  useEffect(() => {
-    if (requested) setOpenKey(requested.key)
-  }, [requested])
+  // Applied while rendering, so the first open frame already shows it (no
+  // flash or fetch of the one viewed before). The panel then forgets the
+  // ask, so a later remount does not replay it.
+  const [applied, setApplied] = useState<typeof requested>(null)
+  if (requested && requested !== applied) {
+    setApplied(requested)
+    setOpenKey(requested.key)
+  }
   const opened =
     pullRequests.find((pr) => pullRequestKey(pr) === openKey) ??
     (pullRequests.length === 1 ? pullRequests[0] : undefined) ??
