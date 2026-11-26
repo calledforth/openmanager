@@ -649,6 +649,10 @@ ad1e856.
   - every projection that sets `sessions.status`: `turn.started`, the terminals, and the
     interaction events (`event-projection.ts:60-62` and its callers);
   - a producer's status-bearing `session.updated`.
+
+  Since narrowed: a status alone no longer moves it, only what the user did (a turn they sent, a
+  steered message, and the end of a turn they sent). See `docs/session-status.md`, "Place in the
+  list".
 - **Every move of `updated_at` is announced.** The per-transaction pass of §4.3 compares
   `updated_at` as well as status and activity. Its `session.updated` carries `updatedAt`, read
   from the row. This covers moves that today emit nothing, such as a second request while a session

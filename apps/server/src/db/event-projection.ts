@@ -36,6 +36,7 @@ import { gitJsonOf, readWorkspace } from './workspace-rows.ts'
 import { createToolOutputStore, settledTextOf } from './tool-output.ts'
 import { createTurnClosure, reasoningIsOpen, toolIsOpen } from './turn-closure.ts'
 import { backgroundTasksWakeAgent } from '../background-wake.ts'
+import { movesInList } from './session-activity.ts'
 
 type TurnStarted = Extract<ProofEvent, { name: 'turn.started' }>
 type MessageDelta = Extract<ProofEvent, { name: 'message.delta' }>
@@ -44,7 +45,7 @@ type MessageReasoning = Extract<ProofEvent, { name: 'message.reasoning' }>
 type ToolUpdated = Extract<ProofEvent, { name: 'tool.updated' }>
 type NoticeRecorded = Extract<ProofEvent, { name: 'turn.notice.recorded' }>
 type ActivityRow = { turn_id: string; thread_id: string; kind: string; state_json: string }
-type TurnRow = { workspace_id: string; state: string }
+type TurnRow = { workspace_id: string; state: string; origin: string | null }
 
 /** A turn that has ended takes no new output. */
 const finished = (turn: TurnRow) => turn.state !== 'running' && turn.state !== 'waiting'
@@ -133,7 +134,11 @@ export function createEventProjector(
            OR message_id IN (SELECT message_id FROM messages WHERE thread_id IN
                 (SELECT thread_id FROM threads WHERE session_id = ?2))`,
     ].map((sql) => database.prepare(sql)),
-    updateSessionStatus: database.prepare(
+    // A status is not activity: only what the user did moves the session in
+    // the list (`movesInList`), so a status change keeps `updated_at` unless
+    // it comes with one of those (docs/session-status.md).
+    updateSessionStatus: database.prepare('UPDATE sessions SET status = ? WHERE session_id = ?'),
+    updateSessionStatusMoved: database.prepare(
       'UPDATE sessions SET status = ?, updated_at = ? WHERE session_id = ?',
     ),
     updateSessionTime: database.prepare('UPDATE sessions SET updated_at = ? WHERE session_id = ?'),
@@ -246,7 +251,7 @@ export function createEventProjector(
        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
     ),
     selectTurnWorkspace: database.prepare(
-      'SELECT workspace_id, state FROM turns WHERE turn_id = ? AND thread_id = ?',
+      'SELECT workspace_id, state, origin FROM turns WHERE turn_id = ? AND thread_id = ?',
     ),
     /** Only an unfinished turn may change state; late events for finished turns roll back. */
     updateOpenTurnState: database.prepare(
@@ -415,11 +420,11 @@ export function createEventProjector(
     if (event.payload.userMessage) {
       insertMessage(event.payload.userMessage, thread.workspace_id, true, at)
     }
-    s.updateSessionStatus.run(
-      withSubagentsWaiting(event.scope.sessionId, 'running'),
-      at,
-      event.scope.sessionId,
-    )
+    // The user sending something moves the session up; a turn nobody sent does not.
+    const status = withSubagentsWaiting(event.scope.sessionId, 'running')
+    if (movesInList(event.payload.turn.origin)) {
+      s.updateSessionStatusMoved.run(status, at, event.scope.sessionId)
+    } else s.updateSessionStatus.run(status, event.scope.sessionId)
     s.unsettleSession.run(event.scope.sessionId)
     // The earlier result is superseded by the turn now running.
     s.clearSessionDone.run(event.scope.sessionId)
@@ -459,6 +464,9 @@ export function createEventProjector(
         false,
         at,
       )
+      // A message the user sent into the running turn (a steer) moves the
+      // session up, as sending it as a turn of its own would.
+      if (role === 'user') s.updateSessionTime.run(at, event.scope.sessionId)
     }
     appendContent(messageId, content, at)
     s.touchMessage.run(at, messageId)
@@ -647,7 +655,7 @@ export function createEventProjector(
    * (or its own) is open, and back to what its own turns and background work
    * say once none is. A failed session stays failed.
    */
-  function refreshParentsOf(sessionId: string, at: number): void {
+  function refreshParentsOf(sessionId: string): void {
     let child = sessionId
     // Bounded by how deep providers nest; a cycle cannot be filed, but a
     // loop over rows must still end.
@@ -660,12 +668,12 @@ export function createEventProjector(
       if (!row) return
       const waiting = s.pendingForSession.get(parent) !== undefined || subagentsWaiting(parent)
       if (waiting && (row.status === 'running' || row.status === 'idle')) {
-        s.updateSessionStatus.run('waiting', at, parent)
+        s.updateSessionStatus.run('waiting', parent)
         s.unsettleSession.run(parent)
         s.uncookSession.run(parent)
       } else if (!waiting && row.status === 'waiting') {
         const working = !!s.openTurnForSession.get(parent) || !!s.hasBackgroundTasks.get(parent)
-        s.updateSessionStatus.run(working ? 'running' : 'idle', at, parent)
+        s.updateSessionStatus.run(working ? 'running' : 'idle', parent)
       }
       child = parent
     }
@@ -786,10 +794,15 @@ export function createEventProjector(
               s.uncookSession.run(event.payload.sessionId)
             }
           }
-          if (
-            s.updateSessionStatus.run(event.payload.status, movedAt ?? at, event.payload.sessionId)
-              .changes !== 1
-          ) {
+          const updated =
+            movedAt === undefined
+              ? s.updateSessionStatus.run(event.payload.status, event.payload.sessionId)
+              : s.updateSessionStatusMoved.run(
+                  event.payload.status,
+                  movedAt,
+                  event.payload.sessionId,
+                )
+          if (updated.changes !== 1) {
             throw new ProjectionRefusal(
               `Cannot update status for missing session ${event.payload.sessionId}`,
             )
@@ -912,8 +925,7 @@ export function createEventProjector(
               !s.openTurnForSession.get(event.payload.sessionId)
             ) {
               const rests = event.payload.backgroundTasks.length > 0 ? 'running' : 'idle'
-              if (rests !== row.status)
-                s.updateSessionStatus.run(rests, at, event.payload.sessionId)
+              if (rests !== row.status) s.updateSessionStatus.run(rests, event.payload.sessionId)
             }
           }
         }
@@ -1054,10 +1066,10 @@ export function createEventProjector(
         if (s.updateOpenTurnState.run('waiting', at, turnId, event.scope.threadId).changes !== 1) {
           throw new ProjectionRefusal(`Cannot mark missing or finished turn ${turnId} as waiting`)
         }
-        s.updateSessionStatus.run('waiting', at, event.scope.sessionId)
+        s.updateSessionStatus.run('waiting', event.scope.sessionId)
         s.unsettleSession.run(event.scope.sessionId)
         s.uncookSession.run(event.scope.sessionId)
-        refreshParentsOf(event.scope.sessionId, at)
+        refreshParentsOf(event.scope.sessionId)
         return
       }
       case 'interaction.resolved':
@@ -1095,10 +1107,9 @@ export function createEventProjector(
         }
         s.updateSessionStatus.run(
           withSubagentsWaiting(event.scope.sessionId, status),
-          at,
           event.scope.sessionId,
         )
-        refreshParentsOf(event.scope.sessionId, at)
+        refreshParentsOf(event.scope.sessionId)
         return
       }
       case 'turn.completed':
@@ -1120,6 +1131,9 @@ export function createEventProjector(
               ? 'interrupted'
               : 'failed'
         const failure = event.name === 'turn.failed' ? event.payload : undefined
+        // Read before it closes: a missing or finished turn is refused below.
+        const ending = s.selectTurnWorkspace.get(turnId, event.scope.threadId) as
+          TurnRow | undefined
         const finished = s.finishOpenTurn.run(
           state,
           failure?.reason ?? null,
@@ -1146,13 +1160,14 @@ export function createEventProjector(
         const failedHere =
           event.name === 'turn.failed' ||
           (event.name === 'turn.interrupted' && event.payload.reason === 'server_restarted')
-        const session = s.updateSessionStatus.run(
-          failedHere
-            ? 'error'
-            : withSubagentsWaiting(event.scope.sessionId, working ? 'running' : 'idle'),
-          at,
-          event.scope.sessionId,
-        )
+        const status = failedHere
+          ? 'error'
+          : withSubagentsWaiting(event.scope.sessionId, working ? 'running' : 'idle')
+        // The end of a turn the user began moves the session up, however it
+        // ended; the end of one nobody sent does not.
+        const session = movesInList(ending?.origin)
+          ? s.updateSessionStatusMoved.run(status, at, event.scope.sessionId)
+          : s.updateSessionStatus.run(status, event.scope.sessionId)
         if (session.changes !== 1) {
           throw new ProjectionRefusal(
             `Cannot finalize turn for missing session ${event.scope.sessionId}`,

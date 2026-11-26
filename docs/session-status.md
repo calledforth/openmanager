@@ -99,6 +99,28 @@ status without them clears them. That is also how an older environment reads:
 its sessions show plain needs input and working. The fields are additive and
 optional, so no protocol version bump.
 
+## Place in the list
+
+A status is not activity. `SessionSummary.updatedAt` (`sessions.updated_at`),
+which the sidebar on every client sorts by and shows as the session's age,
+moves only for what the user did:
+
+- the user sends something: a turn they sent (a prompt, a queued message when
+  it runs, `/review` or `/compact`), or a message they steered into the
+  running turn;
+- a turn the user sent ends, however it ends (completed, interrupted or
+  failed).
+
+Nothing else moves it: background work starting or ending, a turn the agent
+began by itself (`background`), a parent's or subagent's own turn
+(`delegated`, `subagents`), requests opening or closing, a provider exiting
+while idle, titles, settling, cooking, pins or pull requests. Their status
+still goes out: with SQLite it restates the row's own `updatedAt`, and in
+memory it leaves `updatedAt` out, so clients keep the time they hold. A session's workspace
+recency follows the same rule, since it is the newest `updated_at` of its
+sessions. `movesInList` (`db/session-activity.ts`) holds the rule for the
+projection and the in-memory path alike.
+
 ## Done (unseen completions)
 
 `SessionSummary.doneAt` is set when a turn **completes** and stays set until a

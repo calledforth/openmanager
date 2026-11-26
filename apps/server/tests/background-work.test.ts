@@ -24,6 +24,7 @@ const registeredFor =
 const closers: (() => void)[] = []
 const directories: string[] = []
 afterEach(async () => {
+  vi.useRealTimers()
   for (const close of closers.splice(0)) close()
   await Promise.all(directories.splice(0).map((directory) => rm(directory, { recursive: true })))
 })
@@ -570,6 +571,64 @@ describe('background work', () => {
     })
   }
 
+  // The sidebar lists sessions by `updatedAt`: only the user sending something,
+  // or a turn they began ending, moves a session up.
+  for (const durable of [true, false]) {
+    it(`moves a session in the list only for what the user did${durable ? '' : ', without a database'}`, async () => {
+      vi.useFakeTimers({ toFake: ['Date'] })
+      let now = Date.UTC(2026, 10, 1, 9)
+      const tick = () => vi.setSystemTime((now += 60_000))
+      tick()
+      const h = await setup(durable)
+      const at = () => h.summary().updatedAt
+      const created = at()
+
+      // The user's message moves it.
+      tick()
+      const sent = ProofResponseSchemas['turn.send'].parse(
+        h.dispatch('turn.send', { ...h.created.thread, text: 'Build it' }),
+      ).payload
+      await vi.waitFor(() => expect(h.runtime.prompt).toHaveBeenCalled())
+      h.emit(
+        {
+          category: 'lifecycle',
+          event: 'prompt_started',
+          data: { prompt: 'Build it', userMessageId: sent.userMessage.messageId },
+        },
+        'assistant-1',
+      )
+      const sentAt = at()
+      expect(sentAt).not.toBe(created)
+
+      // Background work starting is not the user's doing.
+      tick()
+      h.roster('provider-task')
+      expect(at()).toBe(sentAt)
+
+      // The end of the turn the user sent moves it.
+      tick()
+      h.text('assistant-1', 'Started.')
+      h.completed('assistant-1')
+      const finishedAt = at()
+      expect(finishedAt).not.toBe(sentAt)
+      expect(h.summary()).toMatchObject({ status: 'running', inBackground: true })
+
+      // The task ending, the turn the agent began by itself to report it, and
+      // that turn's end: none of it moves the session.
+      tick()
+      h.emit({ category: 'lifecycle', event: 'background_turn_started', data: {} }, 'assistant-2')
+      expect(at()).toBe(finishedAt)
+      tick()
+      h.roster()
+      expect(at()).toBe(finishedAt)
+      tick()
+      h.text('assistant-2', 'The build passed.')
+      h.completed('assistant-2')
+      expect(h.summary()).toMatchObject({ status: 'idle', doneAt: expect.any(String) })
+      expect(at()).toBe(finishedAt)
+    })
+  }
+
   it('holds a Claude turn back from done while its task will wake the agent', async () => {
     const h = await setup()
     await h.userTurn('provider-task')
@@ -649,15 +708,16 @@ describe('background work across a restart', () => {
     expect(session.backgroundTasks).toBeUndefined()
     // The roster is the fact; the status that follows is derived from the rows
     // in the same transaction (docs/sync-foundations.md §4.7.8 item 2).
-    // The status change moves the session's time, and its workspace's recency.
+    // Background work ending is not something the user did: the session keeps
+    // its time (the row's own, restated), and its workspace its recency.
     expect(h.published.map((event) => [event.name, event.payload])).toEqual([
       ['session.updated', { sessionId: 'session-1', backgroundTasks: [] }],
       [
         'session.updated',
-        { sessionId: 'session-1', status: 'idle', updatedAt: expect.any(String) },
+        { sessionId: 'session-1', status: 'idle', updatedAt: new Date(1).toISOString() },
       ],
-      ['workspace.updated', { workspace: expect.objectContaining({ workspaceId: 'workspace-1' }) }],
     ])
+    expect(session.updatedAt).toBe(new Date(1).toISOString())
     // Nothing left to say the second time.
     expect(h.service.forgetStaleBackgroundWork()).toBe(0)
   })

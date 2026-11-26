@@ -483,7 +483,8 @@ export function createEventRepository(
         before.activity.waitingOn !== after.activity.waitingOn ||
         before.activity.inBackground !== after.activity.inBackground
       // And so does the session's place in the list (§4.7.1): every move of
-      // `updated_at` is announced, a second request while waiting included.
+      // `updated_at` is announced, a steered message included. Only what the
+      // user did moves it (`movesInList`, event-projection.ts).
       const moved = before.updated_at !== after.updated_at
       if (
         before.status === after.status &&
@@ -708,9 +709,10 @@ type SessionStatusRow = {
 type StatusState = SessionStatusRow & { activity: SessionActivity }
 
 /**
- * The session an event can change the status of: a turn's start and end and
- * every request event, and any `session.updated` (a background roster moves a
- * resting session between idle and running; a producer may state a status).
+ * The session an event can change the status or place in the list of: a
+ * turn's start and end, every request event, a message the user steered into
+ * a turn, and any `session.updated` (a background roster moves a resting
+ * session between idle and running; a producer may state a status).
  */
 function statusSessionOf(event: ProofEvent): string | undefined {
   if (event.scope.type === 'thread') {
@@ -719,7 +721,9 @@ function statusSessionOf(event: ProofEvent): string | undefined {
       event.name === 'interaction.requested' ||
       event.name === 'interaction.resolved' ||
       event.name === 'interaction.expired' ||
-      event.name === 'interaction.cancelled'
+      event.name === 'interaction.cancelled' ||
+      // A steered message moves the session up (`updated_at`), and the pass announces it.
+      (event.name === 'message.delta' && event.payload.role === 'user')
       ? event.scope.sessionId
       : undefined
   }

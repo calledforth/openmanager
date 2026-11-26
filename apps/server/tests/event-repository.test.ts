@@ -266,12 +266,11 @@ describe('event repository transactions', () => {
     }
     // What it waits on rides along: a question outranks the plan asked before
     // it and the permission asked after, and each answer moves it on. The
-    // plan's answer changes neither, but it moves the session's time, and
-    // every move is announced (§4.7.1).
+    // plan's answer changes neither, and a request is not something the user
+    // sent, so it does not move the session's time either: nothing to say.
     expect(statuses).toEqual([
       'running',
       'waiting:plan',
-      'waiting:question',
       'waiting:question',
       'waiting:permission',
       'running',
@@ -282,16 +281,18 @@ describe('event repository transactions', () => {
     expect(
       database.prepare('SELECT status FROM sessions WHERE session_id = ?').get('session-1'),
     ).toEqual({ status: 'idle' })
-    // Retried events return both original cursors and do not duplicate broadcasts.
+    // Retried events return the original cursors and do not duplicate broadcasts.
+    // The end of the user's turn moved the session, and so its workspace.
     expect(append(completed()).map((record) => record.event.eventId)).toEqual([
       'event-completed',
       'event-completed:status',
+      'event-completed:recency',
     ])
     expect(
       database
         .prepare("SELECT count(*) AS n FROM event_log WHERE event_name = 'session.updated'")
         .get(),
-    ).toEqual({ n: 7 })
+    ).toEqual({ n: 6 })
   })
 
   it('ranks generated titles above the agent and below nothing the user asked for', async () => {
@@ -2056,23 +2057,189 @@ describe('session status, once per session per transaction (docs/sync-foundation
       })
     const task = { taskId: 'task-1', kind: 'shell', description: 'watch' }
     const working = repository.appendEvents(environment, [roster('roster-1', [task])])
-    const at = '2026-09-10T10:00:05.000Z'
-    // The resting status moves the session's time, and so its workspace's recency.
+    // Background work is not something the user did: the status changes, but
+    // the session keeps its time (the row's own, restated) and its workspace
+    // its recency.
+    const kept = new Date(1).toISOString()
     expect(working.map((record) => record.event.payload)).toEqual([
       { sessionId: 'session-1', backgroundTasks: [task] },
-      { sessionId: 'session-1', status: 'running', updatedAt: at, inBackground: true },
-      { workspace: expect.objectContaining({ workspaceId: 'workspace-1', lastActivityAt: at }) },
+      { sessionId: 'session-1', status: 'running', updatedAt: kept, inBackground: true },
     ])
     const resting = repository.appendEvents(environment, [roster('roster-2', [])])
-    // Same time, so nothing more for the workspace.
     expect(resting.map((record) => record.event.payload)).toEqual([
       { sessionId: 'session-1', backgroundTasks: [] },
-      { sessionId: 'session-1', status: 'idle', updatedAt: at },
+      { sessionId: 'session-1', status: 'idle', updatedAt: kept },
     ])
     // A failed session stays failed whatever its roster says.
     database.exec("UPDATE sessions SET status = 'error'")
     const failed = repository.appendEvents(environment, [roster('roster-3', [task])])
     expect(failed.map((record) => record.event.eventId)).toEqual(['roster-3'])
+  })
+})
+
+describe('only what the user did moves a session in the list', () => {
+  const environment = { type: 'environment', environmentId: 'environment-1' } as const
+  const time = (database: DatabaseSync) =>
+    new Date(
+      (
+        database
+          .prepare('SELECT updated_at FROM sessions WHERE session_id = ?')
+          .get('session-1') as {
+          updated_at: number
+        }
+      ).updated_at,
+    ).toISOString()
+  const names = (records: readonly { event: { name: string } }[]) =>
+    records.map((record) => record.event.name)
+  const moves = (records: readonly { event: ProofEvent }[]) =>
+    records.flatMap((record) =>
+      record.event.name === 'session.updated' && record.event.payload.status !== undefined
+        ? [record.event.payload.updatedAt]
+        : [],
+    )
+  const roster = (eventId: string, tasks: unknown[], timestamp: string) =>
+    ProofEventSchemas['session.updated'].parse({
+      type: 'event',
+      name: 'session.updated',
+      eventId,
+      timestamp,
+      scope: environment,
+      payload: { sessionId: 'session-1', backgroundTasks: tasks },
+    })
+  const task = { taskId: 'task-1', kind: 'shell', description: 'build' }
+
+  it('keeps its place while background work starts and ends, and through a turn nobody sent', async () => {
+    const { database } = await createDatabase()
+    const repository = createEventRepository(database)
+    const kept = new Date(1).toISOString()
+    const started = repository.appendEvents(environment, [
+      roster('roster-1', [task], '2026-09-10T10:00:00.000Z'),
+    ])
+    expect(time(database)).toBe(kept)
+    // The status changes, but the time it restates is the row's own, and the
+    // workspace's recency stays put.
+    expect(moves(started)).toEqual([kept])
+    expect(names(started)).not.toContain('workspace.updated')
+
+    // The task finished and the agent acts on its result by itself.
+    const opened = repository.appendEvents(scope, [
+      ProofEventSchemas['turn.started'].parse({
+        type: 'event',
+        name: 'turn.started',
+        eventId: 'background-started',
+        timestamp: '2026-09-10T10:00:05.000Z',
+        scope,
+        payload: {
+          turn: {
+            turnId: 'turn-1',
+            threadId: 'thread-1',
+            state: 'running',
+            startedAt: '2026-09-10T10:00:05.000Z',
+            origin: 'background',
+          },
+        },
+      }),
+    ])
+    expect(names(opened)).not.toContain('workspace.updated')
+    const ended = repository.finalizeTurn(scope, [
+      { ...completed('background-completed'), timestamp: '2026-09-10T10:00:09.000Z' },
+    ])
+    expect(names(ended)).not.toContain('workspace.updated')
+    const finished = repository.appendEvents(environment, [
+      roster('roster-2', [], '2026-09-10T10:00:10.000Z'),
+    ])
+    expect(names(finished)).not.toContain('workspace.updated')
+    expect(time(database)).toBe(kept)
+    expect(getSessionSummary(database, 'session-1')).toMatchObject({
+      status: 'idle',
+      updatedAt: kept,
+    })
+  })
+
+  it('moves when the user sends a turn and when it ends, however it ends, but not while it asks', async () => {
+    const { database } = await createDatabase()
+    const repository = createEventRepository(database)
+    const sent = repository.appendEvents(scope, [started()])
+    expect(time(database)).toBe('2026-09-10T10:00:00.000Z')
+    expect(moves(sent)).toEqual(['2026-09-10T10:00:00.000Z'])
+    expect(names(sent)).toContain('workspace.updated')
+
+    // A request is the agent's, not the user's: the status says it, the time stays.
+    const asked = repository.appendEvents(scope, [
+      { ...interactionRequested(), timestamp: '2026-09-10T10:00:01.000Z' },
+    ])
+    expect(moves(asked)).toEqual(['2026-09-10T10:00:00.000Z'])
+    expect(names(asked)).not.toContain('workspace.updated')
+    repository.appendEvents(scope, [
+      { ...interactionResolved(), timestamp: '2026-09-10T10:00:01.500Z' },
+    ])
+    expect(time(database)).toBe('2026-09-10T10:00:00.000Z')
+
+    const done = repository.finalizeTurn(scope, [completed()])
+    expect(time(database)).toBe('2026-09-10T10:00:02.000Z')
+    expect(moves(done)).toEqual(['2026-09-10T10:00:02.000Z'])
+
+    // A turn the user sent that fails moves it too.
+    repository.appendEvents(scope, [
+      ProofEventSchemas['turn.started'].parse({
+        ...started('started-2'),
+        timestamp: '2026-09-10T10:01:00.000Z',
+        payload: {
+          turn: {
+            turnId: 'turn-2',
+            threadId: 'thread-1',
+            state: 'running',
+            startedAt: '2026-09-10T10:01:00.000Z',
+          },
+          userMessage: {
+            messageId: 'message-user-2',
+            threadId: 'thread-1',
+            turnId: 'turn-2',
+            role: 'user',
+            content: [{ type: 'text', text: 'Again' }],
+          },
+        },
+      }),
+    ])
+    expect(time(database)).toBe('2026-09-10T10:01:00.000Z')
+    const failed = repository.finalizeTurn(scope, [
+      ProofEventSchemas['turn.failed'].parse({
+        type: 'event',
+        name: 'turn.failed',
+        eventId: 'failed-2',
+        timestamp: '2026-09-10T10:01:07.000Z',
+        scope,
+        payload: { turnId: 'turn-2', reason: 'provider_error', message: 'Boom.' },
+      }),
+    ])
+    expect(time(database)).toBe('2026-09-10T10:01:07.000Z')
+    expect(moves(failed)).toEqual(['2026-09-10T10:01:07.000Z'])
+  })
+
+  it('moves when the user steers a message into the running turn, and says so', async () => {
+    const { database } = await createDatabase()
+    const repository = createEventRepository(database)
+    repository.appendEvents(scope, [started()])
+    // What the agent says is not the user's doing.
+    expect(moves(repository.appendEvents(scope, [delta('Working', 'assistant-1')]))).toEqual([])
+    const steered = repository.appendEvents(scope, [
+      ProofEventSchemas['message.delta'].parse({
+        type: 'event',
+        name: 'message.delta',
+        eventId: 'steer-1',
+        timestamp: '2026-09-10T10:00:01.500Z',
+        scope,
+        payload: {
+          messageId: 'message-steer',
+          turnId: 'turn-1',
+          role: 'user',
+          content: { type: 'text', text: 'Use the other file' },
+        },
+      }),
+    ])
+    expect(time(database)).toBe('2026-09-10T10:00:01.500Z')
+    expect(moves(steered)).toEqual(['2026-09-10T10:00:01.500Z'])
+    expect(names(steered)).toContain('workspace.updated')
   })
 })
 
