@@ -1658,31 +1658,6 @@ textarea,
 
 /* .thin-scrollbar / .custom-scrollbar: call-site markers only; global webkit rules apply */
 
-/* ━━━ Subagents ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-   Only a subagent waiting on the user moves: its dot breathes. Everything
-   else holds still and says its state in colour and words. */
-.subagent-pulse {
-  animation: subagent-pulse 1.6s ease-in-out infinite;
-}
-
-@keyframes subagent-pulse {
-  0%,
-  100% {
-    opacity: 1;
-    transform: scale(1);
-  }
-  50% {
-    opacity: 0.45;
-    transform: scale(0.8);
-  }
-}
-
-@media (prefers-reduced-motion: reduce) {
-  .subagent-pulse {
-    animation: none;
-  }
-}
-
 /* The conversation's column: 48rem, centred in the chat pane. While the
    subagent rail shows at the pane's right it publishes how much room it
    needs (`--chat-rail-room`, on the pane), and the column gives way just as

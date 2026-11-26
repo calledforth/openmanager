@@ -185,3 +185,22 @@ export function usePullRequestDetail(
 
   return { detail, loading, error }
 }
+
+export { requestOpenPullRequest, useOpenPullRequestRequests } from './open-request'
+
+/**
+ * The session whose pull requests the open one shows. Links are kept on the
+ * root session (a subagent's pull request belongs to the chat that started
+ * it), so a child session shows its root's.
+ */
+export const selectRootSessionId = (state: EnvironmentState): string | null => {
+  let id = state.activeSessionId
+  const seen = new Set<string>()
+  while (id && !seen.has(id)) {
+    seen.add(id)
+    const parent = state.sessions[id]?.parentSessionId
+    if (!parent || !state.sessions[parent]) return id
+    id = parent
+  }
+  return id ?? null
+}

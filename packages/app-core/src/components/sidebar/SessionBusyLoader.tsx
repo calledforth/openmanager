@@ -37,18 +37,21 @@ export function SessionBusyLoader({
   className,
   style,
   tone = 'working',
+  label,
   burst,
 }: {
   className?: string
   style?: CSSProperties
   tone?: SessionBusyTone
+  /** What it says to a screen reader, when it marks something other than a session. */
+  label?: string
   /** Change this to throw one spray of sparks, used when a session finishes. */
   burst?: number
 }) {
   return (
     <div
       role="img"
-      aria-label={LABEL[tone]}
+      aria-label={label ?? LABEL[tone]}
       className={cn('session-busy-ring', `session-busy-ring--${tone}`, className)}
       style={style}
     >
