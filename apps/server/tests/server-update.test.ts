@@ -25,10 +25,9 @@ function setup(overrides: Partial<ServerUpdateOptions> & { newest?: string } = {
   const temp = mkdtempSync(join(tmpdir(), 'om-server-update-'))
   const dataDir = join(temp, 'data')
   mkdirSync(dataDir)
-  const execPath =
-    process.platform === 'win32'
-      ? join(temp, 'OpenManager', 'versions', '0.21.0', 'openmanager.exe')
-      : join(temp, 'openmanager', 'versions', '0.21.0', 'openmanager')
+  // A Linux install's path, whatever the test runs on: the options say `linux`.
+  const execPath = '/home/ada/.local/share/openmanager/versions/0.21.0/openmanager'
+  const audit = createAuditLog(silent, { dataDir })
   const launches: Parameters<LaunchUpdater>[0][] = []
   let githubCalls = 0
   const options: ServerUpdateOptions = {
@@ -56,7 +55,7 @@ function setup(overrides: Partial<ServerUpdateOptions> & { newest?: string } = {
         : credential === 'reader-token'
           ? { clientId: 'phone', capabilities: ['read'] }
           : undefined,
-    audit: createAuditLog(silent, { dataDir }),
+    audit,
     rateLimiter: createRateLimiter(),
     budgetKey: () => 'test',
     log: silent,
@@ -65,6 +64,8 @@ function setup(overrides: Partial<ServerUpdateOptions> & { newest?: string } = {
   const service = createServerUpdateService(options)
   cleanups.push(() => {
     service.close()
+    // The audit log holds its file open, which Windows will not delete.
+    audit.close()
     rmSync(temp, { recursive: true, force: true })
   })
   const writeRecord = (record: UpdateRecord) =>
