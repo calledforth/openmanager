@@ -33,6 +33,7 @@ import { ActionButton } from '../pairing/ActionButton'
 import { ConnectionPanel } from '../settings/ConnectionPanel'
 import { usePhoneTheme } from '../theme/ThemeProvider'
 import { UpdateNotice } from '../updates/UpdateRow'
+import { ServerUpdateCards } from '../server-update/ServerUpdateRow'
 import { coveredBySheet } from '../ui/a11y-focus'
 import { FadeOut, PageTitle, SectionLabel } from '../ui/chrome'
 import { DraftRow } from '../ui/DraftRow'
@@ -389,6 +390,7 @@ export default function SessionsHome() {
             ListHeaderComponent={
               <>
                 <UpdateNotice />
+                <ServerUpdateCards />
                 {caughtUp ? (
                   <AppText
                     variant="text-13-regular"

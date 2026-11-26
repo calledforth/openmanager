@@ -178,3 +178,15 @@ export {
   type PairingLinkResult,
   type PairingPayload,
 } from './pairing-link'
+export {
+  createServerUpdateWatcher,
+  fetchServerUpdateStatus,
+  serverUpdateNotice,
+  startServerUpdate,
+  SERVER_UPDATE_BUSY_POLL_MS,
+  SERVER_UPDATE_IDLE_POLL_MS,
+  type ServerUpdateNotice,
+  type ServerUpdateTarget,
+  type ServerUpdateWatcher,
+  type ServerUpdateWatchSnapshot,
+} from './server-update'

@@ -67,6 +67,8 @@ import { createAgentToolsEndpoint } from './pull-requests/mcp-endpoint.ts'
 import { createPullRequestService } from './pull-requests/service.ts'
 import { createScratchpadService } from './scratchpad.ts'
 import { serverVersion } from './standalone/version.ts'
+import { createServerUpdateService } from './server-update.ts'
+import { isSea } from 'node:sea'
 import { auditValue, createAuditLog } from './audit.ts'
 import type { ServerConfig } from './config.ts'
 import { validateHosts, validateOrigins, validateWorkspaceRoots } from './config.ts'
@@ -743,6 +745,21 @@ export async function startServer(config: ServerConfig) {
     toolOutput: createToolOutputReader(eventDatabase),
     resolveWorkspace,
   })
+  const serverUpdate = createServerUpdateService({
+    dataDir: config.dataDir,
+    version: serverVersion(),
+    execPath: process.execPath,
+    standalone: isSea(),
+    platform: process.platform,
+    arch: process.arch,
+    env: process.env,
+    fetch,
+    authenticate: (credential) => clients.authenticate(credential),
+    audit,
+    rateLimiter,
+    budgetKey,
+    log,
+  })
   let closeClientSockets: (clientId: string) => void = () => undefined
   const pairing = createPairingService({
     dataDir: config.dataDir,
@@ -871,6 +888,7 @@ export async function startServer(config: ServerConfig) {
       return
     }
     if (uploads.handle(request, response)) return
+    if (serverUpdate.handle(request, response)) return
     if (pairing.handle(request, response)) return
     if (agentTools.handle(request, response)) return
     if (request.method === 'GET' && (path === '/health' || path === '/bootstrap')) {
@@ -1119,6 +1137,7 @@ export async function startServer(config: ServerConfig) {
     await runtime.shutdown()
     stopRetention()
     uploads.close()
+    serverUpdate.close()
     pairing.close()
     eventService.close()
     eventDatabase.close()
@@ -1202,6 +1221,7 @@ export async function startServer(config: ServerConfig) {
       if (!closePromise) {
         clientService.stop()
         scratchpad.close()
+        serverUpdate.close()
         const socketClose = sockets.close()
         // Before the listener: an in-flight PUT is cut and its partial file removed.
         uploads.close()

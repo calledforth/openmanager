@@ -46,6 +46,7 @@ import {
   releaseTarget,
 } from './release.ts'
 import { serverVersion } from './version.ts'
+import { RECORD_LOG_LINES, STATUS_FILE_FLAG, type UpdateRecord } from './update-record.ts'
 
 /**
  * `openmanager update`, `openmanager uninstall` and the internal
@@ -527,6 +528,12 @@ export async function runUpdate(
   args: readonly string[],
   deps: StandaloneDeps = defaultDeps(),
 ): Promise<number> {
+  const flag = args.indexOf(STATUS_FILE_FLAG)
+  if (flag !== -1) {
+    const file = args[flag + 1]
+    if (!file) return fail(new CommandError(`${STATUS_FILE_FLAG} needs a file.`), deps)
+    return runRecordedUpdate([...args.slice(0, flag), ...args.slice(flag + 2)], file, deps)
+  }
   try {
     if (args.length > 1 || (args[0] !== undefined && !isVersion(args[0]))) {
       throw new CommandError('Usage: openmanager update [<version>]   (for example 0.2.0)')
@@ -577,6 +584,77 @@ async function update(
   } catch (error) {
     return fail(error, deps)
   }
+}
+
+/**
+ * `openmanager update --status-file <file> [<version>]`: the update a client
+ * asked its server for (server-update.ts). Nobody watches a terminal, so where
+ * it is goes to `file` (update-record.ts) as it moves, with the last lines it
+ * printed; and the service handoff's output is captured rather than attached.
+ */
+async function runRecordedUpdate(
+  args: readonly string[],
+  file: string,
+  deps: StandaloneDeps,
+): Promise<number> {
+  const log: string[] = []
+  const problems: string[] = []
+  const keep = (text: string, problem = false) => {
+    for (const line of text.split(/\r?\n/)) {
+      if (line.trim() === '') continue
+      log.push(line)
+      if (problem) problems.push(line)
+    }
+    log.splice(0, Math.max(0, log.length - RECORD_LOG_LINES))
+  }
+  const record: UpdateRecord = {
+    state: 'updating',
+    pid: process.pid,
+    fromVersion: deps.version,
+    ...(args[0] ? { targetVersion: args[0] } : {}),
+    startedAt: Date.now(),
+    log,
+  }
+  const write = () =>
+    replaceAtomically(file, (temporary) =>
+      writeFile(temporary, `${JSON.stringify(record, null, 2)}\n`, 'utf8'),
+    ).catch((error: unknown) => {
+      deps.stderr(`Could not write ${file}: ${error instanceof Error ? error.message : error}`)
+    })
+  const recorded: StandaloneDeps = {
+    ...deps,
+    stdout: (line) => {
+      deps.stdout(line)
+      keep(line)
+    },
+    stderr: (line) => {
+      deps.stderr(line)
+      keep(line, true)
+    },
+    runAttached: async (program, programArgs) => {
+      const result = await deps.run(program, programArgs)
+      if (result.stdout) deps.stdout(result.stdout.trimEnd())
+      if (result.stderr) deps.stderr(result.stderr.trimEnd())
+      keep(result.stdout)
+      keep(result.stderr, result.code !== 0)
+      return result.code ?? 1
+    },
+  }
+  await write()
+  let code: number
+  try {
+    code = await runUpdate(args, recorded)
+  } catch (error) {
+    code = fail(error, recorded)
+  }
+  record.state = code === 0 ? 'succeeded' : 'failed'
+  record.finishedAt = Date.now()
+  if (code !== 0) {
+    record.error =
+      problems.slice(-3).join('\n') || log.slice(-3).join('\n') || `The update exited with ${code}.`
+  }
+  await write()
+  return code
 }
 
 const USER_PATH_SCRIPT = (dir: string) =>

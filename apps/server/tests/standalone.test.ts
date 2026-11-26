@@ -37,6 +37,7 @@ import {
   parseChecksums,
   releaseTarget,
 } from '../src/standalone/release.js'
+import { readUpdateRecord } from '../src/standalone/update-record.js'
 
 describe('install layout', () => {
   it('finds the install an executable belongs to from its path', () => {
@@ -226,6 +227,14 @@ function fakeInstall(options: {
       if (args[0] === '--version') {
         return { code: 0, stdout: `${readFileSync(file, 'utf8')}\n`, stderr: '' }
       }
+      if (args.join(' ') === 'service update') {
+        // Only an unattended update (--status-file) captures the handoff.
+        attachedCalls.push([file, ...args])
+        const code = options.serviceUpdateCode ?? 0
+        return code === 0
+          ? { code, stdout: 'Environment server is up at http://127.0.0.1:43120.\n', stderr: '' }
+          : { code, stdout: '', stderr: 'The systemd user unit started but nothing answered.\n' }
+      }
       if (args.join(' ') === 'service status --json') {
         if (options.statusFails) {
           return {
@@ -392,6 +401,43 @@ describe.skipIf(target === undefined)('standalone commands', () => {
     expect(system.attachedCalls).toEqual([[next, 'service', 'update']])
     // The version moved from stays for a manual rollback.
     expect(existsSync(system.execPath)).toBe(true)
+  })
+
+  it('update --status-file records each step for the server that asked for it', async () => {
+    const system = fakeInstall({
+      newest: '0.2.0',
+      release: buildRelease('0.2.0'),
+      serviceProgram: ['x'],
+    })
+    cleanups.push(system.temp)
+    const file = join(system.temp, 'server-update.json')
+    expect(await runUpdate(['--status-file', file, '0.2.0'], system.deps)).toBe(0)
+    const record = readUpdateRecord(readFileSync(file, 'utf8'))
+    expect(record).toMatchObject({
+      state: 'succeeded',
+      pid: process.pid,
+      fromVersion: '0.1.0',
+      targetVersion: '0.2.0',
+    })
+    expect(record?.finishedAt).toBeGreaterThanOrEqual(record!.startedAt)
+    expect(record?.log).toContain('Environment server is up at http://127.0.0.1:43120.')
+    const next = join(system.root, 'versions', '0.2.0', exeName)
+    expect(system.attachedCalls).toEqual([[next, 'service', 'update']])
+  })
+
+  it('update --status-file records why a failed handoff failed', async () => {
+    const system = fakeInstall({
+      newest: '0.2.0',
+      release: buildRelease('0.2.0'),
+      serviceProgram: ['x'],
+      serviceUpdateCode: 1,
+    })
+    cleanups.push(system.temp)
+    const file = join(system.temp, 'server-update.json')
+    expect(await runUpdate(['--status-file', file, '0.2.0'], system.deps)).toBe(1)
+    const record = readUpdateRecord(readFileSync(file, 'utf8'))
+    expect(record?.state).toBe('failed')
+    expect(record?.error).toContain('nothing answered')
   })
 
   it('update keeps everything when the checksum does not match', async () => {
