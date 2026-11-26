@@ -49,6 +49,7 @@ import { usePageSheet, type PageSheet } from './page-sheet'
 import { useDeviceAdmin, useTitleSetting } from './useSettingsStores'
 import { ROUTE_ORDER_NOTE, pageStatusWords, routeRows, type RouteRowView } from './environments'
 import { Dot, Pill, SettingsRow, toneColor } from './SettingsRow'
+import { ServerSection } from '../server-update/ServerUpdateRow'
 
 const WORDS_IN = FadeIn.duration(180)
 
@@ -178,6 +179,8 @@ export function EnvironmentScreen({ environmentId }: { environmentId: string }) 
           <ConnectionPanel view={view} />
         </View>
       ) : null}
+
+      <ServerSection environmentId={environmentId} />
 
       <SectionLabel>Routes</SectionLabel>
       {routes.map((route) => (

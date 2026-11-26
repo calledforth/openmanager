@@ -246,7 +246,7 @@ const HEALTH_DOTS: Record<RouteHealthStatus, string> = {
 }
 
 /** A small icon button whose name is its tooltip. */
-function IconAction({
+export function IconAction({
   label,
   icon: Icon,
   onClick,
@@ -458,6 +458,7 @@ export function EnvironmentList({
   selectedId,
   inUseEndpoint,
   renameTarget,
+  accessory,
   onSelect,
   onRemove,
   onDisconnect,
@@ -478,6 +479,8 @@ export function EnvironmentList({
    * connected now, on a server that can be renamed.
    */
   renameTarget?: (environmentId: string) => EnvironmentRenameTarget | undefined
+  /** Shown under each environment's name, such as its server's version. */
+  accessory?: (environmentId: string) => ReactNode
   onSelect?: (environmentId: string) => void
   onRemove?: (environmentId: string) => void
   /** Leave the selected environment without forgetting it. */
@@ -655,6 +658,7 @@ export function EnvironmentList({
                 {failure}
               </p>
             ) : null}
+            {accessory?.(environment.environmentId)}
             <ul className="mt-0.5 flex flex-col" aria-label={`Routes to ${environment.label}`}>
               {environment.routes.map((route) => (
                 <RouteRow
@@ -702,12 +706,15 @@ export function ConnectionScreen({
   environments = [],
   selectedId = null,
   inUseEndpoint,
+  extra,
 }: {
   state: ConnectionUiState
   handlers?: ConnectionHandlers
   environments?: StoredEnvironment[]
   selectedId?: string | null
   inUseEndpoint?: string | null
+  /** Shown above the actions, such as a way to update a server that is too old. */
+  extra?: ReactNode
 }) {
   const choosingSaved = state.kind === 'no_environment' && environments.length > 0
   // With one saved there is nothing to choose between: the screen is the way
@@ -761,7 +768,10 @@ export function ConnectionScreen({
             />
           </>
         ) : (
-          <ActionButtons className="mt-7" state={state} handlers={handlers} />
+          <>
+            {extra}
+            <ActionButtons className="mt-7" state={state} handlers={handlers} />
+          </>
         )}
       </div>
     </div>

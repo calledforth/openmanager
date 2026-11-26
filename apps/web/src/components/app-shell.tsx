@@ -80,6 +80,8 @@ import {
 } from './environments-sidebar'
 import { EnvironmentNotifications } from './session-notifications'
 import { SidebarDock } from './sidebar-dock'
+import { ServerTooOldCallout, ServerUpdateToasts } from './server-update'
+import { ServerUpdatesProvider } from '../providers/server-updates'
 import { SessionSidePanel } from './session-side-panel'
 
 const NewAgentIcon = phosphorIcon(NotePencilIcon)
@@ -480,6 +482,7 @@ export function AppShell() {
             <ConnectionBanner className="pointer-events-auto" state={placed} handlers={handlers} />
           ) : null}
           <EnvironmentFailureNotice className="pointer-events-auto" />
+          <ServerUpdateToasts className="pointer-events-auto" />
         </div>
         {showScreen ? (
           <ConnectionScreen
@@ -488,6 +491,14 @@ export function AppShell() {
             environments={environments}
             selectedId={selectedId}
             inUseEndpoint={inUseEndpoint}
+            extra={
+              ui.kind === 'incompatible_protocol' &&
+              ui.serverProtocolVersion !== undefined &&
+              ui.clientProtocolVersion !== undefined &&
+              ui.serverProtocolVersion < ui.clientProtocolVersion ? (
+                <ServerTooOldCallout environmentId={selectedId} />
+              ) : null
+            }
           />
         ) : (
           <Outlet />
@@ -500,59 +511,61 @@ export function AppShell() {
   // Fluid's default sidebar: one canvas colour for the rail and the page,
   // split by a hairline.
   return (
-    <SidebarProvider className="h-svh min-h-0 overflow-hidden bg-background text-foreground">
-      <EnvironmentClientProvider client={client}>
-        <AddressLookupProvider value={lookup}>
-          <EnvironmentNotifications openId={lookup.owner ?? selectedId} />
-          {/* Above the choice of what is open: an environment with no client
+    <ServerUpdatesProvider>
+      <SidebarProvider className="h-svh min-h-0 overflow-hidden bg-background text-foreground">
+        <EnvironmentClientProvider client={client}>
+          <AddressLookupProvider value={lookup}>
+            <EnvironmentNotifications openId={lookup.owner ?? selectedId} />
+            {/* Above the choice of what is open: an environment with no client
               takes neither the sidebar nor the other environments' cards with it. */}
-          <EnvironmentsSidebarHost
-            footer={<SidebarDock pathname={pathname} />}
-            fallback={
-              <Sidebar className="text-[15px]">
-                <SidebarHeader>
-                  <SidebarWorkspaceHeader
-                    name="OpenManager"
-                    tile={<WorkspaceTile>O</WorkspaceTile>}
-                  />
-                </SidebarHeader>
-                <SidebarContent>
-                  <NavMenu pathname={pathname} includeSessions />
-                </SidebarContent>
-                <SidebarFooter>
-                  <ConnectionStatusChip state={ui} />
-                </SidebarFooter>
-              </Sidebar>
-            }
-          >
-            {/* Above the shell keyed by environment: the New agent card's draft
+            <EnvironmentsSidebarHost
+              footer={<SidebarDock pathname={pathname} />}
+              fallback={
+                <Sidebar className="text-[15px]">
+                  <SidebarHeader>
+                    <SidebarWorkspaceHeader
+                      name="OpenManager"
+                      tile={<WorkspaceTile>O</WorkspaceTile>}
+                    />
+                  </SidebarHeader>
+                  <SidebarContent>
+                    <NavMenu pathname={pathname} includeSessions />
+                  </SidebarContent>
+                  <SidebarFooter>
+                    <ConnectionStatusChip state={ui} />
+                  </SidebarFooter>
+                </Sidebar>
+              }
+            >
+              {/* Above the shell keyed by environment: the New agent card's draft
                 outlives the page's environment and can move to another. */}
-            <QuickAgentWebHost shellEnvironmentId={client ? shellEnvironmentId : null}>
-              {client ? (
-                // By environment, not by client: its drafts and page state are that
-                // environment's, while a client replaced on the same environment keeps
-                // the page as it is.
-                <ConnectedShell
-                  key={shellEnvironmentId}
-                  client={client}
-                  environmentId={shellEnvironmentId}
-                  availability={availability}
-                  pathname={pathname}
-                  landingDraftId={address?.kind === 'draft' ? address.id : null}
-                  holdLandingDraft={address?.kind === 'draft' && lookup.status === 'searching'}
-                >
-                  {main}
-                </ConnectedShell>
-              ) : (
-                <>
-                  {main}
-                  <ShellCommandPalette />
-                </>
-              )}
-            </QuickAgentWebHost>
-          </EnvironmentsSidebarHost>
-        </AddressLookupProvider>
-      </EnvironmentClientProvider>
-    </SidebarProvider>
+              <QuickAgentWebHost shellEnvironmentId={client ? shellEnvironmentId : null}>
+                {client ? (
+                  // By environment, not by client: its drafts and page state are that
+                  // environment's, while a client replaced on the same environment keeps
+                  // the page as it is.
+                  <ConnectedShell
+                    key={shellEnvironmentId}
+                    client={client}
+                    environmentId={shellEnvironmentId}
+                    availability={availability}
+                    pathname={pathname}
+                    landingDraftId={address?.kind === 'draft' ? address.id : null}
+                    holdLandingDraft={address?.kind === 'draft' && lookup.status === 'searching'}
+                  >
+                    {main}
+                  </ConnectedShell>
+                ) : (
+                  <>
+                    {main}
+                    <ShellCommandPalette />
+                  </>
+                )}
+              </QuickAgentWebHost>
+            </EnvironmentsSidebarHost>
+          </AddressLookupProvider>
+        </EnvironmentClientProvider>
+      </SidebarProvider>
+    </ServerUpdatesProvider>
   )
 }

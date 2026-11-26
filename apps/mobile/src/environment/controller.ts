@@ -34,8 +34,9 @@ import {
   type RouteHealthReport,
   type RouteSearchResult,
   type StoredEnvironment,
+  routeSearchOrder,
 } from '@openmanager/environment-client/connection'
-import type { CredentialRefusal } from '@openmanager/environment-client'
+import type { CredentialRefusal, ServerUpdateTarget } from '@openmanager/environment-client'
 import {
   confirmCredentialRejected,
   credentialRefusalOf,
@@ -270,6 +271,12 @@ export interface PhoneConnectionController {
    * searches its routes at once. With no environment named, every one.
    */
   retry(environmentId?: string): void
+  /**
+   * How to ask one environment's server about its own updates
+   * (environment-client's server-update.ts): the route in use, else the first
+   * choice, with the phone's token for it. Null without a token.
+   */
+  serverUpdateTarget(environmentId: string): ServerUpdateTarget | null
   /** Resolves once every registry write handed in so far has finished. */
   flush(): Promise<void>
   dispose(): void
@@ -1143,6 +1150,19 @@ export function createPhoneConnectionController(
 
   return {
     getState: () => state,
+    serverUpdateTarget(environmentId) {
+      const environment = registry.environments.find((item) => item.environmentId === environmentId)
+      if (!environment?.credential) return null
+      const endpoint =
+        state.links[environmentId]?.endpoint ?? routeSearchOrder(environment)[0]?.endpoint
+      if (!endpoint) return null
+      const fetchImpl = options.transport?.fetch
+      return {
+        endpoint,
+        credential: environment.credential,
+        ...(fetchImpl ? { fetch: fetchImpl } : {}),
+      }
+    },
     subscribe(listener) {
       listeners.add(listener)
       return () => {

@@ -94,6 +94,31 @@ data. Running agent turns are interrupted. Your identity, sessions, paired
 devices and credentials stay. The previous version stays on disk until the
 next update, in case you need to go back (`openmanager update <version>`).
 
+### From the app
+
+The server checks GitHub for a newer release shortly after it starts and then
+every six hours. When there is one, the web app shows a toast ("Server update ·
+0.21.0 → 0.22.0 · Update"), Settings → Environments shows it under the
+environment, and the phone shows a card on its home and a row on the
+environment's page. Pressing Update runs the same `openmanager update` on the
+machine, as a process of its own, so stopping the old server does not stop the
+update: under systemd it starts through `systemd-run --user`, on Windows
+through PowerShell's `Start-Process`. The app follows it through the restart
+and says when the new version answers. Only devices paired with admin access
+can start an update; any paired device can see the version.
+
+What the updater does is kept in `<data dir>/server-update.json`, and what it
+printed in `<data dir>/logs/server-update.log`. If the server was started by
+hand (`openmanager` in a terminal) rather than as the background service, the
+new version is installed but nothing can restart the running server; the app
+says to restart it. A server running from a checkout, or installed without the
+install script, cannot update itself; the app says what to run instead.
+
+This works through `GET`/`POST /server-update`, which sits outside protocol
+negotiation, so an app too new for the server's protocol can still update it.
+Servers older than this feature do not have the route: update those once with
+`openmanager update`.
+
 ## Uninstall
 
 ```sh

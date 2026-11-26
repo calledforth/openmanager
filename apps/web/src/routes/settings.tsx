@@ -60,6 +60,7 @@ import type { AppearanceMode } from '@openmanager/app-core/providers/theme-provi
 import { ThemeFamilyPicker } from '../components/theme-family-picker'
 import { useTheme } from '../providers/theme-provider'
 import { cn } from '../lib/utils'
+import { ServerVersionLine } from '../components/server-update'
 
 const SETTINGS_TABS = [
   { id: 'environments', label: 'Environments' },
@@ -479,6 +480,7 @@ function EnvironmentsPanel() {
           selectedId={selectedId}
           inUseEndpoint={inUseEndpoint}
           renameTarget={renameTarget}
+          accessory={(environmentId) => <ServerVersionLine environmentId={environmentId} />}
           onSelect={selectEnvironment}
           onRemove={removeEnvironment}
           onDisconnect={changeEnvironment}
